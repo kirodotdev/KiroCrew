@@ -47,6 +47,7 @@ from kiro_crew.apps.backend import (
 )
 from kiro_crew.apps.bridges import deregister_app
 from kiro_crew.apps.hooks_integration import (
+    loaded_hook_manifest,
     on_app_disable,
     stop_app_startup_hooks,
 )
@@ -406,6 +407,60 @@ async def teardown_app_runtime(
             logger.warning("deregistering app %r failed: %s", name, exc, exc_info=True)
             _fail(f"deregister failed: {exc}")
 
+    return TeardownResult(warnings=warnings, failures=failures)
+
+
+async def stop_app_hooks_for_uninstall(name: str) -> TeardownResult:
+    """Stop *name*'s in-process code before an uninstall removes its files.
+
+    The uninstall handler runs its own backend stop and deregistration, so it does
+    not call :func:`teardown_app_runtime`; this is the in-process half that it
+    would otherwise skip. Without it an uninstalled app's ``backend.hooks`` routes
+    stay in the route registry and keep answering, its ``on_shutdown`` never runs,
+    and its job runs and SDK entry survive, until the hook reconciler's next tick
+    notices the app is gone. Disable has no such window, because it reaches
+    ``on_app_disable`` through :func:`teardown_app_runtime`.
+
+    The CALLER holds ``app_lifecycle_lock(name)`` and has already proven retained
+    startup ownership clear under it (``_refuse_while_startup_hook_runs``), which
+    is why ``startup_stopped=True`` is passed instead of checking a second time.
+
+    ``on_shutdown`` is resolved from the manifest the hooks were LOADED from and
+    runs only when one is retained, the same rule the reconciler applies to an
+    uninstalled app: a retained manifest exists only for an app the gateway loaded
+    healthily, so an app that was never started does not get its shutdown code
+    launched by its own removal. Every stopping step runs regardless.
+
+    ``failures`` names residual execution (cron jobs that may fire, a startup hook
+    still running, job workers still running); ``warnings`` names a failed
+    ``on_shutdown``. Never raises.
+    """
+    warnings: list[str] = []
+    failures: list[str] = []
+    await notify_app_disabled(name)
+    retained = loaded_hook_manifest(name)
+    try:
+        result = await on_app_disable(
+            name,
+            {"name": name, "manifest": retained or {}},
+            run_app_hooks=retained is not None,
+            bounded_startup_cleanup=True,
+            startup_stopped=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - uninstall must still remove the app
+        logger.warning("in-process teardown failed for app %r: %s", name, exc, exc_info=True)
+        return TeardownResult(warnings=[], failures=[redact(f"hooks disable failed: {exc}")])
+    for key, value in (result.items() if isinstance(result, dict) else ()):
+        if key == "hooks_shutdown":
+            if value == "failed":
+                warnings.append(
+                    "the app's own on_shutdown hook failed, so anything it had "
+                    "buffered may not have been saved — its code was still stopped"
+                )
+        elif isinstance(value, str) and value.startswith(("failed:", "partial:")):
+            failures.append(redact(f"{key.replace('_', ' ')} incomplete: {value}"))
+        else:
+            logger.info("uninstall teardown of %r: %s: %s", name, key, value)
     return TeardownResult(warnings=warnings, failures=failures)
 
 
