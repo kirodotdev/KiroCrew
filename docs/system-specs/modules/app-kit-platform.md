@@ -2183,7 +2183,9 @@ counts-and-environment only. The `cron_jobs` and `lessons` counts are nullable:
 zero — app consumers must treat `null` as "no data", not `0`. The checkout's `branch`/`commit` are stripped for app
 tokens (they say what the operator is working on and have no consumer outside the
 owner surfaces); `/api/status` and the SSE stream run on dashboard-user tokens and
-keep the full snapshot. Moving the whole frame behind a declaration was rejected:
+keep the full snapshot. The live auto-approve grant (`yolo`, `yolo_expires_at` and the
+rest of `status_counts.yolo_grant_fields`) joins only a dashboard user's frame; an app
+socket's frame never carries it. Moving the whole frame behind a declaration was rejected:
 every client needs its `version` to force a reload across a gateway upgrade, so
 that would silently cut existing apps off from the upgrade signal. Tier 1 is slot-scoped: visibility follows
 the slot's `SlotOrigin` and the app's `slots:*` declarations (`slots:own` is the
