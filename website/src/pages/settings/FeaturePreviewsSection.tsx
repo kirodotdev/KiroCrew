@@ -12,7 +12,7 @@ import { Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -126,6 +126,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_LAYOUT_HARNESS: return i18nT('pages.developer.featurePreviewsTab.layout_harness')
     case PREVIEW_FOLDER_CONDUCTOR: return i18nT('pages.developer.featurePreviewsTab.folder_conductor')
     case PREVIEW_CREWMATE_HARNESS: return i18nT('pages.developer.featurePreviewsTab.crewmate_harness')
+    case PREVIEW_MATE_SESSIONS: return i18nT('pages.developer.featurePreviewsTab.mate_sessions')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
   }
@@ -154,6 +155,7 @@ export function FeaturePreviewsSection() {
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
   const crewmateHarness = usePreviewFlag(PREVIEW_CREWMATE_HARNESS)
+  const mateSessions = usePreviewFlag(PREVIEW_MATE_SESSIONS)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
@@ -438,6 +440,17 @@ export function FeaturePreviewsSection() {
           hint={i18nT('pages.developer.featurePreviewsTab.crewmate_harness_desc')}
           checked={crewmateHarness}
           onChange={v => setPreviewFlag(PREVIEW_CREWMATE_HARNESS, v)}
+        />
+      </SettingsCard>
+      {/* A crewmate's sessions leave the person's lists for the mate's Sessions
+          tab. NO ingress button: the change is to lists the reader already sees. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.mate_sessions')}
+          description={i18nT('pages.developer.featurePreviewsTab.mate_sessions_desc_summary')}
+          hint={i18nT('pages.developer.featurePreviewsTab.mate_sessions_desc')}
+          checked={mateSessions}
+          onChange={v => setPreviewFlag(PREVIEW_MATE_SESSIONS, v)}
         />
       </SettingsCard>
       {/* Conductor remote dispatch (`work_ledger.remote_dispatch`). Like the KAS card
