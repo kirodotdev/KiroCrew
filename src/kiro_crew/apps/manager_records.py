@@ -819,6 +819,33 @@ def staged_app_grants(
     return granted
 
 
+def held_back_app_grants(name: str, family: str, declared: Sequence[str]) -> list[str] | None:
+    """The *declared* ``permissions.<family>`` entries still waiting for the owner.
+
+    These are the entries the app detail page offers under "Approve new
+    permissions": declared, but outside the approved set. Read only to word a
+    refusal, never to grant. It lists nothing when nothing is known to be
+    waiting: no readable record, no stored set, or a set that predates the
+    family, because :func:`staged_app_grants` then withholds for another reason
+    or approves what is declared.
+
+    *declared* is what an earlier read of the manifest saw. ``None`` means the
+    app moved after that read: an update is swapping its tree, or the live
+    manifest declares other entries than *declared*, so the approved set read
+    here may not belong to it.
+    """
+    if _tree_swap_state(name)[0] or _update_in_progress(name):
+        return None
+    live = get_app_manifest(name)
+    if live is None or [e for e in getattr(live.permissions, family) if e] != list(declared):
+        return None
+    meta = _read_installed(name)
+    if meta is None:
+        return []
+    held = _held_back_entries(_effective_approved_grants(name, meta), {family: list(declared)})
+    return held.get(family, [])
+
+
 def _approved_grants_row(name: str) -> dict[str, Any]:
     """The ``approvedGrants`` key for an app row, absent when no set is stored."""
     grants = _effective_approved_grants(name, _read_installed(name))

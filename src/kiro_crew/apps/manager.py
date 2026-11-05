@@ -197,6 +197,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         approved_manifest_permissions,
         apps_dir,
         get_app_manifest,
+        held_back_app_grants,
         hold_app_record_lock,
         holds_app_record_locks,
         refresh_app_config_keys,
