@@ -824,9 +824,13 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     never scanned at all -- ``is_denied`` allowed a command bash runs.
 
     Quoting is not the only way a ``)`` reaches this walk as an ordinary
-    character. Two COMMAND-GRAMMAR constructs put one there too, and each was
+    character. Three SHELL-GRAMMAR constructs put one there too, and each was
     measured allowing a payload this module still refuses:
 
+    * a ``${...}`` PARAMETER EXPANSION is one word to its matching ``}``, so the
+      ``)`` in ``$(: ${v:-)}; printf token)`` is the default value and the body
+      runs on to the later ``)``. Only a ``$(``, ``<(``, ``>(``, backtick or
+      nested ``${`` inside the word holds a ``}`` that does not close it.
     * a ``#`` COMMENT runs to the end of its line, so the ``)`` in
       ``$(: # )`` is commented out and the substitution closes on a LATER line.
       Counting it closed the body at ``: # ``, and the ``printf`` behind it that
@@ -850,21 +854,61 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     caller must fail CLOSED on that: for an extractor the safe reading is the
     whole remainder (scan more, never less). All three call sites are extractors,
     so a span that reaches too far only feeds them text to inspect.
+
+    The ``${...}`` reading is kept only where it CLOSES the span later than the
+    paren-only walk does. Where it cannot close it (text it does not model, such
+    as a here-document), the paren-only span stands, so no span gets shorter.
     """
-    depth = 1
+    paren = _close_paren_walk(text, open_end, False)
+    spanned = _close_paren_walk(text, open_end, True)
+    return spanned if spanned[1] and spanned[0] > paren[0] else paren
+
+
+def _close_paren_walk(text: str, open_end: int, expansions: bool) -> "tuple[int, bool]":
+    """The walk behind :func:`_matching_close_paren`; *expansions* reads ``${...}``."""
+    frames = ["("]  # innermost last: ``(`` is command text, ``{`` a ``${...}`` word
     cases = 0
+    outer_cases: "list[int]" = []  # a ``${...}`` word starts outside any ``case``
     pos = 0
     state = 0
     ansi = False
     while pos <= len(text):
         jumped = False
+        dollars = 0  # live ``$`` run just before this step: ``$${`` is the PID, then ``{``
+        prev = ""  # the live character just before this step
         for step in _iter_shell_chars(text[pos:], state, ansi):
             off = pos + step.offset
             if off < open_end:
                 continue
             if not step.active:
+                dollars, prev = 0, ""
                 continue
             ch = step.char
+            after_dollar = dollars % 2 == 1
+            opens_body = after_dollar or prev in ("<", ">")
+            dollars = dollars + 1 if ch == "$" else 0
+            prev = ch
+            if expansions and ch == "{" and after_dollar:
+                frames.append("{")
+                outer_cases.append(cases)
+                cases = 0
+                continue
+            if frames[-1] == "{":
+                # Parens, ``#`` and ``case`` are the word's own text here.
+                if ch == "}":
+                    frames.pop()
+                    cases = outer_cases.pop()
+                elif ch == "(" and opens_body:
+                    frames.append("(")
+                elif ch == "`":
+                    close = _backtick_closer(text, off + 1)
+                    if close < 0:
+                        break
+                    pos = close + 1
+                    state, ansi = 0, False
+                    jumped = True
+                    break
+                continue
             # A ``#`` opens a comment only at the START of a word, and the
             # character before it is read as the shell reads it -- a folded
             # continuation leaves ``a\`` + newline + ``#b`` one ordinary word.
@@ -885,10 +929,10 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
             if cases and ch in "()":
                 continue
             if ch == "(":
-                depth += 1
+                frames.append("(")
             elif ch == ")":
-                depth -= 1
-                if depth == 0:
+                frames.pop()
+                if not frames:
                     return (off + len(step.text), True)
         if not jumped:
             break
