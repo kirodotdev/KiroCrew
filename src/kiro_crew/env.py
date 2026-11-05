@@ -20,6 +20,7 @@ from typing import Any
 
 from kiro_crew import env_node_windows, env_own_kirocrew, platform_compat
 from kiro_crew.config.paths import data_home
+from kiro_crew.env_mise import _mise_bin
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # ``uv`` is a declared dependency shipped as a wheel (``setup.cfg``), so this
@@ -1775,38 +1776,6 @@ def expand_spec_args(args: Any, *, server: str | None = None) -> Any:
         _expand_env_placeholders(a, source=source, server=server) if isinstance(a, str) else a
         for a in args
     ]
-
-
-@functools.lru_cache(maxsize=1)
-def _mise_bin() -> str | None:
-    """Locate the ``mise`` binary in a non-login (daemon) context.
-
-    A systemd / launchd gateway does not source the user's shell rc, so
-    ``~/.local/bin`` (mise's default install dir) is often absent from the
-    inherited ``$PATH``. Try ``$PATH`` first, then the default install dir,
-    then macOS Homebrew locations. Discovery must work before mise activation
-    adds the user's toolchain directories to the gateway environment.
-
-    A candidate whose probe raises ``OSError`` is skipped like a missing one:
-    ``Path.is_file`` swallows only not-found errors, so a ``stat`` refused with
-    EACCES (a restricted ``/usr/local/bin`` or a sandboxed gateway) would
-    otherwise abort gateway boot from a lookup that is meant to be optional.
-    """
-    found = shutil.which("mise")
-    if found:
-        return found
-    candidates = [Path.home() / ".local" / "bin" / "mise"]
-    if sys.platform == "darwin":
-        candidates.extend([Path("/opt/homebrew/bin/mise"), Path("/usr/local/bin/mise")])
-    for candidate in candidates:
-        try:
-            usable = candidate.is_file() and os.access(candidate, os.X_OK)
-        except OSError as exc:
-            logger.debug("mise candidate %s skipped: %s", candidate, type(exc).__name__)
-            continue
-        if usable:
-            return str(candidate)
-    return None
 
 
 def activate_mise(env: MutableMapping[str, str] | None = None) -> list[str]:
