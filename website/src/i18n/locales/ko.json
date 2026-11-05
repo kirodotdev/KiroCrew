@@ -6826,6 +6826,7 @@
       "copied": "복사됨",
       "copy": "복사",
       "copy_failed": "복사 실패",
+      "osc52_copied": "터미널에서 복사됨",
       "copy_selection": "선택 항목 복사",
       "disconnected_message": "터미널 연결이 끊겼습니다",
       "displaced_enter_hint": "여기에서 사용하려면 Enter를 누르세요",

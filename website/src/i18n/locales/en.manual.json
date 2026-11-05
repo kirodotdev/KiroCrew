@@ -2387,6 +2387,7 @@
       "copied": "Copied",
       "copy": "Copy",
       "copy_failed": "Copy failed",
+      "osc52_copied": "Copied from terminal",
       "disconnected_message": "Terminal disconnected",
       "displaced_enter_hint": "Press Enter to use it here",
       "displaced_message": "Another window took over this terminal",

@@ -1061,8 +1061,12 @@ class TestTerminalWsIntegration:
                 sess = registry["winok-sess"]
                 assert sess.winpty is not None
                 assert sess.proc is None  # Windows backend has no asyncio proc
+                replayed = await ws.receive(timeout=default_timeout())
                 prompt = await ws.receive(timeout=3)
                 ready = await ws.receive(timeout=3)
+                # The live-output boundary comes before any PTY output.
+                assert replayed.type == web.WSMsgType.TEXT
+                assert json.loads(replayed.data) == {"type": "replayed"}
                 assert prompt.type == web.WSMsgType.BINARY
                 assert prompt.data == b"PS> "
                 assert ready.type == web.WSMsgType.TEXT

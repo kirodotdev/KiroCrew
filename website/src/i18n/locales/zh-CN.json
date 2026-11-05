@@ -6826,6 +6826,7 @@
       "copied": "已复制",
       "copy": "复制",
       "copy_failed": "复制失败",
+      "osc52_copied": "已从终端复制",
       "copy_selection": "复制所选",
       "disconnected_message": "终端已断开连接",
       "displaced_enter_hint": "按 Enter 在此窗口使用",

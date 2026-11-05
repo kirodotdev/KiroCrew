@@ -7012,6 +7012,7 @@
       "copied": "Kopiert",
       "copy": "Kopieren",
       "copy_failed": "Kopieren fehlgeschlagen",
+      "osc52_copied": "Aus dem Terminal kopiert",
       "copy_selection": "Auswahl kopieren",
       "disconnected_message": "Terminal getrennt",
       "displaced_enter_hint": "Mit Enter hier verwenden",
