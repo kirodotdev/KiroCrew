@@ -80,6 +80,7 @@
 import { useCallback, useMemo } from 'react'
 import { useQueries, type UseQueryResult } from '@tanstack/react-query'
 import { api, type InstanceView } from '../api/client'
+import { validRank } from '../utils/folderRank'
 import { hasDashboardPane } from '../utils/remoteCrew'
 
 /** The fields this hook reads off a peer slot; everything else is ignored.
@@ -189,11 +190,14 @@ export interface InstanceSessionRow {
 
 /** One folder of a peer's own sidebar tree, as its `api/chat/folders` lists it.
  *  Only what the crew group draws: the name, the tree shape and the stored
- *  order. The tree is a read-only mirror; it is edited on the peer. */
+ *  position. The position is `rank`, the key a drag on the peer writes; `order`
+ *  is the fallback for a folder with no rank, which is every folder of a peer on
+ *  an older build. The tree is a read-only mirror; it is edited on the peer. */
 export interface PeerFolder {
   id: string
   name: string
   parent_id?: string
+  rank?: string
   order: number
 }
 
@@ -258,20 +262,23 @@ const isConnected = (inst: InstanceView): boolean => inst.status?.state === 'con
 
 /** The folders in a peer's `api/chat/folders` answer, checked one by one: the
  *  reply crossed a machine boundary, so a row without a string `id` and `name`
- *  is dropped rather than rendered, and a repeated `id` keeps its first row. */
+ *  is dropped rather than rendered, a repeated `id` keeps its first row, and a
+ *  `rank` that `validRank` refuses is dropped, so that folder sorts by `order`. */
 export function peerFoldersOf(data: unknown): PeerFolder[] {
   if (!Array.isArray(data)) return []
   const out: PeerFolder[] = []
   const seen = new Set<string>()
   for (const f of data) {
     if (!f || typeof f !== 'object') continue
-    const { id, name, parent_id: parent, order } = f as Record<string, unknown>
+    const { id, name, parent_id: parent, rank, order } = f as Record<string, unknown>
     if (typeof id !== 'string' || !id || typeof name !== 'string' || seen.has(id)) continue
     seen.add(id)
+    const validated = validRank(rank)
     out.push({
       id, name,
       order: typeof order === 'number' && Number.isFinite(order) ? order : 0,
       ...(typeof parent === 'string' && parent ? { parent_id: parent } : {}),
+      ...(validated !== null ? { rank: validated } : {}),
     })
   }
   return out
