@@ -58,6 +58,7 @@ import ChatTitleOverlay from './chat/page/ChatTitleOverlay'
 import ChatTranscriptView from './chat/page/ChatTranscriptView'
 import ComposerDockView from './chat/page/ComposerDockView'
 import { useComposerTypingLock } from './chat/shared-crew/useComposerTypingLock'
+import { SessionPresence, usePresentOthers } from './chat/shared-crew/PresenceChips'
 import { useComposerEditWithTyping } from './chat/shared-crew/typingSignal'
 import ChatSidePanels from './chat/page/ChatSidePanels'
 import { slotBusySteer } from '../components/chat-input/busySend'
@@ -1030,6 +1031,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const sendNowAfterRace = useCallback((slot: string) => { void send(undefined, slot, false, false, true) }, [send])
   // Someone else typing in this shared session locks the composer read-only.
   const typingLock = useComposerTypingLock(activeSlot)
+  // Memoized so the composer's memo holds; `langGen` re-keys the chips' i18nT labels.
+  const othersHere = usePresentOthers(activeSlot).entries.length > 0
+  const composerPresence = useMemo(() => { void langGen; return othersHere ? <SessionPresence sessionKey={activeSlot} /> : undefined }, [othersHere, activeSlot, langGen])
   const composerAbove = useComposerAboveBand({
     langGen,
     controls: sessionControlState,
@@ -1199,7 +1203,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // memory-mode chip nor the Crew Mode chip is offered. Until the first
               // message the composer mark turns it off and both come back; after
               // that the chat stays on the conductor.
-              showComposerMemoryChip={showComposerMemoryChip && !crewModeChosen} switchMemoryMode={switchMemoryMode} composerAbove={composerBand} typingLock={typingLock} composerSessionControls={composerSessionControls}
+              showComposerMemoryChip={showComposerMemoryChip && !crewModeChosen} switchMemoryMode={switchMemoryMode} composerAbove={composerBand} typingLock={typingLock} composerPresence={composerPresence} composerSessionControls={composerSessionControls}
               // Beside the memory chip on the welcome state only, and not while the chat
               // is still loading: drawn alone first, the Crew Mode chip would slide
               // across the memory chip arriving beside it.

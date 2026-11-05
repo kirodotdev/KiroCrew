@@ -29,7 +29,7 @@ function useSlotAttribution(slotKey: string | undefined): SessionAttribution | n
 
 function SenderLine({ name }: { name: string }) {
   return (
-    <div className="text-[12px] leading-5 text-muted mb-0.5 pr-1 truncate max-w-full" data-testid="message-byline" title={i18nT('sharedCrew.sent_by', { name })}>
+    <div className="text-[12px] leading-5 text-muted mb-0.5 pr-1 truncate max-w-full" data-testid="message-byline">
       {name}
     </div>
   )

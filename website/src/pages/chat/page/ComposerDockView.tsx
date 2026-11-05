@@ -274,6 +274,7 @@ interface ComposerDockViewProps {
   composerAbove: JSX.Element
   /** Someone else typing in this shared session: the composer is read-only. */
   typingLock?: ComposerTypingLock | null
+  composerPresence?: JSX.Element
   composerSessionControls: ReturnType<typeof useSessionControlChips>
   /** The Crew Mode chip (crewModeSwitch): offered on this chat, and its switch on. */
   crewModeOffered: boolean
@@ -327,7 +328,7 @@ export default function ComposerDockView({
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
   effortSupported, effortAutoNote = false, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
-  queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock,
+  queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
   composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
@@ -609,6 +610,7 @@ export default function ComposerDockView({
               onFollowUpSend={(text?: string) => { if (!steerRootClosed) send(text) }}
               // Streaming, compaction and stopping keep the input interactive (api_chat queues on slot.running and stop preserves the
               typingLock={typingLock}
+              presence={composerPresence}
               // queue, so Enter queues a follow-up during the stop window). A memory-mode switch locks it, the reason as placeholder; a
               // worker of a closed conductor too, its reason said once by the gate's line above the composer. The Crew Mode
               // switch locks it the same way for its one round-trip: a send that reached the server first would start the

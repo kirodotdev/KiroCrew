@@ -186,7 +186,7 @@ describe('a send that loses a send race', { timeout: 20_000 }, () => {
     expect(race.idempotencyKey).toMatch(/^send-s-/)
     await waitFor(() => expect(screen.getByTestId('send-race-notice')).toBeTruthy())
     expect(screen.getByTestId('send-race-notice').textContent).toContain('alice sent first')
-    expect(screen.getByTestId('send-race-notice').textContent).toContain('can go next, with its own reply')
+    expect(screen.getByTestId('send-race-notice').textContent).toContain("Yours wasn't sent; the draft is kept.")
     expect(screen.getByTestId('send-race-send-now').textContent).toBe("Send after alice's message")
     expect(screen.getByTestId('send-race-notice').getAttribute('data-winner-message')).toBe('m-alice')
     expect(input().value).toBe('my draft')

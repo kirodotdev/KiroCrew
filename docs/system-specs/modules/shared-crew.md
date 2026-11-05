@@ -371,8 +371,8 @@ setup guidance and session list follow it, and the modes never mix:
 | `network` | a Tailscale path is on, or a network person or another operator has been seen | the share card with the Tailscale path's status (first on the page), who has been seen (labelled as seen), personal Remote Control | bylines, filter |
 | `invalid` | the tailnet login allowlist could not be read | one error state with the reason code | bylines, filter |
 
-The session list's bylines and filter, message bylines, decision attribution and
-presence chips are all part of the Shared Crew preview. They show only when the
+The session list's bylines and filter, message bylines and presence chips are all
+part of the Shared Crew preview. They show only when the
 preview is on (`shared_crew_preview`), the mode is read and not `personal`, and
 someone besides the owner has joined: a non-owner People row this Crew saw on an
 authorized request since it started (`sources` holds `observed`;
@@ -1188,6 +1188,24 @@ session switch writes it too. The collab strip's `usePresenceReporter` listens t
 that content-free signal and sends `typing`, then `viewing` after
 `TYPING_HOLD_MS` without a keystroke.
 
+Who else is in the open session shows once, as initials chips at the end of the
+composer's context row (`SessionPresence`, with the other chips beside the model
+chip): at most three initials chips, each named by the person (accessible name and
+hover title), then "+N". The chips never say who is typing, and a session with
+nobody else in it draws none. The browser lists no approval or question
+attribution in the transcript or above the composer. A pending approval or
+question card carries a short label, "Raised by" and the name of the teammate
+whose turn raised it (`useRaisedBy`), and nothing when the viewer raised it or the gateway answers
+it by its approval mode. When another person settles a card this tab was showing,
+or a click loses the race, the composer's status line says how it ended once
+("Bob approved", `useResolvedElsewhere`); the next approval or question card, or
+leaving the session, clears it. A rejection wears no success icon. Both
+read only the decisions cache that the collab strip fills and `shared_crew.decision`
+frames keep current, so a failed read is reported once, by the strip; a split pane
+or crew page with no strip gets them from frames alone. Only cards this tab displayed count: decisions the
+viewer or the gateway settled, a dismissed question, and ones settled before the
+session opened say nothing.
+
 A shared decision (`collab.SharedDecision`) is a tool approval or agent question that
 every collaborator sees and any one may answer. `classify_response` decides a response
 under the resolver's lock: the first response to see `pending` wins, a retry with the
@@ -1321,9 +1339,9 @@ an edit that leaves the draft empty, and a send, report `draft: 'empty'` at once
 `useComposerTypingLock` reads the lease and the viewer; when someone else holds
 it, ChatInput's `typingLock` turns the box read-only (not disabled: the draft
 stays as it was, and so does focus), replaces the button row with
-`TypingLockBanner` (initials and "<name> is typing…"), and keeps only Stop and
-Steer for a running turn. When the lease ends the box unlocks in place. A send
-refused `composer_locked` restores the draft and records the refusal
+`TypingLockBanner` ("<name> is typing…", the only place typing is named; the
+box's placeholder stays empty; a line beside Take over says Take over types in their place and their draft stays with them), and keeps only Stop and Steer for a running turn.
+When the lease ends the box unlocks in place. A send refused `composer_locked` restores the draft and records the refusal
 (`api/typingLease.noteComposerLocked`), which starts a fresh lease read; the
 lock shown is always the server's latest answer, never the refusal's copy.
 With the preview on (`sharedCrewPreviewOn`), the banner also has Take over;
