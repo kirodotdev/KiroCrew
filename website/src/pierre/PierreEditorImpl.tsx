@@ -113,8 +113,13 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   diffSplit?: boolean
   /** Show unchanged regions in the live-diff surface instead of folding them. */
   diffExpandUnchanged?: boolean
+  /** Live-diff editing only: called with true when this session's live diff
+   *  is over the inline budget and the surface fell back to the plain editor,
+   *  false when it renders the live diff. Called again when the baseline
+   *  changes; never in the plain editor, never on unmount. */
+  onLiveDiffDegraded?: (degraded: boolean) => void
   className?: string
-}>(function PierreEditorImpl({ file, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, className }, ref) {
+}>(function PierreEditorImpl({ file, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded, className }, ref) {
   const dark = useIsDark()
   const poolState = usePierreWorkerPool()
   useRegisterEditorSurface()
@@ -270,6 +275,17 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   )
   const renderLiveDiff = diffBase !== undefined
     && isPierreFilePairWithinBudget(baseFile, diffNewFile)
+  // The host reads this verdict to show its own diff view in place of an
+  // editor that dropped the live diff. Layout phase, so the host's re-render
+  // lands before the dropped editor is painted; `baseFile` in the deps
+  // re-reports when the baseline arrives or moves, typing never does.
+  const onLiveDiffDegradedRef = useRef(onLiveDiffDegraded)
+  onLiveDiffDegradedRef.current = onLiveDiffDegraded
+  const liveDiffRequested = diffBase !== undefined
+  useLayoutEffect(() => {
+    if (!liveDiffRequested) return
+    onLiveDiffDegradedRef.current?.(!renderLiveDiff)
+  }, [liveDiffRequested, renderLiveDiff, baseFile])
   const editorRef = useRef<Editor<undefined> | null>(null)
   /** A jump requested before Pierre bound its editor, replayed on attach. */
   const pendingJumpRef = useRef<{ line: number; endLine?: number } | null>(null)

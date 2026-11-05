@@ -496,10 +496,38 @@ export function useMarkdownPanelDiff({ filePath, isRichType, canTextDiff, partia
   // exact all-added rendering this branch exists to suppress.
   const diffUnavailable = diffMode && (diffData?.status === 'not_git' || diffData?.status === 'error')
     ? diffData.status as 'not_git' | 'error' : null
+  // The editor's own verdict on its live diff (`onLiveDiffDegraded`), tagged
+  // with the file and baseline it was given for. A verdict for another file
+  // or baseline counts as none, so the editor mounts again and re-reports.
+  const [liveDiff, setLiveDiff] = useState<{ filePath: string; base: string; degraded: boolean } | null>(null)
+  const filePathRef = useRef(filePath)
+  filePathRef.current = filePath
+  const originalContentRef = useRef(originalContent)
+  originalContentRef.current = originalContent
+  const reportLiveDiffDegraded = useCallback((degraded: boolean) => {
+    const path = filePathRef.current
+    const base = originalContentRef.current
+    setLiveDiff(prev => (prev?.filePath === path && prev.base === base && prev.degraded === degraded ? prev : { filePath: path, base, degraded }))
+  }, [])
+  // Leaving the live-diff session (diff view or editing off) drops the
+  // verdict, so the next session asks the editor again instead of trusting a
+  // file size that may have changed since.
+  const liveDiffSession = diffMode && editing
+  useEffect(() => {
+    if (!liveDiffSession) setLiveDiff(null)
+  }, [liveDiffSession])
+  // An editor that dropped its live diff (over the inline budget) shows
+  // nothing changed, so a clean buffer gets the diff view instead. Only once
+  // the baseline has arrived: before that the editor diffs against a
+  // placeholder and reports again when the real baseline lands. Unsaved edits
+  // keep the editor, so typing never unmounts it.
+  const editorDiffSwap = diffMode && editing && gitPatch == null && !diffUnavailable
+    && diffData != null && !dirty
+    && liveDiff?.filePath === filePath && liveDiff.base === originalContent && liveDiff.degraded
   // Diff mode draws the diff view, not the editor: always in the viewer, and
   // in the editor when the diff is git's patch, once it has arrived (and git
-  // could produce one).
-  const diffViewShown = diffMode && (!editing || (gitPatch != null && !diffUnavailable))
+  // could produce one), or when the editor dropped its over-budget live diff.
+  const diffViewShown = diffMode && (!editing || (gitPatch != null && !diffUnavailable) || editorDiffSwap)
   // Diff mode on a file identical to its baseline renders an empty canvas in
   // BOTH view and edit modes — show a notice instead. Editing past the
   // baseline (content diverges) flips this off automatically.
@@ -552,5 +580,5 @@ export function useMarkdownPanelDiff({ filePath, isRichType, canTextDiff, partia
     }
   }, [canTextDiff, isRichType, diffData, filePath, initialDiffMode, onDiffModeChange, setDiffMode])
 
-  return { diffData, diffChecking, diffQueryError, originalContent, comparedContent, gitPatch, diffUnavailable, diffViewShown, zeroDiff, zeroDiffText, diffErrorText, diffNoBaselineText }
+  return { diffData, diffChecking, diffQueryError, originalContent, comparedContent, gitPatch, diffUnavailable, diffViewShown, zeroDiff, zeroDiffText, diffErrorText, diffNoBaselineText, reportLiveDiffDegraded }
 }
