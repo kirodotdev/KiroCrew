@@ -28,6 +28,7 @@ _RM_FLOOR_NOTE = "Matched on the rm flags and target, not the pattern text: recu
 _RM_FLOOR_UNREAD_NOTE = "Refused because the rm check could not read this command. Simplify it."
 _CAN_FIRE_RE = re.compile(r"r[^\w\s]*m")  # a literal rm, quote splices allowed
 _RM_WORD_RE = re.compile(r"(?<![\w.-])r[^\w\s/]*m(?![\w.-])")  # rm as its own word
+_EXPANDED_HOME = "\2"  # a ``$HOME`` its carrier expands: home whatever quotes the payload adds
 
 #: A redirection is one word, not the program: an optional ``{fd}`` or fd number,
 #: a redirection operator (``>``, ``>>``, ``<``, ``<>``, ``&>``, ``2>&`` …) and any
@@ -36,7 +37,7 @@ _RM_WORD_RE = re.compile(r"(?<![\w.-])r[^\w\s/]*m(?![\w.-])")  # rm as its own w
 #: :func:`shell_normalizer._push_token_redirection` is the shared recognizer that
 #: reports ``(is_redirection, consumes_next_word)``; it reads a WHOLE token, so
 #: :func:`_segments` keeps a redirection and its fd prefix in one word (below).
-_HOME_WORDS = frozenset({"~", "$HOME", "${HOME}"})
+_HOME_WORDS = frozenset({"~", "$HOME", "${HOME}", _EXPANDED_HOME})
 _LITERAL_SHELLS = _shell._NESTED_SHELL_PROGRAMS - {"busybox"}  # busybox's next word is the applet
 _SUBST = _commands.SUBST  # a substitution: may expand to nothing, unlike a literal ``\0``
 #: an unquoted parameter (``$x``, ``${…}``, ``$1``): an unset one expands to nothing
@@ -344,6 +345,28 @@ def _command_tokens(text: str) -> "list[list[str]]":
     return out
 
 
+def _carrier_home(command: str) -> str:
+    """*command* with each ``$HOME`` / ``${HOME}`` its own quoting leaves live as
+    :data:`_EXPANDED_HOME`: bash expands it before a nested shell reads the payload, so
+    no quote the payload adds keeps it literal (``bash -c "rm -fr '$HOME'"``)."""
+    if "$HOME" not in command and "${HOME}" not in command:
+        return command
+    spans = []
+    for cmd in _commands.read_commands(command, heredocs=True):
+        for step in cmd.steps:
+            if step.state == 1:
+                continue  # a single-quoted ``$`` stays literal; an escaped one starts at ``\``
+            at = step.start
+            after = command[at + 5 : at + 6]
+            if command.startswith("${HOME}", at):
+                spans.append((at, at + 7))
+            elif command.startswith("$HOME", at) and not (after.isalnum() or after == "_"):
+                spans.append((at, at + 5))
+    for start, end in sorted(spans, reverse=True):
+        command = command[:start] + _EXPANDED_HOME + command[end:]
+    return command
+
+
 def _rm_wipe_targets_nested(command: str) -> "set[str]":
     """:func:`_rm_wipe_targets` over *command* and each nested-shell payload in it.
 
@@ -370,7 +393,8 @@ def _rm_wipe_targets_nested(command: str) -> "set[str]":
                 seen.add(payload)
                 pending.append(payload)
         views = (source, _ansi_c_newlines(source)) if "$'" in source else (source,)
-        for tokens in (t for view in dict.fromkeys(views) for t in _command_tokens(view)):
+        readings = dict.fromkeys((*views, *map(_carrier_home, (*views, folded))))
+        for tokens in (t for view in readings for t in _command_tokens(view)):
             payloads = _shell._nested_shell_payloads(tokens, allow_join=False)
             if not payloads:
                 continue
