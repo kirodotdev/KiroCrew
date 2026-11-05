@@ -18482,6 +18482,7 @@
         "and_cannot_be_changed_here": "，无法在此更改。",
         "and_per_surface": "以及按接入面的",
         "block_list_rules": "拒绝列表 · {{rules}}",
+        "rule_count_other": "{{count}} 条规则",
         "built_in_rules_enforced_note": "在你的退出选项和任何策略固定之后，当前有 {{total}} 条内置规则中的 {{enabled}} 条正在生效。",
         "cancel": "取消",
         "click_any_control_to_see_exactly_what_it_covers": "点击任一控制项可查看它具体涵盖的范围。",

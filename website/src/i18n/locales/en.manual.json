@@ -8993,6 +8993,8 @@
         "all_allowed": "All allowed",
         "allow_list_rules": "Allow-list · {{rules}}",
         "block_list_rules": "Block-list · {{rules}}",
+        "rule_count_one": "{{count}} rule",
+        "rule_count_other": "{{count}} rules",
         "collapse_category_rules": "Collapse {{category}} rules",
         "delete_pattern": "Delete pattern {{name}}",
         "disable_all_built_in_denies_2": "Disable all built-in denies?",
