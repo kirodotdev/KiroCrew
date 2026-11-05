@@ -292,7 +292,9 @@ def test_adding_an_unselected_server_clears_an_empty_file_wildcard(home, monkeyp
     assert mate_worker.worker_additions(base, written)["tools"] == []
 
 
-def test_adding_does_not_copy_selectors_for_a_base_only_server(home, monkeypatch):
+def test_adding_copies_only_new_selectors_for_a_base_only_server(home, monkeypatch):
+    """The base's own entry and selection win; what the template selects beyond
+    them on that server is written, so the worker gets it."""
     user, mates = home
     base = {"mcpServers": {"notes": {"command": "base-notes"}}, "tools": ["@notes/read"]}
     monkeypatch.setattr(mate_worker_kit, "_worker_base_or_none", lambda: base)
@@ -307,12 +309,14 @@ def test_adding_does_not_copy_selectors_for_a_base_only_server(home, monkeypatch
     preview = _add("notes-agent")
 
     written = _file(mates)
-    assert written["tools"] == []
+    assert written["tools"] == ["@notes/write"]
     assert written["mcpServers"] == {}
-    assert not written.get("allowedTools")
-    assert not [
-        r for r in preview["changes"] if r["change"] == "added" and r["section"] != "prompt"
-    ]
+    assert written["allowedTools"] == ["@notes/write"]
+    assert {
+        (r["section"], r["id"])
+        for r in preview["changes"]
+        if r["change"] == "added" and r["section"] != "prompt"
+    } == {("tools", "@notes/write"), ("allowedTools", "@notes/write")}
 
 
 def test_a_server_already_present_is_left_alone_and_skipped(home):
@@ -688,6 +692,74 @@ def test_a_skipped_base_servers_disabled_tools_are_carried_as_exclusions(home):
     assert "jira" not in spec["mcpServers"]
     assert "notes" in spec["mcpServers"] and "@notes/read" in spec["allowedTools"]
     assert {"section": "excludedTools", "id": ref, "change": "added"} in preview["changes"]
+
+
+def test_adding_a_template_selects_its_tools_on_a_base_declared_server(home):
+    """The base declares ``jira`` but selects none of its tools. Adding a template
+    that uses ``jira`` writes its selectors into the file, the preview lists them,
+    and the worker gets the tools."""
+    user, mates = home
+    base = {
+        "name": "kirocrew-mate-worker",
+        "prompt": "Worker base.",
+        "tools": [],
+        "mcpServers": {"jira": {"command": "jira-mcp"}},
+    }
+    (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
+
+    preview = _add()
+
+    spec = _file(mates)
+    assert "jira" not in spec["mcpServers"]
+    assert "@jira" in spec["tools"]
+    assert "@jira/search" in spec["allowedTools"]
+    assert {"section": "tools", "id": "@jira", "change": "added"} in preview["changes"]
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, spec))
+    assert "@jira" in merged["tools"]
+    assert "@jira/search" in merged["allowedTools"]
+
+
+def test_adding_an_unrelated_template_does_not_widen_a_base_server(home, monkeypatch):
+    """A file ``*`` beside an entry for a base server is not written out as that
+    server's whole selection when an unrelated agent is added."""
+    _, mates = home
+    base = {"mcpServers": {"notes": {"command": "base-notes"}}, "tools": []}
+    monkeypatch.setattr(mate_worker_kit, "_worker_base_or_none", lambda: base)
+    spec = _file(mates)
+    spec["tools"] = ["*", "@notes/read"]
+    spec["mcpServers"] = {"notes": {"command": "base-notes", "disabledTools": ["write"]}}
+    (mates / "pixel.json").write_text(json.dumps(spec), encoding="utf-8")
+
+    _add()
+
+    written = _file(mates)
+    assert "@notes" not in written["tools"]
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, written))
+    assert "@notes" not in merged["tools"]
+    assert "@notes/read" in merged["tools"]
+
+
+def test_a_base_server_selection_with_a_base_grant_previews_as_running_unasked(home, monkeypatch):
+    """The worker inherits the base's own approval, so the preview must not promise
+    that the newly selected tool asks first."""
+    user, _ = home
+    base = {
+        "mcpServers": {"notes": {"command": "base-notes"}},
+        "tools": [],
+        "allowedTools": ["@notes/write"],
+    }
+    monkeypatch.setattr(mate_worker_kit, "_worker_base_or_none", lambda: base)
+    template = {
+        "name": "notes-agent",
+        "tools": ["@notes/write"],
+        "mcpServers": {"notes": {"command": "notes-mcp"}},
+    }
+    (user / "notes-agent.json").write_text(json.dumps(template), encoding="utf-8")
+
+    preview = mate_worker_kit.preview("pixel", {"template": "notes-agent"})
+
+    assert {"section": "tools", "id": "@notes/write", "change": "added"} in preview["changes"]
+    assert preview["runs_unasked"] is True
 
 
 def test_a_template_muting_a_base_server_switches_it_off_in_the_file(home):

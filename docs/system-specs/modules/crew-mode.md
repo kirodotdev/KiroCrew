@@ -4085,8 +4085,15 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   (`kiro_crew.mate_worker`): its `prompt` is appended after the worker's own
   prompt; `mcpServers` the worker base lacks are added and mounted in `tools`
   (a base server of the same name always wins); `resources` and `skills`
-  entries the base lacks are added; `allowedTools` entries are taken only for
-  the servers the file adds. A file that copies the base adds nothing.
+  entries the base lacks are added; `tools` and `allowedTools` entries are taken
+  for the servers the file adds, and the file's EXPLICIT `@server` /
+  `@server/tool` entries for a server the base declares but does not select
+  (`mate_worker.base_server_selections`) are added too, so a Bot can switch on
+  a base server's tools. A `*` in the file never selects a base server, and
+  Crew's own managed servers keep the base's selection. Add abilities
+  (`mate_worker_kit`) writes a template's selectors for such a server into the
+  file the same way and lists them in its preview. A file that copies the base
+  adds nothing.
   **A whole-server switch-off is a restriction, not an addition:** a file entry
   for a server the base declares that reads as muted (`mcp_cleanup.mcp_entry_is_muted`:
   any `disabled` but absent or `false`) is carried by name

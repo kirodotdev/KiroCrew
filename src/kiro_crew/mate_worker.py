@@ -6,7 +6,8 @@ written from source on every start (``agent_materialization.service_agents``).
 The crewmate's file, ``~/.kiro/mates/agents/<id>.json``, extends the WORKER only,
 additively: its prompt after the base's, servers and skills the base lacks (a
 base server always wins), and the ``allowedTools`` and ``tools`` selectors for
-those servers. Its restrictions (``excludedTools``, ``disabledTools``, MCP-page
+those servers and for a non-managed server the base declares
+(:func:`base_server_selections`). Its restrictions (``excludedTools``, ``disabledTools``, MCP-page
 switch-offs, :func:`globally_disabled_refs`) narrow whoever declared them;
 its ``hooks``, ``permissions`` and ``toolsSettings`` are layered on exactly
 (:mod:`kiro_crew.mate_spec_policy`); ``model`` is ignored. Nothing from the file
@@ -384,14 +385,20 @@ def worker_additions(base: dict[str, Any], mate_spec: dict[str, Any]) -> dict[st
     additions: dict[str, Any] = {"prompt": prompt, "mcpServers": added_servers}
     # The file's own selectors for the servers it adds, so a template that
     # mounts one tool of a server does not hand the worker the whole server.
-    additions["tools"] = server_selectors(mate_spec, added_servers)
+    additions["tools"] = [
+        *server_selectors(mate_spec, added_servers),
+        *base_server_selections(base, mate_spec, "tools"),
+    ]
     for key in ("resources", "skills"):
         have = set(_strings(base.get(key)))
         additions[key] = [s for s in dict.fromkeys(_strings(mate_spec.get(key))) if s not in have]
     additions["allowedTools"] = [
-        ref
-        for ref in dict.fromkeys(_strings(mate_spec.get("allowedTools")))
-        if _server_of(ref) in added_servers
+        *(
+            ref
+            for ref in dict.fromkeys(_strings(mate_spec.get("allowedTools")))
+            if _server_of(ref) in added_servers
+        ),
+        *base_server_selections(base, mate_spec, "allowedTools"),
     ]
     # A restriction, not an addition: the file's per-tool limits count for EVERY
     # server it names, a base server included, because the server entry the base
@@ -410,6 +417,31 @@ def worker_additions(base: dict[str, Any], mate_spec: dict[str, Any]) -> dict[st
 
     additions.update(policy_of(mate_spec))
     return additions
+
+
+def base_server_selections(base: dict[str, Any], mate_spec: dict[str, Any], key: str) -> list[str]:
+    """The file's own *key* selectors for servers the worker *base* declares.
+
+    The base declares some servers without selecting their tools; a Bot whose
+    file names ``@server`` or ``@server/tool`` for one of them gets those tools.
+    Only explicit selectors count: a ``*`` in the file selects the servers the
+    file adds, never every server the base declares. Crew's own managed servers
+    keep the base's selection, so the file cannot widen the control plane.
+    """
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+
+    # A base server the file switches off selects nothing.
+    base_servers = (
+        set(_servers(base.get("mcpServers")))
+        - set(KIROCREW_BIN_MCP_SERVERS)
+        - set(disabled_base_servers(base, mate_spec))
+    )
+    have = _strings(base.get(key))
+    return [
+        ref
+        for ref in dict.fromkeys(_strings(mate_spec.get(key)))
+        if _server_of(ref) in base_servers and ref not in have and not covered_by(ref, have)
+    ]
 
 
 def disabled_base_servers(base: dict[str, Any], mate_spec: dict[str, Any]) -> list[str]:
@@ -461,15 +493,18 @@ def merge_worker_spec(base: dict[str, Any], additions: dict[str, Any]) -> dict[s
         extra_items = _strings(additions.get(key))
         if extra_items:
             spec[key] = list(dict.fromkeys([*_strings(spec.get(key)), *extra_items]))
+    # Selectors reach a server the file adds, and one the base declares
+    # (``base_server_selections`` already chose which of those count).
+    selectable = set(servers) - set(muted)
     tools = _strings(spec.get("tools"))
     if "*" not in tools:
         for ref in _strings(additions.get("tools")):
-            if _server_of(ref) in added and ref not in tools:
+            if _server_of(ref) in selectable and ref not in tools:
                 tools.append(ref)
     spec["tools"] = tools
     allowed = _strings(spec.get("allowedTools"))
     for ref in _strings(additions.get("allowedTools")):
-        if _server_of(ref) in added and ref not in allowed:
+        if _server_of(ref) in selectable and ref not in allowed:
             allowed.append(ref)
     # A muted server's approvals grant nothing; drop them so none outlives the mute.
     allowed = [ref for ref in allowed if _server_of(ref) not in muted]
