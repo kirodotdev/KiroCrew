@@ -235,7 +235,7 @@ async def test_failed_judgment_is_logged_at_info(monkeypatch, caplog) -> None:
         AsyncMock(side_effect=asyncio.TimeoutError()),
     )
     ws = _fake_ws()
-    ep = stt_stream._Endpointer(ws, object(), debounce=0.0, timeout=1.0)
+    ep = stt_stream._Endpointer(ws, object(), debounce=0.0)
     with caplog.at_level(logging.INFO, logger=stt_stream.logger.name):
         ep.note_final("whatever")
         await _drain(ep)
