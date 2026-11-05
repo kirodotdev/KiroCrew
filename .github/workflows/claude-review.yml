@@ -1375,11 +1375,14 @@ jobs:
               discovery | validation | discovery,validation) stage="$BUDGET_SPENT" ;;
               *) stage="unknown" ;;
             esac
-            echo "::error::Opus 5.5 review: turn budget spent, needs human review. The $stage stage stopped at --max-turns (error_max_turns) for $HEAD, so no verdict was reached. A re-run walks into the same cap; a human reviews this diff, or splits the PR."
+            way_out="A re-run walks into the same cap: split the PR, or a repository writer who has reviewed this diff records it with \`/ai-review override fable $HEAD <class>: <reason, 20 to 500 characters>\`."
+            echo "::error::Opus 5.5 review: turn budget spent, needs human review. The $stage stage stopped at --max-turns (error_max_turns) for $HEAD, so no verdict was reached. $way_out"
             {
               echo "### Opus 5.5 Review — turn budget spent, needs human review"
               echo
               echo "Stage: \`$stage\` stopped at \`--max-turns\` for \`$HEAD\`. No verdict was reached, so the gate fails."
+              echo
+              echo "$way_out"
             } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
             exit 1
           fi

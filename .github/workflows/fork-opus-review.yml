@@ -1901,7 +1901,7 @@ jobs:
               *) stage="unknown" ;;
             esac
             conclusion="failure"; title="turn budget spent, needs human review"
-            summary="The $stage stage stopped at --max-turns (error_max_turns) for $HEAD, so no verdict was reached. A re-run walks into the same cap; a human reviews this diff, or the PR is split."
+            summary="The $stage stage stopped at --max-turns (error_max_turns) for $HEAD, so no verdict was reached. A re-run walks into the same cap: split the PR, or a repository writer who has reviewed this diff records it with \`/ai-review override fable $HEAD <class>: <reason, 20 to 500 characters>\`."
           fi
           # The output file proves a verdict was COMPUTED, never that it reached
           # the PR. A slot still holding another head's verdict, or an earlier
