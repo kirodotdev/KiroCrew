@@ -26,7 +26,7 @@
  * directly instead of waiting on a socket jsdom will never open.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
@@ -77,7 +77,7 @@ function renderPage() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
         <MemoryRouter initialEntries={['/auto-research']}>
@@ -86,6 +86,7 @@ function renderPage() {
       </Provider>
     </QueryClientProvider>,
   )
+  return { ...view, queryClient }
 }
 
 type User = ReturnType<typeof userEvent.setup>
@@ -139,6 +140,8 @@ beforeEach(() => {
   vi.mocked(api.researchAddQuestion).mockResolvedValue({ ok: true })
   vi.mocked(api.researchKnowledgeStatus).mockResolvedValue({ in_library: false })
   vi.mocked(api.researchReportStatus).mockResolvedValue({ slug: null })
+  vi.mocked(api.researchToKnowledge).mockReset()
+  vi.mocked(api.researchToArtifact).mockReset()
 })
 
 afterEach(() => {
@@ -627,13 +630,16 @@ describe('ResearchLabPage — knowledge and artifact hand-off', () => {
     expect(alertSpy).not.toHaveBeenCalled()
   })
 
-  it('any other library failure alerts and stays retryable', async () => {
+  it('shows a knowledge-library failure beside its action and stays retryable', async () => {
     vi.mocked(api.researchToKnowledge).mockRejectedValue({ status: 500, message: 'library offline' })
     const user = userEvent.setup()
     renderPage()
     await openDetail(user, DONE)
     await user.click(await screen.findByRole('button', { name: /Add to Knowledge/i }))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('library offline'))
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent('library offline')
+    expect(notice.parentElement).toContainElement(screen.getByRole('button', { name: /Add to Knowledge/i }))
+    expect(alertSpy).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /Add to Knowledge/i })).toBeEnabled()
   })
 
@@ -669,14 +675,112 @@ describe('ResearchLabPage — knowledge and artifact hand-off', () => {
     expect(screen.queryByRole('button', { name: /Export as Artifact/i })).not.toBeInTheDocument()
   })
 
-  it('a failed export alerts and leaves the button usable', async () => {
+  it('shows a failed export beside its action and leaves the button usable', async () => {
     vi.mocked(api.researchToArtifact).mockRejectedValue(new Error('no artifact store'))
     const user = userEvent.setup()
     renderPage()
     await openDetail(user, DONE)
     await user.click(await screen.findByRole('button', { name: /Export as Artifact/i }))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Failed to export as artifact'))
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent('Failed to export as artifact')
+    expect(notice.parentElement).toContainElement(screen.getByRole('button', { name: /Export as Artifact/i }))
+    expect(alertSpy).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /Export as Artifact/i })).toBeEnabled()
+  })
+
+  it.each(['knowledge', 'artifact'] as const)('dismisses and clears a %s error on retry', async action => {
+    const request = action === 'knowledge' ? api.researchToKnowledge : api.researchToArtifact
+    const label = action === 'knowledge' ? /Add to Knowledge/i : /Export as Artifact/i
+    vi.mocked(request).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline again'))
+    let finish!: (value: { ok: boolean; slug: string }) => void
+    const pending = new Promise<{ ok: boolean; slug: string }>(resolve => { finish = resolve })
+    vi.mocked(request).mockReturnValueOnce(pending)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, DONE)
+    await user.click(await screen.findByRole('button', { name: label }))
+    const notice = await screen.findByRole('alert')
+    expect(within(notice).queryByRole('button', { name: /Ask/i })).toBeNull()
+    await user.click(within(notice).getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: label }))
+    await screen.findByRole('alert')
+    await user.click(screen.getByRole('button', { name: label }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: action === 'knowledge' ? /Adding/i : /Exporting/i })).toBeDisabled()
+    await act(async () => { finish({ ok: true, slug: 'recovered-report' }); await pending })
+    if (action === 'knowledge') {
+      expect(await screen.findByText(/Added to Knowledge/i)).toBeInTheDocument()
+    } else {
+      expect(await screen.findByRole('link', { name: /View report/i })).toHaveAttribute('href', '/artifacts/recovered-report')
+    }
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(alertSpy).not.toHaveBeenCalled()
+  })
+
+  it('keeps artifact and knowledge failures attached to their own controls', async () => {
+    vi.mocked(api.researchToKnowledge).mockRejectedValue(new Error('library offline'))
+    vi.mocked(api.researchToArtifact).mockRejectedValue(new Error('artifact offline'))
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, DONE)
+    await user.click(await screen.findByRole('button', { name: /Add to Knowledge/i }))
+    await screen.findByText('library offline')
+    await user.click(screen.getByRole('button', { name: /Export as Artifact/i }))
+    await screen.findByText('Failed to export as artifact')
+    const knowledge = screen.getByText('library offline').closest('[role="alert"]')!
+    const artifact = screen.getByText('Failed to export as artifact').closest('[role="alert"]')!
+    expect(screen.getByRole('button', { name: /Fork & Challenge/i }).parentElement).toHaveClass('items-start')
+    await user.click(within(knowledge as HTMLElement).getByRole('button', { name: 'Dismiss' }))
+    expect(knowledge).not.toBeInTheDocument()
+    expect(artifact).toBeInTheDocument()
+  })
+
+  it('keeps the existing report link while a failed regeneration is dismissed and retried', async () => {
+    let finish!: (value: { slug: string }) => void
+    const pending = new Promise<{ slug: string }>(resolve => { finish = resolve })
+    vi.mocked(api.researchReportStatus).mockResolvedValue({ slug: 'earlier-export' })
+    vi.mocked(api.researchToArtifact).mockRejectedValueOnce(new Error('offline')).mockReturnValueOnce(pending)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, DONE)
+    const link = await screen.findByRole('link', { name: /View report/i })
+    await user.click(screen.getByRole('button', { name: /Regenerate/i }))
+    const notice = await screen.findByRole('alert')
+    expect(link).toHaveAttribute('href', '/artifacts/earlier-export')
+    await user.click(within(notice).getByRole('button', { name: 'Dismiss' }))
+    await user.click(screen.getByRole('button', { name: /Regenerate/i }))
+    await waitFor(() => expect(api.researchToArtifact).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('button', { name: /Regenerating/i })).toBeDisabled()
+    expect(screen.queryByRole('alert')).toBeNull()
+    await act(async () => { finish({ slug: 'earlier-export' }); await pending })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Regenerate/i })).toBeEnabled())
+    expect(screen.getByRole('link', { name: /View report/i })).toHaveAttribute('href', '/artifacts/earlier-export')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it.each(['knowledge', 'artifact'] as const)('does not show a late %s failure on another campaign', async action => {
+    const parent = { ...DONE, id: 'parent3333', question: 'Parent research question' }
+    const child = { ...DONE, parent_id: parent.id }
+    vi.mocked(api.researchCampaign).mockImplementation(async id => id === parent.id ? parent : child)
+    const request = action === 'knowledge' ? api.researchToKnowledge : api.researchToArtifact
+    const label = action === 'knowledge' ? /Add to Knowledge/i : /Export as Artifact/i
+    let fail!: (error: Error) => void
+    const pending = new Promise<never>((_resolve, reject) => { fail = reject })
+    vi.mocked(request).mockReturnValueOnce(pending)
+    const user = userEvent.setup()
+    const { queryClient } = renderPage()
+    queryClient.setQueryDefaults(['research-campaign', parent.id], { gcTime: Infinity, staleTime: Infinity })
+    queryClient.setQueryData(['research-campaign', parent.id], parent)
+    await openDetail(user, child)
+    await user.click(await screen.findByRole('button', { name: label }))
+    await waitFor(() => expect(request).toHaveBeenCalledWith(child.id))
+    await user.click(screen.getByRole('button', { name: parent.id }))
+    await screen.findByRole('button', { name: label })
+    await act(async () => { fail(new Error('old campaign offline')); await pending.catch(() => {}) })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: label })).toBeEnabled()
   })
 })
 
