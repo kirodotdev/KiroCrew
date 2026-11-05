@@ -297,6 +297,7 @@ async def load_session(
             member_dispatch=bool(member_session_key) and not member_withheld,
             crew_panel=panel_mounted,
             session_key=session_key,
+            session_cwd=session_work_dir,
             **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
         )
         kas_agents = kas_extras.custom_agents

@@ -612,6 +612,7 @@ class HarnessAdapter(LaunchAdapter):
         crew_panel: bool = False,
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
+        session_cwd: str | Path | None = None,
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -624,6 +625,11 @@ class HarnessAdapter(LaunchAdapter):
         ``worker_stub_names`` is handed in only for a KAS crewmate worker: the
         names of the stubs ``session/new`` injects for that session, from the
         caller's one overlay lookup. A host that projects nothing ignores it.
+
+        ``session_cwd`` is the session's own working directory, which can differ
+        from *work_dir* (the runtime's) for a session opened in another checkout.
+        A host that reads workspace settings beside the session reads them there;
+        one that projects nothing ignores it.
         """
 
     def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:

@@ -64,7 +64,9 @@ def runtime(tmp_path, monkeypatch, home):
             return {"modes": {"currentModeId": "kirocrew"}, "models": []}
         return {}
 
-    async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+    async def _fake_agents(
+        agent, *, member_dispatch=False, crew_panel=False, session_key="", **_kw
+    ):
         return SessionExtras(
             custom_agents=[to_client_custom_agent(agent, spec, "p", session_key=SESSION)]
         )
@@ -161,7 +163,9 @@ async def test_a_new_sessions_hoisted_app_server_snapshot_is_removed_at_shutdown
             return {"sessionId": "sid-new", "modes": {"currentModeId": "kirocrew"}}
         return {}
 
-    async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+    async def _fake_agents(
+        agent, *, member_dispatch=False, crew_panel=False, session_key="", **_kw
+    ):
         return SessionExtras(
             custom_agents=[to_client_custom_agent(agent, spec, "p", session_key=SESSION)],
             app_launches={APP_SERVER: {"command": sys.executable, "args": [str(script)]}},
