@@ -3549,7 +3549,11 @@ still in flight carries an `in_progress` check-run that readiness scores
 - An Opus stage that stops at `--max-turns` (`error_max_turns`) is its own
   outcome: the lane fails with "turn budget spent, needs human review" instead
   of the generic "review incomplete", and a spent stage never passes, even beside
-  a verdict stamp. A re-run walks into the same cap.
+  a verdict stamp. A re-run walks into the same cap, so the failure names the two
+  ways out: split the PR, or a writer who has reviewed the diff records
+  `/ai-review override fable <head-sha> <class>: <reason>` (classes:
+  [Risk release records](#risk-release-records)), which skips both capped stages
+  for that head.
 
 ### A lane says PASS or BLOCK
 

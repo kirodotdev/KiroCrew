@@ -625,6 +625,10 @@ class TestOpusTurnBudgetOutcome:
         assert "no blocking findings" not in result.stdout
         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
         assert "turn budget spent, needs human review" in summary
+        # A re-run cannot pass, so the failure names the per-head way out.
+        override = f"/ai-review override fable {self.HEAD} <class>: <reason, 20 to 500 characters>"
+        assert override in result.stdout, _proc_log(result)
+        assert override in summary
 
     def test_same_repo_gate_unchanged_without_a_spent_budget(self, tmp_path: Path) -> None:
         clean = self._gate(tmp_path / "clean", budget="")
@@ -699,6 +703,10 @@ class TestOpusTurnBudgetOutcome:
         assert "conclusion=failure" in argv, argv
         assert "output[title]=Opus 5.5 Review — turn budget spent, needs human review" in argv
         assert any("discovery stage stopped at --max-turns" in a for a in argv), argv
+        override = (
+            f"`/ai-review override fable {self.HEAD} <class>: <reason, 20 to 500 characters>`"
+        )
+        assert any(override in a for a in argv), argv
 
     def test_fork_finalize_unchanged_without_a_spent_budget(self, tmp_path: Path) -> None:
         argv = self._finalize(tmp_path / "clean", budget="")
