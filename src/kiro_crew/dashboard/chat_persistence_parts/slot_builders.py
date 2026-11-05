@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         _recent_session_slot_name,
         _reconcile_mcp_app_claims,
         _restored_agent_name,
+        _seed_session_tree,
         _takeover_ordering,
         carry_provenance,
         durable_row_count,
@@ -104,6 +105,7 @@ def _prefetch_rehydrate_inputs(
         meta, readable = conv_log.get_metadata(history_key), True
     if not readable or not meta or (meta.get("closed") and not adopt_closed):
         return meta or {}, readable, None, None, None, None, False
+    _seed_session_tree(meta)
     return (
         meta,
         readable,
@@ -933,6 +935,7 @@ def _prefetch_recent_session(
     if not has_folder and not has_pin:
         if cutoff is not None and session.get("modified", 0) < cutoff:
             return None, None, None, None, False
+    _seed_session_tree(meta)
     return (
         meta,
         conv_log.read_messages_chained(key),

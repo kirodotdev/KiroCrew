@@ -386,12 +386,14 @@ are stamped on the slot at mint, before any turn, while the creator never learns
 sid is frozen rather than read at the child's first turn because a creator slot can be closed and
 replaced in between, and a live read would cite the replacement's crew log in an entry that is never
 rewritten. The edge is written only from a mint THIS gateway process witnessed (`_lineage_minted`,
-never persisted): the transcript is a file an agent's file tools can edit, and this log is fenced from
-those tools precisely so nothing in it can be forged as gateway-authored, so `_created_by` read back
-from transcript metadata is restored for authorization but never promoted to lineage, and the sid is
-not persisted at all. A child whose gateway restarted between mint and its first turn therefore
-writes no `parent`. `sid` is a citation of the creator's unit, not the tree key -- a slot outlives its ACP
-session, so the fold that builds the session tree (`crew_log/session_tree.py`, `crew-log-projection.md` section 6)
+never persisted): the transcript is a file an agent's file tools are refused but a sandboxed shell
+can still write, and this log is hidden from every sandboxed process precisely so nothing in it can be
+forged as gateway-authored, so `_created_by` read back from transcript metadata is never promoted to
+lineage, and the sid is not persisted at all. The restore keeps it for authorization only when this
+log's creation records name the same creator (`session-control.md`, the member ownership rule). A
+child whose gateway restarted between mint and its first turn therefore writes no `parent`. `sid`
+is a citation of the creator's unit, not the tree key -- a slot outlives its ACP session,
+so the fold that builds the session tree (`crew_log/session_tree.py`, `crew-log-projection.md` section 6)
 keys it by `slot`, reads the first `session/opened` of each crew log, takes the parent from any log of
 the slot that carries one, and never lets a log without one retract it. The edge can move later:
 `session/adopted` records a new parent, replacing the `session/opened` one, and `session/released`

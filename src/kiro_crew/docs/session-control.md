@@ -86,6 +86,12 @@ waiting in the user's sidebar; watch it with session_read_message.
 
 Pass that key as `target` to every other session tool.
 
+A session you created stays yours across a gateway restart while the crew log
+records that you created it. With the crew log off (`KIROCREW_CREW_LOG=0`), or
+once it no longer holds that record, the session comes back with no creator
+until a later restart can confirm it: your tools get `not_creator` for it, and
+only the person can reach it.
+
 `session_create` never copies a transcript. When the new session should already know
 what you know — you are splitting a long investigation into several sessions —
 use `session_fork` instead.

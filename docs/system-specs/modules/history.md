@@ -1274,8 +1274,9 @@ learn-cron-dashboard):
   persisted row carries.
 - `restore_inputs.py` -- the restore-time reads and screens: the agent-to-model
   map, the restore config, the open-tab snapshot and its key screen, the committed
-  agent, the recent-session key map, the delete-during-read witness, the app-owned channel-row screen and the
-  MCP-app claim recovery. New restore-time reads.
+  agent, the recent-session key map, the delete-during-read witness, the app-owned channel-row screen, the
+  crew-log fold a restored `created_by` is checked against, and the MCP-app claim recovery. New
+  restore-time reads.
 - `turn_marker.py` -- the turn-in-flight marker's validation and reconcile. New
   rules about a turn a restart did not see finish.
 
