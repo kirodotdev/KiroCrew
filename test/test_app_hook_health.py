@@ -334,6 +334,46 @@ class TestStartupPublishesHookHealth:
         hooks_mod._loaded_hook_manifests.clear()
 
     @pytest.mark.asyncio
+    async def test_app_reported_degraded_startup_is_recorded_not_torn_down(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An on_startup that returns normally but calls
+        ctx.health.mark_degraded itself is wired fine. It must be recorded as
+        loaded (so the reconciler does not re-enable it every tick) and must not
+        be torn down, while its degraded snapshot is still published."""
+        hooks_mod._loaded_hook_signatures.clear()
+        hooks_mod._loaded_hook_manifests.clear()
+        events: list[str] = []
+
+        class _SelfDegradingDispatcher(SimpleNamespace):
+            async def _invoke(self, name, hook_path, ctx, *, phase):
+                ctx.health.mark_degraded("needs setup")
+                return True
+
+            async def cache_shutdown_for(self, app_info):
+                events.append("cache")
+
+            async def dispatch_disable(self, app_info):
+                events.append("shutdown")
+                return True
+
+        app_dir = tmp_path / "apps" / "self-degraded"
+        _write_app(app_dir, "backend.routes", "def register(ctx):\n    return []\n")
+        info = _app_info("self-degraded", "backend.routes:register")
+        info["manifest"]["backend"]["hooks"]["on_startup"] = "backend.routes:register"
+        _arm_startup(monkeypatch, tmp_path, app_dir, info)
+        monkeypatch.setattr(hooks_mod, "_lifecycle_dispatcher", _SelfDegradingDispatcher())
+
+        await hooks_mod.on_app_enable("self-degraded", info)
+
+        assert hooks_mod.loaded_hook_signature("self-degraded") is not None
+        assert events == ["cache"], "a self-reported degraded app must not be torn down"
+        health = hooks_mod.get_all_hook_health().get("self-degraded")
+        assert health is not None and "needs setup" in health["issues"]
+        hooks_mod._loaded_hook_signatures.clear()
+        hooks_mod._loaded_hook_manifests.clear()
+
+    @pytest.mark.asyncio
     async def test_working_route_hook_records_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
