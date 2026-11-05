@@ -178,16 +178,39 @@ async def _stop_backend_and_observe(name: str) -> tuple[int | None, bool]:
     )
 
 
-async def _app_may_run_after_install(name: str, *, fresh_install: bool = False) -> bool:
-    """Read whether installed app resources may run after an install or update."""
+def _awaits_consent(info: dict[str, Any] | None) -> bool:
+    """Whether a record is missing or waits for session-approval consent."""
+    return not info or bool(info.get("sessionApprovalConsentPending"))
 
-    def _read_live_state() -> bool:
-        info = get_app(name)
-        if not info or info.get("sessionApprovalConsentPending"):
-            return False
-        return fresh_install or bool(info.get("enabled"))
 
-    return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), _read_live_state)
+async def _read_app_record(name: str) -> dict[str, Any] | None:
+    """Read *name*'s live installed record off the event loop."""
+    return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), get_app, name)
+
+
+async def _app_may_run_after_install(name: str) -> bool:
+    """Read whether installed app resources may run after an install or update.
+
+    The live record decides, for a fresh install and an update alike: True only
+    for an app that is enabled and not waiting for session-approval consent.
+    ``register_app`` never consults ``enabled``, so this read is what keeps a
+    disabled app's agents, skills, MCP servers and crons unpublished and its
+    backend stopped. A managed install writes its record disabled, so a fresh
+    install answers False here; its resources are registered by the guarded
+    ``enable_app`` transition that turns it on.
+    """
+    info = await _read_app_record(name)
+    return not _awaits_consent(info) and bool(info and info.get("enabled"))
+
+
+async def _app_may_enable_after_install(name: str) -> bool:
+    """Read whether a just-installed app may be enabled without the user.
+
+    False for a missing record and for one waiting for session-approval consent,
+    which only the user gives from the disclosure surface. The caller still owes
+    the ``enable_app`` transition; this read does not say the app is enabled.
+    """
+    return not _awaits_consent(await _read_app_record(name))
 
 
 async def _restore_app_after_failed_update(name: str) -> str | None:

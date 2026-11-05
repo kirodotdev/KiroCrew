@@ -260,7 +260,7 @@ async def _install_transaction(
     from kiro_crew.apps.manager import enable_app
     from kiro_crew.apps.registry import install_from_registry
     from kiro_crew.apps.routes import (
-        _app_may_run_after_install,
+        _app_may_enable_after_install,
         _register_app_off_loop,
         _start_backend_after_install,
         _suspend_app_for_session_approval_reconsent,
@@ -273,7 +273,7 @@ async def _install_transaction(
         return result
     if not enabled:
         return {**result, "enabled": False}
-    if not await _app_may_run_after_install(result["name"], fresh_install=True):
+    if not await _app_may_enable_after_install(result["name"]):
         await _suspend_app_for_session_approval_reconsent(result["name"])
         return {**result, "enabled": False}
     activated = await asyncio.to_thread(enable_app, result["name"])

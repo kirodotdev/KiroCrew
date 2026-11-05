@@ -535,24 +535,14 @@ def _handle_app(args: argparse.Namespace) -> None:
         result = install_app(args.source)
         if result.ok:
             print(f"✅ {result.message}")
-            # The gateway's install route uses the same rule
-            # (``apps.routes_lifecycle._app_may_run_after_install`` with
-            # ``fresh_install``): a fresh install registers its agents, skills and
-            # MCP servers unless the app waits for session-approval consent, which
-            # only the dashboard gives.
+            # NOT registered here, the gateway install route's rule
+            # (``apps.routes_lifecycle._app_may_run_after_install``): the record is
+            # written disabled, and registering a disabled app publishes its
+            # agents, skills, MCP servers and crons for an app nobody enabled.
+            # ``app enable`` registers them. An app that waits for session-approval
+            # consent can only be enabled from the dashboard, which gives it.
             info = get_app(result.name)
-            if info and not info.get("sessionApprovalConsentPending"):
-                reg = register_app(result.name)
-                if reg.agents:
-                    print(f"   Agents: {', '.join(reg.agents)}")
-                if reg.skills:
-                    print(f"   Skills: {', '.join(reg.skills)}")
-                if reg.crons:
-                    print(f"   Crons:  {', '.join(reg.crons)}")
-                if reg.errors:
-                    for e in reg.errors:
-                        print(f"   ⚠️  {e}")
-            elif info:
+            if info and info.get("sessionApprovalConsentPending"):
                 print(
                     "   This app asks for session approval, so it stays off until "
                     "enabled from the dashboard."
