@@ -371,6 +371,9 @@ describe('SlackPanel save payload', () => {
     const { save } = seed()
     await hydrated()
 
+    // Where the chats go stays on the row, not only behind the info tip: the
+    // switch sends every later chat to another service.
+    expect(screen.getByText('Posts every new dashboard chat to your Slack DM with the bot.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('switch', { name: 'Connect new sessions to Slack automatically' }))
     expect(screen.queryByText('Auto-connect target')).not.toBeInTheDocument()
     fireEvent.click(saveBtn())

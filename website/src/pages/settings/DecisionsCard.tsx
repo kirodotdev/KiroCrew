@@ -505,7 +505,7 @@ export function DecisionsCard() {
           is asserted against. `settingsCoverage.test.ts` fails when that happens. */}
       <SettingsToggle
         label={i18nT('pages.developer.featurePreviewsTab.decisions')}
-        description={i18nT('pages.developer.featurePreviewsTab.decisions_desc')}
+        hint={i18nT('pages.developer.featurePreviewsTab.decisions_desc')}
         checked={view.enabled}
         onChange={v => consentMut.mutate(v)}
         // With no model the switch can still be turned OFF: a consent that stood
@@ -749,7 +749,7 @@ export function DecisionsCard() {
                 below names the config path the seam asks with. */}
             <SettingsInput
               label={i18nT('pages.developer.featurePreviewsTab.decisions_history_label')}
-              description={i18nT('pages.developer.featurePreviewsTab.decisions_history_desc')}
+              description={i18nT('pages.developer.featurePreviewsTab.decisions_history_desc_summary')} hint={i18nT('pages.developer.featurePreviewsTab.decisions_history_desc')}
               type="number"
               min={0}
               value={budgetDraft ?? String(historyBudget)}

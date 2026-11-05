@@ -354,6 +354,12 @@ interface SettingsSectionProps {
    */
   badge?: React.ReactNode
   /**
+   * An info tip beside the heading, for a section's introduction: what the
+   * section is, said once for a reader who wants it. The same split as a row's
+   * `hint`; a sentence the reader needs to make a choice stays visible instead.
+   */
+  hint?: string
+  /**
    * Render the header as a disclosure that hides its own rows until clicked.
    *
    * For a group whose rows are real and adjustable but which almost nobody needs
@@ -417,7 +423,7 @@ export function useSettingsDeepLinkTarget(): string | null {
   return React.useSyncExternalStore(subscribeDeepLinkTarget, readDeepLinkTarget, readDeepLinkOnServer)
 }
 
-export function SettingsSection({ title, badge, collapsible, children }: SettingsSectionProps) {
+export function SettingsSection({ title, badge, hint, collapsible, children }: SettingsSectionProps) {
   const [open, setOpen] = React.useState(false)
   const bodyId = React.useId()
   const bodyRef = React.useRef<HTMLDivElement>(null)
@@ -512,6 +518,7 @@ export function SettingsSection({ title, badge, collapsible, children }: Setting
         ) : (
           <h4 className="text-base font-semibold text-text-strong">{title}</h4>
         )}
+        {hint && <InfoTip text={hint} placement="top" />}
         {badge}
       </div>
       {/* Unmounted rather than hidden when closed. A collapsed group exists to
