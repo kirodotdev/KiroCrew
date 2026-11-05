@@ -54,6 +54,11 @@ _GATEWAYD_LOG_MAX_BYTES = 10 * 1024 * 1024
 
 # Max time to wait for the gateway's unix socket to appear after spawn.
 _SOCKET_READY_TIMEOUT_SECS = 5.0
+# Total wait while the spawned daemon is still running past the fast bound. A
+# cold start on a slow host (on-access antivirus scanning every imported file is
+# common on Windows) can take longer than 5s to bind; killing that daemon drops
+# every session to per-session MCP, which spawns many more cold processes.
+_SOCKET_READY_SLOW_START_SECS = 30.0
 # Polling interval while waiting for the socket.
 _SOCKET_POLL_INTERVAL_SECS = 0.1
 # Ping/pong round-trip deadline after the socket appears. The daemon is
@@ -622,11 +627,22 @@ class GatewayManager:
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
             return None
 
-        ok = await self._wait_for_socket(self._spec.socket_path, _SOCKET_READY_TIMEOUT_SECS)
+        waited = _SOCKET_READY_TIMEOUT_SECS
+        ok = await self._wait_for_socket(self._spec.socket_path, waited)
+        if not ok and self.is_running and not self._stopping:
+            logger.info(
+                "mcp-gateway daemon is still starting after %.1fs; waiting up to %.1fs",
+                waited,
+                _SOCKET_READY_SLOW_START_SECS,
+            )
+            ok = await self._wait_for_socket(
+                self._spec.socket_path, _SOCKET_READY_SLOW_START_SECS - waited
+            )
+            waited = _SOCKET_READY_SLOW_START_SECS
         if not ok:
             logger.warning(
                 "mcp-gateway socket did not appear within %.1fs; gateway unreachable",
-                _SOCKET_READY_TIMEOUT_SECS,
+                waited,
             )
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
             return None
