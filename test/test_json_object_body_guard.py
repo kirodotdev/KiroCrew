@@ -189,6 +189,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "_MAX_BODY_BYTES",
         _BOUNDED_BY_DEFAULT,
     ),
+    # One goal draft carries three bounded fields plus ordering metadata; the
+    # shared 64 KB ceiling is comfortably above the server's message limit.
+    "handlers/autonudge.py::api_goal_draft_put": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "messaging_api/agent_push.py::api_notification_agent_push": (
         "<default>",
         _BOUNDED_BY_DEFAULT,
