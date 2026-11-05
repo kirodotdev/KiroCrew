@@ -20,6 +20,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_MISTRAL_VIBE,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.config.loader import KiroCrewConfig
@@ -31,8 +32,13 @@ FIELD = "agent.acp_backend"
 #: Known ids the public baseline deliberately does not offer, each entry carrying its
 #: reason in ``test_baseline_ships_every_known_backend``. An entry is a reasoned
 #: exclusion rather than a defect, and it earns its place by naming what the id fails.
-#: Empty: an id whose tool calls bypass the PreToolUse gate stays out until its
-#: routing is verified (e.g. ``Routing.VERIFIED_GATE_EXTENSION``).
+#: Empty today: no id is excluded. Vibe was the one member while its routing was
+#: ``UNVERIFIED``; it left the set when its routing became
+#: ``VERIFIED_SEEDED_SETTINGS`` -- Crew seeds ``VIBE_DEFAULT_AGENT=ask`` plus the
+#: auto-approve clamp variables into the child's environment (a layer Vibe resolves
+#: above its config files) and reads the resolved profile back off the session
+#: response's ``modes`` block before the first prompt, refusing unless the advertised
+#: mode list is exactly ``ask`` (``test/fixtures/acp_frames/mistral-vibe/routing-live.jsonl``).
 NOT_SHIPPED_SELECTABLE: frozenset = frozenset()
 
 
@@ -163,6 +169,7 @@ def test_baseline_ships_every_known_backend():
             ACP_BACKEND_DEEPSEEK,
             ACP_BACKEND_COPILOT,
             ACP_BACKEND_STRANDS,
+            ACP_BACKEND_MISTRAL_VIBE,
         ]
     )
     assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE)

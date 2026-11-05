@@ -14944,6 +14944,7 @@
         "mcp_deny_manage_link": "সংযোগ-এ MCP সার্ভারের তালিকা খোলো",
         "mcp_deny_rule": "{{name}} এ একটি MCP টুল বন্ধ করলে শুধু সেটি নয়, একই সার্ভারের সব টুল থেমে যায়।",
         "missing_components": "এই মেশিনে অনুপস্থিত: {{components}}",
+        "mistral_vibe": "Mistral Vibe",
         "new_sessions_use_this_agent_a_session_that_is_al": "নতুন সেশনগুলি এই এজেন্ট ব্যবহার করে। ইতিমধ্যে খোলা সেশন যে এজেন্টে শুরু হয়েছিল সেটিই ধরে রাখে — এখানে বদলালে চলমান সেশন বদলায় না।",
         "not_offered_by_this_build": "এই বিল্ড এই এজেন্ট দেয় না।",
         "note_crew_command_channel": "স্ল্যাশ কমান্ড {{productName}} এর কমান্ড চ্যানেল দিয়ে যায়।",

@@ -14944,6 +14944,7 @@
         "mcp_deny_manage_link": "कनेक्शन में MCP सर्वर की सूची खोलो",
         "mcp_deny_rule": "{{name}} पर एक MCP टूल बंद करने से उसी सर्वर के सारे टूल रुक जाते हैं, सिर्फ़ वही नहीं जो तुमने बंद किया।",
         "missing_components": "इस मशीन पर अनुपस्थित: {{components}}",
+        "mistral_vibe": "Mistral Vibe",
         "new_sessions_use_this_agent_a_session_that_is_al": "नए सत्र इस एजेंट का उपयोग करते हैं। पहले से खुला सत्र उसी एजेंट पर बना रहता है जिससे वह शुरू हुआ था — यहाँ बदलने से चालू सत्र नहीं बदलता।",
         "not_offered_by_this_build": "यह बिल्ड यह एजेंट नहीं देता।",
         "note_crew_command_channel": "स्लैश कमांड {{productName}} के कमांड चैनल से जाते हैं।",

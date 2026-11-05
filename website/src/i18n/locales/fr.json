@@ -15322,6 +15322,7 @@
         "mcp_deny_manage_link": "Ouvrir la liste des serveurs MCP dans Connexions",
         "mcp_deny_rule": "Désactiver un outil MCP sur {{name}} arrête tous les outils du même serveur, pas seulement celui que vous avez désactivé.",
         "missing_components": "Manquant sur cette machine : {{components}}",
+        "mistral_vibe": "Mistral Vibe",
         "new_sessions_use_this_agent_a_session_that_is_al": "Les nouvelles sessions utilisent cet agent. Une session déjà ouverte conserve celui avec lequel elle a démarré : changer ici ne la modifie pas en cours de session.",
         "not_offered_by_this_build": "Cette version ne propose pas cet agent.",
         "note_crew_command_channel": "Les commandes slash passent par le canal de commandes de {{productName}}.",

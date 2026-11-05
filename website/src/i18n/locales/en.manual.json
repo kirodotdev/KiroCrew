@@ -9986,6 +9986,7 @@
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
+        "mistral_vibe": "Mistral Vibe",
         "opencode": "OpenCode",
         "pi": "Pi",
         "strands": "Strands"

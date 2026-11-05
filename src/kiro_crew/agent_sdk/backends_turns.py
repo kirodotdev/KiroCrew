@@ -27,6 +27,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MISTRAL_VIBE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -381,6 +382,11 @@ ACP_BACKENDS_STEER_RETRACT = frozenset({ACP_BACKEND_KIRO})
 # deepseek is the one non-member:
 # :data:`ACP_BACKENDS_CONTEXT_RECYCLE` carries the consequence, because deepseek
 # reports no compaction at all, so a decline leaves its context unbounded.
+# vibe is a member on its own capture (mistral-vibe 3.1.0,
+# ``test/fixtures/acp_frames/mistral-vibe/compact-live.jsonl``): ``compact`` is in
+# its ``available_commands_update`` (measured live), and the prompt guard has no
+# row for it, so a ``/compact`` prompt reaches the harness and is run by its own
+# command controller.
 ACP_BACKENDS_COMPACT = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -391,6 +397,7 @@ ACP_BACKENDS_COMPACT = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -527,6 +534,9 @@ ACP_BACKENDS_CONTEXT_RECYCLE = frozenset({ACP_BACKEND_DEEPSEEK})
 # copilot is a member on its capture recorded on ``ACP_BACKENDS_COMPACT``: the
 # ``/compact`` turn's own chunk and ``usage_update`` land before its ``end_turn``,
 # and nothing follows it.
+# vibe is a member on the same capture class: its pair lands BEFORE the answer --
+# a ``tool_call`` (``kind: other``, ``Compacting conversation history...``), its
+# completed update, then a plain ``stopReason: end_turn`` with nothing after it.
 ACP_BACKENDS_INLINE_COMPACTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -535,6 +545,7 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -544,7 +555,18 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
 # ``_meta``, captured in ``test/fixtures/acp_frames/codex/compact-live.jsonl``.
 # Every other member is read by the marker alone, so its own ``think`` call with
 # that title is never taken for a compaction.
-ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
+# vibe is a member on the same capture: its pair carries no ``_meta`` either -- a
+# ``tool_call`` with ``kind: other`` titled ``Compacting conversation history...``, and the
+# update completes it on the start's own ``toolCallId``. Its FAILED arm (a
+# ``tool_call_update`` with ``status: failed``, ``Compaction failed``) is read by
+# nobody: the prompt itself errors, so the failure is the transcript's row, as for
+# codex.
+# mistral-vibe cites its driven capture: a ``tool_call`` (``kind: other``, the
+# start title) and the completed update on one ``toolCallId``, the answer
+# ``end_turn`` after the pair --
+# ``test/fixtures/acp_frames/mistral-vibe/compact-live.jsonl`` (mistral-vibe 3.1.0),
+# replayed by ``test/test_acp_frame_replay.py``.
+ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX, ACP_BACKEND_MISTRAL_VIBE})
 
 # How long each backend's provider keeps a conversation's prompt prefix cached
 # after the last request, in seconds, for ``session.idle_compaction``. A backend

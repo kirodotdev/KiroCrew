@@ -91,6 +91,7 @@ MCP tools.
 | **goose** | `ACP_BACKEND_GOOSE = "goose"` — the `goose` binary, which serves ACP itself as `goose acp`. Selectable on a public build; one component to install, no Node floor, and its tool permissions are routed by a mode Crew seeds into the child's environment and reads back off the session response itself, on the restore path as well as the new one (§7). |
 | **DeepSeek** | `ACP_BACKEND_DEEPSEEK = "deepseek"` — the `dsh` binary booting its shipped `acp` profile as `dsh --profile acp`. KNOWN and **selectable** on a public build: it has an install probe, and its tool calls reach Crew's permission gate through the gate plugin Crew composes into it with a per-launch patch (§7). |
 | **Copilot** | `ACP_BACKEND_COPILOT = "copilot"` — GitHub Copilot CLI, which serves ACP itself as `copilot --acp --stdio`. Selectable on a public build; one component to install (`@github/copilot`), and its tool permissions are routed by the `allow_all` session config option Crew writes `off` on every `session/new` and `session/load`, the mechanism Codex has, held there by a prompt slash-command allowlist and a mid-session tripwire (`agent_sdk/backends_routing.py`). |
+| **Vibe** | `ACP_BACKEND_MISTRAL_VIBE = "mistral-vibe"` — `vibe-acp` from `mistral-vibe`, with `MISTRAL_VIBE_ACP_BIN` as an explicit binary override. **Selectable** on a public build: its permission routing is `Routing.VERIFIED_SEEDED_SETTINGS` — Crew seeds `VIBE_DEFAULT_AGENT=ask` plus `VIBE_ENABLE_AUTO_APPROVE=false`, `VIBE_BYPASS_TOOL_PERMISSIONS=false` and `VIBE_DISABLED_AGENTS` into the child's environment and reads the resolved profile back off the `modes` block of the session-opening response before the first prompt, refusing unless the mode is `ask` and the advertised mode list is exactly `ask` (§7; captures at mistral-vibe 3.0.3: `test/fixtures/acp_frames/mistral-vibe/routing-live.jsonl`). |
 
 ## 1. Agent definition and layout
 
@@ -989,3 +990,112 @@ type-checked and none failing loudly when omitted.
 Native CLI skill projection is specified in
 [acp-client.md § Native skill startup views](acp-client.md#native-skill-startup-views).
 Required skill bodies have an explicit total capacity.
+
+## Appendix — mistral-vibe column answers
+
+The shared matrix above keeps one column per harness. The `mistral-vibe` cell for
+every concern row is recorded here instead of inline, so adding or editing one
+harness never rewrites a shared row: a harness PR stays append-only in this file
+and stops colliding with parallel harness edits above.
+
+`mistral-vibe` is selectable on a public build. Its permission routing is
+`Routing.VERIFIED_SEEDED_SETTINGS` — Crew seeds `VIBE_DEFAULT_AGENT=ask` plus
+`VIBE_ENABLE_AUTO_APPROVE=false`, `VIBE_BYPASS_TOOL_PERMISSIONS=false` and
+`VIBE_DISABLED_AGENTS` into the child environment and reads the resolved profile back
+off the `modes` block of the session-opening response, refusing unless
+`currentModeId=ask` and the advertised list is exactly `[ask]` (captures at
+mistral-vibe 3.0.3/3.1.0: `test/fixtures/acp_frames/mistral-vibe/routing-live.jsonl`).
+Its auth is `own_credential_file`: `~/.vibe/.env` on the floor with `VIBE_HOME`
+re-anchored, the leaf spared as adapter-owned (no vault route; documented risk). Its
+MCP projection is `BROKER_ONLY`: vibe-acp consumes the `session/new` `mcpServers`
+array itself, so the array carries Crew's pooled broker stubs. Its compaction IS
+claimed: the harness advertises `compact` and reports the pair itself (measured
+live on 3.1.0: `test/fixtures/acp_frames/mistral-vibe/compact-live.jsonl`).
+
+### Which SESSION is calling — the same answer on every harness
+
+| Concern | mistral-vibe |
+|---|---|
+| `entitlement_source` | `own_credential_file` in `agent_sdk/host_auth.py`; inherited `MISTRAL_API_KEY` is also named by the adapter. |
+| `credential_leaves` | `~/.vibe/.env`, declared on the credential floor. |
+| `home_override_env_vars` | `VIBE_HOME`. |
+| `host_logout_retires_children` | `False`; a Kiro logout does not revoke Vibe's own credentials. |
+| `sign_in_remedy` | Declared remedy: `vibe setup` or `MISTRAL_API_KEY`; neither makes the backend selectable. |
+| `AgentInteractiveLogin` | Not implemented in Crew. |
+| Entitlement discovery, model side | Onboarding advertisement only; no production entitlement probe is claimed. |
+| Readiness probe | Install probe resolves `vibe-acp`; binary availability is not permission-routing verification. |
+
+### 4. Sandbox
+
+| Concern | mistral-vibe |
+|---|---|
+| Self-sandboxing | No internal-sandbox delegation is granted. |
+| Interaction with Crew's sandbox | `_sandbox_preflight` refuses `Routing.UNVERIFIED`; no sandboxed production session is promised. |
+| Delegation predicate | None; not a member of the internal-sandbox capability set. |
+| Extra hidden paths | Credential declaration exists; no enforced-routing mask is claimed while preflight refuses spawn. |
+
+### 5. MCP server injection
+
+| Concern | mistral-vibe |
+|---|---|
+| Delivery channel | The `session/new` `mcpServers` array, measured live on mistral-vibe 3.0.3: a stdio element in the array was spawned and asked `initialize`, `notifications/initialized` and `tools/list` (`test/fixtures/acp_frames/mistral-vibe/routing-live.jsonl`'s capture run). Member of `ACP_BACKENDS_SESSION_MCP_ARRAY`; projection `BROKER_ONLY`. |
+| Shape | Unmeasured; no production transport shape is granted. |
+| Public-core default | `NO_CHANNEL`; no agent-spec projection. |
+| Per-tool MCP deny (`mcpServers.<name>.disabledTools`) | Not projected; no per-tool deny mechanism is claimed. |
+| Env expansion | Not projected; expansion semantics unmeasured. |
+| Loader strictness | Unmeasured. |
+| Auto-approve bypass | No verified all-tool approval routing; sessions are refused. |
+| Tool-name grammar | Unmeasured for Crew MCP calls. |
+| Template MCP additions (a server the user approved for a template Crew does not own; `template_mcp_additions`) | no — `BROKER_ONLY`: the array carries pooled broker stubs, not the spec's own servers |
+
+### 6. Usage, billing, credits
+
+| Concern | mistral-vibe |
+|---|---|
+| Unit | Unmeasured for production sessions. |
+| Quota API | No Vibe quota integration in Crew. |
+| Token discovery | No production usage-discovery claim. |
+| Consumer surface | Vibe answers each `session/prompt` with a `usage` block and emits `usage_update` notifications (captured at 3.0.3), but it is not yet a member of `ACP_BACKENDS_REPORT_USAGE` — the capture shows the wire carries the counts, not that Crew's `TurnUsage` path consumes them; no credit row, because there is no quota to report. |
+
+### 7. Security and permission parity
+
+| Concern | mistral-vibe |
+|---|---|
+| Where denial is enforced | `HookManager.on_tool_call`, reached through `session/request_permission` — and reached only while the session runs the `ask` agent profile, which is why the seed is four `VIBE_*` environment variables (a config layer Vibe resolves above its user and project TOML files) and the read-back on the session-opening response requires BOTH `modes.currentModeId=ask` AND `availableModes` exactly `[ask]` — the second fact is what proves the clamp took effect, because `VIBE_ENABLE_AUTO_APPROVE=false` removes every YOLO profile and `VIBE_DISABLED_AGENTS` removes `accept-edits`/`smart-approve` from that list (`Routing.VERIFIED_SEEDED_SETTINGS`, `acp/harness/mistral_vibe.py`, `AcpClient._verify_mistral_vibe_routing`, on the new, load and fork paths). The read-back pins config precedence across upgrades; per-call emission is OBSERVED, not assumed, at mistral-vibe 3.0.3: `test/fixtures/acp_frames/mistral-vibe/routing-live.jsonl` holds a `write_file` call raising `session/request_permission` under the seed — including with a hostile `bypass_tool_permissions = true` in the config file — and a `reject_once` answer failing the call with no file written. Residual, stated: ACP v1 cannot require a prompt for a passive read (the OS credential mask compensates, as for codex), and a per-tool `permission = "always"` in the operator's OWN config still pre-approves that tool — the operator's grant, the same posture goose's `permission.yaml` carries; what the seed removes is the agent's ability to grant either, since config writes route through the same `ask` gate. Mode switches are client-to-agent calls only, so the model cannot move the session off `ask` itself (captured: `session/set_config_option mode=accept-edits` is refused under the seed). |
+| Deny-pattern engine | No verified route from every tool call to Crew's deny engine. |
+| Auto-approve vocabulary | Built-in profiles are not proof that every ACP tool call asks Crew. |
+| Permission-request options | Production contract unverified. |
+| Auto mode | No supported Crew auto-mode path; backend stays unselectable. |
+| Inherited-config hazard | Profile and inherited-config precedence are not verified for an enforced launch. |
+| Rules Crew cannot override | Unmeasured; no claim of permission parity. |
+| Tool-call titles | No production title-to-permission contract is claimed. |
+
+### 8. Auxiliary runtimes the host cannot self-discover
+
+| Concern | mistral-vibe |
+|---|---|
+| Primary binary | `vibe-acp` from `mistral-vibe`; `MISTRAL_VIBE_ACP_BIN` override, then the self-served resolution ladder. |
+| Additional runtime | No separate Node adapter; the Python package supplies the executable. |
+| Failure mode when missing | Install probe names the missing executable; installing it does not clear the unverified-routing refusal. |
+
+### 9. Tool-result text fidelity (control markers)
+
+| Concern | mistral-vibe |
+|---|---|
+| How a tool result arrives | Unmeasured for a production Crew session. |
+| Directive marker readable in the result | Unmeasured; no Crew directive-delivery guarantee. |
+| How the tool call's `rawInput` arrives | Unmeasured for production permission routing. |
+| Wire title of an MCP tool call | Unmeasured; no verified Crew MCP transport. |
+
+### 10. User-visible behavior
+
+| Concern | mistral-vibe |
+|---|---|
+| A spec with `"tools": []` gets no tools. Pinned by `test/test_agent_sdk_capabilities.py`, `test/test_pi_zero_tool_ban.py` | unknown |
+| A crewmate's worker runs on its crewmate's spec and template policy. Pinned by `test/test_mate_worker_harnesses.py` | unknown |
+| A per-template MCP addition reaches a session of an agent Crew does not own. Pinned by `test/test_template_mcp_additions.py` | unknown |
+| `/compact` works, and the auto-compact threshold is acted on. Pinned by `test/test_compaction_other_backends.py`, `test/test_auto_compact_gate.py` | ok: `/compact` runs inside its turn and the pair is read (`ACP_BACKENDS_INLINE_COMPACTION`, `agent_sdk/backends_turns.py`; `mistral-vibe/compact-live.jsonl`) |
+| `/clear` starts a fresh conversation. Unknowns: #29275 item 9. Pinned by `test/test_slash_command_no_channel.py` | unknown |
+| `/context`, `/help`, `/agent` and the other dashboard slash commands answer. Unknowns: #29275 item 9. Pinned by `test/test_kas_local_inspect_commands.py`, `test/test_slash_command_no_channel.py` | unknown |
+| The model picker lists the harness's models. Unknowns: the Copilot model-picker check on #29275. Pinned by `test/test_session_backend_model_list.py` | unknown |
+| When the harness cannot start on the host, the error says why and what to do. Unknowns: #29275 item 9. Pinned by `test/test_kas_route.py` | unknown |

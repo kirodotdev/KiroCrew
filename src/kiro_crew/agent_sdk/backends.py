@@ -402,6 +402,7 @@ ACP_BACKEND_COPILOT = "copilot"
 # VERIFIED RANGE: @strands-agents/cli 0.2.3 over strands-harness 0.3.3 /
 # strands-agents 1.63.0 (``test/fixtures/acp_frames/strands/``).
 ACP_BACKEND_STRANDS = "strands"
+ACP_BACKEND_MISTRAL_VIBE = "mistral-vibe"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -448,6 +449,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -465,6 +467,7 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -593,6 +596,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -620,6 +624,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_COPILOT: ACP_BACKEND_COPILOT,
+    ACP_BACKEND_MISTRAL_VIBE: ACP_BACKEND_MISTRAL_VIBE,
 }
 
 #: The backend a deployment policy may never deny.

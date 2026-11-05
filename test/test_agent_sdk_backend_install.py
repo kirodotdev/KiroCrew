@@ -1021,6 +1021,7 @@ class TestEndpointPayloadShape:
             "goose",
             "kas",
             "kiro",
+            "mistral-vibe",
             "opencode",
             "pi",
             "strands",

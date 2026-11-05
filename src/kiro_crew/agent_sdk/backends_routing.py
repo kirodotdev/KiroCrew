@@ -34,6 +34,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_MISTRAL_VIBE,
 )
 
 # Backends on which a Side Chat turn may EXECUTE read-only tools under
@@ -496,6 +497,8 @@ ACP_BACKEND_ROUTING: dict = {
     ACP_BACKEND_OPENCODE: Routing.VERIFIED_SEEDED_SETTINGS,
     ACP_BACKEND_PI: Routing.VERIFIED_GATE_EXTENSION,
     ACP_BACKEND_GOOSE: Routing.VERIFIED_SEEDED_SETTINGS,
+    # Vibe resolves its config from ``VIBE_*`` env vars, which outrank its TOML files; captures at mistral-vibe 3.0.3.
+    ACP_BACKEND_MISTRAL_VIBE: Routing.VERIFIED_SEEDED_SETTINGS,
     # deepseek reaches the same member as pi, and by the same reasoning: the harness
     # has no gate of its own that decides a TOOL CALL, so Crew loads one into it.
     # Its sandbox permits an in-policy
@@ -572,6 +575,8 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
 ACP_BACKEND_PERMISSION_SETTING: dict = {
     ACP_BACKEND_OPENCODE: ("permission", "ask"),
     ACP_BACKEND_GOOSE: ("GOOSE_MODE", "approve"),
+    # The primary of the four seed vars; see acp/harness/mistral_vibe.py.
+    ACP_BACKEND_MISTRAL_VIBE: ("VIBE_DEFAULT_AGENT", "ask"),
 }
 
 
