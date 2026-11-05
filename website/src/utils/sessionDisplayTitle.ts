@@ -7,8 +7,9 @@ type TitledSession = { key: string; title?: string | null }
  * slot (`NEW_SESSION_TITLE` in `state_parts/slot_session.py`), in either
  * ellipsis spelling. It is English text, not a title, so no surface shows it
  * (#29748). An exact match, so "New Session Planning" stays a real title.
+ * This is the one copy of the check; the command palette imports it too.
  */
-function isBackendPlaceholderTitle(title: string): boolean {
+export function isBackendPlaceholderTitle(title: string): boolean {
   return title === 'New Session…' || title === 'New Session...'
 }
 
