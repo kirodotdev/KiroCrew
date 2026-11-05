@@ -537,5 +537,10 @@ export { useImeGuard } from '../hooks/useImeGuard'
 export { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export { activeLocale, fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
 export type { NumberOptions, DateStyleOptions, RelativeStyle } from '../i18n/format'
+// The session an app-drawn main pane (`contributes.sessionKinds`) is bound to;
+// `null` on every other surface. The provider stays off the barrel: the binding
+// is the host's to publish, never the app's.
+export { useSessionPane } from './sessionPane'
+export type { SessionPane } from './sessionPane'
 // The App Kit seam level; an app feature-detects the seams above by it.
 export { APP_SDK_LEVEL } from './sdkLevel'

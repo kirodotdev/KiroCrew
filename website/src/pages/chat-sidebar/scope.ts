@@ -19,6 +19,7 @@ import type { useBoardColumnMutations, useBoardColumns, useBoardFolderCollapse, 
 import type { useBulkModelSwitch } from './bulkModelSwitch'
 import type { useConductorLane } from './conductor'
 import type { useFolderChatCreate, useSessionCreate } from './create'
+import type { SessionKindDescriptor } from '../../hooks/sessionKindRegistry'
 import type { useFolderDropOps, useNativeSessionDrag, useSidebarDragHandlers, useSidebarMoveUndo } from './dnd/useSidebarDrag'
 import type { useSessionFilterState, useSessionStatusFilters } from './filters'
 import type { useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderSort, useFolderTree, useFolderVisibility, useRootFolderLanes } from './folders'
@@ -534,6 +535,10 @@ export interface SidebarScope {
   createChatMutation: ReturnType<typeof useSessionCreate>['createChatMutation']
   createRemoteChatMutation: ReturnType<typeof useSessionCreate>['createRemoteChatMutation']
   createEphemeralChatMutation: ReturnType<typeof useSessionCreate>['createEphemeralChatMutation']
+  createSessionKindMutation: ReturnType<typeof useSessionCreate>['createSessionKindMutation']
+
+  // From `useSessionKindDescriptors`: the app-contributed kinds the create menu offers.
+  sessionKindDescriptors: SessionKindDescriptor[]
 
   // From `useNavigate`
   navigate: ReturnType<typeof useNavigate>

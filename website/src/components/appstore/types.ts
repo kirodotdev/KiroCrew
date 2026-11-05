@@ -227,11 +227,12 @@ export type InstalledApp = {
      * shape because this data is third-party) could not otherwise see the field
      * exists. Left as `unknown` on purpose — the only code allowed to decide what a
      * contribution IS is the module that checks it. `panelTabs` is read the same way,
-     * by `hooks/panelTabRegistry.ts`.
+     * by `hooks/panelTabRegistry.ts`, and `sessionKinds` by `hooks/sessionKindRegistry.ts`.
      */
     contributes?: {
       commands?: unknown
       panelTabs?: unknown
+      sessionKinds?: unknown
       messageActions?: unknown
     }
     permissions?: {

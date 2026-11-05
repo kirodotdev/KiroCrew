@@ -217,6 +217,16 @@ export interface ChatDonePayload extends TurnIdentityFields {
   needs_input?: boolean
 }
 
+/** A slot's app-drawn session binding (`contributes.sessionKinds`, CONTRACT §8). */
+export interface ChatSlotSessionKind {
+  /** Installed app name that declares the kind. */
+  app: string
+  /** The kind's `id` within that app's manifest. */
+  kind: string
+  /** Server-minted opaque id (32 lowercase hex) naming this session's object. */
+  object: string
+}
+
 export interface ChatSlot extends TurnIdentityFields {
   /** Which namespace `agent` was chosen in: a configured member, a shared
    *  provider template, or "" when the choice was made by name alone or came
@@ -299,6 +309,11 @@ export interface ChatSlot extends TurnIdentityFields {
   /** The installed app that owns this session, or null/absent for a person's own
    *  chat. Lets the model chip ask for that app's own model setting. */
   app?: string | null
+  /** App-drawn session binding (`contributes.sessionKinds`): the app and kind
+   *  whose pane replaces this slot's transcript and composer, and the opaque
+   *  `object` id the server minted at create. Persisted, so the session comes
+   *  back as its kind after a restart; null/absent for an ordinary chat. */
+  session_kind?: ChatSlotSessionKind | null
   /** Slot key of the session that asked for this one via the session-control
    * create verb; "" / absent for a person's own tab, a fork, a restore. Durable
    * (written at birth, rehydrated), so it is the one link from a crew member's

@@ -43,6 +43,7 @@ _TO_DICT_KEYS = (
     # projected; this is what the sidebar needs from it.
     "row_identity",
     "artifact",
+    "session_kind",
     "messages",
     "running",
     "admission_queued",

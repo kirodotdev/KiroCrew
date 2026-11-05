@@ -56,7 +56,6 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
     _MAX_SELECTION_TITLE,
-    _MAX_TITLE,
     _MESSAGE_ACTION_KEYS,
     _MESSAGE_ACTION_POPOVER_HEIGHT,
     _MESSAGE_ACTION_POPOVER_WIDTH,
@@ -100,11 +99,11 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     SelectionActionConfig,
     SessionControlContribution,
     _int_field,
-    _mirrored_len,
     _name_list,
     _normalize_status_path,
     _strict_int,
 )
+from kiro_crew.apps.manifest_labels import _MAX_TITLE, _mirrored_len  # noqa: F401
 from kiro_crew.apps.manifest_names import (  # noqa: F401
     APP_NAME_MAX_LENGTH,
     KEBAB_RE,
@@ -157,6 +156,13 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     lifecycle_timeout_seconds,
     logger,
 )
+from kiro_crew.apps.manifest_session_kinds import (  # noqa: F401
+    _SESSION_KIND_AGENT_RE,
+    MAX_SESSION_KINDS_PER_APP,
+    SESSION_KIND_ID_RE,
+    SessionKindConfig,
+    session_kinds_errors,
+)
 from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
@@ -172,6 +178,8 @@ from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
 #   ``manifest_containment`` -- app-root path containment and contributed-agent containment
 #   ``manifest_sections`` -- the typed ``app.json`` blocks other than ``contributes``
 #   ``manifest_contributes`` -- the ``contributes`` block and its caps
+#   ``manifest_session_kinds`` -- ``contributes.sessionKinds``, the app-drawn session panes
+#   ``manifest_labels`` -- how a contributed label is measured, and its cap
 
 
 # Expected JSON type per CronEntry field that from_dict type-gates; turns a
@@ -594,6 +602,11 @@ class AppManifest:
                 report_path(
                     refusal, f"contributes.selectionActions entry {refusal}: {selection.entry!r}"
                 )
+        # A session kind's entry is mounted by the same ESM host as a panel tab's.
+        for kind in self.contributes.sessionKinds:
+            refusal = path_refusal(kind.entry)
+            if refusal:
+                report_path(refusal, f"contributes.sessionKinds entry {refusal}: {kind.entry!r}")
 
         # UI page validation
         for page in self.ui.pages:
@@ -838,6 +851,9 @@ class AppManifest:
             or self.contributes.linkOpen
             or self.contributes.composerActions
             or self.contributes.selectionActions
+            # A session kind's `entry` is mounted in the dashboard's own origin as the
+            # session's whole pane, the panel-tab reason below.
+            or self.contributes.sessionKinds
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further

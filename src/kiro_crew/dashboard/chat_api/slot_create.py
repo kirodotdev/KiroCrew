@@ -313,6 +313,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         )
     existing_slot = state._slots.get(_normalize_slot_key(str(name))) if name else None
     request_app = request.get("app", "")
+    # A session whose main pane an installed app draws (`contributes.sessionKinds`).
+    # Judged before anything below reads a folder or builds a slot, so a refused
+    # kind creates nothing; the binding is minted onto the newborn further down.
+    from kiro_crew.dashboard import session_kinds
+
+    session_kind, session_kind_refusal = await session_kinds.session_kind_for_create(
+        body, name=name, owner=is_owner_dashboard_request(request), request_app=request_app
+    )
+    if session_kind_refusal is not None:
+        return session_kind_refusal
     # The person's default folder, for a dashboard New chat that named none.
     # Asked for explicitly (`default_folder: true`) so apps, crons, channels and
     # session_create keep the placement they have today, and applied only to a
@@ -627,6 +637,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 {"error": "invalid app agent owner", "code": "invalid_app_agent_owner"},
                 status=400,
             )
+        # The gate above admits a kind only on an unnamed create, which always mints;
+        # re-asked here, where the mint decision is made, so a kind is never stamped
+        # onto a slot that already exists.
+        if session_kind is not None and not is_new_slot:
+            return session_kinds.invalid_session_kind_response()
         # Charge only a new allocation, with no await between the check and mint.
         if is_new_slot:
             _rate = _service.check_session_create(admission_gate.actor_budget(request))
@@ -785,6 +800,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         artifact_slug = body.get("artifact") if isinstance(body, dict) else None
         if isinstance(artifact_slug, str) and ARTIFACT_SLUG_RE.match(artifact_slug):
             slot._artifact = artifact_slug
+        if session_kind is not None:
+            # The server mints `object`, never the caller, so a new session can
+            # never claim an app record another session already holds.
+            slot._session_kind = session_kinds.mint_session_kind(*session_kind)
         # File the slot before the coalesced broadcast, so its first appearance
         # in every client is already inside the folder.
         folder_applied = False
@@ -1013,7 +1032,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # A pinned title must persist too (not just a folder move): without the
         # write, a restart rehydrates the previous title with a refreshable
         # "auto" origin and the background refresh may rewrite the pin.
-        if app_agent_owner:
+        if app_agent_owner or slot._session_kind:
+            # A session-kind binding needs the same birth line: an app-drawn session
+            # may never get a message, so without one a restart would bring it back
+            # as an empty chat with no pane.
+            #
             # The app-agent binding is what makes every turn re-check the agent,
             # and nothing else records it: the selection record omits it, and a
             # message-less newborn has no metadata line, so the save path's
@@ -1031,7 +1054,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # during the write keeps the slot (liveness over tidiness).
             # A shutdown mid-write is the same unbound newborn, retracted on the
             # way out by the unwind callback registered at the mint.
-            persisted = await _persist_app_agent_owner(state, slot)
+            persisted = await (
+                _persist_app_agent_owner(state, slot)
+                if app_agent_owner
+                else _persist_birth_line(state, slot)
+            )
             if not persisted:
                 if _retract_failed_newborn(state, slot):
                     # The pick recorded above names a key no slot holds now;
@@ -1044,7 +1071,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 return web.json_response(
                     {
                         "error": "Could not save the new session. Try again.",
-                        "code": "app_agent_owner_unpersisted",
+                        "code": (
+                            "app_agent_owner_unpersisted"
+                            if app_agent_owner
+                            else "session_kind_unpersisted"
+                        ),
                     },
                     status=503,
                 )

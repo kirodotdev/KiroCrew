@@ -527,6 +527,9 @@ class SlotProjection:
             "instance_id": slot.instance_id,
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
+            # The app-drawn session binding, `{app, kind, object}` or null on every
+            # slot; a copy, so no serialized payload aliases the slot's own dict.
+            "session_kind": dict(slot._session_kind) if slot._session_kind else None,
             "messages": len(rows),
             # A turn waiting in fair admission is still in flight, so Stop
             # stays available; ``admission_queued`` says it has not started.

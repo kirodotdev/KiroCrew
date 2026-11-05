@@ -80,6 +80,10 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "folder_id",
         "app",
         "artifact",
+        # The app-drawn session binding (``_ChatSlot._session_kind``). Never cleared
+        # once set, but slot-owned like ``artifact`` so a carry never copies one
+        # slot's app record onto another.
+        "session_kind",
         # Durable copy of the slot's held /note lines. Owned, not
         # monotonic: the hold is written while notes are held and must be
         # CLEARED by absence once the flush delivers them — carried forward

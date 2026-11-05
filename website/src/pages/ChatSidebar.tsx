@@ -77,6 +77,7 @@ import { useFolderDropOps, useSidebarMoveUndo, useSidebarDragHandlers, useNative
 import { useSidebarReveal } from './chat-sidebar/reveal'
 import { useHoldPinnedHeaderOnCollapse } from './chat-sidebar/stickyCollapse'
 import { useFolderChatCreate, useSessionCreate } from './chat-sidebar/create'
+import { useSessionKindDescriptors } from '../hooks/sessionKindRegistry'
 export { FOLDER_BODY_INSET_PX, FOLDER_BODY_CLS, BOARD_FOLDER_BODY_CLS, SIDEBAR_TEXT_CONTROL_CLS, STALE_TOGGLE_CLS } from './chat-sidebar/chrome'
 export { connectedChannelLinks } from './chat-sidebar/SessionRow'
 import type { ChatSidebarProps, SidebarScope } from './chat-sidebar/scope'
@@ -754,8 +755,10 @@ function ChatSidebar({
 
   const {
     remoteCrewChatPreview,
-    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation,
+    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation, createSessionKindMutation,
   } = useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, onSelectSlot, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession })
+  // App-contributed kinds of session for the create menu (contributes.sessionKinds).
+  const sessionKindDescriptors = useSessionKindDescriptors()
   // A conductor-lane member anchor opens on the Members page (see renderSessionRow).
   const navigate = useNavigate()
 
@@ -924,7 +927,7 @@ function ChatSidebar({
     closeRefused, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
     columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, commitRecentAmount,
     conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
-    createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
+    createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation, createSessionKindMutation,
     creatingSlot, crewEnable, cycleLane, defaultAgent, deleteColumnWithConfirm,
     deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,
@@ -946,7 +949,7 @@ function ChatSidebar({
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
     renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, resumeAll, revealedContainers,
     revealFlash, rootFolderIds, rootFolders, rowActions, rowAnimEnabled, rowMotionHeld: !rowAnimSettled, rowViews, searchRanked, seedError,
-    seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused,
+    seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, sessionKindDescriptors, setAllFiltersPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
     setFolderActionError, setFolderCleanupOpen, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,

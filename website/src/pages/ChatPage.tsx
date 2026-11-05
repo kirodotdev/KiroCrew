@@ -57,6 +57,7 @@ import ChatEmptyState from './chat/page/ChatEmptyState'
 import ChatTitleOverlay from './chat/page/ChatTitleOverlay'
 import ChatTranscriptView from './chat/page/ChatTranscriptView'
 import ComposerDockView from './chat/page/ComposerDockView'
+import { AppSessionFallbackNotice, AppSessionPane, useSessionKindView } from './chat/page/AppSessionPane'
 import { useComposerTypingLock } from './chat/shared-crew/useComposerTypingLock'
 import { SessionPresence, usePresentOthers } from './chat/shared-crew/PresenceChips'
 import { useComposerEditWithTyping } from './chat/shared-crew/typingSignal'
@@ -693,6 +694,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
 
   const currentSlot = slots.find(s => s.key === activeSlot)
+  // An app-drawn session (contributes.sessionKinds) shows the app's pane in place
+  // of the transcript and composer, or its transcript read-only when the app cannot.
+  const sessionKindView = useSessionKindView(currentSlot)
   const transcriptProjectDir = useChatProjectDir(currentSlot)
   // The thread header carries the same session colour as the sidebar row, read
   // from the same display roster so a scope switch does not blank it.
@@ -1140,7 +1144,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         ) : (
           <SearchHighlightContext.Provider value={searchCtxValue}>
-          <div className="relative flex flex-col flex-1 min-h-0" {...dropTargetProps}>
+          {/* No drop target on a bound session: a drop stages files for a composer it does not draw. */}
+          <div className="relative flex flex-col flex-1 min-h-0" {...(sessionKindView.state === 'none' ? dropTargetProps : {})}>
             <ChatTitleOverlay
               embedMode={embedMode} popout={popout} activeSlot={activeSlot} dispatch={dispatch} filteredSlots={filteredSlots} isMobile={isMobile} titleInTopbar={titleInTopbar}
               activityOpen={activityOpen} setActionError={setActionError} showActionError={showActionError} onPinCollapsedHeight={onPinCollapsedHeight} pinCardRef={pinCardRef}
@@ -1151,7 +1156,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               splitAnchorForActive={splitAnchorForActive} toggleAct={toggleAct} openSidebar={openSidebar} sidebarOnScreen={sidebarOnScreen} sidebarOpen={sidebarOpen}
               sidePanelWantsMount={sidePanelWantsMount} mobileNewSessionItem={mobileNewSessionItem} mobileSessionsToggle={mobileSessionsToggle}
             />
-            <ChatDropOverlay active={dragOver} />
+            {sessionKindView.state === 'pane' ? (
+              <AppSessionPane
+                key={`${sessionKindView.slotKey}:${sessionKindView.binding.object}`}
+                slotKey={sessionKindView.slotKey} app={sessionKindView.app} descriptor={sessionKindView.descriptor} binding={sessionKindView.binding}
+              />
+            ) : sessionKindView.state === 'pending' ? (
+              <div className="flex-1" data-testid="app-session-pending" />
+            ) : (<>
+            {sessionKindView.state === 'none' && <ChatDropOverlay active={dragOver} />}
             <ChatTranscriptView
               embedded={embedded} popout={popout} activeSlot={activeSlot} appToolCallIds={appToolCallIds} titleInTopbar={titleInTopbar} activityOpen={activityOpen}
               completedTurnCount={completedTurnCount} cursorIsForActiveSlot={cursorIsForActiveSlot} kiroCrewVersion={kiroCrewVersion} loadingOlder={loadingOlder} olderFailed={olderFailed}
@@ -1163,6 +1176,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement}
               renderFarmItem={renderFarmItem} renderMessage={renderMessage} renderTurnItem={renderTurnItem}
             />
+            {sessionKindView.state !== 'none' ? (
+              // Read-only: the app that draws this session cannot, so its transcript
+              // shows with a notice where the composer would be, and no composer.
+              <AppSessionFallbackNotice view={sessionKindView} />
+            ) : (<>
             <UltraModeEffect />
             <ComposerDockView
               embedded={embedded} mode={mode} activeSlot={activeSlot} connected={connected} dispatch={dispatch} isMobile={isMobile} isTouch={isTouch} navigate={navigate} provider={provider}
@@ -1219,6 +1237,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               steerWorker={currentCrewRoot && currentSlot ? (currentSlot.title || i18nT('commandCenter.worker_untitled')) : undefined}
               steerWorkerRoot={currentCrewRoot}
             />
+            </>)}
+            </>)}
           </div>
           </SearchHighlightContext.Provider>
         )}

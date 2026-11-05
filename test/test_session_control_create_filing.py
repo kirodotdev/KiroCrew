@@ -571,6 +571,7 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
     child.pinned = True
     child.mode = "design-critique"
     child._artifact = "my-artifact"
+    child._session_kind = {"app": "project-host", "kind": "project", "object": "0f" * 16}
     child.reasoning_effort = "high"
     child.color_index = 3
     child.title = "Pinned title"
@@ -610,6 +611,7 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
     for key in sorted(SLOT_OWNED_META_KEYS - excluded):
         assert key in meta, f"slot-owned field {key!r} missing after an empty-window forced save"
     assert meta.get("artifact") == "my-artifact"
+    assert meta.get("session_kind") == child._session_kind
     assert meta.get("reasoning_effort") == "high"
     assert meta.get("color_index") == 3
     assert meta.get("title") == "Pinned title"

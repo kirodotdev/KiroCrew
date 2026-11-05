@@ -39,12 +39,18 @@ LAYERS: dict[str, frozenset[str]] = {
     "kiro_crew.apps.manifest_names": frozenset(),
     "kiro_crew.apps.manifest_containment": frozenset(),
     "kiro_crew.apps.manifest_sections": frozenset({"kiro_crew.apps.manifest_names"}),
-    "kiro_crew.apps.manifest_contributes": frozenset(),
+    "kiro_crew.apps.manifest_labels": frozenset(),
+    "kiro_crew.apps.manifest_session_kinds": frozenset({"kiro_crew.apps.manifest_labels"}),
+    "kiro_crew.apps.manifest_contributes": frozenset(
+        {"kiro_crew.apps.manifest_labels", "kiro_crew.apps.manifest_session_kinds"}
+    ),
 }
 OWNERS = (
     "kiro_crew.apps.manifest_names",
     "kiro_crew.apps.manifest_containment",
     "kiro_crew.apps.manifest_sections",
+    "kiro_crew.apps.manifest_labels",
+    "kiro_crew.apps.manifest_session_kinds",
     "kiro_crew.apps.manifest_contributes",
 )
 APPS_DIR = Path(manifest.__file__).resolve().parent
@@ -173,9 +179,10 @@ def test_manifest_sys_is_the_sys_platform_config_reads() -> None:
 
 
 def test_the_owners_are_every_manifest_sibling_and_import_only_their_layer() -> None:
-    """``OWNERS`` is every ``manifest_*.py`` beside the facade; ``manifest_sections`` imports
-    ``manifest_names`` and no other owner imports a family member, the facade included,
-    not even for type checking."""
+    """``OWNERS`` is every ``manifest_*.py`` beside the facade; each owner imports only the
+    family members ``LAYERS`` lists for it (``manifest_sections`` imports ``manifest_names``,
+    the ``contributes`` owners the label leaf and ``manifest_contributes`` the session kinds)
+    and none imports the facade, not even for type checking."""
     siblings = {f"kiro_crew.apps.{path.stem}" for path in APPS_DIR.glob("manifest_*.py")}
     assert sorted(siblings) == sorted(OWNERS) == sorted(LAYERS)
     family = {FACADE, *OWNERS}

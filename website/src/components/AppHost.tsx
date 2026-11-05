@@ -15,6 +15,7 @@ import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, PowerOff, AlertTriangle, Package, Bot } from 'lucide-react'
 import { AppApiProvider, type AppUpdate } from '../app-sdk'
+import { SessionPaneProvider, type SessionPane } from '../app-sdk/sessionPane'
 import { Btn, PageHeader } from './ui'
 import AppLoadingFallback from './AppLoadingFallback'
 import { importAppBundle } from './appBundleImport'
@@ -84,6 +85,10 @@ export interface AppHostProps {
   /** The name the route asked for, shown when `app` is absent. The not-found
    *  title is "<name> isn't installed", so it needs the requested name. */
   requestedName?: string
+  /** Set when this host draws a chat session's main pane
+   *  (`contributes.sessionKinds`): the binding the app reads with
+   *  `useSessionPane()`. Every other host leaves it unset, which publishes `null`. */
+  sessionPane?: SessionPane
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +247,7 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
 // AppHost
 // ---------------------------------------------------------------------------
 
-function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: AppHostProps) {
+function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, sessionPane }: AppHostProps) {
   const navigate = useNavigate()
   const [resetKey, setResetKey] = useState(0)
 
@@ -348,15 +353,17 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
         {/* `ui.loading` describes the app's routed page. A side-panel tab mounts
             its own bundle (`entry` override) in a narrow panel, so it keeps the
             default shape rather than borrowing the page's rail or split. */}
-        <Suspense fallback={<AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
-          <LazyApp />
-        </Suspense>
+        <SessionPaneProvider value={sessionPane}>
+          <Suspense fallback={<AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
+            <LazyApp />
+          </Suspense>
+        </SessionPaneProvider>
       </AppApiProvider>
     </AppErrorBoundary>
   )
 }
 
-export default function AppHost({ app, entry, active, sessionKey, requestedName }: AppHostProps) {
+export default function AppHost({ app, entry, active, sessionKey, requestedName, sessionPane }: AppHostProps) {
   // Guard: not installed
   if (!app) return <AppNotFound name={requestedName || 'unknown'} />
   // Guard: disabled
@@ -367,5 +374,5 @@ export default function AppHost({ app, entry, active, sessionKey, requestedName 
   // bundle, so it does not require the app to also declare a routed `ui.entry`.
   if (!entry && !app.manifest?.ui?.entry) return <AppNoUI app={app} />
 
-  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} />
+  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} sessionPane={sessionPane} />
 }
