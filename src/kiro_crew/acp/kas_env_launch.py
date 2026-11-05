@@ -37,11 +37,15 @@ callers run it off the event loop.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
+import re
 import secrets
+import socket
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
@@ -226,17 +230,80 @@ def relay_withheld_env(
     return entry, True, every <= set(env)
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def kas_accepts_url(url: Any) -> bool:
+    """Whether KAS connects to *url*: ``https``, or ``http`` to a loopback host.
+
+    The same test as KAS's ``isHttpsOrLocalhost`` (``mcp/url-validation.ts``),
+    which refuses any other url as ``insecure-url``.
+    """
+    if not isinstance(url, str):
+        return False
+    try:
+        parts = urlsplit(url.strip())
+        host = parts.hostname
+        parts.port  # noqa: B018 -- raises on a port KAS's URL parser also refuses
+    except ValueError:
+        return False
+    scheme = parts.scheme.lower()
+    return scheme == "https" or (scheme == "http" and _normalized_host(host) in _LOOPBACK_HOSTS)
+
+
+def _normalized_host(host: str | None) -> str | None:
+    """*host* as a WHATWG URL parser spells an IP literal (``127.1`` -> ``127.0.0.1``,
+    ``0:0:0:0:0:0:0:1`` -> ``::1``), so the loopback test matches KAS's ``new URL``."""
+    if not host:
+        return host
+    if ":" in host:
+        try:
+            return ipaddress.IPv6Address(host).compressed
+        except ValueError:
+            return host
+    candidate = host[:-1] if host.endswith(".") else host
+    if re.fullmatch(r"[0-9a-fx.]+", candidate):
+        try:
+            return socket.inet_ntoa(socket.inet_aton(candidate))
+        except OSError:
+            return host
+    return host
+
+
+def bridge_url(url: str) -> str:
+    """*url* as the bridge must dial it: a plain ``http`` loopback host in its
+    canonical spelling (``127.0.0.1``, ``[::1]``, ``localhost``).
+
+    The loopback test normalises spellings such as ``127.0.0.1.``, which the OS
+    resolver does not read as numeric and would look up through DNS. Dialling
+    the canonical host keeps the headers on this machine. Port, path and query
+    are kept; ``https`` is returned unchanged.
+    """
+    parts = urlsplit(url.strip())
+    if parts.scheme.lower() != "http":
+        return url
+    host = _normalized_host(parts.hostname)
+    if host not in _LOOPBACK_HOSTS:
+        return url
+    # Userinfo is dropped: urllib would hand ``user@host`` to the resolver as the
+    # host name, and it never sends userinfo as credentials anyway.
+    netloc = f"[{host}]" if ":" in host else host
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit(("http", netloc, parts.path, parts.query, parts.fragment))
+
+
 def bridgeable(entry: Mapping[str, Any]) -> bool:
     """Whether a projected entry is a remote server the launcher can bridge to.
 
     Streamable HTTP only: an ``sse`` entry speaks the older two-endpoint transport,
     which the bridge (:mod:`kiro_crew.kas_http_bridge`) does not, so its headers
-    stay withheld.
+    stay withheld. And only a url KAS itself would accept (:func:`kas_accepts_url`):
+    bridging plain ``http`` to another host would send the headers in cleartext
+    and connect a server the backend refuses.
     """
-    url = entry.get("url")
     return (
-        isinstance(url, str)
-        and url.lower().startswith(("https://", "http://"))
+        kas_accepts_url(entry.get("url"))
         and not entry.get("command")
         and entry.get("type") != "sse"
     )
@@ -274,7 +341,10 @@ def relay_withheld_headers(
     stdio = {k: v for k, v in projected.items() if k not in ("url", "type", "headers", "env")}
     try:
         version = _write_snapshot(
-            {"url": projected["url"], "headers": dict(_expand_env_map(headers, server=server))},
+            {
+                "url": bridge_url(projected["url"]),
+                "headers": dict(_expand_env_map(headers, server=server)),
+            },
             session_key=session_key,
             agent_id=agent_id,
             server=server,
