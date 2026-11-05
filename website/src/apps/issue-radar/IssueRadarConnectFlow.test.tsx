@@ -342,6 +342,13 @@ describe('GitLab instance selection', () => {
     ])
     expect(gitlabHostOptions(undefined)).toEqual(['gitlab.com'])
   })
+
+  it('does not offer an entry carrying a URL root, which Issue Radar cannot use', () => {
+    expect(gitlabHostOptions(['code.example.com/gitlab', 'other.example.com'])).toEqual([
+      'other.example.com',
+      'gitlab.com',
+    ])
+  })
 })
 
 describe('ConnectPanel provider rows', () => {
