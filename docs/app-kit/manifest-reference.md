@@ -1814,6 +1814,10 @@ API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 > enables it again from the detail page, which shows why. An update that adds an
 > entry to `permissions.api` or `permissions.events` keeps the app enabled but
 > withholds the new entries until the user approves them on the detail page.
+> Until then a call only a new `permissions.api` entry covers answers
+> `403 app_permission_not_approved`, and a path no entry covers answers
+> `403 app_permission_not_declared`; each body says what to do
+> ([API reference: permission refusals](api-reference.md#permission-refusals)).
 > Official catalog entries mirror this flag so users see it before
 > install even when the store skips fetching the app manifest. Install-time path
 > traversal is blocked separately by

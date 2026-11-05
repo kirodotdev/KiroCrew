@@ -1434,9 +1434,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RESERVED_APP_PATH_SEGMENTS,
         _api_pattern_matches,
         _app_api_allowlist,
+        _app_grant_facts,
         _app_owns_path,
         _app_perms_cache,
         _app_perms_lock,
+        _read_grant_facts,
+        _scope_refusal,
         app_token_path_allowed,
     )
     from kiro_crew.dashboard.token_auth_callers import (  # noqa: F401
@@ -1513,6 +1516,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import (  # noqa: F401
         platform_compat,
+    )
+    from kiro_crew.dashboard.app_scope_refusal import (  # noqa: F401
+        GrantFacts,
+        ScopeRefusal,
+        app_label,
+        scope_refusal,
     )
     from kiro_crew.dashboard.boot_id import (  # noqa: F401
         current_boot_id,
