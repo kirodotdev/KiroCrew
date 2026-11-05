@@ -766,6 +766,24 @@ def test_exit_reason_enospc_points_at_doctor():
     assert "kirocrew doctor" in rt._exit_reason(1)
 
 
+def test_exit_reason_eagain_points_at_the_task_ceilings():
+    """A child that panics on a refused thread spawn names the task limit."""
+    rt, _reader, _proc = _make_runtime()
+    rt._stderr_lines = [
+        "The application panicked (crashed).",
+        "Message:  called `Result::unwrap()` on an `Err` value: Os { code: 11, "
+        'kind: WouldBlock, message: "Resource temporarily unavailable" }',
+        "Location: scheduled-thread-pool-0.2.7/src/lib.rs:375",
+    ]
+    msg = rt._exit_reason(None)
+    assert "Resource temporarily unavailable" in msg
+    assert "ulimit -u" in msg
+    assert "Task ceilings" in msg
+    # A full runtime tmpfs anywhere in the tail still wins over an EAGAIN line.
+    rt._stderr_lines.append("mkdir: No space left on device")
+    assert "Runtime tmpfs" in rt._exit_reason(None)
+
+
 def test_exit_reason_finds_a_signature_that_is_not_the_last_line():
     """Which line a child flushed last is a race with its own buffering, so the
     signature is searched over the whole retained tail."""

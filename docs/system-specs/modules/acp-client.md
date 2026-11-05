@@ -4490,8 +4490,10 @@ no `audit_source`, the pool re-emits the equivalent per-tool SEL audit itself
 **A process exit has a fixed reason format.** `AcpRuntime._exit_reason` reports
 `process exited (rc=N)`, and for a signal death names the signal beside it
 (`rc=-15 (signal SIGTERM)`, `_rc_phrase`). A stderr line is promoted to the cause
-only when `_proven_death_cause` matches a registration-throttle line or the
-`no space left on device` signature (which adds the `kirocrew doctor` hint);
+only when `_proven_death_cause` matches a registration-throttle line, the
+`no space left on device` signature or the EAGAIN `resource temporarily
+unavailable` signature (each of the last two adds its `kirocrew doctor` hint, and
+the first wins when both appear);
 otherwise the redacted last stderr line goes to DEBUG, and the card keeps its
 separate `stderr_tail` field.
 
