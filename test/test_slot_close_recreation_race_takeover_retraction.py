@@ -1503,3 +1503,136 @@ async def test_close_archive_yields_to_a_user_resume_begun_before_the_close(tmp_
     # live, so no ``closed`` marker may land under the reopened tab.
     assert "closed" not in state.conversation_log.get_metadata(slot_transcript_key(NAME))
     assert state._takeover_watches == {}
+
+
+@pytest.mark.asyncio
+async def test_close_writes_closed_before_taker_retraction_when_its_deferred_write_races(
+    tmp_path, monkeypatch
+):
+    """EXPECTED RED: ``closed`` lands before the taker retracts because the close's
+    deferred write runs while the publication-noted taker is between slot-pop and
+    its own write.
+
+    Race sequence (option b -- taker starts AFTER hand_basis_to_dismissal returns):
+
+    1.  The close runs its archive (refused), drain, and ``hand_basis_to_dismissal``
+        with NO notes in ``watch.standing`` (no rehydrate yet).
+        ``any(seq not in publication_notes for seq in standing)`` on an empty
+        ``standing`` is False, and ``slots.get(name)`` is None (slot was popped by
+        the close's own setup).  ``hand_basis_to_dismissal`` returns ``record``.
+    2.  The close reaches
+            ``await asyncio.to_thread(record_deferred_dismissal, state, owed_now)``
+        -- the yield at slot_lifecycle.py:997 -- and its worker thread is parked.
+    3.  From the parked hook the test signals ``write_entered`` and the event loop
+        creates the rehydrate task.  At this point ``truncating_holders`` is already
+        0 (``hand_basis_to_dismissal`` cleared it), so the rehydrate faces NO
+        ordering barrier: ``takeover_ordering_pending`` returns False and it goes
+        straight to the prefetch.
+    4.  Rehydrate: prefetch -> ``get_or_create_slot`` (publication note added to
+        ``watch.publication_notes``, slot on the key) ->
+        ``_load_rehydrated_window`` raises (fires ``load_entered``) ->
+        ``except BaseException: state._slots.pop()`` (slot gone) ->
+        ``finally`` -> ``retract_same_key_takeover`` (plain note removed) ->
+        ``await asyncio.to_thread(record_deferred_dismissal, ...)`` yields.
+    5.  After ``load_entered``: slot gone, ``watch.standing`` holds only the pub
+        note, ``watch.dismissal`` is still ``record``
+        (``_settle_dismissal(publish=False)`` returns it without clearing).
+        ``write_release.set()`` releases the parked write.
+    6.  The close's thread resumes.  ``dismissal_still_owed``:
+        ``watch.dismissal is record`` True, ``slots.get(name)`` None -> True ->
+        writes ``closed=True``.  Close returns 200.
+    """
+    import threading
+
+    from kiro_crew.dashboard import chat_persistence
+    from kiro_crew.dashboard.chat_utils import slot_transcript_key
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot(NAME)
+    for row in ("first question", "first answer", "second question", "second answer"):
+        slot.append("user" if "question" in row else "assistant", row)
+    slot.drain()
+    assert await handlers.save_slot_off_loop(state, slot, force=True)
+    key = slot_transcript_key(NAME)
+    slot.messages = list(slot.messages)[:2]
+    slot._pending_rewrite = True
+    slot._dirty = True
+
+    # Park the first call to record_deferred_dismissal (slot_lifecycle.py:997).
+    # The rehydrate is created on the event loop AFTER write_entered fires, so
+    # hand_basis_to_dismissal is always called with an empty watch.standing.
+    write_entered = threading.Event()
+    write_release = threading.Event()
+    real_record = handlers.record_deferred_dismissal
+    first_call_lock = threading.Lock()
+
+    def _parked_record(st, dismissal):
+        is_first = first_call_lock.acquire(blocking=False)
+        if is_first:
+            write_entered.set()
+            assert write_release.wait(10.0), "the parked write was never released"
+        return real_record(st, dismissal)
+
+    monkeypatch.setattr(handlers, "record_deferred_dismissal", _parked_record)
+
+    # Signal after get_or_create_slot ran (pub note in watch.publication_notes,
+    # slot on key).  The raise pops the slot synchronously; retract_same_key_
+    # takeover runs synchronously in the finally before the rehydrate's first yield.
+    load_entered = threading.Event()
+    registered = threading.Event()
+
+    def _failing_load(st, published, *args, **kwargs):
+        assert st._slots.get(NAME) is published, "get_or_create_slot had not run yet"
+        registered.set()
+        load_entered.set()
+        raise OSError("the window could not be loaded")
+
+    monkeypatch.setattr(chat_persistence, "_load_rehydrated_window", _failing_load)
+
+    # No _await_takeover_ordering_settled patch: with truncating_holders=0 after
+    # hand_basis_to_dismissal, takeover_ordering_pending returns False and the
+    # rehydrate never reaches the ordering wait.
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    _arm_running_turn(slot, entered, release)
+    close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
+    await _reached(entered, close, seam="the shielded task-cancel wait")
+    # Do NOT start the rehydrate yet -- it must not note before hand_basis_to_dismissal.
+    release.set()
+
+    # Wait for the close's deferred write to be dispatched and parked.
+    # At this point hand_basis_to_dismissal has already returned owed_now (non-None)
+    # because watch.standing was empty when it ran.
+    assert await _event_fired(write_entered, 10.0), (
+        "the close never reached its deferred write at slot_lifecycle.py:997 -- "
+        "hand_basis_to_dismissal may have returned None (plain note standing)"
+    )
+    # truncating_holders is now 0; the rehydrate faces no ordering barrier.
+    rehydrate = asyncio.create_task(
+        chat_persistence.rehydrate_slot_from_history_async(state, NAME, adopt_closed=True)
+    )
+    # Wait for the rehydrate to register (get_or_create_slot ran, pub note set,
+    # slot on key), fail (_load_rehydrated_window raises), pop its slot, and run
+    # retract_same_key_takeover synchronously (before its own first yield).
+    assert await _event_fired(
+        load_entered, 10.0
+    ), "the rehydrate never reached _load_rehydrated_window"
+    # After load_entered: slot is gone (popped), watch.standing has only the pub
+    # note, watch.dismissal is still record.  Release the close's write.
+    write_release.set()
+    resp = await close
+    assert resp.status == 200, resp.text
+    # EXPECTED RED in the unfixed code: the close's deferred write ran while a
+    # publication-noted taker was between slot-pop and its retraction write,
+    # dismissal_still_owed returned True and wrote closed= to disk.
+    assert "closed" not in state.conversation_log.get_metadata(key), (
+        "the close's deferred write (slot_lifecycle.py:997) ran while a pub-noted "
+        "taker was in flight: dismissal_still_owed saw slot gone and wrote closed="
+    )
+    with pytest.raises(OSError):
+        await rehydrate
+    assert registered.is_set(), "the taker never registered its slot"
+    assert NAME not in state._slots
+    assert state.conversation_log.get_metadata(key).get("closed") is True
+    assert state._takeover_watches == {}
