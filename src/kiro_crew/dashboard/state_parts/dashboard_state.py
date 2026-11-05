@@ -190,6 +190,12 @@ class DashboardState:
 
     _slots_push_legacy_owed: bool = False
 
+    # The last slot list each ``slots_diff`` audience was sent, and the sequence
+    # counter its frames carry (``state_parts/slots_diff.py``). Event-loop only.
+    _slot_diff_bases: "dict[str, Any] | None" = None
+
+    _slot_diff_seq: int = 0
+
     # The person's pinned-session order (``pinned_session_order``). A class
     # default for the same reason as the push fields above: serialize_slot
     # reads it on the slots-push hot path, which also runs on a
@@ -1237,6 +1243,9 @@ class DashboardState:
     _trailing_slots_flush = _slots_push._trailing_slots_flush
     _take_slots_audience = _slots_push._take_slots_audience
     _has_legacy_slots_audience = _slots_push._has_legacy_slots_audience
+    _has_generic_slots_audience = _slots_push._has_generic_slots_audience
+    answer_slots_resync = _slots_push.answer_slots_resync
+    _broadcast_slots_note = _slots_push._broadcast_slots_note
     _do_slots_broadcast = _slots_push._do_slots_broadcast
     push_slot_title = _slots_push.push_slot_title
     push_slot_patch = _slots_push.push_slot_patch

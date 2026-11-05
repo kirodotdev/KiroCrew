@@ -17,6 +17,7 @@ from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.constants import crew_log_enabled
 from kiro_crew.dashboard import websocket_hub as _ws_hub
+from kiro_crew.dashboard import ws_slot_diff as _ws_slot_diff
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG, is_relay_teammate
 from kiro_crew.dashboard.origin import check_origin
@@ -832,8 +833,15 @@ async def _serve_ws(
     # ``getattr``: request doubles in the suite are plain dicts with no query.
     query = getattr(request, "query", None) or {}
     declared_caps = {cap.strip() for cap in str(query.get("caps", "")).split(",")}
+    # The operator's rollback lever: a capability named there is served as absent.
+    declared_caps = _ws_slot_diff.without_disabled_caps(declared_caps)
+    _ws_slot_diff.note_missing_caps(bool(ws["_is_dashboard_user"]), declared_caps)
     ws[SLOT_PATCH_WS_FLAG] = bool(ws["_is_dashboard_user"]) and (
         SLOT_PATCH_CAPABILITY in declared_caps
+    )
+    # ``slot_diff.1`` beside it: send the coalesced list as row deltas.
+    ws[_ws_hub.SLOT_DIFF_WS_FLAG] = bool(ws[SLOT_PATCH_WS_FLAG]) and (
+        _ws_hub.SLOT_DIFF_CAPABILITY in declared_caps
     )
     # ``fold_delta.1``: send this tab only the boards it watches (dashboard users only).
     state.set_fold_delta_capable(ws, _ws_hub.FOLD_DELTA_CAPABILITY in declared_caps)
@@ -1722,6 +1730,8 @@ async def _serve_ws(
                         )
                     elif msg_type == "fold_watch":  # replaces the set; no-op unless capable
                         state.set_fold_watch(ws, data.get("slots"))
+                    elif msg_type == "slots_resync":  # a diff missed its base
+                        _ws_slot_diff.handle_slots_resync(state, ws)
                     elif msg_type == "slot_focused":
                         if not owner_request:
                             # SEL: the owner gate is a permission decision —
