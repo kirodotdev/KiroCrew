@@ -33,8 +33,8 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { buildSketchSrcdoc } from '../apps/meetings/lib/sketchSrcdoc'
-import { MERMAID_RUNTIME_PATH } from '../lib/vendorPaths'
+import { buildSketchSrcdoc } from './lib/sketchSrcdoc'
+import { MERMAID_RUNTIME_PATH } from '../../lib/vendorPaths'
 
 const ORIGIN = 'http://localhost:5476'
 

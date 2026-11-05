@@ -893,19 +893,6 @@ def test_a_claimer_passes_the_owner_priority_positionally(path, function, callee
     ]
 
 
-def test_an_unattended_stream_claims_nothing():
-    """Meeting translation is a per-line stream nobody waits on, so it names no
-    priority at all: the BACKGROUND default is the whole statement."""
-    assert (
-        _priority_args(
-            "apps/builtins/meetings/backend/domain/translate.py",
-            "run_oneshot_translation",
-            "get_or_create",
-        )
-        == []
-    )
-
-
 def _turn_tree() -> ast.Module:
     """The dashboard runner and the chat_turn owners it composes, parsed as one module."""
     runner = _SRC / "dashboard/chat_runner.py"

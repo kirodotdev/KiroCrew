@@ -16,15 +16,15 @@ import {
   newSegmentText,
   reconcileTranscriptPage,
   resolveEnabledAgents,
-} from '../apps/meetings/hooks/useMeetingSession'
+} from './hooks/useMeetingSession'
 import {
   CAPTION_FINALS_LIMIT,
   CAPTION_WINDOW_CHARS,
   captionWindow,
-} from '../apps/meetings/hooks/useMeetingTranscription'
-import type { AgentDef, MeetingsConfig } from '../apps/meetings/api'
-import { readSource } from './readSource'
-import EN_CATALOG from '../i18n/locales/en.json'
+} from './hooks/useMeetingTranscription'
+import type { AgentDef, MeetingsConfig } from './api'
+import { readSource } from '../../test/readSource'
+import EN_CATALOG from '../../i18n/locales/en.json'
 
 // Plain repo-relative paths, the convention in PapyrusCloseProject.test.tsx:
 // vitest runs with `website/` as cwd.

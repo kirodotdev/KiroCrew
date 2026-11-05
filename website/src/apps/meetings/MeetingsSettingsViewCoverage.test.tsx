@@ -28,13 +28,13 @@ const apiMocks = vi.hoisted(() => ({
   removeTerm: vi.fn(),
 }))
 
-vi.mock('../apps/meetings/api', async importOriginal => {
-  const actual = await importOriginal<typeof import('../apps/meetings/api')>()
+vi.mock('./api', async importOriginal => {
+  const actual = await importOriginal<typeof import('./api')>()
   return { ...actual, meetingsApi: apiMocks }
 })
 
-import SettingsView from '../apps/meetings/SettingsView'
-import type { ConfigResponse, DictionaryTerm, MeetingsConfig } from '../apps/meetings/api'
+import SettingsView from './SettingsView'
+import type { ConfigResponse, DictionaryTerm, MeetingsConfig } from './api'
 
 const BASE_CONFIG: MeetingsConfig = {
   meeting_agents: [

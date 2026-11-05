@@ -16,15 +16,15 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 import { act, fireEvent, render, renderHook, screen } from '@testing-library/react'
 import { useState } from 'react'
 
-import NoteSidebar from '../apps/meetings/components/NoteSidebar'
+import NoteSidebar from './components/NoteSidebar'
 import {
   MeetingsApiError,
   NOTE_IMAGE_UPLOAD_TIMEOUT_MS,
   meetingsApi,
-} from '../apps/meetings/api'
-import { useNoteDraft } from '../apps/meetings/hooks/useNoteDraft'
-import { MAX_NOTE_CHARS } from '../apps/meetings/noteText'
-import EN_CATALOG from '../i18n/locales/en.json'
+} from './api'
+import { useNoteDraft } from './hooks/useNoteDraft'
+import { MAX_NOTE_CHARS } from './noteText'
+import EN_CATALOG from '../../i18n/locales/en.json'
 
 const NOTE = EN_CATALOG.apps.meetings.note
 const SESSION = EN_CATALOG.apps.meetings.session

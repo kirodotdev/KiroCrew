@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Provider } from 'react-redux'
 
-import { store } from '../store'
+import { store } from '../../store'
 
 const apiMocks = vi.hoisted(() => ({
   config: vi.fn(),
@@ -13,8 +13,8 @@ const apiMocks = vi.hoisted(() => ({
   deleteMeeting: vi.fn(),
 }))
 
-vi.mock('../apps/meetings/api', async importOriginal => {
-  const actual = await importOriginal<typeof import('../apps/meetings/api')>()
+vi.mock('./api', async importOriginal => {
+  const actual = await importOriginal<typeof import('./api')>()
   return { ...actual, meetingsApi: apiMocks }
 })
 
@@ -22,10 +22,10 @@ vi.mock('../apps/meetings/api', async importOriginal => {
 // all-day test can assert WHICH options reached the seam. The suite pins
 // TZ=UTC, so the west-of-UTC day-shift is invisible behaviorally — the
 // `timeZone: 'UTC'` pin is the fix, and the spy is the only way to prove it.
-vi.mock('../i18n/format', { spy: true })
+vi.mock('../../i18n/format', { spy: true })
 
-import MeetingsPage from '../apps/meetings/MeetingsPage'
-import { fmtDateFields } from '../i18n/format'
+import MeetingsPage from './MeetingsPage'
+import { fmtDateFields } from '../../i18n/format'
 
 const ENDED_MEETING = {
   event_id: 'retro',

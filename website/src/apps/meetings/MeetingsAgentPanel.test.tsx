@@ -27,12 +27,12 @@ import { readFileSync } from 'node:fs'
 import { useState } from 'react'
 import { MotionGlobalConfig } from 'framer-motion'
 
-import AgentPanel from '../apps/meetings/components/AgentPanel'
-import AgentPanelSlot from '../apps/meetings/components/AgentPanelSlot'
-import { useExpandedAgent } from '../apps/meetings/hooks/useExpandedAgent'
-import type { AgentDef } from '../apps/meetings/api'
-import { MERMAID_RUNTIME_PATH } from '../lib/vendorPaths'
-import EN_CATALOG from '../i18n/locales/en.json'
+import AgentPanel from './components/AgentPanel'
+import AgentPanelSlot from './components/AgentPanelSlot'
+import { useExpandedAgent } from './hooks/useExpandedAgent'
+import type { AgentDef } from './api'
+import { MERMAID_RUNTIME_PATH } from '../../lib/vendorPaths'
+import EN_CATALOG from '../../i18n/locales/en.json'
 
 // Read as source, not imported: these assertions are about the SHAPE of the call
 // (which cache operation, which HTTP method) rather than its result, and the same

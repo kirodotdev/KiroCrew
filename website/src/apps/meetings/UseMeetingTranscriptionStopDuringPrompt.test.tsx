@@ -12,8 +12,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 
-type HookModule = typeof import('../apps/meetings/hooks/useMeetingTranscription')
-type ApiModule = typeof import('../apps/meetings/api')
+type HookModule = typeof import('./hooks/useMeetingTranscription')
+type ApiModule = typeof import('./api')
 
 type Sent = { kind: 'audio' | 'stop' | 'other'; bytes: number }
 
@@ -161,8 +161,8 @@ interface Harness {
  * over is the same one the spy is installed on.
  */
 async function mount(onFinalImpl?: (text: string) => string | boolean | void): Promise<Harness> {
-  const api = await import('../apps/meetings/api')
-  const mod = await import('../apps/meetings/hooks/useMeetingTranscription')
+  const api = await import('./api')
+  const mod = await import('./hooks/useMeetingTranscription')
   const dispatch = vi.fn().mockResolvedValue({ dispatched: 1, text: 'ok' })
   vi.spyOn(api.meetingsApi, 'dispatch').mockImplementation(
     (id: string, text: string) => dispatch(id, text) as Promise<{ dispatched: number; text: string }>,

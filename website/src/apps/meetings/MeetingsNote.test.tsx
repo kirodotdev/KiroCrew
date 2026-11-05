@@ -13,9 +13,9 @@ import { readFileSync } from 'node:fs'
 import NoteSidebar, {
   imageSnippet,
   insertBlock,
-} from '../apps/meetings/components/NoteSidebar'
-import { MAX_NOTE_CHARS } from '../apps/meetings/noteText'
-import EN_CATALOG from '../i18n/locales/en.json'
+} from './components/NoteSidebar'
+import { MAX_NOTE_CHARS } from './noteText'
+import EN_CATALOG from '../../i18n/locales/en.json'
 
 const SessionSource = readFileSync('src/apps/meetings/hooks/useMeetingSession.ts', 'utf-8')
 const ViewSource = readFileSync('src/apps/meetings/MeetingView.tsx', 'utf-8')

@@ -13,7 +13,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { i18nT } from '../i18n/t'
+import { i18nT } from '../../i18n/t'
 
 const apiMocks = vi.hoisted(() => ({
   init: vi.fn(),
@@ -57,8 +57,8 @@ const stt = vi.hoisted(() => ({
   onError: undefined as ((code: string) => void) | undefined,
 }))
 
-vi.mock('../apps/meetings/api', async importOriginal => {
-  const actual = await importOriginal<typeof import('../apps/meetings/api')>()
+vi.mock('./api', async importOriginal => {
+  const actual = await importOriginal<typeof import('./api')>()
   return { ...actual, meetingsApi: apiMocks }
 })
 
@@ -69,9 +69,9 @@ interface SttOptions {
   onError?: (code: string) => void
 }
 
-vi.mock('../apps/meetings/hooks/useMeetingTranscription', async importOriginal => {
+vi.mock('./hooks/useMeetingTranscription', async importOriginal => {
   const actual = await importOriginal<
-    typeof import('../apps/meetings/hooks/useMeetingTranscription')
+    typeof import('./hooks/useMeetingTranscription')
   >()
   return {
     ...actual,
@@ -92,8 +92,8 @@ vi.mock('../apps/meetings/hooks/useMeetingTranscription', async importOriginal =
   }
 })
 
-import { MeetingsApiError, type AgentDef, type MeetingMeta, type MeetingsConfig } from '../apps/meetings/api'
-import { useMeetingSession } from '../apps/meetings/hooks/useMeetingSession'
+import { MeetingsApiError, type AgentDef, type MeetingMeta, type MeetingsConfig } from './api'
+import { useMeetingSession } from './hooks/useMeetingSession'
 
 type SessionProps = Parameters<typeof useMeetingSession>[0]
 
