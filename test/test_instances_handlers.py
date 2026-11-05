@@ -1419,7 +1419,7 @@ class TestHandlers:
             def __init__(self, ok):
                 self._ok = ok
 
-            async def restart_remote(self, iid):
+            async def restart_remote(self, iid, *, force=False):
                 return {"ok": self._ok, "message": "" if self._ok else "fail"}
 
         # success -> 200

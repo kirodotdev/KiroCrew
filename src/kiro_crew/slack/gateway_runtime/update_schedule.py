@@ -337,6 +337,15 @@ async def _prepare_auto_update_apply(
     if not paused:
         self._update_apply_deferred = True
         return False
+    # Read with no await since the pause returned, so the gate cannot slip in.
+    if getattr(self, "_update_pause_holder", None) == "restart_gate":
+        # The restart gate just told a caller this gateway is idle and holds
+        # the (re-entrant) pause for that caller's restart: an apply started
+        # now would be cut off by it. The pause stays the gate's.
+        logger.info("Auto-update deferred: a restart this gateway approved is pending")
+        self._update_apply_deferred = True
+        return False
+    self._update_pause_holder = "auto_update"
 
     turn_busy, background_busy = self._in_flight_work_counts()
     busy = turn_busy + background_busy
@@ -367,7 +376,14 @@ async def _prepare_auto_update_apply(
             background_busy,
         )
 
-    if await sessions.resume_turn_admission_after_update():
+    # The holder is cleared only once the resume returned (no await between):
+    # a gate pause queued behind this resume returns re-entrantly on this
+    # apply's pause, and must still see it as the apply's, not take it.
+    try:
+        reopened = await sessions.resume_turn_admission_after_update()
+    finally:
+        self._update_pause_holder = None
+    if reopened:
         self._schedule_inbound_replay()
     self._update_apply_deferred = True
     logger.info("Auto-update deferred: %d in-flight turn(s)", busy)
@@ -386,6 +402,10 @@ async def _finish_auto_update_apply(self: GatewayOrchestrator) -> None:
     sessions = self.sessions
     if sessions is None:
         return
+    # The holder is cleared only once the resume returned, with no await
+    # between: a pause queued behind this resume returns re-entrantly on the
+    # pause being released, and must still see whose it is (and stand aside)
+    # rather than take it and have it reopened under it.
     try:
         reopened = await sessions.resume_turn_admission_after_update()
     except Exception:
@@ -393,6 +413,107 @@ async def _finish_auto_update_apply(self: GatewayOrchestrator) -> None:
     else:
         if reopened:
             self._schedule_inbound_replay()
+    finally:
+        self._update_pause_holder = None
+
+
+#: How long an idle answer from the restart gate keeps turn admission paused
+#: while the caller's restart lands. A restart that never comes (the caller
+#: died, or its restart failed) must not leave the gateway refusing turns, so
+#: admission reopens after this.
+_RESTART_GATE_HOLD_SECS = 60.0
+
+
+async def _restart_gate_when_idle(self: GatewayOrchestrator) -> tuple[bool, int, int]:
+    """Say whether a restart now would interrupt work, as ``(idle, turns, background)``.
+
+    The check behind ``kirocrew restart --when-idle``. It takes the pause the
+    automatic apply takes (``pause_turn_admission_for_update``) and runs the
+    same census (``_in_flight_work_counts``), so a remote restart waits for the
+    work a local update would wait for. Busy: admission reopens at once and
+    the counts go back to the caller, who asks again later. Idle: admission
+    stays paused, so no turn starts between this answer and the restart, and
+    reopens after ``_RESTART_GATE_HOLD_SECS`` if no restart arrives. While that
+    hold is live every further ask answers busy and leaves the hold alone.
+
+    A pause someone else holds (an apply under way, or the final drain of a
+    stop) is not this gate's to take or release, so it answers busy. The pause
+    is re-entrant, so ``_update_pause_holder`` says whose it is: the gate sets
+    ``"restart_gate"``, ``_prepare_auto_update_apply`` sets ``"auto_update"``,
+    each right after its pause returns with no await between, and each
+    defers to the other. A gate ask whose pause returns on a pause another
+    gate ask still holds defers to it too. A stop
+    already signalled answers busy too: that gateway is going down anyway,
+    and the caller's next ask finds it gone.
+    """
+    if shutdown_event.is_set():
+        return False, 0, 0
+    sessions = self.sessions
+    # Fixtures built with ``__new__`` skip ``__init__``, hence the default.
+    hold = getattr(self, "_restart_gate_hold", None)
+    if hold is not None and not hold.done():
+        # A restart this gate already approved is on its way. Another ask is
+        # busy, and the approval's hold and pause are left exactly as they are:
+        # releasing them would reopen admission under that pending restart.
+        turns, background = self._in_flight_work_counts()
+        return False, turns, background
+    if sessions is not None:
+        if sessions.admission_closed:
+            turns, background = self._in_flight_work_counts()
+            return False, turns, background
+        try:
+            paused = await sessions.pause_turn_admission_for_update()
+        except Exception:
+            logger.exception("Restart gate could not pause turn admission")
+            paused = False
+        if not paused:
+            turns, background = self._in_flight_work_counts()
+            return False, turns, background
+        # Read with no await since the pause returned. The pause is re-entrant,
+        # so whoever took it while this waited for the lock still owns it -- an
+        # apply, or another gate ask whose resume is queued behind this pause:
+        # busy, and not this gate's to take or release.
+        if getattr(self, "_update_pause_holder", None) is not None:
+            turns, background = self._in_flight_work_counts()
+            return False, turns, background
+        self._update_pause_holder = "restart_gate"
+    turns, background = self._in_flight_work_counts()
+    # An update the dashboard started (``api_update_apply``) runs its policy
+    # installer as a tracked task the census does not count; the restart's
+    # shutdown would cancel it mid-install, so it is work a restart interrupts.
+    background += len(self._dashboard_policy_applies())
+    if turns + background > 0:
+        await self._finish_auto_update_apply()
+        logger.info(
+            "Restart gate: busy with %d turn(s) and %d background workload(s)", turns, background
+        )
+        return False, turns, background
+    if sessions is not None:
+        task = asyncio.create_task(self._release_restart_gate_hold(), name="restart-gate-hold")
+        self._restart_gate_hold = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+    logger.info("Restart gate: idle; turn admission paused for the restart")
+    return True, 0, 0
+
+
+async def _release_restart_gate_hold(self: GatewayOrchestrator) -> None:
+    """Reopen admission the restart gate paused, once its restart did not arrive.
+
+    Left alone once an update restart fenced the pause, or once the pause is no
+    longer the gate's (``_update_pause_holder``).
+    """
+    await asyncio.sleep(self._RESTART_GATE_HOLD_SECS)
+    sessions = self.sessions
+    if sessions is None or getattr(sessions, "update_restart_fenced", False):
+        return
+    if getattr(self, "_update_pause_holder", None) != "restart_gate":
+        return
+    logger.warning(
+        "Restart gate: no restart within %ss of an idle answer; reopening turn admission",
+        self._RESTART_GATE_HOLD_SECS,
+    )
+    await self._finish_auto_update_apply()
 
 
 def _wheel_apply_module() -> Any:

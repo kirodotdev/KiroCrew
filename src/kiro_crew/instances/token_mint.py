@@ -353,8 +353,12 @@ def _run_marker_clause(subcommand: str, port: int) -> str:
         ]
     )
     pointer = f'"$HOME/{CONFIG_DIR_NAME}/run/gateway-{int(port)}.home"'
-    # The pointed home is not the default one, so a bare ``restart`` would miss this gateway.
-    pointed = f"restart --port {int(port)}" if subcommand == "restart" else subcommand
+    # The pointed home is not the default one, so a bare ``restart`` would miss this
+    # gateway. Every ``restart`` form gets the port, its idle-gated one included.
+    if subcommand == "restart" or subcommand.startswith("restart "):
+        pointed = f"restart --port {int(port)}{subcommand[len('restart'):]}"
+    else:
+        pointed = subcommand
     return " ".join(
         [
             f'if [ -z "${{KIROCREW_HOME:-}}" ] && [ -f {pointer} ] && [ -r {pointer} ]; then',
