@@ -11,10 +11,11 @@ import { Input } from '../../../components/ui'
 import Clickable from '../../../components/Clickable'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { errMessage } from '../../../utils/thunkError'
+import { pathBasename, stripTrailingSeparators } from '../../../utils/pathBasename'
 
 import { i18nT } from '../../../i18n/t'
 import { PICKER_CSS } from '../inlineStyles'
-const base = (p: string) => p.split('/').filter(Boolean).pop() || p
+const base = (p: string) => pathBasename(stripTrailingSeparators(p)) || p
 
 export default function ProjectPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [open, setOpen] = useState(false)

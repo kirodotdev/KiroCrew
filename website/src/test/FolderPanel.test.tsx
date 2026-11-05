@@ -103,7 +103,12 @@ describe('FolderPanel', () => {
     vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
     const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
     renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
-    fireEvent.click(await waitFor(() => screen.getByLabelText('Show in file manager')))
+    const btn = await waitFor(() => {
+      const el = screen.getByLabelText('Show in file manager')
+      expect(el).toBeTruthy()
+      return el
+    })
+    await act(async () => { fireEvent.click(btn) })
     // Routes through the shared revealOrOpen helper, which passes the explicit
     // 'reveal' action so a failed reveal surfaces the shared message.
     expect(reveal).toHaveBeenCalledWith('/Users/me/ws', 'reveal')

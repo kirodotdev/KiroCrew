@@ -9,6 +9,8 @@ import {
 } from '../utils/terminalCompletion'
 import type { CompletionMode } from '../utils/terminalCompletion'
 import { sendRawToTerminalSession } from '../utils/terminalRegistry'
+import { isMac } from '../utils/platform'
+import { terminalChord } from '../utils/terminalFullscreen'
 
 import { i18nT } from '../i18n/t'
 /** Debounce between the last keystroke and the completion request. Short enough
@@ -127,11 +129,16 @@ interface CompleteResponse {
  * heuristic otherwise; `commandStart` documents why the fallback being wrong is
  * benign.
  */
-export default function TerminalCompletion({ term, sessionId, active }: {
+export default function TerminalCompletion({ term, sessionId, active, onOpenSearch, onToggleFullscreen }: {
   term: Terminal
   sessionId: string
   /** False while the pane is hidden — no polling, no menu. */
   active: boolean
+  /** Open the scrollback find bar (Cmd+F on macOS, Ctrl+Shift+F elsewhere). Intercepted here because this
+   *  component owns xterm's one custom-key-handler slot (#10176). */
+  onOpenSearch?: () => void
+  /** Toggle the terminal panel fullscreen (Cmd+Shift+F, macOS only). */
+  onToggleFullscreen?: () => void
 }) {
   const [sug, setSug] = useState<Suggestions | null>(null)
   /** The word the listing query is currently keyed on — `null` while idle. */
@@ -163,6 +170,11 @@ export default function TerminalCompletion({ term, sessionId, active }: {
   // custom-key-handler slot from being re-attached on every state change.
   const stateRef = useRef<{ sug: Suggestions | null; selected: number }>({ sug: null, selected: 0 })
   stateRef.current = { sug, selected }
+  // The find/fullscreen chord callbacks, read by the single custom-key handler
+  // without being in its dep set — re-attaching the handler on every render
+  // would shadow the one-slot contract and churn the IME grace state.
+  const chordRef = useRef<{ onOpenSearch?: () => void; onToggleFullscreen?: () => void }>({})
+  chordRef.current = { onOpenSearch, onToggleFullscreen }
 
   const close = useCallback(() => {
     // The debounce timer dies with the menu: a pending run would re-open it for
@@ -529,6 +541,28 @@ export default function TerminalCompletion({ term, sessionId, active }: {
       if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && e.code === 'KeyC') {
         if (!term.hasSelection()) return true
         document.execCommand('copy')
+        return claim(e)
+      }
+      // Scrollback find + fullscreen chords (#10176, #9906), per platform
+      // (terminalChord). The shell owns bare Ctrl+F on every platform
+      // (readline forward-char, page-forward in less/man/vim), so it is never
+      // intercepted: macOS finds on Cmd+F and toggles fullscreen on
+      // Cmd+Shift+F; Linux/Windows find on Ctrl+Shift+F (xterm yields no key
+      // for Ctrl+Shift+letter, so nothing reaches the shell for it today) and
+      // have no fullscreen chord: the overflow-menu item is the way in there.
+      // Matched on the letter typed (isFindChordKey) so a remapped Latin
+      // layout keeps its own Ctrl+<letter> shell keys, with the physical F
+      // position as the fallback only for non-Latin layouts. It fires only
+      // while a terminal pane holds focus, so it never shadows the
+      // dashboard-wide find. These sit BEFORE the menu early-return so they
+      // work with no menu open.
+      const chord = terminalChord(e, isMac)
+      if (chord === 'fullscreen') {
+        chordRef.current.onToggleFullscreen?.()
+        return claim(e)
+      }
+      if (chord === 'find') {
+        chordRef.current.onOpenSearch?.()
         return claim(e)
       }
       const s = stateRef.current.sug

@@ -58,6 +58,7 @@ _OWNER_MODULES = frozenset(
     {
         "account_identity",
         "acp_recovery",
+        "agent_started",
         "app_agent_binding",
         "context_cap",
         "crew_log_attribution",
@@ -407,16 +408,10 @@ def test_the_chat_facade_reexports_the_runner_objects() -> None:
     assert [name for name in names if getattr(chat, name) is not getattr(cr, name)] == []
 
 
-#: The file each coroutine a task is started with is defined in, and each function
-#: that starts one. ``stall_attribution`` names a stalled task by the outermost frame
-#: it can place, and it reads a frame in the runner or in a ``chat_turn`` owner as a
-#: dashboard chat turn, so an entry may live in either; the map pins each entry to its
-#: file, and the stall test below proves the reach for each. ``_run_chat``'s row is the
-#: exit guard's ``guarded`` (``_hands_off_queue_on_exit``), the coroutine every turn task
-#: runs; ``_arm_pending_reset_retry`` and ``_arm_synthesis_recheck`` define the coroutines
-#: they start, ``_launch_synthesis`` starts the pending synthesis,
-#: ``_finish_queue_cycle`` starts it and the title and summary passes, and
-#: ``_prewarm_startup_query`` starts a first message's early embed and memory reads.
+#: The file defining each task-entry coroutine, and each function that starts one.
+#: ``stall_attribution`` reads a frame in the runner or a ``chat_turn`` owner as a chat
+#: turn, so an entry may live in either; the stall test below proves the reach for each.
+#: ``_run_chat``'s row is ``guarded`` in ``_hands_off_queue_on_exit``, which every turn runs.
 _RUNNER_HOME = "dashboard/chat_runner.py"
 _TASK_ENTRY_HOMES: dict[str, str] = {
     "_run_chat": _RUNNER_HOME,
@@ -535,15 +530,18 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_user_origin",
         "_message_is_typed",
         "_turn_provenance_restored",
+        "_turn_start_background",
         "_directive_self_wake",
         "_directive_loop_id",
         "_directive_loop_gen",
         "_skill_trigger_text",
         "_directive_channel_origin",
+        "_directive_source_channels",
         "_directive_owner_origin",
         "_commands_off",
         "_recovery_echo_owed",
         "_turn_actor",
+        "_agent_started",
         "regenerate_hint",
         "_on_consumed",
         "_on_irreversibly_consumed",
@@ -1028,11 +1026,9 @@ def _resolve_target(node: ast.AST, params: dict[str, set[str]]) -> set[str] | No
 def _patched_names_in(text: str) -> set[str]:
     """Names one test source rebinds on the runner itself.
 
-    A dotted target (``chat_runner.KiroCrewConfig.load``) patches an attribute of a
-    shared object rather than a runner binding, so every holder of that object sees
-    it; only first-level runner names count. A name spelled by a parametrized
-    argument resolves to its parameter values; anything else the scan cannot
-    resolve is reported as ``<dynamic>``, which fails the patch-reach test closed.
+    Only first-level names count: a dotted target patches a shared object every holder
+    sees. A parametrized name resolves to its values; anything else is ``<dynamic>``,
+    which fails the patch-reach test closed.
     """
     if not _MENTIONS_THE_RUNNER.search(text):
         return set()
@@ -1095,11 +1091,8 @@ def _facade_patched_names() -> set[str]:
 def _captured_names(source: str) -> set[str]:
     """Names an owner module binds or evaluates when it LOADS, outside ``TYPE_CHECKING``.
 
-    That is everything a later patch of the runner cannot reach: a runtime import
-    (at module level or nested in a module-level ``if``/``try``/``with``), a default
-    argument, a decorator, a class base, a class body, or a module-level expression.
-    A name read inside a function body is read at call time from the runner's
-    globals, so it is not captured. The module docstring evaluates nothing.
+    A later runner patch cannot reach these: runtime imports, defaults, decorators,
+    class bases and bodies, module-level expressions. Function-body reads are not captured.
     """
     tree = ast.parse(source)
     guarded = _type_checking_nodes(tree)
@@ -1269,17 +1262,9 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_runner() -> None:
 
 # ── the path-keyed guards keep their reach ────────────────────────────────────
 
-#: Constructs repository guards enumerate by path, each with the files it lives in:
-#: redaction sinks and the redactor census, the deny chokepoints and the approve
-#: sites, the turn-ceiling, allocation, usage-row and turn-metric sites, the
-#: runtime-death attribution, the transcript-derivation plumbing, the hook gate, the
-#: agent-spec read registry, the slot.running reader map, the task entries, the
-#: stop classifier, the crew-log closers, the persona gate, the L1 budget resets, the
-#: memory-store seam's calls, the frame contract, the compaction-continuation and
-#: native question-card wiring, and the start-priority claimer calls. A file that
-#: grew one would move it out of such a guard's sight without failing it, so each
-#: pattern matches exactly the homes listed here, and a construct moves only together
-#: with its row and the guard that reads it.
+#: Constructs that repository guards enumerate by path, each with the files it lives in.
+#: A new file growing one would escape its guard silently, so each pattern matches
+#: exactly the homes listed, and a construct moves only together with its row and guard.
 _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     r"\b\w*redact\w*\(": (
         _RUNNER_HOME,
@@ -1360,7 +1345,6 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     # _turn_admit; each lives only in its homes, so the turn's own copy stays there.
     r"await _consume_pending_reset\(state, slot\)": (
         "dashboard/chat_turn/eager_spawn.py",
-        "dashboard/chat_turn/session_reset.py",
         "dashboard/chat_turn/turn_admission.py",
     ),
     r"_requested_model = slot\.model": (
@@ -1377,6 +1361,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/tool_approval.py",
     ),
     r"spawn_guarded_turn\(": (
+        "dashboard/chat_turn/agent_started.py",
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",
     ),
@@ -1395,10 +1380,12 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/queue_drain.py",
     ),
     r"\bslot\.task = ": (
+        "dashboard/chat_turn/agent_started.py",
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",
     ),
     r"\.(?:turn_)?running\b": (
+        "dashboard/chat_turn/agent_started.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",

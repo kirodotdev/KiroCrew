@@ -122,6 +122,13 @@ MAX_SUBAGENTS_FIXED_FLOOR = 3
 AUTOCOMPACT_PCT_MIN = 5.0
 AUTOCOMPACT_PCT_MAX = 90.0
 
+# session.idle_compaction_min_context_pct: the context use below which an idle
+# chat is never compacted. The floor is kiro's first-request break-even: below
+# about 40% the cold request a compaction saves is cheaper than the compaction
+# itself, so a hand-edited lower value loads as 40.
+IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN = 40.0
+IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX = 90.0
+
 
 class AutocompactPctError(ValueError):
     """A per-session threshold refused by :func:`parse_autocompact_pct`.
@@ -254,11 +261,21 @@ FILE_CHANGES_KEEP_TURNS_MIN = 0
 # capped at one day. The cap bounds the delay asked for, not when the delete runs.
 KAS_DELETE_DELAY_SECS_MIN = 0
 KAS_DELETE_DELAY_SECS_MAX = 86400
+# Also load-only. ``session.search_scan_window`` (default
+# ``DEFAULT_SEARCH_SCAN_WINDOW``): the ceiling keeps a hand-edited value from making
+# every search read a whole very large store.
+SEARCH_SCAN_WINDOW_MIN = 100
+SEARCH_SCAN_WINDOW_MAX = 100_000
 # A hand-edited ``session.idle_exempt_keys`` can be any size, and every idle sweep copies it.
 # Each listed key can also keep a whole kiro-cli process and its MCP servers running, the
 # per-entry cost ``POOL_SIZE_MAX`` bounds for the warm pool, so the count shares that ceiling.
 IDLE_EXEMPT_KEYS_MAX = POOL_SIZE_MAX
 IDLE_EXEMPT_KEY_MAX_CHARS = 512
+# Load-only bounds on ``session.harness_background_hold_secs``. The floor keeps a
+# hand-edited 0 from turning the hold off; the ceiling of one day bounds how long one
+# launch can keep a session past its idle timeout. The RSS hard ceiling still applies.
+HARNESS_BACKGROUND_HOLD_SECS_MIN = 300
+HARNESS_BACKGROUND_HOLD_SECS_MAX = 86400
 # Ceiling on ``session.reconcile_max_kills``, equal to the arm's own shipped budget
 # (``runtime_reconcile.DEFAULT_MAX_KILLS``, pinned equal by
 # ``test_the_configured_ceiling_cannot_exceed_the_shipped_budget``). Equal rather

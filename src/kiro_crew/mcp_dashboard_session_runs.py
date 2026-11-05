@@ -209,7 +209,7 @@ def _render_session_summary(resp: dict[str, Any]) -> str:
 #: supplied. They are copied into the child's own slot when it is created, as a
 #: per-session pick, so a later profile edit does not reach a child already open;
 #: the note says "copied" so the reply does not read as a live link to the profile.
-_PROFILE_COPY_NOTE = "copied from your crewmate profile at creation"
+_PROFILE_COPY_NOTE = "copied from your Bot profile at creation"
 
 
 class _Created(NamedTuple):
@@ -299,6 +299,9 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
         # Set before the folder preflight below, so its dry-run probe carries the
         # value and a refused threshold creates no folder.
         payload["autocompact_pct"] = args["autocompact_pct"]
+    if args.get("message") is not None:
+        # Also before the preflight: a message the route refuses creates no folder.
+        payload["message"] = args["message"]
 
     def _refused(refused: DashboardError, suffix: str) -> str:
         return redact(
@@ -377,22 +380,43 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         on_model += f" ({_PROFILE_COPY_NOTE}: {', '.join(inherited)})"
     if resp.get("inherited_model_dropped"):
         on_model += (
-            " (your crewmate profile's worker model is not usable here, so the "
+            " (your Bot profile's worker model is not usable here, so the "
             "session starts on the default model; fix the profile or pass `model`)"
         )
     if resp.get("autocompact_pct") is not None:
         on_model += f", auto-compacting at {resp['autocompact_pct']:g}%"
     # A Crew Mode chat's worker is in the sidebar but filed in no folder.
     where = (
-        "the user's sidebar, unfiled (this chat is in Crew Mode)"
+        "the user's sidebar, unfiled (this chat is in Ultra Mode)"
         if crew_mode
         else "the user's sidebar"
     )
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
-        f"It is empty and waiting in {where}; watch it with "
-        "session_read_message." + reply_line(resp) + _worker_capabilities_line(resp)
+        + _first_message_line(
+            {"message": args["message"]} if args.get("message") is not None else {}, resp, where
+        )
+        + reply_line(resp)
+        + _worker_capabilities_line(resp)
     )
+
+
+def _first_message_line(
+    payload: dict[str, Any], resp: dict[str, Any], where: str = "the user's sidebar"
+) -> str:
+    """What became of the create's first message, or that the session is empty."""
+    if "message" not in payload:
+        return f"It is empty and waiting in {where}; watch it with session_read_message."
+    failed = resp.get("delivery_error")
+    if isinstance(failed, dict):
+        return (
+            f"Your first message was NOT delivered: {failed.get('error')} "
+            f"({failed.get('code')}). The session is kept; session_send to it to retry."
+        )
+    receipt = resp.get("delivery") or {}
+    if receipt.get("started"):
+        return "It started a turn on your first message; watch it with session_read_message."
+    return "Your first message is queued for its next turn; poll it with session_read_message."
 
 
 def _worker_capabilities_line(resp: dict[str, Any]) -> str:
@@ -413,7 +437,14 @@ def _create_refusal_remedy(refused: DashboardError, payload: dict[str, Any]) -> 
     discloses nothing the refusal withholds: dispatch the TEMPLATE of that name on
     the caller's own memory (what a one-item worker needs), or let the owner's own
     tab make the create. A request that already asked for the template gets the
-    second remedy alone, since the first is what it just tried.
+    owner's remedies alone, since the first is what it just tried.
+
+    Picking the agent again in the refused chat is NOT a remedy, and the text says
+    so because it is the one a reader reaches for. Every chat that gets here has
+    messages: a different member is refused ``member_session_pinned``, and the same
+    agent is recorded through ``record_agent_selection(replace=True)``, which never
+    vouches. The binder that does vouch runs only for a chat with no messages, which
+    is why a NEW chat with this session's agent is a remedy that works.
     """
     if refused.code != "memory_delegation_denied":
         return ""
@@ -421,11 +452,13 @@ def _create_refusal_remedy(refused: DashboardError, payload: dict[str, Any]) -> 
         return (
             " The template dispatch binds this session's OWN memory, and that binding is "
             "what could not be verified. A member's memory binding cannot be changed in "
-            "Settings; the owner can re-select this session's agent (which re-binds its "
-            "memory) or run the dispatch from their own chat tab."
+            "Settings, and picking an agent again in this chat does not verify it. The "
+            "owner can run the dispatch from their own chat tab, or start a new chat with "
+            "this session's agent (a new chat is verified when it is created) and "
+            "dispatch from there."
         )
     return (
-        " The agent you named is a crew member whose private memory this session may "
+        " The agent you named is a Bot whose private memory this session may "
         "not bind; a member's memory binding cannot be changed in Settings. Re-send "
         'with `agent_kind: "template"` to run that agent\'s shared template on your own '
         "memory (a kirocrew-worker needs no memory of its own), or ask the owner to run "
@@ -767,7 +800,9 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
         resp = ctx.client.post(
             "/api/session-control/send",
-            {"target": args["target"], "message": args["message"], "steer": steer},
+            # ``receipt``: this call's row draws the outgoing card from what the
+            # gateway delivered (``dashboard.session_send_receipts``).
+            {"target": args["target"], "message": args["message"], "steer": steer, "receipt": True},
             session_key=ctx.caller_key,
         )
     except DashboardError as refused:

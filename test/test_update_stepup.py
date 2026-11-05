@@ -16,6 +16,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import notes, real_dashboard_state
 
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.platform import update_stepup
@@ -1303,7 +1305,7 @@ class TestApproveEndpoint:
         _assert_update_lock_free()
 
     async def test_a_promotion_that_detaches_the_sandbox_profile_says_how_to_reattach(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         from kiro_crew.platform import wheel_apply, wheel_engine
 
@@ -1314,15 +1316,17 @@ class TestApproveEndpoint:
         monkeypatch.setattr(updates, "_restart_gateway", AsyncMock(return_value=True))
         pending = update_stepup.arm("9.9.9", "stable")
         req = _request({"nonce": pending.nonce})
+        state = real_dashboard_state(tmp_path)
+        req.app["state"] = state
         await updates.api_update_approve(req)
-        for task in list(req.app["state"]._background_tasks):
+        for task in list(state._background_tasks):
             await task
-        state = req.app["state"]
-        state.notify.assert_called_once()
-        assert "kirocrew service install" in state.notify.call_args.args[2]
+        bodies = [body for _kind, _title, body in notes(state)]
+        assert len(bodies) == 1, notes(state)
+        assert "kirocrew service install" in bodies[0]
         # Sent after the promotion: the update is done, only the re-attach is left.
-        assert "is installed" in state.notify.call_args.args[2]
-        assert "Run `kirocrew update`" not in state.notify.call_args.args[2]
+        assert "is installed" in bodies[0]
+        assert "Run `kirocrew update`" not in bodies[0]
 
     async def test_a_restart_that_would_rerun_the_old_version_is_not_started(
         self, monkeypatch: pytest.MonkeyPatch

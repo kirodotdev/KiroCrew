@@ -284,8 +284,7 @@ class TestReverseShellNcIsCommandTokenAnchored:
     _SIBLING = "reverse-shell-ncat"
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class-local autouse stub, moved verbatim; de-flake pass tracked
-    def _remote_rsync_targets_are_not_this_host(self, monkeypatch):
+    def _remote_rsync_targets_are_not_this_host(self, _floor_monkeypatch):
         # The rsync allow cases name a REMOTE host, which the sandbox-escape floor
         # judges by resolving it, fail-closed while unresolved.  Pin the own-host
         # cache and stub the DNS verdict to "not self" exactly as
@@ -293,10 +292,10 @@ class TestReverseShellNcIsCommandTokenAnchored:
         # nothing is resolved for real and the verdict here is this row's alone.
         own = security.socket.gethostname().strip().lower()
         pinned = frozenset(name for name in {own, own.split(".", 1)[0]} if name)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", lambda host, **_kw: False)
+        _floor_monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
+        _floor_monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        _floor_monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        _floor_monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", lambda host, **_kw: False)
 
     @staticmethod
     def _effective_without(*rule_ids: str) -> list[str]:
@@ -695,9 +694,25 @@ class TestRecursiveForceRmFloor:
 
     @pytest.mark.parametrize(
         "command",
+        ["$1rm -fr ~", "$2rm -fr /", "$@rm -fr ~", "echo ok; $1rm -fr ~", "${1}rm -fr /"],
+    )
+    def test_a_floor_error_refuses_rm_behind_an_unset_parameter(self, monkeypatch, command):
+        """An unset ``$1`` glued to ``rm`` expands to nothing, so bash runs ``rm``."""
+        from kiro_crew.security import rm_floor
+
+        def _boom(_text):
+            raise RuntimeError("walk failed")
+
+        monkeypatch.setattr(rm_floor, "_rm_wipe_targets", _boom)
+        assert "could not read" in (is_denied(command) or "")
+
+    @pytest.mark.parametrize(
+        "command",
         [
             "git log --format=$x",
             "git log --format=%H -n 1",
+            "echo a$1rm",
+            "git log --fo$1rm=%H",
             "make format",
             "docker run --rm alpine true",
             "python3 -m pip install --platform any $PKG",

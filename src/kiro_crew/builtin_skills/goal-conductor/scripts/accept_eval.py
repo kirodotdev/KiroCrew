@@ -61,19 +61,17 @@ THE SECURITY INVARIANT (deliberate, do not weaken):
 
 A spec is written by a model, and this script runs as an approved wrapper, so a
 spec that could name a command would make this script a general way to run one.
-That is not a hypothetical: an earlier revision accepted a generic ``cmd`` kind
-with an allowlist, and it took three review rounds to establish that no
-constraint on ``argv`` fixes the shape. In order, the allowlist was defeated by
-(1) bare interpreters on it, so ``python -c <payload>`` ran anything;
-(2) a basename-only check, so ``/tmp/git`` executed an arbitrary binary under an
-allowlisted name; and (3) plain ``git reset --hard`` - allowlisted, and
-destructive. (3) is the one that settles it. Kiro Crew's denied-command floor
+No constraint on ``argv`` fixes that shape. A generic ``cmd`` kind with an
+allowlist is defeated by (1) bare interpreters on it, so ``python -c <payload>``
+runs anything; (2) a basename-only check, so ``/tmp/git`` executes an arbitrary
+binary under an allowlisted name; and (3) plain ``git reset --hard`` -
+allowlisted, and destructive. (3) is the one that settles it. Kiro Crew's denied-command floor
 inspects the ``execute_bash`` command string, which here reads
 ``python3 .../accept_eval.py``; the real argv arrives on stdin and is executed
 with ``shell=False``, so a denied command never appears in any string the hook
 examines. A generic executor behind an approved wrapper therefore REMOVES the
 deny floor for whatever it accepts, and the bypass is the wrapper rather than
-the list - which is why the list was dropped and not tightened again.
+the list - which is why there is no command list to tighten.
 
 So every argv this script runs is built HERE, from a fixed template, out of
 narrowly-typed spec fields. ``_SELF_BUILT_COMMANDS`` is the internal assertion
@@ -379,25 +377,15 @@ def _evaluate(item):
         if repo:
             argv += ["--repo", str(repo)]
         verdict, evidence = _run(argv)
-        # The draft probe runs HERE, behind a pending verdict, and nowhere else.
+        # The draft probe runs only behind a pending verdict. A draft's checks
+        # can still pass in repos with no check gated on the draft flag, so the
+        # probe must not pre-empt `gh pr checks`, and skipping it on pass/fail
+        # costs nothing.
         #
-        # A draft PR is not unconditionally unsatisfiable, so the probe must not
-        # pre-empt the check: where a repo has no aggregate check gated on the
-        # draft flag, a draft's checks resolve and `gh pr checks` exits 0 - a
-        # `pass` this script keeps returning, since this skill ships to
-        # arbitrary repos. Probing only a pending run also costs nothing on the
-        # pass and fail paths, which is every cycle that was never going to
-        # loop.
-        #
-        # A PENDING draft is refused on the spec, not on a prediction about CI.
-        # The two ways a draft's checks stay pending - a readiness check gated
-        # on the draft flag, which never resolves, and ordinary checks still
-        # running, which do - are indistinguishable to a stateless evaluator,
-        # and this returns the same answer for both ON PURPOSE. A draft is the
-        # author's own "not ready for review", so an unfinished check run on one
-        # is a person's turn; "mark it ready for review" is a step they owe
-        # regardless, and it is bounded. Waiting instead is not: guessing wrong
-        # in that direction is the reported defect, an hour of polling a
+        # A pending draft is refused ON PURPOSE even when its checks are merely
+        # still running: a stateless evaluator cannot tell that apart from a
+        # draft-gated check that never resolves. Marking it ready is a bounded
+        # step the author owes anyway; waiting can poll for an hour on a
         # condition no cycle could change.
         if verdict == "pending" and _pr_is_draft(pr, repo):
             return (

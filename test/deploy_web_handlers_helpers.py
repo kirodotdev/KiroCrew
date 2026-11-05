@@ -20,8 +20,7 @@ from kiro_crew.deploy import engine, handlers
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse isolation of test_deploy_web_handlers.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _force_posix_shell(monkeypatch):
+def _force_posix_shell(_floor_monkeypatch):
     """Neutralise the handlers' ``os.name == "nt"`` platform gate.
 
     The deploy handlers early-return 400/unsupported on Windows because the
@@ -47,28 +46,26 @@ def _force_posix_shell(monkeypatch):
         def __getattr__(self, attr):  # pragma: no cover - trivial delegation
             return getattr(os, attr)
 
-    monkeypatch.setattr(handlers, "os", _PosixNameOs())
+    _floor_monkeypatch.setattr(handlers, "os", _PosixNameOs())
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse isolation of test_deploy_web_handlers.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _isolate_config(tmp_path: Path, monkeypatch):
+def _isolate_config(tmp_path: Path, _floor_monkeypatch):
     # Patch config_dir on all deploy submodules so paths resolve under tmp_path.
     import kiro_crew.deploy as _deploy_pkg
     from kiro_crew.deploy import pending as _pending_mod
     from kiro_crew.deploy import profiles as _profiles_mod
 
-    monkeypatch.setattr(handlers, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(_profiles_mod, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(_pending_mod, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(_deploy_pkg, "config_dir", lambda: tmp_path)
+    _floor_monkeypatch.setattr(handlers, "config_dir", lambda: tmp_path)
+    _floor_monkeypatch.setattr(_profiles_mod, "config_dir", lambda: tmp_path)
+    _floor_monkeypatch.setattr(_pending_mod, "config_dir", lambda: tmp_path)
+    _floor_monkeypatch.setattr(_deploy_pkg, "config_dir", lambda: tmp_path)
     cfg = tmp_path / "config.json"
     return cfg
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse isolation of test_deploy_web_handlers.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _mock_base_stack(monkeypatch):
+def _mock_base_stack(_floor_monkeypatch):
     """Default mock for engine.run_aws so all confirm=True tests pass the base-stack check.
 
     Tests that specifically want to test missing-base-stack behavior can
@@ -79,7 +76,7 @@ def _mock_base_stack(monkeypatch):
     _base_outputs = _json.dumps(
         [{"OutputKey": "BucketName", "OutputValue": "kirocrew-base-bucket"}]
     )
-    monkeypatch.setattr(engine, "run_aws", lambda *a, **kw: (0, _base_outputs, ""))
+    _floor_monkeypatch.setattr(engine, "run_aws", lambda *a, **kw: (0, _base_outputs, ""))
 
 
 def _run(coro):

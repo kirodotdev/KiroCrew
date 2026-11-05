@@ -125,7 +125,7 @@ def test_refusal_survives_the_cache_and_the_list_merge(tmp_path, monkeypatch) ->
     agent_dir = tmp_path / "agents"
     agent_dir.mkdir()
     cfg = {"mcpServers": {"srv": {"command": "srv", "env": {"TMPDIR": "/x/run/t"}}}}
-    (agent_dir / "defaults.json").write_text(json.dumps(cfg))
+    (agent_dir / "defaults.json").write_text(json.dumps(cfg), encoding="utf-8")
     monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(mcp_discovery, "_MCP_JSON_PATHS", (tmp_path / "nope.json",))
     monkeypatch.setattr(mcp_discovery.Path, "home", lambda: tmp_path)

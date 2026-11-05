@@ -27,12 +27,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 class TestBuiltinAgentNamesAreNamespaced:
     """Builtin app agents must not squat a generic global agent name.
 
-    kiro-cli resolves an agent by the ``name`` field INSIDE the JSON, not by the
-    namespaced link filename ``_register_agents`` writes into ~/.kiro/agents/
-    (``<app>--<agent>.json``).  Agent names are therefore ONE FLAT GLOBAL
-    namespace: two installed agents claiming the same name collide, and kiro-cli
-    only warns and picks one.  Prefixing with the app id (app ids are unique in
-    the registry) is what makes a public install collision-proof.
+    kiro-cli resolves an agent by the ``name`` field inside the JSON, not the link
+    filename, so names are one flat global namespace; the unique app id prefix avoids
+    collisions.
     """
 
     def _builtin_dirs(self):
@@ -67,12 +64,8 @@ class TestBuiltinAgentNamesAreNamespaced:
 class TestUserAgentEditsSurviveRefresh:
     """App agent JSONs are re-materialized every boot; user edits must survive.
 
-    Registration rewrites these files from the packaged template on each
-    registration (that is what lets a template change land without a reinstall),
-    but a wholesale write silently reverted anything the user had tuned by hand
-    — `model`, extra `toolsSettings` — on every gateway start. Same split as the
-    managed-MCP refresh: framework-derived keys are refreshed (a stale one is a
-    bug), everything else on disk is the user's and wins.
+    Framework-derived keys are refreshed from the template; everything else on disk
+    (`model`, extra `toolsSettings`) is the user's and wins.
     """
 
     def test_user_keys_win_and_owned_keys_are_refreshed(self) -> None:
@@ -109,12 +102,8 @@ class TestUserAgentEditsSurviveRefresh:
     def test_containment_keys_are_refreshed_not_preserved(self) -> None:
         """`managedToolPolicy` / `includeMcpJson` are the framework's, not the user's.
 
-        Preserving them is wrong in BOTH directions, which is why they are owned:
-        a template that later tightens the exclude list would never reach an
-        already-enabled install, and anything that edited the file could drop the
-        exclude list — which the old rule then preserved forever. There is no
-        provenance here to tell a hand edit from last boot's template copy, so the
-        line is drawn by meaning: containment is refreshed, preference is kept.
+        They mean containment, so they are refreshed: a tightened exclude list must reach
+        existing installs, and a file edit must not drop it for good.
         """
         from kiro_crew.apps.bridges import _preserve_user_agent_edits
 
@@ -150,14 +139,8 @@ class TestUserAgentEditsSurviveRefresh:
         """A field the framework computes but forgets to list here would be
         frozen at whatever the on-disk file happened to hold.
 
-        The set is spelled out rather than derived because the rule is a JUDGEMENT
-        per key, not a property of the data: there is no provenance recording what
-        the last template wrote, so a key is owned when it means CONTAINMENT (the
-        framework must be able to tighten it, and nothing may loosen it by editing
-        the file) and unowned when it means PREFERENCE (the user's choice
-        outranks the template's default). Adding a key below is a security
-        decision; adding one to the template without deciding is the bug this
-        guard exists to surface.
+        The set is spelled out because ownership is a judgement per key: CONTAINMENT keys
+        are owned, PREFERENCE keys are the user's. Adding a key is a security decision.
         """
         from kiro_crew.apps.bridges import _FRAMEWORK_OWNED_AGENT_KEYS
 
@@ -188,18 +171,9 @@ class TestUserAgentEditsSurviveRefresh:
 
         from kiro_crew.apps.bridges import _FRAMEWORK_OWNED_AGENT_KEYS
 
-        # Keys a user is MEANT to be able to pin by hand.
-        # Keys a user is MEANT to be able to pin by hand. `welcomeMessage` is
-        # user-facing copy with no containment role, so a reworded greeting must
-        # survive a template refresh — the same reasoning as `description`.
-        #
-        # `skills` belongs here too, not in `_FRAMEWORK_OWNED_AGENT_KEYS`: it is a live field
-        # (`agent_discovery_parts/agent_roster.py` reads `row.get("skills")` into
-        # `AgentInfo.skills`) naming which
-        # skills an agent loads, which is exactly the kind of choice an operator should be able
-        # to change and keep across a refresh — same category as `model`. Framework ownership is
-        # reserved for identity and CONTAINMENT keys, which this is not. Added when the
-        # auto-improvement builtin became the first template to declare it.
+        # Keys a user is MEANT to be able to pin by hand. `welcomeMessage` is user-facing
+        # copy, like `description`. `skills` (read into `AgentInfo.skills`) is a preference
+        # like `model`, not a containment key.
         preferences = {
             "description",
             "model",
@@ -226,16 +200,9 @@ class TestUserAgentEditsSurviveRefresh:
 class TestBuiltinDeclaredResourcesActuallyRegister:
     """A builtin that declares agents/skills must get them registered.
 
-    Two independent framework bugs made this silently fail, and BOTH are
-    silent-by-construction (registration only logs a warning), so they need
-    executable pins rather than review vigilance:
-
-    1. ``_manifest_to_builtin_dict`` (discovery.py) hand-copied a subset of
-       AppManifest fields into the dict that register_builtin_apps() persists as
-       the data-home app.json snapshot. ``agents`` and ``skills`` were not in
-       that subset, so they never reached the snapshot that register_app() reads.
-    2. ``register_app`` resolved manifest-relative paths against the data-home
-       app dir. A builtin's code lives in the PACKAGE, so every path missed.
+    Registration only logs a warning on failure, so two traps are pinned here:
+    ``_manifest_to_builtin_dict`` must copy ``agents`` and ``skills`` into the snapshot,
+    and paths resolve against the PACKAGE, where a builtin's code lives.
     """
 
     def test_builtin_dict_carries_every_declarative_manifest_field(self):
@@ -283,6 +250,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                 "setup": {"onEnable": "echo hi"},
                 "publishProvider": {"id": "p", "label": "P"},
                 "notifications": {"channels": [{"id": "n", "name": "N"}]},
+                "l10n": {"de": {"displayName": "Sonde"}},
                 "contributes": {
                     "commands": [
                         {
@@ -343,12 +311,8 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
 class TestNeutralizeEntryShape:
     """A neutralize entry must be a complete server spec, not a bare deny.
 
-    kiro-cli's agent loader parses strictly: one mcpServers entry without a
-    command makes it reject the WHOLE agent file — the agent then vanishes from
-    the ACP mode list ("Mode not found" at session time) while `agent list` and
-    `agent validate` still show it, because those use a lenient parser. A bare
-    {"disabledTools": [...]} therefore does not deny a server; it silently
-    unregisters the agent.
+    kiro-cli rejects the WHOLE agent file for an mcpServers entry with no command
+    ("Mode not found"), while `agent list` and `agent validate` still show it.
     """
 
     def test_neutralize_copies_the_full_spec_from_the_global_file(self, monkeypatch):
@@ -429,11 +393,8 @@ class TestNeutralizeEntryShape:
 class TestDeclaredMcpToolsAreEnforced:
     """``permissions.mcpTools`` scopes an app agent's managed tools.
 
-    The gateway mounts its managed servers into every agent, so a narrow
-    ``mcpTools`` scoped nothing until the framework turned the declaration into a
-    ``managedToolPolicy.exclude`` of every undeclared managed tool. These pin the
-    materialization wiring: the exclusion lands, is unioned with an app-authored
-    one, leaves the app's own tools alone, and is inert when nothing is declared.
+    Managed servers mount into every agent, so the declaration becomes a
+    ``managedToolPolicy.exclude`` of every undeclared managed tool.
     """
 
     @staticmethod
@@ -665,10 +626,7 @@ class TestAppPromptPathIsContained:
     """An app's prompt path is app-controlled and read verbatim as the SYSTEM
     prompt — so it must resolve inside the app's own directories.
 
-    Without the bound, an app writing ``file:///Users/me/.ssh/id_rsa`` into its
-    policy hands a credential file to kiro-cli as the persona, and its contents
-    reach the model. The path is only ever legitimately shipped inside the app or
-    rendered into the app's data dir, so anything else is dropped.
+    Otherwise ``file:///Users/me/.ssh/id_rsa`` would reach the model as the persona.
     """
 
     def _call(self, tmp_path, raw):
@@ -860,15 +818,8 @@ class TestPruneAbortsOnUnreadableAgent:
 class TestShippedAgentTemplatesAreRenderedByTheGateway:
     """A shipped template is rendered BY THE GATEWAY, from values it computes itself.
 
-    An earlier version of this took the app's own provisioned copy from its install dir
-    and verified it was "the template with only placeholders substituted". A reviewer
-    pointed out why that is unsound and they were right: the check constrained WHERE a
-    substitution could appear but not WHAT it could contain — and `{UV_BIN}` is an
-    executable path, so an agent with write access to the engine directory could
-    substitute its own binary and kiro-cli would run it.
-
-    Every value is computable in the gateway, so nothing is read back from the mutable
-    side at all: the bytes come from the immutable package, the values from here.
+    Nothing is read back from the app's install dir: `{UV_BIN}` is an executable path,
+    so a provisioned copy could substitute its own binary for kiro-cli to run.
     """
 
     def test_placeholders_resolve_to_gateway_computed_values(self, tmp_path, app_env):
@@ -1045,11 +996,8 @@ class TestRegisterAgentsSnapshotUpkeep:
 class TestRefreshAppAgentsReportsIoFailures:
     """A partial agent rewrite is not a reconciled one.
 
-    `_register_agents` skips a failing agent and continues, so a write that hit ENOSPC
-    left the agent JSON holding the dead MCP url while the caller was told the refresh
-    succeeded. Only the I/O class is collected: this function returns an empty list for
-    several PERMANENT reasons — a self-managed app, a denied one, no declared agents —
-    and a caller that retried on emptiness would spin forever on any of them.
+    `_register_agents` skips a failing agent, so I/O failures are collected. An empty
+    list has PERMANENT causes too, so a caller retrying on emptiness would spin forever.
     """
 
     def _wire(self, monkeypatch, brmod, tmp_path, *, agents=("a.json",)):

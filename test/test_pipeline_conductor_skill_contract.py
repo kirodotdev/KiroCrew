@@ -1,25 +1,12 @@
 """The pipeline-conductor skill's contract, pinned against its own text.
 
-The conductor's decisions live in two places: the bundled scripts, which are
-testable as code, and the skill body, which was testable nowhere until this file
-existed. That asymmetry is what this file closes. A clause the scripts depend on
--- the exit-code branch table for the claim preflight, the ``TERMINAL`` action,
-the delivery counters that size admission -- can be dropped by a well-meaning
-rewrite of a markdown file and nothing anywhere goes red, so the procedure and
-the scripts silently stop agreeing.
+A clause the bundled scripts depend on (the preflight exit-code table, ``TERMINAL``,
+the delivery counters) can be dropped from the markdown with nothing going red.
 
-The assertions are deliberately about SUBSTANCE, not sentences, and the dividing
-line is stated so a later edit has a rule to follow: assert a phrase when it
-states a RULE -- an obligation, a prohibition, a defined behavior, a name the
-scripts share -- and do NOT assert one that only explains WHY the rule exists.
-Rationale is what a rewrite is entitled to reword; pinning it produces a typo
-detector that every legitimate edit has to fight, which is the failure mode that
-makes text tests get deleted.
-
-The prompt is read from the module constant rather than by running the
-installer: ``test_pipeline_conductor_agent.py`` already proves that constant
-reaches the written agent config, and re-stubbing the installer here would
-couple this file to that one for no additional coverage.
+Rule for edits: assert a phrase only when it states a RULE (an obligation, a
+prohibition, a name the scripts share), never one that only explains why.
+The prompt is read from the module constant; ``test_pipeline_conductor_agent.py``
+proves it reaches the written agent config.
 """
 
 from __future__ import annotations
@@ -44,10 +31,8 @@ SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-condu
 SKILL_MD = SKILL_DIR / "SKILL.md"
 DESIGN_DOC = REPO_ROOT / "docs" / "request-for-change" / "rfc-pipeline-conductor.md"
 
-#: The scripts the procedure delegates its deterministic half to. Named
-#: here rather than globbed from the directory on purpose: the point is that the
-#: PROSE cites each one, and a glob would pass on a skill body that mentions
-#: none of them.
+#: The scripts the procedure delegates to. Listed, not globbed: the PROSE must cite
+#: each one.
 BUNDLED_SCRIPTS = (
     "claim_preflight.py",
     "coverage_filter.py",
@@ -106,11 +91,9 @@ def _skill_section(heading: str) -> str:
 
 class TestAgentPromptNamesEveryScript:
     def test_prompt_names_the_script_this_change_adds(self):
-        """Only ``claim_preflight.py`` is pinned here. The other two are already
-        pinned in the installer test's own name list, and re-asserting them would
-        be a second place to update for one fact -- while the preflight is the one
-        that gates every dispatch, so an agent unaware of it falls back to the
-        one-question predicate this change replaced."""
+        """The prompt names ``claim_preflight.py``, which gates every dispatch.
+
+        The other scripts are pinned in the installer test's own name list."""
         assert "claim_preflight.py" in _flat(agent._PIPELINE_CONDUCTOR_SYSTEM_PROMPT)
 
     def test_prompt_states_the_verdicts_the_conductor_branches_on(self):
@@ -130,18 +113,9 @@ class TestQueueBuildExclusionIsDocumented:
     """The queue build must subtract covered items, and must not read the
     subtraction backwards.
 
-    The defect this pins: a work source selects and excludes by LABEL, and a PR
-    carrying ``Fixes #N`` applies no label, so a label-shaped selector emits
-    items whose fix is already in flight -- measured on this repo, 25 of 29
-    label-clean candidates. The per-item preflight refuses each of them, one
-    dispatch-time forge round at a time, which is the rediscovery the filter
-    moves upstream.
-
-    Every assertion here is about the DIRECTION of the cheaper answer. A filter
-    that only subtracts is safe beside a second evidence source; the same filter
-    read as a certificate would widen what gets dispatched on weaker evidence
-    than the authority uses, so "UNCOVERED is not permission" is the clause that
-    has to survive a rewrite.
+    A PR carrying ``Fixes #N`` applies no label, so a label selector emits items
+    already in flight. The filter only subtracts: "UNCOVERED is not permission" is
+    the clause that has to survive a rewrite.
     """
 
     HEADING = "### Queue build exclusion: `coverage_filter.py`"
@@ -194,16 +168,15 @@ class TestQueueBuildExclusionIsDocumented:
 
 class TestClaimPreflightIsDocumented:
     """Dispatch step 3 must not restate a coverage predicate in prose. Prose
-    cannot be tested, which is how it stayed blind to merged PRs, to prose
-    self-claims, and to code that does not exist on the base yet."""
+    cannot be tested, so it misses merged PRs, prose self-claims, and code that
+    does not exist on the base yet."""
 
     HEADING = "### Preflight: `claim_preflight.py`"
 
     def test_dispatch_cites_the_script_and_not_a_prose_predicate(self):
         dispatch = _flat(_skill_section("## Pickup and dispatch"))
         assert "claim_preflight.py" in dispatch
-        # The replaced predicate was a bare open-PR search presented as THE
-        # coverage check. Its return would re-open the blind spot.
+        # A bare open-PR search is not a coverage check: it misses merged PRs.
         assert "gh pr list --search" not in dispatch
 
     def test_an_absent_preflight_script_has_a_defined_behavior(self):
@@ -214,13 +187,12 @@ class TestClaimPreflightIsDocumented:
         dispatch = _flat(_skill_section("## Pickup and dispatch"))
         assert "absent from your install" in dispatch
         assert "never permission" in dispatch
-        # And specifically not a silent downgrade to the predicate it replaced.
+        # And not a silent downgrade to a bare open-PR search.
         assert "never fall through to a bare open-pr search" in dispatch
 
     def test_the_skill_does_not_assume_its_scripts_are_present(self):
-        """One script lands in a sibling change, so the skill's own opening must
-        not assert a bundled count: a reader who is told three ship has no
-        reason to reach the absent-script rule at all."""
+        """The skill must not assert a bundled count: a reader told three ship has
+        no reason to reach the absent-script rule."""
         body = _flat(SKILL_MD.read_text(encoding="utf-8"))
         assert "presence is not assumed" in body
         assert "check at first use" in body
@@ -258,11 +230,10 @@ class TestClaimPreflightIsDocumented:
         assert "falls through to the remaining checks" in preflight
 
     def test_prose_never_closes_an_item(self):
-        """The structural answer to nine false-CLOSE paths in one change: a
-        ratchet stops a new unguarded PATTERN, and cannot stop the next unguarded
-        PHRASING of one already guarded. So the skill has to say that a prose
-        reading is never the authority to close -- otherwise the next reader
-        reinstates the terminal verdict as an obvious simplification."""
+        """A prose reading is never the authority to close an item.
+
+        A ratchet stops a new unguarded pattern but not a new phrasing of one, so
+        the skill has to state the rule."""
         preflight = _flat(_skill_section(self.HEADING))
         assert "prose never closes anything" in preflight
         assert "do not dispatch and do not close" in preflight
@@ -346,10 +317,8 @@ class TestClaimPreflightIsDocumented:
 class TestPodReproAdmissionGate:
     """A pod campaign must reject unit-only fixes before implementation.
 
-    The first pilot silently weakened "pod repro required" into an after-the-fact
-    friction note: all three issues were fixed, none was reproduced in a pod, and
-    the run was still reported as evidence for the pod loop. These assertions pin
-    the distinction between campaign admission and ordinary verification quality.
+    "Pod repro required" is an admission gate, not an after-the-fact friction note:
+    a fix never reproduced in a pod is not evidence for the pod loop.
     """
 
     def test_the_spec_exposes_a_safe_generic_default_and_the_hard_mode(self):
@@ -394,13 +363,8 @@ class TestPodReproAdmissionGate:
 class TestSpecCheckRefusesAnUndeclaredGate:
     """A two-value field is only two-valued if something refuses a third value.
 
-    ``verifier.repro_gate`` is documented as an enum, and a value outside the
-    declared set matches neither branch of the procedure: ``pod_required``'s
-    admission gate never engages while the spec file says it is on, the generic
-    implementation instructions stay reachable, and the campaign metric still
-    counts the run as pod-verified. That is the gate's own failure mode one level
-    down, which is why the check refuses the run rather than falling back to
-    ``best_effort``.
+    A misspelled ``verifier.repro_gate`` matches neither branch, so the pod gate never
+    engages while the spec says it is on. The check refuses rather than defaulting.
     """
 
     @staticmethod
@@ -462,19 +426,11 @@ class TestSpecCheckRefusesAnUndeclaredGate:
         assert script.main(["--spec", str(listy)]) == 2
 
     def test_a_deeply_nested_spec_refuses_with_the_documented_code(self, tmp_path, capsys):
-        """Every unusable spec leaves through exit 2, including the one shape that
-        exhausts the scanner's stack rather than failing to parse.
+        """Every unusable spec leaves through exit 2, deep nesting included.
 
-        A document nested past the scanner's depth raises ``RecursionError``, which
-        subclasses ``RuntimeError`` and not ``ValueError``, so it is the one
-        malformed input that can leave as a traceback and exit 1. Exit 1 is not the
-        code the usage block gives a caller for a malformed spec, and a traceback is
-        not the message that names the field to fix.
-
-        The nesting is of OBJECTS so that parsing, if it somehow succeeded, would
-        yield a dict with no ``verifier`` block and exit 0 -- a nested ARRAY is
-        refused as a non-object anyway, which would pass this assertion without
-        the stack ever being the reason.
+        ``RecursionError`` is not a ``ValueError``, so it could leave as a traceback and
+        exit 1. Objects are nested, not arrays: an array is refused as a non-object
+        anyway, so the stack would never be the reason.
         """
         deep = tmp_path / "deep.json"
         depth = sys.getrecursionlimit() * 20
@@ -509,8 +465,11 @@ class TestSpecCheckRefusesAnUndeclaredGate:
             '`& $env:kirocrew_runtime_python -i -b "<skill-dir>/scripts/spec_check.py" --spec <path>`'
         )
         agent_read = startup.index("only after exit 0 may you read the spec")
-        folder = startup.index("`chat_folder_create`")
-        assert max(posix, powershell) < agent_read < folder
+        # The step after the check: build the queue. A dispatcher creates no folder
+        # (rfc-crewmate-workers-under-the-crewmate.md, Design 6).
+        queue = startup.index("build the queue from the work source")
+        assert max(posix, powershell) < agent_read < queue
+        assert "chat_folder_" not in startup
         assert "current directory, script directory, user site" in startup
         assert "never substitute bare `python` or `python3`" in startup
         assert "refusal to start" in startup
@@ -519,25 +478,12 @@ class TestSpecCheckRefusesAnUndeclaredGate:
 class TestSpecCheckReadsThroughTheSensitivePathGate:
     """The spec path is operator-supplied, so the read is a gated read.
 
-    ``--spec`` comes from the seed message, which makes it caller-influenced: a
-    symlink there could aim the validator at a credential store the sandbox
-    leaves readable, and the script would open it with the operator's own
-    permissions. Reading through ``safe_read_file`` puts the resolved target
-    behind ``is_sensitive_path`` and opens it ``O_NOFOLLOW``, so the gate holds
-    through the link and through a TOCTOU swap of the final component.
+    ``safe_read_file`` checks the resolved target with ``is_sensitive_path`` and opens
+    it ``O_NOFOLLOW``. Each planted spec carries a bad ``repro_gate``, so a bypass
+    would print a different message than the refusal.
 
-    Each case below writes a spec whose CONTENT would produce a *different*
-    message if the gate were bypassed (a bad ``repro_gate`` value, which the
-    validator reports by name). So a passing test proves the file was refused
-    rather than merely proving some non-zero exit.
-
-    The fixture does NOT relocate ``HOME``. Re-anchoring the home directory into
-    ``tmp_path`` would make the planted tree *be* the sensitive location, so the
-    tests would pass without the real credential-boundary classification ever
-    running -- they would be checking the fixture. Instead exactly one planted
-    path is declared sensitive and every other path DELEGATES to the real
-    ``is_sensitive_path``, so the production boundary logic still decides the
-    ordinary-spec cases and a regression in it is not masked.
+    ``HOME`` is not relocated: that would make the fixture itself the sensitive tree.
+    One planted path is sensitive and every other path goes to the real check.
     """
 
     @staticmethod
@@ -546,13 +492,10 @@ class TestSpecCheckReadsThroughTheSensitivePathGate:
 
     @staticmethod
     def _plant_credential_store(monkeypatch, root):
-        """Plant a credential store and classify ONLY it as sensitive.
+        """Plant a credential store, classify ONLY it as sensitive, and return its path.
 
-        Returns the planted path. ``safe_read_file`` calls the bare
-        ``is_sensitive_path`` name out of ``kiro_crew.hooks``' module globals, so
-        patching the attribute there intercepts the real call site rather than a
-        copy. The wrapper compares canonical paths, which is what makes the
-        symlink case meaningful: the link resolves to the planted target.
+        Patched on ``kiro_crew.hooks`` because that is where the real call site looks
+        it up. Canonical paths are compared, so a symlink resolves to the target.
         """
         aws = root / ".aws"
         aws.mkdir(parents=True)
@@ -616,15 +559,10 @@ class TestSpecCheckReadsThroughTheSensitivePathGate:
     def test_an_unenforceable_gate_refuses_rather_than_reading_plainly(
         self, tmp_path, capsys, monkeypatch
     ):
-        """A skill's scripts can run as bare files with ``kiro_crew`` off the
-        path. Degrading to ``read_text`` there would reopen the bypass in
-        the case least likely to be noticed, so absence of the gate is itself a
-        refusal.
+        """With no route to the gate, the script refuses rather than reading plainly.
 
-        The gate is unenforceable only once BOTH routes to it are gone: the
-        import here, and the re-exec under Kiro Crew's own interpreter that
-        ``TestSpecCheckRunsWhereTheGateIsImportable`` covers. Both are stubbed
-        out, so what this pins is the terminal state rather than the relocation.
+        Both routes are stubbed: the import and the re-exec under Kiro Crew's own
+        interpreter (``TestSpecCheckRunsWhereTheGateIsImportable``).
         """
         script = self._script()
         monkeypatch.setattr(script, "safe_read_file", None)
@@ -639,18 +577,9 @@ class TestSpecCheckReadsThroughTheSensitivePathGate:
 class TestSpecCheckRunsWhereTheGateIsImportable:
     """The check has to reach an interpreter that can import the gate.
 
-    The procedure runs this script with a plain ``python3``, and the default
-    install is a managed venv whose interpreter is not the ``python3`` on the
-    operator's ``PATH``. Under that pairing the gate import fails, and since an
-    unenforceable gate is a refusal, the startup predicate refuses EVERY spec:
-    the fail-closed branch stops a healthy install from starting any run at all,
-    which is the opposite of what it exists for.
-
-    So the script re-runs itself under Kiro Crew's own interpreter -- the
-    ``kirocrew`` launcher's sibling -- the way ``web-verify``'s downscale helper
-    reaches Pillow. The read gate is never degraded, only relocated to a process
-    that has it, and the refusal stays last: a build with no launcher, and a
-    second failure inside the re-exec, both still refuse.
+    A plain ``python3`` on a managed-venv install cannot import it, and would refuse
+    every spec. So the script re-runs under the ``kirocrew`` launcher's sibling
+    interpreter; with no launcher, or a second failure there, it still refuses.
     """
 
     @staticmethod
@@ -661,12 +590,8 @@ class TestSpecCheckRunsWhereTheGateIsImportable:
     def _install(tmp_path):
         """A synced copy of the script plus a launcher whose sibling has the gate.
 
-        Both halves mirror production. ``_ensure_builtin_skills`` copies the
-        packaged skill into the skills directory, so the file the agent runs sits
-        outside ``kiro_crew/`` and no ``__file__``-relative walk reaches the
-        package from it. And the launcher is the only handle on the interpreter:
-        a managed install puts ``kirocrew`` on ``PATH`` while the interpreter
-        beside it is on ``PATH`` nowhere.
+        As in production, the copy sits outside ``kiro_crew/``, and only ``kirocrew``
+        is on ``PATH``, not the interpreter beside it.
         """
         scripts = tmp_path / "skills" / "pipeline-conductor" / "scripts"
         scripts.mkdir(parents=True)
@@ -692,22 +617,11 @@ class TestSpecCheckRunsWhereTheGateIsImportable:
     def _run(synced, bindir, spec, home):
         """Run the synced copy the way a managed install runs it.
 
-        ``-S`` drops ``site-packages``, which is where an install of any shape
-        puts the package, and ``-E`` drops ``PYTHONPATH``, which is how a source
-        tree can still be on it. Together they make this process's own
-        interpreter stand in for the operator's ``python3``, so the simulation
-        holds however the checkout under test happens to be installed.
+        ``-S`` and ``-E`` drop ``site-packages`` and ``PYTHONPATH``, so this interpreter
+        stands in for an operator ``python3`` without the package.
 
-        ``KIROCREW_HOME`` and ``KIROCREW_WORKSPACE`` are pinned EXPLICITLY rather
-        than inherited. The rootdir ``_isolate_kirocrew_home`` fixture pins them
-        for this process, but a child assembled from ``os.environ`` is isolated
-        only for as long as that keeps being true, and reaching the operator's
-        real home is not a read: the gate imports ``config.paths``, whose
-        ``config_dir()`` CREATES the home and its marker on first use and can run
-        the legacy home migration as a side effect. Pinning also keeps one
-        developer's config drift out of the streams these assertions read, which
-        is why they check an exit code and one substring rather than the absence
-        of other output.
+        ``KIROCREW_HOME`` and ``KIROCREW_WORKSPACE`` are pinned explicitly: the gate
+        imports ``config.paths``, whose ``config_dir()`` creates the home on first use.
         """
         return subprocess.run(
             [sys.executable, "-S", "-E", str(synced), "--spec", str(spec)],
@@ -891,12 +805,8 @@ class TestSpecCheckRunsWhereTheGateIsImportable:
     def test_the_caller_s_data_home_reaches_the_child_unchanged(self, tmp_path, monkeypatch):
         """The script pins no home of its own, in either direction.
 
-        Which home the check reads is the CALLER's decision -- an operator with a
-        relocated ``KIROCREW_HOME``, and a pod whose whole isolation is that
-        variable, both need the child to resolve exactly what the parent was
-        given. So the re-exec forwards the environment and adds only its own loop
-        marker; a home pinned here would silently retarget the sensitive-path
-        gate away from the caller's own boundary.
+        A pod's whole isolation is ``KIROCREW_HOME``, so the re-exec forwards the
+        environment and adds only its own loop marker.
         """
         script = self._script()
         monkeypatch.setattr(script, "safe_read_file", None)
@@ -930,14 +840,10 @@ class TestProbeSignalsAreDocumented:
         assert "not nudge" in action or "never nudge" in action
 
     def test_every_firing_tag_has_a_row_in_the_action_table(self):
-        """The general rule: whoever authorizes a signal owns its spec row.
+        """Whoever authorizes a signal owns its spec row.
 
-        The tag set is read from the SCRIPT rather than restated here. A list in
-        the test would be one more place a new signal has to be registered, and
-        this check exists precisely because that registration is what gets
-        forgotten -- ``NOPROGRESS`` shipped into the probe against a table that
-        answered every tag except the new one, so the conductor received a line
-        with no defined action.
+        The tag set is read from the SCRIPT, so a new tag cannot ship without a row:
+        the conductor would receive a line with no defined action.
         """
         probe = load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
         cells = [
@@ -963,20 +869,14 @@ class TestProbeSignalsAreDocumented:
         assert "effect" in action
         assert "never liveness" in action
         assert "not a nudge" in action
-        # But the tag is not warm-only, and a row that says it is sends a cold
-        # session past the nudge it does need. The classifier ranks the tag below
-        # the clock, so ITS path is warm by construction -- while the suppression
-        # fallback substitutes the tag for an already-dispositioned report with no
-        # age test at all, so a cold line can carry it too. The printed age is
-        # what separates them, so the row has to route on it.
+        # But the tag is not warm-only: the suppression fallback can put it on a cold
+        # line, so the row has to route on the printed age.
         assert "route on the line's own age" in action
         assert "idle_alert_secs" in action
 
     def test_the_probe_makes_the_no_progress_comparison_itself(self):
-        """The procedure documented a manual two-cycle diff of ``i=``, which the
-        tag replaced. A comparison that lives in prose is enforced by nothing, so
-        leaving it written beside the tag gives the conductor two answers to one
-        question -- and the prose answer is the one that may never happen."""
+        """The probe compares ``i=`` across cycles; the skill must not also ask for a
+        manual diff, which would give the conductor two answers to one question."""
         probe = _flat(_skill_section(self.HEADING))
         assert "the probe makes that comparison itself" in probe
         assert "never diff two cycles by eye" in probe
@@ -1045,17 +945,15 @@ class TestProbeSignalsAreDocumented:
         assert "strips leading emphasis" in probe
 
     def test_the_degraded_path_is_named_as_the_current_default(self):
-        """On a build whose probe predates these fields the fallback fires on
-        every cycle, so writing it as an edge case would understate a changed
-        default."""
+        """With a probe that lacks these fields the fallback fires every cycle, so it
+        is the effective default, not an edge case."""
         probe = _flat(_skill_section(self.HEADING))
         assert "effective default" in probe
 
     def test_absent_probe_fields_are_unknown_not_a_clean_reading(self):
-        """Symmetric to the preflight's absent-script arm, and load-bearing for
-        the same reason: with no delivery counters the posture table's `ample`
-        row would be satisfied by the ABSENCE of its own instrument, which is
-        precisely the defect admission was re-keyed to close."""
+        """Like the preflight's absent-script arm: with no delivery counters the
+        posture table's `ample` row would be satisfied by the ABSENCE of its own
+        instrument."""
         probe = _flat(_skill_section(self.HEADING))
         assert "does not emit these fields" in probe
         assert "absent is `unknown`" in probe
@@ -1076,23 +974,15 @@ class TestPatrolLoopEnumeratesTheTags:
         loop = _flat(_skill_section(self.HEADING))
         assert "noprogress → check the effect" in loop
         assert "never liveness" in loop
-        # The instruction the tag replaced. Left standing it is a second, weaker
-        # answer to the question the probe already answers.
+        # A manual diff would be a second, weaker answer to what the probe answers.
         assert "diff each fired line's `i=`" not in loop
 
 
 class TestPatrolBoundsAgree:
     """The patrol's three arming bounds describe ONE loop.
 
-    ``max_cycles`` and ``max_runtime_secs`` each end the loop on their own, so
-    the smaller of the two is the patrol's real lifetime. When the interval
-    times the cycle cap falls short of the runtime, the cap ends the patrol
-    while the runtime it was armed with is still unspent: the skill promises a
-    run the server never gives.
-
-    The cycle ceiling is read from the server's own schemas rather than copied
-    here: a restated number would agree with the skill and still be wrong
-    about the server.
+    ``max_cycles`` and ``max_runtime_secs`` each end the loop, so interval x cycles
+    must cover the runtime. The cycle ceiling is read from the server's own schemas.
     """
 
     HEADING = "## Startup (once per run)"
@@ -1239,8 +1129,8 @@ class TestReconcileIsUnfilteredAndPerCycle:
         assert "--repo {repo}" in merge
 
     def test_the_watchlist_trap_is_named(self):
-        """Filtering the reconcile to the PRs already tracked reproduces the
-        original blind spot one level down."""
+        """Filtering the reconcile to the PRs already tracked misses every merge of
+        an untracked PR."""
         merge = _flat(_skill_section(self.HEADING))
         assert "watchlist" in merge
 
@@ -1308,8 +1198,7 @@ class TestAdmissionIsSizedOnDelivery:
 
     def test_the_banned_response_is_keyed_on_four_ownership_classes(self):
         """Keying it on one actionable-or-not boolean forces an unclassified line
-        to be either a false stop or a silent drop -- which is why two review
-        rounds demanded opposite things of the same cell."""
+        to be either a false stop or a silent drop."""
         rows = {
             row.split("|")[1].strip()
             for row in _skill_section(self.HEADING).splitlines()
@@ -1418,8 +1307,7 @@ class TestWorkOrderBriefClauses:
         assert "explicitly" in brief
         assert "inherits" in brief
         assert "addopts" in brief
-        # The old wording ("no xdist at all", "single process") let a reader
-        # conclude a bare pytest was the safe form.
+        # A bare pytest is not the safe form.
         assert "do not substitute a small `-n <n>`" in brief
 
     def test_targeted_runs_are_bounded_and_non_interactive(self):
@@ -1449,11 +1337,9 @@ class TestWorkOrderBriefClauses:
         assert "do not push" in brief
 
     def test_an_inoperable_gate_is_reported_not_silently_stalled(self):
-        """Both scripts document exit 2 as an environment error rather than a
-        verdict. Collapsing it into "do not push" turns a worker whose sandbox
-        cannot reach the scripts into an indefinite silent stall on every item,
-        which is worse than the unguarded push it replaces -- so the clause has
-        to separate a gate that REFUSED from one that could not RUN."""
+        """Exit 2 is an environment error, not a verdict. Read as "do not push", it
+        would silently stall every item, so the clause separates a gate that
+        REFUSED from one that could not RUN."""
         brief = _flat(_skill_section(self.HEADING))
         assert "could not run" in brief
         assert "blocked: push gate inoperative" in brief
@@ -1518,12 +1404,8 @@ class TestWorkOrderBriefClauses:
         assert "max_commits" in _skill_section("## The pipeline spec")
 
     def test_the_briefs_stated_default_tracks_the_script_it_describes(self):
-        """The clause tells the worker what ``push_guard.py`` defaults to. That is
-        a duplicated literal, and by this change's own argument an unpinned
-        duplicate drifts silently -- so it is asserted against the script rather
-        than against a number written here. Both ship from this tree, so the
-        dependency runs skill-prose to skill-script and not to any one
-        repository's CI."""
+        """The default the clause states for ``push_guard.py`` is checked against the
+        script, so the duplicated literal cannot drift."""
         script = (
             REPO_ROOT
             / "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py"

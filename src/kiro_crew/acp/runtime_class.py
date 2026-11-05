@@ -32,6 +32,7 @@ from kiro_crew.acp import runtime_tree_kill as _rt_tree
 from kiro_crew.acp import runtime_wire as _rt_wire
 from kiro_crew.acp.client import CLIENT_NAME
 from kiro_crew.acp.harness import HarnessAdapter, harness_for
+from kiro_crew.acp.harness.kas_cloud import KasCloudSandboxHarness
 from kiro_crew.acp.runtime_liveness import _DEFAULT_MAX_AGE_SECS, _DEFAULT_MAX_RSS_MB
 from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.runtime_start import _INIT_NOTIFICATION_BUFFER_LIMIT, StartCollector
@@ -106,6 +107,7 @@ class AcpRuntime:
     _resolve_spawn_plan = _rt_launch._resolve_spawn_plan
     _initialize_handshake = _rt_launch._initialize_handshake
     _spawn_admitted = _rt_launch._spawn_admitted
+    _refuse_over_ceiling_launch = _rt_launch._refuse_over_ceiling_launch
     _failed_start_cleanup = _rt_launch._failed_start_cleanup
     _record_tree_before_failed_start_kill = _rt_launch._record_tree_before_failed_start_kill
     _kill_failed_start_escapees = _rt_launch._kill_failed_start_escapees
@@ -120,6 +122,7 @@ class AcpRuntime:
     _session_work_dir = _rt_setup._session_work_dir
     _refuse_if_loader_unreachable = _rt_setup._refuse_if_loader_unreachable
     _refuse_over_ceiling_start = _rt_setup._refuse_over_ceiling_start
+    _start_launch_name = _rt_setup._start_launch_name
     _kas_custom_agents = _rt_setup._kas_custom_agents
     _mount_member_panel = _rt_setup._mount_member_panel
     _session_start_budget = _rt_setup._session_start_budget
@@ -130,6 +133,8 @@ class AcpRuntime:
     _confirm_member_projection = _rt_setup._confirm_member_projection
     _own_stub_session = _rt_setup._own_stub_session
     _unpooled_control_planes = _rt_setup._unpooled_control_planes
+    _kiro_native_spec_lookup = _rt_setup._kiro_native_spec_lookup
+    _session_label_elements = _rt_setup._session_label_elements
     _copy_native_launch_sources = _rt_setup._copy_native_launch_sources
     _guard_unresolved_mcp_refs = _rt_setup._guard_unresolved_mcp_refs
     _start_mount_check = _rt_setup._start_mount_check
@@ -144,6 +149,7 @@ class AcpRuntime:
     load_session = _rt_load.load_session
     _wait_managed_mcp = _rt_load._wait_managed_mcp
     # The sessions held and how each leaves: ``kiro_crew.acp.runtime_session_registry``.
+    session_activity_at = _rt_registry.session_activity_at
     unregister_session = _rt_registry.unregister_session
     mark_turn_active = _rt_registry.mark_turn_active
     terminate_session = _rt_registry.terminate_session
@@ -159,6 +165,7 @@ class AcpRuntime:
     _finish_session_init = _rt_registry._finish_session_init
     # Putting a session on its agent: ``kiro_crew.acp.runtime_mode_activation``.
     _skill_projection_lock = _rt_mode._skill_projection_lock
+    _refuse_over_ceiling_mode = _rt_mode._refuse_over_ceiling_mode
     _issue_skill_projection_generation = _rt_mode._issue_skill_projection_generation
     _adopted_skill_projection_generation = _rt_mode._adopted_skill_projection_generation
     _note_unadopted_skill_projection = _rt_mode._note_unadopted_skill_projection
@@ -247,6 +254,8 @@ class AcpRuntime:
     _write_remote_token = _rt_remote._write_remote_token
     _remote_session_servers = _rt_remote._remote_session_servers
     _remote_workspace_agents = _rt_remote._remote_workspace_agents
+    set_cloud_sandbox = _rt_remote.set_cloud_sandbox
+    hold_cloud_resume = _rt_remote.hold_cloud_resume
 
     #: See ``__init__``. Set on the class too, so a runtime built without
     #: ``__init__`` (a test double, a restored instance) reads as having none.
@@ -271,6 +280,7 @@ class AcpRuntime:
         tool_search: ToolSearchSettings | None = None,
         shared_scratch: Path | None = None,
         launch_agent: str = "",
+        native_skill_projection: bool = True,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -287,6 +297,12 @@ class AcpRuntime:
         # ``self._agent`` stays the identity every gate, profile, audit row and
         # hook reads. Empty for every other runtime.
         self._launch_agent = launch_agent
+        # Whether a kiro-cli spawn prepares native skill views. Off for a process
+        # whose agents live in a project scope the spec reader refuses (the warm
+        # mint's generation tree sits in the protected ``run/`` dir): the views
+        # would list none of those agents, and the projected frame would then hide
+        # every one of them but the launch agent from ``availableModes``.
+        self._native_skill_projection_enabled = native_skill_projection
         # Canonical Kiro Crew agent identity (a cfg.agents key) resolved by the
         # surface that created this runtime — a DIFFERENT namespace from
         # ``agent`` (the kiro template the process spawns with). Default for
@@ -686,6 +702,13 @@ class AcpRuntime:
         # load runs (``keep_record_on_teardown``).
         self._record_keeping_sessions: set[str] = set()
         self._dropped_frames_flushed_at: float = 0.0
+        # Monotonic time of the last attributable backend frame observed.
+        # The idle sweep reads it (``session_activity_at``) because a session's
+        # own clock moves only when a turn is dispatched, while its backend and
+        # the children it spawned keep emitting between turns. Per session, not
+        # ``_last_activity``: that one is process-wide, and on a shared runtime
+        # it would keep every tenant alive whenever any one of them worked.
+        self._session_activity_at: dict[str, float] = {}
 
     def _pool_lookup(self, agent: str | None) -> tuple[str | None, dict[str, Any] | None]:
         """The overlay name *agent*'s pooled stubs are found under, and its spec snapshot.
@@ -733,6 +756,25 @@ class AcpRuntime:
     @property
     def pid(self) -> int | None:
         return self._pid
+
+    @property
+    def is_cloud_sandbox(self) -> bool:
+        return isinstance(self._harness_resolved, KasCloudSandboxHarness)
+
+    @property
+    def _unclaimed_new_sessions(self) -> set[str]:
+        """Ids a ``session/new`` answered that no caller holds a handle for yet.
+
+        Tearing one down frees it on the backend even under a local-only teardown
+        policy: nothing records the id, so nothing could reopen it. ``session/load``
+        never adds here, so a failed reopen keeps its session. Created on first
+        use, like the projection counter, so a runtime built without
+        ``__init__`` reads an empty set.
+        """
+        found = self.__dict__.get("_unclaimed_new_session_ids")
+        if found is None:
+            found = self.__dict__["_unclaimed_new_session_ids"] = set()
+        return found
 
     @property
     def spawn_monotonic(self) -> float | None:

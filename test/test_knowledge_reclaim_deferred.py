@@ -703,7 +703,7 @@ class TestWatcherReReadsUnderTheGate:
         store = KnowledgeStore(str(tmp_path / "k.db"))
         try:
             path = tmp_path / "notes.md"
-            path.write_text("# notes\n")
+            path.write_text("# notes\n", encoding="utf-8")
             sid = store.add_source(
                 name="notes", source_type="local_file", uri=str(path), properties={"mtime": 0}
             )

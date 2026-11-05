@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import Clickable from '../components/Clickable'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -18,6 +18,7 @@ import { copyToClipboard, copyCode } from '../utils/clipboard'
 import { formatCost } from '../utils/formatCost'
 
 import { i18nT } from '../i18n/t'
+import { fmtNumber } from '../i18n/format'
 import { ApiError, toApiError } from '../api/apiError'
 import { errMessage } from '../utils/thunkError'
 const BASE = '/api/deploy'
@@ -262,12 +263,33 @@ export default function ArtifactDeployPage() {
     },
     onError: (e) => setFailure((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
+  // Each Verify is numbered, and only the newest one may set the verdict: two
+  // checks can be in flight at once (one per profile row), and an older one
+  // that lands last would otherwise show its profile's verdict under the
+  // newer click.
+  const verifySeq = useRef(0)
+  // The profiles with a check in flight: each row's Verify stays locked until
+  // its own check settles.
+  const [verifying, setVerifying] = useState<ReadonlySet<string>>(() => new Set())
   const verify = useMutation({
     mutationFn: (name: string) => jsend<Reach>('/verify', { profile: name }),
-    onSuccess: ({ data }) => { setReach(data); refreshProfiles() },
+    onMutate: (name) => {
+      setVerifying(prev => new Set(prev).add(name))
+      return { seq: ++verifySeq.current }
+    },
+    onSettled: (_data, _err, name) => {
+      setVerifying(prev => { const next = new Set(prev); next.delete(name); return next })
+    },
+    onSuccess: ({ data }, _name, ctx) => {
+      refreshProfiles()
+      if (ctx?.seq === verifySeq.current) setReach(data)
+    },
     // A rejected check (400 body or transport failure) is an unreachable
     // verdict too — it renders through the same unreachable notice below.
-    onError: (e, name) => setReach({ reachable: false, profile: name, error: (errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')) }),
+    onError: (e, name, ctx) => {
+      if (ctx?.seq !== verifySeq.current) return
+      setReach({ reachable: false, profile: name, error: (errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')) })
+    },
   })
 
   const loadPolicyMut = useMutation({
@@ -430,9 +452,10 @@ export default function ArtifactDeployPage() {
       {/* Getting started guide */}
       <Card>
         <Clickable style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: showGuide ? 12 : 0 }}
+             aria-expanded={showGuide}
              onClick={() => setShowGuide((v) => !v)}>
-          {showGuide ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          <CardTitle className="!mb-0"><Terminal size={15} /> {i18nT('pages.artifactDeployPage.getting_started_one_time_aws_setup')}</CardTitle>
+          {showGuide ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
+          <CardTitle className="!mb-0"><Terminal size={15} aria-hidden="true" /> {i18nT('pages.artifactDeployPage.getting_started_one_time_aws_setup')}</CardTitle>
         </Clickable>
         {showGuide && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13 }}>
@@ -482,9 +505,10 @@ export default function ArtifactDeployPage() {
       {/* Security model (collapsible) — the public-by-link warning stays visible even when collapsed */}
       <Card>
         <Clickable style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 8 }}
+             aria-expanded={showSecurity}
              onClick={() => setShowSecurity((v) => !v)}>
-          {showSecurity ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          <CardTitle className="!mb-0"><Lock size={15} /> {i18nT('pages.artifactDeployPage.how_this_is_secured')}</CardTitle>
+          {showSecurity ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
+          <CardTitle className="!mb-0"><Lock size={15} aria-hidden="true" /> {i18nT('pages.artifactDeployPage.how_this_is_secured')}</CardTitle>
         </Clickable>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)', background: 'var(--warn-subtle)', color: 'var(--warn)', fontSize: 12.5, lineHeight: 1.5, marginBottom: showSecurity ? 12 : 0 }}>
           <AlertTriangle className="lucide-inline" style={{ flexShrink: 0, marginTop: 2 }} />
@@ -544,8 +568,15 @@ export default function ArtifactDeployPage() {
           <table className="w-full border-collapse table-striped">
             <thead>
               <tr>
-                {['', 'Name', 'Account', 'Region', 'Status', 'Actions'].map(h => (
-                  <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>
+                {/* The first column is the default-profile star and carries no label. */}
+                {['',
+                  i18nT('pages.artifactDeployPage.col_name'),
+                  i18nT('pages.artifactDeployPage.col_account'),
+                  i18nT('pages.artifactDeployPage.col_region'),
+                  i18nT('pages.artifactDeployPage.col_status'),
+                  i18nT('pages.artifactDeployPage.col_actions'),
+                ].map((h, i) => (
+                  <th key={i} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -565,7 +596,7 @@ export default function ArtifactDeployPage() {
                     </Btn>
                   </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm font-mono font-semibold">{p.name}</td>
-                  <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{p.account ? `acct ${p.account}` : '—'}</td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{p.account ? i18nT('pages.artifactDeployPage.account_short', { account: p.account }) : '—'}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{p.region}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     {p.verified_at
@@ -574,7 +605,8 @@ export default function ArtifactDeployPage() {
                   </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     <span style={{ display: 'flex', gap: 6 }}>
-                      <Btn onClick={() => verify.mutate(p.name)}><ShieldCheck size={11} /> {i18nT('pages.artifactDeployPage.verify')}</Btn>
+                      {/* Locked while this row's own check runs; another row stays free to check. */}
+                      <Btn disabled={verifying.has(p.name)} onClick={() => verify.mutate(p.name)}><ShieldCheck size={11} /> {i18nT('pages.artifactDeployPage.verify')}</Btn>
                       <Btn aria-label={i18nT('pages.artifactDeployPage.remove_from_registry', { name: p.name })}
                         onClick={async () => {
                           if (await confirm({
@@ -600,7 +632,7 @@ export default function ArtifactDeployPage() {
                 <Plus size={10} /> {n}
               </Btn>
             ))}
-            {availableProfiles.length > 8 && <span>+{availableProfiles.length - 8} {i18nT('pages.artifactDeployPage.more')}</span>}
+            {availableProfiles.length > 8 && <span>{i18nT('pages.artifactDeployPage.more_count', { count: availableProfiles.length - 8, n: fmtNumber(availableProfiles.length - 8) })}</span>}
           </div>
         )}
         {showNewProfile && (
@@ -641,7 +673,9 @@ export default function ArtifactDeployPage() {
           <div style={{ marginTop: 10, fontSize: 12 }}>
             {reach.reachable
               ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--ok)' }}>
-                  <CheckCircle size={12} /> {reach.profile}{i18nT('pages.artifactDeployPage.access_reachable')}{reach.account ? ` (account ${reach.account})` : ''}
+                  <CheckCircle size={12} /> {reach.account
+                    ? i18nT('pages.artifactDeployPage.profile_reachable_account', { profile: reach.profile, account: reach.account })
+                    : i18nT('pages.artifactDeployPage.profile_reachable', { profile: reach.profile })}
                 </span>
               : <>
                   {/* No hand-off while the new-profile form (npName/npAccount/npRole)
@@ -764,8 +798,16 @@ export default function ArtifactDeployPage() {
           <table className="w-full border-collapse table-striped">
             <thead>
               <tr>
-                {['Name', 'Type', 'Status', 'Profile', 'URL', 'Cost', 'Actions'].map(h => (
-                  <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>
+                {[
+                  i18nT('pages.artifactDeployPage.col_name'),
+                  i18nT('pages.artifactDeployPage.col_type'),
+                  i18nT('pages.artifactDeployPage.col_status'),
+                  i18nT('pages.artifactDeployPage.col_profile'),
+                  i18nT('pages.artifactDeployPage.col_url'),
+                  i18nT('pages.artifactDeployPage.col_cost'),
+                  i18nT('pages.artifactDeployPage.col_actions'),
+                ].map((h, i) => (
+                  <th key={i} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>
                 ))}
               </tr>
             </thead>

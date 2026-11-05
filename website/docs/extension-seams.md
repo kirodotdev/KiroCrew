@@ -22,7 +22,8 @@ POSTs the file context to the app's endpoint — see the App Kit publishing guid
 
 | Seam | Module | Registrar to reader |
 |------|--------|---------------------|
-| Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` to `getBuiltinApp(route)` (returns `{ component, appId }`) |
+| Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` to `getBuiltinApp(route)` (returns `{ component, appId, opensPathParam? }`) |
+| "Open in <app>" for a file | `apps/pathOpener.ts` | an entry's `opensPathParam` to `pathOpenerTarget(apps)` |
 | Nav icons | `apps/builtinIcons.tsx` | `registerBuiltinIcons()` to `getBuiltinIcon()` |
 | Theme branding | `themeBranding.tsx` | `registerThemeBranding()` to `getThemeBranding()` |
 | Theme picker options | `hooks/useTheme.tsx` | `registerTheme()` to `getRegisteredThemes()` |
@@ -776,12 +777,12 @@ a `create*Endpoints` factory that `client.ts` hands the transport it owns
 the shared `X-Session-Key` header, the session-expiry hooks a
 method that reads its own response calls, and `withJournaledDeadline` (a
 deadline that also records a timed-out read in the error journal). The
-route-specific parsers (`jInstancesDisabled`, `jCrewBoard`, `jSlotEnvironment` and
-`jSharedCrewPreview`)
+route-specific parsers (`jInstancesDisabled`, `jCrewBoard`, `jSlotEnvironment`,
+`jSharedCrewPreview` and `jMembers`)
 are core-only and deliberately absent from `ApiTransport` above: each opts one
 specific benign denial on one core route out of the error journal (a disabled
 instances control plane's 403, a conductor with no ledger's 404 `no_ledger`, and
-the slot-environment read's and the Shared Crew preview read's 403 `owner_only`
+the slot-environment, Shared Crew preview and members roster reads' 403 `owner_only`
 for a caller that is not the dashboard owner), which is not an edition's decision to make. None of them imports a
 runtime value
 from `client.ts` (the telemetry module takes the Kiro usage types defined there

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from '@testing-library/react'
+import { api } from '../api/client'
 import { renderHookWithProviders, createTestStore } from './helpers'
 import { useAgentSync } from '../hooks/useAgentSync'
 import { sseSlots } from '../store/dashboardSlice'
@@ -34,7 +35,15 @@ const storeWithSlots = (slots: ChatSlot[]) => {
 }
 
 describe('useAgentSync recency ordering', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // These cases assert slot order only, synchronously. Pending fetches keep the
+    // resolved default, crons and spawns from landing after the assertion.
+    const pending = () => new Promise<never>(() => {})
+    vi.mocked(api).defaultAgent.mockReturnValue(pending())
+    vi.mocked(api).crons.mockReturnValue(pending())
+    vi.mocked(api).spawnList.mockReturnValue(pending())
+  })
 
   it('keeps the 8 most recently active slots, newest first, out of 12', () => {
     // 12 slots inserted OLDEST-first (chat-1 oldest ... chat-12 newest), the

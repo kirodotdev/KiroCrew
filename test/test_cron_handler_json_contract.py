@@ -186,7 +186,9 @@ async def test_cron_ack_still_reads_an_object_body() -> None:
         )
 
     assert response.status == 200
-    ack.assert_awaited_once_with("job-1", "seen")
+    # The note's ack also names its entry with a fresh id (cron_note_ack).
+    ack.assert_awaited_once()
+    assert ack.await_args.args[:2] == ("job-1", "seen")
     app["state"].ack_notification.assert_awaited_once_with("2026-05-13T00:00:00Z")
 
 

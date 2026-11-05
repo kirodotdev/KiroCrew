@@ -91,12 +91,15 @@ concurrency:
 jobs:
   ratchet-gates:
     name: Backend ratchet & baseline gates
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Whole-tree black through the one-file-per-worker wrapper alone takes
     # 18-19 minutes on the CodeBuild runner, and a green run of this job takes
     # about 24.5 minutes end to end. A 25-minute cap therefore cancels the census
     # step on an ordinary push, and a cancelled gate renders as drift on main.
-    # Keep at least 1.5x the measured green duration here.
+    # Keep at least 1.5x the measured green duration here. Black's cache (see
+    # the black steps) removes most of that on an ordinary push, but a cold
+    # cache -- the first push after a pyproject.toml change, or an evicted
+    # entry -- still pays the full census, so the cap is sized for that run.
     timeout-minutes: 40
     env:
       # Judge the integrated tree, not a diff. See the scope note in the header:
@@ -104,13 +107,29 @@ jobs:
       # otherwise pass by measuring nothing.
       RATCHET_SCOPE_WHOLE_TREE: "1"
     steps:
-      # fetch-depth: 0 for parity with ci.yml backend-lint's checkout: a gate
-      # that falls back to a diff (any run where the override above is not set)
-      # needs parent info a shallow clone truncates.
+      # The gates here scan the WORKING TREE: RATCHET_SCOPE_WHOLE_TREE above
+      # makes ratchet_scope.changed_paths() short-circuit to "whole tree" before
+      # any git call, so no gate resolves a base ref, diffs a second commit, or
+      # reads a historical file.
+      #
+      # filter: blob:none therefore skips the history blobs, which would
+      # otherwise be most of what this checkout transfers (measured in #27496).
+      # It is safe HERE
+      # because nothing diffs: on a lane that does, a lazily fetched blob whose
+      # fetch fails inside `git diff | grep` reads as NO MATCH and a rule passes
+      # unchecked, which is why #27513 declined the same filter for the
+      # diff-reading lanes. Trees are still fetched, which is what
+      # check_cwd_relative_repo_reads.py's `git ls-tree HEAD` reads.
+      #
+      # fetch-depth: 0 is kept because nothing here needs it reduced, NOT
+      # because a gate needs the history. A gate that stopped using whole-tree
+      # scope would diff, and it would have to drop this filter too -- the depth
+      # alone would not make it safe.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
+          filter: blob:none
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -156,9 +175,57 @@ jobs:
       # stayed unfixed -- a partial verdict masquerading as a full one, exactly
       # the class this lane exists to close. Every gate reports, and the job
       # still fails if any of them did.
+      # Black's own cache, carried from the previous push to main. Without it
+      # the black step is most of this job: bounded_black spawns one worker per
+      # file, and ~10,900 spawns took 13-22 minutes per run. With it, Black
+      # re-checks only files whose bytes differ from a version it found
+      # formatted, plus every unformatted (baselined) file, which it never
+      # caches. The verdict is the cold run's: a file's verdict depends only on
+      # its own bytes and Black's mode, and the mode key and Black version are
+      # both part of the cache's identity (see scripts/black_cache_portable.py),
+      # unlike mypy's, which is why ci.yml keeps main's mypy run cold.
+      #
+      # The cached JSON holds repository-relative paths, not Black's pickle: Black
+      # keys entries on absolute paths and a CodeBuild checkout's root changes
+      # every build. For the same reason the cached file's path is RELATIVE
+      # (.cache/ is gitignored): actions/cache hashes the path string into the
+      # entry's version, so a ${{ runner.temp }} path, which expands to that
+      # changing root, saves entries no later build can restore. Saved from main
+      # pushes only, like ci.yml's mypy cache, so only main writes the entry main
+      # restores.
+      - name: Restore black's cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/black-gate-cache.json
+          key: black-gate-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}-${{ github.sha }}
+          restore-keys: |
+            black-gate-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}-
+
+      - name: Rehydrate black's cache for this checkout
+        if: ${{ !cancelled() }}
+        env:
+          BLACK_CACHE_DIR: ${{ runner.temp }}/black-cache
+        run: python3 scripts/black_cache_portable.py restore .cache/black-gate-cache.json
+
       - name: Check formatting (black, baselined)
         if: ${{ !cancelled() }}
+        env:
+          BLACK_CACHE_DIR: ${{ runner.temp }}/black-cache
         run: python3 scripts/check_black_formatting.py
+
+      - name: Export black's cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        env:
+          BLACK_CACHE_DIR: ${{ runner.temp }}/black-cache
+        run: python3 scripts/black_cache_portable.py export .cache/black-gate-cache.json
+
+      - name: Save black's cache (main)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/black-gate-cache.json
+          key: black-gate-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}-${{ github.sha }}
 
       # Whole tree (RATCHET_SCOPE_WHOLE_TREE above): a file main itself pushed
       # over the 2,000-line cap, or a stale baseline row, is main drift that a
@@ -230,7 +297,7 @@ jobs:
 
   frontend-ceiling:
     name: Frontend eslint ceiling
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -308,7 +375,7 @@ jobs:
     # job -- so the sanctioned spelling here is the canonical one, and the heap
     # flag below is left exactly as ci.yml sets it rather than compensated for
     # with an off-convention label.
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -356,7 +423,7 @@ jobs:
   report:
     name: Render ratchet verdict
     needs: [ratchet-gates, frontend-ceiling, bundle-ceiling]
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     # always() so the verdict is rendered even when a gate job failed; the push
     # guard keeps a manual workflow_dispatch from mutating the tracking issue.

@@ -13,14 +13,19 @@ that critical section.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.platform_compat import strip_extended_length_prefix
+
+logger = logging.getLogger(__name__)
 
 JsonObject = dict[str, Any]
 
@@ -42,16 +47,64 @@ def config_file(runtime: Any) -> Path:
     return runtime.DATA_DIR / "config.json"
 
 
+def _is_project_id(value: Any) -> bool:
+    """True for an id the routes can compare and use as a dict key: a string or an int."""
+
+    return isinstance(value, (str, int)) and not isinstance(value, bool)
+
+
+def _usable_project(project: Any) -> bool:
+    """True for a project row every route can read: a dict with an id and a string ``path``."""
+
+    return (
+        isinstance(project, dict)
+        and _is_project_id(project.get("id"))
+        and isinstance(project.get("path"), str)
+    )
+
+
+def _coerce_config(config: JsonObject) -> JsonObject:
+    """Give each registry field the type the routes index it as, in place.
+
+    A field of the wrong type takes its default and a project row that is not
+    usable is left out, so one bad value cannot crash every route that reads
+    the registry. Valid values pass through unchanged, extra keys included.
+    """
+
+    projects = config.get("projects")
+    if not isinstance(projects, list):
+        if projects is not None:
+            logger.warning("design-tweak config: projects is not a list; using []")
+        projects = []
+    usable = [project for project in projects if _usable_project(project)]
+    if len(usable) != len(projects):
+        logger.warning(
+            "design-tweak config: skipped %d project row(s) without an id and a string path",
+            len(projects) - len(usable),
+        )
+    config["projects"] = usable
+
+    if not _is_project_id(config.get("activeId")):
+        config["activeId"] = ""
+
+    counter = config.get("counter", 0)
+    try:
+        # ``int()`` is the conversion the legacy numbering applies, so every value
+        # it accepts ("5", 4.0, true) keeps its number; only what it refuses resets.
+        config["counter"] = int(counter)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning("design-tweak config: counter %r is not a number; using 0", counter)
+        config["counter"] = 0
+    return config
+
+
 def load_config(runtime: Any) -> JsonObject:
     """Load the registry from :func:`config_file`, tolerating bad state."""
 
     try:
         config = runtime.json.loads(config_file(runtime).read_text("utf-8"))
         if isinstance(config, dict):
-            config.setdefault("projects", [])
-            config.setdefault("activeId", "")
-            config.setdefault("counter", 0)
-            return config
+            return _coerce_config(config)
     except (OSError, ValueError):
         pass
     return {"projects": [], "activeId": "", "counter": 0}
@@ -82,21 +135,30 @@ def next_request_number(runtime: Any, project_id: str = "") -> int:
     """
 
     if not project_id:
-        runtime._CFG["counter"] = int(runtime._CFG.get("counter", 0)) + 1
+        # The stored counter can lag the records (``_coerce_config`` resets one it
+        # cannot read), so the next number also clears every unscoped record.
+        highest = _highest_number(runtime, lambda request: not request.get("projectId"))
+        runtime._CFG["counter"] = max(int(runtime._CFG.get("counter", 0)), highest) + 1
         runtime._save_cfg(runtime._CFG)
         return runtime._CFG["counter"]
+
+    return _highest_number(runtime, lambda request: request.get("projectId") == project_id) + 1
+
+
+def _highest_number(runtime: Any, matches: Callable[[JsonObject], bool]) -> int:
+    """The largest request ``number`` in the queue and history among records ``matches`` accepts."""
 
     highest = 0
     for directory in (runtime.QUEUE_DIR, runtime.HANDLED_DIR):
         for path in directory.glob("*.json"):
             request = runtime._read_request(path)
-            if not request or request.get("projectId") != project_id:
+            if not request or not matches(request):
                 continue
             try:
                 highest = max(highest, int(request.get("number") or 0))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
-    return highest + 1
+    return highest
 
 
 def new_request_id() -> str:
@@ -209,7 +271,9 @@ def request_status(request: JsonObject) -> str:
 
     comments = request.get("comments") or []
     if not comments:
-        return "draft"
+        # Only a draft is ever written with no comments (the last delete unlinks
+        # it), so an empty record that says it was sent stays sealed.
+        return "draft" if request.get("state", "draft") == "draft" else "sent"
     if all(comment.get("status") == "done" for comment in comments):
         return "done"
     if request.get("state") != "draft" or any(
@@ -435,9 +499,32 @@ def read_request(runtime: Any, path: Path) -> JsonObject | None:
         if contained.stat().st_size > runtime.MAX_RECORD_BYTES:
             return None
         request = runtime.json.loads(contained.read_text("utf-8"))
-        return request if isinstance(request, dict) else None
     except (runtime._PathEscape, OSError, ValueError):
         return None
+    return _coerce_request(request) if isinstance(request, dict) else None
+
+
+def _coerce_request(request: JsonObject) -> JsonObject:
+    """Give a queue record's ``comments`` the list-of-objects shape its readers index, in place.
+
+    Every route walks ``comments`` and calls ``.get`` on each entry, so a stored
+    value that is not a list, or an entry that is not an object, holds no comment
+    any route can read. Those take the empty default. A missing key stays missing,
+    and a well-formed record passes through unchanged.
+    """
+
+    if "comments" in request:
+        comments = request["comments"]
+        if not isinstance(comments, list):
+            request["comments"] = []
+        elif not all(isinstance(comment, dict) for comment in comments):
+            kept = [comment for comment in comments if isinstance(comment, dict)]
+            # Renumber like a comment delete does, so the next comment's
+            # ``len + 1`` index never repeats one a kept comment holds.
+            for index, comment in enumerate(kept, start=1):
+                comment["index"] = index
+            request["comments"] = kept
+    return request
 
 
 def atomic_write_json(
@@ -468,7 +555,7 @@ def atomic_write_json(
             runtime.os.fsync(descriptor)
         finally:
             runtime.os.close(descriptor)
-        runtime.os.replace(temporary, path)
+        replace_with_retry(temporary, path)
     finally:
         if runtime.os.path.exists(temporary):
             runtime.os.unlink(temporary)

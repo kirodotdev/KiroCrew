@@ -12,6 +12,7 @@ from collections.abc import Mapping, MutableMapping
 from datetime import datetime, timezone
 
 from kiro_crew import platform_compat
+from kiro_crew.agent_spec_pins import coerce_spec_pins
 from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
     _raw_agent_section,
@@ -68,7 +69,6 @@ from kiro_crew.config.sections import (
     _normalize_acp_backend,
     _normalize_jail,
     _normalize_yolo_duration,
-    _port_or_unset,
     _read_skip_permissions,
     _safe_bool,
     _safe_float,
@@ -498,9 +498,9 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
     if agent_data.get(key) == MALFORMED_BACKEND_FLOOR:
         # The floor for an unusable value (``validate_config_data``), already
         # warned about there: never a Kiro CLI pick, so never moved onto KAS.
-        from kiro_crew.acp_backends import GOVERNANCE_FLOOR_BACKEND
+        from kiro_crew.acp_backends import governance_floor_backend
 
-        return GOVERNANCE_FLOOR_BACKEND
+        return governance_floor_backend()
     value = backend_from_stored(agent_data.get(key))
     if value is None:
         default = section.default(key)
@@ -530,7 +530,7 @@ def _note_member_remap(stored: object, used: str) -> None:
         return
     _member_remap_logged = True
     logger.info(
-        "agent.member_acp_backend is stored as %r; crewmate DMs run on %r, the Kiro "
+        "agent.member_acp_backend is stored as %r; Bot DMs run on %r, the Kiro "
         "backend that carries their dispatch tools (config.json is left as it is)",
         stored,
         used,
@@ -543,7 +543,9 @@ _MEMBER_HARNESS_KEY = "member_acp_backend"
 
 #: The ``agent`` fields that hold a harness id, spelled in the config-file
 #: vocabulary on disk and in ``to_dict()`` and as runtime ids on the dataclass.
-_HARNESS_CHOICE_KEYS: tuple[str, ...] = ("acp_backend", "member_acp_backend")
+# ``acp_failover`` is here for the same reason: its loaded value drops chain
+# members this deployment cannot select, and a save must not erase them.
+_HARNESS_CHOICE_KEYS: tuple[str, ...] = ("acp_backend", "member_acp_backend", "acp_failover")
 
 
 def _stored_agent_dict(agent: AgentConfig) -> dict:
@@ -642,6 +644,17 @@ def _strands_str_or_empty(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _builtin_adoption_markers(raw: object) -> dict[str, dict[str, object]]:
+    """``agent.apps_builtin_adoption``: the gateway-written adoption markers, validated.
+
+    The validator is the adoption module's own, so the loader and the base-file
+    reader (``apps.builtin_adoption_state``) cannot disagree on what a marker is.
+    """
+    from kiro_crew.apps.builtin_adoption_markers import coerce_adoption_markers
+
+    return {name: dict(marker) for name, marker in coerce_adoption_markers(raw).items()}
+
+
 def _build_agent_config(agent_data: dict) -> AgentConfig:
     section = _sections.SectionReader(AgentConfig, agent_data)
     return AgentConfig(
@@ -651,6 +664,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         role_models=coerce_role_models(section.get("role_models")),
         role_efforts=coerce_role_efforts(section.get("role_efforts")),
         model_context_tokens=section.get("model_context_tokens"),
+        spec_pins=coerce_spec_pins(section.get("spec_pins")),
         fallback_model=coerce_fallback_model(section.get("fallback_model")),
         refusal_fallback_model=_sections.coerce_refusal_fallback_model(
             section.get("refusal_fallback_model")
@@ -661,6 +675,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         mcp_quarantine_after_failures=section.read("mcp_quarantine_after_failures", _safe_int),
         acp_backend=_read_backend_choice(section, agent_data, "acp_backend"),
         member_acp_backend=_read_backend_choice(section, agent_data, "member_acp_backend"),
+        acp_failover=_sections.normalize_acp_failover(section.get("acp_failover")),
         kas_bundle=section.read("kas_bundle", _safe_bool),
         kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
@@ -716,6 +731,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             if isinstance(_applied := section.get("apps_default_installs_applied"), list)
             else section.default("apps_default_installs_applied")
         ),
+        apps_builtin_adoption=_builtin_adoption_markers(section.get("apps_builtin_adoption")),
         apps_ui_stream_timeout_secs=section.read("apps_ui_stream_timeout_secs", _safe_int, 5, 600),
         jail=_normalize_jail(section.get("jail")),
         dangerously_skip_permissions=_read_skip_permissions(agent_data),
@@ -725,6 +741,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
         tool_search_min_tokens=section.read("tool_search_min_tokens", _safe_int),
         session_sharing=bool(section.get("session_sharing")),
+        agent_started_turns=bool(section.get("agent_started_turns")),
         max_subagents=section.read("max_subagents", _safe_int, 0, SUBAGENT_AUTO_MAX_CEILING),
         max_stop_hook_nudges=section.read("max_stop_hook_nudges", _safe_int, 0),
         subagent_mem_buffer_pct=section.read("subagent_mem_buffer_pct", _safe_int),
@@ -941,6 +958,27 @@ def _load_idle_exempt_keys(raw: object) -> list[str]:
     return idle_exempt_keys
 
 
+def _load_background_hold_secs(section: _sections.SectionReader) -> int:
+    """``session.harness_background_hold_secs``, clamped to its range with a warning.
+
+    A value outside the range is not taken as written: a 0 would turn the hold off and
+    a huge one would keep a launching session past its idle timeout for days. It is
+    clamped to the nearest bound, like the other session ints, and the log says so.
+    """
+    lo, hi = _sections.HARNESS_BACKGROUND_HOLD_SECS_MIN, _sections.HARNESS_BACKGROUND_HOLD_SECS_MAX
+    loaded = section.read("harness_background_hold_secs", _safe_int)
+    clamped = min(max(loaded, lo), hi)
+    if clamped != loaded:
+        logger.warning(
+            "session.harness_background_hold_secs=%d is outside %d-%d; using %d",
+            loaded,
+            lo,
+            hi,
+            clamped,
+        )
+    return clamped
+
+
 def _build_session_config(session_data: dict) -> SessionConfig:
     section = _sections.SectionReader(SessionConfig, session_data)
     return SessionConfig(
@@ -974,6 +1012,18 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             "autocompact_pct", _safe_float, lo=AUTOCOMPACT_PCT_MIN, hi=AUTOCOMPACT_PCT_MAX
         ),
         context_cap=bool(section.get("context_cap")),
+        # Opt-in and costs model calls, so only a real ``true`` turns it on:
+        # a hand-edited "false" or 0 reads as the declared ``False``.
+        idle_compaction=section.read("idle_compaction", _safe_bool),
+        # Clamped to its own [40, 90]: a hand-edited value below the
+        # first-request break-even loads as 40. Bounds come through the module
+        # handle because this module's top-level names are a frozen facade.
+        idle_compaction_min_context_pct=section.read(
+            "idle_compaction_min_context_pct",
+            _safe_float,
+            lo=_sections.IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
+            hi=_sections.IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX,
+        ),
         # Clamped on the read, like the sibling floats: 0 is the sentinel for
         # "use the built-in budget" and any positive value is the wait, so a
         # hand-edited negative collapses to 0 (fallback) and an oversized value
@@ -1004,7 +1054,15 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             _sections.KAS_DELETE_DELAY_SECS_MIN,
             _sections.KAS_DELETE_DELAY_SECS_MAX,
         ),
+        # Bounds via the module handle, like the rest of this section.
+        search_scan_window=section.read(
+            "search_scan_window",
+            _safe_int,
+            _sections.SEARCH_SCAN_WINDOW_MIN,
+            _sections.SEARCH_SCAN_WINDOW_MAX,
+        ),
         watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
+        harness_background_hold_secs=_load_background_hold_secs(section),
         # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
         # reason `_safe_int` states: that sweep runs over the raw dict and skips
         # non-int values, so a numeric STRING passes it and coerces here.
@@ -1191,11 +1249,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
         widget_density=section.get("widget_density"),
-        use_builtin_browser=section.read("use_builtin_browser", _safe_bool),
         browser_local_origins=_sections.coerce_browser_local_origins(
             section.get("browser_local_origins")
         ),
-        browser_view_port=_port_or_unset(section.get("browser_view_port")),
         verbosity=_sections.normalize_verbosity(section.get("verbosity")),
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),

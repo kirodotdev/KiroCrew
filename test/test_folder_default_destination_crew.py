@@ -21,7 +21,9 @@ from kiro_crew.instances.crew_ref import MAX_CREW_REF_LEN, clean_crew_ref
 
 def _enable_with(tmp_path, monkeypatch, **section) -> None:
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    (tmp_path / "config.json").write_text(json.dumps({"instances": {"enabled": True, **section}}))
+    (tmp_path / "config.json").write_text(
+        json.dumps({"instances": {"enabled": True, **section}}), encoding="utf-8"
+    )
     from kiro_crew.config import loader
 
     loader._invalidate_config_cache()

@@ -307,37 +307,15 @@ def _same_persisted_body(
 ) -> bool:
     """True when *disk_body* is the persisted form of *window_body*.
 
-    A persisted row can differ from its window copy by exactly the redaction
-    transform, and EITHER side can be the redacted one, which is why the compare
-    applies it symmetrically. A restore redacts on load while keeping ``ts``
-    verbatim (``chat_persistence.py:708-709``), so the window holds the redacted
-    text; a save redacts every non-user role on the way out
-    (``chat_persistence.py:1282-1284``) while the window keeps it verbatim
-    (``state_parts/slot_transcript.py`` ``append``), so in a session that was never restored the
-    DISK holds the redacted text instead. Redacting one side only cannot converge on that second
-    pair — redacting an already-redacted body just reproduces it — so the row reads
-    as un-flushed and the persisted suffix is appended twice.
+    The redaction transform is applied to BOTH sides because either can be the
+    redacted one: a restore redacts the window copy on load, while a save redacts
+    the disk copy of every non-user role. Redacting one side only reads a
+    persisted row as un-flushed and appends it twice.
 
-    Applying the transform is also what separates a persisted row from a foreign
-    row that merely shares a ``ts``: on a coarse clock two writers flooring off the
-    same previous row both emit ``previous + 1µs`` (``history_schema.monotonic_transcript_ts``), so
-    matching on ``ts`` alone treats an unrelated row as the window's own and drops
-    an un-flushed message from a response the client uses as a replacement.
-
-    Two bodies can redact to the same text while being different messages, so the
-    redaction-equivalent branch ALSO requires the stamps to match. That costs the
-    legitimate case nothing: this branch only ever fires for a row and its own
-    persisted copy, which differ by the transform precisely because one side was
-    redacted, and both the save and the load copy ``ts`` verbatim
-    (``chat_persistence.py:1288`` and ``:714``). A foreign row whose credential
-    merely redacts to the same text carries its own writer's stamp, so it does not
-    consume the window row.
-
-    The requirement is on this branch ALONE, which is why it does not reintroduce
-    the duplication above. A durable injection is byte-identical to its window row,
-    so it returns at the plain-equality check and never reaches here — and that pair
-    genuinely does carry different stamps, because the two writers mint
-    independently.
+    The redaction-equivalent branch also requires equal ``ts``: two different
+    messages can redact to the same text, and save and load both copy ``ts``
+    verbatim. A durable injection is byte-identical to its window row and returns
+    at the plain-equality check, so its independently minted stamp never matters.
     """
     if disk_body == window_body:
         return True
@@ -413,106 +391,26 @@ def _append_unflushed_tail_from_offset(
 ) -> list[dict]:
     """Append window messages that are not yet on disk to a chained disk read.
 
-    ``all_msgs`` is a disk read, so it omits transient roles while the window
-    retains them, and it spans any older sessions a chained read walks. Sizing the
-    tail by subtracting the two lengths therefore mixes units AND measures the
-    whole file: it both re-appends rows the disk read already returned and lets a
-    row from another writer consume a turn that is still owed.
+    Never size the tail by length subtraction: ``all_msgs`` omits transient roles
+    and spans older chained sessions, so the units differ and a foreign writer's
+    row can consume a turn that is still owed. Pass ``snapshot`` from
+    ``_snapshot_slot_window`` captured on the event loop AFTER the disk read; a
+    count captured before an ``await`` goes stale while the threaded read runs.
 
-    Takes the window itself rather than a caller-supplied count, so a caller cannot
-    pass a length captured before an ``await``; the window can grow while a threaded
-    disk read is in flight. ``snapshot`` is the one safe way to supply it: a
-    ``(disk_older_count, window)`` PAIR from ``_snapshot_slot_window`` captured on
-    the event loop AFTER the disk read, which is consistent by construction and
-    cannot observe a mid-finalization window. Passing no snapshot falls back to
-    capturing inside this thread, which is weaker — see that helper.
+    Only the on-disk window region ``all_msgs[slot._disk_older_count:]`` is
+    matched; the frozen prefix before it would fund false matches.
 
-    Prefer message identity. A save copies each window row's ``meta.mid`` to disk,
-    so a window row whose id appears in the disk read is persisted. A durable
-    injector passes the window row's own id to ``ConversationLog.append``, which
-    persists it in the same ``meta.mid`` shape — that copy carrying the id is the
-    point: it IS the window row's flushed form and must match. A writer that passes
-    no id persists no ``meta``, so its rows cannot be mistaken for a flushed window
-    row.
+    When EVERY row in that region carries a string ``meta.mid``, the owed rows are
+    the window rows whose id is not on disk, matched as a MULTISET (a caller can
+    post one id twice) and selected by membership, not a prefix boundary, so an
+    out-of-order flush never drops a row. ``_UNOWED_WINDOW_ROLES`` are skipped; a
+    pending ``permission`` row is still owed.
 
-    A disk read holding no ids at all needs a different boundary: a session
-    persisted before ids existed, or rows a durable injector appended without
-    going through a save. Walk the window and the disk read forward TOGETHER and
-    stop at the first row that is not accounted for. A row from another writer no
-    longer ENDS the run, which is what sizing the boundary as
-    ``len(all_msgs) - slot._disk_older_count`` did — that measures the whole file,
-    so a foreign append walked one row too far and dropped the owed turn. Both
-    estimators the slot already carries are wrong here for opposite reasons: that
-    subtraction over-counts, and ``_disk_window_len`` is not advanced by an
-    injector, so it under-counts and would re-append a persisted row.
-
-    The window is matched against the disk region as an ordered SUBSEQUENCE: a row
-    that does not match the window row under consideration is SKIPPED rather than
-    treated as the end of the window. The save is non-destructive against a
-    cross-process append and merges the preserved rows back in TIME order
-    (``_interleave_foreign_lines``), so the region can read
-    ``[window, foreign, window]`` and an unmatched row means "not mine", not "end of
-    window". Ending the run there leaves every persisted row after it in the tail,
-    which appends an already-persisted suffix a second time.
-
-    Skipping cannot pass over a row that should have matched: both sequences are
-    chronological — the save's merge preserves each side's internal order — so a
-    later window row's persisted copy cannot precede the current row's. It is also
-    bounded: the disk cursor only ever moves forward, so the scans total
-    O(window + region), and the first window row with no match anywhere in the
-    remaining region ends the walk, which is the genuine end of the flushed prefix.
-
-    A row matches on role plus content, compared through the redaction transform
-    on both sides (``_same_persisted_body``). A shared ``ts`` is never SUFFICIENT —
-    on a coarse clock two writers flooring off the same previous row both emit
-    ``previous + 1µs`` (``history_schema.monotonic_transcript_ts``), so accepting it alone drops an
-    un-flushed message — but it is REQUIRED on the redaction-equivalent branch,
-    where the only legitimate pair is a row and its own copy and the stamp is
-    carried through verbatim.
-
-    Ids are counted over the on-disk WINDOW REGION only,
-    ``all_msgs[slot._disk_older_count:]``. The rows before that are the frozen prefix
-    — on-disk rows older than the window, so none of them is in ``slot.messages``.
-    Counting them would let an occurrence that exists only in the prefix fund a match
-    for a window row that was never flushed, and the boundary would then walk past it.
-    The fallback below already starts its disk cursor at the same offset.
-
-    Id matching is selected only when EVERY row in that region carries a valid id, not
-    merely when some row does. The dual-write injectors stamp both copies with one id
-    (``slot.append`` mints it for the window copy and ``append_if_absent`` persists it
-    on the durable copy), but the region can still legitimately hold a MIX: transcripts
-    written before ids existed, and callers that pass no id. Choosing id matching on the
-    strength of one id-carrying
-    row then applies it to a row that structurally cannot match, which reads as
-    un-flushed and appends the injection a second time. A mixed region belongs on the
-    ordered path, which compares the fields both writers do record.
-
-    Ids are matched as a MULTISET, one disk occurrence consumed per window row, not
-    as a set. ``meta`` on an inbound message is caller-supplied and an id is minted
-    only when one is *absent*, so a caller can post the same id twice. A set then
-    matches EVERY window row carrying that id, so the boundary walks past a row that
-    was never persisted and the response omits it — the silent-loss direction. One
-    disk row is enough for that; two disk rows sharing an id are not required.
-    Consuming an occurrence bounds the match to as many rows as really reached disk,
-    and the earliest window row is the persisted one because flushes follow window
-    order.
-
-    Only string ids are matched. A truthy non-string ``mid`` survives to disk for the
-    same caller-supplied reason and would raise ``TypeError`` if hashed.
-
-    The id path selects the owed rows by MEMBERSHIP rather than by a prefix
-    boundary. A boundary assumes every persisted row precedes every un-flushed one.
-    When it does not, a later match moves the boundary past an un-flushed row and
-    the response omits it — a drop, which is worse than the duplication this
-    function exists to prevent. Ending the walk at the first miss is not the
-    remedy either: a transient row is dropped by the save and so can never match,
-    and stopping there re-appends every persisted row after it. Rows the client does
-    not need are skipped outright (``_UNOWED_WINDOW_ROLES``), so selecting by
-    membership cannot surface one the boundary happened to exclude; a pending
-    ``permission`` row is deliberately not among them. Because an id in
-    the disk window region proves that row reached disk, the owed set is simply the
-    rows whose id did not, kept in window order. Where the persisted rows really
-    are a prefix this returns the same answer, so it is a strict generalisation.
+    Otherwise (a mixed or id-less region) walk window and disk forward together as
+    an ordered SUBSEQUENCE: the save merges foreign rows back in time order
+    (``_interleave_foreign_lines``), so an unmatched disk row means "not mine",
+    not "end of window". Rows match on role plus ``_same_persisted_body``; a shared
+    ``ts`` alone is never enough, since coarse clocks give two writers the same stamp.
     """
     if snapshot is None:
         snapshot = _snapshot_slot_window(slot)

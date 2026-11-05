@@ -47,7 +47,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # isolation boundary and the gateway sandbox is unavailable.
         "remote_session/worker.py::run",
         "remote_session/workspace_tools.py::run_command",
-        "remote_session/workspace_tools.py::_git_status",
+        "remote_session/workspace_tools.py::_run_grouped",
+        # Windows only: taskkill /T from the system directory on a read the
+        # guest itself started, so a deadline leaves no orphaned git.exe.
+        "remote_session/workspace_tools.py::_stop_tree",
         # Gateway credential reads: the callers supply fixed CLI verbs and a
         # host from HOSTS, not guest argv. Git helper discovery uses trusted git,
         # its install cwd, a discovery ceiling and a scrubbed GIT_* environment;
@@ -225,6 +228,14 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``pdfplumber`` commits a page's whole character list before any caller
         # can measure it, so the memory bound has to sit one process down.
         "pdf_extract.py::extract_pdf_segments",
+        # ``asyncio.run`` driving the async consent gate — matched because the
+        # detector's receiver set covers asyncio.* and attr set covers .run,
+        # but this is an event-loop entrypoint, not a subprocess primitive.
+        # The one subprocess it transitively reaches is the STS identity probe
+        # in cloud/aws.run_aws: fixed argv (aws sts get-caller-identity) with
+        # profile/region from operator-typed source config, never from agent
+        # output, and the probe result only ever REFUSES the retrieval.
+        "knowledge/connectors/bedrock_kb.py::_consent_allows",
         # The shadow-venv update engine's one spawn seam. Nothing it runs is
         # agent-influenced, and none of it can route through sandboxed_spawn_argv,
         # because the engine's whole job is to build the NEXT gateway install
@@ -443,42 +454,31 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # binary on the unattended path). Same read shape and grounds as
         # npm_preflight._extract above.
         "dep_sync.py::_git_blob_text",
-        # (apps/dependencies.py::_run_aim removed — App Kit capability deps now
-        # resolve through the CapabilityManager seam, so the resolver spawns no
-        # subprocess at all and needs no allowlist entry.)
         # Browser Mode setup/install path, run only from the dashboard settings
         # save (off the event loop) or the `kirocrew browse setup` CLI. Fixed
         # argv of trusted node-toolchain tools resolved via find_node_tool
         # (npm/npx/node) plus the ``playwright install <engine>`` subcommand,
-        # ``browser_cli`` spawns the Playwright CLI toolchain on fixed argv that
-        # the AGENT never contributes to, which is what makes them benign here:
-        #   * ``install_runner.py::_run`` runs the three install steps
-        #     (``npm install -g @playwright/cli@latest``,
-        #     ``playwright-cli install-browser``, ``playwright-cli install
-        #     --skills agents --global``). Every token is a constant in our code
-        #     and the only trigger is the operator pressing Install in Settings.
-        #     Sandboxing it would be wrong, not merely unnecessary: the install
-        #     needs the real npm registry and writes the global prefix.
-        #   * ``view.py::_spawn`` runs ``playwright-cli show --port <n>`` where
-        #     the port comes from our own bind probe, and the host is the
-        #     hardcoded loopback constant.
-        # ``view.py::stop`` spawns nothing: it reaps its own child's process
-        # group rather than issuing a global ``show --kill``, which would take
-        # an operator's independent session down with ours.
-        #   * ``launcher.py::_run_cli`` runs ``playwright-cli --json list`` and ``-s=panel-<8hex>
-        #     goto|open <url>`` (and ``close`` at shutdown) for the Browser
-        #     panel's address bar. The ONE free argv element is a URL the
-        #     dashboard OWNER typed: the route is owner-only, refuses
-        #     internal-secret (agent) callers, and ``validate_url`` admits only
-        #     http(s) with a host and no credentials before it reaches argv.
-        #     The session name is hex derived from the slot key. Not sandboxed
-        #     for the same reason ``show`` is not: the CLI launches the
-        #     operator's real browser daemon, which needs the real cache and
-        #     network, and the human at the dashboard is the approval.
-        # The agent's OWN browser commands are not spawned by us at all -- it
-        # runs them as ordinary shell tool calls through the standard approval
-        # path.
-        "browser_cli/install_runner.py::_run",
+        # Browser Harness (``browser_harness/``), the agent's one browser
+        # driver. Both spawns are fixed argv the AGENT never
+        # contributes to, and neither can be sandboxed without defeating it:
+        #   * ``install.py::_run`` runs ``<sys.executable> -m venv --clear <prefix>``
+        #     and ``<prefix>/bin/python -m pip install --require-hashes -r <lock>``.
+        #     Every token is a module constant or a path under the data home; the
+        #     lock file ships in the package and pins each wheel by sha256; the only
+        #     trigger is the owner pressing Install in Settings (the route refuses
+        #     internal-secret callers). The install needs the real PyPI and writes
+        #     the read-only prefix, which the sandbox exists to deny.
+        #   * ``supervisor.py::_spawn`` starts three children of the gateway: Kiro's
+        #     Chromium (the downloaded binary under the sealed prefix, flags from
+        #     ``_CHROMIUM_ARGS``, the profile path under the data home), the Harness
+        #     daemon (``<prefix>/bin/python -m browser_harness.daemon``) and the
+        #     helper worker (``<prefix>/bin/python -I helper_worker.py``), each in
+        #     the fenced environment ``env.daemon_env`` builds. The agent's browser
+        #     ops reach these children only through ``HarnessSupervisor.call``'s
+        #     helper allowlist, never through argv; the children must reach the
+        #     real browser and the loopback relay, so a sandbox would break them.
+        "browser_harness/install.py::_run",
+        "browser_harness/supervisor.py::_spawn",
         # The KAS engine installer (`kirocrew kas install`, operator terminal, outside
         # the sandbox). `_open_tar` runs the host's `zstd -d -c` on an archive whose
         # name the manifest validated as a bare object name and whose bytes were
@@ -491,15 +491,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "acp/kas_bundle.py::_open_tar",
         "acp/kas_bundle.py::_probe_node",
         "acp/kas_bundle.py::_run_tool",
-        "browser_cli/launcher.py::_run_cli",
-        "browser_cli/view.py::_spawn",
-        # ``chromium_compat.py::_run_tool`` runs ``nm -D <chrome>`` and ``ldconfig -p``
-        # once at gateway start to decide whether the playwright-cli config needs an
-        # older cached Chromium. The tool comes from ``trusted_system_bin`` (fixed
-        # system dirs, never PATH), the flags are fixed, and the one free element is
-        # a ``chrome`` path under the gateway's own Playwright cache. No agent input
-        # reaches the argv; it only reads symbol tables, like the system probes above.
-        "browser_cli/chromium_compat.py::_run_tool",
         # The offline run of an authored dashboard page (``dashboard_verify``). The argv
         # is fixed: a system Python and a browser path, each from a fixed list of system
         # locations and each past the strict provider-executable check (root-owned, not a
@@ -535,6 +526,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # created; the sole input is the operator-typed app name.
         "cli_commands_app.py::_register_app_crons_to_scheduler",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving the shared ``_remove_member_leftovers``
+        # teardown from the loop-less ``kirocrew agent delete``. No child process is
+        # created here; the only input is the operator-typed agent name. The
+        # worktree step's git calls run inside ``crewmate_worktree``'s own runner.
+        "cli_commands_agent.py::_remove_deleted_agent_leftovers",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving ``KasLoginService``'s device-code
         # sign-in and sign-out coroutines from the loop-less ``kirocrew kas
         # login`` / ``kas logout`` verbs. No child process is created: the
@@ -552,6 +549,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # own credential store, and every failure is folded into its result. Same
         # classification as ``cli_doctor.py::_doctor`` above.
         "cli_doctor_parts/host_probes.py::_discord_intent_grants",
+        # ``<kiro-cli> --version`` with a fixed argv and a 5 s timeout, read-only,
+        # for the Connectivity row. The binary is the one ``resolve_kiro_cli``
+        # found; no agent-influenced argument, cwd or env reaches it. Split out
+        # of ``_doctor``; same classification as ``host_probes.py::_report_node``.
+        "cli_doctor.py::_kiro_cli_version_row",
         "cli_doctor_parts/mcp_sections.py::_doctor_mcp_tools",
         # ``node -v`` with a fixed argv and a 5 s timeout, read-only, to judge the
         # installed Node against ``MIN_NODE_VERSION``. Split out of ``_doctor``
@@ -598,7 +600,7 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # exactly what the pin declines to trust); a miss on both means no
         # spawn at all. Operator-invoked doctor, 10s-capped, queries only — no
         # fetch, no mutation. Same classification as the other fixed-argv
-        # doctor probes (``_detect_userspace_oom_killer``, ``_detect_linger``).
+        # doctor probes (``_detect_userspace_oom_killer``).
         "cli_doctor_parts/host_probes.py::_git_line",
         # Read-only system-metrics probe for the Memory section on macOS, where
         # the ``platform_compat`` shim has no ctypes-only per-pid RSS path:
@@ -656,6 +658,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "cli_server.py::_logs_cmd",
         "cli_server_restart.py::_spawn_detached_gateway",
         "cli_server_update.py::_update",
+        # `git ls-remote` for a checkout on no branch, split out of _update: the
+        # same `git` the fetch runs, under the same env, after the same source-pin
+        # and exec-config checks. The argv is literals plus the three reviewed
+        # primary branch refs; stdin=DEVNULL, 60s timeout. Pinned by the
+        # `checkout_on_no_branch` tests in test_cli_server_more_coverage.py.
+        "cli_server_update.py::_detached_upstream_branch",
         # The agent-only config refresh extracted from _update: a fixed argv
         # (`<this interpreter> -m kiro_crew setup --agent-only`) built from
         # sys.executable plus literals, cwd from the detected install layout —
@@ -666,7 +674,9 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # (_divergence_verdict removed — its counting now delegates to the
         # git_divergence module, allowlisted below, and spawns nothing itself.)
         "cli_server_update.py::_update_wheel",
-        "cli_setup.py::_setup_electron",
+        # Desktop app build for `setup --electron-only`: fixed npm / npx argv,
+        # run by the operator from the CLI, each call capped by a timeout.
+        "cli_setup.py::_run_desktop_build_step",
         # Cursor Motion overlay renderer: `<this interpreter> -m
         # kiro_crew.computer_use.overlay_proc`, a fixed argv built from
         # sys.executable plus a module constant — no shell, no PATH lookup, and
@@ -773,11 +783,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # rewrites the process identity would answer wrongly.
         "dashboard/handlers/computer_use.py::_probe_permissions",
         "dashboard/file_api/editor.py::_run",
-        # The file panel diff: fixed list-argv `git diff --no-index -- a b`
-        # (no shell) with the same textconv/attributes/fsmonitor hardening as
-        # `_run`, over two files the gateway itself wrote into a fresh private
-        # temp dir. No argument, path or cwd comes from the request.
-        "dashboard/file_api/editor.py::_diff_redacted_bodies",
+        # The file panel's and the remote Git panel's diff: fixed list-argv
+        # `git diff --no-index -- a b` (no shell) with the same textconv/
+        # attributes/fsmonitor hardening as the editor's `_run`, over two files
+        # the gateway itself wrote into a fresh private temp dir. No argument,
+        # path or cwd comes from the request.
+        "git_no_index_diff.py::no_index_diff",
         "dashboard/file_api/desktop.py::api_screenshot",
         "dashboard/file_api/desktop.py::api_upload",
         "dashboard/handlers/knowledge_sources.py::_run_folder_dialog",
@@ -808,6 +819,13 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # timeout, no shell, no cwd, no agent-influenced arguments.
         "dashboard/handlers_system.py::_scan_mcp_processes",
         "dashboard/handlers_system.py::_get_static_system_info",
+        # The Windows half of _scan_mcp_processes: PowerShell pinned via
+        # trusted_system_bin, list argv with no shell and no cwd. The query's
+        # only inputs are signature strings, which the function itself refuses
+        # unless they are [A-Za-z0-9_.-]+ (no quote, $, backtick or WQL
+        # wildcard), and its one caller passes two hard-coded literals. Reads
+        # the same Win32_Process data as process_command_line.
+        "dashboard/system_windows_probes.py::windows_process_command_lines",
         "dashboard/port_reclaim.py::_listeners_on_port",
         # Bundle-freshness startup probe: fixed `git rev-parse HEAD:website`
         # list-argv (no shell=True) with git PINNED via trusted_git_bin (fixed
@@ -978,6 +996,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # only caller-supplied element is the path being revealed — which is
         # passed as a later argv element, never as the command.
         "platform_compat_trust.py::open_with_default_app",
+        # The desktop-session lookup those launchers ask on a Linux gateway whose
+        # own environment names no display: one fixed, read-only argv
+        # (`systemctl --user show-environment`) with the binary from the trusted
+        # system directories, no shell or cwd, stdin DEVNULL, the environment
+        # `service.common.systemctl_user_env` gives every `systemctl --user` spawn
+        # with the pinned PATH on top, and a timeout. Nothing from a request
+        # reaches it, and only five allowlisted, validated variables are read
+        # from its output.
+        "platform_compat_trust.py::_user_manager_environment",
         # Read-only process-table snapshot through the trusted absolute ``ps``
         # binary. It uses fixed argv, no shell or cwd, and accepts no agent input.
         # It cannot route through sandbox because sandbox imports this module.
@@ -1048,6 +1075,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
         "pod/runtime.py::recent_journal",
+        # `kirocrew pod exec` on Windows. POSIX execs the pod's own kirocrew in
+        # place; Windows has no exec, so the CLI runs the same binary as a child
+        # and returns its exit code. Argv is the pod venv's entry point plus a
+        # verb that already passed require_pod_safe_verb, run from the user's own
+        # terminal, not from an agent turn.
+        "pod/runtime_boot.py::_run_in_pod_as_child",
         # Task Scheduler twin of launchctl above: the single chokepoint for
         # `schtasks.exe /<verb> /TN KiroCrewPod-<name> ...`. Argv is a fixed verb
         # set plus a task name built from a validate_name-checked pod name and a
@@ -1195,9 +1228,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "apple_speech/__init__.py::inventory",
         "apple_speech/__init__.py::start",
         "apple_speech/__init__.py::transcribe",
-        # (`transcribe.py::_python3_bin_dir` is absent: its scripts-dir probe
-        # routes through `dep_sync.py::_probe_interpreter`, so an entry here
-        # would be stale.)
         # Every runtime audio conversion now converges here so the authenticated
         # bundled image stays bound until spawn. The executable is either that
         # digest-verified image or a fixed-directory system candidate; the three

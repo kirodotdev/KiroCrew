@@ -140,6 +140,7 @@ from kiro_crew.cron_service.schedule import (  # noqa: F401 -- re-exported
     _RE_IN_DURATION,
     _TIMER_POLL_SECS,
     _UNIT_SECS,
+    LOCAL_TIMEZONE,
     _compute_next_run_ts_raw,
     _humanize_cron,
     _job_tz,
@@ -147,13 +148,19 @@ from kiro_crew.cron_service.schedule import (  # noqa: F401 -- re-exported
     compute_jitter,
     compute_next_run_ts,
     cron_expr_matches,
+    default_timezone_name,
     format_schedule,
     get_local_tz,
     is_due,
+    is_local_timezone,
     is_valid_skip_date,
     is_valid_timezone,
+    job_follows_host,
+    job_zone_name,
+    never_fires_warning,
     next_wake_secs,
     parse_time_string,
+    resolve_timezone_name,
     validate_cron_expr,
 )
 from kiro_crew.cron_service.service import job_ownership as _job_ownership
@@ -696,6 +703,10 @@ class CronService:
         # the entire exact key, not one caller's reference to it.
         self._active_session_lock = threading.Lock()
         self._active_session_keys: dict[str, dict[str, _RunClaim | None]] = {}
+        # (job id, key) pairs whose registering run ended its turn on the key
+        # (``finish_session_key``): retired by the last sub-agent's cleanup even
+        # while that run's claim is live.
+        self._finished_session_keys: set[tuple[str, str]] = set()
         self._sessions: SessionManager | None = None
         self._reaper_task: asyncio.Task[None] | None = None
         self._push_refresh: Callable[[str], None] | None = None  # set externally
@@ -833,6 +844,8 @@ class CronService:
     # The runs in flight: ``kiro_crew.cron_service.service.run_registry``.
     register_active_session_key = _run_registry.register_active_session_key
     clear_active_session_key = _run_registry.clear_active_session_key
+    retire_finished_session_key = _run_registry.retire_finished_session_key
+    finish_session_key = _run_registry.finish_session_key
     _run_session_keys = _run_registry._run_session_keys
     active_session_keys = _run_registry.active_session_keys
     get_history = _run_registry.get_history
@@ -961,13 +974,37 @@ class CronService:
                 # onto the SAME object (identity is what readers hold), and the
                 # reload-on-change in ``_sync_for_write`` cannot do this, since a
                 # failed save changes nothing on disk.
+                #
+                # Only the fields this update changed are put back. A run in
+                # flight writes its own fields on the loop thread, without the
+                # store lock, onto this same object -- the failure count, the
+                # auto-pause, the one-shot park, the last status -- and a
+                # whole-record restore would undo that write. So the update is
+                # applied to a private copy first, the fields it changed are
+                # read off that copy (no other thread can touch it), and only
+                # those are written to the live job; a failed save restores
+                # each of them only while it still holds this update's value.
                 previous_limit = job.auto_pause_after_failures
-                before = copy.copy(job)
-                apply_job_update(job, kwargs, chat_folder_out)
+                staged = copy.copy(job)
+                prior = dict(staged.__dict__)
+                apply_job_update(staged, kwargs, chat_folder_out)
+                edits = {
+                    name: value
+                    for name, value in staged.__dict__.items()
+                    if name not in prior or prior[name] is not value
+                }
+                for name, value in edits.items():
+                    setattr(job, name, value)
                 try:
                     self._save()
                 except BaseException:
-                    job.__dict__.update(before.__dict__)
+                    for name, value in edits.items():
+                        if name not in job.__dict__ or job.__dict__[name] is not value:
+                            continue
+                        if name in prior:
+                            setattr(job, name, prior[name])
+                        else:
+                            delattr(job, name)
                     raise
                 job.audit_auto_pause_limit_change(previous_limit, audit_actor)
                 logger.info("Updated cron job %s", job_id)
@@ -1160,7 +1197,40 @@ class CronService:
                         # A user resume that lifts an auto-pause restores execute
                         # permission — audit it like the auto-pause transition.
                         job._audit_pause_change("auto_pause_cleared")
-                    self._save()
+                    try:
+                        self._save()
+                    except BaseException:
+                        # These pause fields are also written on the loop thread
+                        # by a run in flight, so restoring the values seen here
+                        # would undo the run's write, and keeping them leaves a
+                        # change the caller is told failed. A reload does
+                        # neither: a run's write that must outlive a reload is
+                        # a held run record or settlement (re-applied by
+                        # ``_load``) or a pending removal (skipped by the due
+                        # scan), the same guarantee a reload after another
+                        # process's write relies on. The list is then the store
+                        # plus those records, as if this request never ran. The
+                        # fingerprint is dropped first, so a reload that cannot
+                        # run here still happens on the next ``_sync``. A store
+                        # that cannot be read latches ``_load_failed``: the list
+                        # is never part-swapped, and every save is refused until
+                        # a load replaces it, so no later write can persist the
+                        # change this caller is told failed.
+                        self._reset_fingerprint()
+                        try:
+                            self._sync()
+                        except Exception:
+                            logger.error(
+                                "Cron: reload after a failed pause/resume save did not run",
+                                exc_info=True,
+                            )
+                        else:
+                            if self._load_failed:
+                                logger.error(
+                                    "Cron: store unreadable after a failed pause/resume save;"
+                                    " writes are refused until it reloads"
+                                )
+                        raise
                     logger.info("%s cron job %s", "Enabled" if enabled else "Disabled", job_id)
                     return True
             if expected_owner is not None:

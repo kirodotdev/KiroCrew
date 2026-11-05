@@ -23,15 +23,18 @@ import OverlayDrawer from '../components/OverlayDrawer'
 import { paneCovered } from '../hooks/paneVisibility'
 
 let reduceMotion = false
+/** A phone/desktop form-switch view transition is in progress (layoutFormTransition). */
+let morphing = false
 
 /** The framer-motion props this mock READS; every other prop lands in `rest` and
  *  is forwarded to the plain DOM element, which is what the index signature is for. */
 interface MotionMockProps {
   [prop: string]: unknown
   children?: React.ReactNode
-  initial?: { clipPath?: string }
+  initial?: { clipPath?: string } | false
   animate?: { clipPath?: string }
-  exit?: { clipPath?: string }
+  exit?: { clipPath?: string } | string
+  variants?: Record<string, (custom: boolean) => { clipPath?: string; transition?: { duration?: number } }>
   transition?: unknown
 }
 
@@ -41,13 +44,17 @@ vi.mock('framer-motion', async () => {
   const React = await import('react')
   const make = (tag: string) =>
     React.forwardRef((props: MotionMockProps, ref: React.Ref<unknown>) => {
-      const { children, initial, animate, exit, transition: _transition, ...rest } = props
+      const { children, initial, animate, exit, variants, transition: _transition, ...rest } = props
+      // A variant-label exit resolves the way AnimatePresence's `custom` would:
+      // with the form-switch flag this test sets.
+      const resolved = typeof exit === 'string' ? variants?.[exit]?.(morphing) : exit
       return React.createElement(tag, {
         ...rest,
         ref,
-        'data-initial-clip': initial?.clipPath ?? '',
+        'data-initial-clip': initial === false ? 'none' : initial?.clipPath ?? '',
         'data-animate-clip': animate?.clipPath ?? '',
-        'data-exit-clip': typeof exit?.clipPath === 'string' ? exit.clipPath : '',
+        'data-exit-clip': typeof resolved?.clipPath === 'string' ? resolved.clipPath : '',
+        'data-exit-duration': resolved?.transition?.duration ?? '',
       }, children)
     })
   return {
@@ -93,6 +100,24 @@ describe('OverlayDrawer morph clip', () => {
     reduceMotion = false
     const { container } = mount()
     expect(clipped(container)!.getAttribute('data-exit-clip')).toBe('inset(9px 224px 563px 8px round 6px)')
+  })
+
+  // During a form switch the view transition slides the drawer, so the drawer
+  // neither plays its opening clip nor its collapse.
+  it('enters already open and leaves at once while a form switch is being animated', () => {
+    reduceMotion = false
+    morphing = true
+    document.documentElement.dataset.layoutMorph = 'unfold'
+    try {
+      const { container } = mount()
+      const el = clipped(container)!
+      expect(el.getAttribute('data-initial-clip')).toBe('none')
+      expect(el.getAttribute('data-exit-clip')).toBe('')
+      expect(el.getAttribute('data-exit-duration')).toBe('0')
+    } finally {
+      morphing = false
+      delete document.documentElement.dataset.layoutMorph
+    }
   })
 
   it('expandFrom replaces the OPENING clip so the panel grows out of the flyout', () => {

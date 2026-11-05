@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -62,6 +63,8 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.cpu_affinity import affinity_cpu_count
+from kiro_crew.resource_status_agent_ceiling import AgentCeiling, gb_text
+from kiro_crew.resource_status_agent_ceiling import read_agent_ceiling as _read_agent_ceiling
 from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_PHRASE
 
 logger = logging.getLogger(__name__)
@@ -397,6 +400,29 @@ class ResourceStatus:
     # None off macOS or when unreadable. Reported beside the posture, never
     # folded into it.
     memory_pressure_level: int | None = None
+    # Set when ``available_gb`` is the agent slice's headroom rather than the
+    # host's (see AgentCeiling). Read only under pressure, so None on an ample
+    # reading whatever binds.
+    agent_ceiling: AgentCeiling | None = None
+
+    @property
+    def memory_subject(self) -> str:
+        """What the memory figure measures: "Agent memory" or "Host memory"."""
+        return "Agent memory" if self.agent_ceiling is not None else "Host memory"
+
+    def memory_reading(self) -> str:
+        """The free-memory figure as the advisories print it, naming its ceiling.
+
+        A slice-bound figure is printed with the host's own figure beside it, so
+        a reader comparing it with the dashboard's host gauge sees why they differ.
+        """
+        figure = f"~{self.available_gb:.1f} GB"
+        if self.agent_ceiling is None:
+            return f"{figure} free"
+        return (
+            f"{figure} left under the {gb_text(self.agent_ceiling.ceiling_gb)} GB agent memory "
+            f"ceiling, ~{gb_text(self.agent_ceiling.host_available_gb)} GB free on the host"
+        )
 
     @property
     def memory_pressure_held(self) -> bool:
@@ -495,19 +521,18 @@ class ResourceStatus:
             if self.memory_pressure_held:
                 return self._kernel_pressure_line()
             return self._tasks_only_line()
-        gb = f"{self.available_gb:.1f}"
-        load = self._load_suffix()
+        reading = f"{self.memory_reading()}{self._load_suffix()}"
         suffix = self._pressure_clause() + self._tasks_clause()
         if self.posture == POSTURE_CRITICAL:
             return (
-                f"[RESOURCES] Host memory is CRITICALLY low (~{gb} GB free{load}). "
+                f"[RESOURCES] {self.memory_subject} is CRITICALLY low ({reading}). "
                 "Do NOT start heavy work now (full test suites, large builds, big "
                 "parallel sub-agent waves) — it may fail or destabilize other "
                 "sessions on this host. Run only the lightest necessary steps, or "
                 "wait for memory to free. Call the resource_status tool to re-check."
             ) + suffix
         return (
-            f"[RESOURCES] Host memory is tight (~{gb} GB free{load}). Before heavy "
+            f"[RESOURCES] {self.memory_subject} is tight ({reading}). Before heavy "
             "work, prefer the lighter path: run targeted tests instead of the full "
             "suite, avoid large parallel sub-agent waves, and serialize or defer "
             "memory-heavy builds/test runs. Call the resource_status tool to "
@@ -563,7 +588,7 @@ class ResourceStatus:
             level = "CRITICALLY low" if self.posture == POSTURE_CRITICAL else "tight"
             parts.append(
                 f"The gateway machine (where this session's engine and subagents run) "
-                f"is {level} on memory (~{self.available_gb:.1f} GB free"
+                f"is {level} on memory ({self.memory_reading()}"
                 f"{self._load_suffix()}), so keep sub-agent waves small." + self._pressure_clause()
             )
         elif gateway_pressed:
@@ -636,6 +661,14 @@ class ResourceStatus:
                 f"  Available memory: {self.available_gb:.1f} GB "
                 f"(tight \u2264 {self.pressure_gb:g} GB, critical \u2264 {self.critical_gb:g} GB)"
             )
+        ceiling = self.agent_ceiling
+        if ceiling is not None:
+            lines.append(
+                f"  Measured against the agent memory ceiling ({gb_text(ceiling.ceiling_gb)} GB); "
+                f"the host has {ceiling.host_available_gb:.1f} GB available"
+            )
+            if ceiling.shmem_notable:
+                lines.append(f"  {ceiling.shmem_sentence()}")
         load = f"{self.load_per_cpu}/core" if self.load_per_cpu is not None else "unknown"
         lines.append(f"  CPU cores: {self.cpu_count}   1-min load: {load}")
         lines.append(f"  Posture: {self.posture.upper()}")
@@ -749,11 +782,18 @@ def temp_headroom(root: str) -> TempHeadroom | None:
 
     A filesystem without inode accounting (``f_files == 0``: btrfs, some FUSE
     mounts) cannot run out of inodes, so it reads as fully free on that axis
-    and never trips the absolute floor.
+    and never trips the absolute floor. A host without ``os.statvfs`` (native
+    Windows) still measures free space through ``shutil.disk_usage`` and reads
+    the same way, since NTFS keeps no inode limit to report.
     """
     statvfs = getattr(os, "statvfs", None)
     if statvfs is None:
-        return None
+        try:
+            usage = shutil.disk_usage(root)
+        except OSError:
+            return None
+        free_pct = 100.0 * usage.free / usage.total if usage.total else 100.0
+        return TempHeadroom(root, free_pct, 100.0, TEMP_FREE_INODES_FLOOR, counts_inodes=False)
     try:
         st = statvfs(root)
     except OSError:
@@ -771,8 +811,8 @@ def temp_headroom(root: str) -> TempHeadroom | None:
 def temp_headroom_lines() -> list[str]:
     """The pull tool's temp-space block, plus a guidance line when one is low.
 
-    Empty when no root can be measured, so a host without ``statvfs`` prints
-    nothing rather than an "unknown" line on every call.
+    Empty when no root can be measured, so an unreadable root prints nothing
+    rather than an "unknown" line on every call.
     """
     readings = [r for r in (temp_headroom(root) for root in temp_roots()) if r is not None]
     if not readings:
@@ -914,6 +954,7 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
             lines.append(
                 f"  Provider throttling (scoped, not a host signal): {', '.join(throttled)}"
             )
+    lines.extend(_health_lines(state.get("health"), state.get("last_sample")))
     recent = state.get("recent_decisions")
     if isinstance(recent, list) and recent:
         lines.append("  Recent cap changes (newest last):")
@@ -936,6 +977,43 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
     if counts:
         lines.append("  Decisions: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     return lines
+
+
+def _health_reading(value: object, digits: int | None = None) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        return "-"
+    return f"{value:.{digits}f}" if digits is not None else f"{value}"
+
+
+def _health_lines(health: object, last_sample: object) -> list[str]:
+    if not isinstance(health, dict):
+        return []
+    sample = last_sample if isinstance(last_sample, dict) else {}
+    age = health.get("age_secs")
+    age_text = f"{age:.0f}s old" if isinstance(age, (int, float)) else "age unknown"
+    if health.get("stale"):
+        limit = health.get("max_age_secs")
+        limit_text = f", limit {limit:.0f}s" if isinstance(limit, (int, float)) else ""
+        return [f"  Health (advisory): sample stale ({age_text}{limit_text}); readings withheld"]
+    readings = (
+        f"sessions {_health_reading(sample.get('active_sessions'))}   "
+        f"cron queue {_health_reading(sample.get('cron_queue_depth'))}   "
+        f"cpu/core {_health_reading(sample.get('cpu_pressure'), 2)}   "
+        f"loop lag {_health_reading(sample.get('loop_lag_ms'), 0)}ms"
+    )
+    signals = ",".join(health.get("signals") or []) or "none"
+    suspected = [
+        name
+        for flag, name in (
+            (health.get("cron_collision_suspected"), "cron collision"),
+            (health.get("renderer_suspected"), "renderer"),
+        )
+        if flag
+    ]
+    return [
+        f"  Health (advisory, sample {age_text}): {readings}",
+        f"  Health signals: {signals}; suspected: {', '.join(suspected) or 'none'}",
+    ]
 
 
 def _resolve_thresholds(cfg: object | None) -> tuple[float, float]:
@@ -1165,6 +1243,9 @@ def probe(cfg: object | None = None) -> ResourceStatus:
     load_per_cpu = _read_load_per_cpu(cpu_count)
     posture = _classify(available_gb, pressure_gb, critical_gb)
     slice_tasks, slice_tasks_limit, slice_tasks_own = _read_agent_slice_tasks()
+    # Only a pressured reading is worded, so only a pressured probe pays for the
+    # attribution reads.
+    agent_ceiling = _read_agent_ceiling() if posture in (POSTURE_TIGHT, POSTURE_CRITICAL) else None
     return ResourceStatus(
         available_gb=available_gb,
         cpu_count=cpu_count,
@@ -1176,6 +1257,7 @@ def probe(cfg: object | None = None) -> ResourceStatus:
         slice_tasks_limit=slice_tasks_limit,
         slice_tasks_own=slice_tasks_own,
         memory_pressure_level=read_memory_pressure_level(),
+        agent_ceiling=agent_ceiling,
     )
 
 
@@ -1351,7 +1433,7 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
                 posture=status.posture,
                 available_gb=status.available_gb,
                 reason=(
-                    f"host memory is critical (~{status.available_gb:.1f} GB free, "
+                    f"{status.memory_subject.lower()} is critical ({status.memory_reading()}, "
                     f"critical \u2264 {status.critical_gb:g} GB) — retry when memory frees"
                 ),
             )

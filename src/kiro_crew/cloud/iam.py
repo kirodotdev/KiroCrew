@@ -455,12 +455,11 @@ def policy_document() -> dict[str, Any]:
             # read-only, so the shared "*" resource grants nothing a split wouldn't.
             #
             # NB (Route53DnsPreflight): a private hosted zone bound to the target
-            # VPC can be authoritative for a host the bootstrap downloads from (e.g.
-            # Amazon Q's `q.<region>.amazonaws.com` endpoint zone shadows
-            # desktop-release.q.us-east-1.amazonaws.com), which makes the install
-            # fail on NXDOMAIN with no fallthrough to public DNS. The launch
-            # degrades gracefully without route53:ListHostedZonesByVPC — it just
-            # loses the early warning — so it is safe to omit on an older policy.
+            # VPC can be authoritative for a host the bootstrap downloads from,
+            # which makes the install fail on NXDOMAIN with no fallthrough to
+            # public DNS. The launch degrades gracefully without
+            # route53:ListHostedZonesByVPC — it just loses the early warning —
+            # so it is safe to omit on an older policy.
             # ListHostedZonesByVPC does not support resource-level permissions.
             #
             # ec2:Describe* is one wildcard, not a list: CloudFormation's EC2

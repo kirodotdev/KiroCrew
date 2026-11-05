@@ -1,6 +1,9 @@
 """Tests for _setup_electron desktop app installation."""
 
+import subprocess
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from kiro_crew.cli_setup import _setup, _setup_electron
 
@@ -172,13 +175,13 @@ class TestSetupElectronOnly:
     """kirocrew setup --electron-only dispatches correctly."""
 
     def test_electron_only_calls_setup_electron(self, capsys, monkeypatch):
-        monkeypatch.setattr("kiro_crew.cli_setup._setup_electron", lambda: None)
+        monkeypatch.setattr("kiro_crew.cli_setup._setup_electron", lambda: True)
         _setup(electron_only=True)
         out = capsys.readouterr().out
         assert "Desktop App" in out
 
     def test_electron_only_returns_early(self, monkeypatch):
-        monkeypatch.setattr("kiro_crew.cli_setup._setup_electron", lambda: None)
+        monkeypatch.setattr("kiro_crew.cli_setup._setup_electron", lambda: True)
         with patch("kiro_crew.agent.install_agent") as mock_agent:
             _setup(electron_only=True)
         mock_agent.assert_not_called()
@@ -238,3 +241,90 @@ class TestSetupDesktopPrompt:
 
         assert prompts == ["  Install Kiro Crew desktop app to ~/Applications? [Y/n]: "]
         assert installs == [1]
+
+
+class TestSetupElectronOnlyExitCode:
+    """`setup --electron-only` exits non-zero when the desktop build fails.
+
+    The build only runs on macOS, so the platform, Node lookup and every
+    subprocess are faked: no real npm or electron-builder runs.
+    """
+
+    def _mac(self, monkeypatch, tmp_path, *, node="/usr/local/bin/node"):
+        import kiro_crew.cli_setup as cs
+
+        electron_dir = tmp_path / "website" / "electron"
+        electron_dir.mkdir(parents=True)
+        monkeypatch.setattr(cs.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(cs.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(cs.platform, "machine", lambda: "arm64")
+        monkeypatch.setattr(cs.shutil, "which", lambda _: node)
+        monkeypatch.setattr(cs, "_find_electron_dir", lambda: electron_dir)
+        return electron_dir
+
+    def _exit_code(self, monkeypatch, run):
+        monkeypatch.setattr("kiro_crew.cli_setup.subprocess.run", run)
+        with pytest.raises(SystemExit) as exc:
+            _setup(electron_only=True)
+        return exc.value.code
+
+    def test_missing_node_exits_non_zero(self, tmp_path, capsys, monkeypatch):
+        self._mac(monkeypatch, tmp_path, node=None)
+        assert self._exit_code(monkeypatch, MagicMock()) == 1
+        assert "Node.js not found" in capsys.readouterr().out
+
+    def test_npm_install_failure_exits_non_zero(self, tmp_path, capsys, monkeypatch):
+        self._mac(monkeypatch, tmp_path)
+        failed = MagicMock(returncode=1, stdout="", stderr="npm ERR! 404")
+        assert self._exit_code(monkeypatch, lambda *a, **kw: failed) == 1
+        assert "npm install failed: npm ERR! 404" in capsys.readouterr().out
+
+    def test_build_failure_exits_non_zero(self, tmp_path, capsys, monkeypatch):
+        self._mac(monkeypatch, tmp_path)
+        results = iter(
+            [
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="Error: build failed"),
+            ]
+        )
+        assert self._exit_code(monkeypatch, lambda *a, **kw: next(results)) == 1
+        assert "Electron build failed: Error: build failed" in capsys.readouterr().out
+
+    def test_npm_timeout_exits_non_zero_without_a_traceback(self, tmp_path, capsys, monkeypatch):
+        self._mac(monkeypatch, tmp_path)
+
+        def _timeout(cmd, *a, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+        assert self._exit_code(monkeypatch, _timeout) == 1
+        out = capsys.readouterr().out
+        assert "npm install timed out after 120s" in out
+        assert "setup --electron-only" in out
+
+    def test_npm_missing_from_path_exits_non_zero(self, tmp_path, capsys, monkeypatch):
+        self._mac(monkeypatch, tmp_path)
+
+        def _no_npm(*a, **kw):
+            raise FileNotFoundError(2, "No such file or directory", "npm")
+
+        assert self._exit_code(monkeypatch, _no_npm) == 1
+        assert "npm install could not start" in capsys.readouterr().out
+
+    def test_missing_app_after_build_exits_non_zero(self, tmp_path, capsys, monkeypatch):
+        self._mac(monkeypatch, tmp_path)
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        assert self._exit_code(monkeypatch, lambda *a, **kw: ok) == 1
+        assert "KiroCrew.app not found" in capsys.readouterr().out
+
+    def test_successful_build_exits_zero(self, tmp_path, capsys, monkeypatch):
+        electron_dir = self._mac(monkeypatch, tmp_path)
+        (electron_dir / "dist" / "mac-arm64" / "KiroCrew.app").mkdir(parents=True)
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr("kiro_crew.cli_setup.subprocess.run", lambda *a, **kw: ok)
+        _setup(electron_only=True)
+        assert "installed to ~/Applications" in capsys.readouterr().out
+
+    def test_non_mac_is_not_a_failure(self, capsys, monkeypatch):
+        monkeypatch.setattr("kiro_crew.cli_setup.platform.system", lambda: "Linux")
+        _setup(electron_only=True)
+        assert "only available on macOS" in capsys.readouterr().out

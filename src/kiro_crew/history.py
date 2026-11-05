@@ -460,6 +460,10 @@ class ConversationLog:
         self._title_scan_cache: _LRUCache[tuple[tuple[tuple[int, int, int], int], int, object]] = (
             _LRUCache(_METADATA_CACHE_MAX)
         )
+        #: size or inode moves on every write path in this repo; ctime moves on POSIX only
+        self._has_messages_cache: _LRUCache[tuple[CacheIdentity, int, bool]] = _LRUCache(
+            _METADATA_CACHE_MAX
+        )
         #: Bounded identity-keyed LRU of formatted ``recent()`` windows keyed by
         #: (key, max_messages, roles). The tail-read fast path intentionally
         #: never warms ``_msg_cache`` (it returns a partial view), so a session
@@ -476,7 +480,13 @@ class ConversationLog:
         #: every session, so routing it through ``_msg_cache`` retains the full
         #: parsed transcript corpus. The file stamp includes inode and size in
         #: addition to nanosecond mtime so rotations and atomic rewrites miss.
-        self._file_change_cache: _LRUCache[_FileChangeCacheEntry] = _LRUCache(cache_max)
+        #:
+        #: Sized by ``_METADATA_CACHE_MAX``, NOT ``cache_max``: the scan walks
+        #: every session in one order, so an LRU smaller than the store evicts
+        #: each entry before it is read again and every call re-reads every
+        #: file. Entries hold changed paths only (a few hundred bytes for a
+        #: session with documents), so covering the whole store is cheap.
+        self._file_change_cache: _LRUCache[_FileChangeCacheEntry] = _LRUCache(_METADATA_CACHE_MAX)
         #: Sparse row-to-byte indexes for paginated transcript reads. Entries
         #: contain offsets and counts only, never message content, so a bounded
         #: page does not retain the complete parsed transcript in memory.
@@ -660,6 +670,33 @@ class ConversationLog:
                     return True
         return False
 
+    def listing_has_messages(self, key: str) -> bool:
+        """:meth:`has_messages` for the Older Sessions listing, memoized per file.
+
+        The listing asks this of every untitled transcript on each refresh. An
+        answer is reused while the file's stamp and this log's write generation
+        both match, so an unchanged transcript costs one ``stat`` instead of the
+        per-key lock and an open. Only the listing calls this: the callers that
+        gate memory on the answer keep the locked, uncached :meth:`has_messages`.
+        """
+        path = self._path(key)
+        # Generation BEFORE the stat, as in list_sessions: a write landing
+        # between them bumps it and the publish below discards itself.
+        gen = self._cache_gen(key)
+        try:
+            identity = self._cache_identity(os.stat(path))
+        except OSError:
+            # Absent or unstattable: the locked read decides, uncached.
+            return self.has_messages(key)
+        cached = self._has_messages_cache.get(key)
+        if cached is not None and cached[0] == identity and cached[1] == self._cache_gen(key):
+            return cached[2]
+        result = self.has_messages(key)
+        self._publish_if_current(
+            self._has_messages_cache, key, (identity, gen, result), key=key, gen=gen
+        )
+        return result
+
     def session_mtime(self, key: str) -> float | None:
         """Return the session file's mtime, or None if it can't be stat'd.
 
@@ -706,8 +743,7 @@ class ConversationLog:
     def get_unconsolidated(self, key: str) -> tuple[list[dict], int]:
         """Return (messages_after_last_consolidated, total_message_count)."""
         messages = self._read_messages(key)
-        offset = self._read_metadata(key).get("last_consolidated", 0)
-        return messages[offset:], len(messages)
+        return messages[self.consolidated_offset(key) :], len(messages)
 
     def chained_keys(self, key: str) -> list[str]:
         """Every transcript key :meth:`read_messages_chained` concatenates for *key*."""
@@ -800,6 +836,10 @@ class ConversationLog:
 
     def read_rotated_messages_chained(self, key: str) -> list[dict]:
         return self._read_projection.read_rotated_messages_chained(key)
+
+    def read_rotated_messages(self, key: str) -> list[dict]:
+        """Rows size-rotation archived out of *key*'s own transcript, oldest first."""
+        return self._read_projection.read_rotated_messages(key)
 
     def chain_mid_rotation(self, key: str) -> bool:
         """See ``HistoryReadProjection.chain_mid_rotation``."""
@@ -913,8 +953,16 @@ class ConversationLog:
     def mtime_of(self, key: str) -> float | None:
         return self._metadata_projection.mtime_of(key)
 
-    def clear_closed(self, key: str, *, only_if_closed_before: float | None = None) -> None:
-        self._metadata_projection.clear_closed(key, only_if_closed_before=only_if_closed_before)
+    def clear_closed(
+        self,
+        key: str,
+        *,
+        only_if_closed_before: float | None = None,
+        only_if_closed_id: str | None = None,
+    ) -> None:
+        self._metadata_projection.clear_closed(
+            key, only_if_closed_before=only_if_closed_before, only_if_closed_id=only_if_closed_id
+        )
 
     def _read_messages(self, key: str) -> list[dict]:
         return self._read_projection._read_messages(key)
@@ -1104,6 +1152,7 @@ class ConversationLog:
     _persist_inline_attachments = _history_append._persist_inline_attachments
     append = _history_append.append
     append_if_absent = _history_append.append_if_absent
+    _holds_identical_row = _history_append._holds_identical_row
 
     # -- Consolidation marker and retry ledger (``history_marker``).
     rotation_generation = _history_marker.rotation_generation

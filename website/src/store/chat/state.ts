@@ -62,6 +62,10 @@ const seedSlotActivity = (): ChatState['slotActivity'] =>
 
 export type SlotState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
 export type EndedTurn = { gen: string; turn: number }
+/** One prompt this tab submitted: the bubble text and the send's own id. */
+export type SendAttempt = { text: string; sendId: string }
+/** Retention bound for `ChatState.sendAttempts`, per slot. */
+export const SEND_ATTEMPTS_PER_SLOT_MAX = 50
 
 /** Live progress entry for a dynamic-workflow run. Folded from workflow_run_event
  *  WS messages so the chat can show status while a run executes. */
@@ -155,9 +159,9 @@ export interface SideState {
   createdAt: string
   /** The banner counts the parent turns newer than `createdAt` instead of
    *  comparing with `openedAtTurnCount`, because the count this tab held when the
-   *  conversation began is no baseline: the conversation was restored, or its
-   *  first row landed in an empty state made earlier, while this tab could be
-   *  showing another slot or still loading this one. Counted at render: the
+   *  conversation began is no baseline: the conversation was restored, its
+   *  first row landed in an empty state made earlier, or it began while this tab
+   *  was showing another slot or still loading this one. Counted at render: the
    *  parent transcript can load later. */
   countsTurnsSinceCreated?: boolean
   /** The answer of this run streamed before this tab joined it, so its deltas
@@ -229,8 +233,9 @@ export interface ChatState {
   activatedRequestSeq?: number
   /** The resume that opened its session last, and the session that was
    *  active when it did, so the swap in `handleResumeSession` retires only
-   *  the tab that resume replaced. */
-  lastResumeActivation?: { requestId: string; replaced: string | null } | null
+   *  the tab that resume replaced. `leaveSplit` marks a resume whose caller
+   *  asked the chat page to leave Split View once it takes the view. */
+  lastResumeActivation?: { requestId: string; replaced: string | null; leaveSplit?: boolean } | null
   /** The last session the user OPENED by a gesture, set when that open's
    *  transcript load lands (`switchSlot.fulfilled` for a switch marked
    *  `gesture`, which only user-initiated opens set; see `SwitchSlotArg`). `seq` counts the opens,
@@ -313,9 +318,10 @@ export interface ChatState {
    *  NAME, not the sentence, so the copy re-resolves on locale switch; ''
    *  when the slot list no longer knew the title. The optional report keeps
    *  the API endpoint, status, and backend code available to Ask the agent
-   *  while the displayed sentence stays localized. Cleared by the next
+   *  while the displayed sentence stays localized. `closed` is a Back/Forward
+   *  onto a session this tab saw closed (#14762). Cleared by the next
    *  `switchSlot.pending` or the notice's dismiss. */
-  switchSlotGone: { name: string; kind: 'gone' | 'failed'; report?: ErrorReport } | null
+  switchSlotGone: { name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport } | null
   loadingOlder: boolean
   /** Last older-history fetch was rejected; surfaced on the top-of-transcript bar. */
   slotOlderError: boolean
@@ -578,6 +584,11 @@ export interface ChatState {
    *  queue edit for an entry this tab has no card for get kept
    *  (`SideState.editedBeforeRestore`). */
   slotSideReading?: Record<string, boolean>
+  /** Slots whose side conversation another tab closed (`chat.side_closed` naming
+   *  another tab) while this tab showed it or held one of its questions, so the
+   *  panel says why it emptied. `sideClose` and a new conversation clear it, so
+   *  this tab's own Refresh context shows nothing new. */
+  slotSideClosedElsewhere?: Record<string, boolean>
   slotMessages: Record<string, ChatMessage[]>
   /** Fresh `has_more` for a BACKGROUND pane, written by every bounded warm.
    *  The pane's own query is staleTime:Infinity, so its has_more freezes at
@@ -626,6 +637,12 @@ export interface ChatState {
   /** Reasoning blocks whose anchoring row is above the loaded window, per slot.
    *  Client-only, so this is their only copy until the anchor pages back in. */
   thinkingOrphans: Record<string, Array<ParkedThinking<ChatMessage>>>
+  /** Prompts whose optimistic bubble this tab minted, per slot, oldest first
+   *  (capped at `SEND_ATTEMPTS_PER_SLOT_MAX`). Client-only. ↑/↓ recall reads
+   *  it so a prompt whose row later vanished from the transcript (a refresh
+   *  that dropped the optimistic row, a send that never landed) can still be
+   *  recalled; an attempt whose `sendId` is on a row is skipped there. */
+  sendAttempts?: Record<string, SendAttempt[]>
   /** Path B: per-slot live stream state so a non-active pane shows its own
    *  streaming/tool/idle indicator (mirrors slotActivity for tool events).
    *  `tick` is the entry's receipt order: `state` is written only through

@@ -55,6 +55,9 @@ import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import { parseFileRecord } from '../../lib/fileRecord'
 import UserMessage from './UserMessage'
+import SessionMessageCard from './SessionMessageCard'
+import { isSessionSendTool, parseSessionSend } from './sessionRelay'
+import { i18nT } from '../../i18n/t'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
 import { crewmateBubbleClass, crewmateCornerClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
 import { CardCornersContext } from '../../cards/cardCorners'
@@ -88,6 +91,10 @@ export interface TranscriptRendererOptions {
   /** Slot these rows belong to. The tool line keys its per-slot log off it;
    *  omitted (the single-chat surface) it reads the active slot's. */
   slot?: string
+  /** The LOCAL slot whose replies may draw lock tags with the owner's reveal.
+   *  A host showing this gateway's own session passes its key; the crew
+   *  window (another gateway's rows) never does. */
+  revealSlot?: string
   /** Whether a tool row animates as "running". Default: the transcript's
    *  running flag. ChatPage narrows it to the trailing group -- rows after the
    *  last assistant text while the slot is in `tool_running`. */
@@ -474,6 +481,39 @@ export function createTranscriptRenderers(
       },
     },
     {
+      // This session's OWN `session_send` tool call, once it DELIVERED: the
+      // OUTGOING session-message card, its `@tag` naming the slot the gateway
+      // resolved (so a send addressed by title links to the real key). Refines
+      // the generic tool line and must precede it. A call still running, refused,
+      // rejected or denied has no success result and stays that line, which shows
+      // its state; so does one whose args will not parse. `session_broadcast`
+      // (many targets) is left to the generic line — one `@tag` cannot name a
+      // fan-out.
+      id: 'session_send_tool',
+      roles: ['tool'],
+      match: m => !!m.content?.startsWith('🔧') && isSessionSendTool(m),
+      render: (m, ctx) => {
+        const call = parseSessionSend(m)
+        if (!call) return toolLine(m, ctx)
+        const selfKey = o.slot ?? o.activeSession ?? ''
+        const selfTitle = (selfKey && o.sessions?.get(selfKey)) || i18nT('pages.chat.sessionMessageCard.this_session')
+        const recipientTitle = o.sessions?.get(call.delivered) || o.sessions?.get(call.target) || call.target
+        return ctx.row(
+          <SessionMessageCard
+            key={ctx.key}
+            sender={{ key: selfKey || 'self', title: selfTitle }}
+            recipient={{ key: call.delivered, title: recipientTitle }}
+            body={call.message}
+            time={formatTs(m.ts)}
+            // The same gate as the body's session chips: a host that withholds
+            // the roster (offline) cannot navigate, so the @tag stays plain text.
+            onOpenSession={o.sessions ? o.onSessionOpen : undefined}
+          />,
+          true,
+        )
+      },
+    },
+    {
       // An MCP server's own question to the person (a form or a link). The SDK
       // default draws it read-only because it has no slot to answer on; every
       // dashboard surface that knows its slot (the page, a pane, a crew window)
@@ -664,10 +704,13 @@ export function createTranscriptRenderers(
             // DM with one named peer every send while it works is a steer, so
             // the ack kiro-cli emits would close nearly every reply with the
             // mechanics this surface hides (#17838). The marker is still
-            // stripped from the prose.
+            // stripped from the prose. No file-change chips either: the
+            // mate's writes (notes, scripts, its page) are not what the user
+            // reviews here (#30233).
             const bubble = renderAssistantBubble(m, ctx, crewmateBubbleClass(pos), {
               forceFooter: pos === 'single' || pos === 'end',
               suppressSteerAck: true,
+              hideFileChanges: true,
               // A crewmate's reply is prose about the crew's own work, so it
               // names sessions constantly. Same triple the single-chat page
               // hands its bubble, and `m.ts` with it so the SHORT form resolves
@@ -676,6 +719,7 @@ export function createTranscriptRenderers(
               sessions: o.sessions,
               activeSession: o.activeSession,
               messageTs: m.ts,
+              redactionSlot: o.revealSlot,
             })
             if (bubble === null) return null
             return ctx.row(
@@ -794,6 +838,10 @@ export function createTranscriptRenderers(
                 meta={m.meta}
                 timestamp={formatTs(m.ts)}
                 timestampTitle={fmtMessageTimeFull(m.ts)}
+                // A message another session delivered names its sender as a
+                // link; the same gate the body's session chips use.
+                sessions={o.onSessionOpen ? o.sessions : undefined}
+                onSessionOpen={o.sessions ? o.onSessionOpen : undefined}
                 // The session triple mirrors the crewmate bubble above, so a
                 // `/chat?sid=…` the USER pasted resolves exactly as the same
                 // link does in the reply quoting it back.
@@ -819,6 +867,18 @@ export function createTranscriptRenderers(
             </>,
             true,
           ),
+        } satisfies MessageRenderer]
+      : []),
+    // A host showing this gateway's own session (not a crewmate's chat, which
+    // has its own entry above) draws the reply with its lock tags and reveal.
+    ...(!crewmate && o.revealSlot
+      ? [{
+          id: 'assistant',
+          roles: ['assistant', 'streaming'],
+          render: (m: ChatMessage, ctx: MessageRenderContext) => {
+            const bubble = renderAssistantBubble(m, ctx, undefined, { redactionSlot: o.revealSlot })
+            return bubble === null ? null : ctx.wrapper(bubble)
+          },
         } satisfies MessageRenderer]
       : []),
   ]

@@ -3,8 +3,10 @@
  * second (the confirmation, naming the crew) starts it.
  *
  * The click calls `POST /api/instances/{id}/update`, which runs the crew's own
- * `kirocrew update`, then its restart, then reads the crew's version back, as
- * a background job; this control polls `GET` on the same path and shows the
+ * `kirocrew update`, waits for the crew's running work to finish, restarts
+ * it, then reads the crew's version back, as a background job. A job that
+ * stopped short of the restart (still busy, or a crew too old to wait) offers
+ * "Restart now", which confirms first and restarts without waiting; this control polls `GET` on the same path and shows the
  * job's phase and its outcome: a new version, the same version (the crew's
  * updater installed nothing), no answer yet, or the remote's redacted error,
  * each with what to do next. Nothing runs without the confirming click, and
@@ -14,7 +16,7 @@
  * post-update offer) reads the same job query, so a job started in one place
  * shows its progress in the other.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowDownCircle, CheckCircle, Info, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
@@ -57,7 +59,26 @@ export function isSettledOutcome(job: RemoteUpdateJob | null | undefined): boole
   return job?.state === 'succeeded' || job?.state === 'unchanged' || job?.state === 'unverified'
 }
 
+/** How long the gateway waits for a busy crew before it stops short of the
+ *  restart (`REMOTE_UPDATE_IDLE_WAIT_SECS`), in minutes, for the copy. */
+const IDLE_WAIT_MINUTES = 10
+
+/** A failed job that stopped short of its restart, which `force` retries. */
+function stoppedBeforeRestart(job: RemoteUpdateJob | null): boolean {
+  return (
+    job?.state === 'failed'
+    && (job.code === 'still_busy' || job.code === 'peer_cannot_wait' || job.code === 'idle_check_failed')
+  )
+}
+
 function progressLabel(job: RemoteUpdateJob | null, name: string): string {
+  if (job?.phase === 'waiting_for_idle') {
+    return i18nT('components.remoteUpdate.waiting_for_idle', {
+      name,
+      turns: job.waiting?.turns ?? 0,
+      background: job.waiting?.background ?? 0,
+    })
+  }
   if (job?.phase === 'restarting') return i18nT('components.remoteUpdate.restarting', { name })
   if (job?.phase === 'verifying') return i18nT('components.remoteUpdate.verifying', { name })
   return i18nT('components.remoteUpdate.updating', { name })
@@ -65,10 +86,36 @@ function progressLabel(job: RemoteUpdateJob | null, name: string): string {
 
 export default function RemoteUpdateControl({ instanceId, name }: { instanceId: string; name: string }) {
   const queryClient = useQueryClient()
-  const [armed, setArmed] = useState(false)
+  // Which confirmation is open: the update, or the restart that does not wait.
+  const [armed, setArmed] = useState<false | 'update' | 'force'>(false)
+  // Arming swaps the pressed button for the confirm row and Cancel swaps it
+  // back, so each press unmounts the focused button and focus would fall to
+  // the page. Move it to the control that takes its place: Cancel on arm (the
+  // safe choice, so a held Enter cannot also start the job) and the pressed
+  // button on Cancel. Only after a press, so nothing is stolen on render.
+  const updateRef = useRef<HTMLButtonElement>(null)
+  const forceRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const focusNext = useRef<'cancel' | 'update' | 'force' | null>(null)
+  useEffect(() => {
+    const target = focusNext.current
+    focusNext.current = null
+    if (target === 'cancel') cancelRef.current?.focus()
+    else if (target === 'update') updateRef.current?.focus()
+    else if (target === 'force') forceRef.current?.focus()
+  }, [armed])
+  const arm = (kind: 'update' | 'force') => {
+    focusNext.current = 'cancel'
+    setArmed(kind)
+  }
+  const disarm = (from: 'update' | 'force') => {
+    focusNext.current = from
+    setArmed(false)
+  }
   const jobQ = useRemoteUpdateJob(instanceId)
   const start = useMutation({
-    mutationFn: () => api.updateRemoteInstance(instanceId),
+    mutationFn: (force: boolean) =>
+      force ? api.updateRemoteInstance(instanceId, { force: true }) : api.updateRemoteInstance(instanceId),
     onSuccess: r => queryClient.setQueryData(remoteUpdateJobKey(instanceId), { job: r.job }),
     // A refusal can mean a job already runs (started from the other surface):
     // re-read it, so its progress replaces the refusal.
@@ -152,14 +199,21 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
     )
   }
   const restartFailed = job?.state === 'failed' && job.phase === 'restarting'
+  const stopped = stoppedBeforeRestart(job)
   const failure = start.error
     ? errMessage(start.error)
     : jobQ.error
       ? i18nT('components.remoteUpdate.status_read_failed', { name, error: errMessage(jobQ.error) })
       : job?.state === 'failed'
-        ? restartFailed
-          ? i18nT('components.remoteUpdate.failed_restart', { name, error: job.error || '?' })
-          : i18nT('components.remoteUpdate.failed_update', { name, error: job.error || '?' })
+        ? job.code === 'still_busy'
+          ? i18nT('components.remoteUpdate.failed_still_busy', { name, minutes: IDLE_WAIT_MINUTES })
+          : job.code === 'peer_cannot_wait'
+            ? i18nT('components.remoteUpdate.failed_cannot_wait', { name })
+            : job.code === 'idle_check_failed'
+              ? i18nT('components.remoteUpdate.failed_idle_check', { name, error: job.error || '?' })
+            : restartFailed
+              ? i18nT('components.remoteUpdate.failed_restart', { name, error: job.error || '?' })
+              : i18nT('components.remoteUpdate.failed_update', { name, error: job.error || '?' })
         : ''
   // A failure this control could not tie to the remote (a refusal from this
   // gateway, or the status read itself) gets no remote next step.
@@ -167,6 +221,8 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
   // A finished job that did not land is retried with the same action; the
   // label says so, since the crew already ran it once.
   const again = job?.state === 'failed' || job?.state === 'unchanged'
+  // Retrying the update cannot help a crew whose build has no idle check.
+  const cannotWait = !localFailure && job?.state === 'failed' && job.code === 'peer_cannot_wait'
   return (
     <span className={ROOT} data-testid="remote-update-control">
       {job?.state === 'unchanged' && (
@@ -185,7 +241,8 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
           {/* A refusal from this gateway (chained, headless, already
               running) or a failed status read says what it is itself; the
               next step is for a remote that ran and failed. */}
-          {!localFailure && (
+          {/* A job that stopped short of its restart names its own next steps. */}
+          {!localFailure && !stopped && (
             <span className="text-[12px] text-muted max-w-[420px]">
               {restartFailed
                 ? i18nT('components.remoteUpdate.failed_restart_next_step', {
@@ -198,22 +255,44 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
           )}
         </>
       )}
-      {armed ? (
+      {armed === 'update' ? (
         <span className="flex flex-col gap-1 min-w-0 max-w-full">
           <span className="text-[12px] text-muted">{i18nT('components.remoteUpdate.confirm_hint', { name })}</span>
           <span data-testid="remote-update-confirm-row" className="flex flex-wrap items-center gap-2 min-w-0 max-w-full">
-            <Btn primary className="max-w-full text-left" onClick={() => start.mutate()}>
+            <Btn primary className="max-w-full text-left" onClick={() => start.mutate(false)}>
               <ArrowDownCircle className="lucide-inline shrink-0" aria-hidden />{' '}
               <span className="min-w-0">{i18nT('components.remoteUpdate.confirm', { name })}</span>
             </Btn>
-            <Btn onClick={() => setArmed(false)}>{i18nT('components.remoteUpdate.cancel')}</Btn>
+            <Btn ref={cancelRef} onClick={() => disarm('update')}>{i18nT('components.remoteUpdate.cancel')}</Btn>
           </span>
         </span>
+      ) : armed === 'force' ? (
+        <span data-testid="remote-update-force-row" className="flex flex-wrap items-center gap-2 min-w-0 max-w-full">
+          {/* Danger, not primary: this stops the crew's running work. */}
+          <Btn danger className="max-w-full text-left" onClick={() => start.mutate(true)}>
+            <RefreshCw className="lucide-inline shrink-0" aria-hidden />{' '}
+            <span className="min-w-0">{i18nT('components.remoteUpdate.restart_now_confirm', { name })}</span>
+          </Btn>
+          <Btn ref={cancelRef} onClick={() => disarm('force')}>{i18nT('components.remoteUpdate.cancel')}</Btn>
+        </span>
       ) : (
-        <Btn onClick={() => setArmed(true)} aria-label={i18nT('components.remoteUpdate.update_aria', { name })}>
-          <ArrowDownCircle className="lucide-inline" aria-hidden />{' '}
-          {again ? i18nT('components.remoteUpdate.try_again') : i18nT('components.remoteUpdate.update')}
-        </Btn>
+        <>
+          {/* A crew too old to report its work answers the same way to every
+              retry, and its message names only its own two ways out. */}
+          {!cannotWait && (
+            <Btn ref={updateRef} onClick={() => arm('update')} aria-label={i18nT('components.remoteUpdate.update_aria', { name })}>
+              <ArrowDownCircle className="lucide-inline" aria-hidden />{' '}
+              {again ? i18nT('components.remoteUpdate.try_again') : i18nT('components.remoteUpdate.update')}
+            </Btn>
+          )}
+          {/* Restarting without waiting stops the crew's running work, so it
+              asks for its own confirmation too. */}
+          {stopped && (
+            <Btn ref={forceRef} onClick={() => arm('force')}>
+              <RefreshCw className="lucide-inline" aria-hidden /> {i18nT('components.remoteUpdate.restart_now')}
+            </Btn>
+          )}
+        </>
       )}
     </span>
   )

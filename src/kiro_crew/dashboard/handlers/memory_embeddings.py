@@ -22,6 +22,7 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 
 from kiro_crew.apps.registry import minimal_env
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -463,7 +464,10 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
 
     raw = str(body.get("path", "") or "").strip()
-    validate_only = bool(body.get("validate_only"))
+    # A spelled "false"/"0"/"no"/"off" means False; any other value keeps the
+    # truthiness it has always been read with.
+    raw_validate_only = body.get("validate_only")
+    validate_only = _coerce_bool(raw_validate_only, bool(raw_validate_only))
 
     # Validate BEFORE writing, so a typo never lands in config.
     size_bytes = 0

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 from kiro_crew import model_registry
 from kiro_crew.acp_backends import DEFAULT_ACP_BACKEND
@@ -141,6 +142,20 @@ class AgentConfig:
             "1,000,000-token reference. Takes effect on the next config reload.",
         ),
     )
+    spec_pins: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Agent spec pins",
+            "Which file an agent name runs when two or more specs in the agents "
+            'directory declare it, as {"<agent name>": "<file name>"}, for example '
+            '{"helper": "PkgA-helper.json"}. A bare .json or .md file name, never a '
+            "path, so a pin survives the package's updates. Set it with "
+            "'kirocrew agent pin <name> <file>' or the chat's chooser. With no pin, "
+            "differing specs under one name are refused; a pin naming none of them is "
+            "refused too and never falls back to another file. New sessions run the "
+            "pinned file; a running session's later spec reads follow the current pin.",
+        ),
+    )
     fallback_model: str = field(
         default="auto",
         metadata=_meta(
@@ -240,15 +255,37 @@ class AgentConfig:
     member_acp_backend: str = field(
         default="kas",
         metadata=_meta(
-            "Crew member ACP backend",
+            "Bot ACP backend",
             "Backend for crew-member DM sessions: 'kas' (default when omitted or '') "
             "or another dispatch-capable backend (claude, codex, opencode, goose). "
-            "Crewmates run on KAS as their Kiro backend, so 'kiro' here also "
+            "Bots run on KAS as their Kiro backend, so 'kiro' here also "
             "selects KAS. Members dispatch work into worker sessions through "
             "session-control tools mounted per session over the wire.",
             # Same no-enum reasoning as acp_backend above: the live selectable
             # set comes from the registry via resolve_selected_backend, never a
             # frozen literal.
+        ),
+    )
+    # Plain JSON data, read through ``acp_failover.failover_policy`` where it
+    # is used: a dataclass here would not survive ``to_dict()`` and ``save()``.
+    acp_failover: dict = field(
+        default_factory=dict,
+        metadata=_meta(
+            "ACP backend failover",
+            "Opt-in, off-by-default policy that starts a sub-agent on another "
+            "backend when the one it asked for cannot start. An object with "
+            "'enabled' (bool), 'chain' (ordered list of distinct backend names, "
+            "spelled as spawn_run spells them, e.g. 'codex', 'claude', 'kiro') "
+            "and optional 'triggers' (which refusals cause a hop: "
+            "backend_not_installed, backend_restart_required; both when omitted). "
+            "A hop only goes to a later chain member that can start, never a "
+            "silent Kiro fallback, and the spawn result names the backend that "
+            "ran and the one it replaced. A hop moves the prompt and its context "
+            "to that backend's vendor and bill. A name that is not selectable is "
+            "skipped. Absent means no failover.",
+            # No enum: 'chain' names selectable backends, whose live set comes
+            # from the registry, and 'triggers' is checked in
+            # AcpFailoverConfig.from_raw; a frozen literal here would drift.
         ),
     )
     kas_bundle: bool = field(
@@ -260,25 +297,29 @@ class AgentConfig:
             "with its own Node runtime, instead of reaching the engine through "
             "kiro-cli's ACP relay. kiro-cli is not needed on this route, and the "
             "engine always takes its credential from Kiro Crew's own sign-in "
-            "(the dashboard's Sign in), never from kiro-cli's store. A true value "
-            "with nothing installed refuses the spawn and names the install command.",
+            "(the dashboard's Sign in), never from kiro-cli's store. With nothing "
+            "installed the gateway installs the pinned engine at the first spawn. "
+            "With false, KAS still takes this route when kiro-cli's relay cannot "
+            "run on the host (no kiro-cli, or one that is not signed in).",
             # The running KAS runtime keeps its process across the switch, so
             # sessions move routes only once that process is replaced.
             restart=True,
         ),
     )
     kas_persist_mcp_sign_in: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "KAS: keep remote MCP sign-ins across sessions",
-            "When true, the 'kas' backend lets Kiro Crew keep a remote MCP server's "
-            "OAuth sign-in (client registration and tokens) in a dedicated encrypted "
-            "vault under the data home (kas/mcp-grants/), so new sessions, subagents "
-            "and crons reuse it until the refresh token expires or is revoked. The "
+            "When true (the default), the 'kas' backend lets Kiro Crew keep a remote "
+            "MCP server's OAuth sign-in (client registration and tokens) in a "
+            "dedicated encrypted vault under the data home (kas/mcp-grants/), so new "
+            "sessions, subagents and crons reuse it until the refresh token expires or "
+            "is revoked, as the 'kiro' backend does with its own sign-in cache. The "
             "vault is not the Secrets vault: it is not listed there and cannot be "
-            "granted to a cron, and the agent cannot read it. When false (the "
-            "default), the engine keeps each sign-in in memory and a new session "
-            "asks again.",
+            "granted to a cron, and the agent cannot read it. When false, the engine "
+            "keeps each sign-in in memory and a new session asks again. Only a JSON "
+            "true turns it on: any other stored value, or a config file that cannot "
+            "be read, keeps sign-ins in memory.",
             # Declared in the engine's initialize, so a running KAS process keeps
             # what it declared until it is replaced.
             restart=True,
@@ -319,8 +360,8 @@ class AgentConfig:
     crew_mode_agent: str = field(
         default=_CREW_MODE_AGENT_DEFAULT,
         metadata=_meta(
-            "Crew Mode conductor",
-            "The conductor template a chat runs when Crew Mode is turned on. "
+            "Ultra Mode agent",
+            "The agent template a chat runs when Ultra Mode is turned on. "
             "Empty falls back to the default. Takes effect live for new chats; "
             "no gateway restart.",
         ),
@@ -561,6 +602,15 @@ class AgentConfig:
             "Remove a name to let it be installed again on the next start.",
         ),
     )
+    apps_builtin_adoption: dict[str, dict[str, Any]] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Adopted Built-in Apps",
+            "Former built-in apps this gateway moved to their own repository. "
+            "A name here is never registered as a built-in again, so "
+            "uninstalling the app sticks. Written by the gateway; do not edit.",
+        ),
+    )
     apps_ui_stream_timeout_secs: int = field(
         default=30,
         metadata=_meta(
@@ -642,7 +692,10 @@ class AgentConfig:
             "tool_search_min_tokens; disabling reverts to sending full tool "
             "specs. Crew's servers defer only when the spawn runs the pinned "
             "kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0; any "
-            "other executable, an older or unknown version keeps them resident. To override the never-defer list, set "
+            "other executable, an older or unknown version keeps them resident. "
+            "On Kiro Crew's own KAS engine bundle they always defer: that engine "
+            "keeps its tools array fixed when a tool loads. To override the "
+            "never-defer list, set "
             "ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the "
             "gateway's environment. No effect on any other ACP backend.",
         ),
@@ -675,10 +728,22 @@ class AgentConfig:
             "Session Sharing",
             "Subagents reuse a shared ACP runtime instead of spawning a fresh "
             "backend process per subagent. Reduces startup from ~3-5s to ~200ms "
-            "and memory from ~400MB to near-zero per subagent. Default ON for the "
+            "and memory from about 0.55 GB to near-zero per subagent. Default ON for the "
             "eligible backends (kiro-cli and codex); every other ACP backend "
             "ignores it and runs a dedicated process per subagent. Set false to "
             "opt an eligible backend back onto per-subagent processes.",
+        ),
+    )
+    agent_started_turns: bool = field(
+        default=True,
+        metadata=_meta(
+            "Agent-started Turns",
+            "Show a reply the agent starts on its own between your messages, such "
+            "as Claude Code answering when a background command finishes, as its "
+            "own message in the dashboard chat, with its tool calls and "
+            "permission prompts. Only the claude backend starts such turns. Set "
+            "false to turn it off: that reply then shows under your next message. "
+            "Applies from the next turn.",
         ),
     )
     max_subagents: int = field(
@@ -1196,11 +1261,11 @@ class AgentConfig:
             "config: the tools come from the kirocrew-dashboard MCP server, so an "
             "agent that does not mount it never has them, exactly like any other "
             "MCP server. Turn this off to withdraw the capability from every agent "
-            "at once without editing each spec, except crew member DM sessions and "
+            "at once without editing each spec, except Bot DM sessions and "
             "the Conductor in your own dashboard tab, which keep dispatching "
             "workers unless Member Dispatch is also off. Sessions can only reach "
             "peers in the same workspace; incognito, app-scoped and scheduled "
-            "sessions are never addressable, and a crew member, a scheduled run, "
+            "sessions are never addressable, and a Bot, a scheduled run, "
             "or a Conductor admitted with this off reaches only sessions it "
             "created itself.",
         ),
@@ -1219,7 +1284,7 @@ class AgentConfig:
         default=True,
         metadata=_meta(
             "Member Dispatch",
-            "Let a crew member's DM session, and the Conductor in your own "
+            "Let a Bot's DM session, and the Conductor in your own "
             "dashboard tab, open and drive worker sessions they create, even when "
             "Session Control is off. On by default, because dispatching work into "
             "workers is the crew-member operating model, not an opt-in: this is "
@@ -1235,7 +1300,7 @@ class AgentConfig:
         default=True,
         metadata=_meta(
             "Crew Dashboard",
-            "Let a crew member publish its own webview, shown in that member's "
+            "Let a Bot publish its own webview, shown in that member's "
             "drawer on the Crew page. A member sends a JSON object and names a "
             "template that renders it, so a long-running crew can say what it is "
             "holding, which worker is stuck and what needs a decision, to someone "
@@ -1415,6 +1480,11 @@ class AgentConfig:
         self.role_models = coerce_role_models(self.role_models)
         self.role_efforts = coerce_role_efforts(self.role_efforts)
         self.model_context_tokens = coerce_model_context_tokens(self.model_context_tokens)
+        # Call-time: bound here, the coercer would be a name this section module
+        # serves, and the sections facade re-exports only names its owners define.
+        from kiro_crew.agent_spec_pins import coerce_spec_pins
+
+        self.spec_pins = coerce_spec_pins(self.spec_pins)
         # Same defensive TYPE coercion for the DeepSeek provider-key map. What its
         # names and values may BE is refused at spawn, by name -- see
         # coerce_deepseek_env.

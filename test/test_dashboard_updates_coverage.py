@@ -1,32 +1,11 @@
 """Failure and streaming paths of the dashboard update handlers.
 
-``dashboard/handlers/updates.py`` owns three surfaces whose HAPPY paths are
-already pinned elsewhere (``test_update_check_install_aware.py``,
-``test_update_channel_and_restart.py``, ``test_update_venv_detection.py``) while
-their refusal and degraded paths were untested:
-
-* **the check** — every ``git`` subprocess in ``_check_git_checkout`` is wrapped
-  in its own ``wait_for``, and each timeout has to record an error code rather
-  than fall through to "you are on the latest version". A check that could not
-  run must never read as a verdict.
-* **the apply** — ``POST /api/update`` refuses a non-checkout, a
-  governance-pinned remote and a dirty tree, and its background worker has to
-  report a failed ``git pull`` instead of silently stopping.
-* **the streams** — ``GET /api/logs`` and the dashboard SSE endpoint are the two
-  long-lived writers. Their client-disconnect and cancellation paths are the
-  ones that leak a logging handler or an SSE queue when they are wrong.
-
-Every subprocess, config write and socket here is stubbed: the tests touch no
-network, spawn no process and write only under ``tmp_path``.
-
-This file pins the check (``GET /api/update/check``, the ``_check_git_checkout`` failure
-paths, the ``_do_update_check`` dispatch and the update-info accessors), the auto-update
-switch (``POST /api/update/auto``) and the changelog cache. The apply, with its worker, the
-pip-install report and the simulate and cancel endpoints, is pinned in
-``test_dashboard_updates_coverage_apply.py``; the streams, with the log level endpoint and
-the log handlers, are pinned in ``test_dashboard_updates_coverage_streams.py``. The
-module-state fixture and the request stub every file uses, and the subprocess and checkout
-stubs the check and the apply share, live in ``dashboard_updates_coverage_helpers.py``.
+This file pins the check (``GET /api/update/check`` and ``_check_git_checkout``), the
+auto-update switch and the changelog cache. Each git wait timing out must record an error
+code: a check that could not run must never read as "you are on the latest version".
+The apply and streams live in ``test_dashboard_updates_coverage_apply.py`` and
+``test_dashboard_updates_coverage_streams.py``; shared stubs in
+``dashboard_updates_coverage_helpers.py``. Every subprocess and socket is stubbed.
 """
 
 from __future__ import annotations
@@ -157,16 +136,9 @@ def _recorded(path: Path) -> tuple[int, str | None] | None:
 class _TimedOutGitWaits:
     """``asyncio`` as the updates module sees it, with every git wait timing out.
 
-    Bound as that module's own ``asyncio``, never over the real module, so the
-    event loop, the test's own bound and ``platform_compat`` keep the real one.
-    ``wait_for`` does what the real one does when its deadline passes -- cancels
-    the awaited ``communicate()`` and raises ``TimeoutError`` -- but on a signal,
-    never a clock: it waits until the stand-in git has recorded *started_record*
-    (its helper's pid when there is a helper, else git's own pid). The stand-in
-    writes that record only after ``create_subprocess_exec`` has launched it and
-    ``communicate()`` is reading, so the timeout fires with git provably started
-    and hung -- and, with a helper, the helper holding git's stderr -- however
-    long the stand-in took to start.
+    Bound only as that module's ``asyncio``, so the event loop keeps the real one.
+    ``wait_for`` cancels and raises ``TimeoutError`` on a signal, not a clock: once the
+    stand-in git has written *started_record*, so git is provably started and hung.
     """
 
     def __init__(self, started_record: Path) -> None:
@@ -198,11 +170,8 @@ class TestGitFetchTimeoutReapsTheHelper:
     ) -> tuple[Path, str]:
         """Set up to drive the shared isolated-fetch helper with a hung stand-in git.
 
-        The fetch runs in :func:`fetch_and_pin_upstream`, which receives ``git``
-        as an argument; the stand-in is handed to it there. The helper also
-        resolves the remote URL via the module's own trusted git -- which the
-        stand-in only ever hangs -- so ``resolve_remote_url`` is stubbed to a URL
-        and only the FETCH reaches the stand-in. Returns ``(pidfile, git)``.
+        ``resolve_remote_url`` is stubbed, so only the FETCH in
+        :func:`fetch_and_pin_upstream` reaches the stand-in. Returns ``(pidfile, git)``.
         """
         pidfile = tmp_path / "helper.pid"
         bindir = tmp_path / "bin"
@@ -371,12 +340,8 @@ class TestGitFetchTimeoutReapsTheHelper:
     ):
         """Drives the timeout test above with a recorder in place of ``os.kill``.
 
-        That test sees the helper exit before its cleanup runs, and nothing holds the
-        helper's pid once the helper is reaped: a signal sent to the pid then reaches
-        whatever process holds the number. After the fetch timeout returns, the
-        recorder passes a signal to that pid on only while the pid still runs the
-        helper (its recorded start-time identity, not a zombie). It records any other
-        and never sends it.
+        A reaped helper's pid can be reused, so after the timeout the recorder forwards a
+        signal only while the pid still has the helper's start-time identity.
         """
         pidfile = tmp_path / "helper.pid"
         real_kill = os.kill
@@ -469,11 +434,8 @@ class TestGitCheckoutFailurePaths:
     async def _run(self, monkeypatch, tmp_path, procs, *, fetch_oid: str | None = _FETCH_OID):
         """Drive the check with the upstream resolution and isolated fetch stubbed.
 
-        The network fetch runs through ``fetch_and_pin_upstream`` (its own tests
-        are in ``test_update_check_git_exec_neutralized``); here it is stubbed to
-        a fetched OID, or to ``None`` for a fetch failure. ``procs`` are the
-        checkout's own read spawns, in order: ``rev-parse HEAD``, the divergence
-        ``rev-list``, ``git show``, ``git diff``.
+        ``fetch_and_pin_upstream`` is stubbed to an OID or ``None``. ``procs`` are the
+        read spawns in order: ``rev-parse HEAD``, ``rev-list``, ``git show``, ``git diff``.
         """
         argv = _sequence_procs(monkeypatch, procs)
         monkeypatch.setattr(updates, "repo_exec_config_reason", lambda _proj: "")
@@ -773,6 +735,58 @@ class TestAutoUpdateToggle:
 
         assert resp.status == 400
         req.app["state"].push_refresh.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("overlay", "pinned"),
+        [
+            (None, False),
+            ({"timezone": "UTC"}, False),
+            ({"auto_update": False}, True),
+            ({"auto_update": True}, True),
+        ],
+        ids=["no-overlay", "overlay-without-key", "pinned-off", "pinned-on"],
+    )
+    async def test_the_pin_is_readable_without_a_click(
+        self, monkeypatch, tmp_path, overlay, pinned
+    ):
+        """GET reports the pin so the switch can be held before its first click.
+
+        It reads the overlay alone: no update check, no config write.
+        """
+        from kiro_crew.config import loader
+
+        local = tmp_path / "config.local.json"
+        if overlay is not None:
+            local.write_text(json.dumps(overlay), encoding="utf-8")
+        monkeypatch.setattr(loader, "config_local_path", lambda: local)
+        checks: list[str] = []
+        monkeypatch.setattr(updates, "_do_update_check", lambda: checks.append("check"))
+        wrote: list[dict] = []
+        monkeypatch.setattr(
+            updates, "update_config_locked", lambda _p, *, mutate: wrote.append(mutate({}))
+        )
+
+        resp = await updates.api_update_auto_pin(MagicMock())
+
+        assert resp.status == 200
+        assert json.loads(resp.body.decode()) == {"overlay_override": pinned}
+        assert checks == []
+        assert wrote == []
+
+    def test_the_pin_read_is_routed_beside_the_write(self):
+        from aiohttp import web
+
+        from kiro_crew.dashboard.routes import system
+
+        app = web.Application()
+        system.register(app)
+        methods = {
+            r.method
+            for r in app.router.routes()
+            if r.resource and r.resource.canonical == "/api/update/auto"
+        }
+        assert {"GET", "POST"} <= methods
 
     @pytest.mark.parametrize(
         "raw",

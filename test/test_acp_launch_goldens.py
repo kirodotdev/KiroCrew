@@ -1,23 +1,11 @@
 """The launch of every known harness matches the committed golden.
 
-One file, one question: for each id in ``ACP_BACKENDS_KNOWN``, does
-``AcpClient._spawn`` still hand the process factory the same argv, log the spawn
-under the same label, drain stderr under the same label, and add the same
-environment variables it did before? A change that moves where those are COMPUTED
-must not move what they ARE -- for kiro-cli above all, whose construction path
-harness-parity H13 keeps free of work added for an adapter.
+For each id in ``ACP_BACKENDS_KNOWN``: argv, spawn and stderr log labels, and added env
+vars (harness-parity H13 for kiro-cli). The ``PATH``, interpreter path and pi gate nonce
+are placeholders: only their presence is pinned.
 
-Three values in the fixture are placeholders, because they are properties of the
-host or the run rather than of the harness: the augmented ``PATH``, the interpreter
-path, and pi's per-session gate nonce. That each harness RECEIVES them is what is
-pinned; their values are not.
-
-STRICTLY READ-ONLY. Nothing here writes the fixture, and nothing here writes
-anywhere in the repository (AUTOSDE ``no-test-side-effects``). The writer is
-``scripts/update_acp_launch_goldens.py``; run it only when a launch fact is meant to
-change, and commit the rewritten fixture with that change so the fixture diff is what
-shows a reviewer which harness moved. The capture both share is
-``test/acp_launch_capture.py``.
+Read-only (AUTOSDE ``no-test-side-effects``). The writer is
+``scripts/update_acp_launch_goldens.py``; the shared capture is ``test/acp_launch_capture.py``.
 """
 
 from __future__ import annotations
@@ -203,16 +191,9 @@ def test_the_fixture_is_written_in_the_shared_spelling() -> None:
 def test_a_capture_leaves_every_resolver_cache_as_it_found_it(tmp_path) -> None:
     """The capture must not leak its synthetic binaries into the worker.
 
-    ``_spawn``'s resolution ladders cache their answer in a module global for the
-    life of the process, and a capture stubs those resolvers -- so driving the real
-    spawn WRITES this file's ``/opt/bin/...`` fiction into a cache the rest of the
-    suite shares. A later test that reads a cache it did not seed would then pass or
-    fail on that fiction.
-
-    Every cache the capture touches is checked, adapters and self-served alike, and
-    the pre-capture state is read here rather than assumed: an earlier test in the
-    same worker may legitimately have left a real resolution in place, and the
-    contract is "as it found it", not "empty".
+    The resolvers cache in module globals, so a capture would write ``/opt/bin/...``
+    into a suite-wide cache. The state is snapshotted, not assumed empty: an earlier
+    test may have left a real resolution.
     """
     before = capture_mod.snapshot_bin_caches()
 
@@ -241,12 +222,9 @@ def test_the_default_home_stays_pinned_while_the_capture_environment_is_installe
 ) -> None:
     """No instant has the cleared environment installed and the real resolver live.
 
-    The fixed parent carries no ``KIROCREW_HOME``. A thread an earlier test on the
-    same worker left running reads the home when it calls ``config_dir()``, so if
-    the capture installs that environment before pinning the default resolver, or
-    lifts the pin before restoring the environment, such a thread resolves the
-    operator's real ``~/.kiro/crew`` in between. Both edges of the environment
-    patch are probed, because those are the moments a concurrent reader can land.
+    The fixed parent has no ``KIROCREW_HOME``, so a leftover thread calling
+    ``config_dir()`` in that gap would resolve the real ``~/.kiro/crew``. Both edges of
+    the env patch are probed.
     """
     from unittest import mock
 
@@ -291,19 +269,9 @@ def test_the_deepseek_capture_writes_its_scratch_windows_only_under_tmp_path(
 ) -> None:
     """Every filesystem write the DeepSeek arm makes lands under the test's temp dir.
 
-    The arm is the one harness whose spawn path WRITES into the scratch window it is
-    handed rather than only naming it: ``record_owner`` installs the child's pid as
-    ``.owner`` in the session window, and the gate probe's throwaway window is
-    ``rmtree``'d in the arm's ``finally`` -- both from an executor thread, so neither
-    is attributable to this test by frame. When the capture answered
-    ``allocate_scratch`` with a fixed synthetic ``/opt/scratch/...`` path, both became
-    writes at a real absolute path on the recording host, outside every sandbox.
-
-    The two writers are wrapped at the names the arm looks up, so a stub that ever
-    again answers a path outside ``tmp_path`` fails here with the path named, instead
-    of leaving an ``unlink`` and an ``rmtree`` aimed at someone's disk. And the owner
-    write must be RECORDED, not merely attempted: an absent directory answers
-    ``"unwritable"``, which is exactly what the host path did.
+    ``record_owner`` and the probe window's ``rmtree`` write from an executor thread, so
+    a stub path outside ``tmp_path`` would hit the real disk. The owner write must be
+    recorded: an absent directory answers ``"unwritable"``.
     """
     touched: list[Path] = []
     outcomes: list[str] = []
@@ -337,17 +305,8 @@ def test_the_deepseek_capture_writes_its_scratch_windows_only_under_tmp_path(
 def test_the_env_delta_does_not_depend_on_the_recording_environment(monkeypatch, tmp_path) -> None:
     """The fixture must record what _spawn CONTRIBUTES, not what this host lacked.
 
-    ``env_added`` is a delta, and measuring it against the ambient environment made it
-    a property of the recording process: a host that already exported a variable
-    ``_spawn`` also sets saw no difference and recorded no key, while a clean runner
-    recorded one. That is what made the committed fixture disagree with a Windows
-    runner on ``KIROCREW_SPAWNED`` -- Crew exports it into every agent it spawns, so a
-    capture taken from inside an agent could never observe ``_spawn`` setting it.
-
-    Driven in BOTH directions against the same backend: once with those variables
-    absent from the ambient environment, once with them present and set to the very
-    values ``_spawn`` would write. A capture that reads the ambient environment
-    answers differently in the two cases; one that pins its parent cannot.
+    Against the ambient env, a host already exporting ``KIROCREW_SPAWNED`` (any agent)
+    records no key. Run with the vars absent and present; only a pinned parent agrees.
     """
     marker_keys = {
         "KIROCREW_SPAWNED": "1",
@@ -374,13 +333,10 @@ def test_the_env_delta_does_not_depend_on_the_recording_environment(monkeypatch,
 
 
 def test_the_fixed_parent_never_carries_a_variable_spawn_sets() -> None:
-    """The pass-through allowlist must not be able to hide a contributed key again.
+    """The pass-through allowlist must not be able to hide a contributed key.
 
-    The fix pins the parent environment but carries some OS variables through from the
-    host, because Windows cannot resolve a home or temp directory without them. That
-    list is only safe while it names nothing ``_spawn`` writes -- otherwise a
-    carried-through value would mask a contribution exactly as the ambient
-    environment did.
+    Some OS vars pass through for Windows home and temp resolution. The list must name
+    nothing ``_spawn`` writes, or it masks a contribution.
     """
     contributed = {
         "KIROCREW_SPAWNED",
@@ -403,11 +359,8 @@ def test_the_fixed_parent_never_carries_a_variable_spawn_sets() -> None:
 class _WindowsLikeEnviron(MutableMapping):
     """``os.environ`` as Windows presents it: variable names folded to upper case.
 
-    A plain ``dict`` subclass will not do -- ``dict.update`` and the ``{**d}`` splat
-    take a C-level fast path that never calls ``__setitem__``, so the fold would not
-    apply. A ``MutableMapping`` routes every write through ``__setitem__``, which is
-    what makes ``patch.dict(..., clear=True)`` and ``dict(os.environ)`` fold here the
-    way they do on a real Windows host.
+    Not a ``dict`` subclass: ``dict.update`` and ``{**d}`` skip ``__setitem__``, so the
+    fold would not apply.
     """
 
     def __init__(self, data=None) -> None:
@@ -437,13 +390,8 @@ class _WindowsLikeEnviron(MutableMapping):
 def test_a_windows_case_fold_reports_no_phantom_removal(monkeypatch, tmp_path) -> None:
     """A name the child inherits under a folded case is not recorded as removed.
 
-    On Windows ``os.environ`` folds every variable name to one case, so a name the
-    host exports as ``SystemRoot`` reaches the child as ``SYSTEMROOT``. Measuring the
-    delta against the pre-roundtrip parent -- which still holds the mixed-case
-    ``SystemRoot`` the pass-through allowlist read back -- reports that name as
-    removed, which is the Windows-only golden failure this pins. The fold is simulated
-    with a case-insensitive ``os.environ`` rather than by flipping ``os.name``, which
-    would turn ``pathlib`` into ``WindowsPath`` on this host.
+    ``SystemRoot`` reaches the child as ``SYSTEMROOT``. Simulated with a folding
+    ``os.environ``, not by flipping ``os.name``, which would make ``pathlib`` Windows.
     """
     folded = _WindowsLikeEnviron(os.environ)
     # The host variable whose mixed case ``fixed_parent_env`` reads back, and which the
@@ -477,11 +425,8 @@ def test_the_delta_still_reports_a_variable_the_launch_genuinely_dropped() -> No
 def test_a_derived_stub_accepts_exactly_what_the_real_collaborator_accepts() -> None:
     """A stub's accepted arguments must track its target's, in BOTH directions.
 
-    A stub narrower than the thing it stubs rejects a call the spawn path really makes,
-    which fails every case here for a reason that is about this file rather than about
-    any harness. A stub wider than it -- ``**kwargs`` -- accepts a keyword the target
-    does not have, so an argument could reach the real collaborator only in production
-    and never be measured here. Both are pinned, so neither shape can pass.
+    Narrower rejects a real call; wider (``**kwargs``) hides an argument that reaches
+    only the real collaborator.
     """
 
     def target(env, *, flavour: bool = False):
@@ -638,7 +583,6 @@ class _Recording:
         self.wrap_kwargs: dict = {}
         self.factory_argv: list[str] = []
         self.factory_kwargs: dict = {}
-        self.socket_env_arg: dict | None = None
         self.forward_args: tuple | None = None
         self.pod_internal_sandbox: bool | None = None
 
@@ -648,7 +592,6 @@ def _launch_tools(
     *,
     scratch: _Scratch,
     delegate: bool = False,
-    browser_env: dict[str, str] | None = None,
     spawn_error: BaseException | None = None,
     retrying=None,
 ):
@@ -689,15 +632,6 @@ def _launch_tools(
         rec.calls.append(f"apply_pod_home_remap:{pod_home_remap}")
         return dict(env, POD_REMAP=str(pod_home_remap))
 
-    def _browser_session(env):
-        rec.calls.append("browser_session_env")
-        return dict(browser_env or {})
-
-    def _browser_socket(env):
-        rec.calls.append("browser_socket_env")
-        rec.socket_env_arg = dict(env)
-        return {"BROWSER_SOCKET": "sock"}
-
     def _xdist(env):
         rec.calls.append("inject_xdist_auto_cap")
         env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "2"
@@ -727,8 +661,6 @@ def _launch_tools(
         augmented_path=lambda path: f"{path}:/augmented",
         scrub_agent_subprocess_env=_scrub,
         apply_pod_home_remap=_pod_remap,
-        browser_session_env=_browser_session,
-        browser_socket_env=_browser_socket,
         inject_xdist_auto_cap=_xdist,
         bind_voice_safe_agent_workspace_async=_bind,
         create_subprocess_limited=_create,
@@ -833,7 +765,7 @@ def test_the_child_environment_is_built_in_one_fixed_order(monkeypatch, tmp_path
             env_after_scratch=_step("after_scratch"),
             pod_home_remap=True,
         ),
-        _launch_tools(rec, scratch=_Scratch(tmp_path / "scratch"), browser_env={"B": "kc-1"}),
+        _launch_tools(rec, scratch=_Scratch(tmp_path / "scratch")),
     )
 
     before = seen["before_scrub"]
@@ -845,9 +777,7 @@ def test_the_child_environment_is_built_in_one_fixed_order(monkeypatch, tmp_path
     assert "POD_REMAP" not in after_scrub and "KIROCREW_SPAWNED" not in after_scrub
     after_marker = seen["after_marker"]
     assert after_marker["POD_REMAP"] == "True" and after_marker["KIROCREW_SPAWNED"] == "1"
-    assert "B" not in after_marker
     after_scratch = seen["after_scratch"]
-    assert after_scratch["B"] == "kc-1"
     assert after_scratch["KIROCREW_SCRATCH"] == str(tmp_path / "scratch")
     assert "PYTEST_XDIST_AUTO_NUM_WORKERS" not in after_scratch
     child = rec.factory_kwargs["env"]
@@ -855,43 +785,6 @@ def test_the_child_environment_is_built_in_one_fixed_order(monkeypatch, tmp_path
     assert rec.calls.index("scrub_agent_subprocess_env") < rec.calls.index(
         "apply_pod_home_remap:True"
     )
-
-
-def test_the_browser_session_reaches_the_child_with_its_socket_env(monkeypatch, tmp_path) -> None:
-    """Each agent process gets its own named browser session, and its lifecycle socket.
-
-    Without the name, two agents' nameless browser commands resolve to one shared
-    ``default`` browser and navigate and close each other's pages. The socket env is
-    resolved from the gateway's environment plus that name, off the loop through the
-    guarded hop, because it reads the filesystem while the sandbox launcher is live.
-    """
-    _launch_env(monkeypatch, GATEWAY="g")
-    host = _FakeHost(tmp_path)
-    rec = _Recording()
-    _run_launch(
-        host,
-        _request(),
-        _launch_tools(rec, scratch=_Scratch(None), browser_env={"AGENT_BROWSER_SESSION": "kc-7"}),
-    )
-
-    child = rec.factory_kwargs["env"]
-    assert child["AGENT_BROWSER_SESSION"] == "kc-7"
-    assert child["BROWSER_SOCKET"] == "sock"
-    lookup = rec.socket_env_arg
-    assert lookup is not None
-    assert (lookup["GATEWAY"], lookup["AGENT_BROWSER_SESSION"]) == ("g", "kc-7")
-    # The GATEWAY's environment plus the name, never the child's: neither the session
-    # overlay nor anything the tail wrote on the child reaches the lookup.
-    assert "EXTRA" not in lookup and "KIROCREW_SPAWNED" not in lookup
-    assert "_browser_socket" in host.guarded
-
-
-def test_no_browser_session_means_no_socket_lookup(monkeypatch, tmp_path) -> None:
-    _launch_env(monkeypatch)
-    rec = _Recording()
-    _run_launch(_FakeHost(tmp_path), _request(), _launch_tools(rec, scratch=_Scratch(None)))
-    assert "browser_socket_env" not in rec.calls
-    assert "BROWSER_SOCKET" not in rec.factory_kwargs["env"]
 
 
 def test_a_failed_spawn_releases_the_workspace_and_the_sandbox_launcher(
@@ -1056,11 +949,8 @@ def _host_name_re(hosts: frozenset[str]) -> re.Pattern[str]:
 def _host_tokens(source: str, hosts: frozenset[str]) -> list[str]:
     """Every CODE token of *source* that names one of *hosts*.
 
-    Read through ``tokenize`` so comments and prose never count: an identifier is
-    matched whole against :func:`_host_name_re` (the names in an f-string's fields
-    arrive as identifiers too), and a string literal, or one literal part of an
-    f-string, counts only when its value IS a host id (``"deepseek"``,
-    ``f"{x}deepseek"``) -- which a docstring never is.
+    Via ``tokenize``, so comments never count. Identifiers match :func:`_host_name_re`;
+    a literal counts only when its value is a host id (``"deepseek"``, ``f"{x}deepseek"``).
     """
     import ast
     import io
@@ -1086,11 +976,8 @@ def _host_tokens(source: str, hosts: frozenset[str]) -> list[str]:
 def test_the_shared_launch_code_names_no_per_process_host() -> None:
     """harness-parity H13: the code every host shares carries no host's conditional.
 
-    Kept as a source read on purpose, because the defect has no behavioural signal: a
-    branch such as ``if self.backend == "deepseek":`` added to the tail is inert on the
-    Kiro path, so no launch of kiro-cli changes and the golden stays green. What a host
-    needs at launch belongs in its adapter (``acp/harness/<host>.py``), so the tail, the
-    client's spawn and the runtime's spawn must not spell one.
+    A source read: ``if self.backend == "deepseek":`` is inert on kiro, so the golden
+    stays green. Host needs belong in ``acp/harness/<host>.py``.
     """
     from kiro_crew.acp import launch as launch_mod
     from kiro_crew.acp import runtime as runtime_mod

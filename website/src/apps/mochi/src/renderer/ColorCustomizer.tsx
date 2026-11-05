@@ -4,7 +4,7 @@
  * Preset picker grid (each preset shows an SVG preview) + manual color editor
  * with per-body-part highlighting. i18n via useT().
  */
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Check, X } from 'lucide-react'
 import { extractSvgColors, applySvgColorMap, type ColorMap } from '../shared/colorCustomizer'
 import { PresetRegistry, extractSwatches, type CatPreset } from '../shared/catPresets'
@@ -140,15 +140,23 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
   // MeetingTitle). The field has no blur handler, so there is no pointer-blur
   // path to exclude.
   const saveTriggerRef = useRef<HTMLButtonElement | null>(null)
+  // Set by a close, read by the effect below once the trigger is mounted again.
+  const restoreSaveFocusRef = useRef(false)
   const closeSaveForm = useCallback(() => {
+    restoreSaveFocusRef.current = true
     setShowSaveForm(false)
-    // Only take back focus the unmount dropped: a save can resolve after the
-    // user has already moved on to another control, and that control keeps it.
-    requestAnimationFrame(() => {
-      const at = document.activeElement
-      if (at === null || at === document.body) saveTriggerRef.current?.focus({ preventScroll: true })
-    })
   }, [])
+  // Runs after the commit that remounts the trigger, so the ref is set however
+  // the close was reached (a key, a click, or a save that resolved later). A
+  // timer could fire before that commit when the close followed an await.
+  // Only take back focus the unmount dropped: a save can resolve after the user
+  // has already moved on to another control, and that control keeps it.
+  useLayoutEffect(() => {
+    if (showSaveForm || !restoreSaveFocusRef.current) return
+    restoreSaveFocusRef.current = false
+    const at = document.activeElement
+    if (at === null || at === document.body) saveTriggerRef.current?.focus({ preventScroll: true })
+  }, [showSaveForm])
   const [saveNameInput, setSaveNameInput] = useState('')
   const sourceColors = useMemo(() => extractSvgColors(idleSvgContent), [idleSvgContent])
 
@@ -243,6 +251,7 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
               value={saveNameInput}
               onChange={e => setSaveNameInput(e.target.value)}
               {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: closeSaveForm })}
+              aria-label={i18nT('apps.mochi.color.prompt_name')}
               placeholder={i18nT('apps.mochi.color.prompt_name')}
               autoFocus
               style={{

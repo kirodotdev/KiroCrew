@@ -59,42 +59,21 @@ RECEIPT_MAX_ITEMS = 5
 RECEIPT_MAX_OWED = 4
 
 #: Publications refused in a row, with nothing landing, before a debt is GIVEN UP.
-#: :data:`RECEIPT_MAX_OWED` bounds how much one debt holds; this and
-#: :data:`RECEIPT_MAX_DEBTS` bound how LONG it is held and how MANY are held, which is
-#: the rest of the same policy: retain a debt while it is plausibly publishable, and
-#: while the registry has room for it.
+#: Counted in refusals, not time: each refusal already tried an edit AND a post, so a
+#: run of them is evidence the conversation takes no writes. Only a landed body restarts
+#: the count; a transition that retains a record is itself a refusal, so restarting
+#: there would make the bound unreachable under ordinary mid-turn-then-drain traffic.
 #:
-#: The count is of refusals, not of elapsed time, because each refusal is fresh evidence
-#: that this conversation takes no writes while a clock only says nobody spoke. Each
-#: refusal has already tried an edit AND a post, so a run of them is strong evidence
-#: rather than a rate-limit window. Landing a body is the ONLY thing that restarts the
-#: allowance: a transition that retains a record is itself one of these refusals, so
-#: restarting it there would make the whole bound unreachable in the ordinary traffic
-#: pattern -- a mid-turn message then a drain, each refused, each retaining -- which is
-#: exactly the pattern the bound exists for.
-#:
-#: Its size is tied to :data:`RECEIPT_MAX_OWED` because the two bounds race: a debt takes
-#: on one record per refusal, so an allowance shorter than the records the size cap needs
-#: would give the debt up before that cap could ever bite, leaving
-#: :attr:`QueueReceipt.omitted_records` describing a state nothing reaches. Twice the size
-#: cap leaves room for the list to fill AND to shed, and still gives up while the
-#: conversation is the only thing that has gone wrong.
-#:
-#: Giving up matters because the entry is the registry's only entry for its session key,
-#: and a key can span several conversations: one permanently unwritable chat holds the
-#: key against every healthy sibling on it, so none of them gets a receipt either. The
-#: cost of giving up is the bubble in the dead conversation keeping its "⏳ Queued" text,
-#: which no write could have corrected anyway.
+#: Twice :data:`RECEIPT_MAX_OWED` because the two bounds race: a shorter allowance would
+#: give the debt up before the size cap could bite. Giving up matters because one
+#: unwritable chat otherwise holds the session key against every healthy sibling on it.
 RECEIPT_MAX_PUBLISH_ATTEMPTS = 2 * RECEIPT_MAX_OWED
 
 #: Terminal entries the registry retains at once. A debt is retried only by a later
-#: transition ON ITS OWN KEY, so a key that stops being addressed -- a session key
-#: rotates its ``:gen{N}`` suffix on reset -- leaves a debt nothing will ever visit
-#: again, and per-debt attempts cannot expire what is never attempted. This is the bound
-#: that reaches those: past it the LEAST RECENTLY ATTEMPTED debt is released (every
-#: attempt moves its entry to the back), which is the one whose key has been silent
-#: longest and so the one most likely to be orphaned.
-#: What it releases is COUNTED, for the same reason the body cap counts what it drops.
+#: transition on its own key, so a key that stops being addressed (a reset rotates its
+#: ``:gen{N}`` suffix) is never visited again. Past this bound the LEAST RECENTLY
+#: ATTEMPTED debt is released (each attempt moves its entry to the back), and the
+#: release is COUNTED.
 RECEIPT_MAX_DEBTS = 64
 
 #: Instant, no-extra-bubble acknowledgement that a mid-turn steer was accepted
@@ -124,30 +103,15 @@ _ADDRESS_SEP = "\x00"
 def receipt_address_key(label: str, *parts: object) -> str:
     """The stable id of the ONE conversation a surface's message ids are valid in.
 
-    Pass the values that name the conversation the bubble is SEEN in, and it must
-    be at least as fine as the session key: two conversations the session key
-    collapses onto one entry share one bubble, and this key is then the only thing
-    that can keep one of them out of the other's. Two conversations the session key
-    already separates never meet in an entry, so a key that cannot tell them apart
-    costs nothing there.
+    Must be at least as fine as the session key: conversations the session key
+    collapses onto one entry share one bubble, and only this key keeps them apart.
+    So a Telegram forum route (Topic already in the session key) needs only
+    ``chat_id``, while a Webex group space (``space:{room_id}``) needs the thread too.
+    Every part comes from the provider's inbound payload, never from the agent.
 
-    That is why two channels with the same shape answer differently. A Telegram
-    forum route carries the Topic in the session key, so two Topics hold separate
-    entries and ``chat_id`` alone is enough. A Webex group space routes as
-    ``space:{room_id}``, so two THREADS of one room share an entry and the thread
-    belongs in the key beside the room.
-
-    Every part comes from the provider's own inbound payload, so the key names a
-    conversation the provider assigned and nothing the agent can choose.
-
-    Returns ``""`` when any part is missing, which reads as UNKNOWN rather than as
-    an address: :meth:`QueueReceipt.addressed_by` matches no key against it, not
-    even another empty one, and :meth:`ReceiptQueue.create_or_grow_locked` opens no
-    bubble on a surface that cannot name its address. Fail closed -- without an
-    address there is no way to tell the bubble's own conversation from any other.
-    A caller whose component is legitimately absent -- a Webex receipt in the room
-    root rather than under a thread -- passes a nameable stand-in for it, because
-    "the room root" is a conversation and "unknown" is not.
+    Returns ``""`` (UNKNOWN) when any part is missing: it matches no key, not even
+    another empty one, and no bubble is opened for it. A legitimately absent part
+    (a Webex room root, not a thread) gets a nameable stand-in instead.
     """
     values = [str(part) for part in parts]
     if not label or not all(values):
@@ -187,17 +151,10 @@ def receipt_text(
 class ReceiptLine:
     """One queued message as the receipt lists it: whose it is, and what it shows.
 
-    The owner is the token :func:`kiro_crew.messaging.queue_drain.owner_token` builds,
-    the same value the queue entry itself carries, so the bubble and the queue agree
-    about who queued what. Empty for a producer that cannot name its principal, which
-    makes the line nobody's to withdraw.
-
-    The address is :func:`receipt_address_key` for the surface this line ARRIVED on,
-    and it is what decides where the line may be shown. Under a shared session key
-    one bubble can list lines from several conversations, and a line may only be
-    rendered back into the conversation it came from -- so every body written to the
-    bubble is built from :meth:`QueueReceipt.texts_at_address`, never from the whole
-    list. Empty when the surface could not name its address, which shows the line
+    ``owner`` is the :func:`kiro_crew.messaging.queue_drain.owner_token` the queue
+    entry carries too; empty makes the line nobody's to withdraw. ``address`` is the
+    :func:`receipt_address_key` the line ARRIVED on: under a shared session key a
+    line may be rendered only back into its own conversation, and empty shows it
     nowhere.
     """
 
@@ -210,38 +167,24 @@ class ReceiptLine:
 class QueueReceipt:
     """The single, in-place receipt bubble tracking messages queued mid-turn.
 
-    ``msg_id`` is deliberately opaque (``Any``): Telegram message ids are ints
-    and Discord's are strings, the two are never interleaved in one process, and
-    a generic parameter would add ceremony without catching a real mixup -- the
-    id is only ever handed straight back to the surface that produced it.
+    ``msg_id`` is opaque (``Any``): Telegram ids are ints, Discord's strings, and
+    the id is only ever handed back to the surface that produced it.
 
-    One registry entry serves a whole session key, and that key can span several
-    conversations: under ``messaging.dm_scope = "unified"`` every allow-listed
-    person's direct chat collapses into one key, and a group space routes as
-    ``space:{room_id}`` under ANY scope. So the lines on one bubble may come from
-    several conversations while ``msg_id`` names a message in exactly ONE of them --
-    the one the bubble was opened in. Everything below follows from that single
-    pairing, and all of it is decided on the ADDRESS rather than on who is calling:
+    One entry serves a whole session key, which can span several conversations
+    (``messaging.dm_scope = "unified"`` DMs, or a ``space:{room_id}`` group space),
+    while ``msg_id`` names a message in exactly the ONE it was opened in. So, decided
+    on the ADDRESS rather than on who is calling:
 
-    * only the bubble's own address may write to the bubble. ``msg_id`` is a
-      per-conversation number, so the same integer in another chat is an unrelated
-      message and editing it there would rewrite a stranger's post.
-    * a body written to the bubble may quote only the lines that arrived at that
-      same address (:meth:`texts_at_address`). One person's text must not appear in
-      another person's chat, and the bubble's chat is somebody's chat.
+    * only the bubble's own address may write to it: the same ``msg_id`` in another
+      chat is a stranger's post.
+    * a body may quote only lines that arrived at that address
+      (:meth:`texts_at_address`), so one person's text never shows in another's chat.
 
-    Deciding on the address and not on the principal is what makes both rules true
-    on the two shared-key routes at once. In a group space every member's surface
-    binds the same ``room_id``, so a second member's message both may and must
-    update the shared bubble; under unified DM scope two members' surfaces bind
-    different chats, so neither may write to the other's. A test on who is calling
-    cannot tell those apart -- it is the same "somebody else" in both.
+    A caller test cannot get both shared-key routes right: in a group space a second
+    member must update the shared bubble, under unified DMs they must not.
 
-    ``opened_on`` is the surface the bubble was opened on, and :attr:`address` is
-    its key. Holding the surface for the entry's life is something a surface
-    supports: it closes over its channel's long-lived client plus the bound address
-    and carries no per-request state. An entry always has one, because a bubble is
-    not opened on a surface that cannot name its address.
+    ``opened_on`` is the surface the bubble was opened on (safe to hold: it carries
+    no per-request state); :attr:`address` is its key.
     """
 
     msg_id: Any
@@ -251,38 +194,22 @@ class QueueReceipt:
     #: rather than through some caller's surface.
     opened_on: ReceiptSurface | None = None
     lines: list[ReceiptLine] = field(default_factory=list)
-    #: The FINAL records this bubble still owes, OLDEST first, each set when its own
-    #: write did not land.
-    #:
-    #: An entry carrying any is TERMINAL: those messages have already left the queue,
-    #: so it is not grown and not flipped again -- the next mid-turn message opens a
-    #: fresh bubble rather than putting answered text back under "Queued". A body
-    #: travels WITH the entry because the record owed is the one that transition
-    #: computed; recomputing it later would write whatever the later transition
-    #: happened to be instead.
-    #:
-    #: It is a LIST because a transition can meet an entry that already owes one: the
-    #: channel that refused the earlier record is usually still refusing, and a single
-    #: slot would mean the later transition's record is dropped on the floor with
-    #: nothing left to publish it. They are kept in the order they happened, which is
-    #: the order a reader must see them in, and capped at :data:`RECEIPT_MAX_OWED`.
+    #: The FINAL records this bubble still owes, OLDEST first (the order a reader must
+    #: see them), capped at :data:`RECEIPT_MAX_OWED`. Any makes the entry TERMINAL: not
+    #: grown or flipped again, so answered text never goes back under "Queued". Each
+    #: body is the one its transition computed; recomputing later would write the wrong
+    #: record. A list because the channel that refused one record usually refuses the
+    #: next, and a single slot would drop it.
     owed_bodies: list[str] = field(default_factory=list)
-    #: How many owed records were released to keep :attr:`owed_bodies` inside
-    #: :data:`RECEIPT_MAX_OWED`. Counted at the same seam that releases them, because a
-    #: released record has no other trace: a shortened list reads exactly like a burst
-    #: that never produced those records. The count is said out loud once, on the body
-    #: that reaches the reader first, and cleared when that body lands.
+    #: Owed records released by the :data:`RECEIPT_MAX_OWED` cap, which leave no other
+    #: trace. Said once on the first body that reaches the reader, cleared when it lands.
     omitted_records: int = 0
-    #: Whether a record for this debt has already reached the reader. There is ONE
-    #: bubble and it holds the OLDEST record, so once anything has been published the
-    #: bubble is spent: every later body is posted beneath it. Without this a retry
-    #: would edit the next body over the record already sitting in the bubble.
+    #: Whether a record for this debt has reached the reader. The ONE bubble holds the
+    #: OLDEST record, so after that every body is posted beneath it rather than edited
+    #: over it.
     bubble_consumed: bool = False
-    #: Publications refused in a row with nothing landing. The evidence the retention
-    #: bound is measured against: restarted ONLY by a body that reaches the reader, since
-    #: a transition retaining a record is itself one of these refusals. So it counts
-    #: refusals of the body an attempt actually offers -- the oldest -- rather than the
-    #: age of the entry holding it.
+    #: Refusals in a row of the oldest owed body, with nothing landing. Restarted only
+    #: by a body that reaches the reader (see :data:`RECEIPT_MAX_PUBLISH_ATTEMPTS`).
     publish_failures: int = 0
 
     @property
@@ -307,12 +234,9 @@ class QueueReceipt:
     def addressed_by(self, surface: ReceiptSurface) -> bool:
         """Whether *surface* writes to the same conversation this bubble lives in.
 
-        This is the whole address rule as one question, and every transition asks it
-        instead of asking who is calling. True on a shared-conversation route (a group
-        space, where every member's surface binds the one ``room_id``) and false across
-        two chats that merely share a session key (unified DM scope). An unknown
-        address on either side answers false: without a key there is nothing to
-        compare, and guessing is what puts a body in the wrong chat.
+        The whole address rule; every transition asks it instead of who is calling.
+        True in a group space (one ``room_id``), false across chats that only share a
+        session key. An unknown address on either side answers false.
         """
         mine = self.address
         return bool(mine) and mine == surface.address_key
@@ -332,31 +256,14 @@ class QueueReceipt:
     def terminalize(self, body: str) -> None:
         """Make this entry terminal, owing *body* after anything it already owes.
 
-        The one way to add to :attr:`owed_bodies`, so the bound on what a terminal entry
-        retains is applied HERE -- at the point of retention -- rather than at each of
-        the transitions that terminalize, where the next one added would forget it. Three
-        bounds meet at this seam, one per way a debt can grow without end. Each ``body``
-        is already bounded: :func:`receipt_text` lists at most :data:`RECEIPT_MAX_ITEMS`
-        items and :func:`short` truncates each, so one retained string cannot grow with
-        the burst that produced it. The LIST is bounded here, to
-        :data:`RECEIPT_MAX_OWED`, because it grows by one every time a transition meets a
-        channel that is still refusing. How LONG the debt is held is bounded by
-        :meth:`note_refusal`, whose allowance this deliberately leaves alone -- a
-        retention past the first is itself a refused publication, so restarting it here is
-        what would make that bound unreachable; how MANY debts the registry holds is
-        bounded where this is called from.
+        The one way to add to :attr:`owed_bodies`, so the :data:`RECEIPT_MAX_OWED` cap
+        is applied at the point of retention, and what it releases is COUNTED in
+        :attr:`omitted_records`. Each body is already bounded by :func:`receipt_text`.
+        It leaves :meth:`note_refusal`'s allowance alone: restarting it here would make
+        that bound unreachable.
 
-        ``lines`` is released: it holds every message verbatim and is of no further use
-        -- a terminal entry is never grown, never flipped, and never rendered again.
-
-        Appending rather than replacing is the whole point. The earlier record describes
-        messages that left the queue earlier, and *body* describes this transition's own;
-        writing one over the other would say the wrong thing happened, permanently.
-
-        What the cap releases is COUNTED here, at that same seam. A released record has
-        no other trace of itself: the list simply becomes shorter, which reads exactly
-        like a burst that never produced those records at all. The count travels with the
-        entry until a record reaches the reader carrying it.
+        Appends rather than replaces: the earlier record describes earlier messages.
+        ``lines`` is released, since a terminal entry is never rendered again.
         """
         self.owed_bodies.append(body)
         released = len(self.owed_bodies) - RECEIPT_MAX_OWED
@@ -368,26 +275,14 @@ class QueueReceipt:
     def note_refusal(self, *, progressed: bool) -> bool:
         """Count one refused publication. Returns whether retention is SPENT.
 
-        The lifetime half of the bound that :meth:`terminalize` states the size half of,
-        kept beside it so what a terminal entry is allowed to hold and how long it is
-        allowed to hold it are one decision in one place. Only the observation is
-        elsewhere: a refusal is seen where a body is published, and the publisher reports
-        it here rather than judging it there.
+        The lifetime half of the bound :meth:`terminalize` sizes. *progressed* is
+        whether a body landed during the attempt, the ONLY thing that restarts the
+        allowance: a channel that publishes one record and refuses the next is still
+        draining. A record JOINING the debt must not restart it, or the count never
+        reaches the cap while traffic keeps arriving.
 
-        *progressed* is whether anything left the debt during that attempt, and landing a
-        body is the ONLY thing that restarts the allowance. A channel that published one
-        record and refused the next is working -- the debt is draining, and expiring it
-        would throw away records on their way to a reader. Nothing else may restart it,
-        least of all a record JOINING the debt: every retention past the first is itself
-        one of these refusals, so restarting there leaves the count oscillating below the
-        cap for as long as traffic keeps arriving, which is precisely when the bound is
-        needed.
-
-        What it counts is refusals of the debt's OLDEST body, since that is the only one
-        a publication attempt offers before returning. The newer records behind it share
-        that body's fate rather than each earning their own allowance -- they are owed on
-        the same conversation, and the oldest has to go first for a reader to see them in
-        the order they happened.
+        Counts refusals of the OLDEST body only; newer ones share its fate, since it
+        must go first for the reader to see them in order.
         """
         self.publish_failures = 0 if progressed else self.publish_failures + 1
         return self.publish_failures >= RECEIPT_MAX_PUBLISH_ATTEMPTS
@@ -395,15 +290,9 @@ class QueueReceipt:
     def abandon(self) -> int:
         """Give up everything owed. Returns how many records now reach nobody, ever.
 
-        The debt is emptied IN PLACE, so this entry stops being terminal: it owes
-        nothing, every transition treats it as settled, and the key it sat on is released.
-        That is the whole point -- a key held by a conversation that takes no writes is a
-        key no sibling on it can have.
-
-        The return value includes :attr:`omitted_records` as well as the bodies still
-        held, because those records are given up here too. Counting only the bodies would
-        lose a count that was itself the record of a loss, which is the same silence one
-        level up.
+        Empties the debt IN PLACE so the entry stops being terminal and releases its
+        key to siblings. The count includes :attr:`omitted_records`, which are given up
+        too.
         """
         given_up = len(self.owed_bodies) + self.omitted_records
         self.owed_bodies.clear()
@@ -426,30 +315,15 @@ class QueueReceipt:
     def drop_answered(self, owner: str, still_queued: int) -> None:
         """Drop *owner*'s answered lines here, keeping their *still_queued* NEWEST.
 
-        What a drain just took off the queue, and only that. It keeps the newest rather
-        than dropping "as many as were answered", because those two are not the same
-        number: a queued message does not always open a line here. A refused
-        :meth:`ReceiptSurface.send_receipt` opens no bubble at all, and a message that
-        arrives while this entry owes a record is deliberately not retained -- so one
-        principal can hold FEWER lines than they have messages on the queue, and a
-        positional count then consumes a line whose message is still queued. That line is
-        its only handle, so erasing it costs that message its acknowledgement on the
-        bubble and its final record, with nothing left to revisit either.
+        Keeps the newest rather than dropping "as many as were answered": not every
+        queued message opens a line (a refused send, or arrival while the entry owes a
+        record), so a positional count would erase a still-queued message's only handle.
+        The drain takes from the front and re-enqueues the rest, so what is still queued
+        is the principal's LATEST; with fewer lines than *still_queued*, none is dropped
+        (a line left listed is re-rendered as queued; a removed one is gone).
 
-        Counting from the END is what removes the mismatch instead of tracking it: the
-        drain collapses in arrival order from the front of the queue and re-enqueues the
-        rest, so whatever of this principal's is still queued is their LATEST, and
-        *still_queued* is what that drain itself put back rather than anything inferred
-        here. When they hold fewer lines than that, every line they have is still queued
-        and none is dropped -- the safe direction, because a line left listed is
-        re-rendered as queued by the next transition, while a line removed is gone.
-
-        Scoped to :attr:`address` as well as to *owner*, for the reason every rule here
-        is: a line records the address it ARRIVED at, and a drain answers ONE envelope,
-        so the lines it took are the ones that arrived where that envelope came from.
-
-        An empty *owner* drops nothing, matching :meth:`withdraw` -- a caller that cannot
-        name its principal names no line.
+        Scoped to :attr:`address` too, since a drain answers ONE envelope. An empty
+        *owner* drops nothing, matching :meth:`withdraw`.
         """
         if not owner:
             return
@@ -471,21 +345,11 @@ class QueueReceipt:
     def others_at_address(self, owner: str) -> list[str]:
         """What this bubble still lists for principals OTHER than *owner*, in order.
 
-        The question a drain asks before it retires the bubble, and it is deliberately
-        narrower than :meth:`texts_at_address`. Three categories of remaining line meet
-        here and only one of them may hold the key:
-
-        * another principal's line at this address -- ONLY that entry is their handle,
-          and only their own drain can answer them, so retiring it erases an
-          acknowledgement for a message that is still queued. That is this list.
-        * a line at ANOTHER address -- never rendered on this bubble, so it is owed
-          nothing by it. Excluded, the same way every render here excludes it.
-        * *owner*'s own line past the collapse cap -- still queued, but it is answered
-          by this same principal's very next drain and the flip body already says so
-          with ``+N deferred``. Excluded, so that contract is left as it is.
-
-        An empty *owner* names no principal, so nothing can be told apart from them and
-        the answer is every line at the address.
+        Asked before a drain retires the bubble. Only another principal's line at this
+        address may hold it: this entry is their only handle. Lines at another address
+        are never rendered here, and *owner*'s own lines past the collapse cap are
+        answered by their next drain (the flip body says ``+N deferred``). An empty
+        *owner* returns every line at the address.
         """
         mine = self.address
         if not mine:
@@ -586,42 +450,23 @@ class ReceiptQueue:
         receipt = self._receipts.get(session_key)
         line = ReceiptLine(owner=owner, text=display_text, address=surface.address_key)
         if receipt is not None and receipt.owes_record:
-            # Terminal: those messages already left the queue. Growing it would put
-            # answered text back under "Queued" beside this new one, so the record it
-            # owes is written first and the key released only once it owes nothing --
-            # this entry is that bubble's only handle. The write goes to the bubble's OWN
-            # conversation, not this caller's: under a shared key the arriving message
-            # may be from another chat, and the record quotes that chat's text.
-            #
-            # Owing nothing covers the debt being PUBLISHED and the debt being GIVEN UP
-            # on a conversation that has refused every write for long enough. Both free
-            # the key, and this is the burst on which THIS message gets a bubble of its
-            # own: under a shared session key the arriving surface is often a healthy
-            # sibling of the one that went silent, and the key was the only thing
-            # standing between it and its own receipt.
+            # Terminal: growing it would put answered text back under "Queued". Write the
+            # owed record first, through the bubble's OWN conversation (the arriving
+            # message may be from another chat). Once the debt is published or given up,
+            # the key is free and this message gets a bubble of its own.
             if await self._write_record(session_key, receipt) != "owed":
                 self._receipts.pop(session_key, None)
                 receipt = None
             else:
-                # Still no channel, and the debt has attempts left, so this entry stays
-                # terminal and this message gets no bubble yet. The residual is one
-                # missing "⏳ Queued" acknowledgement per message that arrives while the
-                # debt is held, and the lifetime bound is what stops them accruing without
-                # end; nothing is lost either way, because the caller enqueued before
-                # calling and the drain renders its answering record from what it dequeued
-                # rather than from here. The line is deliberately NOT retained on a
-                # terminal entry. No path reads those lines -- every transition returns
-                # above on ``owes_record`` -- so keeping them would change nothing a reader
-                # sees while growing a verbatim burst for as long as the channel refuses,
-                # which is the retention the bound at ``terminalize`` exists to release.
+                # Still owed with attempts left: this message gets no bubble yet. Nothing
+                # is lost, since the message is already enqueued and the drain renders
+                # from what it dequeued. The line is NOT retained: no path reads a
+                # terminal entry's lines, and keeping them would grow without bound.
                 return
         if receipt is None:
             if not surface.address_key:
-                # No address, so no bubble. Every later write would have to guess which
-                # conversation this entry's ``msg_id`` belongs to, and a wrong guess
-                # rewrites a stranger's message. A channel whose inbound omitted its
-                # conversation id degrades to no receipt, which is the same outcome as
-                # a refused ``send_receipt`` and is already handled everywhere.
+                # No address, so no bubble: a guessed conversation for ``msg_id`` could
+                # rewrite a stranger's message. Same outcome as a refused ``send_receipt``.
                 logger.debug("%s: queue receipt skipped, surface has no address", surface.label)
                 return
             msg_id = await surface.send_receipt(receipt_text([display_text]))
@@ -632,23 +477,12 @@ class ReceiptQueue:
             return
         receipt.lines.append(line)
         if not receipt.addressed_by(surface):
-            # Another conversation under a shared key. There is no address this edit
-            # could use: ``msg_id`` names a message in the bubble's chat and nowhere
-            # else, while THIS caller's chat holds no bubble, so editing through the
-            # caller would rewrite whatever unrelated message happens to hold that
-            # number there. The line is RECORDED so the registry and the queue agree
-            # about what is still queued, and it is shown on no bubble at all: this one
-            # renders only its own address, and this chat gets its own bubble once this
-            # entry is gone. Safe because a grow owes no record -- the message is still
-            # QUEUED and will be answered. Which conversation a shared bubble belongs to
-            # is the registry key's own question, not this one's.
+            # Another conversation under a shared key: ``msg_id`` is valid only in the
+            # bubble's chat, so no edit is possible. The line is RECORDED so the registry
+            # matches the queue, and shown nowhere; the message is still queued.
             return
-        # A refused grow needs no record and no terminal state: this message is still
-        # QUEUED, which is exactly what ``lines`` tracks, so the registry and the queue
-        # still agree and the next message's edit re-renders the list. Only a transition
-        # whose messages have already LEFT the queue can strand a bubble. Rendered from
-        # this address's own lines: the entry may also hold another chat's, and they may
-        # not be shown here even though the bubble is the same object.
+        # A refused grow owes no record: the message is still QUEUED and the next edit
+        # re-renders. Rendered from this address's own lines only.
         await self._edit(surface, receipt.msg_id, receipt_text(receipt.texts_at_address()))
 
     async def flip_answering_locked(
@@ -668,34 +502,19 @@ class ReceiptQueue:
         past the cap) is noted so the remainder is not silently implied. Caller
         MUST hold :attr:`lock` across dequeue + this call.
 
-        ``deferred`` is also what decides which of *owner*'s lines this flip drops, so it
-        is load-bearing and not only wording: it is the count the drain re-enqueued for
-        this principal, which is the only number here that names what is still queued.
-        ``answered`` cannot, because a queued message does not always open a line -- see
-        :meth:`QueueReceipt.drop_answered`. A caller that under-counts it erases an
-        acknowledgement; one that over-counts leaves a line the next transition
-        re-renders, so every shipped drain counts its OWN principal's re-enqueued
-        entries rather than the whole remainder.
+        ``deferred`` also decides which of *owner*'s lines are dropped: it is the count
+        the drain re-enqueued for THIS principal, the only number that names what is
+        still queued (see :meth:`QueueReceipt.drop_answered`). Under-counting erases an
+        acknowledgement; over-counting only leaves a line to re-render.
 
-        One drained turn carries ONE envelope, so every text in ``answered`` came from
-        the same conversation, and *surface* is built from that same origin. So the
-        address test below is also a test on the BODY: when it passes, ``answered`` is
-        this bubble's own chat's text; when it fails, ``answered`` belongs to a
-        different chat and none of it may appear here.
+        One drained turn carries ONE envelope, so the address test below also tests the
+        BODY: when it fails, ``answered`` is another chat's text and may not appear here.
 
-        ``owner`` is WHOSE messages this drain answered -- the same token the queue
-        entries it took were tagged with -- and it is what makes "the answered ones"
-        identifiable among the bubble's lines. One bubble can list several principals'
-        lines while one drain answers one principal's: a group space puts every member
-        on one session key AND one address, so a PARTIAL drain is the ordinary case
-        there rather than an edge. When another principal's line is still listed here
-        afterwards the entry is KEPT and the bubble re-rendered as queued, because that
-        entry is the only handle their message has. REQUIRED and keyword-only, the way
-        the Discord and Telegram wrappers that forward to it already spell it: every
-        drain answers entries the producer tagged with :func:`owner_token`, which never
-        builds an empty token, so a caller that cannot name its principal does not
-        exist and an omission is a type error at the call site rather than a silent
-        return to retiring the whole bubble. There is no unnamed-caller fallback here.
+        ``owner`` is whose messages this drain answered (the queue entries' token). In a
+        group space a PARTIAL drain is ordinary, and when another principal's line is
+        still listed the entry is KEPT and re-rendered as queued. Required and
+        keyword-only: :func:`owner_token` never builds an empty token, so an omission is
+        a type error rather than a silent retire of the whole bubble.
         """
         receipt = self._receipts.pop(session_key, None)
         if receipt is None:
@@ -704,111 +523,58 @@ class ReceiptQueue:
         if deferred:
             body += f" · +{deferred} deferred"
         if receipt.owes_record:
-            # Already terminal from an earlier refused transition. Retry THAT record
-            # first -- writing this transition's words over what actually happened would
-            # say the opposite, permanently -- and keep the entry until it lands.
-            #
-            # Whether THIS record dies with the debt depends on whose conversation it came
-            # from. The debt's own chat: the attempt below tries an edit AND a post there,
-            # so it is the evidence this record has no channel either, and ``also=1`` has
-            # it counted with the debt rather than retained -- retaining would re-arm the
-            # very key that release freed. A DIFFERENT chat sharing the key: the debt's
-            # refusals are evidence about the dead conversation and say nothing about this
-            # one, so this record is not counted with it and is offered on its own surface
-            # below. Giving up on a healthy sibling's record would be the exact harm the
-            # release exists to end.
+            # Already terminal: retry THAT record first and keep the entry until it lands.
+            # From the debt's own chat, this record shares its fate (``also=1``), since
+            # retaining it would re-arm the key the release freed. From a sibling chat,
+            # the debt's refusals say nothing about it, so it is offered on its own
+            # surface below.
             mine = receipt.addressed_by(surface)
             outcome = await self._write_record(session_key, receipt, also=1 if mine else 0)
             if outcome == "owed":
-                # The debt has no channel: that call just tried an edit AND a post and
-                # both failed, so THIS record has none either and posting it now would
-                # fail the same way. It JOINS the debt behind the older one instead of
-                # being dropped -- these messages have already left the queue and a
-                # retired key is revisited by nothing, so dropping it is permanent
-                # silence over answered messages. Only this bubble's own chat's text may
-                # be retained here: otherwise ``answered`` belongs to another
-                # conversation, and a retained body is written to this bubble later.
+                # The edit AND post just failed, so this record JOINS the debt rather
+                # than being dropped for good. Only this bubble's own chat's text may be
+                # retained, because a retained body is later written to this bubble.
                 if mine:
                     self._retain_owed(session_key, receipt, body)
                 else:
                     self._receipts[session_key] = receipt
                 return
             if outcome == "given_up":
-                # The bound decided the DEBT's conversation takes nothing and released the
-                # key. A record from that same chat goes with it, counted above: retaining
-                # it would re-arm that very key as terminal with a fresh allowance, undoing
-                # the release and starving the siblings again, and posting it would fail
-                # exactly as the attempt just did.
-                #
-                # A record from a healthy sibling on the key is the opposite case. Its own
-                # surface is untested by anything that just happened, these messages have
-                # already left the queue, and the key is now free -- so the record is
-                # POSTED there, and counted lost only if that surface refuses it too.
+                # The debt was given up and the key released. A record from that chat
+                # went with it (counted above). A sibling's record is POSTED on its own,
+                # untested surface, and counted lost only if that refuses too.
                 if not mine and not await self._post_record(surface, body):
                     self._report_lost(surface.label, "sibling chat refuses the post too", 1)
                 return
-            # It published, so this transition's own record has no bubble left to edit: it
-            # is POSTED beside it, at the bubble's own address. Retiring the key and
-            # returning here instead would lose the drained burst's receipt for good -- a
-            # retired key is revisited by nothing, and these messages have already left
-            # the queue.
-            # Only when the caller addresses the bubble: otherwise ``answered`` is
-            # another chat's text, which may not appear here at all.
+            # The debt published and spent the bubble, so this record is POSTED beside it,
+            # and only when the caller addresses the bubble (else ``answered`` is another
+            # chat's text).
             if mine:
                 if not await self._post_record(receipt.opened_on, body):
-                    # The post failed too, so this record has reached nobody. Retain it:
-                    # a later transition then edits the bubble to it, which replaces a
-                    # record the reader has already been shown rather than losing this
-                    # one entirely.
+                    # Reached nobody: retain it so a later transition still writes it.
                     self._retain_owed(session_key, receipt, body)
             return
         if not receipt.addressed_by(surface):
-            # This turn answered a DIFFERENT conversation that shares the session key,
-            # so nothing of it may be written here -- not the edit, whose body would
-            # quote that chat's text into this one, and not a retained record, which
-            # would post the same body later. Nothing is stranded by staying silent:
-            # the drain answers one envelope at a time and defers the rest, so this
-            # bubble's own messages are still QUEUED. Putting the entry back LIVE is
-            # what keeps that true -- dropping it would leave a bubble reading
-            # "⏳ Queued" for messages that really are still queued, and open a second
-            # bubble beside it for the same burst.
+            # This turn answered ANOTHER conversation on the key, so nothing is written
+            # here (its text may not appear in this chat). This bubble's own messages are
+            # still QUEUED, so the entry goes back LIVE; dropping it would open a second
+            # bubble for the same burst.
             self._receipts[session_key] = receipt
             return
-        # ``deferred`` and NOT ``len(answered)``: it is the count this drain itself put
-        # back on the queue for this principal, so it names what is still queued without
-        # assuming every queued message opened a line here -- a refused ``send_receipt``
-        # and an arrival against a terminal entry both open none.
+        # ``deferred``, NOT ``len(answered)``: not every queued message opened a line.
         receipt.drop_answered(owner, deferred)
         if receipt.others_at_address(owner):
-            # A PARTIAL drain: this bubble still lists ANOTHER principal's queued
-            # message, and one drain answers one principal. A group space gives every
-            # member the one session key AND the one address, so both of their messages
-            # are listed on this single bubble and :meth:`addressed_by` is true for each
-            # of them -- which is what makes this the ordinary case there rather than an
-            # edge. Unconditional: every caller names its principal, so there is no
-            # "unnamed" flip for which this question could be skipped.
-            #
-            # "Now answering" would say that other member's message went, and retiring
-            # the key strands it exactly the way it strands a partial stop: this entry is
-            # their only handle, so their own later drain finds nothing to flip and
-            # records them nowhere at all, while the next burst opens a second bubble
-            # beside the stale one. So the bubble is re-rendered to what is STILL queued
-            # and the entry stays LIVE. This turn's own messages lose nothing by that:
-            # they are being answered, and the answer is what says so -- the same reason
-            # a partial stop leaves its caller to learn from the stop reply.
-            #
-            # Rendered from ``texts_at_address`` like every other body here, so it lists
-            # this address's remaining lines and not another conversation's. A refused
-            # re-render owes no record, for the reason a refused GROW owes none: these
-            # messages have not left the queue, so the registry and the queue still agree
-            # and the next transition renders the list again.
+            # A PARTIAL drain (ordinary in a group space): another principal's message is
+            # still queued and this entry is its only handle. "Now answering" would say
+            # it went, so the bubble is re-rendered to what is STILL queued and stays
+            # LIVE; this turn's answer speaks for its own messages. A refused re-render
+            # owes no record, since nothing here has left the queue.
             self._receipts[session_key] = receipt
             await self._edit(surface, receipt.msg_id, receipt_text(receipt.texts_at_address()))
             return
         if not await self._edit(surface, receipt.msg_id, body):
-            # These messages have LEFT the queue, so nothing else will ever revisit this
-            # bubble on its own: dropped now it reads "⏳ Queued" for good. The record is
-            # published immediately instead, and the entry kept only if that fails too.
+            # These messages LEFT the queue, so nothing will revisit the bubble: post the
+            # record now, and keep the entry only if that fails too.
             await self._owe_record(session_key, receipt, body)
 
     async def finish_cancelled_locked(
@@ -818,35 +584,15 @@ class ReceiptQueue:
 
         Caller MUST hold :attr:`lock` across clear_queue + this call.
 
-        ``owner`` names the ONE principal whose messages were cleared, and then only
-        that person's lines are withdrawn from the record. Whether anything is written
-        depends on the ADDRESS, not on who is calling:
+        ``owner`` names the ONE principal whose lines are withdrawn. While any line at
+        the bubble's address remains, nothing is written ("Cancelled" would say they
+        went). Otherwise the bubble is finalized over the caller's OWN withdrawn lines,
+        and only when the caller's surface addresses the bubble: in another chat the
+        same ``msg_id`` is a different message.
 
-        * the caller's surface addresses the bubble -- it finalizes as cancelled over
-          the caller's OWN withdrawn lines, which arrived at that same address. Not
-          over what remains: those lines may have arrived from another chat that
-          merely shares this session key.
-        * it does not -- nothing is written, because ``msg_id`` names a message in the
-          bubble's chat and in the caller's the same number is another message
-          entirely. The lines are withdrawn from the record either way.
-
-        Both cases are preceded by a condition that has nothing to do with addressing:
-        while ANY line remains after the withdraw, nothing is written at all. Those
-        messages are still queued, so "Cancelled" would say they went and a re-render
-        would show their text.
-
-        The entry is dropped once it owes nothing. It is RETAINED in exactly one case:
-        the finalizing edit did not land, so the entry carries the record it owes and
-        is terminal. That is safe against a later drain for the same reason the
-        addressing rule holds -- an owed record is written through
-        :attr:`QueueReceipt.opened_on`, the surface the bubble was opened on, so no
-        transition is ever handed an id minted in a different chat. A retained entry is
-        not live and is never grown, so a later burst opens a fresh bubble rather than
-        joining this one; which conversation a shared bubble belongs to is the registry
-        key's own question.
-
-        Omitted, the whole receipt is finalized, which is what the whole-session callers
-        mean: the queue they cleared was all of it.
+        The entry is retained only when the finalizing write fails, as a terminal debt
+        written later through :attr:`QueueReceipt.opened_on`. Omitted ``owner``
+        finalizes the whole receipt, as whole-session callers mean.
         """
         receipt = self._receipts.get(session_key)
         if receipt is None:
@@ -918,26 +664,14 @@ class ReceiptQueue:
     async def _owe_record(self, session_key: str, receipt: QueueReceipt, body: str) -> None:
         """Publish *body* as this bubble's record NOW; keep the entry only if that fails.
 
-        Reached when a transition's own edit was refused and its messages have already
-        LEFT the queue. Posting here is what gives the record a path that does not
-        depend on another message ever arriving: a retained body is otherwise written
-        only by a LATER transition, so a burst that ends at this refusal would leave the
-        bubble reading "⏳ Queued" over answered messages for good.
+        For a transition whose edit was refused after its messages LEFT the queue.
+        Posting now means the record does not wait on another message arriving.
+        Retaining is the last resort when the post fails too. Never for a refused GROW:
+        its message is still queued and owes no record.
 
-        The stale bubble plus a posted record are together true. Retaining is the last
-        resort, for when the post fails too -- then a later transition still has a body
-        to write, and the entry carries the bound on what it holds.
-
-        The one transition that must NOT come here is a refused GROW: its message is
-        still queued, so it owes no record at all and a post would announce something
-        that has not happened.
-
-        The refusal that creates the debt is COUNTED like any other, because it is one: an
-        edit was refused above and a post is refused here, which is the same evidence
-        every later attempt gathers. Starting the allowance at zero instead would hand the
-        conversation one free refusal. The evidence is all this reports -- whether the
-        allowance is spent is decided in one place, where a debt is published -- so the
-        record is retained here either way and the next attempt is what acts on it.
+        The refusal that creates the debt is COUNTED (an edit and a post both failed),
+        so the conversation gets no free refusal; whether the allowance is spent is
+        decided where a debt is published.
         """
         if await self._post_record(receipt.opened_on, body):
             return
@@ -959,13 +693,9 @@ class ReceiptQueue:
     def _touch(self, session_key: str) -> None:
         """Move *session_key*'s entry to the BACK of the registry, if it holds one.
 
-        Registry order is insertion order, so re-inserting an entry every time something
-        is ATTEMPTED on it leaves the terminal entries ordered by how recently each was
-        tried. That is what :meth:`_release_oldest_debts` needs: the front is then a key
-        nothing has come back to, rather than merely a debt that happens to be old. A
-        debt still being retried and refused every burst is the opposite of silent, and
-        evicting it while an untouched orphan sits behind it would lose the record that
-        still had a channel to hope for.
+        Re-inserting on every attempt orders terminal entries by last attempt, so
+        :meth:`_release_oldest_debts` evicts a key nothing has come back to, not one
+        still being retried.
         """
         receipt = self._receipts.pop(session_key, None)
         if receipt is not None:
@@ -992,20 +722,11 @@ class ReceiptQueue:
     ) -> None:
         """Give up *receipt*'s debt, release its key, and COUNT what is lost.
 
-        The one path out of retention, so a released record is accounted the same way
-        whichever bound released it and neither can become the silent drop a bound without
-        an accounting seam would be. Releasing the key HERE is what makes "given up" and
-        "published" mean the same thing to every transition above: the key owes nothing,
-        and none of them has to re-derive that.
-
-        *also* counts records the caller is giving up alongside the debt -- a transition
-        whose own record has nowhere left to go once the conversation has proved it takes
-        nothing. Retaining that record instead would re-arm this very key as terminal with
-        a fresh allowance, which is the opposite of what reaching this bound decided.
-
-        Says nothing to the reader, deliberately: the conversation these records belonged
-        to is the one that would not take a write. The warning is the operator's copy, and
-        it is the only trace a released record leaves.
+        The one path out of retention, so every bound accounts the same way, and
+        "given up" frees the key just like "published". *also* counts the caller's own
+        record given up with the debt; retaining it would re-arm the key. Nothing goes
+        to the reader (that conversation takes no writes); the operator warning is the
+        only trace.
         """
         given_up = receipt.abandon() + also
         self._receipts.pop(session_key, None)
@@ -1015,11 +736,7 @@ class ReceiptQueue:
     def _report_lost(self, label: str, reason: str, count: int) -> None:
         """Account for *count* records that will reach no reader. The one such seam.
 
-        Every loss the retention policy causes is reported here and nowhere else, so the
-        operator's copy has one shape whichever bound or refusal produced it, and a loss
-        cannot be added without going through this line. It is a WARNING rather than
-        anything the reader sees: the chat these records belonged to is the one that would
-        not take a write.
+        A WARNING for the operator, not the reader: that chat would not take a write.
         """
         logger.warning(
             "%s: queue receipt debt given up (%s), %d record(s) reach nobody",
@@ -1050,59 +767,22 @@ class ReceiptQueue:
     ) -> RecordOutcome:
         """Put the record *receipt* owes onto its bubble. Returns whether it landed.
 
-        Writes through ``receipt.opened_on`` and NEVER through a caller's surface.
-        Under a shared session key the surface handed to a transition belongs to
-        whichever conversation spoke last, and both writes here are addressed to the
-        bubble's own: the edit targets ``msg_id``, which is another message entirely
-        in any other chat, and the fallback POSTS the body as a fresh notified
-        message, so a body built for one chat would arrive in a reader's chat
-        unannounced. That the body is safe to show there is established where it was
-        BUILT -- every transition renders from
-        :meth:`QueueReceipt.texts_at_address` or from lines it has just checked
-        against the bubble's address -- because here there is nothing left to check
-        it against. An entry with no bound surface is not written at all: there is no
-        address to fall back to, only the wrong one.
+        Writes through ``receipt.opened_on``, NEVER a caller's surface: under a shared
+        key the caller may be another chat, where ``msg_id`` is a different message and
+        a post would land unannounced. Bodies were checked against the bubble's address
+        where they were BUILT. No bound surface means no write.
 
-        Editing first is what keeps the record in the bubble the reader is already
-        looking at. When the bubble refuses edits the record is POSTED instead: past
-        Webex's documented per-message edit cap no edit of that id will ever land, so
-        retrying alone would leave the record owed for the life of the process. The
-        stale bubble still reads "⏳ Queued" and the posted record says what happened,
-        which together are true; a silent bubble alone is not. The post goes to the
-        bubble's own send address, so on a channel with forum Topics the record lands
-        in the Topic the bubble is in rather than the parent chat.
+        Edits first; on refusal POSTS instead (past Webex's per-message edit cap no edit
+        will ever land), to the bubble's own send address so a forum Topic gets it.
+        Bodies go OLDEST FIRST: only the oldest may take the bubble, the rest are posted
+        beneath it. The first landed record spends the bubble, so later calls never edit
+        over it. Records the cap released are named on the first body to land. Each body
+        leaves the debt only once it LANDS.
 
-        Several records can be owed, and they are published OLDEST FIRST: the oldest
-        goes into the bubble, and each later one is POSTED beneath it, which is the
-        order they happened in and so the order a reader must read them in. Only the
-        oldest can take the bubble -- there is one bubble and the rest arrived after it.
-
-        The bubble is spent by the FIRST record that reaches the reader, whether it got
-        there by edit or by post, and that is remembered on the entry. A later call must
-        not edit again: the bubble sits above everything posted beneath it, so editing a
-        later body into it would both erase the record already shown there and put the
-        two records in the wrong order for whoever reads them.
-
-        Records released by the cap are named once, on the first body to reach the
-        reader, and the count is cleared when that body lands. A shortened list is
-        otherwise indistinguishable from a burst that produced no such records.
-
-        Each body is dropped from the debt only once it LANDS, one at a time, so a
-        failure partway through keeps exactly what has not reached anybody.
-
-        A refusal is reported to :meth:`QueueReceipt.note_refusal`, and a debt whose
-        retention that spends is GIVEN UP: emptied, counted, and its key released. So the
-        answer is three-valued. ``published`` and ``given_up`` differ in what the reader
-        got and agree on what the REGISTRY has -- a key owing nothing -- which is what
-        lets a transition free the key on either, and a key released is a key a healthy
-        sibling conversation can open its own bubble on. ``owed`` is the only answer that
-        leaves the entry terminal.
-
-        *also* is for a caller holding a record of its own that dies WITH the debt: pass 1
-        and the give-up counts it alongside, so one bound reaching its limit produces one
-        accounted loss rather than a second write-off on the same entry. It is ignored
-        unless the debt is actually given up, which is the only outcome that strands such a
-        record.
+        Returns ``published``, ``given_up`` (retention spent per
+        :meth:`QueueReceipt.note_refusal`; key released either way) or ``owed`` (still
+        terminal). *also* = 1 counts the caller's own record with a given-up debt, so
+        one bound produces one accounted loss; ignored otherwise.
         """
         bodies = receipt.owed_bodies
         if not bodies:
@@ -1140,10 +820,7 @@ class ReceiptQueue:
         passed through to :meth:`_write_off` for a caller whose own record goes with the
         debt when the bound is reached.
 
-        A debt that survives is TOUCHED, so the population bound reads it as recently
-        tried rather than as an orphan. That is the difference between a conversation
-        nothing comes back to and one being refused on every burst, and only the first
-        should be the one evicted.
+        A surviving debt is TOUCHED so the population bound evicts orphans first.
         """
         progressed = len(receipt.owed_bodies) < owed_before
         if not receipt.note_refusal(progressed=progressed):

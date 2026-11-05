@@ -1,20 +1,10 @@
 """Tests for in-gateway stale-turn auto-recovery on AcpSessionHandle.
 
-Covers the two-stage fix:
-
-1. **Fold-in (fix #1):** the per-session stale check must fold the runtime's
-   stderr/keepalive clock (``_runtime._last_activity``) into the idle window, so
-   a turn that streams its final text and then thinks silently on stdout (while
-   still emitting ``thinking_tokens`` on stderr) is NOT falsely declared stale.
-   Mirrors ``TestAcpClientStaleTurn`` for the ``AcpClient`` path.
-
-2. **Cancel-ack probe → auto-recovery:** a genuine stale (silent on BOTH clocks)
-   is probed via ``session/cancel`` rather than blindly ended. If kiro acks
-   (done-but-missing-frame) the turn completes normally — no re-drive. If the
-   cancel goes unacked past the grace window it is a confirmed wedge and the
-   handle signals ``STOP_REASON_STALE_RECOVER`` so the dashboard reset+resume+
-   continue-nudge path recovers the turn in place. The pre-existing user-cancel
-   path (not a stale probe) still yields ``error: cancel unacked`` unchanged.
+The idle window folds in ``_runtime._last_activity`` (stderr thinking keeps a turn
+alive, as ``TestAcpClientStaleTurn`` pins for ``AcpClient``). A turn silent on both
+clocks is probed with ``session/cancel``: an ack completes it, no ack within the grace
+window signals ``STOP_REASON_STALE_RECOVER``. A user cancel still yields
+``error: cancel unacked``.
 """
 
 import asyncio
@@ -50,7 +40,7 @@ from kiro_crew.dashboard.state import (
     build_tool_stall_recovery_prompt,
     extract_log_redirect_target,
 )
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # Tight windows for tests: consult the oracle almost immediately and act on
 # UNKNOWN verdicts after 50ms idle.
@@ -66,18 +56,9 @@ _FAST_WD = WatchdogSettings(
 class _FreshActivityRuntime:
     """Runtime double whose ``_last_activity`` always reads as the current instant.
 
-    Stands in for a stderr drain that keeps refreshing the keepalive clock while
-    stdout is silent.
-
-    This replaces a refresher task that rewrote the attribute every 20ms against
-    the 50ms ``stale_window_secs`` above. That left only 30ms of margin, and an
-    ``asyncio.sleep`` on a loaded CI runner overruns easily — Windows timer
-    granularity alone is about 15.6ms — at which point the attribute looks stale
-    and the stale guard trips, failing the test for a reason unrelated to the
-    behaviour under test. A property cannot be late.
-
-    ``AcpSessionHandle`` only ever READS ``_runtime._last_activity`` (the writes
-    live in the real runtime's own drain), so exposing it read-only is faithful.
+    Stands in for a stderr drain refreshing the clock while stdout is silent. A
+    property, not a refresher task: a sleep on a loaded runner can overrun the 50ms
+    window. ``AcpSessionHandle`` only reads the attribute, so read-only is faithful.
     """
 
     def __init__(self) -> None:
@@ -102,12 +83,8 @@ def _make_handle(
 ) -> AcpSessionHandle:
     """A handle over a fake runtime with a controllable ``_last_activity``.
 
-    ``rt.pid`` is None so the liveness oracle returns UNKNOWN ("no runtime
-    pid") and the timeout-governed UNKNOWN class — the legacy-equivalent
-    behavior these tests exercise — applies.
-
-    With ``fresh_activity=True`` the clock reports "now" on every read, which is
-    what a continuously-active stderr drain looks like.
+    ``rt.pid`` is None so the oracle answers UNKNOWN and the timeout rule applies.
+    ``fresh_activity=True`` reports "now" on every read, like an active stderr drain.
     """
     rt: object
     if fresh_activity:
@@ -314,11 +291,8 @@ class _SilentQueue:
 class _SilentQueueWithBacklog:
     """Queue that times out when empty but delivers items added via put_nowait.
 
-    Used for TOCTOU Path A tests: a frame put_nowait()-ed DURING the oracle
-    await stays in the backlog. qsize() reflects the actual count, so the
-    TOCTOU guard's queue-depth check fires correctly. Once items are present
-    they are delivered immediately on the next get(), so the loop consumes
-    them and updates last_data_ts normally.
+    For TOCTOU Path A: a frame added during the oracle await stays queued, so
+    qsize() trips the queue-depth check, then the next get() delivers it.
     """
 
     def __init__(self, tick: float = 0.02) -> None:
@@ -974,25 +948,16 @@ def test_build_tool_stall_recovery_prompt_file_write_content_has_no_redirect_hin
     assert "partial results" in body.lower()
 
 
-# ── F2: TOCTOU race — progress frame during oracle must prevent cancel ────────
+# ── TOCTOU race — progress frame during oracle must prevent cancel ────────
 
 
 @pytest.mark.asyncio
 def _make_one_shot_oracle(dead_evidence: str):
-    """Factory for a one-shot oracle mock. The FIRST call blocks until
-    released and returns a DEAD verdict (so the cancel branch IS reached
-    without the TOCTOU guard). Subsequent calls return WORKING (simulating
-    the oracle observing the activity that arrived during the first wait).
+    """Factory for a one-shot oracle mock.
 
-    This models real behavior: if a session is alive (frame arrived during
-    the oracle), the oracle detects activity on the NEXT check and returns
-    WORKING — the TOCTOU guard is only needed to bridge the window between
-    the stale snapshot and the real activity observation.
-
-    Mutation check: removing the TOCTOU guard leaves the first DEAD verdict
-    unintercepted → session/cancel is sent. With the guard the first call is
-    skipped, last_data_ts is reset, and the second call returns WORKING →
-    no cancel.
+    The first call blocks until released and returns DEAD, so the cancel branch is
+    reached without the TOCTOU guard; later calls return WORKING, as a live session
+    shows on the next check.
     """
     oracle_entered = asyncio.Event()
     oracle_release = asyncio.Event()
@@ -1037,17 +1002,10 @@ async def test_wait_for_response_counts_buffered_responses_in_ingress_seq():
 
 @pytest.mark.asyncio
 async def test_toctou_path_b_ingress_seq_prevents_cancel():
-    """F2 Path B: concurrent _wait_for_response consumed the progress frame.
+    """Path B: concurrent _wait_for_response consumed the progress frame.
 
-    The frame is NOT in the queue when the oracle returns — it is in
-    _wait_for_response's buffer list. qsize() is still 0, but _ingress_seq
-    was incremented when _wait_for_response buffered the notification.
-    The TOCTOU guard detects _ingress_seq advanced and skips the cancel.
-
-    The oracle returns DEAD on its first call so the cancel branch IS
-    reached when the guard is absent. Subsequent calls return WORKING.
-    Mutation check: removing the _ingress_seq arm lets the first DEAD
-    verdict reach _end_stalled_tool → session/cancel.
+    The frame sits in _wait_for_response's buffer, so qsize() is 0 but
+    _ingress_seq advanced, and the guard skips the cancel.
     """
     evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
     oracle, oracle_entered, oracle_release, oracle_rechecked = _make_one_shot_oracle(evidence)
@@ -1073,7 +1031,11 @@ async def test_toctou_path_b_ingress_seq_prevents_cancel():
     handle._ingress_seq += 1
 
     oracle_release.set()
-    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
+    # Either outcome ends the wait, so a missing guard fails on the cancel check below.
+    await async_wait_until(
+        lambda: oracle_rechecked.is_set() or handle._cancelled,
+        describe=lambda: "the watchdog's second oracle consult or a cancel",
+    )
     drain_task.cancel()
     try:
         await drain_task
@@ -1082,24 +1044,16 @@ async def test_toctou_path_b_ingress_seq_prevents_cancel():
 
     # _ingress_seq advanced → TOCTOU guard fired → first DEAD verdict skipped
     # → second call returned WORKING → no session/cancel.
+    assert handle._cancelled is False
     assert handle._runtime.send_notification.await_count == 0
 
 
 @pytest.mark.asyncio
 async def test_toctou_path_a_queue_depth_prevents_cancel():
-    """F2 Path A: no concurrent _wait_for_response — the progress frame lands
-    directly in the session queue and stays there during the oracle await.
+    """Path A: the progress frame lands in the session queue during the oracle await.
 
-    qsize() grows from 0 to 1 while the oracle is blocked. The TOCTOU guard
-    detects the queue-depth change and skips the cancel.
-
-    Oracle returns DEAD on first call (cancel branch reached without guard);
-    subsequent calls return WORKING (activity observed after reset).
-    Mutation check: removing the qsize() arm lets the first DEAD reach
-    _end_stalled_tool → session/cancel.
-
-    Uses _SilentQueueWithBacklog: times out when empty (fast watchdog trigger)
-    but delivers items added via put_nowait() on the next get() call.
+    qsize() grows from 0 to 1 while the oracle is blocked, and the guard skips the
+    cancel.
     """
     evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
     oracle, oracle_entered, oracle_release, oracle_rechecked = _make_one_shot_oracle(evidence)
@@ -1128,7 +1082,11 @@ async def test_toctou_path_a_queue_depth_prevents_cancel():
     )
 
     oracle_release.set()
-    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
+    # Either outcome ends the wait, so a missing guard fails on the cancel check below.
+    await async_wait_until(
+        lambda: oracle_rechecked.is_set() or handle._cancelled,
+        describe=lambda: "the watchdog's second oracle consult or a cancel",
+    )
     drain_task.cancel()
     try:
         await drain_task
@@ -1137,19 +1095,16 @@ async def test_toctou_path_a_queue_depth_prevents_cancel():
 
     # qsize() grew → TOCTOU guard fired → first DEAD skipped → WORKING →
     # no session/cancel.
+    assert handle._cancelled is False
     assert handle._runtime.send_notification.await_count == 0
 
 
 @pytest.mark.asyncio
 async def test_toctou_stale_eligible_path_also_guarded():
-    """F2: the model-wait (_stale_eligible) oracle path has the same TOCTOU
-    race as the tool-dispatch path and must be guarded too.
+    """The model-wait (_stale_eligible) oracle path is guarded against the same race.
 
-    Without the guard, a DEAD verdict on the stale branch would probe/cancel
-    a live session that had a progress frame arrive during the oracle await.
-    The guard detects the queue-depth change and skips the first DEAD cancel.
-
-    Oracle returns DEAD on first call; WORKING on subsequent calls.
+    A frame arriving during the oracle await must stop the first DEAD verdict from
+    cancelling a live session.
     """
     evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
     oracle, oracle_entered, oracle_release, oracle_rechecked = _make_one_shot_oracle(evidence)
@@ -1173,7 +1128,11 @@ async def test_toctou_stale_eligible_path_also_guarded():
     )
 
     oracle_release.set()
-    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
+    # Either outcome ends the wait, so a missing guard fails on the cancel check below.
+    await async_wait_until(
+        lambda: oracle_rechecked.is_set() or handle._cancelled,
+        describe=lambda: "the watchdog's second oracle consult or a cancel",
+    )
     drain_task.cancel()
     try:
         await drain_task
@@ -1181,6 +1140,7 @@ async def test_toctou_stale_eligible_path_also_guarded():
         pass
 
     # TOCTOU guard on the stale branch prevented the probe cancel.
+    assert handle._cancelled is False
     assert handle._runtime.send_notification.await_count == 0
 
 
@@ -1188,17 +1148,9 @@ async def test_toctou_stale_eligible_path_also_guarded():
 async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
     """TOCTOU Path C, stale branch only: runtime activity without a frame.
 
-    The stale idle clock folds in ``_runtime._last_activity`` (stderr
-    thinking-tokens, keepalives, stdin writes), none of which enqueue a
-    session frame or advance ``_ingress_seq`` — so the two frame-path signals
-    are blind to it. Activity that would have deferred the probe had it
-    landed one tick before the snapshot must defer it when it lands during
-    the oracle await too: the guard also snapshots/rechecks the runtime
-    clock on this branch.
-
-    Oracle returns DEAD on first call (probe reached without the guard);
-    WORKING on subsequent calls. Mutation check: removing the runtime-clock
-    arm lets the first DEAD verdict reach the probe → session/cancel.
+    ``_runtime._last_activity`` (stderr thinking, keepalives, stdin writes) enqueues
+    no frame and leaves ``_ingress_seq`` alone, so the guard also rechecks the
+    runtime clock on this branch.
     """
     evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
     oracle, oracle_entered, oracle_release, oracle_rechecked = _make_one_shot_oracle(evidence)
@@ -1220,7 +1172,11 @@ async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
     handle._runtime._last_activity = time.monotonic()
 
     oracle_release.set()
-    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
+    # Either outcome ends the wait, so a missing guard fails on the cancel check below.
+    await async_wait_until(
+        lambda: oracle_rechecked.is_set() or handle._cancelled,
+        describe=lambda: "the watchdog's second oracle consult or a cancel",
+    )
     drain_task.cancel()
     try:
         await drain_task
@@ -1228,15 +1184,16 @@ async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
         pass
 
     # Runtime-clock arm fired → first DEAD skipped → WORKING → no probe.
+    assert handle._cancelled is False
     assert handle._runtime.send_notification.await_count == 0
 
 
-# ── F3: hard cap bounds UNKNOWN forbearance absolutely ───────────────────────
+# ── hard cap bounds UNKNOWN forbearance absolutely ───────────────────────
 
 
 @pytest.mark.asyncio
 async def test_hard_cap_below_suspect_window_fires_at_cap():
-    """F3: when tool_stall_hard_cap_secs < tool_stall_suspect_secs, the cancel
+    """When tool_stall_hard_cap_secs < tool_stall_suspect_secs, the cancel
     must fire just after the hard cap, not after the (larger) suspect window.
 
     With cap=0.05s and suspect=999s, the cancel would never fire within this
@@ -1421,11 +1378,8 @@ async def test_failed_submission_reports_unknown_without_latching_the_gate():
 async def test_pending_walk_exception_is_consumed_without_any_boundary():
     """The retrieval callback must be attached at SUBMISSION.
 
-    A turn that ends on a tool-stall verdict returns while the walk is still
-    running; if the handle then goes idle, no later tick and no boundary ever
-    observes it, and a walk that raises reaches ``Future.__del__`` unretrieved —
-    reported through the loop exception handler as an unhandled-asyncio crash for
-    an ordinary probe failure.
+    A tool-stall turn can return mid-walk and the handle go idle; a later failure
+    would reach ``Future.__del__`` unretrieved and report an unhandled crash.
     """
     handle = _consult_handle()
     handle._oracle = MagicMock()
@@ -1672,13 +1626,8 @@ async def test_tool_dispatch_retires_the_liveness_state():
 async def test_a_previous_tools_walk_cannot_claim_the_new_tools_child():
     """The tool path's sharper version of the stale-write hazard.
 
-    ``_check_shell_child`` matches a descendant against the DISPATCHED command
-    and stores it as ``_tracked_child`` so later ticks get exact exit detection.
-    A walk still running with the previous tool's ``ToolCallState`` matches a
-    child of the previous command; with an in-place ``reset()`` that write lands
-    on the live oracle and the new tool's next tick reports
-    ``WORKING "shell child N alive"`` for a process that has nothing to do with
-    it — deferring recovery of a genuinely stalled tool to the hard cap.
+    A late walk would store the previous command's child as ``_tracked_child`` on the
+    live oracle, and the new tool would read ``WORKING "shell child N alive"``.
     """
     handle = _consult_handle()
     tool_a_oracle = handle._oracle
@@ -1713,12 +1662,8 @@ async def test_a_previous_tools_walk_cannot_claim_the_new_tools_child():
 async def test_tracked_child_still_carries_across_ticks_after_retirement(monkeypatch):
     """Retirement must not break the cross-tick contract it sits next to.
 
-    ``check_tool``'s exact-exit detection depends on ``_tracked_child`` surviving
-    from the tick that matched it to the tick that checks it. ``fresh()`` starts
-    in exactly the state ``reset()`` produced and the consult binds
-    ``self._oracle`` at submission, so ticks after a boundary accumulate on the
-    new instance the way they did before — including through the in-flight gate,
-    which releases as soon as a walk completes.
+    ``check_tool``'s exact-exit detection needs ``_tracked_child`` to survive from
+    the tick that matched it to the next, including through the in-flight gate.
     """
     # The fabricated runtime is unreadable, but its tracked PID can belong to
     # an unrelated live process on the host. The fixture must isolate both.

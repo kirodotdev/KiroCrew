@@ -128,6 +128,27 @@ describe('TabBody', () => {
     expect((setDiffLineNumbers.mock.calls[0][0] as (v: boolean) => boolean)(false)).toBe(true)
   })
 
+  it('names the turn-diff toolbar button by the file name on a Windows path, keeping the full path as the click target', () => {
+    const onFileOpen = vi.fn()
+    // The gateway on Windows reports a native path; a `/`-only split would show
+    // the whole `C:\…` string where the file name belongs.
+    const tab: PanelTab = { id: 'diff:C:\\proj\\src\\a.ts', kind: 'diff', title: 'a.ts - Diff', path: 'C:\\proj\\src\\a.ts', original: 'a\n', modified: 'a\nb\n' }
+    renderWith(<TabBody {...bodyProps(tab, { onFileOpen })} />)
+    const btn = screen.getByText('a.ts')
+    expect(btn).toBeTruthy()
+    fireEvent.click(btn)
+    // The click still opens the whole path, not the bare name.
+    expect(onFileOpen.mock.calls).toEqual([['C:\\proj\\src\\a.ts']])
+  })
+
+  it('keeps a POSIX name that contains a backslash whole in the turn-diff toolbar', () => {
+    // On POSIX a backslash is a legal file-name character, so `we\ird.md` is ONE
+    // name and must not be split on it.
+    const tab: PanelTab = { id: 'diff:/tmp/we\\ird.md', kind: 'diff', title: 'we\\ird.md - Diff', path: '/tmp/we\\ird.md', original: 'a\n', modified: 'a\nb\n' }
+    renderWith(<TabBody {...bodyProps(tab)} />)
+    expect(screen.getByText('we\\ird.md')).toBeTruthy()
+  })
+
   it('renders nothing for a kind that has no kept-mounted body', () => {
     const tab: PanelTab = { id: 'changes', kind: 'changes', title: 'Changes' }
     const { container } = renderWith(<TabBody {...bodyProps(tab)} />)

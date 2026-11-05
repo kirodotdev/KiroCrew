@@ -26,11 +26,15 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, AbstractSet, Any, Literal, overload
 
 import kiro_crew._facade_mirror as _facade_mirror
-from kiro_crew import platform_compat
+from kiro_crew import owner_only_files, platform_compat
 
 # ``replace_with_retry`` is facade surface with no reader here: its inventory,
 # test/campaign_facade_inventories/kiro_crew.history_projection.json, pins it.
-from kiro_crew.atomic_write import atomic_write, replace_with_retry  # noqa: F401
+from kiro_crew.atomic_write import (  # noqa: F401
+    TRANSCRIPT_REPLACE_BUDGET_SECONDS,
+    atomic_write,
+    replace_with_retry,
+)
 from kiro_crew.chat_attachments import (
     purge_staged_attachments,
     restore_staged_attachments,
@@ -49,12 +53,12 @@ from kiro_crew.history_projection_contract import (
     TranscriptRevisionChanged,
     _history_facade,
 )
+from kiro_crew.history_rewrite import rewrite_metadata_line, rewrite_transcript
 from kiro_crew.jsonl_util import (
     bounded_raw_records,
     raise_if_splitlines_boundary,
     strict_raw_records_with_offsets,
 )
-from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.preview_text import speech_preview
 from kiro_crew.transcript_count import count_messages, message_row
 from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
@@ -371,9 +375,16 @@ class SessionMetadataProjection:
         self._log.update_metadata(key, {"title": title})
 
     def update_metadata(self, key: str, fields: dict) -> None:
-        """Merge fields under the same lock used by transcript writers."""
-        with self._log._locked(key):
-            self._log._update_metadata_locked(key, fields)
+        """Merge fields into the metadata line, renaming under the transcript writers' lock.
+
+        The replacement is built and synced before the lock is taken
+        (:func:`~kiro_crew.history_rewrite.rewrite_metadata_line`), so appenders do
+        not wait on the flush; a write that landed in between is merged again under
+        the lock.
+        """
+        rewrite_metadata_line(
+            self._log, key, lambda _path, text: self._metadata_replacement(key, text, fields)
+        )
         if "tab_id" in fields:
             self._log.invalidate_tab_id_cache()
 
@@ -455,8 +466,17 @@ class SessionMetadataProjection:
             self._log.invalidate_tab_id_cache()
         return True
 
-    def _update_metadata_locked(self, key: str, fields: dict) -> bool:
+    def _update_metadata_locked(self, key: str, fields: dict, *, durable: bool = False) -> bool:
         """Merge or upsert one metadata line while the owner lock is held.
+
+        *durable* ``False`` (every caller through the log's own
+        ``_update_metadata_locked``: a lease claim or renewal, a retry counter, a
+        memory-mode relabel) writes the replacement unsynced. These are small
+        conditional writes made while the caller holds the lock, so a sync here
+        would make every writer of the session wait on a whole-transcript flush,
+        and this method is the seam their tests inject failures at, so the
+        stage-outside-the-lock path cannot serve them. *durable* ``True`` (the
+        agent-selection rollback) syncs before the rename.
 
         Returns True when the line was written, False when the write was
         SKIPPED — a first line that is JSON but not a metadata object (a
@@ -476,7 +496,45 @@ class SessionMetadataProjection:
         """
         path = self._log._path(key)
         previous_mtime = _history_facade()._safe_mtime(path)
-        lines = _split_transcript_bytes(path.read_bytes()) if path.exists() else []
+        # An undecodable first line comes back as a blank placeholder, so the
+        # corrupt-line rewrite below can replace it (see _split_transcript_bytes).
+        text = "".join(_split_transcript_bytes(path.read_bytes())) if path.exists() else None
+        content = self._metadata_replacement(key, text, fields)
+        if content is None:
+            return False
+        if not durable:
+            # Unsynced, owner-only on every root (see the docstring). The rename
+            # carries the transcript budget so a held Windows reader does not
+            # defeat it inside the count-based retry's short window; off the event
+            # loop (the consolidation lease claim) the budget is spent, on the
+            # loop replace_with_retry re-raises at once and never sleeps.
+            atomic_write(
+                path,
+                content,
+                mode=owner_only_files.OWNER_ONLY_FILE_MODE,
+                replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
+            )
+            _history_facade()._restore_mtime(path, previous_mtime)
+            self._log._invalidate_cache(key)
+            return True
+        # Synced before the rename: only line 0 changed, but the file renamed into
+        # place carries every row of the conversation. The helper writes every byte
+        # (a short write cannot publish a prefix of the transcript) and renames
+        # through the shared retrying replace that a concurrent Windows reader
+        # needs, keeping the file owner-only on every root (eval workspaces too).
+        rewrite_transcript(path, content)
+        _history_facade()._restore_mtime(path, previous_mtime)
+        self._log._invalidate_cache(key)
+        return True
+
+    def _metadata_replacement(self, key: str, text: str | None, fields: dict) -> bytes | None:
+        """The transcript *text* with *fields* merged into line 0, or ``None`` to leave it.
+
+        Shared by :meth:`_update_metadata_locked` and :meth:`update_metadata`, so both
+        apply the same upsert, corrupt-line and legacy-file rules. The result is
+        bytes, so no newline translation happens on Windows.
+        """
+        lines = text.splitlines(keepends=True) if text is not None else []
         healing_corrupt_line = False
         if lines:
             try:
@@ -497,9 +555,9 @@ class SessionMetadataProjection:
                     "memory_mode": STRICTEST_MEMORY_MODE,
                 }
             if not isinstance(metadata, dict):
-                return False
+                return None
             if metadata.get("_type") != "metadata":
-                return False
+                return None
         else:
             self._log._dir.mkdir(parents=True, exist_ok=True)
             metadata = {
@@ -514,19 +572,7 @@ class SessionMetadataProjection:
             metadata["memory_mode"] = STRICTEST_MEMORY_MODE
             metadata.pop("memory_store", None)
         lines[0] = json.dumps(metadata) + "\n"
-
-        # This hot one-line edit remains crash-atomic without paying for an
-        # fsync while every other writer of the session is excluded.
-        # ``atomic_write`` writes every byte (a short write cannot publish a
-        # prefix of the transcript) and renames through the retrying replace
-        # that a concurrent Windows reader needs. The mode is owner-only on
-        # every root, as the transcript's first write sets it: a transcript can
-        # live outside the data home (an eval workspace), where the default
-        # would follow the umask and widen the rewritten file.
-        atomic_write(path, "".join(lines).encode("utf-8"), mode=OWNER_ONLY_FILE_MODE)
-        _history_facade()._restore_mtime(path, previous_mtime)
-        self._log._invalidate_cache(key)
-        return True
+        return "".join(lines).encode("utf-8")
 
     def mtime_of(self, key: str) -> float | None:
         """Return a session file mtime without reading its contents."""
@@ -540,8 +586,16 @@ class SessionMetadataProjection:
         key: str,
         *,
         only_if_closed_before: float | None = None,
+        only_if_closed_id: str | None = None,
     ) -> None:
-        """Remove a stale closed marker with an optional compare-and-clear."""
+        """Remove a stale closed marker with an optional compare-and-clear.
+
+        *only_if_closed_before* keeps a stamp whose ``closed_at`` is at or past
+        the bound. *only_if_closed_id* keeps every stamp whose ``closed_id``
+        differs from the given identity -- a line stamped without one included,
+        so a writer can clear only the stamp it wrote itself. Both are read
+        under the transcript lock, against the line as it is now.
+        """
         with self._log._locked(key):
             path = self._log._path(key)
             if not path.exists():
@@ -568,10 +622,15 @@ class SessionMetadataProjection:
                     close_time = previous_mtime
                 if close_time is not None and close_time >= only_if_closed_before:
                     return
+            if only_if_closed_id is not None and metadata.get("closed_id") != only_if_closed_id:
+                return
             metadata.pop("closed", None)
             metadata.pop("closed_at", None)
+            metadata.pop("closed_id", None)
             lines[0] = json.dumps(metadata) + "\n"
-            atomic_write(path, "".join(lines), fsync=False, newline="")
+            # Synced: the replacement carries every row, not just the cleared flag.
+            # Bytes, so no newline translation turns the LF ends into CRLF on Windows.
+            rewrite_transcript(path, "".join(lines).encode("utf-8"))
             _history_facade()._restore_mtime(path, previous_mtime)
             # Invalidate before releasing the lock so no preserved-mtime fill
             # can publish the pre-clear metadata under the current generation.

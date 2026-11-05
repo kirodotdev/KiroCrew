@@ -56,7 +56,10 @@ from .store_parts.fulltext_index import FTS_INDEX_VERSION  # noqa: F401
 from .store_parts.item_ownership import _DOC_STATE_KEY_COL  # noqa: F401
 from .store_parts.item_ownership import _DOC_STATE_TABLES  # noqa: F401
 from .store_parts.item_ownership import _OWNERSHIP_HASH_COL  # noqa: F401
+from .store_parts.item_ownership import LiveSourceHoldsNoItems  # noqa: F401
 from .store_parts.maintenance_sweeps import _RECLAIM_CHUNK  # noqa: F401
+from .store_parts.source_rows import _ACCOUNT_BOUND_SOURCE_TYPE  # noqa: F401
+from .store_parts.source_rows import _ACCOUNT_BOUND_URI_PREFIX  # noqa: F401
 from .store_parts.source_rows import _WALKING_SOURCE_TYPES  # noqa: F401
 from .store_parts.source_rows import AUTO_ADDED_PROP  # noqa: F401
 from .store_parts.source_rows import AUTO_REGISTRATION_RETIRED_PROP  # noqa: F401
@@ -78,18 +81,12 @@ _STORE_OWNERS: tuple[str, ...] = (
     "kiro_crew.knowledge.store_parts.bundle_ownership",
 )
 
-#: Test-only switch. ``False`` in production: every connection keeps SQLite's
-#: own thread-affinity guard (``check_same_thread=True``), so a caller that
-#: caches ``store.db`` and uses it from another thread is refused with
-#: ``ProgrammingError`` instead of racing the owner. ``test/conftest.py`` flips
-#: this to ``True`` once per session so ``_close_all_for_tests()`` can close the
-#: handles other (usually exited) threads opened -- the one operation the
-#: default guard refuses that a teardown needs, since an unclosed connection is
-#: a reference cycle on CPython 3.11+ and holds its descriptors until the
-#: cyclic collector runs. Only the ``test/`` testpath loads that conftest; the
-#: app test trees under ``src/kiro_crew/apps/builtins`` do not, so they never
-#: activate the flip themselves (a ``test/`` case run earlier in the same worker
-#: leaves it on). Nothing in production may set it.
+#: Test-only switch; ``False`` in production, where SQLite's own
+#: ``check_same_thread`` guard refuses cross-thread use of ``store.db``.
+#: ``test/conftest.py`` sets it so ``_close_all_for_tests()`` can close handles
+#: other threads opened (an unclosed connection is a reference cycle on CPython
+#: 3.11+). The app test trees under ``src/kiro_crew/apps/builtins`` do not load
+#: that conftest. Nothing in production may set it.
 _ALLOW_CROSS_THREAD_CLOSE_FOR_TESTS = False
 
 
@@ -153,22 +150,16 @@ MAINTENANCE_WAIT_SECS = 600.0
 class IngestionGate:
     """Reader/writer gate between ingestion and store maintenance.
 
-    Ingestion writes a source in several autocommit steps -- the source row,
-    its ingestion job, its items, its entities and their mentions -- and the
-    orphan sweep's predicates read exactly those half-states as orphans: a
-    source without items, an entity without a mention. The sweep runs after the
-    listener is up, concurrently with requests, so the two need an ordering
-    that is not a clock: ``ingestion_in_flight()`` brackets one whole ingest
-    (many may hold it at once) and ``maintenance_window()`` waits until no
-    holder remains, then holds the sweep's turn, during which a NEW ingest
-    waits at its entry rather than starting under the sweep.
+    Ingestion writes a source in several autocommit steps, and the orphan
+    sweep would read those half-states (a source without items, an entity
+    without a mention) as orphans. ``ingestion_in_flight()`` brackets one
+    ingest (many may hold it); ``maintenance_window()`` waits until no holder
+    remains, and new ingests wait at entry meanwhile, so a stream of ingests
+    cannot starve the sweep.
 
-    The wait is bounded. Ingestion that never drains inside ``timeout`` makes
-    the window yield ``False`` -- the caller skips its sweep and the next
-    launch retries -- rather than either side killing the other. While the
-    window is waiting, new ingestion is already held back, so a steady stream
-    of ingests cannot starve the sweep indefinitely; a single long ingest can,
-    and that is the bounded case.
+    The wait is bounded: if ingestion never drains inside ``timeout`` the
+    window yields ``False``, the caller skips its sweep and the next launch
+    retries.
     """
 
     def __init__(self) -> None:
@@ -180,13 +171,10 @@ class IngestionGate:
     def ingestion_in_flight(self, *, admitted: bool = False) -> Iterator[None]:
         """Hold the gate for one ingest.
 
-        *admitted* is for a hold handed on from a current holder to a task it
-        starts: the holder's own hold means no sweep is running, so the new
-        hold joins it without waiting for a maintenance window that may have
-        begun waiting in between -- waiting there would hold the parent's
-        release hostage to the window's timeout (the window waits for the
-        parent; the parent waits for this entry). An admitted hold still counts,
-        so the window keeps waiting for it like any other.
+        *admitted* is for a hold handed from a current holder to a task it
+        starts: it skips the wait for a pending maintenance window, which
+        would deadlock (the window waits for the parent, the parent for this
+        entry) until the window's timeout. An admitted hold still counts.
         """
         with self._cond:
             while self._maintenance and not admitted:
@@ -239,41 +227,23 @@ class IngestionGate:
                 self._cond.notify_all()
 
 
-# Every query the store runs funnels through the ``db`` property, so one check
-# there covers every caller at any stack depth -- including the ones a lexical
-# ``async def`` scan cannot see, which is why this guard exists.
+# Every query funnels through the ``db`` property, so one check there covers
+# callers a lexical ``async def`` scan cannot see.
 #
-# Both narrowings below are temporary and exist for the same reason: this store
-# still has on-loop callers left -- the watcher's marked cancel-path finalize
-# (``# on-loop-io-ok`` in ``knowledge/watcher.py``; the lexical baseline in
-# ``.github/sync-io-in-async-baseline.txt`` is now empty, and a marker is an
-# exemption, not an offload).
+# Two takes stay on the loop, marked ``# on-loop-io-ok``: the watcher's
+# self-heal rebuild finalizes its job row inline on cancellation, where an
+# interrupted ``to_thread`` could drop the write (``start_rebuild_job`` sweeps a
+# stale 'processing' row to 'abandoned' either way), and
+# ``dashboard/state_parts/dashboard_state.py`` builds the store lazily, with
+# migrations under ``allow_on_loop()``. Hence two narrowings:
 #
-# The ``dashboard/handlers/knowledge_*.py`` owners take the store through a worker
-# for every take of their OWN, endpoints and background tasks alike. ``artifact_ingest.py``'s
-# job-status reads run on a worker too: ``ingest_artifact`` reads inside its
-# ``_settle`` unit under ``run_to_completion``, and ``reconcile_artifacts``
-# reads through ``asyncio.to_thread``.
+# * ``strict_env=STORE_STRICT_ENV`` keeps this store off the shared
+#   ``KIROCREW_STRICT_ON_LOOP_PERSIST`` switch that the e2e gateway exports,
+#   where the watcher's finalize would raise.
+# * ``dev_mode_arms_strict=False`` stops a developer gateway raising on the
+#   same takes, which would push the developer to unset ``KIROCREW_DEV_MODE``.
 #
-# Two takes stay inline, carried as ``# on-loop-io-ok`` markers, and the
-# lexical baseline is empty. The watcher's self-heal rebuild
-# finalizes its job row inline on its cancellation path, where an interrupted
-# ``to_thread`` could drop the write -- ``start_rebuild_job`` sweeps a stale
-# 'processing' row to 'abandoned', so the single-flight guard recovers either
-# way. And ``dashboard/state_parts/dashboard_state.py`` builds this store lazily, whose migrations
-# run under ``allow_on_loop()`` below.
-#
-# * ``strict_env=STORE_STRICT_ENV`` keeps this store off the SHARED
-#   ``KIROCREW_STRICT_ON_LOOP_PERSIST`` switch, which ``setup.py``'s ``test_e2e``
-#   and ``ci.yml`` already export into the e2e gateway for history's clean
-#   surface. On the shared flag, the watcher's finalize would raise inside the
-#   e2e gateway.
-# * ``dev_mode_arms_strict=False`` keeps a developer gateway from raising on that
-#   same backlog, which would report tracked work as a regression and push the
-#   developer to unset ``KIROCREW_DEV_MODE`` -- silencing history_offload.py's guard too.
-#
-# When that baseline is empty, delete both arguments and this store joins
-# the shared switch.
+# Once those takes are gone, drop both arguments.
 _ON_LOOP_DB_GUARD = OnLoopDBGuard(
     label="knowledge store",
     remedy=(
@@ -296,77 +266,47 @@ class KnowledgeStore:
         # every connection with SQLite `mode=ro`, so a write is refused by the
         # engine rather than by convention -- see `open_read_only`.
         self._read_only = read_only
-        # One connection PER THREAD. sqlite3 connections carry
-        # thread affinity (check_same_thread=True by default), but callers
-        # like HybridRetriever.search() run on worker threads via
-        # run_in_embed_pool / asyncio.to_thread while the store is created
-        # on another thread. A shared connection raises
-        # sqlite3.ProgrammingError from those workers (HTTP 500 on
-        # /api/knowledge/search-for-context). WAL mode (below) supports
-        # concurrent readers alongside a single writer, and busy_timeout
-        # serializes rare cross-thread writes.
+        # One connection PER THREAD: sqlite3 connections are thread-affine and
+        # readers such as HybridRetriever.search() run on worker threads. WAL
+        # allows concurrent readers; busy_timeout serializes rare cross-thread
+        # writes.
         self._thread_local = threading.local()
-        # Every connection this store has opened, on any thread, so `_close_all_for_tests()`
-        # can release them all. Without this a connection a worker thread opened had
-        # no close path at all: on CPython 3.11+ an unclosed `sqlite3.Connection`
-        # is a reference CYCLE (its statement cache is an `lru_cache` wrapping the
-        # connection itself), so dropping the store does not free the descriptor
-        # -- only the cyclic collector eventually does. `_generation` is bumped
-        # by `_close_all_for_tests()`; a thread whose cached connection predates it reopens
-        # lazily instead of touching a handle another thread closed.
+        # Every connection opened, so `_close_all_for_tests()` can release them:
+        # on CPython 3.11+ an unclosed `sqlite3.Connection` is a reference cycle
+        # that only the cyclic collector frees. A thread whose cached connection
+        # predates `_generation` reopens instead of touching a closed handle.
         self._connections: list[sqlite3.Connection] = []
         self._connections_lock = threading.Lock()
         self._generation = 0
-        # The FTS index rebuild is deliberately NOT done here. This constructor
-        # runs on the gateway's boot path (see the construction note below),
-        # and a rebuild is data-scaled, so doing it here would stall the
-        # gateway at boot for the length of a full reindex. It is triggered
-        # instead by the first reader -- `ensure_fts_index_current` -- which
-        # always runs on a worker thread.
+        # The data-scaled FTS rebuild is left to the first reader
+        # (`ensure_fts_index_current`, on a worker) so it never stalls boot.
         #
-        # Guards the rebuild ONLY, so two reader threads in this process do not
-        # each start one. Deliberately not taken on the FTS write path: the
-        # rebuild acquires this and then SQLite's writer lock, so a writer that
-        # held SQLite's and waited on this one would invert the order and
-        # deadlock until busy_timeout. Writes are serialized by SQLite alone --
-        # see `_fts_terms_segmented`.
+        # Guards the rebuild ONLY. Not taken on the FTS write path: the rebuild
+        # takes this then SQLite's writer lock, so a writer doing the reverse
+        # would deadlock until busy_timeout.
         self._fts_lock = threading.Lock()
         self._fts_index_current = False
         # Which term representation `items_fts` currently holds: True once it is
         # known to be CJK-segmented, None while unknown. Never cached as False --
         # see `_fts_terms_segmented`.
         self._fts_segmented: bool | None = None
-        # The entity graph is materialised on first READ, not here -- see
-        # `ensure_graph_loaded`. `_graph` is the backing store for the `graph`
-        # property; nothing outside `_load_graph` and that property should touch
-        # it. RE-ENTRANT because both the first-touch accessor and `_load_graph`
-        # itself acquire it: the accessor holds it across the call so two readers
-        # cannot each start a scan, and `_load_graph` acquires it again so that
-        # EVERY rebuild -- including the six mutation-refresh call sites, which
-        # hold no lock of their own -- serializes against every other. A plain
-        # `Lock` would self-deadlock on that nesting.
+        # The entity graph is built on first READ (`ensure_graph_loaded`); only
+        # `_load_graph` and the `graph` property touch `_graph`. The lock is
+        # re-entrant because the accessor holds it across `_load_graph`, which
+        # takes it again so every rebuild, including mutation refreshes that
+        # hold no lock, serializes.
         self._graph = SimpleDiGraph()
         self._graph_loaded = False
         self._graph_lock = threading.RLock()
         # Orders ingestion against the deferred orphan sweep -- see
         # `IngestionGate`, `ingestion_in_flight` and `maintenance_window`.
         self._ingestion_gate = IngestionGate()
-        # This constructor sits on the gateway's boot path: `start_dashboard`
-        # builds the lazy `knowledge_store` on a worker thread just before
-        # `setup_knowledge_routes()` reads it, BEFORE the socket binds, so it
-        # runs on every launch. Other callers (a CLI command, a test, a handler
-        # harness) may still build a store on an event-loop thread. That take
-        # is deliberate, so the on-loop guard -- which exists to police
-        # reader/writer query paths -- would warn spuriously on it. Being on
-        # the boot path is not free, though, so neither data-scaled piece of
-        # construction sits on the boot path: `_load_graph()` is deferred to
-        # the first graph reader (`ensure_graph_loaded`), the same shape the
-        # FTS rebuild uses, and the writer-locked orphan sweep is
-        # `reclaim_orphans()`, kicked from a worker thread by `start_dashboard`
-        # once the listener is up. What remains here is the schema DDL and the
-        # per-column ALTERs, which are O(schema), not O(data).
-        # The suppression ends with the block: the non-constructor
-        # `_load_graph()` call sites and every query path stay fully guarded.
+        # The constructor runs on every launch before the socket binds, and
+        # some callers (CLI, tests) build a store on an event-loop thread on
+        # purpose, so the guard is suppressed for this block only. Nothing
+        # data-scaled runs here: the graph load and the orphan sweep
+        # (`reclaim_orphans()`, started after the listener is up) are deferred,
+        # leaving O(schema) DDL and ALTERs.
         if read_only:
             return
         try:
@@ -434,32 +374,20 @@ class KnowledgeStore:
     def open_read_only(cls, db_path: str) -> "KnowledgeStore":
         """Open an EXISTING library for reading only: no DDL, no migration, no reap.
 
-        The constructor runs `_migrate()` on every open, and that sweep takes the
-        writer lock and deletes any itemless source row nothing references. That
-        is the right cost for a surface that goes on to write and the wrong one
-        for a verb documented as read-only -- `kirocrew knowledge stats` runs in
-        a fresh process, so it would re-run the sweep on every invocation. Here
-        the file is opened with SQLite `mode=ro`: nothing on this store can
-        write, because the engine refuses rather than a convention asking. The
-        trade is that a schema behind the code is reported, not repaired -- a
-        read that meets a missing table or column raises
-        `sqlite3.OperationalError`, and any migrating open (the gateway,
-        `kirocrew knowledge dedup --apply`) is the fix.
+        `_migrate()` takes the writer lock and deletes unreferenced itemless
+        sources, which a read-only verb such as `kirocrew knowledge stats` must
+        not do. The file opens with SQLite `mode=ro`, so the engine refuses any
+        write. A schema behind the code is reported, not repaired: a missing
+        table or column raises `sqlite3.OperationalError` until a migrating
+        open (the gateway, `kirocrew knowledge dedup --apply`) runs.
         """
         return cls(db_path, read_only=True)
 
     def _connect(self) -> sqlite3.Connection:
-        # Production keeps SQLite's thread-affinity guard and registers nothing:
-        # its connections are freed exactly as before (by refcount or the cyclic
-        # collector), so the registry pins no exited thread's handle. Under the
-        # test flag the native guard is relaxed -- which does NOT make the
-        # connection shared: `db` still hands every thread its own, and the
-        # `_ThreadAffineTestConnection` factory re-applies the guard in Python on
-        # every statement entry point the store uses (cursor/execute*/commit/
-        # rollback), leaving only `close()` cross-thread -- so `_close_all_for_tests()`,
-        # called from whichever thread tears the store down, can release the
-        # handles OTHER threads opened; the native check refuses that even for
-        # an exited thread.
+        # Production keeps SQLite's thread-affinity guard and registers nothing,
+        # so no exited thread's handle is pinned. Under the test flag the native
+        # guard is relaxed but `_ThreadAffineTestConnection` re-applies it in
+        # Python, leaving only `close()` cross-thread for `_close_all_for_tests()`.
         test_mode = _ALLOW_CROSS_THREAD_CLOSE_FOR_TESTS
         connect_kwargs: dict = {"timeout": 30, "isolation_level": None}
         if test_mode:
@@ -666,6 +594,8 @@ class KnowledgeStore:
     add_source_location = _item_ownership.add_source_location
     add_source_location_in_txn = _item_ownership.add_source_location_in_txn
     sources_holding_item = _item_ownership.sources_holding_item
+    _refuse_live_source = _item_ownership._refuse_live_source
+    _reassignment_candidates = _item_ownership._reassignment_candidates
     reassign_item_source = _item_ownership.reassign_item_source
 
     # Item rows and deletes: ``kiro_crew.knowledge.store_parts.item_rows``.

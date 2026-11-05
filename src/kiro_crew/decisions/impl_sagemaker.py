@@ -23,9 +23,10 @@ The body and the answer are the ``/v1/systemone`` JSON. Images travel as
 ``assets`` with ``data_base64`` (a SageMaker request carries one body, so there is
 no multipart form), and a request that carries images or a Box question sets the
 custom attribute ``TypeSafe-Danger-Zone-Images=true``, which the container reads
-in place of the HTTP opt-in header of the same name. :func:`invoke` sends such a
-body and :func:`box_answers` reads the Box answers back; the gate's text
-decisions go through :class:`SageMakerOracle`.
+in place of the HTTP opt-in header of the same name. The gate's decisions, text,
+image and Box alike, go through :class:`SageMakerOracle`, which builds and reads
+the body with the hosted client's own ``_to_wire`` / ``_from_wire``. :func:`invoke`
+sends a hand-built body and :func:`box_answers` reads its Box answers back.
 
 Nothing here logs a request, a response, an image or a credential. Errors carry a fixed
 message and, for a container error, its status code only.
@@ -50,7 +51,7 @@ from urllib.parse import unquote, urlsplit
 
 from kiro_crew.config.sections import DECISION_PROVIDER_MODEL_DEFAULT
 from kiro_crew.constants import AWS_PROFILE_NAME_RE
-from kiro_crew.decisions.types import Answers, Question
+from kiro_crew.decisions.types import Answers, ImageAsset, Question
 
 SCHEME = "sagemaker"
 
@@ -127,6 +128,10 @@ class SageMakerCredentialsError(SageMakerError):
 
 class SageMakerEndpointNotFound(SageMakerError):
     """No endpoint by that name exists in that region for these credentials."""
+
+
+class SageMakerRequestTooLarge(SageMakerConfigError):
+    """The request body is over :data:`MAX_REQUEST_BYTES`; it is never sent."""
 
 
 class SageMakerTimeout(SageMakerError):
@@ -446,7 +451,9 @@ def invoke_sync(
     """
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
     if len(payload) > MAX_REQUEST_BYTES:
-        raise SageMakerConfigError(f"request exceeds {MAX_REQUEST_BYTES} bytes")
+        raise SageMakerRequestTooLarge(
+            f"request is {len(payload)} bytes, over the {MAX_REQUEST_BYTES}-byte SageMaker limit"
+        )
     images = needs_images_opt_in(body)
     budget = _budget_secs(timeout_ms)
     deadline = clock() + budget
@@ -509,14 +516,29 @@ class SageMakerOracle:
         self._timeout_ms = getattr(provider, "timeout_ms", 1000)
         self.last_response_meta: dict[str, Any] | None = None
 
-    async def ask(self, state: dict | str, questions: list[Question]) -> Answers:
-        """Send one request carrying every question. Raises on any failure."""
-        from kiro_crew.decisions.impl_jev import _from_wire, _response_meta, _to_wire
+    async def ask(
+        self,
+        state: dict | str,
+        questions: list[Question],
+        *,
+        assets: Mapping[str, ImageAsset] | None = None,
+    ) -> Answers:
+        """Send one request carrying every question. Raises on any failure.
+
+        *assets* are the images the state names by id. They are encoded by the
+        hosted client's own ``_to_wire`` (same formats and per-image byte cap), and
+        Box answers are read by its ``_from_wire``, so both transports hand the
+        gate the same :class:`~kiro_crew.decisions.types.Answer`. A body carrying an
+        image or a Box question sets :data:`IMAGES_ATTRIBUTE` (see
+        :func:`invoke_sync`). The gate passes *assets* only after the point named
+        an image scope.
+        """
+        from kiro_crew.decisions.impl_systemone import _from_wire, _response_meta, _to_wire
 
         if not questions:
             raise SageMakerProtocolError("no questions to ask")
         target = parse_endpoint(self._endpoint)
-        body = _to_wire(state, self._model, questions)
+        body = _to_wire(state, self._model, questions, assets)
         parsed, request_id = await asyncio.to_thread(invoke_sync, target, body, self._timeout_ms)
         answers = _from_wire(parsed, questions)
         self.last_response_meta = _response_meta(parsed, request_id)

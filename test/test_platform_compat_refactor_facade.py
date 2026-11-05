@@ -127,6 +127,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.platform_compat_native": tuple("""
         IS_WINDOWS IS_POSIX IS_LINUX IS_MACOS _WINDOWS_PID_MAX SIGKILL _OWN_PGID SIGTERM SIGHUP
         CREATE_NEW_PROCESS_GROUP DETACHED_PROCESS CREATE_SUSPENDED _SUBPROCESS_NO_WINDOW
+        _FileBasicInfo _FileId128 _FileIdInfo _ByHandleFileInformation
         _ProcessEntry32 _ProcessMemoryCounters _MemoryStatusEx _SidAndAttributes _TokenUser
         _IoCounters _JobObjectBasicLimitInformation _JobObjectExtendedLimitInformation
         _ThreadEntry32 _windows_last_error _open_process_query_handle _close_process_handle
@@ -158,7 +159,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _darwin_libproc_fd_bound _darwin_libproc_fd_handle _darwin_peer_is_loopback
         darwin_established_tcp_count _darwin_libc_sysctl _darwin_libc_sysctl_loaded
         _darwin_libc_sysctl_lock _darwin_sysctl_handle darwin_process_argv
-        _darwin_tb_frequency
+        _darwin_tb_frequency _DARWIN_PTI_RESIDENT_SIZE_OFFSET darwin_resident_bytes_for_pid
         darwin_process_environ DarwinKinfoProc _darwin_kinfo_proc_parse
         _darwin_kinfo_size_mismatch_logged _darwin_kinfo_query darwin_kinfo_proc
         darwin_pid_is_zombie darwin_pgroup_members _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC
@@ -187,12 +188,16 @@ _MOVED: dict[str, tuple[str, ...]] = {
         symlink_or_junction _ISJUNCTION _FILE_ATTRIBUTE_REPARSE_POINT
         _IO_REPARSE_TAG_MOUNT_POINT _is_junction_fallback _IO_REPARSE_TAG_NAME_SURROGATE
         lstat_is_name_surrogate _StrOrPath strip_extended_length_prefix is_link_or_junction
-        first_linked_ancestor unlink_link_or_junction _WIN_GENERIC_READ _WIN_GENERIC_WRITE
+        first_linked_ancestor unlink_link_or_junction _windows_handle_identity
+        _windows_file_identity opened_file_identity opened_path_identity_matches _WIN_DELETE
+        _WIN_FILE_WRITE_ATTRIBUTES _WIN_GENERIC_READ _WIN_GENERIC_WRITE
         _WIN_FILE_SHARE_READ_WRITE _WIN_FILE_SHARE_READ _WIN_OPEN_EXISTING
         _WIN_FILE_FLAG_BACKUP_SEMANTICS _WIN_FILE_FLAG_OPEN_REPARSE_POINT
-        _WIN_FILE_ATTRIBUTE_DIRECTORY _WIN_FILE_ATTRIBUTE_REPARSE_POINT pin_directory
+        _WIN_FILE_ATTRIBUTE_DIRECTORY _WIN_FILE_ATTRIBUTE_REPARSE_POINT
+        _WIN_FILE_ATTRIBUTE_READONLY _WIN_FILE_ATTRIBUTE_NORMAL pin_directory
         pinned_dir_flags PINNED_TREE_MAX_DEPTH PinnedDirectory pinned_directory
-        _win_open_without_following open_file_no_reparse _WIN_FILE_LIST_DIRECTORY
+        _win_open_without_following open_path_no_reparse unlink_path_if_identity
+        open_file_no_reparse _WIN_FILE_LIST_DIRECTORY
         _WIN_OPEN_ALWAYS _WIN_FILE_ATTRIBUTE_TAG_INFO win_fd_is_link _win_reparse_refused
         win_open_no_reparse open_create_no_reparse names_a_verbatim_only_file
         """.split()),
@@ -200,7 +205,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _RENAME_NOREPLACE_FN _RENAME_NOREPLACE_FLAG _SYS_RENAMEAT2_BY_MACHINE
         _build_renameat2_via_syscall RENAME_NOREPLACE_AVAILABLE TCC_PROTECTED_HOME_DIRS
         TCC_LIBRARY_WALKABLE_CHILDREN _LIBRARY_DIR rename_noreplace publish_dir_noreplace
-        tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe chmod_safe
+        tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe dup_fd_at_or_above
+        chmod_safe
         claude_code_managed_settings_dir
         _clear_readonly_and_retry rmtree_force _WIN_FILE_SHARE_READ_WRITE_DELETE
         open_log_file_for_tail open_lock_file_for_sweep path_volume_is_remote
@@ -219,7 +225,13 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _ACL_WRITE _NO_ACL_ERRNOS _acl_admits_another_account group_write_admits_another_account
         _is_root_owned_path _local_aws_bin_candidate _is_native_program
         _local_aws_bin_is_trusted trusted_aws_bin aws_bin_declined_on_ownership
-        trusted_system_path desktop_launcher_available reveal_in_file_manager
+        trusted_system_path desktop_launcher_available _ASCII_ALNUM _WAYLAND_NAME_CHARS
+        _XAUTHORITY_CHARS _DESKTOP_NAME_CHARS _ascii_digits _x11_display_number
+        _is_local_x11_display _is_wayland_socket_name _is_xauthority_path _is_desktop_names
+        _is_kde_session_version _DESKTOP_SESSION_CHECKS _X11_SOCKET_DIR _DESKTOP_SESSION_TTL_SECS
+        _DESKTOP_SESSION_TIMEOUT_SECS _desktop_session_lock _desktop_session_cache
+        _user_manager_desktop_session _user_manager_environment _desktop_session_from
+        _live_desktop_session _x11_display_is_live _wayland_display_is_live reveal_in_file_manager
         open_with_default_app _reveal_env tool_outside_trusted_dirs short_path_name
         """.split()),
     "kiro_crew.platform_compat_liveness": tuple("""
@@ -286,7 +298,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         windows_tree_cleanup_pending _create_windows_subprocess_owned
         """.split()),
     "kiro_crew.platform_compat_kill": tuple("""
-        pgroup_exists _raise_taskkill_error kill_pid kill_process_group kill_process_tree
+        pgroup_exists _raise_taskkill_error kill_pid kill_process_group _killpg kill_process_tree
         kill_process_tree_pinned kill_pid_pinned kill_pid_async kill_process_tree_async
         REAP_TIMEOUT_SECS _shares_own_process_group kill_popen_tree kill_and_reap
         _run_cleanup_shielded _isolated_group_of_live_child _discard_output_until_exit
@@ -393,6 +405,9 @@ _CARVED_IMPORTS: dict[str, frozenset[str]] = {
             "kiro_crew.platform_compat_identity",
             "kiro_crew.platform_compat_liveness",
             "kiro_crew.platform_compat_native",
+            # darwin_pgroup_members settles macOS's EPERM for pgroup_exists and for an
+            # all-zombie group's killpg.
+            "kiro_crew.platform_compat_proctable",
             "kiro_crew.platform_compat_trust",
             "kiro_crew.platform_compat_winproc",
             "kiro_crew.platform_compat_wintree",
@@ -532,9 +547,11 @@ def test_the_owners_log_under_the_compatibility_layer_s_name() -> None:
 #: both bind, each importing its own, so the patch reaches the facade's and the carved
 #: owners' code (the mirror carries it there) but not the lock or owner-only module's.
 #: ``Path`` is rebound for the process-identity and trusted-binary helpers, in the carved
-#: identity and trust owners; no test fakes it for a lock or an owner-only helper. A new
-#: entry is a decision that the patch needs no forwarding.
-_PC_SHARED_BINDINGS_PATCHED: frozenset[str] = frozenset({"Path"})
+#: identity and trust owners; ``os`` is rebound for the native branch of
+#: ``unlink_path_if_identity``, in the carved links owner (its ``name``, ``fstat`` and
+#: ``close``). No test fakes either for a lock or an owner-only helper. A new entry is a
+#: decision that the patch needs no forwarding.
+_PC_SHARED_BINDINGS_PATCHED: frozenset[str] = frozenset({"Path", "os"})
 
 
 @pytest.mark.parametrize("part", range(shared.CENSUS_PARTS))

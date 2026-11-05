@@ -15,7 +15,8 @@ Instance fields written: ``_claude_inline_settings``,
 
 Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_permission_mode``,
 ``_session_id``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
-``_side_read_only``, ``_spec_zero_tools``.
+``_side_read_only``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
+``_spec_zero_tools``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS
+from kiro_crew.acp.spec_tools_allowlists import claude_ask_rules_for_allowlists
 from kiro_crew.acp.transport_errors import AcpError, AcpTimeoutError
 from kiro_crew.acp.types import METHOD_SET_MODE
 from kiro_crew.security import sandbox_credential_targets
@@ -82,6 +84,14 @@ _CLAUDE_SIDE_READ_ONLY_ASK_RULES: tuple[str, ...] = (
     "WebFetch",
     "WebSearch",
 )
+
+#: The Claude Code switch that turns its auto-memory off for the whole session: it
+#: neither loads ``<config dir>/projects/<project key>/memory/MEMORY.md`` nor writes
+#: a memory file. Read by the CLI from its process env, where it wins over the
+#: ``autoMemoryEnabled`` setting (Claude Code 2.1.318). Sent in
+#: ``_meta.claudeCode.options.env`` and in the flag tier's ``settings.env`` for an
+#: incognito or temporary session.
+_CLAUDE_DISABLE_AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 
 #: gitignore's pattern characters. A rule written from a real path escapes them, as
 #: Claude Code does for a path the user approves, so a directory named ``[x]`` is
@@ -408,9 +418,11 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     widening direction.
 
     A session whose spec declares ``"tools": []`` (``_spec_zero_tools``, the
-    background ``kirocrew-lite`` helpers) gets ``strictMcpConfig``, so only the
-    wire array mounts: the harness's own user, project and plugin servers stay
-    out of a session that must run no tool.
+    background ``kirocrew-lite`` helpers) mounts no tool at all: ``tools`` is
+    empty, so no built-in exists for an allow rule in any settings file to
+    pre-approve, ``strictMcpConfig`` keeps the harness's own user, project and
+    plugin servers out, and bypass is off. The wire array it ships beside must be
+    empty too, which :func:`refuse_claude_zero_tool_mounts` checks first.
 
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
@@ -421,6 +433,14 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     session needs; the deny rules are what keep an allow rule or an
     additional directory there from reaching a sensitive path. A side session
     with no deny rules to carry raises ``AcpError`` instead of starting.
+
+    An incognito or temporary session (``memory_mode`` not ``persistent``) gets
+    ``CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`` in ``env`` and in ``settings.env``, so
+    Claude Code's auto-memory neither reads nor writes the project's memory
+    files. The adapter spreads ``env`` over its own process env, so nothing it
+    sets there is lost; ``settings.env`` is the flag tier, which Claude Code
+    applies after the user, project and local tiers' ``env``, so none of those
+    can set the switch back.
     """
     options: dict[str, Any] = {}
     excluded = getattr(self, "_claude_local_settings_excluded", False) or getattr(
@@ -434,11 +454,32 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
             inline = getattr(self, "_session_mcp_inline_settings", None)
         if isinstance(inline, dict) and inline:
             options["settings"] = dict(inline)
+    # The spec's shell and write allowlists' ask rules ride the envelope whether or
+    # not ``settings.local.json`` is Crew's: a declined project file still loads,
+    # and its allow rules would otherwise approve those calls without a request.
+    # Built from the allowlists this session's requests are stamped with.
+    allowlist_asks = claude_ask_rules_for_allowlists(
+        getattr(self, "_spec_shell_allowlist", None),
+        getattr(self, "_spec_write_allowlist", None),
+    )
+    if allowlist_asks:
+        carried_settings = dict(options.get("settings") or {})
+        carried_permissions = dict(carried_settings.get("permissions") or {})
+        ask = list(carried_permissions.get("ask") or [])
+        ask.extend(rule for rule in allowlist_asks if rule not in ask)
+        carried_permissions["ask"] = ask
+        carried_settings["permissions"] = carried_permissions
+        options["settings"] = carried_settings
     if getattr(self, "_spec_zero_tools", False):
         # The spec declares ``"tools": []`` (the background ``kirocrew-lite``
-        # helpers): without this the harness mounts the user's, the project's and
-        # plugins' servers beside the wire array, and starts them on every call.
+        # helpers). Without ``tools`` the adapter mounts Claude Code's whole
+        # built-in preset, and an allow rule in the user's or the project's
+        # settings runs a call there unasked, so no permission request reaches
+        # Crew. Without ``strictMcpConfig`` it mounts the user's, the project's
+        # and plugins' servers beside the wire array.
+        options["tools"] = []
         options["strictMcpConfig"] = True
+        options["allowDangerouslySkipPermissions"] = False
     if getattr(self, "_side_read_only", False):
         # A Side Chat session: only the read built-ins exist, so no allow rule
         # in the user's settings can pre-approve a write. No MCP server either
@@ -467,6 +508,18 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
         side_settings["permissions"] = side_permissions
         side_settings["disableAllHooks"] = True
         options["settings"] = side_settings
+    if self.memory_mode != "persistent":
+        # Claude Code's auto-memory reads the project's MEMORY.md into the
+        # session and writes memory files with no permission request. The
+        # adapter spreads this env over its own process env. Claude Code then
+        # copies each settings tier's ``env`` over the process env, so a user
+        # or project ``env`` could set the switch back; the flag tier
+        # (``settings``) is copied last, so it carries the switch too. Copied,
+        # never mutated: the inline and Side Chat settings are shared dicts.
+        options.setdefault("env", {})[_CLAUDE_DISABLE_AUTO_MEMORY_ENV] = "1"
+        flag = dict(options.get("settings") or {})
+        flag["env"] = {**dict(flag.get("env") or {}), _CLAUDE_DISABLE_AUTO_MEMORY_ENV: "1"}
+        options["settings"] = flag
     # What this envelope ships, recorded as it is built: the session freezes
     # these deny and ask rules at creation, and a later re-seed (``_reseed_after_capture``)
     # moves the live inline settings without reaching the session.
@@ -479,6 +532,22 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
             shipped.update((kind, rule) for rule in rules if isinstance(rule, str))
     self._claude_shipped_restrictions = frozenset(shipped)
     return {"claudeCode": {"options": options}}
+
+
+def refuse_claude_zero_tool_mounts(spec_zero_tools: bool, mcp_servers: Any) -> None:
+    """Refuse a zero-tool claude session whose wire array mounts a server.
+
+    On a session whose spec declares ``"tools": []``, :func:`_claude_session_meta`
+    removes every built-in and keeps the harness's own servers out, so the wire
+    array is the one channel left that could mount a tool. The mirror withholds
+    every server such a spec does not reference, so a non-empty array is a
+    composition defect: ``AcpError``, and the session is not started.
+    """
+    if spec_zero_tools and mcp_servers:
+        raise AcpError(
+            'a claude session whose spec declares "tools": [] was composed with '
+            f"{len(mcp_servers)} MCP server(s), so it was not started"
+        )
 
 
 def _claude_session_excludes_local(self: AcpClient) -> bool:
@@ -546,6 +615,9 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     is below :data:`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, and Side Chat
     runs no tools on such an adapter; if the adapter that answered the
     handshake reports a version below it anyway, the session is stopped here.
+    A session whose spec declares ``"tools": []`` is stopped below the same
+    floor, since its empty ``tools`` option is what removes the built-ins, but
+    is not pinned: it mounts no tool, so its mode approves nothing.
     Any other session gains no call (harness-parity H13).
 
     Observed on claude-agent-acp 0.84.0
@@ -560,17 +632,21 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     window between the writer's read and the session's creation.
     """
     excludes_local = self._claude_session_excludes_local()
-    if not (excludes_local or getattr(self, "_side_read_only", False)):
+    side = getattr(self, "_side_read_only", False)
+    if not (excludes_local or side or getattr(self, "_spec_zero_tools", False)):
         return
     if self._claude_adapter_below_setting_sources_floor():
-        # The installed package passed the floor, but the adapter that answered
-        # the handshake did not: it may have ignored the session's options.
+        # The adapter that answered the handshake is below the floor, or named no
+        # version: it may have ignored the session's options.
         await self._kill_process(force=True)
         raise AcpError(
             "the claude-agent-acp that answered the handshake is not verified to "
             "honour settingSources or the other session options, so a session "
             "that depends on them was stopped before its first prompt"
         )
+    if not (excludes_local or side):
+        # A zero-tool session mounts no tool, so its mode has nothing to approve.
+        return
     if excludes_local:
         await self._verify_claude_project_denies_unchanged()
     session_id = resp.get("sessionId") or self._session_id

@@ -32,6 +32,8 @@ export interface AppPanelTabDecl {
 export interface PanelTabAppRecord {
   name: string
   enabled?: boolean
+  /** Set when the gateway skipped this built-in at boot: it has no routes, so it is not live. */
+  unavailable?: { reason: string }
   manifest?: {
     contributes?: { panelTabs?: AppPanelTabDecl[] }
   }
@@ -115,7 +117,7 @@ export function resolvePanelTabs(apps: readonly PanelTabAppRecord[]): PanelTabDe
   // the strip order must be the same answer for every viewer.
   const sorted = [...list].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
   for (const app of sorted) {
-    if (!app.enabled) continue
+    if (!app.enabled || app.unavailable) continue
     // A hand-edited app.json can carry `"panelTabs": {}` — an object satisfies the
     // optional-chain and the `?? []` default, then `.slice` is not a function. The
     // manifest normalizer does not coerce `contributes`, so the shape is checked here.
@@ -210,6 +212,26 @@ export function useInstalledApps(): {
     isLoadingError,
     refetch,
   }
+}
+
+/**
+ * The installed apps the `['apps']` cache already holds, without asking for them.
+ *
+ * A disabled observer: it reads whatever answer the shell's own `['apps']` read has
+ * put in the cache and re-renders when that answer arrives, but never starts a
+ * request, waits on one, or reports one failing. An empty list therefore means
+ * "nothing known yet" as much as "nothing installed", which suits a reader whose
+ * default render does not depend on the list. It registers the same guarded
+ * `queryFn` as `useInstalledApps`, so the key keeps a guarded function whichever
+ * observer registered last.
+ */
+export function useLoadedInstalledApps(): InstalledApp[] {
+  const { data } = useQuery({
+    queryKey: ['apps'],
+    queryFn: () => (typeof api?.listApps === 'function' ? api.listApps() : []),
+    enabled: false,
+  })
+  return Array.isArray(data) ? (data as InstalledApp[]) : []
 }
 
 export function usePanelTabDescriptors(): PanelTabDescriptor[] {

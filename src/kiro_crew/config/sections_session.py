@@ -12,12 +12,18 @@ from typing import Any
 from kiro_crew.config.fields import _meta
 from kiro_crew.config.sections_defaults import (
     DEFAULT_AUTOCOMPACT_PCT,
+    DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
     DEFAULT_POOL_SIZE,
     DEFAULT_RECONCILE_MAX_KILLS,
+    DEFAULT_SEARCH_SCAN_WINDOW,
     DEFAULT_SESSION_TIMEOUT,
     DEFAULT_WATCHDOG_RSS_MAX_MB,
     SectionReader,
 )
+
+# Highest dock position a crew may hold. Far above any roster a person drags by
+# hand; it only bounds a hand-edited or hostile value.
+STAR_ORDER_MAX = 10_000
 
 
 def _archive_retention_days(session_data: dict) -> int:
@@ -108,6 +114,31 @@ class SessionConfig:
             "so a change needs no restart.",
         ),
     )
+    idle_compaction: bool = field(
+        default=False,
+        metadata=_meta(
+            "Compact Idle Chats Before Cache Expiry",
+            "When a dashboard chat has been idle for slightly less than its "
+            "backend's prompt-cache lifetime, compact it once so your next turn "
+            "re-sends a summary instead of the full history. It saves credits only "
+            "on large chats you come back to: each idle compaction is an extra "
+            "model call that costs credits even if you never return, if you return "
+            "just after it starts you wait for it to finish, up to the compaction "
+            "wait limit plus about 20 seconds (5 minutes by default), "
+            "and the summary loses detail from earlier in the conversation. Only "
+            "chats whose context is at least Idle Compaction Minimum Context full "
+            "are compacted. Backends with an unknown cache lifetime are skipped.",
+        ),
+    )
+    idle_compaction_min_context_pct: float = field(
+        default=50.0,
+        metadata=_meta(
+            "Idle Compaction Minimum Context",
+            "Context usage percentage below which an idle chat is left alone. "
+            "Below about 40% a compaction costs more than re-sending the history "
+            "it replaces, so values below 40 are raised to 40 (40-90).",
+        ),
+    )
     compact_wait_secs: float = field(
         default=0.0,
         metadata=_meta(
@@ -193,6 +224,18 @@ class SessionConfig:
             "ignore it.",
         ),
     )
+    search_scan_window: int = field(
+        default=DEFAULT_SEARCH_SCAN_WINDOW,
+        metadata=_meta(
+            "Session Search Scan Window",
+            "How many of the most recently changed session transcripts a session "
+            "search reads: the dashboard search, search_chat_history and a chat "
+            "channel's session picker. An older session is not searched, and the "
+            "results say how many were searched out of how many there are. A larger "
+            "window makes each search read more transcripts. Clamped to "
+            "100..100000. Read at each search, so a change needs no restart.",
+        ),
+    )
     watchdog_rss_max_mb: int = field(
         default=DEFAULT_WATCHDOG_RSS_MAX_MB,
         metadata=_meta(
@@ -201,6 +244,19 @@ class SessionConfig:
             "this many MiB (default 4096). 0 disables; the internal background "
             "runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in "
             "flight) are never recycled.",
+        ),
+    )
+    harness_background_hold_secs: int = field(
+        default=DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
+        metadata=_meta(
+            "Background Work Hold (seconds)",
+            "On the Claude backend, how long after the agent starts background work "
+            "(a Workflow or a backgrounded command) the idle timeout and the Watchdog "
+            "RSS Limit still leave its session running (default 3600, 300-86400). "
+            "Claude Code does not report when that work ends, so after this time the "
+            "work is treated as finished and the session can be ended; the chat then "
+            "says the work may have been stopped. Raise it for work that runs longer. "
+            "Twice the Watchdog RSS Limit still ends a session inside the hold.",
         ),
     )
     reconcile_max_kills: int = field(
@@ -263,12 +319,12 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Worker Model",
-            "Model for the sessions this mate dispatches through "
+            "Model for the sessions this Bot dispatches through "
             "session_create when the call names none. Empty copies the "
-            "mate's model pin when set; with both fields empty, no session "
+            "Bot's model pin when set; with both fields empty, no session "
             "model is pinned and the worker's own agent or the global default "
             "decides. Unlike 'model', 'auto' is a real pin here: workers run "
-            "on the backend's own default, which is how a mate on a costly "
+            "on the backend's own default, which is how a Bot on a costly "
             "model keeps its workers cheap. An explicit model on the call wins.",
         ),
     )
@@ -276,12 +332,12 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Worker Reasoning Effort",
-            "Reasoning effort for the sessions this mate dispatches through "
+            "Reasoning effort for the sessions this Bot dispatches through "
             "session_create when the call names none. Empty means: while the "
-            "workers run the mate's own model (worker_model empty and no model "
-            "on the call) they take the mate's own effort (the field above); "
+            "workers run the Bot's own model (worker_model empty and no model "
+            "on the call) they take the Bot's own effort (the field above); "
             "under any other model no level is pinned and the worker's agent "
-            "decides as usual (its own crew pin if it runs as a mate, else "
+            "decides as usual (its own crew pin if it runs as a Bot, else "
             "agent.reasoning_effort, else the model default). Set, one of the five "
             "standard levels. An explicit effort on the call wins.",
         ),
@@ -290,7 +346,7 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Harness",
-            "Agent harness for this crewmate's own chat and the worker sessions it "
+            "Agent harness for this Bot's own chat and the worker sessions it "
             "opens, spelled as agent.acp_backend (kiro, kas, claude, ...). Empty "
             "inherits agent.member_acp_backend. A harness this gateway cannot start "
             "refuses the session with the reason instead of running another one. "
@@ -301,18 +357,18 @@ class KiroCrewAgentConfig:
         default=False,
         metadata=_meta(
             "Dynamic capabilities",
-            "Preview, per crewmate: this crewmate can find "
+            "Preview, per Bot: this Bot can find "
             "new skills or tools for its worker and ask for them on a card in its "
-            "chat. Off (the default): only you add them, in this crewmate's "
+            "chat. Off (the default): only you add them, in this Bot's "
             "advanced settings, and it tells you when its worker lacks one. "
-            "Read per request, so a change reaches the crewmate's next session.",
+            "Read per request, so a change reaches the Bot's next session.",
         ),
     )
     approval_mode: str = field(
         default="",
         metadata=_meta(
             "Approval Mode",
-            "Tool approval for this mate's own Mates-page thread: normal, "
+            "Tool approval for this Bot's own Bots-page thread: normal, "
             "trust_reads or trust. Empty means the user never chose one, and the "
             "thread opens in trust.",
         ),
@@ -349,11 +405,21 @@ class KiroCrewAgentConfig:
         default=False,
         metadata=_meta(
             "Starred",
-            "Marks this crew as a favourite on the Crew Members page. Purely a "
+            "Marks this crew as a favourite on the Bots page. Purely a "
             "roster preference: the page's star filter shows only starred "
             "crews, so the dozens of package-installed crews the agent sync "
             "writes here can be collapsed behind the few you actually drive. "
             "Never read by routing, spawning, or the orchestrator.",
+        ),
+    )
+    star_order: int = field(
+        default=0,
+        metadata=_meta(
+            "Star order",
+            "Position of this starred crew in the dashboard's left dock, set by "
+            "dragging its row there. 1 is the top; 0 means not placed yet, which "
+            "sorts after every placed crew. Cleared when the crew is unstarred. "
+            "Purely a display preference, like starred.",
         ),
     )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``
@@ -436,9 +502,9 @@ class KiroCrewAgentConfig:
         default_factory=dict,
         metadata=_meta(
             "Imported",
-            "Provenance stamp of a mate imported from a .crewmate file: "
+            "Provenance stamp of a Bot imported from a .kirobot file: "
             "{'format_version', 'sender_label', 'sha256', 'imported_at'}. Empty "
-            "for a mate made here. The sender label is self-declared; nothing "
+            "for a Bot made here. The sender label is self-declared; nothing "
             "reads the stamp to reach the sender.",
         ),
     )
@@ -563,6 +629,16 @@ class SessionEnvironmentsConfig:
             "credential is stored.",
         ),
     )
+    kiro_cloud_profiles: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Kiro Cloud Sessions Profiles",
+            "Named Kiro Cloud Sessions profiles (at most 20), each {id, name, "
+            "repositories}. The session runs in a Kiro Cloud Sessions sandbox through "
+            "Kiro Agent, without Kiro Crew's tools, MCP servers or governance gate; the "
+            "gateway's Kiro sign-in authenticates.",
+        ),
+    )
 
     default_profile: str = field(
         default="",
@@ -592,6 +668,7 @@ class SessionEnvironmentsConfig:
         from kiro_crew.config.session_environments import (
             load_boxd_profiles,
             load_default_profile,
+            load_kiro_cloud_profiles,
             load_session_environments,
             load_sprites_profiles,
             load_stop_on_shutdown,
@@ -605,6 +682,7 @@ class SessionEnvironmentsConfig:
             profiles=[SessionEnvironmentProfileConfig(**p) for p in profiles],
             sprites_profiles=load_sprites_profiles(section),
             boxd_profiles=load_boxd_profiles(section),
+            kiro_cloud_profiles=load_kiro_cloud_profiles(section),
             default_profile=load_default_profile(section),
             stop_on_shutdown=load_stop_on_shutdown(section),
         )

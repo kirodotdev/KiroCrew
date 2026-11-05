@@ -41,7 +41,11 @@ from kiro_crew.dashboard.state import chat_message_note, row_mid
 from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE, EMPTY_TURN_NOTICE_AFTER_WORK
 
 # Read when the module loads (the placeholder pattern), so imported plainly.
-from kiro_crew.security import EXFILTRATION_REDACTION_TAG_PREFIX, redact, redact_and_truncate
+from kiro_crew.security import (
+    EXFILTRATION_REDACTION_TAG_PREFIX,
+    redact,
+    redact_and_truncate,
+)
 from kiro_crew.security.credential_sources import credential_records
 from kiro_crew.security.redaction import redact_credentials_with_records
 from kiro_crew.sel import SecurityEvent
@@ -69,11 +73,16 @@ if TYPE_CHECKING:
         sel_is_warm,
         telemetry_channel_of,
     )
+    from kiro_crew.dashboard.chat_turn.agent_started import (
+        AGENT_ORIGIN_META_KEY,
+        agent_origin_meta,
+    )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _decisions_strip_meta
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
     from kiro_crew.dashboard.chat_turn.model_fallback import (
         _configured_refusal_fallback,
         _record_refused_cycle,
+        _refusal_fallback_is_same_model,
         _refusal_fallback_retry,
     )
     from kiro_crew.dashboard.chat_turn.recovery import (
@@ -98,6 +107,20 @@ if TYPE_CHECKING:
 #: reader. Used only to tag the audit event; the label is applied regardless.
 _DIRECTIVE_SHAPED_RE = re.compile(
     r"""(?ix)(?:^|[\s(\[{"'])(?:system|assistant|developer|instruction)\s*["']?\s*:"""
+)
+
+
+#: English fallback for the same-model refusal-fallback notice row. The
+#: dashboard renders the localized copy keyed on the gateway-notice token
+#: (``refusal_fallback_same_model``); this text is what channel mirrors, SSE
+#: readers and an older frontend read. Emitted as a SEPARATE ``notice`` row from
+#: the terminal refusal card, so the sentence localizes without tokenizing the
+#: composite card.
+_REFUSAL_FALLBACK_SAME_MODEL_NOTICE = (
+    "ℹ️ Automatic retry was skipped because the fallback model"
+    " (`agent.refusal_fallback_model`) is the same as your current model —"
+    " retrying the same model hits the same filter. Pick a different model for"
+    " the fallback to retry automatically."
 )
 
 
@@ -180,15 +203,21 @@ def _segment_row_meta(
     body is only control notices, the row is tagged a system notice
     (:data:`REGENERATE_NOTICE_ONLY`): it answers nothing, so a later Regenerate
     must not take it for the reply it re-runs.
+
+    A row of a turn the agent started on its own carries ``meta.origin``
+    (``agent_started.agent_origin_meta``).
     """
     meta = _decisions_strip_meta(slot)
     message_id = getattr(slot, "segment_message_id", "")
     if message_id:
         slot.segment_message_id = ""
     notice_only = text is not None and not is_regenerate_answer(slot, text)
-    if not blocked_links and not redactions and not message_id and not notice_only:
+    agent_started = getattr(slot, "_turn_agent_started", False) is True
+    if not (blocked_links or redactions or message_id or notice_only or agent_started):
         return meta
     out = dict(meta) if meta else {}
+    if agent_started:
+        out[AGENT_ORIGIN_META_KEY] = agent_origin_meta()
     if notice_only:
         out["kind"] = "compaction"
         out["notice"] = REGENERATE_NOTICE_ONLY
@@ -388,6 +417,24 @@ def _give_back_run(
 def _redact_segment(
     slot: _ChatSlot, text: str, *, _ordered_out: list[bool] | None = None
 ) -> tuple[str, list[dict], list[dict]]:
+    """:func:`_redact_segment_unkept`, keeping only the saved records' values.
+
+    Every pass inside mints handles into one pending map; only the handles in
+    the records this returns are kept in ``security.reveal_store``.
+    """
+    pending: dict[str, str] = {}
+    out = _redact_segment_unkept(slot, text, _ordered_out=_ordered_out, _reveal_pending=pending)
+    _commit_reveals(slot, out[2], pending)
+    return out
+
+
+def _redact_segment_unkept(
+    slot: _ChatSlot,
+    text: str,
+    *,
+    _ordered_out: list[bool] | None = None,
+    _reveal_pending: dict[str, str] | None = None,
+) -> tuple[str, list[dict], list[dict]]:
     """Redact one assistant segment as one text and describe every placeholder.
 
     ``text`` is the segment as it streamed: each delta redacted on its own.
@@ -436,7 +483,9 @@ def _redact_segment(
     _reset_segment_copy(slot)
     shown = _reflow_label_and_audit(slot, text)
     if raw == "":
-        return _redact_segment_text(slot, shown, _ordered_out=_ordered_out)
+        return _redact_segment_text(
+            slot, shown, _ordered_out=_ordered_out, _reveal_pending=_reveal_pending
+        )
     if not text:
         # Streamed deltas with no streamed text left: nothing was shown.
         return "", [], []
@@ -449,7 +498,9 @@ def _redact_segment(
         try:
             whole = reflow_and_label_glued_option_marker(raw)[0]
             order: list[bool] = []
-            saved = _redact_segment_text(slot, whole, _ordered_out=order)
+            saved = _redact_segment_text(
+                slot, whole, _ordered_out=order, _reveal_pending=_reveal_pending
+            )
             if removed:
                 per_delta, _, _ = _redact_segment_text(slot, shown)
                 # Never edit the raw copy to drop such a value: a mask changes
@@ -466,7 +517,11 @@ def _redact_segment(
                     and saved[0]
                     != (
                         strict := _redact_segment_text(
-                            slot, whole, tuple(removed), _ordered_out=strict_order
+                            slot,
+                            whole,
+                            tuple(removed),
+                            _ordered_out=strict_order,
+                            _reveal_pending=_reveal_pending,
                         )
                     )[0]
                 ):
@@ -653,11 +708,15 @@ def _redact_segment_text(
     judged_sri_values: Collection[str] = (),
     *,
     _ordered_out: list[bool] | None = None,
+    _reveal_pending: dict[str, str] | None = None,
 ) -> tuple[str, list[dict], list[dict]]:
     """Both removers over ``text``, with the records each placeholder needs.
 
     ``_ordered_out`` gets ``[True]``, or ``[False]`` when a record has no
     placeholder of its own, so the records do not pair with them by order.
+    ``_reveal_pending``, when given, gets each removed value under the
+    ``reveal_id`` its record carries; nothing is kept until
+    :func:`_commit_reveals` keeps the ones whose records are saved.
     """
     if _ordered_out is not None:
         _ordered_out[:] = [True]
@@ -683,7 +742,37 @@ def _redact_segment_text(
     for w in cred_warnings:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the redactor's warning names the pattern class, never the matched value; moved verbatim
         logger.warning("Credential redacted in chat segment: %s", w)
-    return redacted, blocked_links, credential_records(matches, slot.credential_evidence)
+    return (
+        redacted,
+        blocked_links,
+        credential_records(matches, slot.credential_evidence, reveal_pending=_reveal_pending),
+    )
+
+
+def _commit_reveals(slot: _ChatSlot, records: Iterable[Any], pending: dict[str, str]) -> None:
+    """Keep in gateway memory the removed values of the records being SAVED.
+
+    Only these: a pass whose records are thrown away (the per-delta check, a
+    strict retry that lost, a flush that failed closed) leaves nothing behind
+    in ``security.reveal_store``. A value the store refuses (too large, no
+    slot) leaves its record with ``reveal_id`` None, which reads as not kept.
+    """
+    # Imported here: this module's functions also run from the chat_runner
+    # facade's namespace, which does not carry these names.
+    from kiro_crew.security import reveal_store
+    from kiro_crew.security.credential_sources import REVEAL_KEY
+
+    scope = str(getattr(slot, "key", "") or "")
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        handle = record.get(REVEAL_KEY)
+        if not isinstance(handle, str):
+            continue
+        value = pending.get(handle)
+        if value is None or not reveal_store.STORE.stash_as(handle, value, scope=scope):
+            record[REVEAL_KEY] = None
+    pending.clear()
 
 
 def _append_command_reply(slot: _ChatSlot, text: str) -> None:
@@ -703,7 +792,11 @@ def _append_command_reply(slot: _ChatSlot, text: str) -> None:
     turn, not to a command answered without one.
     """
     ordered: list[bool] = []
-    redacted, blocked_links, redactions = _redact_segment_text(slot, text, _ordered_out=ordered)
+    pending: dict[str, str] = {}
+    redacted, blocked_links, redactions = _redact_segment_text(
+        slot, text, _ordered_out=ordered, _reveal_pending=pending
+    )
+    _commit_reveals(slot, redactions, pending)
     meta: dict[str, Any] = {}
     if blocked_links:
         meta["blocked_links"] = blocked_links
@@ -1025,6 +1118,8 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
     resumed = turn.resumed
     slot = turn.slot
     state = turn.state
+    from kiro_crew.dashboard import gateway_notice as gn
+
     # What the turn produced OF ITS OWN: `assistant_text` minus any backend
     # control notice that arrived as assistant text (the claude adapter's
     # "Compacting..."). The notice stays in `assistant_text` — it is real
@@ -1085,6 +1180,12 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
         _flush_text_stream(turn)
         _flush_segment(state, slot, turn.assistant_text, broadcast=False)
         turn._reply_flushed = True
+        # A refusal terminal means the engine did not answer this turn: a turn
+        # its in-turn fallback recovered ends `end_turn` on both engines (KAS
+        # reports it so, and a V2 refusal hop drops the refusal it moved off;
+        # see acp/engine_fallback._drop_superseded_refusal). So no extra gate:
+        # a recovered turn never reaches Crew's refusal card or retry, and the
+        # engine-fallback notice is the only account of the walk.
         if _stop_reason == STOP_REASON_REFUSAL:
             # The Kiro service's content filter STREAMS its canned
             # explanation as assistant text and then ends the turn, so the
@@ -1130,6 +1231,29 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                     "error",
                     _refusal_card,
                     "msg msg-err",
+                )
+                if (
+                    _prompt_depth == 0
+                    and turn._crew_log_actor == "user"
+                    and not slot._refusal_fallback_attempted
+                    and _refusal_fallback_is_same_model(turn.client, _turn_refusal)
+                ):
+                    # A fallback is set but equals the refusing model, so the
+                    # swap was skipped. Post a localized notice row keyed on its
+                    # gateway-notice token; the card itself stays un-tokenized.
+                    # Gated to the same turns the retry itself runs on
+                    # (interactive, top-level, actor user): an unattended or
+                    # nested turn never retries, so the advice to pick a
+                    # different fallback would not apply to it.
+                    slot.append(
+                        "notice",
+                        _REFUSAL_FALLBACK_SAME_MODEL_NOTICE,
+                        "msg msg-info",
+                        meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL),
+                    )
+                turn.died_notice = (
+                    "The model declined to answer and the chat stopped. "
+                    "Open the chat to see why."
                 )
     elif _stop_reason == STOP_REASON_REFUSAL:
         # Model-side content refusal with no accompanying text: Anthropic's
@@ -1188,6 +1312,33 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                 _refusal_card,
                 "msg msg-err",
             )
+            if (
+                _prompt_depth == 0
+                and turn._crew_log_actor == "user"
+                and not slot._refusal_fallback_attempted
+                and _refusal_fallback_is_same_model(turn.client, _turn_refusal)
+            ):
+                # A fallback is set but equals the refusing model, so the swap
+                # was skipped. Post a localized notice row keyed on its
+                # gateway-notice token; the card stays un-tokenized. Gated to
+                # the same turns the retry itself runs on (interactive,
+                # top-level, actor user): an unattended or nested turn never
+                # retries, so the advice to pick a different fallback would not
+                # apply to it.
+                slot.append(
+                    "notice",
+                    _REFUSAL_FALLBACK_SAME_MODEL_NOTICE,
+                    "msg msg-info",
+                    meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL),
+                )
+            turn.died_notice = (
+                "The model declined to answer and the chat stopped. " "Open the chat to see why."
+            )
+    elif turn._agent_started:
+        # A turn the agent started answers no prompt, so neither recovery below
+        # (the post-compaction continuation, the empty-response ladder) has a
+        # prompt to continue or replay: it ends as it stands.
+        pass
     elif not turn._terminal_directive_applied and should_continue_after_compaction(
         # A turn that ended on an applied terminal directive is answered by
         # that directive, whatever compaction happened before it: the empty

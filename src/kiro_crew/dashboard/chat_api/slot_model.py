@@ -252,6 +252,10 @@ async def _try_live_model_switch(
         # Propagate so the handler answers 4xx and the slot keeps its old model.
         raise
     except Exception as exc:
+        if provider.switches_by_relaunch is True:
+            # A relaunch that failed put the prior model back on the same chat; a
+            # reset would cold-start on the refused model and fail the same way.
+            raise
         logger.warning(
             "Live set_model(%s) failed for slot %s: %s: %s — falling back to reset",
             wire,
@@ -726,6 +730,16 @@ async def switch_slot_model(
             _rollback_pick()
             logger.warning("Slot %s model rejected: %s", name, exc)
             return web.json_response({"error": str(exc), "code": "model_unavailable"}, status=400)
+        except Exception as exc:
+            if provider is None or provider.switches_by_relaunch is not True:
+                raise
+            # A relaunching harness refused the pick and kept its model, so the
+            # slot keeps it too (same answer as an unavailable model).
+            _rollback_pick()
+            logger.warning("Slot %s model switch refused: %s", name, exc)
+            return web.json_response(
+                {"error": str(exc), "code": "model_switch_refused"}, status=400
+            )
         if effective_session_key(slot) != session_key:
             # The slot was bound to a different session while the live switch
             # awaited its provider RPCs (a cron/workflow slot gets linked when

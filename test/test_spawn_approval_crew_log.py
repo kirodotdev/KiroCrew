@@ -29,6 +29,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from crew_log_drain import assert_drained
 from off_loop_helpers import off_loop
 
 from kiro_crew.crew_log import crew_log_path, emit
@@ -214,7 +215,7 @@ async def test_a_spawn_waiting_on_a_human_is_pending_in_the_approvals_fold(_pinn
     info = mgr.spawn("Return only the result of 1+1", parent_session_key="dashboard:chat-7")
     assert info is not None and not info.done
     await _reach_the_prompt(approval)
-    assert emit.flush()
+    assert_drained()
 
     folded = _folded()
     assert folded["pending"] == 1, folded
@@ -244,7 +245,7 @@ async def test_an_approved_spawn_is_decided_without_naming_who_answered(_pinned_
             break
         emit.flush()
         await asyncio.sleep(0)
-    assert emit.flush()
+    assert_drained()
 
     (decided,) = _of("approval/decided")
     assert decided["approval_id"] == f"spawn:{info.id}"
@@ -268,7 +269,7 @@ async def test_a_declined_spawn_is_recorded_as_rejected(_pinned_parent):
     info = mgr.spawn("Return only the result of 1+1", parent_session_key="dashboard:chat-7")
     assert info is not None
     await _settle(info)
-    assert emit.flush()
+    assert_drained()
 
     folded = _folded()
     assert folded["requested"] == 1 and folded["decided"] == 1
@@ -297,7 +298,7 @@ async def test_a_prompt_no_surface_received_is_a_host_decline_with_its_cause(_pi
     info = mgr.spawn("Return only the result of 1+1", parent_session_key="dashboard:chat-7")
     assert info is not None
     await _settle(info)
-    assert emit.flush()
+    assert_drained()
 
     assert [row["approval_id"] for row in _of("approval/requested")] == [f"spawn:{info.id}"]
     (decided,) = _of("approval/decided")
@@ -321,7 +322,7 @@ async def test_a_callback_that_raised_is_a_host_decline_with_its_own_cause(_pinn
     info = mgr.spawn("Return only the result of 1+1", parent_session_key="dashboard:chat-7")
     assert info is not None
     await _settle(info)
-    assert emit.flush()
+    assert_drained()
 
     (decided,) = _of("approval/decided")
     assert decided["decision"] == "rejected"
@@ -344,7 +345,7 @@ async def test_a_cancelled_wait_still_answers_its_own_request(_pinned_parent):
     info = mgr.spawn("Return only the result of 1+1", parent_session_key="dashboard:chat-7")
     assert info is not None
     await _reach_the_prompt(approval)
-    assert emit.flush()
+    assert_drained()
     assert _folded()["pending"] == 1
 
     task = mgr._tasks.get(info.id)
@@ -354,7 +355,7 @@ async def test_a_cancelled_wait_still_answers_its_own_request(_pinned_parent):
         if task.done():
             break
         await asyncio.sleep(0)
-    assert emit.flush()
+    assert_drained()
 
     (decided,) = _of("approval/decided")
     assert decided["approval_id"] == f"spawn:{info.id}"
@@ -383,7 +384,7 @@ async def test_an_unresolvable_parent_writes_neither_half(_pinned_parent, monkey
     info = mgr.spawn("Return only the result of 1+1", parent_session_key="dashboard:chat-7")
     assert info is not None
     await _settle(info)
-    assert emit.flush()
+    assert_drained()
 
     folded = _folded()
     assert folded["requested"] == 0 and folded["decided"] == 0
@@ -438,5 +439,5 @@ def test_the_decision_helper_is_a_no_op_for_a_request_that_was_not_written():
         approval_id="spawn:orphan",
         decision="approved",
     )
-    assert emit.flush()
+    assert_drained()
     assert _of("approval/decided") == []

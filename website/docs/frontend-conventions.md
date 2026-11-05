@@ -191,7 +191,11 @@ a cost, where data goes, a status such as "disabled by instance config". `hint`
 renders an `InfoTip` beside the label; it is for what the control IS, which a
 reader wants once and never again. A row that always shows two lines of prose
 spends attention whether or not it is being read, so the default for an
-explanatory sentence is `hint`, one catalog string per tip. An error is neither: it renders through
+explanatory sentence is `hint`, one catalog string per tip. A long choice-making
+paragraph becomes one short `description` sentence with the full paragraph as the
+`hint`. `SecretField` and `TagListEditor` take the same `hint`, and a
+`SettingsSection` takes one for its introduction, drawn beside the heading instead
+of as a paragraph above the first card. An error is neither: it renders through
 `ErrorNotice` (`AUTOSDE.yaml`, `errors-use-error-notice`), never behind a tip.
 
 `InfoTip` is accessible by construction — keyboard focusable, named by a short
@@ -248,7 +252,7 @@ set against the backend converter), `import '../utils/hljs'`
 ### The file panel, the chat pane and the browser panel
 
 `components/MarkdownPanel.tsx` (a side-panel file tab), `components/ChatPane.tsx`
-(one chat session in split view or a mate's chat) and
+(one chat session in split view or a Bot's chat) and
 `components/WebPreviewPanel.tsx` (the Browser tab) are facades over sibling owners
 in `components/`. Each facade keeps its module id, its default export and every
 named export: hosts import it, and the specs that mount a host mock it by that id,
@@ -584,6 +588,12 @@ Add a new protocol to `ALLOWED_PROTOCOLS` in that file, and only there. Each
 addition widens what a model-authored or user-pasted link can launch on the host,
 so treat it as a security change, not a formatting one.
 
+In a desktop-app pane (`isDesktopAppPane`), `MdAnchor` opens an editor link
+with `window.open` on a plain click, because the frame's CSP `frame-src`
+refuses an in-place navigation to a custom scheme. Other pages keep in-place
+navigation. In the desktop app that call reaches the window-open handler in
+`website/electron/external-scheme.js`, which asks the user before opening it.
+
 How a refused destination RENDERS is part of the contract (issue #9925): the
 transform's rejection sentinel is `''`, and `MdAnchor`'s `!href` guard renders
 the label as inert text with **no anchor** — never `<a href="">`, whose empty
@@ -856,8 +866,9 @@ files own it:
   the same rule through `hooks/useTouchReplay.ts`: spread its `pointerProps` on
   the anchor and return early while `fromTouch()` is true, as `useNavTip`,
   `useHoverIntent`, `RefLink` and `MarkdownToc` do), and
-  emits the iOS safe-area utilities (`p-safe`, `top-safe-offset-*`, …) as
-  `@utility` blocks. Adding a utility for a new token means adding one
+  emits the iOS safe-area utilities (`p-safe`, `p-safe-or-*`, `top-safe-offset-*`, …) as
+  `@utility` blocks; `--safe-area-x` in `src/styles/design-tokens.css` is the wider
+  side inset, for a width taken from the viewport. Adding a utility for a new token means adding one
   `--color-<token>: var(--<token>)` line here; `scripts/check-phantom-classes.mjs`
   compiles against this file to catch a utility whose token was never declared.
 - `src/index.css` — the entry, read top to bottom in cascade order. First the
@@ -1062,7 +1073,12 @@ To add one:
 2. Export it as the module default.
 3. Add one entry to `BUILTIN_COMPONENT_REGISTRY` (a `BuiltinAppEntry`):
    `'/my-app': { component: lazy(() => import('./my-app/MyAppPage')), appId: '<app.json name>' }`.
-   `appId` must equal the `name` in the app's `app.json` manifest.
+   `appId` must equal the `name` in the app's `app.json` manifest. A page that
+   opens an absolute path handed to it in its URL also sets `opensPathParam` to
+   the query parameter it reads (`<route>?<param>=<path>`). The file viewer's ⋯
+   menu then offers "Open in <app>" for it through `src/apps/pathOpener.ts`,
+   which names no app: it takes the first such entry whose app is enabled and
+   routed natively.
 4. Declare `ui.pages` in the app's `app.json` manifest, and its `ui.icon` name.
 5. If the icon is not already in `src/apps/builtinIcons.tsx`, add it to
    `BUILTIN_ICON_REGISTRY` (Lucide element, `size={16}`).

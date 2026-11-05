@@ -131,7 +131,11 @@ jobs:
     name: Test Release Candidate SHA
     if: needs.version.outputs.channel == 'insider'
     needs: version
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     # Match ci.yml's whole-file split so every runner carries a bounded part of
     # the exact-SHA gate while the matrix still covers the full test population.
     timeout-minutes: 60
@@ -276,7 +280,9 @@ jobs:
     # docs/ci/ci-and-reviews.md.
     runs-on:
       group: kirocrew-runners
-    timeout-minutes: 10
+    # A full-history checkout on this runner group can take most of ten
+    # minutes even with the blobless filter below; 20 leaves headroom.
+    timeout-minutes: 20
     # Replaces the workflow default: `actions: read` is what lets the promotion
     # check ask whether a prerelease tag's release run actually SUCCEEDED.
     permissions:
@@ -288,6 +294,10 @@ jobs:
           # Full history so the stable tag resolves unambiguously, and so the
           # CHANGELOG read is of the tagged commit rather than a partial tree.
           fetch-depth: 0
+          # Blobless: every commit and tag still arrives, and the working tree
+          # is still checked out in full, but blobs of older commits are not
+          # downloaded. That is what makes a full-history clone fit the budget.
+          filter: blob:none
           persist-credentials: false
       - name: Verify stable publication preconditions
         env:
@@ -1666,7 +1676,11 @@ jobs:
           needs.sign-and-notarize-arm64.result == 'success' &&
           needs.sign-and-notarize-x64.result == 'success' &&
           needs.github-release.result == 'success' }}
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 10
     # Editing a release needs contents:write, and this job holds nothing else:
     # no AWS identity, no package scope. Same least-privilege split as

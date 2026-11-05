@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 
 from kiro_crew.constants import md_link_destination
 
@@ -57,6 +58,17 @@ _LINK_RE = re.compile(
 
 #: Inline code span. Non-greedy over a single backtick pair.
 _CODE_SPAN_RE = re.compile(r"`([^`]*)`")
+
+#: A bare URL, kept verbatim through the emphasis passes. It runs to the next
+#: whitespace; :func:`_keep_bare_url` decides which emphasis marker in it closes
+#: an opener before the URL.
+_BARE_URL_RE = re.compile(r"https?://[^\s<>\x00]+")
+
+#: A maximal run of one emphasis character.
+_MARKER_RUN_RE = re.compile(r"\*+|_+|~+")
+
+#: A token :func:`_flatten_inline` swaps a verbatim span for.
+_KEPT_TOKEN_RE = re.compile(r"\x00(\d+)\x00")
 
 #: Emphasis, longest marker first so "**" is not eaten as two "*".
 _EMPHASIS_RES = (
@@ -150,24 +162,71 @@ def _flatten_block(line: str) -> str:
 
 
 def _flatten_inline(line: str) -> str:
+    # Inline code, link targets and bare URLs are shown as written, so they sit
+    # out the emphasis passes: ``__init__`` in backticks or in
+    # ``https://e.com/__init__.py`` keeps its underscores. Each is swapped for a
+    # NUL-delimited token and put back last; a line that already holds a NUL is
+    # flattened without the swap, so input text can never pose as a token.
+    kept: list[str] = []
+
+    def keep(value: str) -> str:
+        kept.append(value)
+        return f"\x00{len(kept) - 1}\x00"
+
+    protect = "\x00" not in line
+    if protect:
+        line = _CODE_SPAN_RE.sub(lambda m: keep(m.group(1)), line)
+    else:
+        line = _CODE_SPAN_RE.sub(r"\1", line)
+
     # A link's URL is kept: it is often the actionable part of the answer, and
     # iMessage makes a bare URL tappable.
-    line = _IMAGE_RE.sub(lambda m: _link_text(m.group(1), m.group(2)), line)
-    line = _LINK_RE.sub(lambda m: _link_text(m.group(1), m.group(2)), line)
-    line = _CODE_SPAN_RE.sub(r"\1", line)
+    def link(m: re.Match[str]) -> str:
+        label, target = m.group(1).strip(), m.group(2).strip()
+        # A target already holding a code-span token is restored by the final
+        # pass as it stands; keeping it whole would hide that inner token.
+        shown = keep(target) if protect and target and "\x00" not in target else target
+        if not label or label == target:
+            return shown or label
+        if not target:
+            return label
+        return f"{label} ({shown})"
+
+    line = _IMAGE_RE.sub(link, line)
+    line = _LINK_RE.sub(link, line)
+    if protect:
+        line = _BARE_URL_RE.sub(lambda m: _keep_bare_url(m, keep), line)
     for pattern in _EMPHASIS_RES:
         line = pattern.sub(r"\1", line)
+    if protect:
+        line = _KEPT_TOKEN_RE.sub(lambda m: kept[int(m.group(1))], line)
     return line.rstrip()
 
 
-def _link_text(label: str, target: str) -> str:
-    label = label.strip()
-    target = target.strip()
-    if not label:
-        return target
-    if not target or label == target:
-        return label
-    return f"{label} ({target})"
+def _keep_bare_url(m: re.Match[str], keep: Callable[[str], str]) -> str:
+    """Keep a bare URL, leaving outside it a marker run that closes an opener.
+
+    Underscores and asterisks belong to the URL (``.../__tests__``) unless the
+    text before the URL holds an unclosed run of the same marker: then the last
+    such run inside the match is that opener's closer (``**see https://e.com**.``),
+    and it and everything after it stay outside the kept token for the emphasis
+    passes.
+    """
+    url = m.group(0)
+    open_runs = _unclosed_marker_runs(m.string[: m.start()])
+    cut = len(url)
+    for run in _MARKER_RUN_RE.finditer(url):
+        if run.group(0) in open_runs:
+            cut = run.start()
+    return keep(url[:cut]) + url[cut:]
+
+
+def _unclosed_marker_runs(prefix: str) -> set[str]:
+    """Marker runs that occur an odd number of times in ``prefix``."""
+    counts: dict[str, int] = {}
+    for run in _MARKER_RUN_RE.finditer(prefix):
+        counts[run.group(0)] = counts.get(run.group(0), 0) + 1
+    return {run for run, n in counts.items() if n % 2}
 
 
 def chunk_plaintext(text: str, limit: int) -> list[str]:
@@ -203,23 +262,46 @@ def chunk_plaintext(text: str, limit: int) -> list[str]:
     return chunks
 
 
+#: Each break tier and the divisor of ``limit`` its cut must reach. These
+#: follow ``messaging.split.split_markdown_safe``'s ladder (a paragraph break
+#: at least halfway in, a line break at least a quarter in), and a space takes
+#: the line tier's floor. A break nearer the start would strand most of the
+#: budget: ``"Hi\n\n"`` plus one long answer becomes three messages, not two.
+_BREAK_TIERS: tuple[tuple[str, int], ...] = (("\n\n", 2), ("\n", 4), (" ", 4))
+
+
 def _preferred_cut(text: str, limit: int) -> int:
     """Best split index within ``limit``: paragraph, then line, then space.
 
-    Each candidate is pulled back to a grapheme boundary. A candidate that
-    collapses to zero after that is discarded, so the search degrades to the
-    next-weaker boundary instead of producing an empty chunk and looping.
+    A break counts only when its cut reaches its tier's share of ``limit``;
+    an earlier one falls through to the next-weaker tier. With no tier left,
+    the last break in reach is still taken when the word after it fits one
+    chunk, so a long URL behind a short lead-in moves whole; a word too long
+    for any chunk is cut anyway, so the budget is filled instead. A hard cut is
+    pulled back to a grapheme boundary; one that collapses to zero emits the
+    first grapheme whole instead of producing an empty chunk and looping.
     """
     window = text[: limit + 1]
-    for separator in ("\n\n", "\n", " "):
+    for separator, divisor in _BREAK_TIERS:
         index = window.rfind(separator)
-        if index > 0:
+        if index > 0 and index + len(separator) >= limit // divisor:
             return index + len(separator)
+    last_break = max(window.rfind("\n"), window.rfind(" "))
+    if last_break > 0:
+        start = last_break + 1
+        if _word_end(text, start, start + limit + 1) - start <= limit:
+            return start
     cut = _grapheme_boundary(text, limit)
     # A single grapheme longer than the whole limit (a long emoji ZWJ
     # sequence with a tiny limit) has no safe boundary below it; emit it whole
     # rather than splitting it or spinning forever on a zero-width cut.
     return cut if cut > 0 else _grapheme_end(text, limit)
+
+
+def _word_end(text: str, start: int, reach: int) -> int:
+    """First space or newline in ``text[start:reach]``, else ``reach`` capped at the end."""
+    ends = [i for i in (text.find(" ", start, reach), text.find("\n", start, reach)) if i >= 0]
+    return min(ends) if ends else min(reach, len(text))
 
 
 def _grapheme_boundary(text: str, index: int) -> int:

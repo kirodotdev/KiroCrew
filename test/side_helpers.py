@@ -71,11 +71,10 @@ def _capture_broadcasts(state) -> list[tuple[str, Any]]:
 
 
 @pytest.fixture(name="_published_readonly_spec", autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim; no importing module calls monkeypatch.undo()
-def _published_readonly_spec_fixture(monkeypatch):
+def _published_readonly_spec_fixture(_floor_monkeypatch):
     """Stand in for the derived-spec publisher on every side turn in this file;
     see ``chat_test_helpers.stub_readonly_spec_publisher``. Returns the recorded
     ``(base_name, project_dir)`` calls. The tests here pin what the turn does
     with the name (binds the session to it) and with a refusal (never runs the
     base)."""
-    return stub_readonly_spec_publisher(monkeypatch)
+    return stub_readonly_spec_publisher(_floor_monkeypatch)

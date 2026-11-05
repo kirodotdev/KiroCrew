@@ -31,6 +31,7 @@ from kiro_crew.dashboard.chat_tags_policy import (
 )
 from kiro_crew.dashboard.chat_tags_store import (
     _bump_slot_tags_revision,
+    _next_order,
     _order_key,
     _tags_write_lock,
 )
@@ -469,7 +470,7 @@ async def api_chat_tag_column_create(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     async with _tags_write_lock(state):
-        column = _normalize_column(state, {**body, "order": len(state._tag_boards)})
+        column = _normalize_column(state, {**body, "order": _next_order(state._tag_boards)})
         if column is None:
             return web.json_response(
                 {"error": "invalid column payload", "code": "invalid_column_payload"}, status=400

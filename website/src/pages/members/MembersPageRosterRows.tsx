@@ -17,6 +17,7 @@ import { Btn } from '../../components/ui'
 import { useTranslation } from 'react-i18next'
 import { type MemberRosterRow } from '../../api/client'
 import CrewAvatar from '../../components/CrewAvatar'
+import { crewDisplayName } from '../../components/AgentSelector'
 import { defaultLookFor } from '../../lib/avatarPoses'
 import { type AutomationRecord } from '../../monitoring/automation'
 import { motion } from 'framer-motion'
@@ -182,8 +183,8 @@ export function MemberRow({
           }}
           aria-pressed={!!view.starred}
           disabled={starPending.has(view.name)}
-          aria-label={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: view.name })}
-          title={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: view.name })}
+          aria-label={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: crewDisplayName(view) })}
+          title={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: crewDisplayName(view) })}
           // 24x24 minimum target (the icon is 13px): a touch that lands beside
           // the glyph must hit the star, not the row button underneath.
           className={`absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded hover:bg-bg-hover transition-opacity ${

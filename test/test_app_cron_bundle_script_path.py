@@ -425,13 +425,17 @@ class TestCronSdkDirectEntryPoint:
         elsewhere = tmp_path / "foreign-cwd"
         elsewhere.mkdir()
         monkeypatch.chdir(elsewhere)
-        sdk, service = self._sdk()
+        from kiro_crew.apps.cron_sdk import CronSDK
+        from kiro_crew.cron import CronService
 
-        sdk.add_job(CRON, "go", every_secs=600, script="job.py:run")
+        service = CronService(base_dir=home / "crons")
+        job = CronSDK(APP, service).add_job(CRON, "go", every_secs=600, script="job.py:run")
 
         # Persisted absolute, for the same reason the bridge does it: the
         # fire-time gate and the launcher re-resolve this string context-free.
-        assert service.add_job.call_args.kwargs["script"] == f"{_bundle(home) / 'job.py'}:run"
+        want = f"{_bundle(home) / 'job.py'}:run"
+        assert job.script == want
+        assert [j.script for j in service.list_jobs() if j.name == CRON] == [want]
 
     def test_a_relative_spec_naming_no_bundle_file_is_refused(self, home, tmp_path, monkeypatch):
         """A bundle base must not become a way to smuggle in a CWD file.

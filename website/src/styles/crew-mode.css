@@ -95,27 +95,31 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
   border-radius: var(--radius-lg, 12px);
 }
 
-/* The composer's Ultra Mode chip. Off: a quiet glass chip with accent text.
-   Pressed (`aria-pressed="true"`): a light accent tint, a solid accent border
-   and the gradient label.
+/* The composer's Ultra Mode chip. Off and on must differ in the edge and the
+   fill, not only in the label, so a glance tells them apart.
+   Off: an untinted glass chip with the app's plain 1px border, like any other
+   composer chip; only the bolt and the label carry the accent.
+   Pressed (`aria-pressed="true"`): an accent tint, a 2px solid accent edge
+   (border plus an inset ring), a filled bolt and the gradient label.
    Panes are solid by default (liquid-glass.css forces fill and outline with
    `!important`), so the fill and edge here are too; the keyboard ring is left
    alone. */
 html:root .liquid-glass.crew-chip {
-  --glass-band: color-mix(in srgb, var(--aim) 30%, var(--glass-band-plain));
-  --glass-edge: color-mix(in srgb, var(--aim) 55%, transparent);
-  --crew-chip-mix: 10%;
+  --crew-chip-mix: 0%;
   background: color-mix(in srgb, var(--aim) var(--crew-chip-mix), var(--bg-elevated)) !important;
-  border-color: color-mix(in srgb, var(--aim) 50%, var(--border));
+  border-color: var(--border);
 }
 
 html:root .liquid-glass.crew-chip[aria-pressed="true"] {
+  --glass-band: color-mix(in srgb, var(--aim) 30%, var(--glass-band-plain));
+  --glass-edge: color-mix(in srgb, var(--aim) 55%, transparent);
   --crew-chip-mix: 12%;
   border-color: var(--aim);
+  box-shadow: inset 0 0 0 1px var(--aim);
 }
 
 html:root .liquid-glass.crew-chip:not(:focus-visible) {
-  outline-color: color-mix(in srgb, var(--aim) 60%, var(--border)) !important;
+  outline-color: var(--border) !important;
 }
 
 html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:focus-visible) {
@@ -126,19 +130,22 @@ html:root .liquid-glass.crew-chip[aria-disabled="true"] {
   --crew-chip-mix: 4%;
   --glass-edge: var(--border);
   border-color: var(--border);
+  box-shadow: none;
 }
 
 html:root .liquid-glass.crew-chip[aria-disabled="true"]:not(:focus-visible) {
   outline-color: var(--border) !important;
 }
 
+/* Hover on the off chip hints at the accent but stays lighter than pressed:
+   a faint tint and a half-accent border, never the solid edge. */
 html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):hover {
-  --crew-chip-mix: 18%;
-  border-color: var(--aim);
+  --crew-chip-mix: 6%;
+  border-color: color-mix(in srgb, var(--aim) 50%, var(--border));
 }
 
 html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):active {
-  --crew-chip-mix: 34%;
+  --crew-chip-mix: 20%;
 }
 
 /* Pressed stays light on hover and press too, so its gradient label keeps
@@ -146,6 +153,7 @@ html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):act
 html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-disabled="true"]):hover,
 html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-disabled="true"]):active {
   --crew-chip-mix: 16%;
+  border-color: var(--aim);
 }
 
 /* Status text on a card or row: the state's hue mixed toward the theme's

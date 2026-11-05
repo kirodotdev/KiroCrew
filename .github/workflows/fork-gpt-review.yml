@@ -1121,7 +1121,8 @@ jobs:
             else
               echo "::warning::GPT 6.1 fork review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
             fi
-            printf ' 1' >> codex-failed-passes
+            # <pass>:<exit code>, so the verdict can name why the pass failed.
+            printf ' 1:%s' "$rc" >> codex-failed-passes
           fi
 
       # Re-assume the role BETWEEN the passes: the session lasts one hour, and a
@@ -1258,7 +1259,7 @@ jobs:
             else
               echo "::warning::GPT 6.1 fork review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
             fi
-            failed_passes="${failed_passes} 2"
+            failed_passes="${failed_passes} 2:${rc}"
           fi
 
           refused_passes="$(cat "$RUNNER_TEMP/codex-refused-passes" 2>/dev/null || true)"
@@ -1284,8 +1285,20 @@ jobs:
                 echo "The refusal is caused by the reviewed content, not by a transient failure, so a re-run is very unlikely to produce a verdict. A declined review is not an approval: a repository writer must adjudicate with \`/ai-review override gpt $HEAD <class>: <one-sentence reason>\`."
               } > codex-review-output.md
             else
+              # Name each failed pass's cause from its exit code; finalize puts it on the check-run.
+              cause=""
+              for entry in $failed_passes; do
+                case "${entry#*:}" in
+                  124) why="hit the per-pass time limit (exit 124)" ;;
+                  0) why="ended without writing its output (exit 0)" ;;
+                  1) why="stopped on a review CLI error (exit 1)" ;;
+                  *) why="failed (exit ${entry#*:})" ;;
+                esac
+                cause="${cause:+$cause; }pass ${entry%%:*} ${why}"
+              done
+              echo "incomplete_cause=$cause" >> "$GITHUB_OUTPUT"
               {
-                echo "> **Incomplete review:** pass(es)${failed_passes} did not complete."
+                echo "> **Incomplete review:** ${cause}."
                 echo
                 echo "The pass-2 verdict was not published because both calls are required. Re-run the workflow for a complete review."
               } > codex-review-output.md
@@ -2744,6 +2757,7 @@ jobs:
           ADJ_NOTE: ${{ steps.adj.outputs.note }}
           PUBLICATION: ${{ steps.post.outputs.publication }}
           REFUSED: ${{ steps.gpt_pass2.outputs.refused }}
+          INCOMPLETE_CAUSE: ${{ steps.gpt_pass2.outputs.incomplete_cause }}
         run: |
           set -uo pipefail
           lane_text="$(printf 'Lane run: %s/%s/actions/runs/%s\n\n<!-- ai-review-fork-lane run=%s -->' \
@@ -2768,6 +2782,11 @@ jobs:
             fi
           fi
           summary="Fork AI review for $HEAD. See the PR comment for details. $extra"
+          # A run that reached no verdict names why here: its comment is
+          # withheld whenever an earlier head's comment exists.
+          if [ "$title" = "review incomplete" ] && [ -n "${INCOMPLETE_CAUSE:-}" ]; then
+            summary="GPT 6.1 could not finish reviewing $HEAD: ${INCOMPLETE_CAUSE}. No verdict was published, so this check fails closed. Re-run this lane for a complete review."
+          fi
           # A refusal is its own terminal state, distinct from a crash. The
           # refused comment body carries no [GPT-REVIEWED] stamp, so the stale-
           # read guard withholds it whenever a comment for an earlier head exists;
@@ -2848,7 +2867,7 @@ jobs:
             fb_summary="$summary"
             if [ "$title" = "review incomplete" ]; then
               fb_title="could not run"
-              fb_summary="The fork GPT review job failed before producing a verdict; re-run it."
+              [ -n "${INCOMPLETE_CAUSE:-}" ] || fb_summary="The fork GPT review job failed before producing a verdict; re-run it."
             fi
             gh api --method POST "repos/$REPO/check-runs" \
               -f name="GPT 6.1 Review" -f head_sha="$HEAD" \

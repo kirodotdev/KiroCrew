@@ -144,8 +144,8 @@ export function FollowDefaultModelAction() {
   return (
     <SettingsField
       label={i18nT('pages.settings.chatPanel.follow_default_label')}
-      description={i18nT('pages.settings.chatPanel.follow_default_description')}
-      hint={i18nT('pages.settings.chatPanel.follow_default_hint')}
+      description={i18nT('pages.settings.chatPanel.follow_default_description_summary')}
+      hint={i18nT('pages.settings.chatPanel.follow_default_description_tip')}
     >
       <div className="flex flex-wrap items-center gap-3">
         <Btn type="button" onClick={() => void run()} disabled={phase !== 'idle'} data-testid="follow-default-button">

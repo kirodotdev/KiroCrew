@@ -1,13 +1,7 @@
 """Tests for repairing kiro-cli transcripts wedged by an oversized image.
 
-The module rewrites stored image blocks in a ``.jsonl`` transcript so no image
-exceeds the inline-image edge cap. These tests generate REAL PNG bytes with
-Pillow (the fixtures must decode), build records at both observed nesting depths
-(a ``Prompt`` attachment directly under ``content`` and a ``ToolResults`` image
-one ``toolResult`` level deeper), and assert the structural invariants a repair
-must preserve. Pillow is a hard dependency here, as it is in the neighbouring
-``test_web_verify_downscale`` / ``test_image_primitives`` suites, so it is
-imported at module level with no skipif guard.
+The fixtures are real Pillow PNGs (they must decode) at every observed nesting depth.
+Pillow is a hard dependency, as in ``test_image_primitives``, so there is no skipif guard.
 """
 
 from __future__ import annotations
@@ -85,11 +79,8 @@ def _tool_result_record(size: tuple[int, int]) -> dict:
 def _compaction_record(size: tuple[int, int]) -> dict:
     """A Compaction record: blocks hang off ``content`` on a snapshot message.
 
-    Path verified against real transcripts:
-    ``.data.messages_snapshot[i].content[j]``. Note the block array is at a
-    top-level ``content`` here, NOT under ``data`` -- a traversal that only
-    knows the ``data.content`` spelling misses every one of these, and
-    Compaction snapshots hold 42% of all stored image blocks.
+    Path verified against real transcripts: ``.data.messages_snapshot[i].content[j]``.
+    The block array is a top-level ``content``, not under ``data``.
     """
     return {
         "version": 1,
@@ -159,14 +150,8 @@ def _text_block_carrying_an_image_shaped_payload(size: tuple[int, int]) -> dict:
 def _write_transcript(path: Path, records: list) -> None:
     """Write one JSON record per line, matching kiro-cli's compact spelling.
 
-    ``newline=""`` is required, not cosmetic: without it Python translates each
-    ``\\n`` to ``\\r\\n`` on Windows, so these fixtures would assert
-    platform-dependent bytes and the byte-exactness tests would fail there while
-    passing on POSIX. Line-ending BEHAVIOUR is exercised deliberately by the
-    CRLF test instead of leaking in through the helper.
-
-    Members that are already strings are written verbatim (used for the
-    invalid-JSON and non-image passthrough lines).
+    ``newline=""`` is required: without it Windows writes ``\\r\\n`` and the byte-exact
+    tests fail there. Members that are already strings are written verbatim.
     """
     with path.open("w", encoding="utf-8", newline="") as handle:
         for rec in records:
@@ -181,12 +166,7 @@ class TestDriftTripwire:
     """A format change must surface as a warning, never as a clean report."""
 
     def test_an_unknown_nesting_is_WARNED_about_and_not_repaired(self, tmp_path):
-        """The failure mode this PR nearly shipped: a shape the anchor cannot see.
-
-        Simulates a future kiro-cli record whose blocks hang somewhere the
-        anchored traversal does not know. The image must NOT be rewritten (the
-        anchor is what decides that) but the report must refuse to look clean.
-        """
+        """A record shape the anchored traversal does not know warns and is not rewritten."""
         p = tmp_path / "s.jsonl"
         unknown = {
             "version": 1,
@@ -246,17 +226,11 @@ class TestDriftTripwire:
     def test_a_deeply_nested_tool_payload_does_not_crash_the_repair(self, tmp_path):
         """An arbitrarily nested tool payload must not abort the whole repair.
 
-        The tripwire walk descends into TOOL PAYLOADS, whose nesting is not this
-        module's data and has no natural bound, so trusting the interpreter's
-        recursion limit would let one odd record kill the repair of a transcript
-        the operator needs repaired. Depth-bounded instead -- and the truncation
-        is REPORTED, because an unverified subtree must not read as clean.
+        Tool payload nesting has no natural bound, so the walk is depth-bounded and the
+        truncation is reported: an unverified subtree must not read as clean.
         """
         p = tmp_path / "s.jsonl"
-        # Must carry the QUOTED "image" token, or the byte prefilter skips the
-        # line and it is never parsed or walked at all -- which is itself the
-        # first bound on how reachable this is. A tool payload with a
-        # {"type": "image"} field is the plausible shape.
+        # Must carry the quoted "image" token, or the byte prefilter skips the line.
         deep: dict = {"kind": "text", "data": {"type": "image", "note": "x"}}
         for _ in range(sir._MAX_WALK_DEPTH + 60):
             deep = {"nested": deep}
@@ -506,12 +480,8 @@ class TestScanFile:
     def test_invalid_utf8_in_an_unrelated_line_survives_a_repair(self, tmp_path):
         """A malformed byte sequence must not be rewritten into U+FFFD.
 
-        Every line is written back on apply, so a text-mode read with
-        errors="replace" would irreversibly destroy any byte sequence that is not
-        valid UTF-8 -- in a line this tool has no business touching. Decoding
-        strictly instead would refuse the whole transcript and leave the session
-        dead. Reading bytes and only decoding the lines actually parsed keeps
-        both the malformed line and the repair.
+        Every line is written back, so errors="replace" would destroy it and a strict decode
+        would refuse the whole transcript. Only the lines actually parsed are decoded.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_prompt_record((3000, 1200))])
@@ -533,12 +503,7 @@ class TestScanFile:
     def test_a_CRLF_transcript_keeps_CRLF_on_the_repaired_line_too(self, tmp_path):
         """Line endings must survive, including on the line that was rewritten.
 
-        Surfaced by a Windows CI shard, which is the only place it could be:
-        kiro-cli may write CRLF there, and reading bytes while stripping only
-        ``\\n`` leaves the ``\\r`` attached. Passthrough lines were already
-        byte-exact, but a rewritten record would have been emitted with a bare
-        ``\\n`` -- leaving the repaired line as the single odd one out in an
-        otherwise CRLF file.
+        kiro-cli may write CRLF on Windows; a rewritten record must not end in a bare ``\\n``.
         """
         p = tmp_path / "s.jsonl"
         keep = json.dumps({"kind": "Response", "data": {}}, separators=(",", ":"))
@@ -610,10 +575,7 @@ class TestAnchoredTraversal:
     def test_image_shaped_payload_inside_a_text_block_is_left_alone(self, tmp_path):
         """Application data that merely looks like an image block is not media.
 
-        A tool can legitimately return a JSON document containing a dict shaped
-        exactly like a stored image block. Rewriting its bytes would corrupt
-        another tool's data file while reporting a successful repair, so the
-        record must come back untouched even though the payload is over cap.
+        Rewriting it would corrupt another tool's data, so it stays untouched even over cap.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_text_block_carrying_an_image_shaped_payload((3000, 1200))])
@@ -629,9 +591,7 @@ class TestAnchoredTraversal:
     def test_a_real_nested_tool_result_image_is_still_repaired(self, tmp_path):
         """The anchored walk must still reach the depth real transcripts use.
 
-        Guards the other direction of the same change: narrowing the traversal
-        must not stop it finding an image one ``toolResult`` level down, which
-        is where 18 of 20 real oversized images were found.
+        One ``toolResult`` level down is where 18 of 20 real oversized images were found.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_tool_result_record((3000, 1200))])
@@ -650,11 +610,8 @@ class TestAnchoredTraversal:
     def test_compaction_snapshot_images_are_found(self, tmp_path, builder):
         """Compaction snapshots carry 42% of stored images and must be reached.
 
-        These are the shapes that first exposed the traversal as too narrow: the
-        block array sits at a top-level ``content`` on each snapshot message
-        rather than under ``data``, so a data.content-only walk silently reported
-        a clean transcript while an over-cap image stayed live -- success
-        returned, nothing changed, session still wedged.
+        The block array is a top-level ``content`` on each snapshot message, so a
+        data.content-only walk would report clean while the session stayed wedged.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [builder((3000, 1200))])
@@ -714,12 +671,8 @@ class TestLostAppendRefusal:
     def test_an_append_landing_DURING_the_write_is_still_refused(self, tmp_path, monkeypatch):
         """The early check alone is not enough: the write itself takes time.
 
-        Between the up-front stat and ``os.replace`` sit a whole-file backup copy
-        and a full temp-file rewrite plus fsync -- seconds on a real transcript.
-        An append arriving inside that window passes the early check and would
-        still be clobbered, so the stat is re-taken immediately before the
-        rename. Simulated by appending from inside ``os.fsync``, the last call
-        before the rename, which is precisely the window the early check misses.
+        The backup copy and temp rewrite take seconds, so the stat is re-taken right before
+        ``os.replace``. The append runs inside ``os.fsync``, the last call before the rename.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_prompt_record((3000, 1200))])
@@ -829,12 +782,8 @@ class TestReplacementTranscriptIsLockedDown:
     def test_the_temp_is_locked_down_before_any_content_is_written(self, tmp_path, monkeypatch):
         """A repair must not WIDEN access to the conversation it rewrites.
 
-        mkstemp is 0o600 on POSIX, but on Windows the temp inherits the session
-        directory's DACL, and ``os.replace`` then publishes those permissions
-        onto the transcript -- so a repair would hand the whole conversation to
-        other local accounts. Asserted as an ordered trace because the ordering
-        is the property: locking down after the payload leaves the content
-        readable for the duration of a multi-megabyte write.
+        On Windows the temp inherits the directory's DACL and ``os.replace`` publishes it.
+        The order is the property: locking down after the write leaves content readable.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_prompt_record((3000, 1200))])
@@ -853,11 +802,11 @@ class TestReplacementTranscriptIsLockedDown:
             order.append("fdopen")
             return real_fdopen(fd, *a, **kw)
 
-        monkeypatch.setattr(sir.platform_compat, "restrict_to_owner", traced_restrict)
-        monkeypatch.setattr(os, "fdopen", traced_fdopen)
+        with monkeypatch.context() as mp:
+            mp.setattr(sir.platform_compat, "restrict_to_owner", traced_restrict)
+            mp.setattr(os, "fdopen", traced_fdopen)
 
-        sir.apply_repair(p, lines, backup=False, expect=report.source_stat)
-        monkeypatch.undo()
+            sir.apply_repair(p, lines, backup=False, expect=report.source_stat)
 
         # The temp is restricted, and restricted before it is opened for writing.
         assert "restrict:tmp" in order
@@ -866,14 +815,8 @@ class TestReplacementTranscriptIsLockedDown:
     def test_a_failed_temp_lockdown_leaves_no_temp_and_no_leak(self, tmp_path, monkeypatch):
         """The lockdown is fail-loud, so its failure must not strand the temp.
 
-        Same descriptor-ownership hazard as the backup path: the raw fd is ours
-        until fdopen takes it, and Windows refuses to unlink a file with an open
-        handle -- which would leave a .tmp behind on every failed repair.
-
-        Asserted by tracking the exact descriptor `tempfile.mkstemp` hands back
-        and the successful close operation. A later fstat of that number is not
-        an ownership check: a background thread may already have reused the
-        closed descriptor for another file.
+        The raw fd is ours until fdopen takes it, and Windows cannot unlink an open file.
+        The close is tracked directly: a later fstat could hit a reused descriptor number.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_prompt_record((3000, 1200))])
@@ -939,14 +882,8 @@ class TestBackupIsNeverOverwritten:
     def test_the_sidecar_NAME_is_claimed_before_the_content_is_read(self, tmp_path, monkeypatch):
         """This ordering is what makes the concurrency guarantee hold.
 
-        A check-then-write guard reads the transcript and then writes, so two
-        concurrent runs can both pass the check and the later read can capture
-        ALREADY-REPAIRED content, replacing the genuine pre-repair copy. Exclusive
-        create closes that only because the name is claimed FIRST: a rival running
-        this same code gets EEXIST at its own open and never reaches a read.
-
-        Asserted as a sequence rather than by racing two processes, which would be
-        a flaky test of the same fact.
+        Claiming the name first makes a concurrent rival get EEXIST before it can read
+        already-repaired content. Asserted as a sequence; racing processes would flake.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_prompt_record((3000, 1200))])
@@ -967,11 +904,11 @@ class TestBackupIsNeverOverwritten:
                 order.append("read")
             return real_read_bytes(self)
 
-        monkeypatch.setattr(os, "open", traced_open)
-        monkeypatch.setattr(Path, "read_bytes", traced_read)
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "open", traced_open)
+            mp.setattr(Path, "read_bytes", traced_read)
 
-        sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
-        monkeypatch.undo()
+            sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
 
         assert order == ["open(exclusive=True)", "read"]
 
@@ -980,18 +917,9 @@ class TestBackupIsNeverOverwritten:
     ):
         """A fail-loud lockdown must not wedge every future retry.
 
-        The lockdown runs while the sidecar is still empty, so its failure is the
-        one point where a descriptor is open on a file the cleanup then has to
-        remove. If the fd outlived that, Windows would refuse the unlink (open
-        handle) and the stranded empty sidecar would make every later --apply
-        raise BackupExistsError -- a permanent block created by a failure that
-        changed nothing.
-
-        Asserted by tracking the exact descriptor `os.open` hands back for the
-        sidecar and confirming it is closed, rather than by a process-wide
-        `/proc/self/fd` census: the census counts descriptors opened and closed
-        by the xdist worker's own background threads too, so it flakes
-        independently of whether THIS repair leaked anything.
+        A leaked fd makes Windows refuse the unlink, and the empty sidecar then makes every
+        later --apply raise BackupExistsError. The sidecar's own fd is tracked, not a
+        `/proc/self/fd` census, which xdist background threads make flaky.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_prompt_record((3000, 1200))])
@@ -1002,31 +930,31 @@ class TestBackupIsNeverOverwritten:
         def boom(_path):
             raise OSError("icacls failed")
 
-        monkeypatch.setattr(sir.platform_compat, "restrict_to_owner", boom)
+        with monkeypatch.context() as mp:
+            mp.setattr(sir.platform_compat, "restrict_to_owner", boom)
 
-        opened: list[int] = []
-        real_open = os.open
+            opened: list[int] = []
+            real_open = os.open
 
-        def tracking_open(target, *args, **kwargs):
-            fd = real_open(target, *args, **kwargs)
-            if str(target) == str(sidecar):
-                opened.append(fd)
-            return fd
+            def tracking_open(target, *args, **kwargs):
+                fd = real_open(target, *args, **kwargs)
+                if str(target) == str(sidecar):
+                    opened.append(fd)
+                return fd
 
-        monkeypatch.setattr(os, "open", tracking_open)
+            mp.setattr(os, "open", tracking_open)
 
-        with pytest.raises(OSError, match="icacls failed"):
-            sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
+            with pytest.raises(OSError, match="icacls failed"):
+                sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
 
-        assert not sidecar.exists()  # nothing stranded to block the retry
-        assert not list(tmp_path.glob("*.tmp"))
-        assert len(opened) == 1
-        with pytest.raises(OSError) as info:
-            os.fstat(opened[0])
-        assert info.value.errno == errno.EBADF, "the sidecar's descriptor was leaked"
+            assert not sidecar.exists()  # nothing stranded to block the retry
+            assert not list(tmp_path.glob("*.tmp"))
+            assert len(opened) == 1
+            with pytest.raises(OSError) as info:
+                os.fstat(opened[0])
+            assert info.value.errno == errno.EBADF, "the sidecar's descriptor was leaked"
 
         # And the retry it would have blocked now works.
-        monkeypatch.undo()
         report2, lines2 = sir.scan_file(p)
         assert lines2 is not None
         sir.apply_repair(p, lines2, backup=True, expect=report2.source_stat)
@@ -1113,18 +1041,8 @@ class TestBackupDoesNotFollowAPlantedLink:
     def test_a_symlink_at_the_backup_path_is_REFUSED_and_its_target_untouched(self, tmp_path):
         """The backup name is predictable, so it is a plantable target.
 
-        Anything able to write the session directory can pre-create
-        ``<transcript>.pre-image-repair.bak`` as a symlink to a file it could not
-        write directly, and a copy that opens the destination for writing would
-        push the transcript through the link into that file -- the write performed
-        by a trusted operator command rather than by the planter.
-
-        Two independent defences now stand in front of that, and this asserts the
-        outer one: the sidecar-exists refusal declines before any write happens.
-        The inner one remains as defence in depth -- the backup goes through
-        ``atomic_write``, which renames a fresh temp file into place and so
-        replaces a link rather than following it, should the refusal ever be
-        bypassed.
+        A planted symlink would make a trusted command write through it. This pins the outer
+        defence, the sidecar-exists refusal; ``atomic_write`` also replaces rather than follows.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_prompt_record((3000, 1200))])

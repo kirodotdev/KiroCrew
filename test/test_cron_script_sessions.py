@@ -1,11 +1,8 @@
 """``ScriptContext`` opens and seeds dashboard sessions with the cron's own credential.
 
-A script cron that drives the dashboard cannot hold a dashboard token:
-``POST /api/token/local`` refuses a sandboxed child. These tests pin the five
-methods that call the ``/api/chat`` routes the internal secret already reaches,
-presenting the same ``X-Internal-Secret`` / ``X-Session-Key`` pair ``notify()``
-presents plus the run's signed session token. No bearer token is minted or
-handled anywhere on this path.
+``POST /api/token/local`` refuses a sandboxed child, so the five methods present the
+``X-Internal-Secret`` / ``X-Session-Key`` pair ``notify()`` uses plus the run's signed
+session token. No bearer token is minted on this path.
 """
 
 from __future__ import annotations
@@ -422,7 +419,7 @@ class TestCrewLogAppend:
     def test_a_cron_bound_to_no_crewmate_raises_with_the_gateway_code(self, ctx, gateway):
         body = json.dumps(
             {
-                "error": "this cron job is bound to no crewmate, so it has no crew log to append to",
+                "error": "this cron job is bound to no Bot, so it has no crew log to append to",
                 "code": "cron_not_member_bound",
             }
         ).encode()

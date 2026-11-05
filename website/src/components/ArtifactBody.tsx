@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Download, Eye, Image as ImageIcon, ImageOff, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
@@ -22,6 +22,7 @@ import type { Artifact, ArtifactComment } from '../types'
 import MarkdownOutlineRail from './MarkdownToc'
 
 import { i18nT } from '../i18n/t'
+import { dispatchLightbox } from './markdown/Lightbox'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 // Shared renderer for the full-page route and the chat side-panel Artifacts
 // tab (markdown/text/json/svg natively via ContentRenderer; widget/html via
@@ -573,7 +574,11 @@ export const ArtifactBodyImage = memo(function ArtifactBodyImage({
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const url = artifactAssetUrl(slug)
-  const alt = artifact.image?.alt || artifact.name
+  // Blank or whitespace-only text is no description: it would leave the image,
+  // and the button that wraps it, with no accessible name.
+  const alt = artifact.image?.alt?.trim() || artifact.name?.trim() || ''
+  const viewFullSize = i18nT('components.artifactBody.view_full_size')
+  const viewHintId = useId()
   const downloadName =
     artifact.image?.original_filename || `${slug}.${artifact.image?.ext || 'png'}`
   // The asset endpoint can legitimately fail (missing sidecar, unreadable file,
@@ -598,17 +603,40 @@ export const ArtifactBodyImage = memo(function ArtifactBodyImage({
             />
           </div>
         ) : (
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle handler (degrade to the "could not be loaded" notice), not a user interaction; there is nothing here for a keyboard to reach
-          <img
-            src={url}
-            alt={alt}
-            width={artifact.image?.width}
-            height={artifact.image?.height}
-            loading="lazy"
-            className="max-w-full max-h-full object-contain"
-            draggable={false}
-            onError={() => setFailed(true)}
-          />
+          /* A button around the image opens it in the app-wide image viewer
+             (zoom and pan), the same one a chat image opens: fit-to-view is
+             the only size this body can show, and a large screenshot's small
+             text is unreadable at it (#28760). A button, not a click on the
+             <img>, so a keyboard reaches it too. The button takes its name
+             from the image's `alt`, so a screen reader still hears what the
+             image is, and "View full size" is its description through a
+             visually hidden line (`title` alone is not read reliably). With
+             no text to name the image at all, "View full size" is the name. */
+          <>
+          <span id={viewHintId} hidden>{viewFullSize}</span>
+          <button
+            type="button"
+            className="w-full h-full flex items-center justify-center p-0 border-none bg-transparent cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-accent"
+            title={viewFullSize}
+            {...(alt ? { 'aria-describedby': viewHintId } : { 'aria-label': viewFullSize })}
+            data-testid="artifact-body-image-open"
+            onClick={(e) => { const img = e.currentTarget.querySelector('img'); if (img) dispatchLightbox(img) }}
+          >
+            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle handler (degrade to the "could not be loaded" notice), not a user interaction */}
+            <img
+              src={url}
+              alt={alt}
+              width={artifact.image?.width}
+              height={artifact.image?.height}
+              loading="lazy"
+              className="max-w-full max-h-full object-contain"
+              draggable={false}
+              // The viewer's Download names the file from this, as the body's own Download does.
+              data-lightbox-filename={downloadName}
+              onError={() => setFailed(true)}
+            />
+          </button>
+          </>
         )}
       </div>
       <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 text-sm text-muted">

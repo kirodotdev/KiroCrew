@@ -514,7 +514,81 @@ class SharedTemplateOverCeiling(Exception):
     """A crew-bound spec Kiro Crew does not own carries grants the ceiling denies."""
 
 
-def require_shared_template_within_ceiling(agent: str | None, backend: str) -> None:
+class AgentSpecLaunchUnresolved(SharedTemplateOverCeiling):
+    """kiro-cli would be handed a name whose file it would choose among several.
+
+    A subclass so every start that refuses an over-ceiling spec refuses this too;
+    its cause is the :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError`
+    (or :class:`~kiro_crew.agent_discovery.AgentSpecPinError`) the resolver raised,
+    which the dashboard reads to offer the chooser.
+    """
+
+
+def _project_spec_runs(agent: str, work_dir: str | Path | None) -> bool:
+    """Whether kiro-cli would run the checkout's own spec for *agent* instead.
+
+    kiro-cli resolves the name against ``<work_dir>/.kiro/agents/`` first, so a
+    dispatchable project spec (JSON and parsed, the form that surely dispatches)
+    shadows every user-level claimant. Asked only when the user-level files would
+    refuse the start, so an uncontested start never scans the checkout.
+    """
+    if work_dir is None:
+        return False
+    return (
+        agent_mod._project_shadow_of(agent, work_dir, markdown_specs=False, dispatchable_only=True)
+        is not None
+    )
+
+
+def require_launch_resolves_one_file(
+    agent: str, launch_name: str | None, work_dir: str | Path | None = None
+) -> None:
+    """Refuse handing kiro-cli the authored *agent* name when its file is contested.
+
+    kiro-cli resolves a name it is handed itself, so for a name two or more
+    user-level specs declare it must be handed a Kiro Crew skill view built from the
+    file the declared-name resolver chose (``agent.spec_pins`` applied, see
+    ``acp.skill_projection``). Any other launch name is a single Crew-owned file and
+    passes. Raises :class:`AgentSpecLaunchUnresolved` when the launch name is the
+    authored one (or unknown) and the claimants differ with no pin, the pin is
+    broken, or a pin chose a file no view could be built from (projection off, the
+    alias lock busy). Identical claimants with no pin pass: whichever file kiro-cli
+    picks, the agent is the same.
+    """
+    if launch_name and launch_name != agent:
+        return
+    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
+
+    try:
+        claim = declared_spec_claim(
+            agent_mod.kiro_agents_dir_path(), agent, operation="kiro_cli_launch_pin", source="acp"
+        )
+    except AmbiguousAgentSpecError as exc:
+        if _project_spec_runs(agent, work_dir):
+            return
+        raise AgentSpecLaunchUnresolved(f"{exc}\nThe session was not started.") from exc
+    except OSError:
+        return
+    if claim is None or len(claim.claimants) < 2 or not (claim.pinned or claim.divergent):
+        return
+    if _project_spec_runs(agent, work_dir):
+        return
+    raise AgentSpecLaunchUnresolved(
+        f"agent {agent!r}: agent.spec_pins chooses {claim.path.name!r} among "
+        f"{len(claim.claimants)} specs that declare the name, but kiro-cli could not be "
+        "handed a Kiro Crew copy of that file (the skill view is off or could not be "
+        "prepared), and given the name it would choose a file itself. The session was "
+        "not started. Try again in a moment; if it keeps failing, restart the gateway."
+    )
+
+
+def require_shared_template_within_ceiling(
+    agent: str | None,
+    backend: str,
+    *,
+    launch_name: str | None = None,
+    work_dir: str | Path | None = None,
+) -> None:
     """Refuse a *backend* start on a crew-bound spec Kiro Crew does not own that the
     ceiling would narrow.
 
@@ -529,11 +603,24 @@ def require_shared_template_within_ceiling(agent: str | None, backend: str) -> N
     writers govern them). A file that cannot be read, or one with a second hard link,
     is refused too: kiro-cli may read what this check could not. Raises
     :class:`SharedTemplateOverCeiling` naming the file and the remedy; reads only.
+
+    *launch_name* is the name kiro-cli is handed for *agent*. When it is a skill
+    view (a Crew-owned copy the native projection wrote, with the ceiling applied,
+    ``agent_materialization.shared_template_view``), kiro-cli reads that file and no
+    claimant of *agent*, so the check judges the view independently of the claimants:
+    a stale view that still carries a denied grant is refused even when the authored
+    source is now within the ceiling. A missing view is permitted only when every
+    governed spelling has its own writer or saved capability materialization, its
+    claimants are within the ceiling, and therefore no view file exists to carry a
+    grant. Any other name, the authored one included, is refused on its claimants alone.
     """
     from kiro_crew.acp_backends import ACP_BACKENDS_SPEC_FILE_GRANTS
 
     if not agent or backend not in ACP_BACKENDS_SPEC_FILE_GRANTS:
         return
+    # A host that reads the spec file resolves the name it is handed itself: refused
+    # here, before the ceiling check, when that name would let it choose the file.
+    require_launch_resolves_one_file(agent, launch_name, work_dir)
     from kiro_crew.config.loader import KiroCrewConfig  # circular import
 
     try:
@@ -576,13 +663,33 @@ def require_shared_template_within_ceiling(agent: str | None, backend: str) -> N
         if not names and not _bindings_may_be_incomplete(cfg) and not moved_from:
             return
         owned_names = {Path(f).stem for f in OWNED_KIRO_AGENT_FILES}
-        over = _claimants_over_ceiling(names | {agent}, agent_state.all_fork_info(), owned_names)
+        governed_names = names | {agent}
+        forks = agent_state.all_fork_info()
+        over = _claimants_over_ceiling(governed_names, forks, owned_names)
+        if _is_skill_view_name(launch_name):
+            assert launch_name is not None
+            agents_dir = agent_mod.kiro_agents_dir_path()
+            managed = all(
+                _files_with_their_own_writer(name, forks, owned_names, agents_dir) is not None
+                or agent_state.get_capabilities(name) is not None
+                for name in governed_names
+            )
+            # A managed spec may have a synthetic alias without a file during client
+            # construction. Existing views still need checking: a warm runtime can
+            # retain an older alias after its writer narrows the source.
+            over = _view_over_ceiling(agent, launch_name, allow_absent=managed and not over)
     except Exception as exc:
         # Fail closed: an unread binding or lineage may be the one this start runs.
         raise SharedTemplateOverCeiling(
             f"agent {agent!r}: its spec could not be checked against the governance "
             f"ceiling ({exc}); the session was not started"
         ) from exc
+    if over and _is_skill_view_name(launch_name):
+        raise SharedTemplateOverCeiling(
+            f"agent {agent!r}: its kiro-cli skill view {launch_name} still grants tools "
+            "the governance ceiling denies, so the session was not started. Try again; "
+            "if it keeps failing, restart the gateway so the view is rebuilt."
+        )
     if over:
         files = ", ".join(str(path) for path in sorted(over)) or "its spec"
         raise SharedTemplateOverCeiling(
@@ -591,6 +698,48 @@ def require_shared_template_within_ceiling(agent: str | None, backend: str) -> N
             "from its allowedTools or autoApprove, or start the session on KAS, whose "
             "projection filters them."
         )
+
+
+def _is_skill_view_name(name: object) -> bool:
+    """Whether *name* is a skill view's name (``acp.skill_projection``), not an agent's."""
+    from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+
+    return isinstance(name, str) and name.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+
+
+def _view_over_ceiling(
+    agent: str, view_name: str, *, allow_absent: bool = False
+) -> "frozenset[Path]":
+    """The skill view *view_name* when the ceiling narrows it or it cannot be read.
+
+    The view is the one file kiro-cli reads for *agent* when handed *view_name*, and it
+    sits in the agents directory, so it gets the same fenced read and the same passes
+    as any claimant (:func:`_read_for_pass`, :func:`_apply_governance_passes`). A view
+    that does not parse or cannot be read is refused. An absent view is refused unless
+    *allow_absent* says every spelling is managed and its claimants are within the
+    ceiling; no file then exists from which kiro-cli could consume a stale grant.
+    """
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    path = agents_dir / f"{view_name}.json"
+    if allow_absent:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return frozenset()
+        except OSError:
+            return frozenset({path})
+    raw, _unknown = _read_for_pass(path, agents_dir)
+    if raw is None:
+        return frozenset({path})
+    try:
+        doc = user_json.loads_user_json(raw.decode("utf-8", errors="replace"))
+    except ValueError:
+        return frozenset({path})
+    if not isinstance(doc, dict):
+        return frozenset({path})
+    after = copy.deepcopy(doc)
+    _apply_governance_passes(after, source=f"shared-template-check:{agent}", audit=False)
+    return frozenset({path}) if _spec_grants(doc) - _spec_grants(after) else frozenset()
 
 
 def _bindings_may_be_incomplete(cfg: object) -> bool:

@@ -1,37 +1,12 @@
 """Integration test: several REAL stub processes must share ONE backend.
 
-Every other gateway test drives the stub seam in-process -- ``attach_stub("s1")``
-takes a string label, not a process. That leaves the one property pooling exists
-for completely unasserted: *do N independent client processes end up behind a
-single MCP server?*
+A pooling failure is silent: the stub degrades to per-session ``exec`` and every
+call still works. So this module counts backends from the outside, by having the
+spawned server append a line per launch, instead of reading the pool's private dict.
 
-This matters because a pooling failure is SILENT. When the handshake breaks the
-stub degrades to per-session ``exec`` (``stub.py``'s always-degrade guarantee),
-so every tool call still works, no error surfaces, and the only difference is
-that the memory saving is gone. Two such failures were found during the Windows
-port and both presented as "everything works":
-
-* ``os.getuid()`` in the Register frame raised on Windows, so pooling had never
-  once taken effect there;
-* the peer-identity check ran before the first pipe read, so admission denied
-  100% of connections.
-
-Assertions that say "nothing errored" cannot catch either. Counting the backends
-can, so that is what this module does -- and it counts them from the OUTSIDE, by
-having the spawned server append a line per launch, rather than by reading the
-pool's private dict. A closed-box count survives refactors of the pool internals.
-
-Platform coverage is the whole point, so this file deliberately contains no
-platform branch other than where the endpoint is placed. Permission modes
-(POSIX ``chmod`` vs Windows DACL) and identity verdicts (``SO_PEERCRED`` vs
-token SID vs macOS ``UNVERIFIABLE``) are genuinely platform-shaped and are
-covered by their own platform-split tests; folding them in here would turn this
-into a per-platform mock farm and cost the portability that
-:mod:`kiro_crew.mcp_gateway.transport` was written to provide.
-
-``test_pool_integ_is_never_silently_skipped_on_windows`` guards the coverage
-itself: a Windows skip would remove the only positive proof of pooling on the
-platform where the transport is newest, and would do it while CI stayed green.
+The only platform branch is where the endpoint is placed.
+``test_pool_integ_is_never_silently_skipped_on_windows`` keeps a Windows skip from
+removing the only proof of pooling there.
 """
 
 from __future__ import annotations
@@ -64,16 +39,9 @@ _REPLY_TIMEOUT = 60.0
 def _no_git_fingerprint(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """``run_gatewayd`` warms ``code_fingerprint()`` in-process without a git spawn.
 
-    The daemon these tests drive calls ``warm_code_fingerprint()`` at start, and
-    the cached fingerprint is of ``_PACKAGE_ROOT`` -- THIS checkout -- so a cold
-    read runs ``git -C <checkout> rev-parse HEAD`` and ``git diff HEAD`` on the
-    developer's own repository with the worker's cwd inherited; which test pays
-    depends on run order. Nothing here reads the value (the stubs' target is the
-    fake server, not a Kiro Crew subcommand, so no stub folds it into its pool
-    key), so the trusted-git resolver is pinned to "absent" -- the product's own
-    no-spawn arm, the mtime rule -- exactly as ``test_mcp_gateway_daemon_lifecycle.py``
-    does. The cache is cleared on both sides so the pinned value neither reuses
-    a real one nor leaks to a module that must match a child daemon's.
+    A cold read would run git on this checkout. Nothing here reads the value, so the
+    trusted-git resolver is pinned to "absent" (the mtime rule). The cache is cleared
+    on both sides so the pinned value neither reuses a real one nor leaks out.
     """
     monkeypatch.setattr(cf, "trusted_git_bin", lambda: None)
     cf.code_fingerprint.cache_clear()
@@ -84,11 +52,8 @@ def _no_git_fingerprint(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def _endpoint_dir() -> str | None:
     """Where to put the test endpoint.
 
-    On POSIX this binds a real socket, and ``AF_UNIX`` caps ``sun_path`` at
-    ~104 bytes -- pytest's ``tmp_path`` blows past that on macOS -- so it binds
-    under ``/tmp``. A Windows named pipe has neither the length limit nor a
-    ``/tmp``, so the platform default applies there. This is a path choice, not
-    a behavioural branch: everything below is identical on all three platforms.
+    POSIX binds under ``/tmp`` because ``AF_UNIX`` caps ``sun_path`` at ~104 bytes and
+    macOS ``tmp_path`` exceeds it. Windows named pipes use the platform default.
     """
     return None if pc.IS_WINDOWS else "/tmp"
 
@@ -124,17 +89,9 @@ async def _spawn_stub(
 ) -> asyncio.subprocess.Process:
     """Launch a REAL stub process, exactly as the rewriter's overlay would.
 
-    ``poolable`` mirrors the flag the rewriter passes: set, the backend may be
-    shared with other connections carrying the same PoolKey; unset, this
-    connection gets its own.
-
-    ``session_key`` is what the stub puts in its Register frame, and therefore
-    what gatewayd injects as the caller block. Empty means the stub registers
-    without an identity -- a state gatewayd handles by forwarding ``caller=None``.
-
-    ``env_json`` is the server's declared env, which the stub folds into
-    ``effective_env_hash``. It is how a test varies a REAL pool dimension when
-    the resolver hands every key the same target.
+    ``poolable``: the backend may be shared by connections with the same PoolKey.
+    ``session_key``: the Register-frame identity; empty makes gatewayd send ``caller=None``.
+    ``env_json``: folded into ``effective_env_hash``, a real pool dimension to vary.
     """
     env = {**_clean_env(), "KIROCREW_HOME": str(home)}
     if session_key:
@@ -242,11 +199,8 @@ async def _drive_tool_call(proc: asyncio.subprocess.Process, req_id: int) -> dic
 async def _reap(procs: list[asyncio.subprocess.Process]) -> None:
     """Tear down stubs through the portable primitive.
 
-    ``kill_process_tree_async``, not ``os.killpg``/``signal.SIGKILL``: those
-    names do not exist on Windows, and the shipped code was caught making
-    exactly this mistake during the port -- the arguments are evaluated before
-    the call, so the ``AttributeError`` escaped handlers written for
-    ``ProcessLookupError``/``OSError``.
+    Not ``os.killpg``/``signal.SIGKILL``: those names do not exist on Windows, and the
+    ``AttributeError`` escapes handlers written for ``ProcessLookupError``/``OSError``.
     """
     for p in procs:
         if p.returncode is None:
@@ -275,18 +229,9 @@ def _observed_callers(log: Path) -> list[str]:
 async def test_two_stubs_on_one_backend_are_told_apart(tmp_path: Path, short_sock_dir) -> None:
     """Each session's calls reach the SHARED backend carrying its own identity.
 
-    The unit tests around ``kirocrew-cron`` prove the server CONSUMES the caller
-    block. They cannot prove gatewayd SENDS one, which is the half that was
-    broken: ``backend_stubs.py`` strips any stub-supplied block from every forwarded
-    request and re-injects its own only when the backend advertised
-    ``kirocrew.caller-identity`` -- and that capability is parsed off a REAL
-    ``initialize`` response, a step the in-process stub seam every other gateway
-    test uses does not go through.
-
-    So this drives two real stubs with different session keys onto one pooled
-    backend and reads back what the backend was actually handed. Counting
-    backends (the sibling test) says they shared a process; this says the shared
-    process could still tell them apart.
+    gatewayd injects the caller block only when the backend advertised
+    ``kirocrew.caller-identity`` in a REAL ``initialize`` response, which the in-process
+    stub seam never sends. So two real stubs read back what the backend was handed.
     """
     endpoint_root = short_sock_dir
     sock = endpoint_root / "gw.sock"
@@ -365,24 +310,10 @@ async def test_two_UNNAMED_stubs_on_one_backend_get_distinct_namespaces(
 ) -> None:
     """Co-tenants gatewayd cannot NAME must still be separable.
 
-    The sibling test above proves a named co-tenant arrives carrying its own
-    identity. This is the case that has no identity to arrive with: a stub whose
-    session gatewayd cannot resolve forwards ``caller=None``, so nothing in the
-    frame distinguishes two such stubs. The backend then falls back to its own
-    process for a namespace -- correct in the 1:1 shim topology, and worthless on a
-    POOLED backend where that process is shared, which is how two unnamed
-    co-tenants came to share one ``unresolved:<pid>`` snapshot namespace and could
-    resolve element indices against each other's trees.
-
-    So this drives two identity-less stubs onto one pooled backend and reads back
-    the per-connection nonce each call carried. Distinct, non-empty values are the
-    whole fix: they are what the backend keys per-tenant state on when there is no
-    identity.
-
-    The nonce is asserted, not the (absent) identity: on a host where the peer
-    walk happens to find a pidfile for the test process's ancestry a stub could
-    legitimately be named, and that would not weaken this claim -- the nonce is
-    injected for every connection either way.
+    With ``caller=None`` a pooled backend would key state on its own shared pid, so
+    two unnamed co-tenants would share one ``unresolved:<pid>`` namespace. Each call
+    must carry a distinct, non-empty per-connection nonce instead. The nonce is
+    asserted, not the identity: a host may legitimately name a stub.
     """
     endpoint_root = short_sock_dir
     sock = endpoint_root / "gw.sock"
@@ -527,7 +458,7 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_
         fallback = home / "logs" / "stub_fallback.jsonl"
         assert not fallback.exists(), f"a stub degraded to per-session exec: {fallback.read_text()}"
 
-        # --- a different agent SHARES it ----------------------------------
+        # a different agent SHARES it
         # Measured on real processes: the agent name never reaches the backend,
         # so a second agent declaring this server identically has asked for the
         # process that is already running.
@@ -594,12 +525,8 @@ async def test_pooled_stubs_get_the_backends_instructions_after_a_respawn_too(
 ) -> None:
     """MCP ``instructions`` reach every stub of a pooled backend, unchanged.
 
-    Kiro Crew's servers carry their usage text in the ``initialize`` result
-    (``kiro_crew.mcp_instructions``), and gatewayd answers every stub after the
-    first from its cached copy of that result. So the text must survive the
-    replay, and after the shared backend dies, a stub that connects later must get
-    the REPLACEMENT's result rather than a stale one. The fake stamps its pid into
-    the text, which names the backend each reply came from.
+    gatewayd replays a cached ``initialize`` result to later stubs; after the backend
+    dies a new stub must get the replacement's text. The fake stamps its pid into it.
     """
     sock = short_sock_dir / "gw.sock"
     work_dir = tmp_path / "ws"
@@ -670,7 +597,7 @@ async def test_pooled_stubs_get_the_backends_instructions_after_a_respawn_too(
         assert served_by != dead, "a stub after the respawn was replayed the dead backend's result"
         assert served_by in backends, (served_by, backends)
         fallback = home / "logs" / "stub_fallback.jsonl"
-        assert not fallback.exists(), fallback.read_text()
+        assert not fallback.exists(), fallback.read_text(encoding="utf-8")
     finally:
         await _reap(procs)
         stop.set()
@@ -686,16 +613,8 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
 ) -> None:
     """The decoupling assertion: a stub exists either way, sharing does not.
 
-    3 real stubs, one identical PoolKey, none declared poolable -> 3 MCP server
-    processes. Two things have to hold at once, and only asserting both
-    distinguishes a real decoupling from either failure mode:
-
-    * 3 backends, not 1 -- opting out of pooling really means opting out. One
-      backend here would be the silent cross-session sharing the PoolKey has no
-      dimension to prevent.
-    * no stub degraded to per-session exec -- the stub IS in the path, which is
-      what gives the connection an address for an MCP Apps callback. 3 backends
-      with 3 fallbacks would be the old behaviour wearing this test's result.
+    3 non-poolable stubs with one PoolKey must give 3 backends AND no exec fallback:
+    the stub must stay in the path to give an MCP Apps callback an address.
     """
     endpoint_root = short_sock_dir
     sock = endpoint_root / "gw.sock"
@@ -787,24 +706,9 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
             await asyncio.wait_for(daemon, timeout=30)
         except asyncio.TimeoutError:  # pragma: no cover - daemon shutdown hang
             daemon.cancel()
-    # A private backend's reap belongs to the pool, and ``shutdown_all`` joins it:
-    # by the time ``run_gatewayd`` has returned every one of them has been
-    # terminated AND waited for. The inline ``await orphan.shutdown()`` this
-    # replaced was cancelled by the daemon's own teardown after
-    # ``release_exclusive`` had already dropped the backend from the exclusive
-    # map, so the child was outside ``shutdown_all`` and outlived the daemon --
-    # a zombie or a live process here, and its pipe transports still finalizing
-    # after the test's loop closed.
-    #
-    # The check is identity-pinned, not a bare ``pid_exists``: a reaped pid can
-    # be recycled onto an unrelated process between ``shutdown_all`` and here
-    # (common on a busy CI host, and Windows pids are small and recycle fast),
-    # and a bare existence probe would then read that stranger as a surviving
-    # backend and fail the test spuriously. A pid counts as a survivor only
-    # while it STILL names the same process object it did when captured above --
-    # ``process_start_time`` unchanged. A token that was unreadable at capture
-    # (``None``) cannot be confirmed as a survivor and is not counted; the
-    # pooling assertions above already prove all three backends ran.
+    # ``shutdown_all`` reaps private backends, so none may outlive ``run_gatewayd``.
+    # Survivors are matched by ``process_start_time``, not bare ``pid_exists``: a
+    # reaped pid can be recycled. A token unreadable at capture (``None``) is not counted.
     survivors = [
         pid
         for pid, token in backend_ids.items()
@@ -819,19 +723,9 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
 def _windows_collect_ignore() -> list[str]:
     """Read the Windows exclusion list from its DATA FILE, not conftest's runtime state.
 
-    Importing conftest and reading its state looks equivalent and is not: the set
-    is filled only when ``platform_compat.IS_WINDOWS``, so on the Linux matrix --
-    the only place this guard runs -- it is empty, and every membership assertion
-    against it passes vacuously, which is precisely the class of false pass this
-    guard exists to prevent. Reading the file is platform-independent.
-
-    The names live in ``windows-collect-ignore.txt`` rather than as string
-    literals inside conftest, because a
-    second reader needs them: naming a file explicitly on the pytest command
-    line bypasses conftest's ``pytest_ignore_collect`` hook, so the CI reduced-scope
-    selector (``scripts/ci-surface-tests.py``) has to apply the same exclusion itself.
-    Reading that file keeps this guard pointed at the real source of truth --
-    an AST walk over conftest now finds no literals and would go blind.
+    conftest fills its set only when ``platform_compat.IS_WINDOWS``, so on Linux, where
+    this guard runs, it is empty and every membership check would pass vacuously.
+    ``windows-collect-ignore.txt`` is also read by ``scripts/ci-surface-tests.py``.
     """
     listfile = Path(__file__).with_name("windows-collect-ignore.txt")
     found = [
@@ -851,16 +745,9 @@ def _windows_collect_ignore() -> list[str]:
 def test_pool_integ_is_never_silently_skipped_on_windows() -> None:
     """Guard the coverage, not the code.
 
-    Windows has two silent filters -- ``windows-collect-ignore.txt`` (whole files)
-    and ``windows-expected-failures.txt`` (node ids marked skip) -- and nothing
-    audits either. During the port a set of enforcing tests was written,
-    mutation-verified, and still never ran on Windows, because their whole file
-    sat in that list; CI stayed green throughout.
-
-    A skipped test asserts nothing, so this guard has to live outside the suite
-    it protects. It runs on Linux, where it always executes, and fails loudly if
-    the pooling proof is ever excluded from the platform whose transport is
-    newest.
+    Windows silently filters via ``windows-collect-ignore.txt`` (whole files) and
+    ``windows-expected-failures.txt`` (node ids). A skipped test asserts nothing, so
+    this guard runs on Linux and fails if the pooling proof lands in either list.
     """
     this_file = Path(__file__).name
 
@@ -883,17 +770,9 @@ def test_pool_integ_is_never_silently_skipped_on_windows() -> None:
 def test_every_consumer_of_the_fake_reads_it_through_recorded() -> None:
     """Whoever spawns the fake must read its history through ``recorded``.
 
-    The fake keeps one file per backend pid under ``<log>.d/``, so opening the
-    log path itself finds nothing and yields the empty list -- which reads as "the
-    gateway recorded nothing", the same shape as a genuinely broken gateway. That
-    failure is silent in the direction that matters: the reader is fine until an
-    assertion happens to compare against a NON-empty expectation.
-
-    So the guard is on the import, not on any one assertion: a module that names
-    the fake as its spawned server and does not bind
-    ``fake_pool_mcp_server.recorded`` is reading the layout on its own, whatever
-    it happens to assert today. Text alone would accept a mention in a comment,
-    so the import is found in the AST.
+    The fake writes one file per pid under ``<log>.d/``, so opening the log path
+    yields an empty list that looks like a broken gateway. The import is found in the
+    AST, since plain text would accept a mention in a comment.
     """
     import ast
 
@@ -948,7 +827,7 @@ async def test_backends_hosting_stub_covers_exclusive() -> None:
     assert pool.backends_hosting_stub("s-none") == []
 
 
-# --- admission: a private-stub storm ------------------------------------------
+# admission: a private-stub storm
 
 #: Private (non-poolable) stubs launched at once. The storm the spawn gate exists
 #: for is ~30 such stubs; every one is a full Python process importing
@@ -986,17 +865,9 @@ async def test_a_private_stub_storm_is_admitted_a_few_at_a_time_and_all_reach_re
 ) -> None:
     """THE admission assertion, from the outside.
 
-    ``_STORM_STUBS`` non-poolable stubs register at once. Each one wants its own
-    backend, which the pool's ``max_backends`` never bounded; each backend takes
-    ``_STORM_INIT_DELAY`` to answer ``initialize``. Three things must hold:
-
-    * every stub gets its ``initialize`` answered -- nobody is refused and nobody
-      is left hanging past its budget;
-    * no more than ``_STORM_CAPACITY`` spawn+initialize windows are ever open at
-      once, read back from the launch/initialized stamps the fake writes -- the
-      gate held the rest in its FIFO;
-    * no stub fell back to a per-session exec: the fallback ledger under the
-      test's own home does not exist.
+    ``_STORM_STUBS`` non-poolable stubs register at once (``max_backends`` does not
+    bound them). Every stub is answered, at most ``_STORM_CAPACITY`` spawn+initialize
+    windows overlap (from the fake's stamps), and no stub falls back to exec.
     """
     sock = short_sock_dir / "gw.sock"
     work_dir = tmp_path / "ws"

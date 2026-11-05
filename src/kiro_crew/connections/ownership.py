@@ -1,6 +1,6 @@
 """The Disconnect ownership oracle: who owns an MCP entry and its grant.
 
-Relocated verbatim from ``kiro_crew.dashboard.handlers.connections`` so the
+Kept apart from ``kiro_crew.dashboard.handlers.connections`` so the
 destructive-decision logic — the spec census, the entry/grant identity
 judgement, and the single-lock purge-and-revoke transaction — is owned and
 evolved apart from the HTTP layer. The handler keeps the route-facing concerns
@@ -15,9 +15,8 @@ module on the import path of every ``from kiro_crew.connections import …``,
 and the census helpers are collaborators of one destructive endpoint, not
 package API. Import them from this module directly.
 
-The docstrings and comments below carry the safety reasoning that shaped this
-code across the disconnect review rounds; they moved with it unchanged. The
-behavior is pinned by ``test/test_connections_disconnect.py``: the census
+The docstrings and comments below carry the safety reasoning behind this code.
+The behavior is pinned by ``test/test_connections_disconnect.py``: the census
 helpers directly, the judge and transaction through the disconnect endpoint.
 """
 
@@ -39,6 +38,7 @@ from kiro_crew.agent_spec_format import (
     opens_frontmatter_fence,
     parse_agent_spec_text,
 )
+from kiro_crew.platform import PlatformCompositionError
 
 logger = logging.getLogger(__name__)
 
@@ -719,8 +719,12 @@ async def remove_provider_entry(
         # different flocks and reentrancy never arises.
         try:
             from kiro_crew.agent import rebuild_agent_config_reporting
+            from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
 
             _spec_path, spec_rewritten = await _offload_config_write(rebuild_agent_config_reporting)
+        except PlatformCompositionError:
+            logger.error(COMPOSITION_REFUSED_LOG, f"disconnect of {slug}", exc_info=True)
+            spec_rewritten = False
         except Exception:  # noqa: BLE001 — the config write already landed
             logger.warning("agent config rebuild failed after disconnect", exc_info=True)
             spec_rewritten = False

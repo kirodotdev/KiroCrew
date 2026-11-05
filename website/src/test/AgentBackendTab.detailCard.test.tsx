@@ -216,7 +216,7 @@ describe('AgentBackendTab detail card', () => {
     await waitFor(() =>
       expect(screen.getByText('Kiro CLI supports 1 of 1 features')).toBeInTheDocument(),
     )
-    const saved = screen.getByText('Mates load their saved agent')
+    const saved = screen.getByText('Bots load their saved agent')
     const folded = saved.closest('details')
     expect(folded).not.toBeNull()
     expect(folded?.open).toBe(false)
@@ -616,6 +616,20 @@ describe('AgentBackendTab MCP ability card', () => {
     expect(panel().getByText(/The auto-approve rules your agent config file sets/)).toBeInTheDocument()
     expect(panel().getByText(/The permission mode your agent config file asks for/)).toBeInTheDocument()
     expect(panel().getByText(/The hooks your agent config file defines/)).toBeInTheDocument()
+  })
+
+  it('names only the preToolUse hooks where the rest of the hooks still run', async () => {
+    // The server narrows the hooks line where Crew fires every other event itself, so
+    // the card must not tell that reader none of their hooks run.
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('kiro', { ...card(), ...mcp({ ineffective: ['hooks_pre_tool_use'] }) })],
+    })
+    wrap()
+    await waitFor(() =>
+      expect(panel().getByText(/The preToolUse hooks your agent config file defines/)).toBeInTheDocument(),
+    )
+    expect(panel().queryByText(/^The hooks your agent config file defines/)).toBeNull()
+    expect(panel().queryByText('hooks_pre_tool_use')).toBeNull()
   })
 
   it('renders no heading for an agent that honours the whole file', async () => {

@@ -54,7 +54,7 @@ declares more than the free space where it extracts.
 | crons | `crons.json` |
 | config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `project_dir`, `workspace_dir` |
 | skills | `skills/` directory |
-| crew-teams | `crew-teams/teams.json` (the mate team list) |
+| crew-teams | `crew-teams/teams.json` (the Bot team list) |
 | workspace | `workspace/`, `plan_memory/` directories |
 | notifications | `notifications.jsonl` |
 | security | `telemetry_salt` |
@@ -239,6 +239,8 @@ into `memory_stores/.member-backups/pre-restore-<timestamp>/` inside the data ho
 where agents cannot read them. Other components go into `pre-restore-<timestamp>/`
 at the data-home root. The saved paths are printed, so a wrong-snapshot restore
 is recoverable. If rollback cannot finish, the failure report names both locations.
+A replace refused while the state is still being saved changes nothing and removes
+its partial saved copy; if that copy cannot be removed, its path is printed.
 Rollback restores only paths whose mutation actually began. A phase-one copy of a
 later, untouched tree is not written back over live data that arrived while an earlier
 component was being replaced.

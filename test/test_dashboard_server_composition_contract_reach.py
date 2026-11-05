@@ -188,7 +188,6 @@ _RESOLVED_DYNAMIC_PATCHES: dict[tuple[str, str], frozenset[str]] = {
     ("test_dashboard_server_startup_coverage.py", "_neutralise_outside_process_work"): frozenset(
         {
             "start_enabled_app_backends",
-            "start_deferred_app_backends",
             "register_builtin_apps",
             "cleanup_migrated_builtin",
             "on_gateway_startup",
@@ -709,7 +708,7 @@ _DASHBOARD_HOOKS = {
         "_stt_startup",
         "_own_host_warm",
         "_instances_startup",
-        "_browser_sessions_startup",
+        "_harness_startup",
     ),
     "on_cleanup": (
         "_tunnel_shutdown",
@@ -726,10 +725,10 @@ _DASHBOARD_HOOKS = {
         "_local_decision_model_shutdown",
         "_decision_http_shutdown",
         "_config_watch_shutdown",
+        "_stop_remote_puller",
         "_instances_shutdown",
         "_crew_log_drain",
-        "_browser_install_shutdown",
-        "_browser_view_shutdown",
+        "_harness_shutdown",
         "_connections_warm_shutdown",
         "_workflow_shutdown",
         "_unlink_unix_socket",
@@ -738,7 +737,7 @@ _DASHBOARD_HOOKS = {
     "on_response_prepare": ("_finalize_asset_cache_control",),
 }
 _API_HOOKS = {
-    "on_startup": ("_stt_startup", "_own_host_warm"),
+    "on_startup": ("_stt_startup", "_own_host_warm", "_harness_startup"),
     "on_cleanup": (
         "_kiro_prerequisite_shutdown",
         "_kas_login_shutdown",
@@ -748,7 +747,7 @@ _API_HOOKS = {
         "_config_watch_shutdown",
         "_prevent_sleep_shutdown",
         "_listener_guard_shutdown",
-        "_browser_install_shutdown",
+        "_harness_shutdown",
         "_connections_warm_shutdown",
         "_workflow_shutdown",
         "_unlink_unix_socket",
@@ -769,6 +768,7 @@ _DASHBOARD_BOOT = tuple("""
     set_pending_consumed_hook set_global_hook_store register_skill_read_observer
     wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
+    _apply_builtin_adoptions
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred
@@ -783,7 +783,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred_instances _deferred_instances _deferred_instances _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
@@ -802,13 +802,13 @@ _DASHBOARD_BOOT = tuple("""
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_enterprise_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch
-    _register_instances_hooks _register_browser_install_cleanup
-    _register_browser_view_cleanup _register_connections_warm_lifecycle
+    _register_instances_hooks _register_browser_harness_lifecycle _register_connections_warm_lifecycle
     _register_workflow_lifecycle _register_crewmate_prune_gate _register_change_card_hook
     _register_unix_socket_cleanup build_hardened_runner on_gateway_startup
     init_hook_reconciler async_safe_context_call current_context register_pre_exec_stop
     _arm_listener_guard
-    _kick_crewmate_prune _kick_pinned_order_load subprocess_executor _kick_default_app_installs _start_unix_site _resolved_bound_port
+    _kick_crewmate_prune _kick_pinned_order_load _kick_default_app_installs
+    _kick_builtin_adoption_staging _resolved_bound_port _start_unix_site
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
     _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
@@ -823,10 +823,11 @@ _DASHBOARD_BOOT = tuple("""
 _DASHBOARD_TEARDOWN = tuple("""
     current_context unregister_status_delta_sink stop_hook_reconciler
     on_gateway_shutdown async_safe_context_call current_context _release_sleep_block
+    _stop_remote_puller
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
     S:_initialize_workflow_service S:_prebuild_memory_after_preparation
-    S:_prune_browser_snapshots_loop S:_stt_idle_sweep
+    S:_start_remote_puller S:_stt_idle_sweep
     S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
     T:_live_sibling_port T:_register_deploy_skills
     T:_take_prior_dropped_grant
@@ -836,7 +837,7 @@ _DASHBOARD_ELSEWHERE = tuple("""
     T:migrate_channel_transcripts T:migrate_existing_crewmates T:newest_dump_with_stacks T:open_dump_file
     T:prune_synced_crewmates T:record_healthy_boot T:refresh_config_meta_stamp
     T:refresh_materialized_agents
-    T:register_builtin_apps T:rotate_dumps T:start_deferred_app_backends
+    T:register_builtin_apps T:rotate_dumps
     T:start_enabled_app_backends T:sweep_stale_dumps T:take_dropped_grant
     T:tighten_data_home T:warm_own_host_names
     """.split())
@@ -863,15 +864,15 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred_instances _deferred_instances _deferred_instances _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
-    _register_listener_guard_shutdown _register_browser_install_cleanup
-    _register_connections_warm_lifecycle _register_workflow_lifecycle
-    _register_unix_socket_cleanup build_hardened_runner bind_address_for _start_site
+    _register_listener_guard_shutdown
+    _register_browser_harness_lifecycle _register_connections_warm_lifecycle _register_workflow_lifecycle
+    _register_unix_socket_cleanup build_hardened_runner register_pre_exec_stop bind_address_for _start_site
     _arm_listener_guard _kick_pinned_order_load _export_bound_port _resolved_bound_port
-    _start_unix_site _resolved_bound_port _resolved_bound_host _start_secondary_loopback_site
+    _resolved_bound_port _start_unix_site _resolved_bound_host _start_secondary_loopback_site
     subprocess_executor _resolved_bound_host _resolved_bound_host _note_listener_sidecar
     _resolved_bound_host _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
@@ -1108,8 +1109,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 336
-_MCP_TABLE_DIGEST = "14fa16c5658779a210978429efce77e2c2fc4d3d260724a32955b0f1ac639c42"
+_MCP_TABLE_ROWS = 332
+_MCP_TABLE_DIGEST = "941071f57ae79a2f104e2ab7817e0334a5f53cb1ffe6443ce8afcfd4221b2a9f"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

@@ -71,6 +71,9 @@ from kiro_crew import (  # noqa: F401
 )
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent  # noqa: F401
 from kiro_crew.config.paths import config_dir, kiro_agents_dir  # noqa: F401
+from kiro_crew.config.write_provenance import (  # noqa: F401
+    launcher_record as _published_file_record,
+)
 from kiro_crew.constants import (  # noqa: F401
     KIROCREW_SANDBOX_TOOL_ENV,
     KIROCREW_SANDBOX_TOOL_VALUE,
@@ -351,7 +354,9 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         SANDBOX_LAYER_HARNESS,
         _command_log_label,
         _delegate_to_kiro_internal_sandbox,
+        _first_json_value,
         _kiro_delegation_warned,
+        _kiro_settings_concat_warned,
         _spawns_kiro_cli,
         delegated_workspace_exposes_sealed_target,
         kiro_internal_sandbox_enabled,
@@ -652,6 +657,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _live_target_irregular_detail,
         _live_target_multilink_detail,
         _live_target_symlink_detail,
+        _materialize_env_mask_target,
         _materialize_live_target_mask_target,
         _materialize_maskable_dirs,
         _materialize_md_notebook_mask_targets,

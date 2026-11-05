@@ -354,17 +354,29 @@ class TestResumeFromHistory:
 
 
 class TestConsolidation:
-    def test_consolidation_not_triggered_for_restricted(self, tmp_path):
+    def test_consolidation_not_triggered_for_restricted(self, tmp_path, monkeypatch):
         """maybe_consolidate must not be called for restricted sessions."""
         from kiro_crew.dashboard.chat import _maybe_consolidate
+        from kiro_crew.sel import SecurityEventLog
 
         state = _make_state(tmp_path)
         state.consolidator = MagicMock()
         slot = state.get_or_create_slot("e1", memory_mode="incognito")
+        sel_dir = tmp_path / "sel"
+        monkeypatch.setattr(SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(SecurityEventLog, "_initialized", False)
+        real_log = MagicMock(wraps=SecurityEventLog(base_dir=sel_dir, sync=True))
 
-        with patch("kiro_crew.dashboard.chat_utils.sel") as mock_sel:
+        with patch("kiro_crew.dashboard.chat_utils.sel", return_value=real_log) as mock_sel:
             _maybe_consolidate(state, slot)
 
+        rows = [
+            _json.loads(line)
+            for line in (sel_dir / "security_events.jsonl").read_text("utf-8").splitlines()
+        ]
+        assert [(r["operation"], r["outcome"], r["resources"]) for r in rows] == [
+            ("consolidate", "denied", "restricted_session_block")
+        ]
         state.consolidator.maybe_consolidate.assert_not_called()
         mock_sel().log_api_access.assert_called_once_with(
             caller="dashboard:e1",

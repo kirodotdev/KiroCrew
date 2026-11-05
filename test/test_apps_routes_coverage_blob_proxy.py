@@ -295,6 +295,43 @@ class TestBlobProxy:
             assert await resp.read() == b"\x89PNG\r\n"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["logo.svg", "logo.png", "logo.jpg", "logo.webp", "logo.ico"])
+    async def test_a_served_blob_carries_a_sandbox_csp(
+        self, name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A registry author's art opened top-level must not run as a document on
+        the dashboard origin, so every served type gets the no-script sandbox."""
+        _setup_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(routes_mod, "known_registry_repos", lambda: {"acme"})
+        clone_url = "ssh://forge.example/org/acme.git"
+        monkeypatch.setattr(
+            routes_mod,
+            "get_registry_app_by_repo",
+            lambda repo: {"repo": repo, "gitUrl": clone_url, "branch": "main"},
+        )
+
+        async def _must_not_fetch(*args: Any, **kwargs: Any) -> bool:
+            raise AssertionError("cache hit must not trigger a clone")
+
+        monkeypatch.setattr(routes_mod, "_fetch_git_blob", _must_not_fetch)
+        cache = (
+            routes_mod._blob_cache_dir() / routes_mod._blob_cache_key("acme", clone_url) / "main"
+        )
+        cache.mkdir(parents=True)
+        (cache / name).write_bytes(
+            b'<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>'
+        )
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(
+                "/api/apps/blob", params={"repo": "acme", "path": name, "ref": "main"}
+            )
+            assert resp.status == 200
+            csp = resp.headers["Content-Security-Policy"]
+            assert "sandbox" in csp.split("; ")
+            assert "default-src 'none'" in csp
+
+    @pytest.mark.asyncio
     async def test_serving_a_cached_blob_refreshes_its_mtime(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

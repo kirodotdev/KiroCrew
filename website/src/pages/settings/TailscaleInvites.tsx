@@ -1,20 +1,22 @@
-/** Settings > People > Invite over Tailscale.
+/** Settings > People > Invite.
  *
- *  One step for the owner: type teammates' emails (or make a link), optionally
+ *  The one invite flow, entered from the one `Invite…` button (`InviteEntry`):
+ *  type teammates' emails (or make a link), optionally
  *  give them a name and a picture, and send. Tailscale mails the share invite;
  *  when the teammate accepts, Crew learns their real Tailscale login and lets
  *  that login in. The name and picture are display only: who gets in is always
  *  the login Tailscale reports, even when they accepted from another account.
  *
- *  Without a connected Tailscale API key the card links the admin console's
+ *  Without a connected Tailscale API key the dialog links the admin console's
  *  Machines page, where the owner shares this machine by hand. The key is sent
  *  once and never shown again.
  *
  *  After an invite is made, `CopyInviteMessage` copies the message to send with
- *  it. The first invite, while nobody else has access, asks once per Crew
- *  (`useFirstShareGate`) with one warning line: they will see every session and
- *  Crew memory, with real counts. */
-import { useCallback, useMemo, useRef, useState } from 'react'
+ *  it. An invite nobody has accepted yet is a Waiting row in the People list
+ *  (`InviteRow`). The first invite, while nobody else has access, asks once per
+ *  Crew (`useFirstShareGate`) with one warning line: they will see every session
+ *  and Crew memory, with real counts. */
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Copy, ExternalLink, Link2, Mail, MessageSquare, RefreshCw, Trash2, UserPlus } from 'lucide-react'
 import { api } from '../../api/client'
@@ -31,15 +33,14 @@ import {
   parseEmails,
   type FirstShare,
   type FirstShareView,
+  type InviteRecord,
   type TailscaleInvite,
   type TailscaleInvitesStatus,
 } from '../../api/sharedCrewInvites'
-import { invitesPinnedOff } from '../../api/sharedCrewUi'
+import { heldLinks, invitesPinnedOff } from '../../api/sharedCrewUi'
 import { useSharedCrewCapabilities, useSharedCrewPeople } from '../../hooks/sharedCrew/useSharedCrew'
 import { tailnetDirectActive } from '../../components/TailnetDirectLink'
 import { buildInviteMessage, ownerDisplayName } from './inviteMessage'
-import { SettingsCard, SettingsSection } from '../../components/settings'
-import { headingTip } from './PeopleModes'
 import { Badge, Btn, Input, Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import Modal from '../../components/Modal'
@@ -53,8 +54,16 @@ import { useConfirm } from '../../components/ConfirmDialog'
 export const tailscaleInvitesKey = [...sharedCrewKeys.all, 'tailscale-invites'] as const
 export const sharedCrewAccessKey = [...sharedCrewKeys.all, 'access'] as const
 
+/** Where to stop sharing, in the words of the path that shared the Crew. A new
+ *  sharing path adds its case with its own catalog key. */
+function stopSharingText(transport: string): string {
+  switch (transport) {
+    default: return i18nT('sharedCrew.first_share_stop_tailscale')
+  }
+}
+
 /** Who can open the Crew, what they will see, the laptop note and where to stop sharing. */
-function FirstShareBody({ share }: { share: FirstShare }) {
+function FirstShareBody({ share, transport }: { share: FirstShare; transport: string }) {
   const counted = share.sessions !== null && share.memory_items !== null
   return (
     <div className="flex flex-col gap-2" data-testid="first-share-body">
@@ -69,7 +78,7 @@ function FirstShareBody({ share }: { share: FirstShare }) {
           {share.host.state === 'available' ? i18nT('sharedCrew.first_share_laptop') : i18nT('sharedCrew.first_share_laptop_no_keep_awake')}
         </p>
       )}
-      <p className="m-0" data-testid="first-share-stop">{i18nT('sharedCrew.first_share_stop_tailscale')}</p>
+      <p className="m-0" data-testid="first-share-stop">{stopSharingText(transport)}</p>
     </div>
   )
 }
@@ -102,8 +111,10 @@ export function CopyInviteMessage({ inviteUrl = '', testId = 'invite-copy-messag
   )
 }
 
-/** Allow sharing when no warning is due, or after the owner confirms it. */
-export function useFirstShareGate() {
+/** Allow sharing when no warning is due, or after the owner confirms it. The
+ *  acknowledgment is per Crew, so one covers every sharing path; *transport*
+ *  only words where to stop sharing. */
+export function useFirstShareGate(transport = 'tailscale') {
   const qc = useQueryClient()
   const { confirm, confirmDialog } = useConfirm()
   const [shareError, setShareError] = useState('')
@@ -123,7 +134,7 @@ export function useFirstShareGate() {
     if (!share?.needs_ack) return true
     const ok = await confirm({
       title: i18nT('sharedCrew.first_share_title'),
-      body: <FirstShareBody share={share} />,
+      body: <FirstShareBody share={share} transport={transport} />,
       confirmLabel: i18nT('sharedCrew.first_share_confirm'),
       danger: false,
       primary: true,
@@ -139,7 +150,7 @@ export function useFirstShareGate() {
     }
     await qc.invalidateQueries({ queryKey: sharedCrewAccessKey })
     return true
-  }, [confirm, qc])
+  }, [confirm, qc, transport])
   return { confirmShare, firstShareDialog: confirmDialog, shareError }
 }
 
@@ -166,12 +177,22 @@ export function inviteErrorText(code: string): string {
   }
 }
 
+const acceptedCount = (status: TailscaleInvitesStatus | null | undefined) => (status?.invites ?? []).filter(i => i.status === 'accepted').length
+
 export function useInvites() {
+  const qc = useQueryClient()
   const caps = useSharedCrewCapabilities({ fetchOnMount: false })
   const pinned = invitesPinnedOff(caps.capabilities)
   const query = useQuery({
     queryKey: tailscaleInvitesKey,
-    queryFn: () => api.tailscaleInvites(),
+    queryFn: async () => {
+      const next = await api.tailscaleInvites()
+      // An invite that turned accepted leaves the invite surfaces: the person's
+      // row has to be there to take its place.
+      const before = qc.getQueryData<TailscaleInvitesStatus | null>(tailscaleInvitesKey)
+      if (acceptedCount(next) > acceptedCount(before)) void qc.invalidateQueries({ queryKey: sharedCrewKeys.people })
+      return next
+    },
     // An enterprise policy that pins tailnet access off closes the invite
     // routes (404), so nothing is read and no Invite… control appears.
     enabled: !caps.isPending && !pinned,
@@ -220,7 +241,7 @@ function ErrorLine({ code, testId }: { code: string; testId: string }) {
 /** A client-side check on a field, not a failure: plain text, not an `ErrorNotice`. */
 function FieldHint({ code, id }: { code: string; id: string }) {
   if (!code) return null
-  return <span id={id} className="text-[12px] text-text" data-testid={id}>{inviteErrorText(code)}</span>
+  return <span id={id} role="status" className="text-[12px] text-text" data-testid={id}>{inviteErrorText(code)}</span>
 }
 
 /** No key yet: the manual share path, and the one-time key form. */
@@ -236,10 +257,8 @@ function ConnectForm() {
     <div className="flex flex-col gap-3 min-w-0" data-testid="invite-connect">
       <ExtLink href={TAILSCALE_ADMIN_MACHINES_URL} label={i18nT('sharedCrew.invite_manual_link')} testId="invite-admin-share" />
       <div className="flex flex-col gap-1.5 pt-2 border-t border-border min-w-0">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <label htmlFor="tailscale-api-key" className="text-sm font-medium text-text-strong">{i18nT('sharedCrew.invite_key_label')}</label>
-          {headingTip(i18nT('sharedCrew.invite_key_help'), 'invite-key-tip')}
-        </div>
+        <label htmlFor="tailscale-api-key" className="text-sm font-medium text-text-strong">{i18nT('sharedCrew.invite_key_label')}</label>
+        <p className="text-[13px] text-muted" data-testid="invite-key-help">{i18nT('sharedCrew.invite_key_help')}</p>
         <ExtLink href={TAILSCALE_ADMIN_KEYS_URL} label={i18nT('sharedCrew.invite_key_link')} testId="invite-admin-keys" />
         <form
           className="flex flex-wrap gap-2 items-center min-w-0"
@@ -324,7 +343,7 @@ function InviteForm({ disabled }: { disabled: boolean }) {
       onSubmit={e => { e.preventDefault(); if (canSend && !disabled && !upload.isPending) void submission.run() }}
     >
       {firstShareDialog}
-      <div role="tablist" aria-label={i18nT('sharedCrew.invite_title')} className="flex flex-wrap gap-2">
+      <div role="tablist" aria-label={i18nT('sharedCrew.invite_dialog_title')} className="flex flex-wrap gap-2">
         <Btn type="button" role="tab" aria-selected={mode === 'email'} primary={mode === 'email'} disabled={draftLocked} onClick={() => setMode('email')} data-testid="invite-mode-email">
           <Mail size={14} className="lucide-inline" aria-hidden /> {i18nT('sharedCrew.invite_by_email')}
         </Btn>
@@ -363,7 +382,7 @@ function InviteForm({ disabled }: { disabled: boolean }) {
         <div className="flex items-center gap-2">
           {avatarId && <img src={avatarUrl(avatarId)} alt="" className="w-8 h-8 rounded-full object-cover" data-testid="invite-avatar-preview" />}
           <input ref={fileRef} type="file" disabled={draftLocked || upload.isPending} accept={AVATAR_TYPES.join(',')} className="sr-only" aria-label={i18nT('sharedCrew.invite_avatar')} onChange={e => { onPick(e.target.files?.[0]); e.target.value = '' }} data-testid="invite-avatar-input" />
-          <Btn type="button" onClick={() => fileRef.current?.click()} disabled={draftLocked || upload.isPending}>{i18nT('sharedCrew.invite_avatar')}</Btn>
+          <Btn type="button" onClick={() => fileRef.current?.click()} disabled={draftLocked || upload.isPending} aria-describedby={avatarHint ? 'invite-avatar-hint' : undefined}>{i18nT('sharedCrew.invite_avatar')}</Btn>
         </div>
       </div>
       <FieldHint code={avatarHint} id="invite-avatar-hint" />
@@ -394,48 +413,34 @@ function InviteForm({ disabled }: { disabled: boolean }) {
   )
 }
 
-/** One invite. `inPeople` is the People list's form: a not-yet-joined row,
- *  dimmed, offering only Revoke. */
-export function InviteRow({ invite, inPeople = false }: { invite: TailscaleInvite; inPeople?: boolean }) {
+/** Revoke with a confirm step: the one revoke control, on an invite row and on
+ *  a joined person's row. *children* (a row's other actions) hide while the
+ *  confirm shows. A link, or a row with no person's name, has no one to name:
+ *  everyone who joined with it loses access. Otherwise the sentence follows the
+ *  row's state: an unaccepted invite, an accepted share not connected yet, or a
+ *  connected member. */
+export type RevokeState = 'sent' | 'accepted' | 'member'
+
+const REVOKE_BODY: Record<RevokeState, string> = {
+  sent: 'sharedCrew.invite_revoke_body',
+  accepted: 'sharedCrew.invite_revoke_accepted_body',
+  member: 'sharedCrew.person_revoke_body',
+}
+
+export function RevokeControl({ inviteId, name, link = false, state = 'sent', children }: { inviteId: string; name: string; link?: boolean; state?: RevokeState; children?: ReactNode }) {
   const qc = useQueryClient()
   const [confirming, setConfirming] = useState(false)
-  const refresh = () => void qc.invalidateQueries({ queryKey: tailscaleInvitesKey })
-  const resend = useMutation({ mutationFn: () => api.tailscaleResendInvite(invite.id) })
   const revoke = useMutation({
-    mutationFn: () => api.tailscaleRevokeInvite(invite.id),
-    onSuccess: () => { refresh(); void qc.invalidateQueries({ queryKey: sharedCrewKeys.people }) },
+    mutationFn: () => api.tailscaleRevokeInvite(inviteId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: tailscaleInvitesKey })
+      void qc.invalidateQueries({ queryKey: sharedCrewKeys.people })
+    },
   })
-  const who = invite.accepted_login || invite.email || i18nT('sharedCrew.invite_link_row')
-  const name = invite.alias || who
   return (
-    <li className={`flex flex-wrap items-center gap-3 py-2 min-w-0${inPeople ? ' opacity-60' : ''}`} data-testid={`invite-${invite.id}`} data-status={invite.status}>
-      {invite.avatar_id ? (
-        <img src={avatarUrl(invite.avatar_id)} alt="" className="w-8 h-8 rounded-full object-cover shrink-0" />
-      ) : (
-        <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-bg-hover text-text text-[12px] font-semibold shrink-0" aria-hidden>
-          {(name.trim()[0] ?? '?').toUpperCase()}
-        </span>
-      )}
-      <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-        <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          <span className="text-sm font-medium text-text-strong truncate max-w-full" title={name}>{name}</span>
-          {invite.status === 'accepted'
-            ? <Badge variant="ok">{i18nT('sharedCrew.invite_status_accepted')}</Badge>
-            : <Badge variant="warn">{i18nT('sharedCrew.invite_status_pending')}</Badge>}
-          {!inPeople && invite.kind === 'link' && <Badge variant="muted">{invite.multi_use ? i18nT('sharedCrew.invite_reusable') : i18nT('sharedCrew.invite_single_use')}</Badge>}
-        </div>
-        {name !== who && <span className="text-[12px] text-muted truncate" title={who}>{who}</span>}
-        {invite.status === 'accepted' && invite.email && invite.accepted_login && invite.email.toLowerCase() !== invite.accepted_login.toLowerCase() && (
-          <span className="text-[12px] text-muted" data-testid="invite-other-account">{i18nT('sharedCrew.invite_other_account', { email: invite.email })}</span>
-        )}
-        {invite.created_at > 0 && <span className="text-[12px] text-muted">{i18nT('sharedCrew.invite_sent_at', { when: fmtDateTime(invite.created_at * 1000) })}</span>}
-      </div>
+    <>
       <div className="flex flex-wrap gap-2">
-        {!inPeople && !confirming && invite.kind === 'email' && invite.status === 'pending' && (
-          <Btn type="button" onClick={() => resend.mutate()} disabled={resend.isPending || resend.isSuccess} data-testid="invite-resend">
-            <RefreshCw size={14} className="lucide-inline" aria-hidden /> {resend.isSuccess ? i18nT('sharedCrew.invite_resent') : i18nT('sharedCrew.invite_resend')}
-          </Btn>
-        )}
+        {!confirming && children}
         {confirming ? (
           <>
             <Btn type="button" danger onClick={() => revoke.mutate()} disabled={revoke.isPending} data-testid="invite-revoke-confirm">
@@ -449,13 +454,57 @@ export function InviteRow({ invite, inPeople = false }: { invite: TailscaleInvit
           </Btn>
         )}
       </div>
-      {confirming && <p className="text-[12px] text-muted w-full">{i18nT('sharedCrew.invite_revoke_body')}</p>}
-      <ErrorLine code={revoke.isError ? inviteErrorCode(revoke.error) || 'error' : resend.isError ? inviteErrorCode(resend.error) || 'error' : ''} testId="invite-row-error" />
+      {confirming && <p className="text-[12px] text-muted w-full">{link || !name.trim() ? i18nT('sharedCrew.invite_revoke_link_body') : i18nT(REVOKE_BODY[state], { name })}</p>}
+      <ErrorLine code={revoke.isError ? inviteErrorCode(revoke.error) || 'error' : ''} testId="invite-revoke-error" />
+    </>
+  )
+}
+
+/** An invite whose person has not joined, under the "Invites" heading, with
+ *  Resend (a pending email invite) and Remove. Only the text fades, so the
+ *  buttons read as live. An accepted share whose person has not connected yet
+ *  reads Accepted. Used under "Invites" in the People list and for a link in
+ *  the invite dialog. */
+export function InviteRow({ invite }: { invite: InviteRecord }) {
+  const resend = useMutation({ mutationFn: () => api.tailscaleResendInvite(invite.id) })
+  const who = invite.accepted_login || invite.email || i18nT('sharedCrew.invite_link_row')
+  const name = invite.alias || who
+  const otherAccount = invite.accepted_login && invite.email && invite.email.trim().toLowerCase() !== invite.accepted_login.trim().toLowerCase()
+  return (
+    <li className="flex flex-wrap items-center gap-3 py-2 min-w-0" data-testid={`invite-${invite.id}`} data-status={invite.status}>
+      {invite.avatar_id ? (
+        <img src={avatarUrl(invite.avatar_id)} alt="" className="w-8 h-8 rounded-full object-cover shrink-0" />
+      ) : (
+        <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-bg-hover text-text text-[12px] font-semibold shrink-0" aria-hidden>
+          {(name.trim()[0] ?? '?').toUpperCase()}
+        </span>
+      )}
+      <div className="flex flex-col gap-0.5 min-w-0 flex-1 opacity-60">
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+          <span className="text-sm font-medium text-text-strong truncate max-w-full" title={name}>{name}</span>
+          {invite.kind === 'link' && invite.multi_use
+            ? <Badge variant="muted">{i18nT('sharedCrew.invite_reusable')}</Badge>
+            : invite.status === 'accepted'
+              ? <Badge variant="ok">{i18nT('sharedCrew.invite_status_accepted')}</Badge>
+              : invite.kind === 'email' && <Badge variant="muted">{i18nT('sharedCrew.invite_status_sent')}</Badge>}
+        </div>
+        {name !== who && <span className="text-[12px] text-muted truncate" title={who}>{who}</span>}
+        {otherAccount && <span className="text-[12px] text-muted" data-testid="invite-other-account">{i18nT('sharedCrew.invite_other_account', { email: invite.email })}</span>}
+        {invite.created_at > 0 && <span className="text-[12px] text-muted">{i18nT(invite.kind === 'link' ? 'sharedCrew.invite_created_at' : 'sharedCrew.invite_sent_at', { when: fmtDateTime(invite.created_at * 1000) })}</span>}
+      </div>
+      <RevokeControl inviteId={invite.id} name={name} link={invite.kind === 'link'} state={invite.status === 'accepted' ? 'accepted' : 'sent'}>
+        {invite.kind === 'email' && invite.status === 'pending' && (
+          <Btn type="button" onClick={() => resend.mutate()} disabled={resend.isPending || resend.isSuccess} data-testid="invite-resend">
+            <RefreshCw size={14} className="lucide-inline" aria-hidden /> {resend.isSuccess ? i18nT('sharedCrew.invite_resent') : i18nT('sharedCrew.invite_resend')}
+          </Btn>
+        )}
+      </RevokeControl>
+      <ErrorLine code={resend.isError ? inviteErrorCode(resend.error) || 'error' : ''} testId="invite-row-error" />
     </li>
   )
 }
 
-function Connected({ status, showList = true }: { status: TailscaleInvitesStatus; showList?: boolean }) {
+function Connected({ status }: { status: TailscaleInvitesStatus }) {
   const qc = useQueryClient()
   const { confirm, confirmDialog } = useConfirm()
   const disconnect = useMutation({
@@ -487,42 +536,42 @@ function Connected({ status, showList = true }: { status: TailscaleInvitesStatus
         <p className="text-[12px] text-warn" data-testid="invite-restart">{i18nT('sharedCrew.invite_restart_needed')}</p>
       )}
       <InviteForm disabled={removal.isPending} />
-      {showList && <div className="pt-2 border-t border-border">
-        {status.invites.length === 0 ? (
-          !status.sync?.error && <p className="text-[13px] text-muted" data-testid="invite-empty">{i18nT('sharedCrew.invite_empty')}</p>
-        ) : (
-          <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('sharedCrew.invite_list_title')}>
-            {status.invites.map(i => <InviteRow key={i.id} invite={i} />)}
-          </ul>
-        )}
-      </div>}
     </div>
   )
 }
 
-/** The whole card. Hidden when this gateway has no invite routes (404). */
-export function TailscaleInvites() {
-  const query = useInvites()
-  if (query.isLoading) return null
-  const status = query.data
-  const code = query.isError ? inviteErrorCode(query.error) : ''
-  // Missing routes and an initial owner-only refusal intentionally hide the card.
-  if (!status && (!query.isError || code === 'owner_only')) return null
+/** The links an owner holds: reusable ones stay live after people join through
+ *  them, and a link names nobody, so they live here and not in People. */
+function HeldLinks({ invites }: { invites: readonly TailscaleInvite[] }) {
+  const people = useSharedCrewPeople(true, { fetchOnMount: false })
+  const links = heldLinks(people.data?.people ?? [], invites)
+  if (links.length === 0) return null
   return (
-    <SettingsSection title={i18nT('sharedCrew.invite_title')}>
-      <InviteReadError query={query} testId="invite-load-error" askAgent={!status} />
-      {status && <SettingsCard>
-        <div className="flex flex-col gap-2 min-w-0" data-testid="tailscale-invites">
-          {status.connected ? <Connected status={status} /> : <ConnectForm />}
-        </div>
-      </SettingsCard>}
-    </SettingsSection>
+    <ul className="flex flex-col divide-y divide-border pt-2 border-t border-border" data-testid="invite-links">
+      {links.map(i => <InviteRow key={i.id} invite={i} />)}
+    </ul>
   )
 }
 
-/** The People page's "Invite..." dialog. Without a Tailscale API key it asks for
- *  one first (with the by-hand share path beside it); with one, it is the
- *  invite form. Invites not yet accepted show in the People list. */
+/** The Tailscale path of the invite dialog: the API key first when none is
+ *  connected (with the by-hand share path beside it), then the invite form and
+ *  the links held. Each sharing path adds its own pane to the dialog. */
+function TailscalePane({ status }: { status: TailscaleInvitesStatus }) {
+  return status.connected ? (
+    <>
+      <Connected status={status} />
+      <HeldLinks invites={status.invites} />
+    </>
+  ) : (
+    <>
+      <p className="text-[13px] text-muted" data-testid="invite-key-first">{i18nT('sharedCrew.invite_dialog_key_first')}</p>
+      <ConnectForm />
+    </>
+  )
+}
+
+/** The People page's "Invite…" dialog. Invites not yet accepted show in the
+ *  People list as Invites rows. */
 export function InviteDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const query = useInvites()
   const status = query.data
@@ -530,13 +579,31 @@ export function InviteDialog({ open, onClose }: { open: boolean; onClose: () => 
     <Modal open={open} onClose={onClose} title={i18nT('sharedCrew.invite_dialog_title')} maxWidth={520} guardAccidentalDismiss>
       <div className="flex flex-col gap-3 min-w-0" data-testid="invite-dialog">
         <InviteReadError query={query} testId="invite-dialog-error" />
-        {status && (status.connected ? <Connected status={status} showList={false} /> : (
-          <>
-            <p className="text-[13px] text-muted">{i18nT('sharedCrew.invite_dialog_key_first')}</p>
-            <ConnectForm />
-          </>
-        ))}
+        {status && <TailscalePane status={status} />}
       </div>
     </Modal>
+  )
+}
+
+/** The one place a person is invited from: the `Invite…` button and its dialog,
+ *  with `children` (links that belong beside it) after the button. Renders the
+ *  button only for the owner, whose invite read answered; a failed read shows
+ *  its notice and retry here, once. */
+export function InviteEntry({ children }: { children?: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const query = useInvites()
+  return (
+    <>
+      {query.data && (
+        <div className="flex items-center gap-3 min-w-0 flex-wrap">
+          <Btn onClick={() => setOpen(true)} data-testid="share-hero-invite">
+            <UserPlus size={14} className="lucide-inline" aria-hidden /> {i18nT('sharedCrew.hero_invite')}
+          </Btn>
+          {children}
+        </div>
+      )}
+      {!open && <InviteReadError query={query} testId="people-invites-error" />}
+      {query.data && <InviteDialog open={open} onClose={() => setOpen(false)} />}
+    </>
   )
 }

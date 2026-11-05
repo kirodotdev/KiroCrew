@@ -16,6 +16,8 @@ import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { store as globalStore } from '../store'
 import chatReducer, { setActiveSlot, clearMessages, clearQuestionCard, sseChatMessage, setQuestionCard, setQuestionDraft, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard } from '../store/chatSlice'
+// The raised-by label reads the Shared Crew decisions; these tests are about question frames.
+vi.mock('../pages/chat/shared-crew/useRaisedBy', () => ({ useRaisedBy: () => '' }))
 import PendingQuestionCard from '../components/PendingQuestionCard'
 import { __resetForTests, loadDrafts } from '../utils/chatDrafts'
 import { registerMainComposer } from '../utils/composerRestore'

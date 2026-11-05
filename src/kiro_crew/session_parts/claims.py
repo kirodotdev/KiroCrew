@@ -11,17 +11,19 @@ on an instance reaches every caller.
 
 Instance fields written: ``_allocation``.
 
-Instance fields read: none.
+Instance fields read: ``parent_turns``.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import shutdown_event
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.session_allocation import SessionAllocationService, _collect_parent_runtime_kwargs
 from kiro_crew.session_allocation import parent_work_scratch_dir as _parent_work_scratch_dir
 from kiro_crew.session_parts.policy import BACKGROUND_AGENT, BACKGROUND_KEY
@@ -101,7 +103,12 @@ def session_generation(self: SessionManager, key: str) -> int:
 
 
 def _advance_session_generation(self: SessionManager, key: str) -> int:
-    """Advance ownership generation after registry publication/removal."""
+    """Advance ownership generation after registry publication/removal.
+
+    Every reset, recycle and removal passes here, so this is also where the
+    key's idle-compaction stretch ends: the session it was armed on is gone.
+    """
+    self.cancel_idle_compaction(key)
     return self._allocation_boundary().advance_ownership_generation(key)
 
 
@@ -135,6 +142,7 @@ def _spawn_in_flight(self: SessionManager, key: str) -> str | None:
 
 async def try_acquire(self: SessionManager, key: str) -> bool:
     """Try to acquire an exact-key idle session."""
+    self.cancel_idle_compaction(key)
     return await self._allocation_boundary().try_acquire(key)
 
 
@@ -251,7 +259,10 @@ async def get_or_create(
 
     ``start_priority`` orders a cold start in the start queues; a caller passes
     FOREGROUND only where a person waits on it (rule: ``kiro_crew.start_priority``).
+
+    A claim is activity, so it ends the key's idle-compaction stretch first.
     """
+    self.cancel_idle_compaction(key)
     if key == BACKGROUND_KEY:
         # ``_bg`` is one persistent session shared by every background job,
         # so it is always the background agent, whichever caller reaches it
@@ -342,6 +353,19 @@ def allocation_requested_model(self: SessionManager, key: str) -> str:
     """
     session = self._sessions.get(self._fold_key(key))
     return session.requested_model if session is not None else ""
+
+
+def fresh_start_unclaimed(self: SessionManager, key: str) -> bool:
+    """Whether *key*'s live session started fresh and no real turn has claimed it yet.
+
+    The state an eager prewarm leaves: registered, first turn still armed ``FRESH``.
+    The next real claim takes that observation and builds a session-start context.
+    A read only; it consumes nothing. A resumed prewarm and a used session answer no.
+    """
+    from kiro_crew.session_parts.record import FirstTurnState
+
+    session = self._sessions.get(self._fold_key(key))
+    return session is not None and session.first_turn is FirstTurnState.FRESH
 
 
 def record_effort_override(self: SessionManager, key: str, level: str) -> None:
@@ -530,10 +554,115 @@ def release(
 ) -> None:
     """Release the key-based session lease.
 
+    First the attempt this release ends is settled in the parent-turn ledger
+    (``kiro_crew.parent_turns``): its inline marks are confirmed if its engine
+    noted that the turn landed, revoked otherwise. That runs before the
+    allocation release, ahead of its orphaned-release early return, because a
+    turn whose session a reaper or a reset already popped ends exactly there.
+
     ``wake_queue`` wakes the queued entries' channel drains once the lease is free;
     see ``SessionAllocationService.release``.
     """
+    settle_turn(self, key)
     self._allocation_boundary().release(key, cleanup=cleanup, wake_queue=wake_queue)
+
+
+def settle_turn(self: SessionManager, key: str) -> None:
+    """End the calling task's open attempt on ``key`` without releasing the permit.
+
+    Settles that attempt in the parent-turn ledger as :func:`release` does first:
+    its inline marks are confirmed if its engine noted that the turn landed,
+    revoked otherwise. For an engine that runs a second turn inside one claim (an
+    injection's in-claim retry): the first turn's marks are settled by its own
+    end, and the second turn opens a new attempt with a new epoch, so a mark the
+    first turn's tool stamped and sent late is never held under the second.
+    """
+    ledger = getattr(self, "parent_turns", None)
+    if ledger is not None:
+        ledger.end_attempt(canonical_key(key), _holding_task(self, key))
+
+
+def _holding_task(sessions: SessionManager, key: str) -> Any:
+    """The task whose holding of ``key``'s permit a note or release names.
+
+    The calling task: engines claim, note and release a session in one task. Off
+    the loop, where no task runs, the live session's ``turn_owner`` stands in.
+    """
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    if task is not None:
+        return task
+    return sessions.turn_holder(key)
+
+
+def turn_holder(self: SessionManager, key: str) -> Any:
+    """The task holding ``key``'s turn permit right now, or None when no turn holds it.
+
+    The live session's ``turn_owner``, which the claim sets when it takes the
+    permit and the release clears.
+    """
+    session = self._sessions.get(self._fold_key(key))
+    if session is None or not session.semaphore.locked():
+        return None
+    return getattr(session, "turn_owner", None)
+
+
+def turn_token(
+    self: SessionManager, key: str, *, open_attempt: bool = True
+) -> tuple[str, Any, int] | None:
+    """The attempt holding ``key``'s turn permit right now, or None when no turn holds it.
+
+    The token a done read stamps and a mark-collected holds its marks under, so
+    that this attempt's end settles them (``kiro_crew.parent_turns``). The done
+    read opens the attempt when none is open; the mark passes
+    ``open_attempt=False`` and only names one already open, since an attempt that
+    opened nothing read no child done.
+    """
+    owner = self.turn_holder(key)
+    ledger = getattr(self, "parent_turns", None)
+    if owner is None or ledger is None:
+        return None
+    canonical = canonical_key(key)
+    if open_attempt:
+        return ledger.open_attempt(canonical, owner)
+    return ledger.open_token(canonical, owner)
+
+
+def turn_prompt_in_flight(self: SessionManager, key: str) -> bool:
+    """True while a turn holds ``key``'s permit AND its prompt is in flight on the provider.
+
+    The window from a claim to the prompt's write (a completion's injection
+    still building its message, a retry before it dispatches) is held but has no
+    prompt in flight, so no tool call can belong to it. Read through the
+    provider's own ``has_active_turn`` (an ACP session's handle: its turn began
+    and has neither ended nor been cancelled). A provider that cannot report it
+    answers False, the base default, so the holder is not named: a completion
+    is then delivered, a duplicate at worst.
+    """
+    session = self._sessions.get(self._fold_key(key))
+    if session is None or not session.semaphore.locked():
+        return False
+    has_active_turn = getattr(getattr(session, "provider", None), "has_active_turn", None)
+    if not callable(has_active_turn):
+        return False
+    try:
+        return has_active_turn() is True
+    except Exception:
+        return False
+
+
+def note_turn_landed(self: SessionManager, key: str) -> None:
+    """The engine holding ``key``'s permit decided that its turn landed.
+
+    Called where each engine already decides it (its stop reason succeeded), so
+    the end of this attempt confirms the inline marks it received. An attempt
+    that ends with no note revokes them.
+    """
+    ledger = getattr(self, "parent_turns", None)
+    if ledger is not None:
+        ledger.note_landed(ledger.open_attempt(canonical_key(key), _holding_task(self, key)))
 
 
 async def _safe_cleanup(self: SessionManager, provider: LLMProvider, session_id: str) -> None:

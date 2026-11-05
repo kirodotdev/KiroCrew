@@ -1,12 +1,8 @@
 """Live turns under eviction, resume, claims and teardown, and the `previous` edge.
 
-It pins that eviction, a reconnect or a warm reuse never closes an open turn, that only a
-resume repairs one, and that a resume leaves alone a turn this process is still running; how
-a claim and a teardown hold or release the log's write ownership; what a dispatched child
-records and how child pins are capped; that a refused turn writes no start; that call-index
-numbering survives cache pressure; and which earlier store of the same slot a newly created
-log names as `previous`. The repair of a superseded log's tail and the chain walk are pinned
-in `test_crew_log_emit.py`, and the writer in `test_crew_log_emit_write_path.py`.
+Only a resume repairs an open turn, and never one this process is still running. The
+superseded-tail repair and chain walk are in `test_crew_log_emit.py`; the writer is in
+`test_crew_log_emit_write_path.py`.
 """
 
 from __future__ import annotations
@@ -17,6 +13,7 @@ import logging
 import threading
 
 import pytest
+from crew_log_drain import assert_drained
 from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     SESSION,
     SUCCESSOR,
@@ -34,17 +31,14 @@ from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import emit
 from kiro_crew.crew_log import projection as crew_log_projection
 
-# --- cache pressure -------------------------------------------------------
+# cache pressure
 
 
 def test_cache_pressure_never_closes_a_live_turn(monkeypatch):
     """What a bounded LRU of open handles must not do to a running turn.
 
-    With more concurrent crew logs than the cache holds, evicting a live session's
-    handle makes the next emit in that same turn reopen the crew log -- and an open
-    that repaired would append a false `turn/completed {interrupted}` into a turn
-    that then keeps writing. Two things prevent it: repair is opt-in and only a
-    resume asks for it, and a session with a turn in flight is not evicted at all.
+    A reopen that repaired would write a false `turn/completed {interrupted}` into a turn
+    that keeps writing. Only a resume repairs, and a live turn is never evicted.
     """
     _open_session()
     emit.on_turn_started(SESSION, 7, "user")
@@ -56,7 +50,7 @@ def test_cache_pressure_never_closes_a_live_turn(monkeypatch):
         emit.on_session_opened(other, agent="kirocrew")
         emit.on_turn_started(other, 1, "user")
         emit.on_turn_completed(other, 1, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
 
     # The live session survived the pressure ...
     assert SESSION in emit._open
@@ -66,7 +60,7 @@ def test_cache_pressure_never_closes_a_live_turn(monkeypatch):
     assert types.count("tool/called") == 1
     # ... and its next entry still names the turn it belongs to.
     emit.on_tool_completed(SESSION, 7, status="completed", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
     last = _body()[-1]
     assert last["type"] == "tool/completed"
     assert last["data"]["turn"] == 7
@@ -80,7 +74,7 @@ def test_a_finished_session_is_evicted_so_the_cache_stays_bounded():
         emit.on_session_opened(other, agent="kirocrew")
         emit.on_turn_started(other, 1, "user")
         emit.on_turn_completed(other, 1, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
     assert len(emit._open) <= emit._MAX_OPEN_CREW_LOGS
 
 
@@ -90,11 +84,11 @@ def test_a_reconnect_after_an_eviction_does_not_repair(monkeypatch):
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
     with emit._lock:
         emit._open.clear()  # simulate the eviction the cap would have made
     emit.on_tool_completed(SESSION, 1, status="completed", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
     types = [e["type"] for e in _body()]
     assert "turn/completed" not in types
     assert types[-1] == "tool/completed"
@@ -110,10 +104,10 @@ def test_a_resume_closes_a_child_the_registry_no_longer_lists():
         _open_session()
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
-        assert emit.flush()
+        assert_drained()
         emit.reset_caches()
         emit.on_session_opened(SESSION, agent="kirocrew", resumed=True)
-        assert emit.flush()
+        assert_drained()
         closers = [e for e in _body() if e["type"] == "subagent/failed"]
         assert [e["data"]["agent_id"] for e in closers] == ["sub-1"]
         assert closers[0]["data"]["outcome"] == "unknown"
@@ -130,10 +124,10 @@ def test_a_resume_leaves_a_child_the_registry_still_lists_alone():
         _open_session()
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
-        assert emit.flush()
+        assert_drained()
         emit.reset_caches()
         emit.on_session_opened(SESSION, agent="kirocrew", resumed=True)
-        assert emit.flush()
+        assert_drained()
         assert [e for e in _body() if e["type"] == "subagent/failed"] == []
     finally:
         emit.set_child_liveness(None)
@@ -162,7 +156,7 @@ def test_a_dispatch_records_the_task_the_child_was_asked_to_do():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1", task="audit the retry path")
-    assert emit.flush()
+    assert_drained()
     assert _opener("subagent/spawned")["task"] == "audit the retry path"
 
 
@@ -175,7 +169,7 @@ def test_a_dispatch_with_no_task_text_writes_no_task_key_at_all():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1", task="")
-    assert emit.flush()
+    assert_drained()
     assert "task" not in _opener("subagent/spawned")
 
 
@@ -189,7 +183,7 @@ def test_the_task_text_is_clipped_on_the_same_terms_as_a_plan_item():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1", task="t" * (emit._MAX_SHORT_TEXT + 50))
-    assert emit.flush()
+    assert_drained()
     written = _opener("subagent/spawned")["task"]
     assert len(written) == emit._MAX_SHORT_TEXT
     assert written.endswith("\u2026")
@@ -206,7 +200,7 @@ def test_a_credential_in_the_task_text_never_reaches_the_log():
     emit.on_subagent_spawned(
         SESSION, 1, agent_id="sub-1", task="deploy with AKIAIOSFODNN7EXAMPLE now"
     )
-    assert emit.flush()
+    assert_drained()
     assert "AKIAIOSFODNN7EXAMPLE" not in _opener("subagent/spawned")["task"]
 
 
@@ -221,7 +215,7 @@ def test_a_completed_child_records_the_credits_it_billed():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
     emit.on_subagent_completed(SESSION, agent_id="sub-1", duration_ms=7, credits=1.5)
-    assert emit.flush()
+    assert_drained()
     assert _closer("subagent/completed")["credits"] == 1.5
 
 
@@ -237,7 +231,7 @@ def test_a_child_billed_nothing_writes_no_credits_key_at_all():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
     emit.on_subagent_completed(SESSION, agent_id="sub-1", duration_ms=7, credits=0.0)
-    assert emit.flush()
+    assert_drained()
     assert "credits" not in _closer("subagent/completed")
 
 
@@ -255,7 +249,7 @@ def test_a_child_that_did_not_finish_still_records_what_it_spent(outcome):
     emit.on_subagent_failed(
         SESSION, agent_id="sub-1", reason="boom", outcome=outcome, duration_ms=3, credits=0.75
     )
-    assert emit.flush()
+    assert_drained()
     data = _closer("subagent/failed")
     assert data["outcome"] == outcome
     assert data["credits"] == 0.75
@@ -274,7 +268,7 @@ def test_a_non_finite_charge_is_not_written_at_all(bad):
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
     emit.on_subagent_completed(SESSION, agent_id="sub-1", duration_ms=7, credits=bad)
-    assert emit.flush()
+    assert_drained()
     assert "credits" not in _closer("subagent/completed")
 
 
@@ -286,7 +280,7 @@ def test_a_child_that_did_not_finish_and_billed_nothing_writes_no_credits(outcom
     emit.on_subagent_failed(
         SESSION, agent_id="sub-1", reason="boom", outcome=outcome, duration_ms=3, credits=0.0
     )
-    assert emit.flush()
+    assert_drained()
     assert "credits" not in _closer("subagent/failed")
 
 
@@ -307,7 +301,7 @@ def test_the_child_probe_reports_present_while_this_session_owes_an_entry():
     _open_session()
     emit.on_session_opened(other, agent="kirocrew", slot="chat-8")
     emit.on_session_opened(held, agent="kirocrew", slot="chat-9")
-    assert emit.flush()
+    assert_drained()
     real_append = lg.CrewLog.append
     holding = threading.Event()
     release = threading.Event()
@@ -335,7 +329,7 @@ def test_the_child_probe_reports_present_while_this_session_owes_an_entry():
             asyncio.run(_owe(SESSION))
             assert gone("sub-1") is False, "a child was reported gone while its session owed"
             release.set()
-            assert emit.flush(timeout=10.0)
+            assert_drained()
         assert gone("sub-1") is True, "the debt outlived the entry that landed"
     finally:
         release.set()
@@ -404,10 +398,10 @@ def test_a_resume_with_no_registered_probe_closes_no_child():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
-    assert emit.flush()
+    assert_drained()
     emit.reset_caches()
     emit.on_session_opened(SESSION, agent="kirocrew", resumed=True)
-    assert emit.flush()
+    assert_drained()
     assert [e for e in _body() if e["type"] == "subagent/failed"] == []
 
 
@@ -417,10 +411,10 @@ def test_a_resume_is_the_one_path_that_closes_an_open_turn():
     # that is gone -- the one situation where closing it records what happened.
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
     emit.reset_caches()
     emit.on_session_opened(SESSION, agent="kirocrew", resumed=True)
-    assert emit.flush()
+    assert_drained()
     closers = [e for e in _body() if e["type"] == "turn/completed"]
     assert len(closers) == 1
     assert closers[0]["data"] == {"turn": 1, "stop_reason": "interrupted"}
@@ -447,12 +441,12 @@ def test_a_resume_does_not_close_a_turn_this_process_is_still_running(caplog):
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
     # NO reset_caches: this process still holds turn 1 as live, which is the whole
     # point -- the claim below is contradicted by our own state.
     with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
         emit.on_session_opened(SESSION, agent="kirocrew", resumed=True)
-        assert emit.flush()
+        assert_drained()
 
     body = _body()
     assert "turn/completed" not in [e["type"] for e in body], (
@@ -469,7 +463,7 @@ def test_a_resume_does_not_close_a_turn_this_process_is_still_running(caplog):
     # And the turn still ends exactly once, on its own terms.
     emit.on_tool_completed(SESSION, 1, name="fs_read", call_id="tc-1", status="completed")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn", duration_ms=5)
-    assert emit.flush()
+    assert_drained()
     closers = [e for e in _body() if e["type"] == "turn/completed"]
     assert len(closers) == 1, f"the turn completed {len(closers)} times: {closers}"
     assert closers[0]["data"]["stop_reason"] == "end_turn"
@@ -496,14 +490,14 @@ def test_a_claim_that_cannot_own_the_log_writes_nothing_and_counts_the_loss():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
     before = [e["type"] for e in _body()]
     emit.reset_caches()
 
     with _owned_elsewhere():
         emit.on_session_opened(SESSION, agent="kirocrew", resumed=True)
         emit.on_message_received(SESSION, 1, role="user", text="hello")
-        assert emit.flush()
+        assert_drained()
         after = [e["type"] for e in _body()]
         assert after == before, f"a process that owns nothing wrote into the log: {after}"
         assert (
@@ -513,7 +507,7 @@ def test_a_claim_that_cannot_own_the_log_writes_nothing_and_counts_the_loss():
     # Ownership released: the same emitter writes again, so the refusal was about
     # the moment rather than a state it latched.
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn", duration_ms=5)
-    assert emit.flush()
+    assert_drained()
     assert [e["type"] for e in _body()][-1] == "turn/completed"
 
 
@@ -538,7 +532,7 @@ def test_a_claim_does_not_take_back_a_pin_a_queued_closer_still_owes(monkeypatch
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
 
     release = threading.Event()
     original = lg.CrewLog.append
@@ -558,7 +552,7 @@ def test_a_claim_does_not_take_back_a_pin_a_queued_closer_still_owes(monkeypatch
     )
 
     release.set()
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     assert "turn/completed" in [e["type"] for e in _body()]
     assert emit.live_turn(SESSION) == 0, "the write job never released the pin it owed"
 
@@ -573,7 +567,7 @@ def test_a_claim_still_closes_a_turn_no_closer_is_coming_for():
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
 
     _open_session()
     assert emit.live_turn(SESSION) == 0, "a claim left a turn nothing will ever close"
@@ -596,16 +590,16 @@ def test_a_teardown_mid_turn_keeps_the_write_ownership_that_turn_needs():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
 
     emit.on_session_closed(SESSION, "reset")
-    assert emit.flush()
+    assert_drained()
     assert not _can_take_ownership(), "a live turn's write ownership was released by its teardown"
 
     # And the turn still closes on its own terms, through the handle it kept.
     emit.on_tool_completed(SESSION, 1, name="fs_read", call_id="tc-1", status="completed")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn", duration_ms=5)
-    assert emit.flush()
+    assert_drained()
     types = [e["type"] for e in _body()]
     assert (
         types.count("turn/completed") == 1
@@ -622,10 +616,10 @@ def test_a_teardown_between_turns_gives_the_write_ownership_back():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn", duration_ms=5)
-    assert emit.flush()
+    assert_drained()
 
     emit.on_session_closed(SESSION, "reset")
-    assert emit.flush()
+    assert_drained()
     gc.collect()
     assert _can_take_ownership(), "a torn-down session with no live turn kept the log"
 
@@ -633,10 +627,10 @@ def test_a_teardown_between_turns_gives_the_write_ownership_back():
 def test_a_warm_reuse_inside_this_process_closes_nothing():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
     emit.reset_caches()
     emit.on_session_opened(SESSION, agent="kirocrew")  # resumed defaults False
-    assert emit.flush()
+    assert_drained()
     assert "turn/completed" not in [e["type"] for e in _body()]
 
 
@@ -697,7 +691,7 @@ def test_call_index_of_a_live_turn_survives_cache_pressure():
         emit.on_session_opened(other, agent="kirocrew")
         emit.on_turn_started(other, 1, "user")
         emit.on_tool_called(other, 1, name="fs_read", call_id="tc-x")
-    assert emit.flush()
+    assert_drained()
     live = sum(
         emit.live_turn(f"stepfill-{n:04d}") == 1 for n in range(emit._MAX_OPEN_CREW_LOGS + 1)
     )
@@ -705,7 +699,7 @@ def test_call_index_of_a_live_turn_survives_cache_pressure():
 
     assert emit.live_turn(SESSION) == 3
     emit.on_tool_called(SESSION, 3, name="fs_read", call_id="tc-3")
-    assert emit.flush()
+    assert_drained()
     steps = [e["data"]["call_index"] for e in _body() if e["type"] == "tool/called"]
     assert steps == [1, 2, 3], "the numbering restarted, so two calls share a step"
 
@@ -729,12 +723,12 @@ def test_call_index_stays_unique_when_many_turns_are_live_at_once():
         other = f"livefill-{n:04d}"
         emit.on_session_opened(other, agent="kirocrew")
         emit.on_turn_started(other, 1, "user")
-    assert emit.flush()
+    assert_drained()
     assert emit.live_turn(SESSION) == 7, "the oldest live turn lost its pin"
 
     for call in range(3):
         emit.on_tool_called(SESSION, 7, name="fs_read", call_id=f"late-{call}")
-    assert emit.flush()
+    assert_drained()
     steps = [e["data"]["call_index"] for e in _body() if e["type"] == "tool/called"]
     assert steps == sorted(steps), f"ordinals went backwards: {steps}"
     assert len(steps) == len(set(steps)), f"two calls share an ordinal: {steps}"
@@ -774,9 +768,9 @@ def test_a_new_store_for_a_slot_that_had_one_names_it_as_previous():
     file says the two belong to the same slot.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     _open_successor(previous_sid=SESSION)
-    assert emit.flush()
+    assert_drained()
 
     opened = [e for e in _body(SUCCESSOR) if e["type"] == "session/opened"]
     assert len(opened) == 1
@@ -796,7 +790,7 @@ def test_a_slots_first_store_names_no_previous():
     empty name, and a chain walker would try to open it.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     assert "previous" not in _body(SESSION)[0]["data"]
 
 
@@ -817,7 +811,7 @@ def test_a_resume_of_the_same_store_writes_no_previous_edge():
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
 
     # Retention's effect on this unit, without waiting for retention.
     _remove_as_retention_does(_log_path(SESSION).unlink)
@@ -827,7 +821,7 @@ def test_a_resume_of_the_same_store_writes_no_previous_edge():
     emit.on_session_opened(
         SESSION, agent="kirocrew", slot="chat-7", resumed=True, previous_sid=SESSION
     )
-    assert emit.flush()
+    assert_drained()
 
     opened = [e for e in _body(SESSION) if e["type"] == "session/opened"]
     assert len(opened) == 1, "the re-created crew log carries exactly one opener"
@@ -845,11 +839,11 @@ def test_a_warm_reuse_of_a_live_store_writes_nothing_at_all():
     a silent claim into a second opener.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     before = len(_body(SESSION))
 
     emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7", previous_sid=SESSION)
-    assert emit.flush()
+    assert_drained()
     assert len(_body(SESSION)) == before, "a warm reuse appended something"
 
 
@@ -868,16 +862,16 @@ def test_a_re_attach_names_no_predecessor():
     bystander = "acp-sess-bystander"
     emit.on_session_opened(bystander, agent="kirocrew", slot="chat-9")
     emit.on_turn_started(bystander, 1, "user")
-    assert emit.flush()
+    assert_drained()
 
     _open_session()
-    assert emit.flush()
+    assert_drained()
     emit.reset_caches()
     # A re-attach to a store that EXISTS, handed an unrelated unit as predecessor.
     emit.on_session_opened(
         SESSION, agent="kirocrew", slot="chat-7", resumed=True, previous_sid=bystander
     )
-    assert emit.flush()
+    assert_drained()
 
     for entry in [e for e in _body(SESSION) if e["type"] == "session/opened"]:
         assert "previous" not in entry["data"]
@@ -901,10 +895,10 @@ def test_a_candidate_from_another_slot_is_not_linked():
     # A crew log belonging to a DIFFERENT slot, fully written.
     other = "acp-sess-other-slot"
     emit.on_session_opened(other, agent="kirocrew", slot="chat-9", cwd="/home/dev/project")
-    assert emit.flush()
+    assert_drained()
 
     _open_successor(previous_sid=other)
-    assert emit.flush()
+    assert_drained()
 
     opened = [e for e in _body(SUCCESSOR) if e["type"] == "session/opened"]
     assert len(opened) == 1
@@ -921,7 +915,7 @@ def test_a_candidate_whose_crew_log_is_gone_is_not_linked_and_costs_no_entry():
     refusal must not take it down too.
     """
     _open_successor(previous_sid="acp-sess-never-existed")
-    assert emit.flush()
+    assert_drained()
 
     opened = [e for e in _body(SUCCESSOR) if e["type"] == "session/opened"]
     assert len(opened) == 1
@@ -938,7 +932,7 @@ def test_the_previous_edge_survives_a_retry_that_finds_the_header_already_writte
     Mutation guard: reading `created` instead of the latch drops `previous` here.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     calls = {"n": 0}
     real_append = lg.CrewLog.append
@@ -952,8 +946,8 @@ def test_the_previous_edge_survives_a_retry_that_finds_the_header_already_writte
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(lg.CrewLog, "append", _fail_the_first_append)
         _open_successor(previous_sid=SESSION)
-        assert emit.flush()
-        assert emit.flush()
+        assert_drained()
+        assert_drained()
 
     opened = [e for e in _body(SUCCESSOR) if e["type"] == "session/opened"]
     assert len(opened) == 1, "the retried entry landed more or less than once"
@@ -970,7 +964,7 @@ def test_a_reader_joins_both_stores_of_one_slot_through_the_status_fold():
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
     # The predecessor's ACP session is gone before the successor opens, so this
     # process holds none of its live state -- a gateway restart's shape. A live
     # record left standing would mean a turn still RUNNING, which the repair
@@ -979,7 +973,7 @@ def test_a_reader_joins_both_stores_of_one_slot_through_the_status_fold():
     _open_successor(previous_sid=SESSION)
     emit.on_turn_started(SUCCESSOR, 1, "user")
     emit.on_turn_completed(SUCCESSOR, 1, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
 
     newest = crew_log_projection.read_projection(SUCCESSOR, "status").value
     assert newest["slot"] == "chat-7"

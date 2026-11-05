@@ -117,12 +117,8 @@ class TestNotifyInjectionFailed:
     async def test_a_teardown_cancelled_member_arms_no_digest_flush(self) -> None:
         """The hold-expiry sweep must not arm a flush for a wave whose parent ended.
 
-        A wave member parks its siblings' announces on its own digest. When the hold
-        ages out the reaper forces a partial flush -- and that flush is a SYNTHETIC
-        record with a fresh id, so the delivery gate keyed on run ids can never
-        recognise it. It would reach ``_on_done`` on its own and rebuild the retired
-        parent's conversation minutes after the teardown. The member is therefore
-        skipped at the source, in the expiry scan.
+        The forced partial flush is a synthetic record with a fresh id, so the delivery gate
+        keyed on run ids cannot catch it; the member is skipped in the expiry scan instead.
         """
         import kiro_crew.subagent as _facade
 
@@ -146,12 +142,9 @@ class TestNotifyInjectionFailed:
     async def test_a_suppressed_report_drops_its_own_digest_hold(self) -> None:
         """Skipping the delivery also releases what the run was holding.
 
-        Leaving ``_digest_held_at`` set would let the next expiry sweep arm the flush
-        this run's own suppression exists to prevent, and leaving
-        ``_digest_settle_deliveries``
-        on the record would leave its held siblings with an ungated delivery. The
-        siblings are marked, not tombstoned: their results never reached a parent, so
-        orphan reconciliation must still be able to find them.
+        ``_digest_held_at`` would let the next sweep arm the flush, and
+        ``_digest_settle_deliveries`` would leave held siblings ungated. Siblings are marked,
+        not tombstoned, so orphan reconciliation can still find them.
         """
         mgr = _manager(on_done=AsyncMock())
         info = _info(parent_session_key="dash:1")
@@ -178,14 +171,10 @@ class TestNotifyInjectionFailed:
         mgr._on_done.assert_not_awaited()
 
     def test_the_teardown_gate_forgets_by_age_and_never_by_count(self) -> None:
-        """Eviction is AGE, because a capacity rule can drop a live gate.
+        """Eviction is by age, because a capacity rule can drop a live gate.
 
-        One parent with more queued children than any capacity would evict its own
-        earliest ids while their reports were still being spawned, and those reports then
-        walk through the gate and rebuild the conversation the teardown took down. An age
-        rule cannot: the TTL exceeds every window in which a marked run has an announce
-        left. A read must not extend an entry's life either, or the TTL stops describing
-        what is retained.
+        A parent with many queued children would evict its own earliest ids mid-spawn. The
+        TTL exceeds every window with an announce left, and a read must not extend it.
         """
         from kiro_crew.subagent import _AgingIdSet
 
@@ -210,11 +199,8 @@ class TestNotifyInjectionFailed:
     async def test_a_suppressed_report_discards_its_own_gate_entry(self) -> None:
         """The gate keeps an id until that run's delivery is suppressed, not for a span.
 
-        Age is only the backstop. Once the report has been dropped, ``_on_done`` was never
-        called, so none of the gateway's injection paths can fire for this run either --
-        the entry has done its job. Leaving it to expire instead made the gate depend on a
-        TTL in the ordinary case, and an approval-parked run (deliberately not cancelled,
-        because the approval is a person's to answer) can outlive any short one.
+        Age is only the backstop: an approval-parked run (not cancelled, since the approval
+        is a person's to answer) can outlive a short TTL.
         """
         mgr = _manager(on_done=AsyncMock())
         info = _info(parent_session_key="dash:1")
@@ -240,21 +226,12 @@ class TestNotifyInjectionFailed:
     async def test_a_rejected_spawn_approval_after_teardown_does_not_recreate_the_conversation(
         self,
     ) -> None:
-        """The REJECTION path announces too, and it never reached ``_report_terminal``.
+        """The rejection path announces too, and it never reached ``_report_terminal``.
 
-        A spawn parked on its approval is marked by the teardown and deliberately not
-        cancelled, because the approval is a person's to answer. When that person then
-        DECLINES, the spawn gate takes its own terminal exit: it claims the finalize and
-        calls ``_safe_announce`` directly, without passing through the terminal report
-        where the delivery gate lives. So the one representation the teardown is certain
-        to have marked walked straight into ``_on_done``, which resolves the parent key
-        through the session registry and CREATES a session when none is live -- rebuilding
-        the conversation the teardown had just taken down and seeding it with the refusal
-        of a spawn that key never asked for.
-
-        Driven through the real gate rather than a hand-built record: ``spawn`` registers,
-        the approval callback parks, ``snapshot_teardown_children`` arms the mark exactly
-        as ``session_lifecycle`` does, and only then is the prompt answered ``False``.
+        A declined approval calls ``_safe_announce`` directly, bypassing the delivery gate,
+        and ``_on_done`` would create a session for the torn-down parent key. Driven through
+        the real gate: ``snapshot_teardown_children`` arms the mark as ``session_lifecycle``
+        does before the prompt is answered ``False``.
         """
         approval_gate = asyncio.Event()
 
@@ -410,13 +387,9 @@ class TestInjectionNoticeOutcome:
 class TestInjectionNoticeDoesNotContradictItsReason:
     """A completed run's outcome line must not name a mechanism.
 
-    ``notify_injection_failed`` prints ``reason`` one line above the outcome
-    line, and most of its callers pass something that is not a timeout:
-    ``slack/gateway.py`` sends "provider dead after prompt-busy retries",
-    "ACP process died", a raw ``str(exception)`` from a failed injection turn,
-    and the last injection-failure reason after the attempt cap. A completed
-    branch that asserts "delivery timed out" contradicts every one of them, in
-    a message whose reader is the LLM deciding what to do next.
+    ``notify_injection_failed`` prints ``reason`` just above it, and most callers in
+    ``slack/gateway.py`` pass non-timeout reasons, so "delivery timed out" would
+    contradict them to the LLM reading the notice.
     """
 
     #: The reasons the four non-timeout call sites actually pass, verbatim.
@@ -1362,15 +1335,11 @@ class TestReportsInFlightStrandBackstops:
 
 
 class TestEveryDoneFlipArmsTheHold:
-    """A done-but-unreported hold protects wave close only if EVERY terminal
-    ``info.done = True`` flip arms it in the same synchronous block. Hand-placed
-    arms are fragile — one missed flip (the common success path) reopens the
-    double-finalize race. This source-scan fails on a bare ``.done = True`` that
-    is not followed by an ``arm_report_in_flight`` call, so a new flip site
-    cannot silently bypass the hold. The one documented exception is the
-    cancelled-recovery limbo arm, which takes no finalize claim and whose
-    ``not info.done`` guard proves no report ever runs — it carries an explicit
-    ``report-free`` marker on an adjacent line."""
+    """Every terminal ``info.done = True`` flip arms the report hold in the same block.
+
+    One missed flip reopens the double-finalize race, so this source scan fails on a bare
+    flip not followed by ``arm_report_in_flight``. The cancelled-recovery limbo arm is
+    exempt (no finalize claim) and carries a ``report-free`` marker."""
 
     def test_no_terminal_done_flip_is_left_unarmed(self) -> None:
         import re
@@ -1404,15 +1373,11 @@ class TestEveryDoneFlipArmsTheHold:
         )
 
     def test_every_deferred_safe_announce_is_armed_first(self) -> None:
-        """A record flipped ``done=True`` elsewhere and then announced through a
-        DEFERRED ``ensure_future(_safe_announce(info))`` is in the same
-        done-but-unreported window as a flip-site: the arm inside
-        ``_safe_announce`` runs only on the task's first step, one event-loop
-        turn later, so a sibling completing in that turn closes the wave early.
-        Every such scheduling must be preceded by a synchronous
-        ``arm_report_in_flight(info)`` in the same block. The one exception is a
-        NON-batch rejection (``_drain_queue``'s path), which carries no
-        ``batch_id`` and so holds nothing — marked ``non-batch`` nearby."""
+        """Every deferred ``ensure_future(_safe_announce(info))`` is armed first.
+
+        The arm inside ``_safe_announce`` runs one loop turn later, when a sibling could
+        close the wave, so a synchronous ``arm_report_in_flight(info)`` must precede it. A
+        non-batch rejection (``_drain_queue``) holds nothing and is marked ``non-batch``."""
         import re
 
         root = Path(__file__).resolve().parent.parent / "src" / "kiro_crew" / "subagent_manager"

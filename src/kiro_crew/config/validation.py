@@ -36,6 +36,7 @@ import logging
 import threading
 from typing import Iterable
 
+from kiro_crew.apps.builtin_host_grants import config_top_keys as _builtin_config_top_keys
 from kiro_crew.config.fields import _coerce_bool
 
 # Top-level config.json sections an app owns and reads from the file directly,
@@ -50,12 +51,12 @@ from kiro_crew.config.fields import _coerce_bool
 # itself tells the operator to write them -- so the unrecognized-top-level-key
 # warning below skips them, or every launch scolds the user for following Kiro
 # Crew's own instructions. Private to this module because that warning is the
-# only consumer; a second member is the point at which this wants to become an
-# app-declared registration rather than a longer literal.
-#   * dev_fleet -- ``dev_fleet.repo_path`` names the Kiro Crew checkout Dev Fleet
-#     manages; read by apps/builtins/dev_fleet/repository.py::_load_dev_fleet_cfg
-#     and prescribed by the dashboard's "no checkout found" banner.
-_APP_OWNED_TOP_KEYS: frozenset = frozenset({"dev_fleet"})
+# only consumer. The members are not spelled here: a shipped built-in declares its
+# own in its host grants (``config_top_keys``, read through
+# ``kiro_crew.apps.builtin_host_grants``), so this core names no app and the set is
+# empty when no built-in declares one. Read once at import, so validation itself
+# stays the in-memory-only consumer the extension registry below requires.
+_APP_OWNED_TOP_KEYS: frozenset = _builtin_config_top_keys()
 
 # Top-level config.json sections THIS CORE itself writes and reads, but does not
 # model as a dataclass field. The settings UI persists them into config.json and
@@ -66,9 +67,8 @@ _APP_OWNED_TOP_KEYS: frozenset = frozenset({"dev_fleet"})
 # loader captures them into _extra_sections and re-emits them via to_dict(), so
 # they are NOT reserved (reserved keys are dropped on save). They differ from
 # _APP_OWNED_TOP_KEYS only in who owns the reader -- core here, a builtin app
-# there -- which is why they are a separate set and the "second member becomes a
-# registration mechanism" note on the app-owned set does not govern this one:
-# a core-owned section has no manifest to declare itself through.
+# there -- which is why they are a separate set and not a host-grant declaration:
+# a core-owned section has no app to declare itself through.
 # Excluded only in the shape the reader keeps -- a JSON object -- so a scalar
 # written by hand keeps the one warning that says it is being ignored.
 #   * voice_reply -- the dashboard/Slack voice settings block. Written by
@@ -274,6 +274,13 @@ def _actual_type_name(value: object) -> str:
 #:   and ``governance._confirm_tool_patterns`` reads it, or a present non-list
 #:   value, as an unknown list, so the writers and the gate withhold instead.
 #:
+#: * ``agent`` (the section): ``agent.kas_persist_mcp_sign_in`` defaults to on,
+#:   so an overlay whose ``agent`` is not an object (``{"agent": null}``) and
+#:   replaces the base file's section would, repaired to absent, drop a stored
+#:   ``false`` and start storing OAuth tokens. Preserved, ``_coerced_section``
+#:   records ``agent`` as degraded and ``kas_secret_storage.persistence_enabled``
+#:   reads it as off, so sign-ins stay in memory.
+#:
 #: * ``workspaces``: the table names WHERE the Global V1 memory workspaces
 #:   live, some possibly at absolute directories outside the data home, and the
 #:   folder-steering memory-store fence is built from it. Repairing a malformed
@@ -290,6 +297,7 @@ def _actual_type_name(value: object) -> str:
 #: listed here; adding a path without them just keeps evidence nobody reads.
 _FAIL_CLOSED_PATHS = frozenset(
     {
+        "agent",
         "publish",
         "publish.allowed_destinations",
         "dashboard",
@@ -337,6 +345,25 @@ def _apply_field_default(data: dict, dot_path: str) -> bool:
             section.pop(parts[1], None)
             return True
     return False
+
+
+#: The spellings :func:`~kiro_crew.config.fields._coerce_bool` reads as a bool.
+_BOOL_SPELLINGS = frozenset({"true", "false", "1", "0", "yes", "no", "on", "off"})
+
+
+def _quoted_bool_hint(expected: object, value: object, sensitive: bool) -> str:
+    """The fix to name when a boolean field holds a quoted boolean such as ``"false"``.
+
+    The value is still refused (the setting reads as its default); the hint only
+    tells the operator why their ``"false"`` did nothing and how to write it.
+    Empty for any other mismatch, and for a sensitive path, whose value is masked.
+    """
+    types = expected if isinstance(expected, list) else [expected]
+    if sensitive or "boolean" not in types or not isinstance(value, str):
+        return ""
+    if value.strip().lower() not in _BOOL_SPELLINGS:
+        return ""
+    return "; a quoted boolean is ignored: write true or false without quotes to set it"
 
 
 def _coerce_legacy_numeric_values(data: dict, schema: dict) -> None:
@@ -738,14 +765,16 @@ def validate_config_data(data: dict) -> dict:
         for harness_key in ("acp_backend", "member_acp_backend"):
             if harness_key in agent and not isinstance(agent[harness_key], str):
                 from kiro_crew.acp_backends import (
-                    GOVERNANCE_FLOOR_BACKEND,
                     backend_to_stored,
+                    floor_label,
+                    governance_floor_backend,
                 )
 
                 logger.warning(
-                    "Ignoring agent.%s %r (not a backend id); using the Kiro CLI floor",
+                    "Ignoring agent.%s %r (not a backend id); using the %s floor",
                     harness_key,
                     agent[harness_key],
+                    floor_label(),
                 )
                 # ``agent.acp_backend`` gets a marker, not ``"kiro"``: a stored Kiro
                 # CLI pick can run on KAS (``KIRO_SELECTION_BACKEND``), and this is
@@ -754,7 +783,7 @@ def validate_config_data(data: dict) -> dict:
                 agent[harness_key] = (
                     MALFORMED_BACKEND_FLOOR
                     if harness_key == "acp_backend"
-                    else backend_to_stored(GOVERNANCE_FLOOR_BACKEND)
+                    else backend_to_stored(governance_floor_backend())
                 )
 
     # 4. Preserve numeric values written by older config writers.
@@ -804,12 +833,13 @@ def validate_config_data(data: dict) -> dict:
                 actual = _actual_type_name(value)
                 removed = _apply_field_default(data, dot_path)
                 logger.warning(
-                    "Config: type mismatch at '%s': " "expected %s, got %s (value: %s); %s",
+                    "Config: type mismatch at '%s': " "expected %s, got %s (value: %s); %s%s",
                     dot_path,
                     expected,
                     actual,
                     display_val,
                     "using default" if removed else "value kept (validated by its consumer)",
+                    _quoted_bool_hint(expected, value, sensitive),
                 )
             else:
                 # Generic validation error

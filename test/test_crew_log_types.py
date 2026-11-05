@@ -18,8 +18,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew.crew_log import (
+    CODE_BAD_DATA,
     CODE_BAD_DATA_FIELD,
     SESSION_ENTRY_TYPES,
     CrewLog,
@@ -375,79 +377,15 @@ def _isolated_home(tmp_path, monkeypatch):
     assert not lease._held, f"a lease outlived its test on this worker: {sorted(lease._held)}"
 
 
-# --- what is declared ------------------------------------------------------
+# what is declared
 
 
 def test_every_type_written_today_is_declared_and_nothing_else_is():
     # The registry declares the types that HAVE a writer. A type nothing writes
     # would declare a shape no site produces, and the first emitter to land would
-    # have to satisfy a contract written without it.
-    #
-    # 23 before this count moved: the six the emitter already wrote and the registry
-    # had never declared -- four subagent/*, background/completed and plan/updated --
-    # joined it. The first five stopped a fold outright; plan/updated was skipped
-    # instead, which the class fold reads as damage.
-    #
-    # The two past those six are the crew-facing boards' own records: the Issue Radar
-    # crew's ``radar/recorded`` and the work ledger's ``work/recorded``. A board's
-    # writes are entries in this log rather than a second record beside it.
-    #
-    # The two past THOSE are the session tree's: ``session/adopted`` and
-    # ``session/released``, which move a session under a new parent and back to a root.
-    # They are declared for the reason everything here is -- ``KNOWN_TYPES`` is derived
-    # from this registry, so an undeclared type in a log stops every later fold of it --
-    # and not because any fold of ONE log branches on them: the session tree is folded
-    # across logs.
-    #
-    # The one past those is the crew webview's ``panel/published``, which joins its
-    # siblings for the same reason they did: a panel is a record whose history matters,
-    # and one overwritable document per crew could hold none of it.
-    #
-    # The one past THAT is ``subagent/dismissed``, for the same reason again: the
-    # Subagents panel's durable half is a fold of this log, so a card the user cleared
-    # has to be recorded here. It was held in a registry keyed on the run's folder, and
-    # when that folder was reclaimed first the dismissed card came back.
-    #
-    # The one past THAT is the dynamic dashboard's ``dashboard/instance_changed``. A
-    # crewmate's dashboard instance is a copy it edits and rolls back, so what a reader
-    # needs is the sequence of changes rather than the current page -- and a sequence is
-    # what only an append-only log holds.
-    #
-    # The two past that are the dynamic dashboard's agentic pair, which join their
-    # siblings for a reason the panel entry's own note gives twice over: an agentic
-    # value's ONLY record is this log (no host Python computes a dashboard value, so
-    # there is no file beside it), and a refused write's whole worth is its history --
-    # a mistake book is a fold over refusals, and one overwritable document could hold
-    # none of it.
-    #
-    # The five past that are the change cards and guide offers: each proposal is
-    # a row of the conversation, and ``card/*`` / ``guide/*`` record the proposal and
-    # every outcome in the same session's history.
-    #
-    # Two past those joined most recently. The session tree's ``session/spawned`` is
-    # written on the CREATOR's log at session_create time so a child's creating edge
-    # survives a restart before the child's first turn writes a log of its own.
-    #
-    # ``session/unrestored`` is the open-tab registry's own record. It joins for the
-    # reason the agentic pair does -- this log is its ONLY record -- and the gap it
-    # covers is the sharpest of the set: a tab the startup restore lists and cannot
-    # show has nothing to show anywhere else. No ``session/closed``, because the
-    # gateway did not stop serving the session; no delete, because nothing was
-    # deleted; and the restore's own warning goes to a gateway log that rotates away.
-    #
-    # The two past that are a crewmate's own record for its Dashboard page:
-    # ``dashboard/goal_recorded`` and ``dashboard/waiting_changed``, snapshots the gateway
-    # appends when the goal record or the "waiting on you" list changes.
-    #
-    # The one past those is ``context/measured``: the agent engine's own measurement of
-    # a turn's context, which the ``usage`` fold attaches to that turn's composition row.
-    #
-    # The one past that is ``dashboard/custom_value``: a record a script cron appends
-    # for its crewmate through the record door, which the ``custom`` fold keeps the
-    # latest of per type.
-    #
-    # The one past that is ``dashboard/custom_failed``: a member-bound script cron's
-    # failed run, which the same fold marks on that writer's records.
+    # have to satisfy a contract written without it. Each type that joins does so
+    # because KNOWN_TYPES is derived from this registry: an undeclared type in a
+    # log stops every later fold of it. Bump the count when a new writer lands.
     assert len(SESSION_ENTRY_TYPES) == 51
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
@@ -729,7 +667,7 @@ def test_the_sampled_types_are_the_ignorable_ones():
     }
 
 
-# --- the canonical examples validate --------------------------------------
+# the canonical examples validate
 
 
 @pytest.mark.parametrize("entry_type", sorted(CANONICAL))
@@ -885,21 +823,30 @@ def test_a_bad_value_is_refused_at_the_path_that_holds_it(entry_type, payload, p
 def test_an_open_enum_accepts_a_value_it_does_not_list():
     # `stop_reason` is the provider's own terminal reason, so the registry lists
     # what it knows and enforces nothing: an unlisted reason is a record to keep.
-    validate_data("session", "turn/completed", {"turn": 1, "stop_reason": "max_tokens"})
-    validate_data("session", "session/closed", {"reason": "evicted"})
-    validate_data(
-        "session", "tool/completed", CANONICAL["tool/completed"] | {"status": "cancelled"}
-    )
+    unlisted = [
+        ("turn/completed", {"turn": 1, "stop_reason": "max_tokens"}),
+        ("session/closed", {"reason": "evicted"}),
+        ("tool/completed", CANONICAL["tool/completed"] | {"status": "cancelled"}),
+    ]
+    led = _fresh()
+    for entry_type, payload in unlisted:
+        validate_data("session", entry_type, payload)
+        led.append(entry_type, payload, src="gateway")
+    del led
+    assert [(e["type"], e["data"]) for e in _entries()[1:]] == unlisted
 
 
 def test_a_token_mapping_is_required_whole_but_only_once_it_is_there():
     # The parent field stays optional: a nested requirement is checked once its
     # object is present, which is what lets the crash-repair closer write a
     # turn/completed with no tokens at all.
-    validate_data("session", "turn/completed", {"turn": 1, "stop_reason": "interrupted"})
+    payload = {"turn": 1, "stop_reason": "interrupted"}
+    validate_data("session", "turn/completed", payload)
+    _fresh().append("turn/completed", payload, src="gateway")
+    assert [e["data"] for e in _entries()[1:]] == [payload]
 
 
-# --- what is not declared passes through ---------------------------------
+# what is not declared passes through
 
 
 @pytest.mark.parametrize(
@@ -934,9 +881,16 @@ def test_a_non_mapping_payload_is_left_to_require_data():
     # `bad_data` already owns "data is not an object". Two codes for one fact
     # would make a caller branch twice on the same refusal.
     validate_data("session", "turn/started", ["not", "a", "dict"])
+    led = _fresh()
+    with pytest.raises(CrewLogError) as caught:
+        led.append("turn/started", ["not", "a", "dict"], src="gateway")  # type: ignore[arg-type]
+    code, field = caught.value.code, caught.value.field
+    # The record's traceback holds this frame, and so ``led`` and its write lease.
+    del caught, led
+    assert (code, field) == (CODE_BAD_DATA, "data")
 
 
-# --- the append path enforces it -----------------------------------------
+# the append path enforces it
 
 
 def _entries(session_id: str = SESSION) -> list[dict]:
@@ -1017,7 +971,7 @@ def test_an_undeclared_crew_append_is_untouched_by_the_registry():
     assert crew.last_seq == 2
 
 
-# --- the real writers satisfy the registry -------------------------------
+# the real writers satisfy the registry
 
 
 def test_every_entry_a_real_turn_produces_validates():
@@ -1108,7 +1062,7 @@ def test_every_entry_a_real_turn_produces_validates():
         context_window=200_000,
     )
     emit.on_session_closed(SESSION, "reset")
-    assert emit.flush(timeout=5.0)
+    assert_drained()
     assert emit.dropped_writes() == 0
     body = _entries()[1:]
     assert body, "the emitter wrote nothing"
@@ -1138,7 +1092,7 @@ def test_every_entry_a_real_turn_produces_validates():
 def test_an_oversize_body_and_its_chunk_group_validate():
     emit.on_session_opened(SESSION, agent="kirocrew", owner="default")
     emit.on_message_sent(SESSION, 1, step=1, text="x" * 200_000)
-    assert emit.flush(timeout=5.0)
+    assert_drained()
     body = _entries()[1:]
     kinds = [entry["type"] for entry in body]
     assert "message/chunk" in kinds and "message/sent" in kinds
@@ -1177,7 +1131,7 @@ def test_the_failed_turn_closer_validates_without_credits_or_tokens():
     emit.on_session_opened(SESSION, agent="kirocrew", owner="default")
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_turn_failed(SESSION, 1, error="AcpError", duration_ms=12, model="c", provider="kiro")
-    assert emit.flush(timeout=5.0)
+    assert_drained()
     closer = [e for e in _entries()[1:] if e["type"] == "turn/completed"][-1]
     assert "credits" not in closer["data"] and "tokens" not in closer["data"]
     validate_data("session", "turn/completed", closer["data"])
@@ -1202,7 +1156,7 @@ def test_the_measured_turn_closer_validates_with_credits_and_no_tokens():
         model="c",
         provider="kiro",
     )
-    assert emit.flush(timeout=5.0)
+    assert_drained()
     closer = [e for e in _entries()[1:] if e["type"] == "turn/completed"][-1]
     assert closer["data"]["credits"] == 0.42
     assert "tokens" not in closer["data"]
@@ -1245,7 +1199,7 @@ def test_a_repaired_log_reopens_with_its_closers_on_disk():
         validate_data("session", entry["type"], entry["data"])
 
 
-# --- the reference tables -------------------------------------------------
+# the reference tables
 
 
 def test_the_markdown_dump_covers_every_type_and_field():
@@ -1312,7 +1266,7 @@ def test_the_module_runs_as_a_command():
     assert "# Declared `session` crew log entry types" in result.stdout
 
 
-# --- the declarations are well formed ------------------------------------
+# the declarations are well formed
 
 
 def test_a_declaration_that_names_an_unknown_json_type_is_a_build_error():

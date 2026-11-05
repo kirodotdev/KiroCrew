@@ -41,8 +41,13 @@ from kiro_crew.config.loader import (
     _clamp_compact_wait_secs,
 )
 from kiro_crew.config.sections import (
+    BROWSER_CHOICES,
+    BROWSER_LOCAL_ORIGIN_PATTERN,
+    BROWSER_LOCAL_ORIGINS_MAX,
     COMPACT_WAIT_SECS_MAX,
     COMPACT_WAIT_SECS_MIN,
+    CREDENTIAL_DOMAIN_PATTERN,
+    CREDENTIAL_DOMAINS_CAP,
     DECISION_BUCKET_MAX,
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
@@ -50,6 +55,8 @@ from kiro_crew.config.sections import (
     FEATURE_PREVIEW_FLAGS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    LIVE_MAX_FPS_CHOICES,
+    LIVE_QUALITIES,
     SESSION_SORT_MODES,
     SHARED_CREW_BOUNDS,
     STRANDS_PROVIDER_CHOICES,
@@ -138,6 +145,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # schema; the card says so after a save. No install is implied by turning it on:
     # a true value with nothing installed refuses the next KAS spawn by name.
     "agent.kas_bundle": {"type": "bool"},
+    # The remote-dispatch preview switch (Settings → Developer → Feature previews,
+    # rfc-conductor-remote-dispatch.md). Read on every call, so no restart.
+    "work_ledger.remote_dispatch": {"type": "bool"},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
@@ -528,6 +538,50 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": DECISION_BUCKET_MIN,
         "max": DECISION_BUCKET_MAX,
     },
+    # Browser (Settings -> Browser, RFC browser-live-harness section 8). Owner
+    # writes only; the change-card classes (``change_card_catalog_kinds``) say
+    # which of these widen what an agent may reach: the browser pick (the
+    # person's own Chrome holds their logins), turning password masking off and
+    # turning the sign-in on. The live-view keys shape a stream that reaches
+    # OWNER websockets only. The two
+    # closed enums refuse a typo rather than degrade it, unlike the loader, so a
+    # user sees the refusal where they typed.
+    # Values come from the config section itself, so this gate and the loader's
+    # own normalization cannot drift.
+    "browser.choice": {"type": "enum", "values": list(BROWSER_CHOICES)},
+    "browser.live.enabled": {"type": "bool"},
+    "browser.live.quality": {"type": "enum", "values": list(LIVE_QUALITIES)},
+    "browser.live.max_fps": {"type": "enum", "values": list(LIVE_MAX_FPS_CHOICES)},
+    "browser.live.mask_passwords": {"type": "bool"},
+    # Sign-in for Kiro's Chromium (the edition's browser-credential provider). The
+    # switch decides whether the provider's cookies go into Kiro's own Chromium;
+    # the domains narrow which of the provider's domains may be used. Only the
+    # intersection with what the provider declares is ever applied, and the
+    # person's own Chrome is never filled. Settings shows both only when a
+    # provider exists.
+    "browser.credentials.enabled": {"type": "bool"},
+    "browser.credentials.domains": {
+        "type": "str_list",
+        "max_items": CREDENTIAL_DOMAINS_CAP,
+        "max_item_len": 253,
+        "item_pattern": CREDENTIAL_DOMAIN_PATTERN,
+    },
+    # The Preview tab's allowlist (Settings -> Browser -> Local preview). A list
+    # of `host:port` loopback origins; `item_pattern` refuses any other shape at
+    # the write so the editor can say so, and the loader's
+    # `coerce_browser_local_origins` drops anything that still slips in (a
+    # hand-edited file). Bounded like the other `str_list` entries. TWO readers:
+    # the Preview tab (which frames only listed origins) and the agent's `browser`
+    # tool, whose navigate gate admits a loopback URL only when its host:port is
+    # listed here -- so an entry widens what the AGENT may open, not just what the
+    # person previews. The gateway's own port is refused by the tool at use time,
+    # not here.
+    "dashboard.browser_local_origins": {
+        "type": "str_list",
+        "max_items": BROWSER_LOCAL_ORIGINS_MAX,
+        "max_item_len": 64,
+        "item_pattern": BROWSER_LOCAL_ORIGIN_PATTERN,
+    },
     # Session Environments holds credential-free profiles only, so the masked GET
     # may return it. ``normalize`` is the loader's own validator, so this gate
     # refuses what a load would drop; leaf paths update one scalar key alone.
@@ -547,6 +601,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "session_environments.boxd_profiles": {
         "type": "normalized",
         "normalize": _session_environments.validate_boxd_profiles,
+    },
+    "session_environments.kiro_cloud_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_kiro_cloud_profiles,
     },
     "session_environments.default_profile": {
         "type": "normalized",

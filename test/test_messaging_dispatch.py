@@ -285,7 +285,7 @@ def test_every_pipeline_channel_stop_path_records_the_stop() -> None:
         elif records:
             checked.append(path.parent.name)
     # Non-vacuity: the channels known to cancel directly are all covered.
-    assert {"webex", "wecom", "weixin", "teams", "whatsapp"} <= set(checked), checked
+    assert {"feishu", "webex", "wecom", "weixin", "teams", "whatsapp"} <= set(checked), checked
 
 
 def test_the_driver_reaches_its_renderer_only_through_the_guarded_surface() -> None:
@@ -406,7 +406,7 @@ class TestPureCancelPredicate:
         )
         # The channels known to ship a cancel today. A channel dropping out of
         # this set means the discovery above silently stopped seeing it.
-        assert {"discord", "telegram", "wecom", "teams", "whatsapp"} <= set(found), found
+        assert {"discord", "feishu", "telegram", "wecom", "teams", "whatsapp"} <= set(found), found
 
         union = set().union(*found.values())
         missing = union - D._CANCEL_ALIASES

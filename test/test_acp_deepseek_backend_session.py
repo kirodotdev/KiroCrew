@@ -212,17 +212,13 @@ def test_the_install_pins_the_exact_dsh_build_the_routing_was_measured_on() -> N
 def test_the_resolution_ladder_prefers_the_explicit_override(monkeypatch, tmp_path) -> None:
     """Override, then mise, then PATH -- the plain-binary ladder.
 
-    What is pinned is the ORDER, so executability is STUBBED rather than staged on
-    disk. A file written and chmod-ed here answers ``is_executable_file`` on POSIX
-    and not on Windows, where an executable needs a recognised extension -- so a
-    disk-staged override fell through to the mise rung there, and this test was
-    asserting the platform's notion of an executable instead of the precedence it
-    exists to pin.
+    Executability is stubbed, not staged on disk: Windows needs a recognised
+    extension for ``is_executable_file``, and only the order is under test.
     """
     from kiro_crew.acp import client as client_module
 
     binary = tmp_path / "dsh"
-    binary.write_text("#!/bin/sh\n")
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setenv("DSH_BIN", str(binary))
     monkeypatch.setattr(
         client_module.platform_compat,
@@ -278,11 +274,8 @@ def test_the_arm_runs_the_credential_mask_preflight_before_its_read_back(
 ) -> None:
     """An ENFORCED harness takes a preflight call site, and takes it FIRST.
 
-    ORDER is the part worth pinning: the read-back boots a child of this harness, and
-    a child that ran before the mask was resolved would read the operator's
-    credentials with the gate's own blessing. And the gate is composed through the
-    harness's own per-launch patch flag, naming the sealed copy, never by editing a
-    profile Crew does not own.
+    The read-back boots a child, which must not run before the mask is resolved. The
+    gate goes in through the per-launch patch flag, never by editing the profile.
     """
     rig = _DeepseekLaunchRig(monkeypatch, tmp_path)
     plan = rig.run()

@@ -1,14 +1,8 @@
 """The dashboard chat path's tool-approval window.
 
-Three properties, one per failure mode observed in production:
-
-1. The window is CONFIGURABLE and short by default, not a literal
-   ``7200.0`` in ``chat_runner`` equal to the turn ceiling.
-2. It is CLAMPED below the turn ceiling. A window at or above the ceiling can
-   never fire — the turn is cut first — so it is not a longer wait, it is a
-   wait that never reports.
-3. Its timeout says an APPROVAL went unanswered and to resend, rather than
-   borrowing the generic turn-timeout wording.
+It is configurable and short by default; clamped below the turn ceiling (a window at or
+above it never fires, the turn is cut first); and its timeout says an APPROVAL went
+unanswered, not the generic turn-timeout wording.
 """
 
 from __future__ import annotations
@@ -91,21 +85,10 @@ def cfg(monkeypatch: pytest.MonkeyPatch):
 def _isolate_turn_deadline():
     """Give every test a clean ``_TURN_DEADLINE`` and put the outside value back.
 
-    Residue travels through the main-thread context: an un-reset ``set()`` made
-    there is inherited by every later test in the worker, because each async
-    test's task context is copied from it (an async test's own writes die with
-    its task copy — a leak seen at test start was already in the parent
-    context). Baselining to ``None`` here is what makes this module's
-    ``get() is None`` assertions deterministic under any ordering; restoring
-    the snapshot afterwards keeps the fixture honest about state it did not
-    create. Deliberately a sync fixture: an async one would run inside a copied
-    task context and its writes would be discarded with it.
-
-    Save/restore is by VALUE, not ``reset(token)``, mirroring
-    ``turn_dispatch._bounded_turn``: test and shutdown harnesses may resume
-    finalization in a copied Context (notably Windows xdist); ``reset(token)``
-    then raises and can take down the whole worker because tokens are
-    context-bound. The sites below follow the same pattern for the same reason.
+    An un-reset ``set()`` in the main-thread context leaks into every later async test,
+    whose task context is copied from it. Sync on purpose: an async fixture's writes die
+    with its task copy. Restored by VALUE, not ``reset(token)``: tokens are
+    context-bound and raise when finalization resumes in a copied Context (Windows xdist).
     """
     prev = td._TURN_DEADLINE.get()
     td._TURN_DEADLINE.set(None)
@@ -118,12 +101,8 @@ def _isolate_turn_deadline():
 def test_token_based_restore_stays_banned_in_this_module() -> None:
     """No test here may restore ``_TURN_DEADLINE`` through a ContextVar token.
 
-    The isolation fixture above masks exactly the failure it fixes: with every
-    test baselined to ``None``, the ``get() is None`` assertions cannot
-    catch a reintroduced token-based restore — the pattern that leaves the var
-    set (or kills the worker) when finalization resumes in a copied Context,
-    per the rationale at turn_dispatch.py:350-356. Pin the ban at the source
-    level instead of relying on convention.
+    The fixture above baselines to ``None``, so the ``get() is None`` assertions cannot
+    catch a token-based restore; the ban is pinned at the source level instead.
     """
     src = inspect.getsource(sys.modules[__name__])
     needle = "_TURN_DEADLINE" + ".reset("
@@ -243,12 +222,8 @@ class TestLoadTimeClamp:
     def test_approval_max_is_decoupled_from_a_raised_turn_ceiling(self) -> None:
         """Raising the turn ceiling must NOT raise the approval window's max.
 
-        The approval suites hold a flat 2h runtime window
-        (``DashboardState._APPROVAL_TIMEOUT``); a config max that follows the
-        24h turn-ceiling max would accept windows the runtime silently never
-        honours. So with a 24h ceiling configured, an oversized window still
-        clamps to the static 7200 — the cross-field margin (86340s) is no
-        longer the binding limit.
+        The runtime holds a flat 2h window (``DashboardState._APPROVAL_TIMEOUT``), so with
+        a 24h ceiling an oversized window still clamps to 7200, not the 86340s margin.
         """
         assert TOOL_APPROVAL_TIMEOUT_MAX == 7200
         data = {
@@ -365,12 +340,8 @@ class TestArmTimeBudget:
     async def test_bounded_turn_restores_the_previous_deadline_by_value(self) -> None:
         """A non-None prior deadline comes back after the turn — not None.
 
-        Pins the restore-by-value contract documented in ``_bounded_turn``
-        (turn_dispatch.py): the finally writes back the CAPTURED previous
-        value. No other test armed a non-None prior value, so the two
-        ``get() is None`` neighbours above only ever exercised the None case —
-        which is how a residue inherited from another test's context read as
-        this module's product bug.
+        Pins ``_bounded_turn``'s restore-by-value; the ``get() is None`` neighbours above
+        exercise only the None case.
         """
         prev = td._TURN_DEADLINE.get()
         armed = asyncio.get_running_loop().time() + 999.0
@@ -399,11 +370,8 @@ class TestNoBudgetCard:
 class TestCardsMatchRealRecovery:
     """Neither card may claim the turn stopped — the reject path continues it.
 
-    A declined prompt is answered with ``reject_tool`` and the turn keeps going,
-    so the agent is told the tool was denied and keeps working (pinned by
+    A declined prompt gets ``reject_tool`` and the turn goes on (pinned by
     ``TestTheRunnersApprovalWindow.test_a_declined_prompt_carries_the_turn_on``).
-    Wording that says "stopped" tells the user to expect lost work that never
-    happened.
     """
 
     def test_neither_card_claims_the_turn_stopped(self) -> None:
@@ -428,6 +396,33 @@ class TestTimeoutCard:
 
     def test_hour_scale_wording(self) -> None:
         assert "1.5 hours" in td.format_approval_timeout_card(5400.0)
+
+
+class TestWaitPhrasePluralization:
+    """``_approval_wait_phrase`` picks the right unit and singular/plural.
+
+    The note read "waited 1 minutes" (and "1 hours"): the helper always wrote a
+    plural and never used seconds, even for a sub-minute window.
+    """
+
+    @pytest.mark.parametrize(
+        ("secs", "expected"),
+        [
+            (30, "30 seconds"),
+            (60, "1 minute"),
+            (90, "2 minutes"),
+            (120, "2 minutes"),
+            (3600, "1 hour"),
+            (5400, "1.5 hours"),
+        ],
+    )
+    def test_phrase_matches_count_and_unit(self, secs: int, expected: str) -> None:
+        assert td._approval_wait_phrase(float(secs)) == expected
+
+    def test_note_reads_30_seconds_not_1_minutes(self) -> None:
+        note = td.format_approval_expired_note("run_command", "Run Echo", 30.0)
+        assert "waited 30 seconds" in note
+        assert "1 minutes" not in note
 
 
 # ── the window as the runner applies it, through one real turn ───────────────
@@ -505,13 +500,9 @@ def _echo_last_steer(ctx: TurnContext) -> AcpEvent:
 class TestTheRunnersApprovalWindow:
     """What a dashboard turn does with a prompt nobody answers, end to end.
 
-    Each runs one real ``_run_chat`` turn (``turn_harness.run_turn``) on virtual
-    time, so a 600 s window expires at exactly 600 s in microseconds. The window
-    the turn waits is the MINIMUM of the slot's own (the 180 s deny-fast of an
-    unattended app worker, the attended 7200 s) and ``tool_approval_timeout_secs``
-    (the configured window, bounded by the turn ceiling and by the budget left in
-    the running turn) -- one bound alone either ignores the configuration or
-    outlives the turn.
+    Each runs one real ``_run_chat`` turn on virtual time. The wait is the MINIMUM of the
+    slot's own window (180 s unattended, 7200 s attended) and ``tool_approval_timeout_secs``
+    bounded by the turn's remaining budget.
     """
 
     @pytest.mark.asyncio
@@ -738,14 +729,10 @@ class TestTheRunnersApprovalWindow:
 def test_the_bounded_steer_is_never_wrapped_again_at_a_call_site() -> None:
     """Kept as a source pin: it guards duplication, which no turn can observe.
 
-    The steer's bound lives inside ``_steer_policy_notice`` so every deny path
-    inherits it and a new one cannot be added without it. A call site wrapping
-    the helper in its own ``asyncio.wait_for`` behaves identically (same or a
-    larger bound) -- the behavioural half is
-    ``test_a_steer_that_never_returns_still_lets_the_reject_through`` -- so the
-    one thing left to guard is the duplicated bound itself. Scanned over the
-    runner and every ``chat_turn`` owner, so a move between them keeps it.
-    Counted in ``test_source_pin_budget.py``.
+    The bound lives inside ``_steer_policy_notice``; a call site's own ``asyncio.wait_for``
+    behaves the same, so only the duplication is guarded here (behaviour:
+    ``test_a_steer_that_never_returns_still_lets_the_reject_through``). Counted in
+    ``test_source_pin_budget.py``.
     """
     from kiro_crew.dashboard import chat_runner, chat_turn
 

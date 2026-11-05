@@ -16,10 +16,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state, drain_background_tasks
+from crew_log_drain import assert_drained
 
 from kiro_crew import context_omissions
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_assembly import budget as _budgets
+from kiro_crew.crew_log import crew_log_path
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.entry_types import validate_data
 from kiro_crew.crew_log.schema import KIND_SESSION
@@ -218,7 +220,13 @@ class TestTheTurnWritesTheRecord:
     """The runner gathers the cuts around the build and writes them with the turn."""
 
     @pytest.mark.asyncio
-    async def test_a_cut_made_while_building_reaches_the_entry(self, tmp_path, monkeypatch):
+    async def test_a_cut_made_while_building_reaches_the_entry(
+        self, tmp_path, monkeypatch, request, _floor_monkeypatch
+    ):
+        _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        _floor_monkeypatch.setenv(crew_log_emit.CREW_LOG_ENV, "1")
+        crew_log_emit.reset_caches()
+        request.addfinalizer(crew_log_emit.reset_caches)
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "workspace"),
             skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
@@ -238,6 +246,8 @@ class TestTheTurnWritesTheRecord:
         state.context_builder.build_message = MagicMock(side_effect=build)
         state.context_builder.ensure_store = AsyncMock(return_value=object())
         provider = MagicMock()
+        provider.session_id = "acp-omissions-0001"
+        provider.client._session_id = "acp-omissions-0001"
 
         async def stream(*_args, **_kwargs):
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done.")
@@ -249,8 +259,6 @@ class TestTheTurnWritesTheRecord:
         state.sessions.consume_needs_reinjection = MagicMock(return_value=False)
         state.sessions.record_failure = AsyncMock()
         state.broadcast_ws = MagicMock()
-        composed = MagicMock()
-        monkeypatch.setattr(crew_log_emit, "on_context_composed", composed)
         monkeypatch.setattr(chat_runner, "title_then_refresh", AsyncMock())
         monkeypatch.setattr(chat_runner, "generate_session_summary", AsyncMock())
 
@@ -258,9 +266,14 @@ class TestTheTurnWritesTheRecord:
         slot.append("user", "plan it")
         await asyncio.wait_for(chat_runner._run_chat(state, slot, "plan it"), 30)
         await finished(drain_background_tasks(state), "draining the background tasks", timeout=10)
+        assert_drained()
 
-        composed.assert_called_once()
-        assert composed.call_args.kwargs["omitted"] == {
+        path = crew_log_path("session", "acp-omissions-0001")
+        with path.open("r", encoding="utf-8") as handle:
+            entries = [json.loads(line) for line in handle if line.strip()][1:]
+        composed = [e for e in entries if e["type"] == "context/composed"]
+        assert len(composed) == 1
+        assert composed[0]["data"]["omitted"] == {
             context_omissions.LESSON_RULES: {
                 "reason": "budget",
                 "omitted": 3,

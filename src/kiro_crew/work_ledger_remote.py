@@ -24,6 +24,7 @@ fetches and calls these.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from kiro_crew.work_ledger_records import (
     WORKER_STATUSES,
     WorkItem,
     WorkLedgerError,
+    _now_iso,
     logger,
 )
 from kiro_crew.work_ledger_rules import (
@@ -49,6 +51,7 @@ from kiro_crew.work_ledger_rules import (
     parse_stamp,
 )
 from kiro_crew.work_ledger_store import (
+    _CONDUCTOR_FILE,
     _ITEMS_DIR,
     _REMOTE_DIR,
     RESERVED_ROOT_DIRS,
@@ -57,19 +60,26 @@ from kiro_crew.work_ledger_store import (
     _require_item_id,
     _work_ledger_root,
     _write_record,
+    conductor_dir,
     item_lock,
     read_work_item,
 )
-from kiro_crew.work_vocab import WORK_REASON_STATUSES
+from kiro_crew.work_vocab import (
+    MAX_RETIRED_BINDINGS,
+    WORK_MAX_INSTANCE_ID_CHARS,
+    WORK_MAX_PEER_SLOT_CHARS,
+    WORK_REASON_STATUSES,
+    coerce_retired_bindings,
+)
 
 #: The root directory of the remote state records; one of the store's reserved dirs.
 REMOTE_DIR = _REMOTE_DIR
 
 #: Longest crew id kept, the cap the instance registry puts on an id.
-MAX_INSTANCE_ID_CHARS = 128
+MAX_INSTANCE_ID_CHARS = WORK_MAX_INSTANCE_ID_CHARS
 
 #: Longest peer slot key kept, the cap ``bind`` puts on a worker key.
-MAX_PEER_SLOT_CHARS = 512
+MAX_PEER_SLOT_CHARS = WORK_MAX_PEER_SLOT_CHARS
 
 #: The crew connection states a record may hold (``TunnelState`` values) plus
 #: ``unknown`` for a crew the registry does not name.
@@ -108,6 +118,26 @@ class RemoteState:
     attempted_at: str | None = None
     #: Why the last pull did not ingest, a stable code, or ``None``.
     error: str | None = None
+    #: A digest of the peer snapshot whose filing last failed to reach the crew log,
+    #: and when. A pull retries that same snapshot only after
+    #: ``UNRECORDED_RETRY_SECS``, so a log that keeps refusing costs one audited
+    #: attempt per window, not one per pull; a changed snapshot is filed at once.
+    unrecorded_key: str | None = None
+    unrecorded_at: str | None = None
+    #: Whether the last pull read the crew's slot list. ``False`` means ``running``
+    #: and ``closed`` are carried over from an older read.
+    roster_read: bool = False
+    #: The CURRENT binding's newest filed peer stamp (wave 8): a peer snapshot no
+    #: newer is not news. Each crew stamps with its own clock, so a retired
+    #: worker's stamp must not gate its replacement. ``report_floor_known`` False
+    #: (a record from before wave 8) falls back to the item's ``last_report_at``.
+    report_floor: str | None = None
+    report_floor_known: bool = False
+    #: Which binding this record describes, ``"<crew>/<slot>"`` (wave 8), or
+    #: ``None`` for a fresh record or one from before wave 8. A record naming
+    #: another pair than the item's is stale: nothing is ingested on it and no
+    #: replacement may bind until a fresh one is stored.
+    binding: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +149,12 @@ class RemoteState:
             "ingested_at": self.ingested_at,
             "attempted_at": self.attempted_at,
             "error": self.error,
+            "unrecorded_key": self.unrecorded_key,
+            "unrecorded_at": self.unrecorded_at,
+            "roster_read": self.roster_read,
+            "report_floor": self.report_floor,
+            "report_floor_known": self.report_floor_known,
+            "binding": self.binding,
         }
 
     @classmethod
@@ -144,7 +180,26 @@ class RemoteState:
             ingested_at=_text("ingested_at"),
             attempted_at=_text("attempted_at"),
             error=_text("error"),
+            unrecorded_key=_text("unrecorded_key"),
+            unrecorded_at=_text("unrecorded_at"),
+            roster_read=_flag("roster_read"),
+            report_floor=_text("report_floor"),
+            report_floor_known=_flag("report_floor_known"),
+            binding=_binding(raw.get("binding")),
         )
+
+
+def _binding(value: Any) -> str | None:
+    """A stored binding identity, at the pair's own caps, or ``None``."""
+    cap = MAX_INSTANCE_ID_CHARS + 1 + MAX_PEER_SLOT_CHARS
+    return value if isinstance(value, str) and 0 < len(value) <= cap else None
+
+
+def binding_id(item: WorkItem) -> str | None:
+    """*item*'s current remote pair as a :attr:`RemoteState.binding`, or ``None``."""
+    if not item.worker_instance_id or not item.worker_session_key:
+        return None
+    return f"{item.worker_instance_id}/{item.worker_session_key}"
 
 
 def read_remote_state(board: str, item_id: str) -> RemoteState | None:
@@ -158,7 +213,9 @@ def read_remote_state(board: str, item_id: str) -> RemoteState | None:
 
 def write_remote_state(board: str, item_id: str, state: RemoteState) -> None:
     path = remote_state_path(board, item_id)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    from kiro_crew.owner_only_files import mkdirs_owner_only
+
+    mkdirs_owner_only(path.parent)
     _write_record(path, state.to_dict())
 
 
@@ -219,6 +276,51 @@ def remote_liveness_map(board: str, items: Any) -> dict[str, tuple[bool, bool]]:
     return out
 
 
+def _open_remote_items(board_dir: Path) -> list[WorkItem]:
+    """The open items in *board_dir* bound to a worker on a crew. Never raises."""
+    try:
+        entries = sorted((board_dir / _ITEMS_DIR).glob("it_*.json"))
+    except OSError:
+        return []
+    out: list[WorkItem] = []
+    for entry in entries:
+        try:
+            raw = _read_json_record(entry)
+        except Exception:  # noqa: BLE001 - one torn file must not hide the rest
+            raw = None
+        if not isinstance(raw, dict):
+            continue
+        item = WorkItem.from_dict(raw)
+        if item.worker_instance_id and item.worker_session_key and not item.is_terminal:
+            out.append(item)
+    return out
+
+
+def _has_pending_close(board_dir: Path) -> bool:
+    """Whether *board_dir* holds an item with a ``retired`` binding. Never raises."""
+    try:
+        entries = sorted((board_dir / _ITEMS_DIR).glob("it_*.json"))
+    except OSError:
+        return False
+    for entry in entries:
+        try:
+            raw = _read_json_record(entry)
+        except Exception:  # noqa: BLE001 - one torn file must not hide the rest
+            raw = None
+        if isinstance(raw, dict) and any(
+            b["state"] == "retired" for b in WorkItem.from_dict(raw).retired_bindings
+        ):
+            return True
+    return False
+
+
+def _board_dirs() -> list[Path]:
+    try:
+        return [d for d in _work_ledger_root().iterdir() if d.name not in RESERVED_ROOT_DIRS]
+    except OSError:
+        return []
+
+
 def open_remote_bindings() -> dict[str, int]:
     """``{crew instance id: open remote bindings}`` across every ledger here. BLOCKING.
 
@@ -228,27 +330,77 @@ def open_remote_bindings() -> dict[str, int]:
     directory counts nothing: the peer gate, not this count, admits a create.
     """
     counts: dict[str, int] = {}
-    try:
-        boards = [d for d in _work_ledger_root().iterdir() if d.name not in RESERVED_ROOT_DIRS]
-    except OSError:
-        return counts
-    for board in boards:
-        try:
-            entries = sorted((board / _ITEMS_DIR).glob("it_*.json"))
-        except OSError:
-            continue
-        for entry in entries:
-            try:
-                raw = _read_json_record(entry)
-            except Exception:  # noqa: BLE001 - one torn file must not hide the rest
-                raw = None
-            if not isinstance(raw, dict):
-                continue
-            item = WorkItem.from_dict(raw)
-            crew = item.worker_instance_id
-            if crew and item.worker_session_key and not item.is_terminal:
-                counts[crew] = counts.get(crew, 0) + 1
+    for board in _board_dirs():
+        for item in _open_remote_items(board):
+            crew = str(item.worker_instance_id)
+            counts[crew] = counts.get(crew, 0) + 1
     return counts
+
+
+def boards_with_open_remote() -> list[str]:
+    """The conductor keys of every ledger here the hub's background puller walks. BLOCKING.
+
+    A ledger qualifies with an open crew-bound item, or with a retired binding
+    whose peer slot is not yet closed (wave 8), so a reconnect closes it with
+    nobody watching. Such an entry reserves nothing (:func:`open_remote_bindings`). The key comes from the board's own
+    header, and a header whose key does not name the directory it sits in is
+    skipped, so a pull never runs against a board it cannot address. Never raises.
+    """
+    keys: list[str] = []
+    for board in _board_dirs():
+        if not _open_remote_items(board) and not _has_pending_close(board):
+            continue
+        try:
+            raw = _read_json_record(board / _CONDUCTOR_FILE)
+        except Exception:  # noqa: BLE001 - one torn header must not hide the rest
+            raw = None
+        key = raw.get("slot_key") if isinstance(raw, dict) else None
+        if not isinstance(key, str) or not key:
+            continue
+        # By name, not by path: ``conductor_dir`` resolves symlinks and the listed
+        # directory does not, so a data home under a symlinked $HOME would match none.
+        if _store_name(key) != board.name:
+            continue
+        try:
+            conductor_dir(key)
+        except WorkLedgerError:
+            continue
+        keys.append(key)
+    return sorted(keys)
+
+
+#: Seconds between two runs of the hub's background puller
+#: (:mod:`kiro_crew.dashboard.handlers.remote_puller`). Here, not there, because the
+#: work-ledger probe reads it too and must not import the dashboard.
+REMOTE_PULL_INTERVAL_SECS = 30.0
+
+#: How old a remote item's last good pull may be before the probe stops trusting
+#: the hub's copy of its fields: three puller runs, so one slow or missed run never
+#: drops the person-wait hold, and a puller that stopped does within two minutes.
+REMOTE_PULL_FRESH_SECS = 3 * REMOTE_PULL_INTERVAL_SECS
+
+
+def remote_pull_fresh(board: str, item: WorkItem, now: datetime | None = None) -> bool:
+    """Whether the hub's copy of remote *item* is recent enough to stand for the peer's.
+
+    True only when the last pull reached the crew connected, read its slot list,
+    filed without error, and did so within :data:`REMOTE_PULL_FRESH_SECS`. Anything else, a missing or
+    unreadable record included, answers ``False``. Never raises.
+    """
+    try:
+        stored = read_remote_state(board, item.item_id)
+    except Exception:  # noqa: BLE001 - a doubt answers not fresh
+        return False
+    if stored is None or stored.crew_state != "connected" or stored.error is not None:
+        return False
+    if not stored.roster_read:
+        # The slot list was not read, so whether the worker is gone is unknown.
+        return False
+    moment = parse_stamp(stored.ingested_at) if stored.ingested_at else None
+    if moment is None:
+        return False
+    age = ((now or datetime.now(timezone.utc)) - moment).total_seconds()
+    return -REMOTE_PULL_FRESH_SECS < age <= REMOTE_PULL_FRESH_SECS
 
 
 def _require_peer_text(value: Any, cap: int, name: str) -> str:
@@ -287,6 +439,128 @@ def apply_remote_bind(
         item.worker_instance_id = crew
         event = _commit_item_locked(slot_key, item, "bind", f"{slot} on crew {crew}")
     return {"conductor": None, "item": item, "event": event}
+
+
+#: The refusal for a retire while every kept binding still waits to be closed.
+CODE_RETIRED_HISTORY_FULL = "retired_history_full"
+
+#: Why a binding was retired (rfc §5b).
+RETIRE_REASONS: frozenset[str] = frozenset({"crew_unreachable"})
+
+
+def apply_remote_retire(
+    slot_key: str,
+    item_id: str,
+    *,
+    worker_session_key: Any,
+    worker_instance_id: Any,
+    reason: Any,
+) -> dict[str, Any]:
+    """Retire an item's current remote binding. Conductor-owned, event kind ``retire``.
+
+    Reached only from the hub's own ingest. Needs the item open and still bound to
+    exactly this pair; moves the pair into ``retired_bindings`` and leaves the item
+    unbound, so the next ingest reads nothing from that slot and a placement may
+    bind it again. Marking an entry ``destroyed`` once its slot is closed belongs to
+    the peer half (wave 8b).
+    """
+    checked_id = _require_item_id(item_id)
+    slot = _require_peer_text(worker_session_key, MAX_PEER_SLOT_CHARS, "worker_session_key")
+    crew = _require_peer_text(worker_instance_id, MAX_INSTANCE_ID_CHARS, "worker_instance_id")
+    checked_reason = _require_choice(reason, RETIRE_REASONS, "reason", CODE_INVALID_VALUE)
+    with item_lock(slot_key, checked_id, create=False):
+        item = read_work_item(slot_key, checked_id)
+        if item is None:
+            raise WorkLedgerError(
+                f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
+            )
+        if item.is_terminal:
+            raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
+        if item.worker_session_key != slot or item.worker_instance_id != crew:
+            raise WorkLedgerError(
+                f"item {checked_id!r} is not bound to that crew session",
+                code=CODE_INVALID_VALUE,
+            )
+        history = [dict(b) for b in item.retired_bindings]
+        history.append(
+            {
+                "worker_session_key": slot,
+                "worker_instance_id": crew,
+                "branch": item.artifacts.get("branch") or None,
+                "state": "retired",
+                "reason": checked_reason,
+                "retired_at": _now_iso(),
+                "destroyed_at": None,
+            }
+        )
+        item.retired_bindings = _trim_history(history)
+        item.worker_session_key = None
+        item.worker_instance_id = None
+        event = _commit_item_locked(
+            slot_key, item, "retire", f"retired the binding on crew {crew}: {checked_reason}"
+        )
+    return {"conductor": None, "item": item, "event": event}
+
+
+def apply_remote_destroy(
+    slot_key: str, item_id: str, *, worker_session_key: Any, worker_instance_id: Any
+) -> dict[str, Any]:
+    """Mark a ``retired`` binding ``destroyed``: its peer slot is closed. Event ``destroy``.
+
+    Conductor-owned, reached only from the hub after the peer confirmed the slot
+    closed or gone. Moves no other field, so it is admitted on a closed item too.
+    Refuses a pair the history does not hold as ``retired``.
+    """
+    checked_id = _require_item_id(item_id)
+    slot = _require_peer_text(worker_session_key, MAX_PEER_SLOT_CHARS, "worker_session_key")
+    crew = _require_peer_text(worker_instance_id, MAX_INSTANCE_ID_CHARS, "worker_instance_id")
+    with item_lock(slot_key, checked_id, create=False):
+        item = read_work_item(slot_key, checked_id)
+        if item is None:
+            raise WorkLedgerError(
+                f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
+            )
+        history = [dict(b) for b in item.retired_bindings]
+        entry = next(
+            (
+                b
+                for b in history
+                if b["state"] == "retired"
+                and b["worker_session_key"] == slot
+                and b["worker_instance_id"] == crew
+            ),
+            None,
+        )
+        if entry is None:
+            raise WorkLedgerError(
+                f"item {checked_id!r} holds no retired session {slot} on crew {crew}",
+                code=CODE_INVALID_VALUE,
+            )
+        entry["state"], entry["destroyed_at"] = "destroyed", _now_iso()
+        item.retired_bindings = coerce_retired_bindings(history)
+        event = _commit_item_locked(
+            slot_key, item, "destroy", f"closed the retired session on crew {crew}"
+        )
+    return {"conductor": None, "item": item, "event": event}
+
+
+def _trim_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*history* within :data:`MAX_RETIRED_BINDINGS`, oldest destroyed entry first out.
+
+    A ``retired`` entry is never dropped: it is the only record that admits a
+    ``close`` of its slot. A history of live entries only is refused
+    ``retired_history_full``, so the binding stays current; an entry becomes
+    ``destroyed`` (droppable) only once wave 8b closes its slot.
+    """
+    while len(history) > MAX_RETIRED_BINDINGS:
+        gone = next((b for b in history if b["state"] == "destroyed"), None)
+        if gone is None:
+            raise WorkLedgerError(
+                f"{MAX_RETIRED_BINDINGS} retired sessions still wait to be closed",
+                code=CODE_RETIRED_HISTORY_FULL,
+            )
+        history.remove(gone)
+    return coerce_retired_bindings(history)
 
 
 def apply_remote_report(

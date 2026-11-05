@@ -98,9 +98,9 @@ def test_cli_import_does_not_load_heavy_modules(tmp_path: Path) -> None:
     # otherwise; the interpreter resolves kiro_crew from the installed package,
     # not from the directory it runs in, so nothing here needs the checkout.
     res = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-X", "utf8", "-c", code],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         timeout=120,
         cwd=tmp_path,
     )
@@ -194,11 +194,11 @@ def _read_line(
 def _stdio_roundtrip(subcommand: str, tmp_path: Path) -> list[str]:
     """Start ``kirocrew <subcommand>`` over stdio; return the tools/list names."""
     proc = subprocess.Popen(
-        [sys.executable, "-m", "kiro_crew", subcommand],
+        [sys.executable, "-X", "utf8", "-m", "kiro_crew", subcommand],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=True, encoding="utf-8",
         # Confined to the test's directory: the server is pinned to a
         # throwaway home already, and its cwd must not be the checkout either.
         cwd=tmp_path,
@@ -280,7 +280,7 @@ def test_boot_platform_runs_before_mcp_core_dispatch(monkeypatch) -> None:
     assert order == ["boot_platform", "dispatch"]
 
 
-def test_platform_composition_error_still_aborts_mcp_core(monkeypatch) -> None:
+def test_platform_composition_error_still_aborts_mcp_core(monkeypatch, capsys) -> None:
     """A composition failure aborts BEFORE dispatch — no silent downgrade."""
 
     def _raise(*_a, **_k):
@@ -294,6 +294,33 @@ def test_platform_composition_error_still_aborts_mcp_core(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "kiro_crew.mcp_core", fake_mcp_core)
 
     monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "mcp-core"])
-    with pytest.raises(PlatformCompositionError):
+    with pytest.raises(SystemExit) as exited:
         cli.main()
+    assert exited.value.code == 1
     assert dispatched == [], "mcp-core dispatched despite a failed platform composition"
+    err = capsys.readouterr().err
+    assert "❌ companion missing" in err
+    assert "Traceback" not in err
+
+
+def test_a_policy_error_reaches_policy_validate_as_one_line(monkeypatch, capsys) -> None:
+    """`kirocrew policy validate` on a policy with a typo'd key: the error the
+    composition raised, on one line with exit 1, and the command never runs."""
+
+    def _raise(*_a, **_k):
+        raise PlatformCompositionError("unknown governed key 'sandbox.enabeld' (fail-closed)")
+
+    monkeypatch.setattr(cli, "boot_platform", _raise)
+    ran: list[bool] = []
+    monkeypatch.setattr(
+        "kiro_crew.cli_commands._policy", lambda *_a, **_k: ran.append(True)
+    )
+    monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "policy", "validate"])
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+    assert exited.value.code == 1
+    assert ran == []
+    err = capsys.readouterr().err
+    assert "❌ unknown governed key 'sandbox.enabeld' (fail-closed)" in err
+    assert "kirocrew doctor" in err
+    assert "Traceback" not in err

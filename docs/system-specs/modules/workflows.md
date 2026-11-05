@@ -402,7 +402,7 @@ untouched. On top of those verbs the port adds only:
   `mode_raise_refused` for a mode above the target session's current mode or
   above the launching session's own posture (`_trust` → `trust`, `_trust_reads`
   → `trust_reads`, else `normal`; a launching slot that closed or was replaced
-  reads as `normal`, and a Crew Mode card trust (`_trust_card_scoped`), which
+  reads as `normal`, and an Ultra Mode card trust (`_trust_card_scoped`), which
   `approval_posture.trust_carries` keeps from passing to the sessions it
   starts though it reaches its subagents, counts as no `_trust`). So a session the person lowered stays lowered, and the
   mode write's `trust` arm, which also approves the session's pending tool calls,
@@ -634,7 +634,10 @@ runtime ships neither `jsonschema` nor a JSON-Schema-consuming pydantic path.
 Supported: `type` (`object`, `array`, `string`, `integer`, `number`, `boolean`,
 `null`, or a union list of those), `properties`, `required`, `items`, `enum`.
 Unknown keywords are ignored, so a richer schema still validates on the parts this
-understands. `bool` is explicitly **not** an `integer` or `number`.
+understands. `bool` is explicitly **not** an `integer` or `number`, and an `enum`
+member matches a `bool` only when it is a `bool` too. A float with no fractional
+part (`3.0`) is an `integer`, as in JSON Schema, and `ctx.agent` returns it as
+the `int` `3`.
 
 `parse_json(text)` is tolerant of the two shapes a model actually returns: a
 fenced ` ```json ` block, and JSON wrapped in prose. Prose recovery delegates to
@@ -764,7 +767,13 @@ Two distinct serializations:
   the full form. This is additive and status-keyed: `partial_results` stays the
   failed/cancelled channel so a run never reports both, an active run omits both
   (it is still accumulating), and the exposure is a factual record of the calls
-  that settled, not a claim the run produced a validated business artifact. The
+  that settled, not a claim the run produced a validated business artifact. A
+  failed or cancelled run's `partial_result_count` and `partial_results` leave out
+  a call with an entry in `agent_errors`: it keeps its slot in the stored
+  `agent_results`, which reruns replay, but it settled nothing worth preserving, so
+  the "preserved" count never includes a call the failed count also names. A
+  finished run's `agent_results` stays a record of every call, a failed one as
+  `None`. The
   `workflow_result` MCP projection includes these outputs through the same
   recursive redaction as the aggregate result and errors. The completion message
   names the recorded-call count and this field, and explicitly separates a
@@ -778,6 +787,11 @@ Two distinct serializations:
   the chat that launched the run gets the failure through the normal completion
   notice. The load writes the failed status back, so a later boot never
   notifies the same run again.
+  Snapshot `ended_at` is the terminal event's timestamp; if a nonactive run
+  has none (a restored interruption or driver exception), it uses the last
+  recorded event as the latest known activity. This fallback remains unchanged
+  across restarts. An active (`running`/`paused`) run without a terminal event,
+  or any run without events, reports `None`.
 
 Before each model turn, authoring, pooled workers and named sessions publish the
 ordinary strict transport identity for their acquired key. The run itself owns
@@ -1105,7 +1119,7 @@ writes nothing. Neither card offers Undo: the library has no delete, and an upda
 keeps every earlier revision in `revisions`. Only the main assistant's own
 dashboard chat may propose one: the shared card caller check already refuses
 sub-agents, scheduled and app sessions, channel turns and turns the user did not
-send, and the propose route also refuses a crewmate's thread and its workers
+send, and the propose route also refuses a Bot's thread and its workers
 (`owner_assistant_only`). SEL records the proposal on the shared `cards.propose` row
 (its resource names the card id and kind), the owner's decline as `cards.decline`,
 and the save itself on the definition route's own `workflow_definition_create` /
@@ -1393,7 +1407,10 @@ never spawns `kiro-cli` in tests. Two production adapters:
   worker after `provider.new_conversation()` (a fresh `session/new` on the live
   process, skipping spawn and initialize), falling back to a hard
   `SessionManager.reset` if that is unavailable or fails, so a reused worker can
-  never carry prior-task context forward. Dead workers are retired and replaced.
+  never carry prior-task context forward. Only a backend on the shared runtime
+  (kiro, KAS, Codex) has the cheap reset; one on its own `AcpClient` (claude and
+  the other per-session adapters) raises `NotImplementedError` naming the backend,
+  and its reuse is the hard reset, logged at INFO as a cold start. Dead workers are retired and replaced.
   A `session=<key>` call bypasses the pool entirely, since it needs a stable named
   session rather than a reset-between-uses worker.
 
@@ -1536,6 +1553,16 @@ losing a pathological key beats leaking the secret.
 malformed value becomes `None` ("no override") and can never widen or remove a
 run's ceiling.
 
+The other loosely typed launch fields are read the same lenient way, never
+refused: `_opt_str` reads a `name` on `/run` and `/run_intent` as absent unless
+it is a string, so an object or list never becomes a run's name, and
+`_rerun_from_index` reads a rerun's `from_index` as 0 unless it is a whole
+number, clamping a negative one to 0 (a `bool` would otherwise replay call 0).
+`_opt_title` reads the fallback `title` on all three launch routes the same way:
+an object, list or boolean is absent, so it never titles the chat with its repr,
+while a string passes unchanged and a non-zero number keeps its text (zero stays
+absent).
+
 When the originating chat slot is gone at delivery (the common case for a
 webhook-driven run, whose ephemeral session is destroyed when its turn ends),
 `inject_workflow_result` falls back to a dedicated `workflow-<run_id>` slot
@@ -1554,6 +1581,17 @@ length-bounded on every construction path, so a direct POST cannot store an
 unbounded value. With neither argument the default title and unfiled placement
 are unchanged. A live originating session is never titled or filed by these
 arguments, and incognito/temporary runs still get no fallback slot.
+
+A new fallback slot is a slot allocation, so it tests the same live-session
+ceiling as every other allocator (`live_slot_count() >= MAX_LIVE_SLOTS`, 500).
+At the ceiling both delivery paths (`inject_workflow_result` and
+`inject_bound_workflow_result`, the latter before it binds the run's identity)
+create nothing, log one warning naming the run id, and return `False`; the result
+stays on the run record (`workflow_status`, the Runs view). The test keeps a
+workflow whose origin is gone on every run from filling the slot table, which
+would answer the person's own new chat with 409 `slot_cap_reached`. A re-fire into an
+existing `workflow-<run_id>` slot and delivery into a live originating chat
+allocate nothing and are not tested.
 
 Live progress reaches the browser as a `workflow_run_event` WS broadcast carrying
 the redacted event plus the run's `session_key`, and the frontend
@@ -2045,10 +2083,10 @@ refusal or a `WorkflowMemoryError`, both raised with fixed text (a test parses
 every raise site to keep it so). Any other cause, such as an `OSError` or a
 memory-store refusal that formats one and its path into its own text, stays in
 the log only. When either reason is one of
-the two a mate's own binding produces (`MEMBER_ON_GLOBAL_REASON`,
+the two a Bot's own binding produces (`MEMBER_ON_GLOBAL_REASON`,
 `MEMBER_WITHOUT_IDENTITY_REASON`), the text adds the two ways to run a workflow:
-a chat with no mate picked (the default template on Global), or a mate
-with its own memory. A mate on Global V1 is still refused: member memory
+a chat with no Bot picked (the default template on Global), or a Bot
+with its own memory. A Bot on Global V1 is still refused: member memory
 never substitutes Global. A refusal that names no reason keeps the generic text
 "Workflow memory is unavailable; no Global fallback was used."
 

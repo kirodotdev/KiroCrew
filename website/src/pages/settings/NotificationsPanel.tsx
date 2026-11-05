@@ -172,6 +172,10 @@ const CHANNEL_LABELS: Record<string, () => string> = {
   // opposite of what muting it does, which is silence only the gateway's
   // "a newer version is published" notes.
   'system.apps': () => i18nT('pages.settings.notificationsPanel.channel_apps'),
+  // The bare id is "turn", which reads as the "turn" sound category (conversation
+  // handoffs) and is jargon besides -- this channel carries the bell entry a chat
+  // raises when it STOPS with an error, so it is labelled in task language.
+  'system.turn': () => i18nT('pages.settings.notificationsPanel.channel_turn'),
 }
 
 /** Human label for a channel within its group (drop the source prefix apps
@@ -185,6 +189,14 @@ function channelLabel(c: NotificationChannel): string {
 type ChannelsData = { channels?: NotificationChannel[] }
 type ChannelPatch = { muted?: boolean; priority?: string | null }
 const CHANNELS_KEY = ['notification-channels'] as const
+
+/** The stored settings fields a channel patch writes. */
+function channelPatchFields(patch: ChannelPatch): ('muted' | 'priority')[] {
+  const fields: ('muted' | 'priority')[] = []
+  if (patch.muted !== undefined) fields.push('muted')
+  if ('priority' in patch) fields.push('priority')
+  return fields
+}
 
 /** Per-channel notification settings: mute + priority override,
  *  grouped by source (System first, then apps). Protected channels render
@@ -577,27 +589,78 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   // while onError rolled the value back. The notice renders in the SubNav
   // banner slot instead, which stays mounted across rail switches.
   const qc = useQueryClient()
+  // The value the server last confirmed for each channel field that has a
+  // patch in flight, keyed `channel` + field. A rollback restores this, not
+  // the value its own patch replaced: when two patches to one field overlap,
+  // the second one's "before" is the first one's optimistic value, which the
+  // server may never have held.
+  const persistedRef = useRef(new Map<string, { value: unknown; pending: number }>())
+  const fieldKey = (channel: string, k: string) => JSON.stringify([channel, k])
   const patchMut = useMutation({
     mutationFn: ({ channel, settings }: { channel: string; settings: ChannelPatch }) =>
       api.updateNotificationChannelSettings(channel, settings),
-    // Optimistic update; the PUT is authoritative — a failure rolls the cache
-    // back to the snapshot and the refetch below re-syncs with the server.
+    // Optimistic update; the PUT is authoritative — a failure rolls back the
+    // fields this patch set and the refetch below re-syncs with the server.
     onMutate: ({ channel, settings }) => {
-      const snap = qc.getQueryData<ChannelsData>(CHANNELS_KEY)
+      const touched = channelPatchFields(settings)
+      const before = qc.getQueryData<ChannelsData>(CHANNELS_KEY)?.channels?.find(c => c.channel === channel)?.settings
+      const applied = { ...before }
+      if (settings.muted !== undefined) { if (settings.muted) applied.muted = true; else delete applied.muted }
+      if ('priority' in settings) { if (settings.priority) applied.priority = settings.priority; else delete applied.priority }
       qc.setQueryData<ChannelsData>(CHANNELS_KEY, prev => prev && {
         ...prev,
         channels: prev.channels?.map(c => {
           if (c.channel !== channel) return c
           const next = { ...c.settings }
-          if (settings.muted !== undefined) { if (settings.muted) next.muted = true; else delete next.muted }
-          if ('priority' in settings) { if (settings.priority) next.priority = settings.priority; else delete next.priority }
+          for (const k of touched) { if (applied[k] === undefined) delete next[k]; else Object.assign(next, { [k]: applied[k] }) }
           return { ...c, settings: next }
         }),
       })
-      return { snap }
+      for (const k of touched) {
+        const key = fieldKey(channel, k)
+        const entry = persistedRef.current.get(key) ?? { value: before?.[k], pending: 0 }
+        entry.pending += 1
+        persistedRef.current.set(key, entry)
+      }
+      return { touched, applied }
     },
-    onError: (_err, _vars, ctx) => { if (ctx?.snap) qc.setQueryData(CHANNELS_KEY, ctx.snap) },
-    onSettled: () => qc.invalidateQueries({ queryKey: CHANNELS_KEY }),
+    onSuccess: (_data, { channel }, ctx) => {
+      for (const k of ctx.touched) {
+        const entry = persistedRef.current.get(fieldKey(channel, k))
+        if (entry) entry.value = ctx.applied[k]
+      }
+    },
+    // Field-scoped compare-and-set, NOT a whole-list snapshot restore: a
+    // snapshot taken before this patch would also undo every LATER patch that
+    // landed meanwhile (another channel, or the other field of this one).
+    // Restore only the fields this patch set, only where the cache still holds
+    // this patch's own value, and to the value the server last confirmed. Same
+    // rule as chat-sidebar/folders.ts.
+    onError: (_err, { channel }, ctx) => {
+      if (!ctx) return
+      qc.setQueryData<ChannelsData>(CHANNELS_KEY, prev => prev && {
+        ...prev,
+        channels: prev.channels?.map(c => {
+          if (c.channel !== channel) return c
+          const next = { ...c.settings }
+          for (const k of ctx.touched) {
+            if (next[k] !== ctx.applied[k]) continue
+            const persisted = persistedRef.current.get(fieldKey(channel, k))?.value
+            if (persisted === undefined) delete next[k]
+            else Object.assign(next, { [k]: persisted })
+          }
+          return { ...c, settings: next }
+        }),
+      })
+    },
+    onSettled: (_data, _err, { channel }, ctx) => {
+      for (const k of ctx?.touched ?? []) {
+        const key = fieldKey(channel, k)
+        const entry = persistedRef.current.get(key)
+        if (entry && --entry.pending <= 0) persistedRef.current.delete(key)
+      }
+      return qc.invalidateQueries({ queryKey: CHANNELS_KEY })
+    },
   })
   const patchChannel = (channel: string, settings: ChannelPatch) => patchMut.mutate({ channel, settings })
 

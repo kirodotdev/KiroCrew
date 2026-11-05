@@ -1,28 +1,11 @@
 """Session work ledger — core primitive, nudge injection, routes, cleanup.
 
-The state record is now a PROJECTION of the session's crew log (see
-docs/system-specs/modules/session-work-ledger.md and the ``ledger`` fold in
-``crew_log/projection.py``): :func:`session_ledger.record` appends one
-``ledger/recorded`` entry per call and every reader folds those entries back
-into the record. This file covers the surface that lives on top of that fold —
-the phase-requires-event discipline, the bounds, terminal-phase handling, the
-snapshot rendering and its caps, the async nudge composer, the route layer's
-session-identity gating, the MCP tools' strict-identity gate, and the LEGACY
-``ledger/`` store's delete machinery (``purge_matching`` and its lock/inode
-helpers, still the one spelling of removing one of those directories).
+The record is a projection of the session's crew log (the ``ledger`` fold in
+``crew_log/projection.py``); the fold itself is pinned in
+``test_session_ledger_projection.py``.
 
-The record-to-fold round trip and the slot join across units are pinned in the
-sibling ``test_session_ledger_projection.py``; this file cross-references those
-rather than re-testing the fold's internals, and reaches the crew log through
-the same fixtures that file established.
-
-Two fixture families here, on purpose:
-
-* ``_unit`` builds a real crew log for a slot and records through the public
-  path, for the properties that live on the fold.
-* the purge/lock tests build a LEGACY store by writing ``state.json`` and the
-  ``slot_key`` breadcrumb on disk directly: nothing writes that store, and its
-  delete machinery still has to hold for the residue on disk.
+``_unit`` builds a real crew log for a slot. The purge tests write a legacy
+``ledger/`` store on disk directly, since nothing writes that store any more.
 """
 
 from __future__ import annotations
@@ -38,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from crew_log_drain import assert_drained
 from off_loop_helpers import off_loop
 
 from kiro_crew import crew_log as lg
@@ -87,7 +71,7 @@ def _record(slot_key: str, *, session_id: str = SESSION, **fields: Any) -> dict[
     running event loop the writer defers instead of appending inline.
     """
     state = sl.record(slot_key, session_id=session_id, **fields)
-    assert crew_log_emit.flush(timeout=5.0), "the crew log writer did not drain"
+    assert_drained()
     return state
 
 
@@ -171,7 +155,7 @@ def test_phase_and_event_ride_on_one_entry():
     key = "chat-3-333"
     _unit(slot=key)
     _record(key, phase="implementing", event="started the fix", event_kind="phase")
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     handle = CrewLog.open(lg.KIND_SESSION, SESSION)
     try:
         entries = [e for e in handle.iter_from(1) if e.type == sl.LEDGER_ENTRY_TYPE]
@@ -256,15 +240,9 @@ def test_unknown_event_kind_without_phase_coerced_to_note():
 
 
 def test_read_state_of_a_slot_that_recorded_nothing_is_the_empty_record():
-    """A slot with no crew log entries folds to the empty record, and never
-    raises — a nudge cycle reads this on its way into a turn.
+    """A slot with no crew log entries folds to the empty record, and never raises.
 
-    The record is a fold rather than a file this function parses, so there is no
-    malformed or over-ceiling FILE for it to refuse and zero out. The append-only crew
-    log a
-    reader folds cannot be read to nothing by a damaged line; a fold that cannot
-    be made returns the empty record by contract, which the projection suite
-    pins directly."""
+    A nudge cycle reads this on its way into a turn."""
     _unit(slot="chat-8-888")
     assert sl.read_state("chat-8-888") == sl._empty_state()
     assert sl.has_ledger("chat-8-888") is False
@@ -449,23 +427,10 @@ def _composer_offenders(adapters: dict[str, str]) -> list[str]:
 
 
 def test_gateway_fire_callbacks_use_the_composer():
-    """EVERY fire path must reach compose_nudge_body -- reverting a call site to
-    the snapshot-less render_nudge_message drops ledger injection for that
-    surface silently.
+    """Every fire path must reach compose_nudge_body, or that surface loses the ledger.
 
-    Enumerated rather than counted. A hardcoded total says "3" until a channel is
-    added, and then it fails for the one reason that is NOT a defect (a new
-    adapter) while a channel that quietly opted itself out could keep the total
-    correct by existing. Naming the offenders also tells whoever broke it which
-    surface lost its ledger.
-
-    Reaching the composer counts whether an adapter calls it itself or delegates
-    to a shared fire path that does, because a channel that hands its whole turn
-    to a spine gets the snapshot from the spine. The delegation is resolved ONE
-    hop and only onto a target that calls the composer DIRECTLY, so a chain of
-    adapters forwarding to each other can never satisfy this by passing the
-    obligation around. An adapter that neither composes nor delegates is still an
-    offender, which is what ``test_the_composer_ratchet_is_not_vacuous`` pins.
+    Offenders are named, not counted, so a new adapter does not break the test.
+    Delegation counts one hop, onto a target that calls the composer directly.
     """
     from kiro_crew.slack import gateway
 
@@ -490,11 +455,8 @@ def test_gateway_fire_callbacks_use_the_composer():
 def test_the_composer_ratchet_is_not_vacuous():
     """The allowance above must not let a real opt-out through.
 
-    Three shapes are checked against the same helpers the ratchet uses: an
-    adapter that composes directly passes, one that delegates to a spine which
-    composes passes, and one that does neither is named. The fourth shape is the
-    one the one-hop rule exists for: two adapters that only forward to each other
-    never reach the composer, so both are named rather than excusing each other.
+    Composing and delegating pass, neither is named, and two adapters that only
+    forward to each other are both named.
     """
     composes = """
     async def _fire_alpha_nudge(self, loop):
@@ -618,23 +580,9 @@ async def test_route_record_without_a_crew_log_is_409(_open_route):
 async def test_route_record_answers_a_typed_refusal_when_the_crew_log_refuses(_open_route):
     """A crew log the fold REFUSES is answered with a code, never as a bare 500.
 
-    The record is a projection of the session's crew log, so every write folds
-    that log first. The fold's refusal type is ``CrewLogError`` — not a
-    ``ValueError`` and not an ``OSError`` — so the route's typed branches do not
-    name it, and an unhandled one leaves aiohttp to answer ``500 Internal Server
-    Error / Server got itself in trouble``: a body with no code, which tells the
-    caller neither what failed nor whether retrying could ever work.
-
-    409 with the crew log's own code, which is the answer the sibling work-ledger
-    route already gives for the same refusal on the same store
-    (``handlers/work_ledger_conductor.py``, ``crew_log_unreadable``): the request is well
-    formed and the state of the record's home is what blocks it.
-
-    The damage here is the one an append-only writer cannot produce — a
-    byte-identical copy of the newest record, so the last seq appears twice —
-    which is the case ``projection.advance`` refuses with ``bad_data``. Driven
-    through the real store and the real route rather than a patched raise, so the
-    test pins the path a caller actually travels.
+    The fold raises ``CrewLogError``, neither ``ValueError`` nor ``OSError``. The 409
+    matches ``handlers/work_ledger_conductor.py``. A duplicated newest line makes
+    ``projection.advance`` refuse with ``bad_data``.
     """
     routes = _open_route
     slot = sl.ledger_key("chat-r-1")
@@ -643,7 +591,7 @@ async def test_route_record_answers_a_typed_refusal_when_the_crew_log_refuses(_o
         _mk_request("POST", "/api/session-ledger/record", body={"goal": "before the damage"})
     )
     assert first.status == 200, "the undamaged write must land, or this pins nothing"
-    assert crew_log_emit.flush(timeout=5.0), "the crew log writer did not drain"
+    assert_drained()
 
     path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     newest = path.read_bytes().splitlines(keepends=True)[-1]
@@ -688,15 +636,10 @@ async def test_route_refuses_restricted_session(monkeypatch, _open_route):
 
 @pytest.mark.asyncio
 async def test_route_write_lands_under_ledger_key(_open_route):
-    """The route folds the header key exactly like the nudge composer does —
-    losslessly, dashboard prefixes only — and the write lands in the crew log the
-    calling session is serving on, read back through the fold under the folded
-    key.
+    """The route folds the header key like the nudge composer does.
 
-    The read-back runs OFF the loop, as ``api_session_ledger_get`` runs it. The eager
-    folder reads this unit on its own thread right after the append, under the unit's
-    append lock, and an acquire on the event-loop thread makes one attempt: a read
-    made there while that pass holds the lock is refused and answers the empty record.
+    The read-back runs off the loop: on the loop thread the lock acquire makes one
+    attempt and, racing the eager folder, answers the empty record.
     """
     routes = _open_route
     sk = "dashboard_chat-77-999"
@@ -716,21 +659,15 @@ def test_routes_are_on_the_strict_internal_allowlist():
 
 # ── legacy ledger/ store: permanent-delete preservation boundary ───────────
 #
-# The purge machinery removes a LEGACY ``ledger/<store>`` directory — residue on
-# disk that ``kirocrew ledger-sweep`` collects and nothing writes. So these
-# fixtures build one directly on
-# disk: the ``state.json`` document plus the ``slot_key`` breadcrumb that lets a
-# purge NAME the store, exactly what ``ledger_dir`` + ``_store_name`` expect.
+# Nothing writes a legacy ``ledger/<store>`` any more, so these fixtures build one
+# on disk: ``state.json`` plus the ``slot_key`` breadcrumb ``_store_name`` reads.
 
 
 def _legacy_store(key: str, *, phase: str = "done") -> Any:
     """Build a legacy ``ledger/`` store for *key* on disk (no ``record`` call).
 
-    Writes the two identity files a purge keys on, and the lock inode it takes:
-    ``purge_matching`` opens that file WITHOUT creating it, deliberately — a writer
-    may bring a store into being by locking it and a deleter must not — so a
-    fixture without one is skipped as a store that is already gone. ``record`` no
-    longer produces this directory, so the delete machinery's fixtures build it.
+    Includes the lock inode: ``purge_matching`` opens it without creating it, so a
+    fixture without one is skipped as already gone.
     """
     directory = sl.ledger_dir(key)
     directory.mkdir(parents=True, exist_ok=True)
@@ -1198,15 +1135,8 @@ class _JsonResponse:
 def test_read_of_a_slot_whose_fold_outlasts_the_telemetry_budget(monkeypatch):
     """A ledger read must not fail on a slot whose crew log takes a while to fold.
 
-    ``/api/session-ledger`` folds the slot's log, which is O(the log) and streams
-    every unit on a cold fold, so the GET does real work. Given only the 10s
-    ``mcp_core._get`` hands a telemetry read, a big-enough slot answers
-    ``Error: timed out`` -- while ``session_ledger_record``, which reaches the SAME
-    fold through ``_post``, has 30s and succeeds. This pins the read's budget
-    against a route slower than the telemetry default.
-
-    The real chain runs: the tool, ``_get``, ``_send``, and the error wrapping.
-    Only the socket is faked, and it fakes exactly what a slow fold does.
+    The fold is O(the log); with the 10s telemetry default of ``mcp_core._get`` a big
+    slot would time out while ``session_ledger_record`` has 30s. Only the socket is fake.
     """
     from kiro_crew import mcp_core
     from kiro_crew.mcp_tools import ledger as tools
@@ -1234,13 +1164,8 @@ def test_read_of_a_slot_whose_fold_outlasts_the_telemetry_budget(monkeypatch):
 def test_the_ledger_read_budget_matches_the_write_path(monkeypatch):
     """Same ledger, same fold, same budget.
 
-    The write pays the fold AND an append, so a read allowed less than the write
-    can fail where that write succeeds -- an outcome no caller can predict from
-    the two tools' descriptions. The floor is read off ``_send``, the one
-    transport every verb funnels through and the default ``_post`` leaves alone,
-    rather than restated here, so the two cannot drift apart silently. (``_post``
-    itself is replaced by the suite's no-traffic fixture, so its signature is the
-    stub's rather than the real one's.)
+    The floor is read off ``_send``, not restated; ``_post`` is the no-traffic
+    fixture's stub here, so its signature cannot be used.
     """
     import inspect
 

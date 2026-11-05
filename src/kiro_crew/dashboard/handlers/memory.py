@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from aiohttp import web
 
 from kiro_crew import _facade_mirror, memory_schema
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -572,6 +573,10 @@ async def api_memory_history(request: web.Request) -> web.Response:
     return _memory_document_response(content)
 
 
+class _MemorySectionNotObject(Exception):
+    """config.json's ``memory`` entry is present but is not a JSON object."""
+
+
 async def api_memory_settings(request: web.Request) -> web.Response:
     """GET/PUT /api/memory/settings — memory consolidation config."""
     cfg = KiroCrewConfig.load()
@@ -624,7 +629,10 @@ async def api_memory_settings(request: web.Request) -> web.Response:
                     {"error": "history_max_days must be an integer"}, status=400
                 )
         if "migrated" in body:
-            updates["migrated"] = bool(body["migrated"])
+            # A spelled "false"/"0"/"no"/"off" means False; any other value
+            # keeps the truthiness it has always been saved with.
+            raw_migrated = body["migrated"]
+            updates["migrated"] = _coerce_bool(raw_migrated, bool(raw_migrated))
 
         def _apply(data: dict) -> dict | None:
             # Nothing recognised in the body: skip the write rather than reach
@@ -636,11 +644,27 @@ async def api_memory_settings(request: web.Request) -> web.Response:
             # is no change to persist.
             if not updates:
                 return None
-            data.setdefault("memory", {}).update(updates)
+            section = data.setdefault("memory", {})
+            if not isinstance(section, dict):
+                # Refuse rather than replace it with {}: whatever the person put
+                # there is theirs to fix, and nothing is written.
+                raise _MemorySectionNotObject
+            section.update(updates)
             return data
 
         try:
             await run_config_write(update_config_locked, config_path(), mutate=_apply)
+        except _MemorySectionNotObject:
+            return web.json_response(
+                {
+                    "error": (
+                        "config.json has a 'memory' entry that is not an object; "
+                        "fix or remove it, then save again"
+                    ),
+                    "code": "config_section_not_object",
+                },
+                status=409,
+            )
         except ConfigReadError:
             # Fail closed: writing back a {} baseline would drop every other setting.
             logger.exception("Refusing to save memory settings: config unreadable")
@@ -1523,6 +1547,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew._sqlite_compat import (  # noqa: F401
+        is_cjk_char,
+    )
     from kiro_crew.apps.registry import (  # noqa: F401
         minimal_env,
     )

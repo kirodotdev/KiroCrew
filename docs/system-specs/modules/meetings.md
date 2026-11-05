@@ -68,7 +68,7 @@ GET    /meetings/{id}/translations[?since=N]   translated lines, cursor-paged
 PUT    /meetings/{id}/outputs       replace one agent's minutes  {agent_id, content}
 DELETE /meetings/{id}/outputs       discard the edit, serve the agent's own output {agent_id}
 GET    /meetings/{id}/note          the user's own note + its absolute path
-PUT    /meetings/{id}/note          {content} — replace it
+PUT    /meetings/{id}/note          {content, editor?, seq?} — replace it
 POST   /meetings/{id}/note/images   multipart — one pasted screenshot
 POST   /meetings/{id}/attachments   {action: add|remove, attachments[]|index}
 POST   /meetings/{id}/agents        {agent_id, enable} — toggle mid-meeting
@@ -180,6 +180,15 @@ Minutes edits share the metadata transaction with deletion as well: the meeting
 existence check and sidecar write/delete are one unit, so a stale PUT cannot recreate
 an orphan `edits/` directory. Deletion also waits for task filing's
 provider-to-local-record transaction.
+
+`tasks.json` is agent-written, so a malformed file is expected. Reads for display
+(`store.read_tasks`) accept one leading UTF-8 byte-order mark and show any other
+unparseable file as an empty list. Every task route that writes the list back
+(add, edit, delete, review, the filing record) reads through
+`store.read_tasks_for_update` instead: a present file that does not parse as a task
+document is moved to `tasks.json.corrupt-<utc>` with a warning before the save, and
+a read or move that fails answers `500 tasks_unreadable` and leaves the file as it
+is. One edit therefore never saves a single task over the tasks still in the file.
 
 `ensure_data_dirs()` creates the subtree and seeds `dictionary.toml` +
 `config.json` at app startup (an `on_startup` hook, run on the executor). It
@@ -504,7 +513,7 @@ meeting view is a separate UI decision.
 
 `notes/<id>/note.md` per meeting, with pasted screenshots beside it under
 `images/` (see **Data** for why that tree, and why it is write-fenced rather than
-read-fenced). Five decisions worth carrying forward:
+read-fenced). Six decisions worth carrying forward:
 
 * **The note is not redacted**, unlike everything else this app accepts, and the PUT
   body is validated by hand rather than with `field_str`. That helper treats a
@@ -528,6 +537,18 @@ read-fenced). Five decisions worth carrying forward:
   and an image whose markdown would cross the cap is left out with the too-large
   notice. The client copy lives in `noteText.ts`; `test_meetings_note.py` holds it
   equal to the server's.
+* **One meeting view's saves land in send order**. The `pagehide` save
+  skips the mutation's queue (the page is gone before a queued save is sent), so it
+  and an autosave still on the wire are two concurrent PUTs that pool threads can
+  store in either order, and the older one landing last erased the newest text
+  after the page had discarded its draft. `useMeetingSession` numbers every save at
+  SEND time with a per-view `editor` id and a rising `seq`; `_save_note` drops a
+  save older than the last one stored for that editor, inside the same transaction
+  as its write (a seq is recorded only once its write lands, so a failed write
+  supersedes nothing), and answers `superseded: true` with the note as stored, which
+  `useNoteDraft` does not take as confirmation. The map is in memory and bounded:
+  the race never spans a restart. Different editors (two tabs, a reloaded page)
+  stay last-write-wins, and a PUT with neither field is unordered, as before.
 * **The note is never polled**, and the save response seeds the cache instead of
   invalidating: the textarea is the authoritative copy, and refetching under the user
   is how an autosaving editor loses a sentence.
@@ -726,6 +747,11 @@ let the server close so trailing finals arrive. Every FINAL segment is POSTed to
 they drive both the compact caption and one clearly marked live row, then disappear
 when the recognizer finalizes or the stream closes. The browser keeps only a
 bounded recent-final buffer for the caption because the JSONL file owns history.
+A stop or an unmount while the microphone permission prompt is open ends the
+start: when the prompt is answered, the late stream is released and no socket
+opens. A pause or end during the prompt is such a stop: the hook's
+`isStarting()` reports the pending start, which `active` and `connecting` do
+not yet show, and the status binding stops it.
 
 `TranscriptPanel` is always present in a meeting and remains available during
 action-item review. With at least one enabled note or diagram agent,
@@ -733,7 +759,13 @@ action-item review. With at least one enabled note or diagram agent,
 scrolling agent grid (stacked on narrower screens). When the roster becomes empty,
 the agent plane exits and the transcript expands to the primary content surface;
 enabling an agent restores the split layout through a Framer Motion layout
-transition that honors reduced-motion preferences. The panel follows new speech
+transition that honors reduced-motion preferences. Each note or diagram panel's
+header carries an Expand control: the chosen panel then fills the workspace (the
+diagram frame and notes pane drop their 340 px and 520 px caps), while the
+transcript and the other panels are hidden but stay mounted, so a draft or the
+follow position survives. The same control or Escape restores the compact
+layout, which is the default, and focus returns to the control. It is view state
+only; transcription and the agents keep running. The transcript panel follows new speech
 until the reader scrolls up, then offers a localized “jump to latest” control
 rather than pulling the reading position away. Lists above 200 durable segments
 are virtualized so polling does not keep thousands of transcript rows mounted.
@@ -831,7 +863,7 @@ broadcast bar remains available when speech input is unavailable.
   by Kiro Crew's own bootstrap from the declarative `div.mermaid` / fenced
   ```mermaid markup the agent is instructed to emit, so the agent has no
   documented need to ship JS. Both directions are tested in
-  `website/src/test/sketchSrcdoc.test.ts` — nothing executable survives, **and** a
+  `website/src/apps/meetings/sketchSrcdoc.test.ts` — nothing executable survives, **and** a
   Mermaid diagram plus an inline-styled HTML table still render (the guards
   against over-stripping the panel into a blank).
 * **A client-supplied FILE path exists in exactly one place** — the audio import —
@@ -890,12 +922,16 @@ fake session manager in `test/meetings_helpers.py`. Every dispatch goes through
 that fake session manager; no test spawns a process, opens a socket, calls a
 model, or decodes audio.
 
-The app's current tests live in the repo-level `test/` tree. `setup.cfg` sets
-`testpaths = test src/kiro_crew/apps/builtins`, so a future in-package Meetings
-suite would also be collected by CI; the second root already collects builtin-app
-suites that intentionally ship beside their code.
+Most of the app's backend tests live in the repo-level `test/` tree. The pins of
+core behaviour the app relies on live in the package's own `tests/` (collected
+through `setup.cfg`'s `testpaths = test src/kiro_crew/apps/builtins`):
+`test_owner_only_store.py` (the startup sweep lists the store the app writes, and a
+transcript inside the data home is created `0600`), `test_import_suffix_demuxers.py`
+(every import-admissible suffix maps to a forced FFmpeg demuxer) and
+`test_translation_start_priority.py` (live translation names no start priority).
 
-Frontend: `website/src/test/MeetingsApiClient.test.ts` (fetch-boundary
+Frontend, all beside the page in `website/src/apps/meetings/`:
+`MeetingsApiClient.test.ts` (fetch-boundary
 translation), `MeetingsSessionLogic.test.ts` (dedup, preset resolution, the
 transition table), `MeetingsPage.test.tsx` and `MeetingsPageCov80.test.tsx` (list,
 refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
@@ -903,4 +939,32 @@ refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
 `MeetingsTranslation.test.tsx`, `MeetingsNote.test.tsx`, `MeetingsNoteDraft.test.tsx`, and
 `MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
-split-to-primary layout transition).
+split-to-primary layout transition), `UseMeetingSessionCoverage.test.tsx` and the two
+`UseMeetingTranscription*` suites (the hooks), `meetingsSplitsNarrow.test.ts` (the
+view's narrow-viewport split), `BroadcastBarImeGuard.test.tsx` (the broadcast bar's
+IME Enter guard), and `settingsStaleTime.test.ts` (the settings view's focus-refetch
+opt-in).
+
+**Repository boundary.** Meetings is to leave this repository whole, so no module
+under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
+`kiro_crew.apps.builtins.meetings`. The app imports the core (speech-to-text, the
+`UNTRUSTED_CALENDAR_EVENT` fence in `kiro_crew.context`, redaction, the sandbox and
+path helpers); the core needs nothing from the app, so no seam is involved.
+`test/test_core_meetings_decoupling.py` is the gate, on the shared
+`test/core_app_independence.py` scanner. The core strings left naming the app are a
+pinned list that may only shrink: the `meetings` skill id in
+`metrics/feature_usage.py`, the data-home floors that name its stores
+(`owner_only_files.STARTUP_SWEEP_STORES`, the HIDDEN sandbox leaf and file-tool
+fence of `apps/meetings/data/edits`, the write fence of `apps/meetings/data/notes`),
+and the `security_posture.py` rows classifying its backend modules. Because the app
+id is an ordinary word, the list also carries the Zoom connector's
+`zoom.meetings.*` operation ids, which are not the app. Its dashboard half is
+`website/src/apps/meetings/meetingsBoundary.test.ts`: outside `src/apps/meetings/`,
+only the `/meetings` row of `apps/builtinRegistry.ts` imports the UI. What still
+names the app in core, deliberately for this wave: `BUILTIN_NAMES`, the app-store
+row in `appManifest.ts`, the `apps.meetings.*` catalog keys, the bundled
+`builtin_skills/meetings/` skill, the eslint path overrides naming its files, the i18n capture
+surface row, the capture harnesses under `website/capture/` and
+`website/scripts/capture-meetings-*.mjs`, and the repo-level `test/test_meetings_*`
+suites with their helpers (one of which, `test_meetings_providers.py`, the native
+IPv6 CI lane names by path).

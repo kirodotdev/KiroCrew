@@ -209,6 +209,16 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "TEAMS_MAX_ACTIVITY_BYTES",
         _BOUNDED_EXPLICIT,
     ),
+    # The live card's control posts (visibility, ack, claim, release, one input
+    # event, reopen, close): small fixed-shape bodies, so the route keeps a 4 KiB
+    # cap of its own, well under the shared default.
+    "handlers/browser_live.py::_run": ("_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
+    # A quick-ask answer: an id, an action and at most a few values of 1 KiB each,
+    # so the route caps the body at 8 KiB, well under the shared default.
+    "handlers/browser_ask.py::api_browser_ask_answer": (
+        "qa.ANSWER_BODY_MAX",
+        _BOUNDED_EXPLICIT,
+    ),
     # Both mediated-secret routes (the capability claim and the request) admit through
     # ``_admit``. A mediated request carries the agent's own body, headers and query, so
     # it gets the 1 MiB cap the MCP stub refuses past before sending, read before decode.
@@ -375,7 +385,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/prompt_queue.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/prompt_queue.py::api_chat_slot_queue_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_steer_retract": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_api/slot_lifecycle.py::api_chat_slot_reset_conversation": (
+    "chat_api/slot_repair.py::api_chat_slot_reset_conversation": (
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
     ),
@@ -448,6 +458,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/cron_runs.py::api_cron_ack": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_lessons.py::api_lessons_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_lessons.py::api_lessons_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/agent_spec_pins.py::api_agent_spec_pin_write": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_board.py::api_cron_folders_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_board.py::api_cron_folders_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # handlers/workflows.py: workflow bodies carry a script source or a

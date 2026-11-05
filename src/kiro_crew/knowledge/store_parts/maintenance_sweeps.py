@@ -38,62 +38,32 @@ _RECLAIM_CHUNK = 200
 def reclaim_orphans(self: KnowledgeStore) -> None:
     """Delete orphan sources, entities and stale relations -- off the boot path.
 
-    Formerly the tail of :meth:`_migrate`, so it ran inside ``__init__`` on
-    the event-loop thread on every launch, before the socket bound. The
-    body is data-scaled (every predicate is a full scan over ``sources``,
-    ``items`` and the state tables) and takes SQLite's writer lock, so a
-    large knowledge store stalled the gateway for long enough to trip the
-    runtime's boot timeouts. ``start_dashboard`` now runs this from a
-    worker thread AFTER the listener is accepting, via
-    ``_kick_knowledge_orphan_reclaim``; the store is readable throughout
-    (WAL readers do not wait on the writer).
+    The body is data-scaled and takes SQLite's writer lock, so
+    ``start_dashboard`` runs it on a worker after the listener is up (via
+    ``_kick_knowledge_orphan_reclaim``); WAL readers are not blocked.
 
-    Running after the listener is up means a request can be ingesting
-    concurrently: :meth:`add_source` commits the source row on its own, and
-    the rows that protect it from the orphan predicate (its ingestion job,
-    its items, its entities' mentions) are written by the caller's pipeline
-    some time later. A sweep observing that half state would delete a
-    source the user just added. The deferred worker therefore runs this
-    inside :meth:`maintenance_window`, which waits for every
-    :meth:`ingestion_in_flight` holder to finish and holds new ingestion
-    off for the duration; this method itself sweeps every row it finds.
+    A request may be ingesting meanwhile, and :meth:`add_source` commits the
+    source row before the rows that protect it from the orphan predicate. The
+    caller therefore runs this inside :meth:`maintenance_window`, and a caller
+    that ingests into an existing source later holds
+    ``pipeline.ingestion_in_flight()`` across the span.
 
-    A caller that looks up an existing source and ingests into it later
-    holds ``pipeline.ingestion_in_flight()`` across the whole span, so the
-    sweep waits for it rather than racing it.
-
-    Thread-safe by the same rules as every other write path: the calling
-    thread gets its own connection through :attr:`db`, and the sweep runs
-    as a series of short ``BEGIN IMMEDIATE`` transactions (see the body). Because it may now run after a reader
-    has materialised the graph, it refreshes the in-memory graph when one is
-    loaded -- the constructor-time sweep never had to, since it always ran
-    before the first load.
+    Deletes run as short ``BEGIN IMMEDIATE`` transactions. A graph a reader
+    already loaded is marked stale afterwards.
     """
-    # Clean orphan sources (no items), entities (no mentions/relations), and stale relations
-    #
-    # Folder sources are EXCLUDED: a watched folder with zero discovered
-    # files is legitimately empty, not orphaned. Deleting it here loses
-    # user-set state -- notably a paused empty folder would be dropped on
-    # restart and then re-created as active by auto-discovery, silently
-    # un-pausing it. The row is user-registered configuration, not derived
-    # data, so only its items are reclaimable. The agent-document and
-    # artifact aggregate sources are containers of the same kind: each is
-    # created empty ('active', no items, no state rows) the moment its
-    # feature first needs it and filled by a later write, so an empty one
-    # is a feature waiting for its first document, not garbage.
+    # Folder sources are EXCLUDED: an empty watched folder is user
+    # configuration, and reaping a paused one would let auto-discovery
+    # re-create it active. The agent and artifact aggregate sources are created
+    # empty before their first document. bedrock_kb never has items (it is
+    # queried at search time), so without the exemption every restart would
+    # delete it.
     orphan_pred = (
         "id NOT IN (SELECT DISTINCT source_id FROM items WHERE source_id IS NOT NULL) "
-        "AND source_type NOT IN ('local_folder', 'obsidian_vault', 'quip', 'agent', 'artifact') "
+        "AND source_type NOT IN ('local_folder', 'obsidian_vault', 'quip', 'agent', 'artifact', 'bedrock_kb') "
         "AND id NOT IN (SELECT source_id FROM ingestion_jobs WHERE status IN ('pending', 'processing')) "
-        # Only a source whose ingest has run to an end state is reclaimable.
-        # Every other status is a claim on the row: 'pending' (the column
-        # default a fresh add_source row carries until its background ingest
-        # writes its gate holder and job row), 'pending_confirmation',
-        # 'syncing', 'active' (a producible initial status for a source a
-        # feature fills later) and 'paused' (user-set) all mean somebody
-        # still intends to write under it. The allowlist is written by the
-        # row's own INSERT or by the ingest that finished, so there is no
-        # window in which a live source reads as an orphan.
+        # Only a source whose ingest reached an end state is reclaimable. Every
+        # other status ('pending', 'pending_confirmation', 'syncing', 'active',
+        # 'paused') means somebody still intends to write under it.
         "AND COALESCE(sync_status, '') IN ('synced', 'error', 'missing') "
         "AND id NOT IN (SELECT DISTINCT source_id FROM folder_file_state) "
         "AND id NOT IN (SELECT DISTINCT source_id FROM artifact_item_state) "
@@ -104,12 +74,9 @@ def reclaim_orphans(self: KnowledgeStore) -> None:
         # gateway start, and the document would stop being reachable from it.
         "AND id NOT IN (SELECT DISTINCT source_id FROM source_locations)"
     )
-    # The candidate list is read outside any transaction, and the deletes run
-    # in chunks of short BEGIN IMMEDIATE transactions that re-check the
-    # predicate under the lock. A knowledge write issued on the event loop
-    # while the sweep runs waits for at most one chunk instead of the whole
-    # data-scaled sweep, so the post-bind sweep cannot stall the loop for
-    # the duration the pre-bind one did.
+    # Candidates are read outside a transaction; deletes run in short chunks
+    # that re-check the predicate under the lock, so a concurrent write waits
+    # for at most one chunk.
     orphan_ids = [
         row[0] for row in self.db.execute(f"SELECT id FROM sources WHERE {orphan_pred}").fetchall()
     ]
@@ -148,36 +115,23 @@ def reclaim_orphans(self: KnowledgeStore) -> None:
 def _adopt_agent_sole_copy_residue(self: KnowledgeStore, source_id: str) -> set[str] | None:
     """Adopt crash residue that is a document's ONLY surviving content.
 
-    Runs as the first step of :meth:`reclaim_agent_source_residue`, inside
-    its drained maintenance window. A replace whose old-group delete
-    committed but whose ownership-row write did not (a store written
-    while those two were separate commits) leaves a slug whose
-    row still names the DELETED previous group, beside the new version's
-    unowned items and their intent marker. Reaping those items, as the
-    marker alone would authorize, deletes the document's last copy. So for
-    a slug whose row names a non-empty group of which NOTHING still exists
-    (under any source or status), the unowned items of EVERY marker at that
-    slug are written into its row instead, and those markers are retired.
+    First step of :meth:`reclaim_agent_source_residue`, inside its drained
+    window. A replace whose old-group delete committed but whose
+    ownership-row write did not leaves a row naming the DELETED group beside
+    the new version's unowned items and intent marker; reaping those would
+    delete the last copy. So for a slug whose row names a non-empty group of
+    which nothing still exists, the unowned items of every marker at that
+    slug are written into its row and the markers retired.
 
-    Nothing stored proves an attempt finished: a hard kill can land after
-    any chunk commit, and no record says how many chunks the attempt meant
-    to write. So adoption keeps the residue but claims no content for it.
-    The row's ``content_hash`` is cleared rather than set to an attempt's
-    hash, because that hash is what tells the next add of the same text
-    "unchanged since last add" -- a truncated attempt adopted under it would
-    never get its missing chunks written. And every attempt is kept, not
-    only the newest, because the newest may be the truncated one and an
-    older one the last complete version. The next add at the slug, of any
-    content, replaces the whole adopted group.
+    No attempt is proven complete, so the row's ``content_hash`` is cleared
+    (a matching hash would make the next add skip missing chunks) and every
+    attempt is kept, not only the newest. The next add at the slug replaces
+    the whole adopted group.
 
-    Left to the sweep, unchanged: a slug with no row (a first add that
-    crashed -- nothing was replaced, so nothing is lost), and a row that
-    owned nothing (a refused or deduped document whose content another row
-    holds). A hash marked at more than one such slug cannot be attributed to
-    one document; it is SPARED rather than adopted or reaped, and so is
-    every other attempt at a slug holding one, so nothing there is deleted
-    while its ownership is unclear -- a leaked duplicate is recoverable, a
-    deleted sole copy is not.
+    Left to the sweep: a slug with no row (nothing was replaced) and a row
+    that owned nothing. A hash marked at more than one candidate slug is
+    SPARED, with every other attempt at that slug: a leaked duplicate is
+    recoverable, a deleted sole copy is not.
 
     Returns the spared hashes for the sweep to leave alone, or ``None`` --
     "cannot tell, do not sweep" -- when an ownership group is unreadable.
@@ -296,55 +250,29 @@ def _adopt_agent_sole_copy_residue(self: KnowledgeStore, source_id: str) -> set[
 def reclaim_agent_source_residue(self: KnowledgeStore) -> int:
     """Delete items an interrupted agent-document ingest provably left behind.
 
-    A HARD KILL during an agent-document ingest is still open: the item
-    chunks and the ``agent_item_state`` ownership-row write are separate
-    commits on an autocommit connection, so a process killed between the
-    item commit and the row commit leaves committed items that no row names.
-    The replacement path keys off that row, so the next add of the same
-    document adds a second copy instead of replacing the first -- the
-    duplicate this sweep repairs. Nothing else on the agent path reaps that
-    residue, so it is permanent until this sweep removes it.
+    The item chunks and the ``agent_item_state`` row are separate commits, so
+    a hard kill between them leaves items no row names, and the next add of
+    the same document duplicates them. Nothing else reaps that residue.
 
-    REAPS ONLY ON POSITIVE EVIDENCE, NEVER BY ABSENCE OF A ROW. "No row
-    names this item" is NOT proof of crash residue: ``_import_bundle_state``
-    has several paths that leave a bundle's agent items unowned on purpose --
-    a row skipped as ``ownership_row_key_held_locally``, an empty or
-    over-claiming group, a bundle with no state tables -- and a single-item
-    export/import round trip (``export_item`` writes no state row) does the
-    same. A sweep keyed on absence would silently and unrecoverably delete
-    every such imported item. So the ingest records an intent marker in
-    ``agent_ingest_intent`` BEFORE it commits items and deletes it on
-    finalize; a marker that survives into a drained maintenance window is
-    the positive proof that an ingest started and never finished. This sweep
-    deletes an unowned ``active`` agent item ONLY when its ``content_hash``
-    matches an intent marker -- the hash the crashed ingest stamped on every
-    chunk it wrote (``items.content_hash`` over the newline-normalized
-    extracted text, the same value the ingest records on the marker). An
-    imported item has no such marker for its hash, so it is never a
-    candidate. The marker sits in its own table rather than on the ownership
-    row, so it covers a crash while REPLACING a live group as well as a
-    first add, and two interrupted attempts at one slug each keep their own
-    evidence. A reaped attempt's marker is deleted in the same transaction.
+    REAPS ONLY ON POSITIVE EVIDENCE, never by absence of a row: several
+    ``_import_bundle_state`` paths and ``export_item`` round trips leave
+    agent items unowned on purpose. The ingest writes a marker in
+    ``agent_ingest_intent`` before committing items and deletes it on
+    finalize; an unowned ``active`` item is deleted only when its
+    ``content_hash`` matches a marker that survived into a drained window.
+    Markers live in their own table, so they cover a crash while replacing a
+    live group and keep two attempts at one slug apart. A reaped attempt's
+    marker is deleted in the same transaction.
 
-    NEVER DELETES A DOCUMENT'S SOLE SURVIVING COPY: before any residue is
-    chosen, :meth:`_adopt_agent_sole_copy_residue` adopts the residue of a
-    slug whose recorded group is gone into that slug's row (and
-    spares a hash it cannot attribute to one slug), so a replace interrupted
-    after its old-group delete is repaired rather than emptied.
+    NEVER DELETES A SOLE SURVIVING COPY:
+    :meth:`_adopt_agent_sole_copy_residue` runs first.
 
-    SCOPED TO THE ``agent://`` SOURCE ALONE: only the agent path writes these
-    markers, so the sweep cannot reach a folder- or artifact-backed item.
+    Scoped to the ``agent://`` source alone. An item another source also
+    holds is DETACHED (``delete_items_batch_in_txn`` with
+    ``owner_source_id``), not destroyed.
 
-    An item another source also holds (a dedup co-location) is DETACHED, not
-    destroyed: ``delete_items_batch_in_txn`` with ``owner_source_id`` moves
-    ownership to a surviving holder and drops only the agent source's
-    location row. Only an item no other source holds is removed outright.
-
-    Runs off the boot path inside ``maintenance_window`` like
-    :meth:`reclaim_orphans`: that waits for in-flight ingestion to drain and
-    holds new ingestion off, so an item still mid-ingest -- its marker not
-    yet replaced by the finalize hop -- is never read as residue. Returns the
-    number of residue items removed.
+    Runs inside ``maintenance_window`` like :meth:`reclaim_orphans`, so a
+    mid-ingest item is never read as residue. Returns the number removed.
     """
     agent_src = self.get_source_by_uri("agent://")
     if not agent_src:
@@ -354,11 +282,9 @@ def reclaim_agent_source_residue(self: KnowledgeStore) -> int:
     def _owned_ids() -> set[str] | None:
         """Every item id a live state row names for this source.
 
-        Delegates to :meth:`agent_owned_item_ids` -- the one place this
-        derivation lives. Returns ``None`` ("cannot tell, do not sweep")
-        when any row's ``item_ids`` is unreadable, in which case the whole
-        sweep stands down for this source until the corruption is resolved
-        (a stale item is recoverable; a wrongly-deleted one is not).
+        Returns ``None`` ("cannot tell, do not sweep") when any row's
+        ``item_ids`` is unreadable: a stale item is recoverable, a
+        wrongly-deleted one is not.
         """
         return self.agent_owned_item_ids(source_id)
 
@@ -369,19 +295,10 @@ def reclaim_agent_source_residue(self: KnowledgeStore) -> int:
     def _ingesting_hashes() -> dict[str, str]:
         """Content hash -> EARLIEST ``started_at`` of a marker naming it.
 
-        The ingest writes one of these before it commits items and deletes it
-        on finalize, so a marker present in a drained maintenance window is
-        positive proof that an ingest of exactly this content started and
-        never finished. An item is residue ONLY if its own ``content_hash``
-        is in this map AND it was created at or after the attempt began
-        (``items.created_at >= started_at``); an imported item that merely
-        lacks an ownership row has no marker, and a pre-existing or bundle
-        item created BEFORE the crash is excluded by the timestamp even when
-        it happens to share a hash. The marker lives in its own table, so it
-        coexists with a live ownership row for the same slug -- a re-add that
-        crashes while replacing a live group leaves its marker here just as a
-        first add does. When two markers name one hash the EARLIEST start is
-        kept, so neither crashed attempt's residue is excluded by the other.
+        An item is residue only if its ``content_hash`` is here AND
+        ``items.created_at >= started_at``, so an item created before the
+        crash is excluded even when it shares a hash. The earliest start is
+        kept so neither of two crashed attempts excludes the other.
         """
         out: dict[str, str] = {}
         for row in self.db.execute(
@@ -397,36 +314,17 @@ def reclaim_agent_source_residue(self: KnowledgeStore) -> int:
         return out
 
     def _live_owned_hashes() -> set[str] | None:
-        """Content hashes a HEALTHY ownership row holds AT A SLUG THAT HAS NO
-        MARKER for that hash.
+        """Content hashes any HEALTHY or ``deduped`` ownership row holds, marker or not.
 
-        A matching marker hash alone must not authorize deleting an item: a
-        document deduped against another, then disturbed by a delete, can
-        leave its ONLY copy unowned (``_adopt_reassigned_item`` refuses an
-        ambiguous hash rather than cross-wire two groups), and a same-content
-        crash marker would then name that surviving copy's hash. Deleting it
-        on hash evidence is irreversible data loss. So if the content behind
-        a hash is still held by a healthy ownership row at a DIFFERENT
-        document -- one with no crash marker of its own for that hash -- the
-        sweep leaves every unowned copy of that hash alone: the content is
-        accounted for elsewhere and the hash is not safe residue evidence.
-        A healthy row shields its hash whether it still NAMES live items or
-        its group is EMPTY: a reassignment that refused ambiguous ownership
-        leaves a ``deduped`` row with no items but a surviving sole copy, and
-        that copy's hash must be shielded by the row's existence alone.
-
-        The shield is UNCONDITIONAL on any healthy or ``deduped`` row's hash,
-        with no exclusion for a hash that also carries a crash marker at the
-        same slug. An earlier design excluded such a (slug, hash) pair so a
-        genuine same-slug retry's orphan could be reaped, but that exclusion
-        stripped protection from the ONE case where the "orphan" is actually
-        the slug's sole surviving copy -- an irreversible deletion. Between
-        leaking a duplicate (the exclusion's absence, self-healing: a later
-        identical add dedups it) and deleting the last copy (the exclusion's
-        presence), the fail-safe choice is to shield, so the exclusion is
-        gone. Returns ``None`` -- "cannot tell, do not sweep" -- if any row's
-        ``item_ids`` is unreadable, for the same fail-safe reason as
-        :func:`_owned_ids`.
+        A marker hash alone must not authorize a delete: a deduped document
+        disturbed by a delete can leave its ONLY copy unowned
+        (``_adopt_reassigned_item`` refuses an ambiguous hash), and a
+        same-content crash marker would then name it. So any hash a healthy
+        or ``deduped`` row holds, even with an empty group, shields every
+        unowned copy of that hash, including at a slug that also has a
+        marker for it: a leaked duplicate self-heals on the next identical
+        add, a deleted last copy does not. Returns ``None`` -- "cannot tell,
+        do not sweep" -- if any row's ``item_ids`` is unreadable.
         """
         # item id -> content_hash, for every item a healthy row names.
         protect_ids: set[str] = set()

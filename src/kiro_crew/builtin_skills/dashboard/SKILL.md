@@ -1,12 +1,12 @@
 ---
 name: dashboard
-description: "Build or change a crewmate's Dashboard tab: a page worth returning to, with real work woven into its design. dashboard_save stores it; dashboard_apply puts it live. Values arrive through declared fields, independently of the page."
+description: "Build or change a Bot's Dashboard tab: a page worth returning to, with real work woven into its design. dashboard_save stores it; dashboard_apply puts it live. Values arrive through declared fields, independently of the page."
 triggers: dashboard, my dashboard, dashboard tab, change my dashboard, another dashboard, dashboard page, show me a different, go back to the old dashboard, build a dashboard, dashboard gallery, dashboard template
 ---
 
 # The Dashboard Tab
 
-One page per crewmate. You design it, the person owns it, and the gateway feeds
+One page per Bot. You design it, the person owns it, and the gateway feeds
 its declared fields. The page, the values and the frame have different jobs:
 
 | Part | Job |
@@ -66,7 +66,7 @@ A template from `dashboard_templates` uses `dashboard_apply(template_id=...)`.
 gate for authored code. `dashboard_rollback` restores a version listed by
 `dashboard_fields`; restoring an old version itself creates a new version.
 
-**Progress goes on the page, not in chat.** People check a crewmate once or
+**Progress goes on the page, not in chat.** People check a Bot once or
 twice a day, and the page is what they read. Keep where your work stands on
 your Dashboard page; the chat gets few reports, and when it gets one it covers
 several things in one message, never a stream of small updates. No goal or
@@ -117,6 +117,15 @@ changes. When they leave the style open, choose a coherent direction from
 the work and its context. That freedom includes a theme, atmosphere and
 visual metaphor, as well as an abstract design. Let that character reach
 across the page rather than stop at a heading or an icon.
+
+**Themed pages are an option.** `THEMES.md` beside this file holds
+whole-page theme ideas, such as an arcade cabinet, a cork board or a
+departure board. When the person leaves the style open, you may pick one
+that suits the work; most people do not know a theme is possible. When they
+ask what looks are possible, name two or three. A clean, plain page is just
+as correct, and a theme is never required. When one is used, it changes
+only the look: every value stays bound to its fold and every link keeps
+working.
 
 **Give the whole page visual depth.** Backgrounds, wallpaper, pattern,
 texture, expressive frames and layered surfaces are welcome parts of the

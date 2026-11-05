@@ -269,3 +269,51 @@ def test_doctor_names_the_exact_floor_when_node_is_missing(monkeypatch) -> None:
     with redirect_stdout(buf):
         cli_doctor._report_node([])
     assert FLOOR_TEXT in buf.getvalue()
+
+
+def test_bundle_route_without_node_on_path_names_the_bundles_node(monkeypatch) -> None:
+    """The KAS engine runs its bundle's own Node, so no install advice is printed."""
+    monkeypatch.setattr(cli_doctor.shutil, "which", lambda name, **_kw: None)
+    issues: list[str] = []
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli_doctor._report_node(issues, bundle_route=True, bundle_node_version="22.23.3")
+    out = buf.getvalue()
+    assert out == (
+        "  node:        ⏭  not on PATH; not needed "
+        "(KAS runs its engine bundle's own Node 22.23.3)\n"
+    )
+    assert issues == []
+
+
+def test_bundle_route_without_an_installed_engine_drops_only_the_version(monkeypatch) -> None:
+    monkeypatch.setattr(cli_doctor.shutil, "which", lambda name, **_kw: None)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli_doctor._report_node([], bundle_route=True)
+    out = buf.getvalue()
+    assert "not needed (KAS runs its engine bundle's own Node)" in out
+    assert "Fix:" not in out and "install Node.js" not in out
+
+
+@pytest.mark.parametrize(("stdout", "ok"), [("v22.11.0\n", False), ("v22.14.0\n", True)])
+def test_bundle_route_still_judges_a_node_on_path(monkeypatch, stdout: str, ok: bool) -> None:
+    """Other tools run on a Node on PATH, so the floor still applies to it."""
+    _fake_node(monkeypatch, cli_doctor, stdout)
+    issues: list[str] = []
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli_doctor._report_node(issues, bundle_route=True, bundle_node_version="22.23.3")
+    out = buf.getvalue()
+    assert "engine bundle" not in out
+    assert issues == ([] if ok else ["node"])
+
+
+def test_relay_route_without_node_keeps_the_install_advice(monkeypatch) -> None:
+    monkeypatch.setattr(cli_doctor.shutil, "which", lambda name, **_kw: None)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli_doctor._report_node([], bundle_route=False, bundle_node_version="22.23.3")
+    out = buf.getvalue()
+    assert "not found (Kiro Crew needs Node" in out
+    assert "Fix: install Node.js" in out

@@ -98,3 +98,89 @@ def kas_tool_view(provider: object) -> dict[str, Any] | None:
         },
         "mode_id": mode_id,
     }
+
+
+def permissions_block_readable(raw: Any) -> bool:
+    """Whether KAS's projection would read the ``permissions`` block *raw* whole.
+
+    A block it refuses (a named bundle, an unknown key, a rule it cannot parse)
+    travels as no rule at all, its denies included. Read without auditing: this
+    asks, it projects nothing.
+    """
+    from kiro_crew.acp import kas_permissions
+
+    parsed = kas_permissions.parse_user_permissions(
+        raw, audit_decision=kas_permissions._asking_only
+    )
+    return parsed is not None
+
+
+def allow_granted_by_spec(rule: dict[str, Any], spec: dict[str, Any]) -> bool:
+    """Whether *spec*'s own grants already cover allow *rule* on KAS.
+
+    Read from the rules KAS's projection derives (``allowed_tools_to_permissions``)
+    from the same input it uses: the ``allowedTools`` list plus each governed
+    server ``autoApprove`` verb. A bare capability allow is granted when that
+    input derives the same one, an ``mcp`` allow when every pattern it matches is
+    covered by a pattern the input derives (:func:`_pattern_contains`).
+    """
+    from kiro_crew.acp import kas_permissions
+    from kiro_crew.acp.kas_auto_approve import auto_approve_refs
+
+    listed = spec.get("allowedTools")
+    allowed = [*(listed if isinstance(listed, list) else [])]
+    allowed.extend(r for r in auto_approve_refs(spec, audit=False) if r not in allowed)
+    derived = kas_permissions.allowed_tools_to_permissions(allowed) or {}
+    allows = [r for r in derived.get("rules", []) if r.get("effect") == "allow"]
+    capability = rule.get("capability")
+    if capability != "mcp":
+        return any(r.get("capability") == capability and not r.get("match") for r in allows)
+    granted = [p for r in allows if r.get("capability") == "mcp" for p in r.get("match") or []]
+    wanted = rule.get("match") or []
+    return bool(wanted) and all(
+        isinstance(p, str) and any(_pattern_contains(g, p) for g in granted) for p in wanted
+    )
+
+
+def _pattern_contains(granted: str, wanted: str) -> bool:
+    """Whether MCP pattern *granted* provably matches everything *wanted* matches.
+
+    Only two shapes are proved: the same pattern, and a whole-server grant
+    (``server/*``) over any pattern on that server. Anything else is not.
+    """
+    if granted == wanted:
+        return True
+    server, sep, tool = granted.partition("/")
+    return bool(sep) and tool == "*" and wanted.startswith(server + "/")
+
+
+def permission_allow_derivable(rule: dict[str, Any]) -> bool:
+    """Whether KAS's projection treats ``permissions`` *rule* as an ``allowedTools``
+    grant, which it drops from the block when the spec has that list."""
+    from kiro_crew.acp import kas_permissions
+
+    if not isinstance(rule.get("capability"), str) or not isinstance(rule.get("effect"), str):
+        return False
+    return kas_permissions._deriver_could_emit(rule)
+
+
+def tools_settings_family(tool: Any) -> str:
+    """The tool family a ``toolsSettings`` key belongs to (``execute_bash`` and
+    ``shell`` are one), else the key itself."""
+    from kiro_crew.acp import kas_permissions
+
+    family = kas_permissions._TOOLS_SETTINGS_FAMILY.get(tool) if isinstance(tool, str) else None
+    return family or str(tool)
+
+
+def tools_settings_unenforced(raw: Any) -> list[str]:
+    """The ``<tool>.<key>`` entries in ``toolsSettings`` *raw* KAS's translation drops.
+
+    Read from KAS's own translation (``tools_settings_to_permissions``): a deny it
+    cannot turn into a rule (a regex with no glob form, a URL pattern naming a
+    path) and an ``allowedCommands`` entry Crew's gate cannot answer are named.
+    """
+    from kiro_crew.acp import kas_permissions
+
+    _block, not_carried = kas_permissions.tools_settings_to_permissions(raw)
+    return sorted(not_carried)

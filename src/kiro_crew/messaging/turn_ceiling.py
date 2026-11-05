@@ -108,28 +108,17 @@ logger = logging.getLogger(__name__)
 #: Set for the span of a turn this gateway GENERATED rather than received, and
 #: spent by the FIRST ceiling gate inside that span.
 #:
-#: The ceiling bounds a conversation that keeps driving itself, and what makes
-#: that runaway unbounded is that each turn's own output arrives as the next
-#: inbound message. A turn an armed nudge loop generates is not that: the loop
-#: carries its own cycle cap and runtime budget, so its cycles are already
-#: bounded and counting them here would let a long legitimate watch spend the
-#: conversation's budget and then latch it -- refusing both its own next cycle
-#: and the human's next message.
+#: A nudge loop has its own cycle cap and runtime budget; counting its cycles
+#: here would let a long watch spend the budget and latch the conversation
+#: against the human too.
 #:
-#: SINGLE-USE, which is the whole safety property. A dispatcher drains the
-#: messages queued during a turn from that turn's own tail, in the same task, so
-#: a span-wide exemption would also exempt every drained INBOUND message -- and
-#: the drain pump keeps answering whatever each drained turn queues next, which
-#: is precisely the unbounded self-driving loop this module exists to bound. One
-#: generated turn therefore buys exactly one uncounted gate; everything nested
-#: inside it, or after it, is counted like any other inbound turn.
+#: SINGLE-USE is the safety property: a dispatcher drains messages queued during
+#: a turn in the same task, so a span-wide exemption would also exempt every
+#: drained inbound message, which is the self-driving loop this module bounds.
 #:
-#: Context-local rather than a parameter because the only code that KNOWS a turn
-#: is generated is the nudge dispatcher, and between it and this gate sit several
-#: channels' ``handle_message`` signatures that have no business carrying the
-#: fact. A ContextVar is copied into the task a dispatch runs in, so a concurrent
-#: human turn in another task is unaffected, which a module-global flag would not
-#: give.
+#: A ContextVar, not a parameter, so the fact need not cross every channel's
+#: ``handle_message``; it is copied per task, so a concurrent human turn is
+#: unaffected.
 _generated_turn: ContextVar[Optional["_GeneratedTurn"]] = ContextVar(
     "kirocrew_turn_ceiling_generated", default=None
 )
@@ -180,14 +169,9 @@ DEFAULT_MAX_TURNS = 90
 #: Width of the rolling window, in seconds.
 DEFAULT_WINDOW_SECS = 3600.0
 
-#: Highest ceiling an operator may set. The per-conversation window RETAINS one
-#: timestamp per counted turn, so the ceiling is that deque's only length bound
-#: and a cap on the row COUNT alone leaves each row unbounded. The arithmetic
-#: fixes the number: MAX_TRACKED_CONVERSATIONS rows at 8 bytes a timestamp is
-#: about 16 MB at this bound and about 160 MB an order of magnitude above it,
-#: which is not a memory budget a loop guard may spend. It is also eleven times
-#: the default, and a chat conversation that legitimately drives a thousand turns
-#: inside one window is not a conversation.
+#: Highest ceiling an operator may set. Each window keeps one timestamp per
+#: counted turn, so this is the deque's only length bound: about 16 MB across
+#: MAX_TRACKED_CONVERSATIONS rows at this value, 160 MB at ten times it.
 MAX_CONFIGURABLE_CEILING = 1000
 
 #: Conversations tracked at once, for the window map and the latch set alike.
@@ -199,14 +183,9 @@ MAX_TRACKED_CONVERSATIONS = 2048
 #: only how often they are spoken is bounded.
 OVERFLOW_REPORT_SECS = 60.0
 
-#: Longest session key either store RETAINS verbatim. A cap on the row count
-#: bounds memory only when each retained field is bounded too, and the key is a
-#: field: 2048 rows of an unbounded string is unbounded. A key longer than this
-#: is stored as a fixed-length digest instead of being truncated, because two
-#: conversations sharing a prefix must not collapse into one count -- a merged
-#: count bounds unrelated conversations together, which is the failure this
-#: module exists to remove. Generous by design: a channel session key is a
-#: surface name and two provider ids, well inside it.
+#: Longest session key either store keeps verbatim, so the row cap bounds memory.
+#: A longer key is stored as a digest, not truncated: keys sharing a prefix must
+#: not merge into one count.
 MAX_RETAINED_KEY_CHARS = 256
 
 
@@ -235,19 +214,12 @@ REFUSAL_TEXT = (
 class TurnCeilingExceeded(Exception):
     """A conversation is at its turn ceiling, so the turn was refused pre-stream.
 
-    Raised from the pre-stream gate, which means no prompt was registered and no
-    model turn was spent. Callers treat it like the shutdown refusal they
-    already handle: terminal for the message, and NOT a fault of the session, so
-    it must not be charged to the circuit breaker.
+    No prompt was registered and no model turn spent. Treat it like the shutdown
+    refusal: terminal for the message, and not charged to the circuit breaker.
 
-    ``announce`` is true only on the turn that CLOSES the latch, and every later
-    refusal on that conversation is silent. In a self-chat the notice is itself
-    output, so it returns as the next inbound message and is refused in turn: a
-    notice on every refusal would answer its own reflection forever -- no model
-    turns, but an endless exchange of channel messages, which is the shape this
-    module exists to end. The first notice carries the remedy, repeating the same
-    text tells the user nothing new, and the operator's feed is told once for the
-    same reason.
+    ``announce`` is true only on the turn that CLOSES the latch; later refusals are
+    silent. In a self-chat the notice returns as inbound and is refused in turn, so
+    a notice per refusal would loop forever.
     """
 
     def __init__(self, message: str, *, announce: bool = True) -> None:
@@ -456,22 +428,13 @@ class ConversationTurnCeiling:
     def _evict_locked(self) -> None:
         """Hold both stores at the cap, and say so when that drops a latch.
 
-        Dropping a WINDOW is cheaper than dropping a LATCH, and both are counted.
-        A window's loss hands that conversation a little extra headroom before it
-        latches; a latch's loss takes its refusal away, so its next inbound
-        message opens a turn and it gets a whole fresh window. Neither may be
-        silent: a truncated tail reads exactly like a population that was never
-        there, so the counts are exact and the totals are said out loud.
+        A dropped window gives that conversation extra headroom; a dropped latch
+        lifts its refusal and gives it a fresh window. Both are counted exactly,
+        never silently. Eviction is least-recently-used; a refused turn moves its
+        key to the end, so a quiet conversation loses its latch first.
 
-        Eviction order is the least-recently-used row, and for a latch that means
-        the least-recently-REFUSED one, because a refused turn moves its key to
-        the end: the conversation that went quiet loses its latch before one that
-        is still being refused.
-
-        Announced at most once per :data:`OVERFLOW_REPORT_SECS`, with the running
-        totals. The throttle is not tidiness: this runs on every ``check``, so a
-        host in steady state above the cap evicts on each counted turn, and an
-        announcement per event would itself become the overflow.
+        Announced at most once per :data:`OVERFLOW_REPORT_SECS`: this runs on every
+        ``check``, so a host above the cap would otherwise log on every turn.
         """
         windows_dropped = 0
         while len(self._windows) > self.max_tracked:
@@ -508,11 +471,8 @@ def shared_ceiling() -> ConversationTurnCeiling:
     return _SHARED
 
 
-#: Set once, by whoever owns a notification feed. A module-level sink rather than
-#: a per-channel injection because the operator-visible half of this guard must
-#: not depend on which channel happened to wire it: a channel that forgot would be
-#: a channel whose pauses are invisible, and invisibility is the defect this
-#: guard exists to remove.
+#: Set once, by whoever owns a notification feed. Module-level rather than
+#: per-channel, so a channel that forgets to wire it cannot hide its pauses.
 _notification_sink: Optional[Callable[[str, str], None]] = None
 
 
@@ -532,15 +492,10 @@ def set_notification_sink(sink: Optional[Callable[[str, str], None]]) -> None:
 def surface_of(session_key: str) -> str:
     """The channel surface a session key addresses.
 
-    Reads the key's first ``:``-segment, which the channel-turn contract requires
-    to equal the channel's governance name. Used only to label a notification, so
-    a key that does not follow the grammar degrades to a generic label instead of
-    raising inside a gate.
-
-    A key with NO ``:`` is such a key, and that case is ordinary rather than
-    malformed: a channel turn resuming a dashboard session runs under the
-    dashboard key. Returning its whole spelling would label the notice with an
-    opaque session id, so it degrades like any other unreadable key.
+    The key's first ``:``-segment (the channel's governance name). Only a label,
+    so an unreadable key degrades to ``"channel"`` instead of raising in a gate. A
+    key with no ``:`` is normal: a resumed dashboard session runs under the
+    dashboard key, whose spelling is an opaque id.
     """
     head, sep, _ = session_key.partition(":")
     if not sep:
@@ -564,27 +519,13 @@ def _emit_latched_note(session_key: str) -> None:
 async def render_refusal(renderer: Any, exc: TurnCeilingExceeded) -> None:
     """Put the refusal into a channel's OWN output stream, and end that stream.
 
-    Dispatching the chunk shows the pause on the surface where it happened, which
-    is the half the per-message echo guards do not have: their drop is silent.
-    ``on_done`` is the other half, and it is required rather than tidy. A
-    channel's ``finally`` calls ``close()``, which tears the turn down -- cancels
-    timers, finalizes the reaction -- and flushes nothing, while a throttled
-    stream holds the chunk's trailing word back so the two halves of a word cut
-    across fragments cannot be appended separately. On the refusal path no
-    further chunk is coming, so without this the notice is appended one word
-    short and the stream is never sealed. The ceiling latches, so every later
-    turn in that conversation would repeat the same truncated notice.
+    ``on_done`` is required: a channel's ``close()`` flushes nothing, and a
+    throttled stream holds back the trailing word, so without it the notice is
+    one word short and the stream never sealed. ``on_done`` is idempotent under
+    the later ``close()``.
 
-    Says nothing at all unless ``exc.announce`` -- see
-    :class:`TurnCeilingExceeded` for why a notice on every refusal would answer
-    its own reflection forever.
-
-    This is what the shared dispatcher's sibling memory-refusal branch does with
-    the same two calls, and ``on_done`` is idempotent under the ``close()`` that
-    follows it in the ``finally``.
-
-    Best effort. It runs on the refusal path, where the turn is already over, so a
-    renderer that cannot flush must not replace a clean refusal with a traceback.
+    Silent unless ``exc.announce`` (see :class:`TurnCeilingExceeded`). Best
+    effort: a renderer failure must not replace a clean refusal with a traceback.
     """
     if not exc.announce:
         return

@@ -33,11 +33,8 @@ from kiro_crew.testing.wait import async_wait_until, await_until, default_timeou
 async def _stalled_gate(*_args, **_kwargs):
     """Stand in for a fire-time gate that outlives the wake deadline.
 
-    Models a recoverable event-loop stall rather than a slow gate: it is the
-    whole ``run_in_cron_gate_pool`` call that fails to complete, so neither of
-    the gate's OWN bounds is what stops it. That is the only way to reach the
-    state where ``asyncio.wait_for`` in ``_execute_with_timeout`` cancels the
-    coroutine AT the await -- no internal deadline sizing can prevent it.
+    The whole ``run_in_cron_gate_pool`` call stalls, so neither of the gate's own bounds
+    stops it and ``_execute_with_timeout`` cancels the coroutine at the await.
     """
     await asyncio.Event().wait()  # parked until the wake deadline cancels it
 
@@ -238,16 +235,9 @@ def test_shutdown_cancel_keeps_the_last_completed_result(tmp_path) -> None:
 async def _run_script_callback_behind_a_busy_worker(gw, job, script_result, hold_secs):
     """Drive the script branch with the cron pool's only worker already busy.
 
-    The blocker is submitted from INSIDE the fire-time gate. That ordering is
-    what puts it ahead of the script in the cron pool's FIFO queue, so the script
-    genuinely waits for a worker -- the production condition. Submitting it up
-    front would let the gate run first and the script would then find a free
-    worker and never queue.
-
-    The gate itself does not touch this pool: it runs on the dedicated
-    ``mc-crongate`` pool with a bound of its own, so starving the cron pool
-    cannot starve the gate. That independence is the point -- it is why this
-    fixture can saturate the cron pool without perturbing the gate under test.
+    The blocker is submitted from inside the fire-time gate so it sits ahead of the
+    script in the pool's FIFO queue; submitted up front, the script would find a free
+    worker. The gate runs on its own ``mc-crongate`` pool, so this cannot starve it.
     """
     captured_cb = None
     release = threading.Event()
@@ -292,26 +282,20 @@ async def _run_script_callback_behind_a_busy_worker(gw, job, script_result, hold
 class TestCronPoolQueueWait:
     """Queue time in the bounded cron pool must not be charged to the job.
 
-    ``run_in_executor`` only SUBMITS. The cron pool is bounded at
-    ``_MAX_CRON_WORKERS``, so a job whose workers are all busy sits in the
-    pool's queue having run nothing -- while the old
-    ``wait_for(run_in_executor(...), timeout=job_timeout + 5)`` counted from the
-    moment it was awaited. Queue time was therefore spent out of the job's own
-    budget, and the kill was recorded as ``timeout (Ns)`` naming the script, so
-    one wedged job reads as N broken ones.
+    ``run_in_executor`` only submits; with all ``_MAX_CRON_WORKERS`` busy a job sits in
+    the queue having run nothing. Charging that wait would record ``timeout (Ns)``
+    against the script, so one wedged job would read as N broken ones.
     """
 
     @pytest.mark.asyncio
     async def test_fast_script_waiting_for_a_worker_is_not_killed_as_a_script_timeout(self):
-        """Negative control: fails pre-fix, for the reason the defect describes.
+        """An instant script behind a worker held 6.5s waits untimed, then runs.
 
-        The script here is instant (mocked ok) but the only worker is held for
-        6.5s, past the 6s the pre-fix budget allowed a 1s-timeout job. Pre-fix
-        this is killed and labelled ``timeout (6s)``; the fix lets it wait for a
-        worker untimed and then run.
+        6.5s is past a 1s-timeout job's 1 + 5 = 6s budget, so charging queue wait to
+        the job would kill it as ``timeout (6s)``.
         """
         gw = _make_gw()
-        job = _make_script_job(timeout=1)  # pre-fix budget: 1 + 5 = 6s
+        job = _make_script_job(timeout=1)  # its own budget: 1 + 5 = 6s
 
         result, mock_run = await _run_script_callback_behind_a_busy_worker(
             gw, job, {"status": "ok"}, hold_secs=6.5
@@ -370,13 +354,8 @@ class TestCronPoolQueueWait:
     async def test_repeated_starvation_never_auto_pauses_a_healthy_script(self):
         """Starvation must not consume the auto-pause budget.
 
-        ``record_failure`` auto-pauses at ``_AUTO_PAUSE_THRESHOLD`` by clearing
-        ``enabled``, and a paused job never fires again. Counting a queue timeout
-        there means a saturated pool permanently disables jobs that never ran a
-        line, so when the pool recovers the work is silently unscheduled. The
-        fire-time governance deny path already declines to count for exactly this
-        reason. Asserts the counter and the pause flag, not merely the absence of
-        an exception.
+        ``record_failure`` auto-pauses at ``_AUTO_PAUSE_THRESHOLD``, so counting queue
+        timeouts would permanently disable jobs that never ran a line.
         """
         from kiro_crew.cron import _AUTO_PAUSE_THRESHOLD
 
@@ -410,17 +389,10 @@ class TestCronPoolQueueWait:
 
     @pytest.mark.asyncio
     async def test_the_enclosing_wake_deadline_also_excludes_queue_wait(self, tmp_path):
-        """Excluding queue wait from the per-call kwarg is only half the job.
+        """The wake deadline also excludes queue wait.
 
-        ``CronService._execute_with_timeout`` wraps the whole run and the pool's
-        queue wait happens inside it, so without a queue term there a job still
-        sitting in the queue is killed by the WAKE deadline and reported as an
-        execution overrun -- the same misdiagnosis, one frame out. Worse, a thread
-        cannot be interrupted, so a worker that claimed the call as the deadline
-        fired keeps running while the overlap guards clear.
-
-        Fails pre-fix: the command job below is killed at its 2s wake budget with
-        ``Timed out after 2s`` and its payload never runs.
+        ``CronService._execute_with_timeout`` wraps the whole run, queue wait included,
+        so without a queue term a queued job is killed and reported as an overrun.
         """
         from kiro_crew.cron import CronService
 
@@ -481,11 +453,7 @@ class TestCronPoolQueueWait:
         """A one-shot that never ran must not be consumed by the run it never had.
 
         ``_merge_job_result`` deletes a ``delete_after_run`` job unless the run was
-        refused, and the queue-timeout paths return without marking a refusal -- so
-        a job that never got a worker is destroyed exactly as if it had completed,
-        and its scheduled work is gone with it. The fire-time deny path already
-        carries the retain-on-refusal property; starvation needs the same one for
-        the same reason, without borrowing the *policy* meaning of that flag.
+        refused, so a queue timeout must mark the job retained.
         """
         from kiro_crew.cron import CronService
 
@@ -517,12 +485,8 @@ class TestCronPoolQueueWait:
     async def test_a_starved_one_shot_at_job_is_not_parked_disabled(self, tmp_path):
         """Retention must not borrow the policy-denial meaning.
 
-        ``fire_time_denied`` is read in three places: besides suppressing the
-        one-shot delete it also forces an ``at`` job disabled, and it is documented
-        as a governance refusal. Reusing it for a capacity event would park a
-        starved one-shot needing an operator to re-enable it, and would mislabel
-        pool saturation as a policy denial in history. Starvation clears on its own,
-        so the job must stay schedulable.
+        ``fire_time_denied`` also forces an ``at`` job disabled and reads as a governance
+        refusal. Starvation clears on its own, so the job must stay schedulable.
         """
         import time
 
@@ -599,14 +563,8 @@ class TestCronPoolQueueWait:
     async def test_the_reaper_does_not_preempt_a_job_inside_the_widened_window(self, tmp_path):
         """The reaper must account for queue wait too, or it cancels a queued job.
 
-        Two deadlines bound one run. Widening only the execution guard leaves the
-        reaper's own threshold 900s lower for every command/script job at or above
-        the default wake budget, so a job whose gate and payload queued through
-        that window is force-killed and the firing is skipped without ever
-        executing -- the mirror image of the misdiagnosis the widening removed.
-
-        Fails pre-fix: with the reaper unchanged its deadline is 1800s, the job
-        below has been in flight 1850s, and it is reaped.
+        Two deadlines bound one run. The job below has been in flight 1850s, past the
+        1800s wake budget but inside the window widened for queue wait.
         """
         from kiro_crew.cron import CronService
 
@@ -660,24 +618,9 @@ class TestCronPoolQueueWait:
     ):
         """The fire-time governance gate must not queue behind long-running cron work.
 
-        Both deadlines deliberately withhold the pool allowance from a message job,
-        on the premise that it never touches the pool. The FIRE-TIME GOVERNANCE GATE
-        breaks that premise. ``vet_job_at_fire_time`` is dispatched off-loop for
-        every job kind, and dispatching it to the CRON pool puts it behind however
-        many long-running command/script jobs hold that pool's
-        ``_MAX_CRON_WORKERS`` workers. The wait happens inside the deadline
-        ``_execute_with_timeout`` arms BEFORE the callback runs, so a saturated pool
-        can spend a message job's entire execution budget before its own dispatch is
-        even reached -- and a one-shot is then deleted having never run.
-
-        Widening the message job's budget is the wrong lever: it would delay the
-        wedged-delivery backstop by the whole allowance for every message job,
-        which is exactly what the two "not widened" tests above pin. The gate
-        belongs off the pool that long-running work occupies -- it is a short,
-        bounded policy check, not job execution.
-
-        Fails pre-fix: with every cron worker held, the gate queues and the job is
-        killed at its 2s budget without ever dispatching.
+        A message job gets no pool allowance, but ``vet_job_at_fire_time`` runs off-loop
+        inside the ``_execute_with_timeout`` deadline. On the cron pool it would queue
+        behind long jobs and spend the message job's whole budget before dispatch.
         """
         from kiro_crew.cron import CronService
 
@@ -765,16 +708,9 @@ class TestCronPoolQueueWait:
     ):
         """Drive the REAL message callback under the REAL wake deadline.
 
-        Returns ``(svc, job, gw)`` after ``_execute_with_timeout`` has returned, so
-        the caller can run the real ``_merge_job_result`` and inspect retention.
-        ``starve`` occupies the gate pool so the call never gets a worker (the
-        QUEUE bound). ``slow_gate`` leaves the pool free and makes the gate's own
-        work overrun (the EXECUTION bound). Those two bounds fail differently
-        inside ``run_in_cron_pool``, which is the whole reason both are driven.
-        ``cancel_gate`` stalls the whole gate call so NEITHER bound fires and the
-        real wake deadline cancels the await instead -- a third outcome the other
-        two are structurally blind to, because they raise something the caller's
-        ``except`` clause catches and a ``CancelledError`` is not caught there.
+        Returns ``(svc, job, gw)`` after ``_execute_with_timeout`` returns. ``starve`` hits
+        the queue bound, ``slow_gate`` the execution bound, and ``cancel_gate`` stalls so
+        the wake deadline cancels the await (a ``CancelledError`` the ``except`` misses).
         """
         from kiro_crew.cron import CronService
 
@@ -837,19 +773,9 @@ class TestCronPoolQueueWait:
     async def test_a_starved_message_one_shot_survives_the_wake_deadline(self, tmp_path, gate_pool):
         """A message one-shot whose GATE is starved must not be consumed.
 
-        The fire-time gate is awaited inside the wake deadline
-        ``_execute_with_timeout`` has already armed, and a message job carries no
-        ``_pool_queue_allowance`` to cover it. Pre-fix the gate had no bound of its
-        own, so a busy pool let the WAKE deadline expire first --
-        ``_execute_with_timeout`` then caught the ``TimeoutError`` and returned
-        normally, ``_merge_job_result`` saw an ordinary finished run, and the
-        ``delete_after_run`` job was deleted having never dispatched.
-
-        The gate's bound is now capped below the wake budget so starvation
-        surfaces as ``CronQueueTimeout`` FIRST, which is what makes the existing
-        ``run_never_started`` retention marker reachable on this path.
-
-        Fails pre-fix: with the gate unbounded the job is gone from the store.
+        A message job has no ``_pool_queue_allowance``, so the gate's bound is capped
+        below the wake budget: starvation raises ``CronQueueTimeout`` first and sets
+        ``run_never_started``, instead of the wake deadline ending an "ordinary" run.
         """
         svc, job, gw = await self._message_one_shot_run(tmp_path, gate_pool, starve=True)
 
@@ -869,11 +795,8 @@ class TestCronPoolQueueWait:
     async def test_a_dispatched_message_one_shot_is_still_deleted(self, tmp_path, gate_pool):
         """Negative control: retention must not leak onto a run that DID dispatch.
 
-        Same path with the gate pool free. The one-shot reaches its dispatch and
-        must then be consumed exactly as before -- otherwise the retention marker
-        has stopped meaning "never started" and every message one-shot would
-        survive forever. This fails for that reason if the marker is set
-        unconditionally rather than only on ``CronQueueTimeout``.
+        With the gate pool free the one-shot dispatches and must be consumed, or every
+        message one-shot would survive forever.
         """
         svc, job, gw = await self._message_one_shot_run(tmp_path, gate_pool, starve=False)
 
@@ -889,21 +812,11 @@ class TestCronPoolQueueWait:
 
     @pytest.mark.asyncio
     async def test_the_execution_deadline_accounts_for_the_gate_bound(self, tmp_path):
-        """The gate's bound is a THIRD term the run deadline has to carry.
+        """The gate's bound is a third term the run deadline has to carry.
 
-        The gate is awaited before the pool dispatch and INSIDE the deadline armed
-        for the whole run, so a gate spending its full bound leaves the subprocess
-        that much less. A thread cannot be interrupted, so when the deadline then
-        fires with a worker already claimed, the overlap guards clear while the
-        subprocess runs on and the next wake duplicates its side effects. That is
-        the hazard ``_SUBPROC_CLEANUP_ALLOWANCE_SECS`` exists for; the queue wait
-        was a second term it did not account for, and this is a third.
-
-        Observes the deadline the code actually arms, by capturing the ``timeout``
-        handed to the enclosing ``wait_for`` -- asserting on the allowance helper
-        instead would pass with the term missing from the deadline entirely.
-
-        Fails pre-fix: 2700s armed where 2730s is owed.
+        A thread cannot be interrupted, so a short deadline clears the overlap guards
+        while the subprocess runs on. Captures the ``timeout`` handed to ``wait_for``:
+        checking the allowance helper would pass with the term missing.
         """
         import math
 
@@ -952,13 +865,8 @@ class TestCronPoolQueueWait:
     async def test_the_reaper_window_also_accounts_for_the_gate_bound(self, tmp_path):
         """Both deadlines must move together or one pre-empts the other.
 
-        This branch already fixed that once for the queue allowance: widening only
-        the execution guard left the reaper lower, so it force-killed runs still
-        inside their own deadline. Adding the gate term to one and not the other
-        re-opens exactly that gap, 30s wide at the default budget.
-
-        Fails pre-fix: the reaper's threshold is 2700s, the job below has been in
-        flight 2715s, and it is reaped while still inside its execution deadline.
+        The job below has been in flight 2715s: past 2700s, but inside the
+        gate-inclusive execution deadline, so the reaper must leave it.
         """
         from kiro_crew.cron import CronService
 
@@ -972,15 +880,9 @@ class TestCronPoolQueueWait:
     async def test_a_slow_gate_does_not_consume_a_message_one_shot(self, tmp_path, gate_pool):
         """A gate that RUNS but overruns its bound must retain its one-shot.
 
-        The sibling case covers a STARVED gate, which never gets a worker and
-        raises ``CronQueueTimeout``. This one gets a worker immediately and then
-        overruns -- ``run_in_cron_pool``'s execution phase, which raised a plain
-        ``asyncio.TimeoutError``. That bypassed the caller's
-        ``except CronQueueTimeout``, so ``run_never_started`` stayed false, the
-        wake deadline caught the bare timeout as an ordinary overrun, and the
-        ``delete_after_run`` job was deleted having never dispatched.
-
-        Fails pre-fix on the job being gone from the store.
+        Unlike a starved gate, this one gets a worker and overruns in
+        ``run_in_cron_pool``'s execution phase, which raises a plain timeout rather
+        than ``CronQueueTimeout``.
         """
         svc, job, gw = await self._message_one_shot_run(
             tmp_path, gate_pool, starve=False, slow_gate=True
@@ -999,22 +901,9 @@ class TestCronPoolQueueWait:
     ):
         """A cancellation landing ON the gate await must still retain the one-shot.
 
-        The gate's bounds are sized to fire before the wake deadline, but no
-        internal sizing survives a stall that pushes wall clock past BOTH of them:
-        ``asyncio.wait_for`` in ``_execute_with_timeout`` then cancels this
-        coroutine AT the await, and a ``CancelledError`` is not a
-        ``CronQueueTimeout``, so the ``except`` clause that sets the retention
-        marker never executes at all. ``_execute_with_timeout`` catches the
-        timeout and returns normally, so ``_merge_job_result`` saw an ordinary
-        finished run and consumed a ``delete_after_run`` job that never
-        dispatched.
-
-        The starvation and overrun siblings both RAISE something the handler
-        catches, which is exactly why they are blind to this: they can only prove
-        the handler works, never that it runs. The marker is therefore set BEFORE
+        A stall past both gate bounds lets ``_execute_with_timeout`` cancel the await,
+        and a ``CancelledError`` skips the ``except`` clause. So the marker is set before
         the await and cleared only once a verdict comes back.
-
-        Fails pre-fix on the job being gone from the store.
         """
         svc, job, gw = await self._message_one_shot_run(
             tmp_path, gate_pool, starve=False, budget=1, cancel_gate=True
@@ -1037,17 +926,8 @@ class TestCronPoolQueueWait:
     async def test_a_returned_verdict_clears_the_retention_marker(self, tmp_path):
         """The opposite direction: pre-setting the marker must not leak.
 
-        Defaulting to retain is only safe if every path that reaches a verdict
-        clears it again. Miss one and a HEALTHY gate leaves the marker set, so the
-        delete site retains a one-shot that already ran -- silent duplicate firing
-        or a job that never leaves the queue, which is the same class of bug
-        pointing the other way.
-
-        Both verdict shapes are driven, since an allow and a deny leave the gate
-        by the same return: the deny still has to clear this marker, because its
-        retention is owned by ``fire_time_denied``, whose readers also park an
-        at-job disabled. Conflating them would park a job for a policy decision
-        that was never made.
+        A healthy gate that left the marker set would retain a one-shot that already ran.
+        A deny must clear it too: its retention belongs to ``fire_time_denied``.
         """
         from kiro_crew.slack.gateway import _await_cron_fire_time_gate
 
@@ -1088,18 +968,9 @@ class TestCronPoolQueueWait:
     ):
         """Starvation at the gate must not drop a message job's dedup context.
 
-        ``last_result`` is a CROSS-RUN field: build_cron_session_context prepends
-        it as "[Previous run result -- do NOT repeat the same content]" for a
-        persistent-session job, so a result-less run deliberately leaves it in
-        place. ``_run_job_isolated`` scopes its own clear to
-        ``job.command or job.script`` for exactly that reason, and the message
-        fire-time deny path never clears at all -- but the shared gate helper
-        cleared for ALL kinds, so a message cron starved at the gate lost the
-        context and the next run repeated content it had already sent.
-
-        Parametrised over all three kinds because asserting retention ALONE
-        would also pass if the clear were deleted outright: the command and
-        script cases are what pin the clear still firing where it belongs.
+        ``last_result`` is cross-run: build_cron_session_context prepends it to stop a
+        persistent-session job repeating itself. The command and script cases pin that
+        the clear still fires there, so deleting it outright would fail.
         """
         import kiro_crew.executors as ex
         from kiro_crew.slack.gateway import _await_cron_fire_time_gate
@@ -1137,24 +1008,10 @@ class TestCronPoolQueueWait:
 class TestClaimBackstopRetainsAnUnstartedOneShot:
     """The claim backstop must not consume a one-shot whose payload never ran.
 
-    ``_claim_backstop`` bounds the whole submitted call -- the claim-time vet AND
-    the payload. When it expires the caller lands in ``except
-    asyncio.TimeoutError``, and that arm fires for two materially different runs:
-
-    * the vet burned the bound before ``handoff.claim()`` was ever granted, so
-      NOTHING executed; and
-    * ``claim()`` was granted, the payload started, and the subprocess overran.
-
-    Only the first is a never-started run. ``abandon()`` is the sole thing that
-    separates them -- it reports whether the payload had started -- and
-    the cron service's delete site reads ``run_never_started`` to decide whether a
-    ``delete_after_run`` job is retained or consumed.
-
-    Both directions are asserted, plus the deny path, because each of the three
-    is a silent failure pointing a different way: retain a run that DID dispatch
-    and the one-shot fires twice or never leaves the queue; set this marker on a
-    deny and an at-job is parked disabled for a policy decision never made,
-    whose retention belongs to ``fire_time_denied``.
+    ``_claim_backstop`` bounds the vet and the payload, so its timeout fires both when
+    the vet ran out before ``handoff.claim()`` and when the payload overran. Only
+    ``abandon()`` tells them apart. The deny path must not set the marker either: its
+    retention belongs to ``fire_time_denied``.
     """
 
     @staticmethod
@@ -1254,36 +1111,18 @@ class TestClaimBackstopRetainsAnUnstartedOneShot:
 class TestClaimBackstopDoesNotConsumeTheFailureBudget:
     """A claim-backstop timeout must only count when the payload dispatched.
 
-    ``_claim_backstop`` bounds the vet AND the payload, so its
-    ``asyncio.TimeoutError`` arm fires for two different runs: a vet that burned
-    the bound before ``handoff.claim()`` (nothing executed), and a payload that
-    started and then overran. Counting the first auto-pauses at
-    ``_AUTO_PAUSE_THRESHOLD`` -- and a paused job never fires again -- so
-    repeated wedged wakes would permanently disable a healthy job that has not
-    run a line, exactly the harm the starvation, gate-deny and vet-overrun arms
-    already decline to cause.
-
-    NOTE ON WHY THIS LIVES HERE. ``test_cron_timeout_autopause_424.py`` pins the
-    same invariant one layer down, but it monkeypatches ``asyncio.wait_for`` and
-    drives ``CronService._execute_with_timeout`` directly -- it never enters
-    ``gateway.py``, so it is structurally blind to these two arms and would pass
-    whether or not they are fixed. This test drives the gateway callback so the
-    arm itself is what is measured.
-
-    Parametrised over BOTH arms and BOTH directions: asserting only the
-    exemption would also pass if the count were deleted outright, so the
-    started=True cases are what pin the counter still firing for a real overrun.
+    A vet that ran out before ``handoff.claim()`` executed nothing; counting it toward
+    ``_AUTO_PAUSE_THRESHOLD`` would permanently disable a healthy job.
+    ``test_cron_timeout_autopause_424.py`` never enters ``gateway.py``, hence this test.
+    The started=True cases pin the counter still firing for a real overrun.
     """
 
     @staticmethod
     def _pool(*, grant_claim: bool):
         """Stand in for run_in_cron_pool, choosing whether claim() is reached.
 
-        grant_claim=False models the backstop expiring DURING the vet: the
-        submitted wrapper is never invoked, so ``_started`` stays False and
-        ``abandon()`` reports the payload as never started. grant_claim=True
-        invokes the wrapper first (reaching ``handoff.claim()``) and only then
-        expires, modelling a payload that ran and overran.
+        grant_claim=False expires during the vet, so ``_started`` stays False;
+        grant_claim=True reaches ``handoff.claim()`` first, a payload that overran.
         """
 
         async def _fake(func, /, *args, timeout, **kw):
@@ -1336,40 +1175,18 @@ class TestClaimBackstopDoesNotConsumeTheFailureBudget:
 class TestACancellationAtTheClaimAwaitKeepsItsOneShot:
     """A cancellation landing on the claim await must not consume a one-shot.
 
-    ``asyncio.CancelledError`` is a ``BaseException``, so none of the command or
-    script block's ``except`` arms caught it -- not the claim backstop's
-    ``asyncio.TimeoutError``, and not the trailing ``except Exception``. The
-    shared ``finally`` did call ``handoff.abandon()``, but DISCARDED its return,
-    which is the one bit separating "the payload never started" from "the payload
-    ran". So a shutdown or wake deadline landing mid-vet reached the cron service's
-    delete site with neither ``run_never_started`` nor ``fire_time_denied`` set,
-    and a ``delete_after_run`` job was consumed having never executed.
-
-    The same class of bug was already cured one path over for the message-job
-    fire-time gate (see
-    ``test_a_gate_cancelled_by_the_wake_deadline_keeps_its_one_shot``, whose
-    docstring names this exact mechanism); the command and script claim awaits
-    were the ones still exposed.
-
-    NOTE ON PLACEMENT, which is what the tests below actually pin. The fix is an
-    ``except asyncio.CancelledError`` arm, NOT an assignment in the shared
-    ``finally``: the fire-time deny path reaches that ``finally`` with the
-    payload equally unstarted, and setting this marker there would park an at-job
-    disabled for a policy decision that was never made -- retention on that path
-    is owned by ``fire_time_denied``. ``test_deny`` below is what keeps that
-    closed, and ``grant_claim=True`` is what keeps the mirror closed: a payload
-    that DID run must stay deletable, or the one-shot fires twice.
+    ``asyncio.CancelledError`` is a ``BaseException``, so no ``except`` arm catches it;
+    the marker is set in an ``except asyncio.CancelledError`` arm, not the shared
+    ``finally``, which the deny path also reaches (its retention is ``fire_time_denied``).
+    ``grant_claim=True`` pins that a payload that did run stays deletable.
     """
 
     @staticmethod
     def _cancelling_pool(*, grant_claim: bool):
         """Stand in for run_in_cron_pool, cancelling instead of timing out.
 
-        grant_claim=False models the deadline cancelling the await DURING the
-        claim-time vet: the submitted wrapper is never invoked, so ``_started``
-        stays False and ``abandon()`` reports the payload as never started.
-        grant_claim=True invokes the wrapper first, reaching ``handoff.claim()``,
-        so the cancellation lands on a run that did dispatch.
+        grant_claim=False cancels during the vet, so ``_started`` stays False;
+        grant_claim=True reaches ``handoff.claim()`` first, a run that did dispatch.
         """
 
         async def _fake(func, /, *args, timeout, **kw):

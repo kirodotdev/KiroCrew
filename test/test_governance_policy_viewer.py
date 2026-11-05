@@ -62,7 +62,7 @@ def _install_ceiling(policy_body, *, edition=None, monkeypatch=None):
 
 
 def _write(d, name, body):
-    (d / f"{name}.json").write_text(json.dumps(body))
+    (d / f"{name}.json").write_text(json.dumps(body), encoding="utf-8")
 
 
 def _by_scope(snapshot):

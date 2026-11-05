@@ -193,7 +193,7 @@ async def _resolve_fallback_folder_id(
 
     if home_owner_of(state._folders, folder_id):
         return "", _error(
-            "this folder belongs to a mate and is managed for you", "mate_home_locked", 403
+            "this folder belongs to a Bot and is managed for you", "mate_home_locked", 403
         )
     return folder_id, None
 
@@ -535,7 +535,7 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
                 expected_store=request.get("workflow_expected_store"),
                 budget_total=budget_total,
                 timeout_secs=_opt_int(body.get("timeout_secs")),
-                fallback_title=str(body.get("title") or ""),
+                fallback_title=_opt_title(body.get("title")),
                 fallback_folder_id=folder_id,
             ),
         )
@@ -603,6 +603,43 @@ def _opt_int(value: Any) -> Optional[int]:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def _opt_str(value: Any) -> str:
+    """An optional text body field; anything but a string reads as absent ("").
+
+    ``name`` labels a run in the run list, so an object, list or number must not
+    reach the service as the run's name. The fallback ``title`` has its own
+    reader, :func:`_opt_title`.
+    """
+    return value if isinstance(value, str) else ""
+
+
+def _opt_title(value: Any) -> str:
+    """The fallback chat title a run asks for; an object, list or boolean reads as absent.
+
+    Passing such a value through ``str()`` would title the chat with its repr
+    (``{'a': 1}``, ``True``). A number becomes its text, since a title such as
+    ``2026`` is a plausible choice.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Zero stays absent, exactly as ``str(0 or "")`` reads it.
+        return str(value or "")
+    return ""
+
+
+def _rerun_from_index(value: Any) -> int:
+    """The agent call a rerun restarts at; anything but a whole number reads as 0.
+
+    A JSON ``true`` is a Python ``bool`` (an ``int`` subclass) and would replay
+    call 0; a negative index already replays nothing, so it is clamped to 0 here
+    and the rerun is labelled for the index it really ran from.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
 
 
 async def _admit_workflow_run(request: web.Request, svc: Any, body: object) -> Any:
@@ -683,9 +720,10 @@ async def api_workflow_run(request: web.Request) -> web.Response:
     source = body.get("source", "")
     if not isinstance(source, str) or not source.strip():
         return web.json_response({"error": "source is required"}, status=400)
-    budget_total = body.get("budget_total")
-    if not isinstance(budget_total, int):
-        budget_total = None
+    # ``_opt_int``, not a bare int check: JSON ``true``/``false`` arrive as a
+    # Python ``bool``, an ``int`` subclass, and a ceiling of 1 or 0 ends the run
+    # at its first agent call.
+    budget_total = _opt_int(body.get("budget_total"))
     refusal = await _private_memory_refusal(request, "workflow.run")
     if refusal is not None:
         return refusal
@@ -711,14 +749,14 @@ async def api_workflow_run(request: web.Request) -> web.Response:
         with principal_scope(None if run_admission.work is None else run_admission.work.budget_key):
             out = await svc.start(
                 source,
-                name=body.get("name", "") or "",
+                name=_opt_str(body.get("name")),
                 args=body.get("args") if isinstance(body.get("args"), dict) else {},
                 author=request.headers.get("X-Session-Key", ""),
                 session_key=request.headers.get("X-Session-Key", ""),
                 expected_store=request.get("workflow_expected_store"),
                 budget_total=budget_total,
                 timeout_secs=_opt_int(body.get("timeout_secs")),
-                fallback_title=str(body.get("title") or ""),
+                fallback_title=_opt_title(body.get("title")),
                 fallback_folder_id=folder_id,
             )
     except Exception:
@@ -771,9 +809,10 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     intent = intent.strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
-    budget_total = body.get("budget_total")
-    if not isinstance(budget_total, int):
-        budget_total = None
+    # ``_opt_int``, not a bare int check: JSON ``true``/``false`` arrive as a
+    # Python ``bool``, an ``int`` subclass, and a ceiling of 1 or 0 ends the run
+    # at its first agent call.
+    budget_total = _opt_int(body.get("budget_total"))
     refusal = await _private_memory_refusal(request, "workflow.run_intent")
     if refusal is not None:
         return refusal
@@ -789,14 +828,14 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
             body,
             lambda: svc.start_from_intent(
                 intent,
-                name=body.get("name", "") or "",
+                name=_opt_str(body.get("name")),
                 args=body.get("args") if isinstance(body.get("args"), dict) else {},
                 author=request.headers.get("X-Session-Key", ""),
                 session_key=request.headers.get("X-Session-Key", ""),
                 expected_store=request.get("workflow_expected_store"),
                 budget_total=budget_total,
                 timeout_secs=_opt_int(body.get("timeout_secs")),
-                fallback_title=str(body.get("title") or ""),
+                fallback_title=_opt_title(body.get("title")),
                 fallback_folder_id=folder_id,
             ),
         )
@@ -967,9 +1006,7 @@ async def api_workflow_run_rerun(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    from_index = body.get("from_index", 0)
-    if not isinstance(from_index, int):
-        from_index = 0
+    from_index = _rerun_from_index(body.get("from_index", 0))
     # Optional edited script: review → tweak → rerun with the edited source.
     edited_source = body.get("source")
     if not isinstance(edited_source, str):

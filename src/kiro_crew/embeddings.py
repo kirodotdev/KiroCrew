@@ -228,6 +228,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         PRIORITY_INTERACTIVE,
         PRIORITY_NORMAL,
         EmbeddingWork,
+        _config_document,
         _embed_threads,
         _read_memory_config,
         _work_for_priority,
@@ -292,13 +293,18 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         consume_dropped_inherited_lib_path,
         operator_lib_path_override,
     )
+    from kiro_crew.atomic_write import (  # noqa: F401
+        replace_with_retry,
+    )
     from kiro_crew.config.loader import (  # noqa: F401
+        config_local_path,
         config_path,
         read_config_text,
     )
     from kiro_crew.config.paths import (  # noqa: F401
         config_dir,
     )
+    from kiro_crew.config.resolution import _deep_merge  # noqa: F401
     from kiro_crew.cpu_affinity import (  # noqa: F401
         affinity_cpu_count,
     )

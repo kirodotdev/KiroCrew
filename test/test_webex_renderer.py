@@ -10,6 +10,11 @@ from kiro_crew.webex.client import WEBEX_MAX_TEXT
 from kiro_crew.webex.renderer import _STATUS_EDIT_BUDGET, WebexRenderer
 from kiro_crew.webex.transport import WEBEX_CAPABILITIES
 
+#: A last-status time every throttle window has passed. Not ``0.0``: the clock is
+#: ``time.monotonic()``, which can read under the doubled throttle (256 s by the
+#: last budgeted edit) on a host booted minutes ago, and the frame is then held.
+_LONG_AGO = float("-inf")
+
 
 class FakeClient:
     """Records message sends, edits, and deletes."""
@@ -143,6 +148,29 @@ class TestFinalAnswer:
         assert delivered == text  # nothing lost
 
     @pytest.mark.asyncio
+    async def test_code_block_over_the_cap_keeps_fences_and_lines_whole(self) -> None:
+        """Each chunk is its own message, so each must close every fence it
+        opens, and the cut must land between lines, never inside one."""
+        code = "\n".join(f"value_{i} = compute({i})  # step {i}" for i in range(400))
+        text = f"intro\n\n```python\n{code}\n```\n\nouttro"
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_turn_start()
+        await r.on_text_chunk(text)
+        await r.on_done()
+        chunks = [c.edits[0][2]] + [
+            m for (conv, m) in c.sent if conv == "ROOM" and m != "🤔 Thinking…"
+        ]
+        assert len(chunks) > 1
+        source_lines = set(text.split("\n"))
+        for chunk in chunks:
+            assert len(chunk.encode("utf-8")) <= WEBEX_MAX_TEXT
+            lines = chunk.split("\n")
+            assert sum(line.startswith("```") for line in lines) % 2 == 0, chunk[:40]
+            assert all(line in source_lines or line == "```" for line in lines)
+        assert chunks[1].startswith("```python\n")
+
+    @pytest.mark.asyncio
     async def test_options_within_the_cap_render_as_a_card(self) -> None:
         """Choices become Adaptive Card buttons, and never vanish.
 
@@ -195,7 +223,7 @@ class TestFinalAnswer:
         await r.on_text_chunk("token AKIA**IOSF**ODNN7EXAMPLE")
         # The throttle window opened at on_turn_start; a status frame is a paced
         # edit, so reopening it is what lets one render inside the test.
-        r._last_status = 0.0
+        r._last_status = _LONG_AGO
         await r.on_tool_call("t2", "fs_write")
 
         frames = [body for (_mid, _room, body) in c.edits]
@@ -432,7 +460,7 @@ class TestToolStatus:
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
-        r._last_status = 0.0  # bypass throttle for the test
+        r._last_status = _LONG_AGO  # bypass throttle for the test
         await r.on_tool_call("t1", "fs_read", tool_kind="read")
         assert any("🔧 Running: fs_read" in m for (_, _, m) in c.edits)
 
@@ -442,7 +470,7 @@ class TestToolStatus:
         r = _renderer(c)
         await r.on_turn_start()
         for i in range(_STATUS_EDIT_BUDGET + 5):
-            r._last_status = 0.0  # bypass throttle
+            r._last_status = _LONG_AGO  # bypass throttle
             await r.on_tool_call(f"t{i}", f"tool_{i}")
         status_edits = [m for (_, _, m) in c.edits if m.startswith("🔧")]
         assert len(status_edits) == _STATUS_EDIT_BUDGET
@@ -452,9 +480,9 @@ class TestToolStatus:
         c = FakeClient(edit_ok=False)
         r = _renderer(c)
         await r.on_turn_start()
-        r._last_status = 0.0
+        r._last_status = _LONG_AGO
         await r.on_tool_call("t1", "tool_a")
-        r._last_status = 0.0
+        r._last_status = _LONG_AGO
         await r.on_tool_call("t2", "tool_b")  # budget burned -> no second edit
         status_edits = [m for (_, _, m) in c.edits if m.startswith("🔧")]
         assert len(status_edits) == 1
@@ -465,7 +493,7 @@ class TestToolStatus:
         r = _renderer(c)
         await r.on_turn_start()
         for i in range(_STATUS_EDIT_BUDGET):
-            r._last_status = 0.0
+            r._last_status = _LONG_AGO
             await r.on_tool_call(f"t{i}", f"tool_{i}")
         await r.on_text_chunk("final answer")
         await r.on_done()

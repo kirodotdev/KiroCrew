@@ -141,7 +141,7 @@ def _refuse_mate_move_out(
     if refuses_refile(state._folders, current_folder_id, folder_id, principal):
         return web.json_response(
             {
-                "error": "this folder belongs to a mate and is managed for you",
+                "error": "this folder belongs to a Bot and is managed for you",
                 "code": "mate_home_locked",
             },
             status=403,
@@ -149,7 +149,7 @@ def _refuse_mate_move_out(
     if not is_mate_principal(principal) or in_mate_home(state._folders, folder_id, principal):
         return None
     return web.json_response(
-        {"error": "a mate's chats stay inside its own folder", "code": "mate_folder_scope"},
+        {"error": "a Bot's chats stay inside its own folder", "code": "mate_folder_scope"},
         status=403,
     )
 
@@ -218,7 +218,7 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         return mate_refusal
     # Optional generation token. The identity re-check below covers THIS
     # request's own awaits, but a caller that resolved the slot in an earlier
-    # request (``chat_folder_file_self`` reads ``/api/chat/slots`` first) has a
+    # request (an MCP tool that reads ``/api/chat/slots`` first) has a
     # gap this handler cannot see: its tab can close and the same slot key be
     # recreated for a different conversation before its PATCH arrives, and the
     # recreated slot carries the same ``dashboard:<key>`` transcript key, so the
@@ -1301,16 +1301,19 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.chat_folders_icons import (  # noqa: F401
         _CHAT_FOLDER_ICON_EPOCHS,
+        _CHAT_FOLDER_ICON_PREVIEWS,
         _CHAT_FOLDER_ICON_TASKS,
         _CHAT_FOLDER_PENDING_ICON_TASKS,
         _FOLDER_COLOR_PALETTE,
         _FOLDER_ICON_MODEL,
+        MAX_ICON_PREVIEW_AVOID,
         _bump_icon_epoch,
         _folder_icon_lock,
         _is_single_emoji,
         _is_valid_folder_color,
         _spawn_chat_folder_icon_task,
         generate_emoji_for_name,
+        icon_preview_avoid,
     )
     from kiro_crew.dashboard.chat_folders_paths import (  # noqa: F401
         MAX_FOLDER_STEERING_DIR_LEN,
@@ -1320,6 +1323,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_principal_steering_dirs,
         _resolve_folder_project_dir,
         _resolve_folder_steering_dirs,
+        _sensitive_refusal,
         _validate_project_dir,
         _validate_steering_dirs,
         resolve_folder_project_dir_off_loop,
@@ -1350,11 +1354,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         live_slot_names_in_folders,
     )
     from kiro_crew.dashboard.chat_folders_routes import (  # noqa: F401
+        _ICON_PREVIEW_ATTEMPTS,
         _MAX_REORDER_BODY_BYTES,
         _MAX_REORDER_ENTRIES,
         _mate_home_locked,
         api_chat_folder_create,
         api_chat_folder_delete,
+        api_chat_folder_icon_preview,
         api_chat_folder_reorder,
         api_chat_folder_update,
         api_chat_folders,

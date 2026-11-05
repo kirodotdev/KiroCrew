@@ -14,7 +14,7 @@ import os
 import re
 import shutil
 import threading
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -445,8 +445,8 @@ async def test_a_failed_session_start_drops_its_prefetch(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_prewarmed_session_starts_no_memory_prefetch(tmp_path, monkeypatch):
-    """Registered already: the build runs at once, so nothing is read early."""
+async def test_a_claimed_session_starts_no_memory_prefetch(tmp_path, monkeypatch):
+    """Registered and already claimed by a real turn: nothing is read early."""
     from test_chat_runner_startup_recall import _turn, _turn_state
 
     state, _provider = _turn_state(tmp_path, monkeypatch, registered=True)
@@ -458,21 +458,60 @@ async def test_a_prewarmed_session_starts_no_memory_prefetch(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_a_cold_start_build_takes_its_prefetch_and_sends_the_same_context(
-    tmp_path, monkeypatch
-):
-    """A dashboard cold start through the real runner and the real ``build_message``.
+async def test_an_unclaimed_prewarm_reads_memory_before_the_claim_returns(tmp_path, monkeypatch):
+    """An eager prewarm no turn has claimed: the reads start beside the claim.
 
-    The turn reserves its prefetch under its bindings' store name (``"default"``) and
-    the build takes it under the execution record's (``""``). Run once without the
-    early reads (the build reads for itself) and once with them: the build takes the
-    prefetch, reading nothing itself, and the context sent is byte-for-byte the same.
+    Its registration mapped its id, so the resumable hint is set too, as live.
+    """
+    from test_chat_runner_startup_recall import _turn, _turn_state
+
+    state, provider = _turn_state(tmp_path, monkeypatch, registered=True, unclaimed=True)
+    state.sessions.resumable_hint = MagicMock(return_value=True)
+    loop = asyncio.get_running_loop()
+    reading = asyncio.Event()
+    seen: list[str] = []
+
+    def fake_prefetch(builder, text, *, workspace, memory_store):
+        seen.append(text)
+        loop.call_soon_threadsafe(reading.set)
+
+    monkeypatch.setattr(chat_runner, "prefetch_session_memory", fake_prefetch)
+
+    async def claiming(*args, **kwargs):
+        # The claim returns only once the reads have begun, so a runner that
+        # reads after the claim never gets past this line.
+        await asyncio.wait_for(reading.wait(), 30)
+        return provider, True, False
+
+    state.sessions.get_or_create = AsyncMock(side_effect=claiming)
+    await _turn(state, "unclaimed-prewarm")
+    assert seen == [MESSAGE]
+
+
+@pytest.mark.parametrize(
+    "registered", [pytest.param(False, id="cold-start"), pytest.param(True, id="unclaimed-prewarm")]
+)
+@pytest.mark.asyncio
+async def test_a_cold_start_build_takes_its_prefetch_and_sends_the_same_context(
+    tmp_path, monkeypatch, registered
+):
+    """A dashboard first turn through the real runner and the real ``build_message``.
+
+    A cold start, and a claim of an eager prewarm no turn has claimed yet. The turn
+    reserves its prefetch under its bindings' store name (``"default"``) and the
+    build takes it under the execution record's (``""``). Run once without the early
+    reads (the build reads for itself) and once with them: the build takes the
+    prefetch, reading nothing itself, and the prompt sent is byte-for-byte the same.
     """
     from test_chat_runner_startup_recall import _turn, _turn_state
 
     sent: dict[str, tuple[str, list[str]]] = {}
     for run, prefetch in (("without", False), ("with", True)):
-        state, provider = _turn_state(tmp_path, monkeypatch, registered=False)
+        state, provider = _turn_state(
+            tmp_path, monkeypatch, registered=registered, unclaimed=registered
+        )
+        if registered:  # the prewarm's own registration mapped its id
+            state.sessions.resumable_hint = MagicMock(return_value=True)
         builder = state.context_builder
         del builder.build_message  # the real method again, not the mock
         if run == "without":  # one memory directory, written once, read by both runs
@@ -734,3 +773,28 @@ def test_turning_the_early_embed_off_turns_the_early_reads_off(builder, reads, m
     assert reads == [], "the prefetch read (and embedded) memory with the early embed off"
     _build(builder)
     assert len(reads) == 1
+
+
+@pytest.mark.parametrize(
+    "first_turn, expected",
+    [
+        pytest.param("FRESH", True, id="unclaimed-fresh"),
+        pytest.param("RESUMED", False, id="unclaimed-resumed"),
+        pytest.param("NOTHING_ARMED", False, id="claimed"),
+        pytest.param(None, False, id="not-registered"),
+    ],
+)
+def test_only_an_unclaimed_fresh_session_answers_fresh_start_unclaimed(first_turn, expected):
+    """The read the admission gate asks, and it consumes nothing."""
+    from types import SimpleNamespace
+
+    from kiro_crew.session_parts import claims
+    from kiro_crew.session_parts.record import FirstTurnState
+
+    sessions = {}
+    if first_turn is not None:
+        sessions["k"] = SimpleNamespace(first_turn=FirstTurnState[first_turn])
+    manager = SimpleNamespace(_sessions=sessions, _fold_key=lambda key: key)
+    assert claims.fresh_start_unclaimed(manager, "k") is expected
+    if first_turn is not None:
+        assert sessions["k"].first_turn is FirstTurnState[first_turn]

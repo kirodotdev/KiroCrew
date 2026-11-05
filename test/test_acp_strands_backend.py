@@ -26,7 +26,6 @@ import pytest
 from kiro_crew.acp._dispatch_parts.permission_requests import build_permission_event, gate_envelope
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness import strands as strands_mod
-from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.agent_sdk import tool_gate as gate
 from kiro_crew.agent_sdk.backends import (
@@ -397,14 +396,19 @@ def test_a_strands_provider_pin_is_kept_even_when_another_catalog_lists_it(monke
     assert strands_mod.strands_model_args("nope/gpt-4.1") == []
 
 
-def test_the_model_is_a_launch_argument_and_a_switch_is_refused() -> None:
+def test_the_model_is_a_launch_argument_and_an_unchanged_pin_sends_nothing() -> None:
     from kiro_crew.acp import client_model_selection as selection
 
     assert STRANDS in ACP_BACKENDS_MODEL_AT_LAUNCH
-    client = SimpleNamespace(backend=STRANDS, _session_id="s", _model="bedrock/x")
+    client = SimpleNamespace(
+        backend=STRANDS,
+        _session_id="s",
+        _model="bedrock/x",
+        _launch_effort="",
+        _model_registry_namespace="strands",
+    )
+    # No ensure_ready on the stub: a call would raise, so passing proves none ran.
     asyncio.run(selection.set_model(client, "bedrock/x"))
-    with pytest.raises(AcpError, match="new chat"):
-        asyncio.run(selection.set_model(client, "anthropic/y"))
 
 
 # ── The install ──

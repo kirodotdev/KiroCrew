@@ -90,7 +90,6 @@ test/test_pod.py::TestUnitRendering::test_env_block_pins_nondefaults
 test/test_pod_cli.py::TestCliVerbs::test_install_writes_unit
 test/test_pod_cli.py::TestUpVerb::test_up_happy_path_json
 test/test_pod_env.py::TestPodConfigWrite::test_config_and_home_are_owner_only
-test/test_process_tree.py::TestDirectChildren::test_proc_children_parsed
 test/test_prompts.py::TestApiPrompts::test_detail_unreadable
 test/test_prompts.py::TestExpandPromptMention::test_unreadable_file
 test/test_refresh_tokens.py::test_tr_u_17_persistence_file_mode_0600
@@ -110,8 +109,6 @@ test/test_service_environment.py::TestServiceEnvironment::test_unit_quotes_space
 test/test_session_ending_verbs.py::TestResetWithPid::test_reset_with_pid_survives_shutdown_force_kills
 test/test_slack_config_handlers.py::test_write_env_updates_adds_and_preserves
 test/test_slack_config_handlers.py::test_write_env_updates_is_atomic_and_owner_only
-test/test_subagent_cwd.py::TestValidateCwd::test_tilde_expanded_in_allowed_roots
-test/test_subagent_cwd.py::TestValidateCwd::test_tilde_expanded_in_cwd
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_computes_available_gb_from_pages
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_missing_page_count_fails_open
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_nonpositive_page_size_fails_open

@@ -1,12 +1,8 @@
 """Fleet probe (``fleet_probe.py``): which argv token is the runner's program position.
 
-A versioned alias as data rather than program, installed entry points, assignments and
-launcher operands in front of the runner, transparent and subject-taking launchers,
-interpreter script and module positions under python's grammar, and ``argv[0]``
-refuted by the kernel binary.
-
-Shared fixtures and helpers are in ``pipeline_conductor_fleet_probe_helpers.py``;
-``test_pipeline_conductor_fleet_probe.py`` heads the suite and states how it is organised.
+Covers versioned aliases, installed entry points, launchers, python's script and module
+positions, and ``argv[0]`` refuted by the kernel binary. Shared helpers are in
+``pipeline_conductor_fleet_probe_helpers.py``.
 """
 
 from __future__ import annotations
@@ -26,10 +22,8 @@ from pipeline_conductor_fleet_probe_helpers import (
 )
 
 
-# The alias in a position that is NOT the program: a directory component, a package
-# name, a log filename, an argument to some other command. These are what a joined-line
-# rule cannot separate from an invocation, and the whole reason the alias is detected on
-# the argv side instead -- so they are the control for that choice, not a side note.
+# The alias in a position that is NOT the program. A joined-line rule cannot tell these
+# from an invocation, which is why the alias is detected on the argv side.
 @pytest.mark.parametrize(
     "argv",
     [
@@ -50,10 +44,7 @@ from pipeline_conductor_fleet_probe_helpers import (
 def test_an_alias_that_is_not_the_program_is_never_reported(mod, tmp_path, monkeypatch, argv):
     """The alias as data, under a command that is not a test run.
 
-    Each one is disqualified by its own FIRST token rather than by a pattern that has to
-    guess: the command already had a program before the alias appeared, so the alias is
-    an argument. Reporting these is what adding the alias to the joined-line rule would
-    have cost.
+    The first token is already a program, so the alias is an argument.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -101,14 +92,9 @@ PYTHON_SPELLINGS = {
 }
 
 
-# What an interpreter is given when the thing it runs is a SCRIPT. In each one the alias
-# is an argument to that script, so it names no program.
-#
-# The tails are split deliberately. A script whose name carries a program suffix is also
-# caught by the suffix rule, so those cases alone cannot show the interpreter rule doing
-# any work -- a mutation removing it stays green. The suffixless tails are the ones that
-# isolate it: nothing but "an interpreter's first non-option operand is the script"
-# separates them from an invocation.
+# What an interpreter is given when the thing it runs is a SCRIPT; the alias is the
+# script's argument. The suffixless tails isolate the interpreter rule, since a `.py`
+# name is also caught by the suffix rule.
 INTERPRETER_SCRIPT_TAILS = {
     "script-then-alias": ["worker.py", "pytest-3"],
     "script-then-alias-path": ["cleanup.py", "/var/tmp/pytest-of-ci/pytest-3"],
@@ -120,27 +106,17 @@ INTERPRETER_SCRIPT_TAILS = {
     "suffixless-script-then-alias-path": ["sweep", "/var/tmp/pytest-of-ci/pytest-3"],
     "inline-code-then-alias": ["-c", "import sys; print(sys.argv)", "pytest-3"],
     "subcommand-shaped-operand-then-alias": ["run", "pytest-3"],
-    # These two isolate the POSITION guard from the entry-point requirement. Every tail
-    # above hands the script a name that is not an installed path, so the entry-point
-    # test alone would decline it and the position guard is never reached. Here the
-    # argument IS an installed entry-point path, so only "the candidate must BE python's
-    # execution target" can decline it -- an ordinary way to tell a wrapper which runner
-    # to use.
+    # These two isolate the POSITION guard: the argument IS an installed entry-point path,
+    # so only "the candidate must be python's execution target" can decline it.
     "script-then-entry-point-path": ["worker.py", "{sys}/bin/pytest-3"],
     "script-then-venv-entry-point": ["harness.py", "{venv}/bin/pytest-3"],
 }
 
 
-# What an interpreter is given when the SCRIPT IT RUNS IS the runner. This is the
-# position the ordinary packaged alias actually occupies: `/usr/bin/pytest-3` carries a
-# python shebang, so the kernel's argv for it is `python3 /usr/bin/pytest-3 …` and the
-# alias never reaches argv[0] at all. Admitting the alias only as the argument of `-m`
-# therefore declines the ordinary run of the very spelling this file detects.
-#
-# The flag tails are here for the same reason the suffixless tails are in the set above:
-# they isolate one rule. `python3 -W ignore prog` has a non-option token that is NOT the
-# script, so a reading that simply took the first dashless token would answer `ignore`
-# and decline the real invocation one position later.
+# What an interpreter is given when the SCRIPT IT RUNS IS the runner. `/usr/bin/pytest-3`
+# has a python shebang, so the kernel's argv is `python3 /usr/bin/pytest-3 …`.
+# The flag tails pin that `-W ignore` is skipped: the first dashless token is not always
+# the script.
 INTERPRETER_ENTRY_POINT_SCRIPTS = {
     "system-prefix": ["{sys}/bin/pytest-3"],
     "local-prefix": ["{local}/bin/pytest-3"],
@@ -155,19 +131,10 @@ INTERPRETER_ENTRY_POINT_SCRIPTS = {
 }
 
 
-# A script position whose path is an ordinary repository file rather than an installed
-# console script. The name alone cannot tell these from the real thing -- they are drawn
-# from the same namespace -- so the INSTALLATION is the evidence: a console script is
-# written into the same directory as the interpreter it was installed for.
-#
-# ``checkout-bin-dir`` is why the directory's NAME cannot carry this on its own. Any
-# repository can hold a ``bin``, so a rule satisfied by the name reports
-# ``python3 <worktree>/bin/pytest-3`` -- a file the checkout happens to carry -- and stops
-# a healthy worker over it. ``sbin-holds-no-interpreter`` and
-# ``install-prefix-but-not-bin`` sit inside a REAL prefix and still decline, which is what
-# separates a directory an interpreter was installed into from one that merely sits near
-# it. The three relative paths cannot be resolved at all from here, because the probe's
-# working directory is not the scanned process's.
+# A script position whose path is a repository file, not an installed console script.
+# The evidence is an interpreter in the same directory: ``checkout-bin-dir`` shows a
+# directory named ``bin`` is not enough. Relative paths cannot be resolved, because the
+# probe's working directory is not the scanned process's.
 NON_ENTRY_POINT_SCRIPTS = {
     "repo-tools-dir": "tools/pytest-3",
     "repo-scripts-dir": "scripts/py.test",
@@ -198,14 +165,8 @@ def test_a_script_position_that_is_not_an_installed_entry_point_is_not_a_runner(
 ):
     """``python3 tools/pytest-3`` runs a file the checkout holds, not the test runner.
 
-    The script position has no ``/proc`` fact to lean on -- the kernel's binary there is
-    the interpreter -- so the path is the only evidence, and a bare or repository-relative
-    name is a file rather than an installation. Accepting one stops a healthy worker and
-    discards its turn, which is the direction that destroys work.
-
-    The Windows ``Scripts`` case is here rather than among the entry points on purpose:
-    ``_basename`` lowercases, so it would arrive indistinguishable from an ordinary
-    ``scripts/`` directory, and a ``/proc`` cmdline comes from a Linux kernel anyway.
+    The path is the only evidence, and a false report stops a healthy worker. The
+    Windows ``Scripts`` case declines because ``_basename`` lowercases it into ``scripts/``.
     """
     prefixes = install_prefixes(tmp_path)
     root = host_proc(tmp_path, monkeypatch)
@@ -223,14 +184,8 @@ def test_a_script_position_that_is_not_an_installed_entry_point_is_not_a_runner(
 def test_an_installed_entry_point_directory_still_reports(mod, tmp_path, monkeypatch, prefix):
     """The other direction: requiring an installation must not cost the packaged run.
 
-    The packaged alias run is the whole point of the argv path, so requiring an
-    installation has to leave every ordinary installation reporting -- and these five
-    prefixes are deliberately unalike, because the rule reads what an installation IS
-    rather than where it sits. A system root, a virtualenv and a version-manager prefix
-    all answer yes without the rule naming any of them, which is what keeps a host whose
-    interpreter is a global shim from being a special case. A ``--user`` install is NOT
-    among them: it installs no interpreter beside its scripts, so it is a stated miss and
-    sits among the declining cases instead.
+    The prefixes are unalike on purpose; the rule names none of them. A ``--user``
+    install has no interpreter beside its scripts, so it is a stated miss.
     """
     prefixes = install_prefixes(tmp_path)
     require_resolvable_prefixes(prefixes)
@@ -249,13 +204,8 @@ def test_a_relative_script_path_is_not_resolved_against_the_probes_own_directory
 ):
     """A relative path belongs to the scanned process's directory, not to the probe's.
 
-    ``/proc/<pid>/cmdline`` records the arguments as written, so ``python3 bin/pytest-3``
-    says nothing about which ``bin`` was meant -- and the one directory the probe must not
-    answer with is its own. Here the probe's working directory really does hold
-    ``bin/python3``, so a rule that resolved the relative path from where it happens to be
-    running would find an interpreter beside a file it has never seen and stop a healthy
-    worker. Refusing the relative path outright is what makes that impossible, and the
-    cost is a missed signal on a spelling no packaged run uses.
+    The probe's working directory here holds ``bin/python3``, so resolving the path from
+    it would report a healthy worker. Relative paths are refused outright.
     """
     prefixes = install_prefixes(tmp_path)
     require_resolvable_prefixes(prefixes)
@@ -273,18 +223,8 @@ def test_a_relative_script_path_is_not_resolved_against_the_probes_own_directory
 def test_an_installed_entry_point_needs_a_posix_absolute_path_on_any_host(mod, tmp_path):
     """A path the rule cannot resolve declines, and a drive letter is one of those.
 
-    ``_is_installed_entry_point`` asks the filesystem for one named file beside the script,
-    so it needs a path it can resolve. A drive-lettered path is not one: the rule's input is
-    ``/proc/<pid>/cmdline``, which only a Linux kernel writes, so ``C:/...`` cannot reach it
-    from a scanned process at all. Accepting it would add a branch no caller can reach,
-    while a host whose own absolute paths are drive-lettered would otherwise let every
-    entry-point case pass for the wrong reason -- declining everything, including the
-    counterexamples that are supposed to decline.
-
-    So the expectation here is tied to the PROPERTY rather than to a platform name: the
-    same real installation must report where the path is POSIX-absolute and decline where it
-    is not, which makes this one pin meaningful on both. The literal Windows spellings are
-    asserted on EVERY host, so a Linux lane guards them too.
+    Only a Linux kernel writes ``/proc/<pid>/cmdline``. The expectation follows whether
+    the path is POSIX-absolute, not the platform; the Windows spellings run on every host.
     """
     prefix = tmp_path / "usr"
     (prefix / "bin").mkdir(parents=True, exist_ok=True)
@@ -558,11 +498,8 @@ def test_a_non_transparent_launchers_immediate_operand_is_not_the_program(
 ):
     """`make pytest-3.12` names a TARGET, and that target runs a capped suite.
 
-    A launcher that interposes a subject of its own does not put the runner in the
-    program position at any distance, the immediate operand included. This is the case
-    with the highest cost in the file: a per-interpreter matrix target is ordinary, the
-    run behind it caps its own workers, and the row stops a healthy worker with no
-    automatic recovery beyond switching the whole detection off.
+    A subject-taking launcher's immediate operand is never the program. Per-interpreter
+    matrix targets are ordinary, and a false row stops a healthy worker.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -660,14 +597,8 @@ def test_an_argv_only_spelling_in_the_module_position_is_not_a_runner(
 ):
     """No pytest MODULE carries a version suffix, so ``-m pytest-3`` is not a pytest run.
 
-    The packaged ``pytest-3`` is a console SCRIPT; the module has always been plain
-    ``pytest``, which the joined-line rule matches on its own. What ``python -m pytest-3``
-    actually runs is a checkout-local ``pytest-3.py``, found by name because an import
-    finder resolves names rather than identifiers -- and reporting it stops a healthy
-    worker and discards its turn.
-
-    What declining costs is ``python -m py.test``, a spelling modern pytest does not
-    provide, so the trade is a missed signal against a stopped worker.
+    It runs a checkout-local ``pytest-3.py``. Declining costs only ``python -m py.test``,
+    which modern pytest does not provide.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -702,12 +633,8 @@ def test_an_interpreter_reports_the_runner_standing_as_its_script_operand(
 ):
     """The interpreter's SCRIPT is the program, so a runner standing there qualifies.
 
-    This is the shape the alias really arrives in. A packaged ``pytest-3`` is a python
-    script with a shebang, so running it makes the kernel's argv ``python3
-    /usr/bin/pytest-3 …``: the alias is the interpreter's script operand and appears at
-    ``argv[0]`` never. A rule admitting the alias only behind ``-m`` declines the
-    ordinary packaged run of the one spelling this detection exists for, and nothing
-    later re-asks -- a declined pid emits no line at all.
+    A packaged ``pytest-3`` has a shebang, so the kernel's argv is ``python3
+    /usr/bin/pytest-3 …`` and the alias never reaches ``argv[0]``.
     """
     prefixes = install_prefixes(tmp_path)
     root = host_proc(tmp_path, monkeypatch)
@@ -773,19 +700,9 @@ def test_a_kernel_binary_that_is_not_a_runner_refutes_a_spoofed_argv0(
 def test_an_unreadable_kernel_link_declines_argv0(mod, tmp_path, monkeypatch):
     """At ``argv[0]`` the kernel's binary must CONFIRM, so an unreadable link declines.
 
-    This position is the one that ACCUSES on nothing but the name the process chose for
-    itself, and a process can make its own ``exe`` unreadable by going non-dumpable -- so
-    treating that silence as permission to report puts the stop back under the control of
-    whatever is being stopped.
-
-    The reading that an unreadable link is harmless does not survive measurement. It
-    rested on the pid already being sorted ``foreign``/``unknown``, but ``_owner_class``
-    falls back to ``_program_class``, which reads the SAME process-chosen argv: an
-    ``argv[0]`` naming a path under a fleet worktree is classified ``fleet`` with no link
-    and no readable ``cwd`` at all. One token then produces a fleet-owned row, and the
-    documented response to one is to stop that worker and discard its in-flight turn,
-    which nothing restores. What declining costs instead is a missed signal on a process
-    whose binary this uid cannot read.
+    A process can hide its own ``exe`` by going non-dumpable. Ownership is no safeguard:
+    ``_owner_class`` falls back to ``_program_class``, which reads the same argv, so an
+    ``argv[0]`` under a fleet worktree is classed ``fleet`` with no link at all.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -797,7 +714,7 @@ def test_an_unreadable_kernel_link_declines_argv0(mod, tmp_path, monkeypatch):
         "process-chosen token can stop a healthy worker"
     )
 
-    # The same shape the adjudication named: ownership derived from that same token.
+    # Ownership derived from that same token.
     spoofed = tmp_path / "wt" / "bin" / "pytest-3"
     fleet_pid(root, fleet, "432", [str(spoofed), "test/"], unspoofed=False)
     assert banned_pids(mod, root, fleet) == set(), (
@@ -825,10 +742,8 @@ def test_a_kernel_binary_agreeing_with_argv0_confirms_it(mod, tmp_path, monkeypa
 def test_an_interpreter_kernel_binary_does_not_refute_a_shebang_runner(mod, tmp_path, monkeypatch):
     """A shebang run is decided one position later, so the refutation never sees it.
 
-    This is why an interpreter is not exempted from the refutation: the kernel puts the
-    interpreter at ``argv[0]`` and the runner after it, so the packaged run is answered
-    by the script-operand rule and reaches the ``argv[0]`` check at all. An exemption
-    there would only ever admit ``exec -a pytest-3 python3 -c …``, which is the spoof.
+    So an interpreter is not exempted: an exemption at ``argv[0]`` would only admit
+    ``exec -a pytest-3 python3 -c …``, which is the spoof.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -872,16 +787,9 @@ def test_an_interpreter_kernel_binary_does_not_refute_a_shebang_runner(mod, tmp_
 def test_the_execution_target_is_located_by_pythons_own_grammar(mod, argv, expected):
     """Python runs exactly ONE thing, and its grammar says which token that is.
 
-    The first selector to appear wins -- ``-m``, ``-c``, ``-``, or the script operand --
-    and every token after it belongs to the thing being run. A single index is what makes
-    ``python3 worker.py -m pytest`` answer 1 rather than 3: the script came first, so the
-    ``-m`` is an argument that script was handed, and a script may spell its own options
-    however it likes. An option this grammar cannot classify answers None, which
-    declines, because a missed line costs a signal and a false one costs a turn.
-
-    The KIND travels with the index because only one of the two can be checked for being
-    an installed entry point: a module name is resolved by the import machinery, while a
-    script is a path that proves only what sits there.
+    The first selector (``-m``, ``-c``, ``-`` or a script) wins, so ``python3 worker.py
+    -m pytest`` answers 1. An unknown option answers None, which declines. The KIND is
+    returned because only a script path can be checked as an installed entry point.
     """
     assert mod._python_execution_target(argv) == expected
 
@@ -936,17 +844,9 @@ def test_an_interpreter_reports_the_alias_when_only_flags_stand_in_front(
 ):
     """``python3 -O pytest-3`` runs the file ``pytest-3``, and that file IS the program.
 
-    Only flags intervene here, so nothing about the launcher's own grammar separates
-    this from an invocation -- which makes it the case that isolates the script-operand
-    rule from every other reason a token can qualify.
-
-    The opposite reading, that such a file may be any data an operator named that way,
-    does not survive the mechanism. For the pid to exist long enough to be scanned the
-    operand has to be something python can actually execute: a file of unparsable data
-    or a directory without ``__main__.py`` -- a pytest temp root such as
-    ``/var/tmp/pytest-of-ci/pytest-3`` is exactly that -- exits before any walk sees it.
-    An alias in a script position that runs is a runner, and it is the position the
-    ordinary packaged spelling always occupies.
+    Only flags intervene, so this isolates the script-operand rule. A pid that lives long
+    enough to scan is running something python can execute; a data file or a pytest temp
+    root exits first.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -967,18 +867,10 @@ def test_an_interpreter_reports_the_alias_when_only_flags_stand_in_front(
 
 
 def test_only_transparent_launchers_can_ever_carry_a_detection(mod):
-    """The detector is BOUNDED: every recognised launcher is enumerated, and the set that
-    can carry a detection is exactly the transparent one.
+    """Only a launcher in ``_TRANSPARENT_LAUNCHER_BASES`` can carry a detection.
 
-    This is the asymmetry expressed at the position check. The two error directions cost
-    wildly different things -- a miss costs a signal, a false row costs a stopped worker
-    and its discarded turn -- so the check answers from a closed list of shapes and
-    anything unlisted is NOT DETECTED. A launcher added to ``_LAUNCHER_BASES`` therefore
-    produces a miss, never a stop, until someone decides it execs what follows and adds it
-    to ``_TRANSPARENT_LAUNCHER_BASES`` deliberately.
-
-    Enumerated from source rather than from a written list, so the assertion cannot drift
-    behind the launcher set it is about.
+    A miss costs a signal and a false row a stopped worker, so a new entry in
+    ``_LAUNCHER_BASES`` yields a miss until it is added to the transparent set.
     """
     tails = (
         ["pytest-3", *UNBUDGETED, "test/"],

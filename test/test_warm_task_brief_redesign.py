@@ -11,6 +11,7 @@ follow-up change. RC7 (the whole-board count) is pinned in
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json
 import time
@@ -689,3 +690,415 @@ async def test_a_second_change_posts_nothing_this_visit(monkeypatch):
         monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d2"}]
     )
     assert len(prompts) == 2 and posted == []
+
+
+# ---------------------------------------------------------------- RC4, RC5: live reads and buttons
+
+
+@pytest.fixture(autouse=True)
+def _no_github(_floor_monkeypatch):
+    """No unit test reaches GitHub; each read is recorded instead."""
+    calls: list[list[str]] = []
+
+    def probe(urls):
+        calls.append(list(urls))
+        return {}
+
+    _floor_monkeypatch.setattr(inputs, "probe_github", probe)
+    _floor_monkeypatch.setattr(inputs, "_live_cache", {})
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_rc4_live_read_is_bounded_cached_and_stamped(monkeypatch, _no_github):
+    def probe(urls):
+        _no_github.append(list(urls))
+        return {
+            url: {"state": "merged", "review": "APPROVED", "mergeable": "", "checks": None}
+            for url in urls
+            if url.endswith("/26100")
+        }
+
+    monkeypatch.setattr(inputs, "probe_github", probe)
+    ledger = [inputs.PrRef("kirodotdev/KiroCrew", n) for n in (26100, 26101, 1, 2, 3, 4)]
+    refs = inputs.pr_refs(["https://github.com/o/r/pull/7"], ledger)
+    assert len(refs) == inputs.MAX_LIVE_PRS
+    now = time.time()
+    first = await inputs.read_live_prs(refs, now)
+    assert first[0]["checked"] is True and first[0]["state"] == "merged"
+    assert first[0]["source"] == "GitHub" and first[0]["read_at"] == inputs.clock(now)
+    assert first[1] == {
+        "pr": "#26101",
+        "repo": "kirodotdev/KiroCrew",
+        "url": "https://github.com/kirodotdev/KiroCrew/pull/26101",
+        "checked": False,
+        "not_checked_since": "never",
+    }
+    # Within 15 minutes the good read is reused; only failed ones are retried.
+    await inputs.read_live_prs(refs[:1], now + 60)
+    assert len(_no_github) == 1
+    await inputs.read_live_prs(refs[:1], now + inputs.LIVE_PR_TTL_SECS)
+    assert len(_no_github) == 2
+
+
+@pytest.mark.asyncio
+async def test_rc4_live_read_past_its_limit_marks_unread_prs_not_checked(monkeypatch, _no_github):
+    async def never_done(fn, urls):
+        # Stands in for the worker thread: the read starts at once and never
+        # answers, so the limit always ends it. No thread, no pool.
+        _no_github.append(list(urls))
+        await asyncio.Event().wait()
+
+    seam = SimpleNamespace(wait_for=asyncio.wait_for, to_thread=never_done)
+    monkeypatch.setattr(inputs, "asyncio", seam)
+    now = time.time()
+    cached, unread = (inputs.PrRef("kirodotdev/KiroCrew", n) for n in (26100, 26101))
+    inputs._live_cache[cached.url] = (now, {"state": "open", "review": "APPROVED"})
+    entries = await inputs.read_live_prs([cached, unread], now, budget=0.01)
+    # What was already read still goes out; the unread PR is never guessed.
+    assert entries[0]["checked"] is True and entries[0]["state"] == "open"
+    assert entries[1] == {
+        "pr": "#26101",
+        "repo": "kirodotdev/KiroCrew",
+        "url": unread.url,
+        "checked": False,
+        "not_checked_since": "never",
+    }
+    assert _no_github == [[unread.url]]
+    # A spent limit starts no read at all.
+    again = await inputs.read_live_prs([unread], now, budget=0)
+    assert again[0]["checked"] is False and len(_no_github) == 1
+
+
+@pytest.mark.asyncio
+async def test_rc4_one_live_read_limit_covers_every_attempt(monkeypatch):
+    budgets: list[float] = []
+    # A synthetic clock scoped to the brief module: each read takes 3 s and
+    # each model call 20 s; only the reads may spend the limit.
+    now = [0.0]
+    clock = SimpleNamespace(time=time.time, monotonic=lambda: now[0])
+    monkeypatch.setattr(warm_task_brief, "time", clock)
+
+    async def read(refs, now_arg=None, budget=inputs.LIVE_READ_TOTAL_SECS):
+        budgets.append(budget)
+        now[0] += 3.0
+        return []
+
+    real_generate = warm_task_brief._generate
+
+    async def generate(*args, **kwargs):
+        now[0] += 20.0
+        return await real_generate(*args, **kwargs)
+
+    monkeypatch.setattr(inputs, "read_live_prs", read)
+    monkeypatch.setattr(warm_task_brief, "_generate", generate)
+    prompts, posted = await _write_run(
+        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d1"}]
+    )
+    assert len(prompts) == 2 and len(posted) == 1
+    assert budgets == [inputs.LIVE_READ_TOTAL_SECS, inputs.LIVE_READ_TOTAL_SECS - 3.0]
+
+
+@pytest.mark.asyncio
+async def test_rc4_only_ledger_prs_and_full_urls_are_read(monkeypatch, _no_github):
+    state = _State()
+    slot = _foreground_slot(state)
+    items = (
+        _item(1, state="open", status="progress", summary="#111 in review"),
+        _item(2, state="open", status="question", summary="Merge #222?", pr=222),
+    )
+    base = _snap(
+        work_items=items,
+        waiting=(
+            {
+                "kind": "options",
+                "text": "See #444 and https://github.com/kirodotdev/KiroCrew/pull/333",
+                "options": ["Go"],
+                "asked_at": "",
+            },
+        ),
+    )
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    read = [url.rsplit("/", 1)[1] for url in _no_github[0]]
+    # The ask's ledger PR, the full URL, then the other open item's ledger PR
+    # (M3: read before the brief may name it); the bare #111 and #444 never are.
+    assert read == ["222", "333", "1"]
+
+
+@pytest.mark.asyncio
+async def test_rc4_a_pr_number_the_input_never_named_drops_the_model_fields(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    base = _snap(
+        waiting=(
+            {
+                "kind": "options",
+                "text": "Merge #26100?",
+                "options": ["Merge it", "Hold"],
+                "asked_at": "",
+            },
+        )
+    )
+
+    async def run_model(*args, **kwargs):
+        return '{"headline":"Merge #18901 now.","body":"#26100 is fine."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    row = slot.rows[-1]
+    # The headline names an invented pull request: only the gateway's own
+    # cards and the failure line post.
+    assert row["meta"]["brief"]["headline"] == warm_task_brief._FAILURE_TEXT["en"]
+    assert "18901" not in row["content"]
+
+
+def test_rc4_the_providers_own_response_type_is_read_not_dropped():
+    from kiro_crew.monitoring.github_pull_request import (
+        GitHubPullRequestResponse,
+        parse_github_pull_request_target,
+    )
+    from kiro_crew.monitoring.pull_request import PullRequestCheck
+
+    response = GitHubPullRequestResponse(
+        target=parse_github_pull_request_target("https://github.com/o/r/pull/7"),
+        state="open",
+        draft=False,
+        head_revision="abc",
+        mergeability="CLEAN",
+        review_decision="APPROVED",
+        checks=(PullRequestCheck("ci", "passed"), PullRequestCheck("lint", "failed")),
+        checks_complete=True,
+        unresolved_review_threads=0,
+        review_threads_complete=True,
+    )
+    assert inputs.facts_of(response) == {
+        "state": "open",
+        "review": "APPROVED",
+        "mergeable": "CLEAN",
+        "checks": {"failed": 1, "pending": 0, "passed": 1, "unknown": 0},
+    }
+    assert inputs.facts_of(None) is None
+    # A check read that did not finish is not an empty, green board.
+    partial = replace(response, checks=(), checks_complete=False)
+    assert inputs.facts_of(partial)["checks"] == inputs.CHECKS_NOT_READ
+
+
+@pytest.mark.asyncio
+async def test_rc4_a_bare_number_in_the_choices_is_never_read(monkeypatch, _no_github):
+    state = _State()
+    slot = _foreground_slot(state)
+    base = _snap(
+        work_items=(_item(1, state="open", status="progress", summary="working"),),
+        waiting=(
+            {
+                "kind": "options",
+                "text": "Proceed?",
+                "options": ["Merge #26100", "Hold #26100"],
+                "asked_at": "",
+            },
+        ),
+    )
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    # The repo would have to be guessed, so the bare number is never read.
+    assert _no_github == [["https://github.com/kirodotdev/KiroCrew/pull/1"]]
+
+
+@pytest.mark.asyncio
+async def test_rc4_a_pr_the_ledger_holds_as_a_number_counts_as_named(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    item = _item(1, state="accepted", status="done", summary="merged", pr=222)
+    item["closed_at"] = _iso(time.time() - 60)
+    base = _snap(work_items=(item,))
+
+    async def run_model(*args, **kwargs):
+        return '{"headline":"#222 merged while you were away."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    assert slot.rows[-1]["meta"]["kind"] == "warm_task_brief_result"
+
+
+def test_rc4_the_item_payload_keeps_the_repo_its_own_pr_is_read_in():
+    item = SimpleNamespace(
+        item_id="it_1",
+        title="t",
+        state="open",
+        verdict="",
+        decision="",
+        worker_session_key="",
+        status="question",
+        reason="",
+        summary="Merge #222?",
+        artifacts={},
+        last_report_at="",
+        created_at="",
+        closed_at="",
+        decided_at="",
+        acceptance={"kind": "pr_checks", "pr": 222, "repo": "kirodotdev/KiroCrew"},
+        pr=None,
+    )
+    payload = warm_task_brief._work_item_payload(item)
+    assert inputs.ledger_ref(payload) == inputs.PrRef("kirodotdev/KiroCrew", 222)
+    snapshot = _snap(work_items=(payload,), waiting=())
+    assert [ref.number for ref in warm_task_brief._live_refs(snapshot)] == [222]
+
+
+@pytest.mark.asyncio
+async def test_rc4_a_hex_colour_in_the_widget_is_not_an_invented_pr(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    base = _snapshot()
+
+    async def run_model(*args, **kwargs):
+        return json.dumps({"headline": "On track.", "widget": '<div style="color:#333">ok</div>'})
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    assert slot.rows[-1]["meta"]["kind"] == "warm_task_brief_result"
+
+
+@pytest.mark.asyncio
+async def test_rc4_an_unfinished_check_read_reaches_the_model_as_not_read(monkeypatch):
+    from kiro_crew.monitoring.github_pull_request import (
+        GitHubPullRequestResponse,
+        parse_github_pull_request_target,
+    )
+
+    url = "https://github.com/kirodotdev/KiroCrew/pull/26100"
+    partial = GitHubPullRequestResponse(
+        target=parse_github_pull_request_target(url),
+        state="open",
+        draft=False,
+        head_revision="abc",
+        mergeability="CLEAN",
+        review_decision="APPROVED",
+        checks=(),
+        checks_complete=False,
+        unresolved_review_threads=0,
+        review_threads_complete=True,
+    )
+    monkeypatch.setattr(
+        inputs, "probe_github", lambda urls: {u: inputs.facts_of(partial) for u in urls}
+    )
+    entry = (await inputs.read_live_prs([inputs.PrRef("kirodotdev/KiroCrew", 26100)]))[0]
+    assert entry["checked"] is True and entry["checks"] == inputs.CHECKS_NOT_READ
+    assert inputs.public_live([entry])[0]["checks"] == inputs.CHECKS_NOT_READ
+
+
+def test_rc4_pr_numbers_use_ascii_boundaries_and_read_qualified_forms():
+    # A CJK letter beside the number is a boundary, so an invented #N is seen.
+    assert inputs.pr_numbers("#18901已合并") == {18901}
+    assert inputs.pr_numbers("见#7。") == {7}
+    # A repository-qualified or PR-prefixed number names that number.
+    assert inputs.pr_numbers("kirodotdev/KiroCrew#26100") == {26100}
+    assert inputs.pr_numbers("PR#26101 and pr#5") == {26101, 5}
+    # Neither an HTML entity, a colour, a path nor a longer number.
+    assert inputs.pr_numbers("&#38; a/b/#9 #1234567890") == set()
+    # The live read takes only a full URL from text, never a written repo#N.
+    assert inputs.pr_refs(["see alpha/svc#7"]) == []
+    assert inputs.pr_refs(["https://github.com/alpha/svc/pull/7"]) == [inputs.PrRef("alpha/svc", 7)]
+
+
+@pytest.mark.asyncio
+async def test_rc4_a_pr_the_input_names_with_its_repo_does_not_fail_the_result(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    item = _item(1, state="open", status="question", summary="Merge kirodotdev/KiroCrew#26100?")
+    base = _snap(work_items=(item,))
+
+    async def run_model(*args, **kwargs):
+        return '{"headline":"#26100 waits on you."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    assert slot.rows[-1]["meta"]["kind"] == "warm_task_brief_result"
+
+
+@pytest.mark.asyncio
+async def test_rc4_a_pr_after_a_line_break_in_the_transcript_counts_as_named(monkeypatch):
+    # The prompt is JSON: "\n#222" there reads "n#222", which no boundary allows.
+    state = _State()
+    slot = _foreground_slot(state)
+    turns = (
+        _turn(1, "user", "Ship it", 7200),
+        _turn(2, "assistant", "Update:\n#222 is still open.", 60),
+    )
+    base = _snap(turns=turns, last_user_at=time.time() - 7200)
+
+    async def run_model(*args, **kwargs):
+        return '{"headline":"#222: not checked since 10:00."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    assert slot.rows[-1]["meta"]["kind"] == "warm_task_brief_result"
+
+
+@pytest.mark.asyncio
+async def test_rc4_a_pr_from_the_original_request_passes_the_check(monkeypatch):
+    # "asked" falls back to the original request, which may sit outside the payload.
+    state = _State()
+    slot = _foreground_slot(state)
+    base = _snap(original_request="Fix #7 please")
+
+    async def run_model(*args, **kwargs):
+        return '{"headline":"On track."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    monkeypatch.setattr(warm_task_brief, "_payload", lambda *a, **k: {"goal": "ship"})
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    row = slot.rows[-1]
+    assert row["meta"]["kind"] == "warm_task_brief_result"
+    assert "#7" in row["meta"]["brief"]["asked"]
+
+
+def test_rc4_a_live_merged_pr_is_not_a_change_since_away():
+    # The read cannot tell when it merged, so it is stated only in live_prs.
+    entry = {
+        "pr": "#26100",
+        "repo": "kirodotdev/KiroCrew",
+        "url": "https://github.com/kirodotdev/KiroCrew/pull/26100",
+        "checked": True,
+        "state": "merged",
+        "source": "GitHub",
+        "read_at": "09:30",
+        "_read_epoch": time.time(),
+    }
+    payload = warm_task_brief._payload(_snapshot(), time.time() - 3600, (entry,))
+    assert all("pr" not in change for change in payload["changes_since_away"])
+    # A checked read is a checked fact, not a "not checked" live entry.
+    assert payload["checked_facts"][0]["values"] == {"state": "merged"}
+    assert "live_prs" not in payload
+
+
+def test_rc4_a_hex_colour_or_a_capped_number_names_no_pr():
+    # A colour is not a PR, wherever the model writes it.
+    assert inputs.pr_numbers("Set the button to #007bff and #fff.") == set()
+    # A number a field cap cut short, ending in an ellipsis, names nothing.
+    assert inputs.pr_numbers("Fix #26100 and #2610…") == {26100}
+    assert inputs.pr_numbers("line one\nasked about #2610…\nnext") == set()
+    # A number followed by a mid-line ellipsis the model wrote still counts.
+    assert inputs.pr_numbers("#26100… then more") == {26100}
+    # A CJK letter next to the number is still a boundary.
+    assert inputs.pr_numbers("#18901已合并") == {18901}
+
+
+@pytest.mark.asyncio
+async def test_rc4_a_capped_asked_fallback_does_not_fail_the_result(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    request = "x" * (warm_task_brief._MAX_ASKED_CHARS - 6) + " #26100 and more"
+    base = _snap(original_request=request)
+
+    async def run_model(*args, **kwargs):
+        return '{"headline":"On track."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    monkeypatch.setattr(warm_task_brief, "_payload", lambda *a, **k: {"goal": "ship"})
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    row = slot.rows[-1]
+    # The cap cut the number: what is left names no PR the input lacks.
+    assert row["meta"]["brief"]["asked"].endswith("#261…")
+    assert row["meta"]["kind"] == "warm_task_brief_result"

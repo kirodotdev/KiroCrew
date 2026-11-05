@@ -11,7 +11,7 @@ A host is refused when it is not a hostname, or is a public suffix or bare TLD
 (``co.uk``, ``github.io``, ``com``): such a claim would reach every site under it.
 The check is a curated list plus a rule for the common ccTLD second levels, not the
 full Public Suffix List, which this package does not ship;
-``website/src/linkPreview/linkPreviewRegistry.ts`` mirrors both.
+``website/src/appFrame/hosts.ts`` mirrors both.
 """
 
 from __future__ import annotations
@@ -22,6 +22,10 @@ import re
 _IDNA_DEVIATIONS = frozenset("\u00df\u03c2\u200c\u200d")
 
 _LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+#: An exact host, or a leading dot for the domain and every subdomain, with at least
+#: two labels (so ``localhost`` and a bare TLD never match). Mirrored by ``HOST_RE``
+#: in ``website/src/appFrame/hosts.ts``.
+HOST_RE = re.compile(r"^\.?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
 
 #: Second-level labels a country-code TLD commonly sells under (``co.uk``,
 #: ``com.au``, ``ac.jp``). ``<label>.<two letters>`` is treated as a public suffix.
@@ -111,9 +115,59 @@ def host_refusal(host: str) -> str | None:
     labels = bare.split(".")
     if len(bare) > 253 or any(not _LABEL_RE.fullmatch(lbl) or len(lbl) > 63 for lbl in labels):
         return "not a hostname"
+    # No top-level domain is all digits, so a numeric last label is an IP address
+    # literal (``127.0.0.1``), not a name an app can claim.
+    if labels[-1].isdigit():
+        return "an IP address, not a hostname"
+    # ``localhost`` and every name under it resolve to this machine (RFC 6761).
+    if labels[-1] == "localhost":
+        return "a loopback name"
     if is_public_suffix(bare):
         return "a public suffix or a bare top-level domain"
     return None
 
 
-__all__ = ["PUBLIC_SUFFIXES", "host_refusal", "is_public_suffix", "normalize_host"]
+def normalized_hosts(raw: object) -> list[str]:
+    """A manifest ``hosts`` value as its normalized, de-duplicated entries.
+
+    What a grant stores. An entry that does not normalize is left out: validation
+    has already refused the manifest that carried it.
+    """
+    out: list[str] = []
+    for h in raw if isinstance(raw, list) else []:
+        n = normalize_host(h) if isinstance(h, str) else None
+        if n and n not in out:
+            out.append(n)
+    return out
+
+
+def host_list_errors(where: str, hosts: list[str], bad_hosts: bool, limit: int) -> list[str]:
+    """The validation errors of a point entry's ``hosts``, already normalized."""
+    errors: list[str] = []
+    if bad_hosts:
+        # Coerced to [] this would read as "no links", and the point would install
+        # clean and never fire.
+        errors.append(f"{where}: hosts must be an array of hostnames")
+    elif not hosts:
+        errors.append(f"{where}: hosts must list at least one hostname")
+    elif len(hosts) > limit:
+        errors.append(f"{where}: {len(hosts)} hosts exceeds the limit of {limit}")
+    for host in hosts:
+        if not HOST_RE.fullmatch(host):
+            errors.append(f"{where}: hosts entry is not a hostname ({host!r})")
+        elif refusal := host_refusal(host):
+            errors.append(f"{where}: hosts entry is {refusal} ({host!r})")
+    if len(set(hosts)) != len(hosts):
+        errors.append(f"{where}: hosts repeats an entry")
+    return errors
+
+
+__all__ = [
+    "HOST_RE",
+    "PUBLIC_SUFFIXES",
+    "host_list_errors",
+    "host_refusal",
+    "is_public_suffix",
+    "normalize_host",
+    "normalized_hosts",
+]

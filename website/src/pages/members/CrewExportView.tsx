@@ -174,7 +174,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
         setChecked({ plan: await api.memberExportPreview(slug, member, choices) })
         return
       }
-      downloadBlob(blob, `${view.name}.crewjam`)
+      downloadBlob(blob, `${view.name}.kirobot`)
     },
   })
 
@@ -193,6 +193,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
   // Only a `lessons_` code is the lessons text failing a check; any other refusal is
   // about the crewmate, so it gets the general message.
   const saveCode = apiErrorCode(save.error)
+  const lessonsRefused = save.isError && saveCode.startsWith('lessons_')
   const saveError = saveCode === 'lessons_exfil_url'
     ? t('pages.membersPage.export_lessons_exfil_url')
     : saveCode === 'lessons_too_large'
@@ -268,6 +269,8 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
                 value={lessons}
                 onChange={e => setLessons(e.target.value)}
                 aria-label={t('pages.membersPage.export_lessons')}
+                aria-invalid={lessonsRefused ? true : undefined}
+                aria-describedby={lessonsRefused ? 'crew-export-error' : undefined}
                 placeholder={t('pages.membersPage.export_lessons_placeholder')}
                 rows={8}
                 disabled={draft.isPending}
@@ -320,7 +323,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
       )}
       {/* No hand-off: the lessons editor above may hold unsaved text, which a hand-off
           to chat would unmount and lose. */}
-      {save.isError && <ErrorNotice message={saveError} testId="crew-export-error" />}
+      {save.isError && <ErrorNotice id="crew-export-error" message={saveError} testId="crew-export-error" />}
       <Btn primary type="button" onClick={() => save.mutate(v)} disabled={save.isPending} className="self-start h-9 px-4 rounded-full" data-testid="crew-export-download">
         <Download size={14} aria-hidden="true" />
         {t('pages.membersPage.export_download')}

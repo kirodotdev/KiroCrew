@@ -49,7 +49,7 @@ if TYPE_CHECKING:
         _note_listener_sidecar,
         _precompute_telemetry,
         _reconcile_listener_publication,
-        _register_browser_install_cleanup,
+        _register_browser_harness_lifecycle,
         _register_config_watch,
         _register_connections_warm_lifecycle,
         _register_deploy_routes,
@@ -377,7 +377,9 @@ async def start_api_server(
     # Slack task, identically to the full dashboard.
     _register_prevent_sleep_shutdown(app, state)
     _register_listener_guard_shutdown(app, state)
-    _register_browser_install_cleanup(app, state)
+    # The headless gateway serves the ``browser`` tool too, so its browser plane
+    # stops with it and a stray daemon is reclaimed at its start, as on the dashboard.
+    _register_browser_harness_lifecycle(app, state)
     _register_connections_warm_lifecycle(app, state)
     _register_workflow_lifecycle(app, state)
 
@@ -415,15 +417,15 @@ async def start_api_server(
     # Export the actually-bound port for child processes (parity with
     # start_dashboard — headless gateways spawn the same MCP stdio children).
     _export_bound_port(runner, port)
+    # Same resolve-once rule as start_dashboard: `--port auto` leaves the
+    # requested port at 0, and both the unix socket's name and the second family
+    # must carry the port the sidecar will name.
+    _bound_port = _resolved_bound_port(runner, port)
     # Additional kernel-verifiable transport for the internal API (parity with
     # start_dashboard; POSIX only, degrades to TCP-only on any failure).
-    _unix_socket_holder["path"] = await _start_unix_site(runner, port)
+    _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)
     # Parity with start_dashboard: hold the other loopback family so a client
     # dialling a NAME cannot be answered by anyone else.
-    # Same resolve-once rule as start_dashboard: `--port auto` leaves the
-    # requested port at 0, and the second family must bind the port the sidecar
-    # will name.
-    _bound_port = _resolved_bound_port(runner, port)
     _second_loopback = await _start_secondary_loopback_site(
         runner, _bound_port, _resolved_bound_host(runner, bind_addr)
     )
@@ -491,12 +493,13 @@ async def start_api_server(
 
     await prepare_gateway(state)
 
-    logger.info("API-only server listening on %s:%d", bind_addr, port)
+    logger.info("API-only server listening on %s:%d", bind_addr, _bound_port)
 
     # Arm the prevent-sleep poll now the loop is up and the port is bound
     # (shutdown hook already registered above). Headless --slack-only mode keeps
-    # the host awake during a long Slack task exactly as the full dashboard does.
-    _arm_prevent_sleep_poll(state, port)
+    # the host awake during a long Slack task exactly as the full dashboard does,
+    # asked about the bound port for the same reason.
+    _arm_prevent_sleep_poll(state, _bound_port)
 
     # Boot-to-ready (rec #1): headless API server is bound and ready. Privacy-safe
     # fixed labels only; best-effort.

@@ -263,13 +263,26 @@ _BLOCKED_SLASH_COMMANDS = (
 )
 
 # Commands the dashboard serves without the harness: the composer opens /side
-# itself, and the slash gate answers /agent <name>, /clear, /goal, /mcp, /model,
-# /prompts, /tools and /workflow before any session work. On a harness in
-# ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` every other harness command only gets a
-# notice, so GET /api/slash-commands lists these (plus /compact, which has a gate
-# of its own) and nothing else there.
+# itself, and the slash gate answers /agent, /clear, /context, /goal, /help, /mcp,
+# /model, /prompts, /tools, /usage and /workflow before any session work. On a
+# harness in ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` every other harness command
+# only gets a notice, so GET /api/slash-commands lists these (plus /compact, which
+# has a gate of its own) and nothing else there.
 _DASHBOARD_SERVED_SLASH_COMMANDS = frozenset(
-    {"/agent", "/clear", "/goal", "/mcp", "/model", "/prompts", "/side", "/tools", "/workflow"}
+    {
+        "/agent",
+        "/clear",
+        "/context",
+        "/goal",
+        "/help",
+        "/mcp",
+        "/model",
+        "/prompts",
+        "/side",
+        "/tools",
+        "/usage",
+        "/workflow",
+    }
 )
 
 # Slash-command descriptions surfaced by the dashboard API
@@ -360,8 +373,9 @@ def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
     """Whether *first_word* should be forwarded to the harness as a command.
 
     Two rules, and the second exists because of a trap. A member of
-    :data:`_SLASH_COMMANDS` is a command on every provider. Under ``claude_code``
-    the harness owns its own command set, so ANY leading slash is forwarded —
+    :data:`_SLASH_COMMANDS` is a command on every provider. When *cc_provider* says
+    the harness owns its own command set (the ``claude_code`` label, or a backend in
+    ``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``), ANY leading slash is forwarded —
     except a quick-prompt token, which is not a command at all but a macro
     :meth:`ContextBuilder.build_message` expands into an instruction. Forwarding one
     would hand the harness a command it has no definition for, and the token would
@@ -617,9 +631,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         background_wake_pending,
         chat_done_payload,
         chunk_generation,
+        idle_compaction_blocker,
         subagents_attached,
         subagents_attached_async,
         synthesis_fire_verdict,
+        wire_session_idle_compaction_probe,
         wire_session_subagent_probe,
     )
     from kiro_crew.dashboard.chat_utils_display import (  # noqa: F401
@@ -732,6 +748,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_system_injection_item,
         payload_for_replay,
         releases_past_subagent_hold,
+        teardown_hold_active,
     )
     from kiro_crew.dashboard.chat_utils_slack_options import (  # noqa: F401
         _forget_slack_options_message,
@@ -754,6 +771,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.chat_utils_slots import (  # noqa: F401
         _INCOGNITO_PREFIX,
+        _PUBLISHED_SLOT_KEYS_LOCK,
         _TEMPORARY_PREFIX,
         ReplacementTightening,
         _apply_incognito_prefix,
@@ -761,11 +779,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _installed_theme_persona,
         _maybe_consolidate,
         _maybe_inject_persona,
+        _owe_listing_refresh,
+        _pay_listing_refresh,
+        _published_keys_of,
         _resettle_restricted_key,
         _sync_dashboard_slots,
         apply_pending_slot_memory_mode,
         dashboard_slot_key,
         effective_session_key,
+        listing_slot_snapshot,
         reject_if_slot_under_construction,
         replacement_shares_transcript,
         restore_replacement_if_handover_did_not_land,
@@ -848,6 +870,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
         ATTACHMENT_META_KEYS,
+        source_channels_of,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
         BUSY_RECOVERY_PREFIX,

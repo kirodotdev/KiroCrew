@@ -190,6 +190,27 @@ const EXFIL_CREDENTIAL_RE = new RegExp(
 // so a minimum-length encoded payload is caught. Same spelling as the backend.
 const EXFIL_B64_RE = /[A-Za-z0-9+/]{40,}={0,2}|[A-Za-z0-9+/]{39}=|[A-Za-z0-9+/]{38}==/i
 
+// A SHA-1 git object name (40 lowercase hex digits) is a 40+ char run in the
+// class above, so a commit permalink's `?commit=<sha>` fired the blob signal.
+// It is not a base64 blob: hex is a 16-symbol alphabet. Mirrors the backend's
+// `_GIT_OBJECT_NAME_RE` / `_exfil_blob_hit`: the test is on the MAXIMAL match,
+// so 41+ digits, mixed case, padding or a SHA glued to other base64 characters
+// are a longer or wider run and still redact. 64 hex (SHA-256) is not carved
+// out: it is the shape of the product's own secrets. Same spelling as the backend.
+const EXFIL_GIT_OBJECT_NAME_RE = /^[0-9a-f]{40}$/
+
+// The blob signal minus bare git object names. Global so every maximal run in
+// the value is judged, with `lastIndex` reset per call.
+const EXFIL_B64_SCAN_RE = new RegExp(EXFIL_B64_RE.source, 'gi')
+function exfilBlobHit(value: string): boolean {
+  EXFIL_B64_SCAN_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = EXFIL_B64_SCAN_RE.exec(value))) {
+    if (!EXFIL_GIT_OBJECT_NAME_RE.test(m[0])) return true
+  }
+  return false
+}
+
 // Aggregate query LENGTH is the one signal that names no shape at all: it fires on
 // any richly-parameterised URL, which is why prefilled issue links —
 // `…/issues/new?title=…&body=<a paragraph of prose>&labels=…` — render as a
@@ -234,7 +255,7 @@ export function sanitizeExfiltrationUrls(text: string): string {
     const url = inLink || cut.includes('?') ? cut : trimWrapperParen(full)
     // A pattern signal past the cut still counts (glued prose can only trip the length one).
     const past = inLink ? '' : full.slice(url.length)
-    const hit = EXFIL_PERCENT_RE.test(past) || EXFIL_CREDENTIAL_RE.test(past) || EXFIL_B64_RE.test(past)
+    const hit = EXFIL_PERCENT_RE.test(past) || EXFIL_CREDENTIAL_RE.test(past) || exfilBlobHit(past)
     const pathAndQuery = url.slice(m[0].length - (m[3] || '').length)
     const qmark = pathAndQuery.indexOf('?')
     if (qmark === -1 && !hit) continue
@@ -242,7 +263,7 @@ export function sanitizeExfiltrationUrls(text: string): string {
     const redact = hit ||
       EXFIL_PERCENT_RE.test(query) ||
       EXFIL_CREDENTIAL_RE.test(query) ||
-      EXFIL_B64_RE.test(query) ||
+      exfilBlobHit(query) ||
       query.length >= EXFIL_QUERY_MIN_LEN
     if (redact) {
       out += text.slice(last, m.index) + i18nT('utils.sanitize.redacted_suspicious_url', { domain })

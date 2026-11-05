@@ -1,5 +1,5 @@
 """The warm task brief's shape: parsing the model's JSON, caps, redaction,
-control-marker defang, the gateway's own progress count, and the plain-text
+control-marker defang, the gateway's own goal count, and the plain-text
 copy. Pure functions only; the return-trigger and publication paths are in
 ``test_warm_task_brief.py``."""
 
@@ -43,7 +43,7 @@ def test_old_prose_shape_still_yields_a_short_brief():
     assert brief.headline.endswith("…")
     assert brief.asked == "Fix the failing test"
     assert brief.needs_you == () and brief.next == () and brief.extra == ()
-    assert brief.status == "on_track" and brief.progress is None
+    assert brief.status == "on_track"
 
 
 def test_the_older_now_field_is_read_as_the_headline():
@@ -159,18 +159,12 @@ def test_progress_counts_the_current_goal_never_the_model(record, items, expecte
     raw = json.dumps(
         {"headline": "Ready.", "progress": {"accepted": 7, "total": 7}, "remaining": "Merge"}
     )
-    brief = warm_task_brief._parse_result(raw, "", progress)
-    assert brief is not None and brief.progress == expected
-    meta = brief.as_meta()
-    if expected is None:
-        # No trustworthy denominator: omit both model and rendered counts.
-        assert "progress" not in meta
-        assert warm_task_brief._brief_text(brief, "en") == "On track: Ready.\nLeft: Merge"
-    else:
-        assert meta["progress"] == {"accepted": expected[0], "total": expected[1]}
-        assert f"Progress: {expected[0]} of {expected[1]} done" in (
-            warm_task_brief._brief_text(brief, "en")
-        )
+    # The count is a fact the model may read, never a field the brief draws:
+    # neither the model's number nor the gateway's reaches the card or text.
+    brief = warm_task_brief._parse_result(raw)
+    assert brief is not None and not hasattr(brief, "progress")
+    assert "progress" not in brief.as_meta()
+    assert warm_task_brief._brief_text(brief, "en") == "On track: Ready.\nLeft: Merge"
 
 
 def test_over_long_fields_and_lists_are_capped():
@@ -310,7 +304,7 @@ def test_a_multiline_private_key_is_redacted_before_whitespace_collapses(field):
     pem = begin + "\n" + body + "\n" + body + "\n" + end
     brief = warm_task_brief._parse_result(json.dumps(_with_field(field, pem)), "")
     assert brief is not None
-    rendered = json.dumps(brief.as_meta()) + warm_task_brief._brief_text(brief, "en")
+    rendered = _rendered(brief)
     assert body[:12] not in rendered
 
 
@@ -327,7 +321,7 @@ def test_a_token_rejoined_by_dropping_bold_markers_is_redacted(field, split):
     token = split.replace("**", "")
     brief = warm_task_brief._parse_result(json.dumps(_with_field(field, f"key {split}")), "")
     assert brief is not None
-    rendered = json.dumps(brief.as_meta()) + warm_task_brief._brief_text(brief, "en")
+    rendered = _rendered(brief)
     assert token not in rendered
 
 
@@ -393,11 +387,10 @@ def test_chinese_brief_uses_chinese_text_labels():
             }
         ),
         "",
-        (1, 2),
     )
     assert brief is not None
     assert warm_task_brief._brief_text(brief, warm_task_brief._language_of("修复失败的测试")) == (
-        "等你处理: 已经复现了失败。\n需要你:\n- 批准推送\n进度: 2 项中已完成 1 项\n"
+        "等你处理: 已经复现了失败。\n需要你:\n- 批准推送\n"
         "还剩: 推送修复\n你让我做: 修复测试\n已做完:\n- 复现失败\n下一步:\n1. 应用修复"
     )
 
@@ -407,10 +400,10 @@ def test_a_free_form_body_keeps_its_lines_and_replaces_the_quoted_request():
         {
             "headline": "Almost there 🎉",
             "body": "You asked for a green nightly.\n\n\n- two fixes in\n- one to go\n"
-            + "x\n" * 60,
+            + "x\n" * 200,
         }
     )
-    brief = warm_task_brief._parse_result(raw, "Fix the nightly", (2, 3))
+    brief = warm_task_brief._parse_result(raw, "Fix the nightly")
     assert brief is not None
     lines = brief.body.split("\n")
     assert lines[:4] == ["You asked for a green nightly.", "", "- two fixes in", "- one to go"]
@@ -418,10 +411,75 @@ def test_a_free_form_body_keeps_its_lines_and_replaces_the_quoted_request():
     # The body carries the reminder, so no fixed "You asked" line is added.
     assert brief.asked == ""
     assert warm_task_brief._brief_text(brief, "en").startswith(
-        "On track: Almost there 🎉\nProgress: 2 of 3 done\nYou asked for a green nightly.\n\n- two"
+        "On track: Almost there 🎉\nYou asked for a green nightly.\n\n- two"
     )
-    long = warm_task_brief._parse_result(json.dumps({"headline": "x", "body": "y " * 2000}))
+    long = warm_task_brief._parse_result(json.dumps({"headline": "x", "body": "y " * 5000}))
     assert long is not None and len(long.body) == warm_task_brief._MAX_BODY_CHARS
+
+
+def test_a_picture_the_model_chose_survives_into_the_body():
+    body = "\n".join(
+        [
+            "Since you left:",
+            "```mermaid",
+            "flowchart LR",
+            "A[Fix PR] --> B{Approve push}",
+            "```",
+            "| Check | State |",
+            "| --- | --- |",
+            "| Unit | green |",
+            '<mcwidget title="Runs"><div style="color:var(--text)">Mon Tue</div></mcwidget>',
+        ]
+    )
+    brief = warm_task_brief._parse_result(json.dumps({"headline": "Back.", "body": body}))
+    assert brief is not None
+    assert brief.body == body
+    assert brief.as_meta()["body"] == body
+    # Every reader of ``content`` (a reply thread's parent, history) draws it
+    # under the chat profile, so the widget becomes a mention there; the
+    # diagram and the table stay.
+    text = warm_task_brief._brief_text(brief, "en")
+    assert "<mcwidget" not in text and "Mon Tue" not in text and "[widget]" in text
+    assert "A[Fix PR] --> B{Approve push}" in text and "| Unit | green |" in text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<mcwidget><script src="https://cdn.jsdelivr.net/x.js"></script></mcwidget>',
+        "<mcwidget><p>cut off",
+        '<MCWIDGET title="x"><b>loud</b></MCWIDGET>',
+    ],
+)
+def test_content_never_carries_a_widget(body):
+    text = warm_task_brief._brief_text(_body_brief("- fact\n" + body), "en")
+    assert "mcwidget" not in text.lower() and "cdn.jsdelivr" not in text
+    assert "- fact" in text
+
+
+def test_content_draws_links_and_addresses_as_text():
+    body = "See [the PR](https://evil.example/x), ![img](https://evil.example/i.png) and https://evil.example/y."
+    text = warm_task_brief._brief_text(_body_brief(body), "en")
+    assert "](" not in text
+    assert "See the PR, img and `https://evil.example/y.`" in text
+
+
+def test_the_body_is_kept_as_source_so_markdown_and_widget_scripts_survive():
+    body = "\n".join(
+        [
+            "- outer",
+            "  - **inner**",
+            "    code   line",
+            "<mcwidget><script>",
+            '  document.getElementById("n").textContent = 2 ** 3;',
+            "</script></mcwidget>   ",
+        ]
+    )
+    brief = warm_task_brief._parse_result(json.dumps({"headline": "Back.", "body": body}))
+    assert brief is not None
+    # Indent, inner spacing, bold and the exponent all reach the renderer;
+    # only trailing whitespace goes.
+    assert brief.body == body.rstrip()
 
 
 @pytest.mark.parametrize("field", ["body"])
@@ -432,7 +490,7 @@ def test_a_private_key_with_a_bold_marker_in_its_header_is_redacted(field):
     pem = begin + "\n" + body + "\n" + body + "\n" + end
     brief = warm_task_brief._parse_result(json.dumps({"headline": "Ready.", field: pem}))
     assert brief is not None
-    rendered = json.dumps(brief.as_meta()) + warm_task_brief._brief_text(brief, "en")
+    rendered = _rendered(brief)
     assert body[:12] not in rendered
 
 
@@ -443,11 +501,17 @@ def test_a_marker_opener_split_across_body_lines_is_defanged():
     assert brief is not None and "[" not in brief.body
 
 
-def test_the_prompt_asks_for_words_only_and_leaves_progress_and_waiting_to_the_gateway():
+def test_the_prompt_lets_the_model_pick_its_own_picture_and_leaves_waiting_to_the_gateway():
     prompt = warm_task_brief._PROMPT
+    # A picture is the model's choice, in any of the chat's own forms, with no
+    # fixed template; no separate widget field and no progress count.
     assert '"widget"' not in prompt
-    assert "no HTML, widget or picture" in prompt
-    for rule in ('"progress" count', '"blocked" or "question"', '"approval" or "needs_human"'):
+    assert "no HTML, widget or picture" not in prompt
+    for form in ("```mermaid", "markdown table", "<mcwidget>", "no fixed template"):
+        assert form in prompt
+    assert '"progress" count' not in prompt
+    assert 'Never add a bare "N of M done"' in prompt
+    for rule in ('"blocked" or "question"', '"approval" or "needs_human"'):
         assert rule in prompt
     rendered = warm_task_brief._build_prompt(
         warm_task_brief.TaskSnapshot(
@@ -491,7 +555,7 @@ def test_waiting_lists_every_open_item_only_a_person_can_move_in_ledger_order():
         _item("it_9", title="", summary=""),
         _item("it_10", title="", summary="Sign the RFC"),
     )
-    brief = warm_task_brief._parse_result('{"headline": "Back."}', "", (40, 44), items)
+    brief = warm_task_brief._parse_result('{"headline": "Back."}', "", items)
     assert brief is not None
     assert brief.waiting == (
         ("B1 #22110: Windows race", "3-line fix or a lock?"),
@@ -500,7 +564,6 @@ def test_waiting_lists_every_open_item_only_a_person_can_move_in_ledger_order():
         ("Sign the RFC", ""),
     )
     assert brief.waiting_total == 4
-    assert brief.progress == (40, 44)
     # Something waits, so a model "done" or "on_track" chip is corrected.
     assert brief.status == "needs_you"
     meta = brief.as_meta()
@@ -540,7 +603,7 @@ def test_a_question_the_conductor_already_answered_no_longer_waits(
         "decided_at": decided_at,
         "last_report_at": last_report_at,
     }
-    brief = warm_task_brief._parse_result('{"headline": "Back."}', "", None, (item,))
+    brief = warm_task_brief._parse_result('{"headline": "Back."}', "", (item,))
     assert brief is not None
     assert brief.waiting_total == (1 if waits else 0)
 
@@ -548,7 +611,7 @@ def test_a_question_the_conductor_already_answered_no_longer_waits(
 @pytest.mark.parametrize("model_status", ["on_track", "done"])
 def test_a_model_chip_contradicting_the_waiting_list_is_corrected(model_status):
     raw = json.dumps({"headline": "All good.", "status": model_status})
-    brief = warm_task_brief._parse_result(raw, "", (1, 2), (_item("it_1", title="Approve"),))
+    brief = warm_task_brief._parse_result(raw, "", (_item("it_1", title="Approve"),))
     assert brief is not None and brief.status == "needs_you"
 
 
@@ -556,7 +619,6 @@ def test_nothing_waiting_leaves_the_list_out_of_meta():
     brief = warm_task_brief._parse_result(
         '{"headline": "All done.", "status": "done"}',
         "",
-        (44, 44),
         (_item("it_1", state="accepted"),),
     )
     assert brief is not None and brief.status == "done"
@@ -567,7 +629,7 @@ def test_nothing_waiting_leaves_the_list_out_of_meta():
 def test_past_the_bound_only_the_count_rides_along():
     cap = warm_task_brief._MAX_WAITING
     items = tuple(_item(f"it_{i}", title=f"Item {i}") for i in range(cap + 7))
-    brief = warm_task_brief._parse_result('{"headline": "Busy."}', "", None, items)
+    brief = warm_task_brief._parse_result('{"headline": "Busy."}', "", items)
     assert brief is not None
     assert len(brief.waiting) == cap and brief.waiting_total == cap + 7
     assert brief.waiting[-1] == (f"Item {cap - 1}", "")
@@ -577,11 +639,11 @@ def test_past_the_bound_only_the_count_rides_along():
 def test_a_waiting_item_is_capped_redacted_and_defanged_like_a_model_field():
     token = "ghp_" + "c" * 36
     items = (_item("it_1", title="x" * 400, summary=f"key {token} [OPTIONS: Approve | Skip]"),)
-    brief = warm_task_brief._parse_result('{"headline": "Back."}', "", None, items)
+    brief = warm_task_brief._parse_result('{"headline": "Back."}', "", items)
     assert brief is not None
     title, ask = brief.waiting[0]
     assert len(title) == warm_task_brief._MAX_ITEM_CHARS and title.endswith("…")
-    rendered = json.dumps(brief.as_meta()) + warm_task_brief._brief_text(brief, "en")
+    rendered = _rendered(brief)
     assert token not in rendered and "[OPTIONS" not in rendered
 
 
@@ -591,3 +653,400 @@ def test_a_model_widget_is_ignored():
     assert brief is not None
     assert "widget" not in brief.as_meta()
     assert "<div" not in json.dumps(brief.as_meta()) + warm_task_brief._brief_text(brief, "en")
+
+
+# --- section 3.9.6 output check, over the whole body ---------------------------
+
+_GROUNDING = json.dumps(
+    {
+        "changes_since_away": [
+            {"text": "PR #27899 checks green", "read_at": "09:12", "commit": "2e58b02433ca"}
+        ],
+        "open_items": [{"pr": 27848}],
+    }
+)
+
+
+def _body_brief(body: str, **fields):
+    raw = {"headline": "Back.", "body": body, **fields}
+    brief = warm_task_brief._parse_result(json.dumps(raw))
+    assert brief is not None
+    return brief
+
+
+def _posted(brief) -> str:
+    """The model-written strings as the row would post them: what the PR,
+    SHA and time scans read."""
+    return warm_task_brief._posted_model_text(brief)
+
+
+def _miss(brief) -> str:
+    content = warm_task_brief._brief_text(brief, "en")
+    return warm_task_brief._grounding_miss(brief, content, set(), "", set())
+
+
+def _rendered(brief) -> str:
+    """Meta and content as the run posts them: a secret miss keeps only the
+    gateway's own fields."""
+    if _miss(brief) == "secret":
+        brief = warm_task_brief._gateway_only(brief, "en")
+    return json.dumps(brief.as_meta()) + warm_task_brief._brief_text(brief, "en")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "- #27899 green at 09:12 (2e58b02433ca), #27848 open, as of 09:30",
+        "```mermaid\nflowchart LR\nA[#27899] --> B[09:12]\n```",
+        "| PR | Read |\n| --- | --- |\n| #27848 | 09:12 |",
+        '<mcwidget><div style="color:var(--text);border:1px solid #007bff">'
+        "&#9679; #27899</div><script>const n = 2 ** 3</script></mcwidget>",
+    ],
+)
+def test_facts_the_input_gave_pass_the_check_in_every_body_form(body):
+    brief = _body_brief(body)
+    assert warm_task_brief._unbacked_facts(_posted(brief), _GROUNDING, {"09:30"}) == []
+
+
+@pytest.mark.parametrize(
+    ("body", "bad"),
+    [
+        ("| PR | SHA |\n| --- | --- |\n| x | deadbeef42 |", "deadbeef42"),
+        ('<mcwidget><span title="23:47">ok</span></mcwidget>', "23:47"),
+        ("<mcwidget><script>el.textContent = 'fixed in a1b2c3d4'</script></mcwidget>", "a1b2c3d4"),
+    ],
+)
+def test_a_fact_the_input_never_gave_fails_the_check_wherever_it_hides(body, bad):
+    brief = _body_brief(body)
+    assert warm_task_brief._unbacked_facts(_posted(brief), _GROUNDING, {"09:30"}) == [bad]
+
+
+def test_every_model_field_is_checked_not_only_the_body():
+    brief = _body_brief("", headline="Back.", next=["Rebase on 0123abcd"])
+    assert warm_task_brief._unbacked_facts(_posted(brief), _GROUNDING, set()) == ["0123abcd"]
+
+
+def test_the_gateways_own_waiting_cards_are_not_checked_as_model_text():
+    item = {
+        "item_id": "it_1",
+        "state": "open",
+        "status": "question",
+        "reason": "needs_human",
+        "title": "Rebase #31337",
+        "summary": "since 14:30, at a1b2c3d4",
+    }
+    brief = warm_task_brief._parse_result(json.dumps({"headline": "Back."}), "", (item,))
+    assert brief is not None
+    content = warm_task_brief._brief_text(brief, "en")
+    assert "#31337" in content
+    assert warm_task_brief._grounding_miss(brief, content, set(), "", set()) == ""
+
+
+def test_a_failed_check_keeps_only_the_gateways_own_cards():
+    item = {
+        "item_id": "it_1",
+        "state": "open",
+        "status": "question",
+        "reason": "needs_human",
+        "title": "Pick a layout",
+        "summary": "",
+    }
+    brief = warm_task_brief._parse_result(
+        json.dumps({"headline": "#999 is merged", "body": "```mermaid\nA-->B\n```"}),
+        "",
+        (item,),
+    )
+    assert brief is not None
+    kept = warm_task_brief._gateway_only(brief, "en")
+    assert kept.headline == warm_task_brief._FAILURE_TEXT["en"]
+    assert kept.body == "" and kept.needs_you == ()
+    assert kept.waiting == (("Pick a layout", ""),) and kept.status == "needs_you"
+
+
+# --- the caps never cut a picture ---------------------------------------------
+
+
+def test_a_widget_the_line_cap_would_cut_is_dropped_whole():
+    widget = "<mcwidget>\n" + "\n".join(f"<p>row {i}</p>" for i in range(300)) + "\n</mcwidget>"
+    brief = _body_brief("- one fact\n\n" + widget)
+    assert brief.body == "- one fact"
+    assert "<mcwidget" not in brief.body
+
+
+def test_a_fence_the_char_cap_would_cut_is_dropped_whole():
+    fence = "```mermaid\nflowchart LR\n" + "A --> B\n" * 1000 + "```"
+    brief = _body_brief("- one fact\n" + fence)
+    assert brief.body == "- one fact"
+
+
+def test_a_picture_inside_the_caps_is_kept_whole():
+    body = "- one fact\n<mcwidget><p>ok</p></mcwidget>\n```mermaid\nA-->B\n```"
+    assert _body_brief(body).body == body
+
+
+@pytest.mark.parametrize(
+    ("model_status", "expected"), [("blocked", "blocked"), ("done", "on_track")]
+)
+def test_a_failed_check_with_nothing_waiting_keeps_a_blocked_read(model_status, expected):
+    brief = _body_brief("#999", status=model_status)
+    assert warm_task_brief._gateway_only(brief, "en").status == expected
+
+
+def test_entities_in_a_body_with_no_credential_are_kept_as_written():
+    body = (
+        "<mcwidget><p>a &amp;&amp; b &lt; c &#9679;</p><script>if (x && y) {}</script></mcwidget>"
+    )
+    assert _body_brief(body).body == body
+
+
+# --- body secrets: one rendered-view scan, fail-closed -------------------------
+
+_AWS_TAIL = "IOSFODNN7EXAMPLE"
+_GH_TAIL = "aB3dE5gH7jK9mN1pQ3rS5tU7vW9xY1zA3bC5"
+
+
+_KEY = f"AKIA{_AWS_TAIL}"
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        f'<input value="AKI&#65;{_AWS_TAIL}">',  # entity-encoded, in an attribute
+        f'<input value="ghp&#95;{_GH_TAIL}">',  # encoded prefix underscore
+        f"AKI&amp;#65;{_AWS_TAIL}",  # double-encoded
+        f"AKIA<b></b>{_AWS_TAIL}",  # split by a tag
+        f"<!-- {_KEY} -->",  # in an HTML comment
+        f"AKIA**{_AWS_TAIL}**",  # bold split
+        f"AKI&#x41;{_AWS_TAIL}",  # hex entity
+        f"[AKIA](#top){_AWS_TAIL}",  # markdown link label
+        "AKIA`IOSF`ODNN7EXAMPLE",  # code span
+        f"ghp_{_GH_TAIL[:18]}**{_GH_TAIL[18:]}**",  # GitHub token, bold half
+        f"AKI\uff21{_AWS_TAIL}",  # full-width A, folded by NFKC
+        f"AK<im<img>g>IA{_AWS_TAIL}",  # rejoined only by image cleaning
+        _KEY,  # plain
+    ],
+)
+def test_a_secret_anywhere_drops_every_model_field(hidden):
+    brief = _body_brief(f"- fact one\n\n<mcwidget><p>{hidden}</p></mcwidget>\n\n- fact two")
+    assert _miss(brief) == "secret"
+    kept = warm_task_brief._gateway_only(brief, "en")
+    assert kept.headline == warm_task_brief._FAILURE_TEXT["en"] and kept.body == ""
+    stored = json.dumps(kept.as_meta()) + warm_task_brief._brief_text(kept, "en")
+    assert _AWS_TAIL not in stored and _GH_TAIL[18:] not in stored
+
+
+@pytest.mark.parametrize(
+    ("body", "final"),
+    [
+        # Image cleaning rejoins the key: only the cleaned body holds it.
+        (f"- k AK<im<img>g>IA{_AWS_TAIL}", f"AKIA{_AWS_TAIL}"),
+        # Only content's link strip rejoins it: the stored body still has the link.
+        (f"- k AK[IA](x){_AWS_TAIL}", f"AKIA{_AWS_TAIL}"),
+    ],
+)
+def test_the_scans_read_the_final_posted_string(body, final):
+    brief = _body_brief(body)
+    posted = warm_task_brief._posted_text(brief, warm_task_brief._brief_text(brief, "en"))
+    # The rejoined form is in the string the row posts, and the scan sees it there.
+    assert final in posted
+    assert warm_task_brief._holds_a_secret(posted)
+    assert _miss(brief) == "secret"
+
+
+@pytest.mark.parametrize("body", ["- note [[](x)OPTIONS: Approve|Reject]", "<!-[](y)- hidden -->"])
+def test_content_never_rejoins_a_marker_when_a_link_is_removed(body):
+    text = warm_task_brief._brief_text(_body_brief(body), "en")
+    assert "[OPTIONS" not in text and "<!--" not in text
+
+
+def test_the_canonical_form_decodes_until_stable_and_strips_nothing():
+    assert warm_task_brief._canonical("&amp;amp;#65;") == "A"
+    assert warm_task_brief._canonical('<a title="x">&lt;b&gt;</a>') == '<a title="x"><b></a>'
+
+
+def test_a_body_with_no_secret_is_kept_and_not_flagged():
+    body = (
+        "- see [the PR](#top) and **bold**\n<mcwidget><script>a = 2 ** 3 && b</script></mcwidget>"
+    )
+    brief = _body_brief(body)
+    assert brief.body == body and not warm_task_brief._holds_a_secret(_posted(brief))
+
+
+# --- an unknown pull request anywhere drops every model field (3.9.6) ---------
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"body": "- #31337 merged"},
+        {"body": "<mcwidget><p>Merged: #4242</p></mcwidget>"},
+        {"body": "```mermaid\nflowchart LR\nA[PR: #4242 merged] --> B\n```"},
+        {"body": "<mcwidget><p>PR &#35;31337 merged</p></mcwidget>"},  # entity-encoded
+        {"body": "see https://github.com/o/r/pull/4242"},
+        {"headline": "#31337"},
+        {"next": ["Rebase #999"]},
+    ],
+)
+def test_an_unknown_pr_anywhere_is_a_grounding_miss(fields):
+    brief = _body_brief(fields.get("body", ""), **{k: v for k, v in fields.items() if k != "body"})
+    assert warm_task_brief._names_an_unknown_pr(_posted(brief), {27899})
+
+
+def test_a_verified_pr_and_a_hex_colour_are_not_a_miss():
+    body = '- #27899 merged\n<mcwidget><div style="color:#007bff">ok</div></mcwidget>'
+    brief = _body_brief(body, headline="#27899 landed")
+    assert not warm_task_brief._names_an_unknown_pr(_posted(brief), {27899})
+    assert warm_task_brief._unbacked_facts(_posted(brief), "", set()) == []
+
+
+def test_an_entity_encoded_time_still_fails_the_fact_check():
+    brief = _body_brief("<mcwidget><p>merged at 23&#58;47</p></mcwidget>")
+    assert warm_task_brief._unbacked_facts(_posted(brief), "", {"09:30"}) == ["23:47"]
+
+
+def test_a_body_image_draws_as_its_alt_text_only():
+    brief = _body_brief(
+        '- a ![chart](https://evil.example/x.png?d=1) b <img src="https://evil.example/y">c'
+    )
+    assert "evil.example" not in brief.body and brief.body == "- a chart b c"
+
+
+def test_content_turns_an_autolink_into_code():
+    text = warm_task_brief._brief_text(_body_brief("see <https://evil.example/z>"), "en")
+    assert "<https://" not in text and "`https://evil.example/z`" in text
+
+
+def test_the_prompt_states_the_as_of_time_it_is_given():
+    snap = warm_task_brief.TaskSnapshot(
+        slot_key="s",
+        history_key="h",
+        original_request="Fix it",
+        fingerprint="f",
+        session_state={},
+        conductor=None,
+        work_items=(),
+        previous_claim="",
+    )
+    from kiro_crew.dashboard import warm_task_brief_inputs as inputs
+
+    at = 1_800_000_000.0
+    assert f"as of {inputs.clock(at)}" in warm_task_brief._build_prompt(snap, now=at)
+
+
+def test_only_the_stated_as_of_minute_is_a_known_time():
+    brief = _body_brief("Deployed at 09:31")
+    assert warm_task_brief._unbacked_facts(_posted(brief), "", {"09:30"}) == ["09:31"]
+
+
+@pytest.mark.parametrize("unclosed", ["<mcwidget><p>half", "```mermaid\nA-->B"])
+def test_an_unclosed_widget_or_fence_the_model_wrote_is_dropped(unclosed):
+    assert _body_brief(f"- kept\n{unclosed}").body == "- kept"
+
+
+def test_a_reference_style_image_draws_as_its_alt_text_only():
+    assert _body_brief("- a ![chart][r] b ![x] c").body == "- a chart b x c"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "- a ![![x](https://a.example)](https://evil.example/p.png?d=1)",
+        "- a <im<img>g src=https://evil.example/a.png>",
+    ],
+)
+def test_a_nested_or_split_image_leaves_no_image(body):
+    cleaned = _body_brief(body).body
+    assert "evil.example" not in cleaned and "<img" not in cleaned and "![" not in cleaned
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "<mcwidget><script>if (!['blocked','question'].includes(s)) n++; x = ![]</script></mcwidget>",
+        "```js\nif (!['a'].includes(s)) n++\n```",
+    ],
+)
+def test_widget_and_fence_source_keeps_a_bang_bracket(block):
+    assert _body_brief(f"- a ![x](https://evil.example/p.png)\n{block}").body == f"- a x\n{block}"
+
+
+def test_content_turns_a_www_autolink_into_code():
+    text = warm_task_brief._brief_text(_body_brief("see www.evil.example/q"), "en")
+    assert "`www.evil.example/q`" in text
+
+
+@pytest.mark.parametrize(
+    ("body", "bad"), [("- at **23**:**47**", "23:47"), ("- **a1b**2c3d4", "a1b2c3d4")]
+)
+def test_an_emphasis_split_time_or_sha_still_fails_the_fact_check(body, bad):
+    assert warm_task_brief._unbacked_facts(_posted(_body_brief(body)), "", {"09:30"}) == [bad]
+
+
+# --- a colour is only a CSS-style declaration's value -----------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "```mermaid\nflowchart LR\nA-->B\nstyle A fill:#333,stroke:#000\n```",
+        "```mermaid\nflowchart LR\nclassDef warn fill: #f9f\n```",
+        '<mcwidget><div style="color:#007bff;border:1px solid #333">ok</div></mcwidget>',
+        "<mcwidget><style>.a{color: #111827}</style><p>x</p></mcwidget>",
+    ],
+)
+def test_a_colour_declaration_value_is_not_a_pr(body):
+    brief = _body_brief(body)
+    assert not warm_task_brief._names_an_unknown_pr(_posted(brief), set())
+
+
+def _named(prefix, bodies):
+    return [pytest.param(body, id=f"{prefix}-{body}") for body in bodies]
+
+
+@pytest.mark.parametrize(
+    "body",
+    _named(
+        "an_emphasis_split_pr_is_still_a_miss",
+        ["- Merged #**31337**", "- Merged #`31337`", "- Merged #~~31337~~"],
+    )
+    + _named(
+        "a_hash_number_outside_a_colour_declaration_is_still_a_pr",
+        [
+            "- fixed in #333",
+            "```mermaid\nflowchart LR\nA[#31337 merged] --> B\n```",
+            "```mermaid\nflowchart LR\nA[fill: #4242 merged] --> B\n```",
+            "- color:#333 is not in a style block",
+            '<mcwidget><p title="#4242">x</p></mcwidget>',
+        ],
+    ),
+)
+def test_an_unknown_pr_reference_is_still_a_miss(body):
+    assert warm_task_brief._names_an_unknown_pr(_posted(_body_brief(body)), set())
+
+
+def test_facts_split_by_tags_drop_every_model_field():
+    brief = _body_brief("- Merged #<b>31337</b> at 23:<b>47</b> on a1b<b>2c3d4</b>")
+    assert _miss(brief) == "unknown_pr"
+    # Each split fact is caught on its own, too.
+    assert warm_task_brief._unbacked_facts(_posted(brief), "a1b2c3d4", set()) == ["23:47"]
+    assert warm_task_brief._unbacked_facts(_posted(brief), "", {"23:47"}) == ["a1b2c3d4"]
+    kept = warm_task_brief._gateway_only(brief, "en")
+    assert kept.body == "" and kept.headline == warm_task_brief._FAILURE_TEXT["en"]
+
+
+def test_a_verified_pr_and_a_mermaid_colour_still_post():
+    body = "- #27899 merged\n```mermaid\nflowchart LR\nA[#27899] --> B\nstyle A fill:#333\n```"
+    brief = _body_brief(body)
+    content = warm_task_brief._brief_text(brief, "en")
+    assert warm_task_brief._grounding_miss(brief, content, {27899}, "", set()) == ""
+    assert brief.body == body
+
+
+def test_every_scanner_reads_the_same_views():
+    views = warm_task_brief._scan_views('a &#35;<b>1</b>2 **3** style="color:#333"')
+    assert len(views) == 3 and all("#333" not in view for view in views)
+    assert "#12" in views[1] and "3" in views[2] and "*" not in views[2]
+
+
+def test_underscore_emphasis_split_pr_is_still_a_miss():
+    assert warm_task_brief._names_an_unknown_pr(_posted(_body_brief("- Merged #__31337__")), set())

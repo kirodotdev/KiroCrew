@@ -240,6 +240,7 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("mcp.webflow.com", "/oauth/authorize"),
         ("mcp.zapier.com", "/oauth/authorize"),
         ("netlify-mcp.netlify.app", "/oauth-server/auth"),
+        ("ticktick.com", "/oauth/authorize"),
         ("todoist.com", "/oauth/authorize"),
         ("www.dropbox.com", "/oauth2/authorize"),
         # Two issuers advertise a consent page on a different host than the
@@ -286,6 +287,41 @@ _OAUTH_QUERY_PARAMS = frozenset(
         "user_scope",
     }
 )
+
+# Salesforce Connected App consumer keys: a fixed public prefix followed by 70
+# to 100 letters, digits, dots or underscores. The set has no `%`, so a value
+# that matches decodes to itself and every decoded form has the same shape.
+_OAUTH_SALESFORCE_CLIENT_ID_RE = re.compile(r"3MVG9[A-Za-z0-9._]{70,100}\Z")
+
+
+def _salesforce_client_id_shaped(value: str) -> bool:
+    """Return whether *value* has the Salesforce consumer-key shape."""
+    return bool(_OAUTH_SALESFORCE_CLIENT_ID_RE.fullmatch(value))
+
+
+def _operator_listed_salesforce_query(host: str, path: str, query: str) -> bool:
+    """Check operator trust only for a non-builtin Salesforce client_id query.
+
+    Endpoint approval is checked by the caller. Builtins and queries without
+    this client_id shape need no additional operator-file lookup.
+    """
+    key = (host.lower(), path)
+    if key in _OAUTH_AUTHORIZATION_ENDPOINTS or not any(
+        name == "client_id" and bool(separator) and _salesforce_client_id_shaped(value)
+        for name, separator, value in (segment.partition("=") for segment in query.split("&"))
+    ):
+        return False
+    return _operator_listed_oauth_endpoint(*key)
+
+
+def _operator_listed_oauth_endpoint(host: str, path: str) -> bool:
+    """Return whether the operator listed this endpoint, auditing each matched entry once."""
+    key = (host.lower(), path)
+    if key in _load_operator_oauth_endpoints():
+        _emit_oauth_extension_used_event(*key)
+        return True
+    return False
+
 
 # ── Operator-owned OAuth endpoint extension (keystone oauth_endpoints.json) ──
 # ``_OAUTH_AUTHORIZATION_ENDPOINTS`` above is deliberately code-owned and

@@ -36,11 +36,13 @@ from kiro_crew.acp.mcp_session_report import (
     McpSessionReport,
     sanitize_sink_text,
 )
+from kiro_crew.acp.oauth_offline import with_google_offline_access
 from kiro_crew.acp.session_handle_runtime_contract import (
     AcpRequestTimeout,
     AcpRuntimeDead,
     AcpRuntimeError,
 )
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
@@ -195,6 +197,18 @@ def _remote_flat_launches(self: AcpSessionHandle) -> dict[str, tuple[tuple[str, 
     return self._mcp_launches
 
 
+def _mcp_attribution_launches(
+    self: AcpSessionHandle,
+) -> dict[str, tuple[tuple[str, ...], ...]]:
+    """The launch roster the oracle reads to sample only the in-flight tool's
+    own MCP server, with no ``remote_flat`` gate.
+
+    Read per call, like :func:`_remote_flat_launches`, so a resumed session's
+    re-declared servers govern the next probe.
+    """
+    return self._mcp_launches
+
+
 def record_mcp_launches(self: AcpSessionHandle, spec: Any, wire_servers: Any) -> None:
     """Record how this session launched its stdio MCP servers.
 
@@ -256,7 +270,7 @@ def _accept_oauth_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> dict[s
     """Validate and deduplicate one MCP OAuth notification."""
     params = msg.params if isinstance(msg.params, dict) else {}
     server_name = str(params.get("serverName") or params.get("name") or "")
-    oauth_url = str(params.get("oauthUrl") or params.get("url") or "")
+    oauth_url = with_google_offline_access(str(params.get("oauthUrl") or params.get("url") or ""))
     if not _is_safe_oauth_url(oauth_url):
         if oauth_url:
             logger.warning(
@@ -316,6 +330,12 @@ async def wait_mcp_ready(
     other guard is unchanged: a failed, disabled, auth-failed or provenance-less
     server still raises, a foreign same-named entry or a server still connecting
     still times out at the deadline, and runtime death still raises.
+
+    A server the host's own snapshot lists as dropped by its MCP registry
+    (:attr:`KasMcpReadiness.registry_filtered`) is decided at once, with no
+    wait: governed, the session starts as soon as every pending server is such a
+    drop; undeclared, the start fails at once naming the servers and the
+    setting, instead of spending *timeout* on servers that cannot come.
     """
     readiness = KasMcpReadiness(self._session_id, required, tool_policy, injected)
     self._mcp_report.include_configured(required)
@@ -353,6 +373,7 @@ async def wait_mcp_ready(
         if msg is None:
             self._queue.put_nowait(None)
             raise AcpRuntimeDead("Runtime exited while waiting for managed MCP readiness")
+        dropped_compaction = consume_stale_compaction_status(self, msg)
         try:
             # Config/OAuth side effects also belong to external servers and
             # pre-mode frames. They must not become readiness requirements.
@@ -362,10 +383,20 @@ async def wait_mcp_ready(
         if stale:
             stale -= 1
             continue
+        if dropped_compaction:
+            continue
         self._mcp_report.record_frame(msg, owned=self._owns_mcp_frame(msg))
         readiness.record(msg)
         if readiness.failure:
             raise AcpRuntimeError(f"KAS managed MCP initialization failed: {readiness.failure}")
+        if readiness.registry_filtered:
+            # The host said its registry dropped these: no wait makes them start.
+            if governed:
+                if readiness.all_pending_filtered:
+                    _record_drops(self._mcp_report, readiness, readiness.pending_names)
+                    return
+            else:
+                raise AcpRuntimeError(_registry_filtered_message(readiness))
     for name in required:
         self._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
 
@@ -378,12 +409,36 @@ def _record_dropped(report: McpSessionReport, readiness: KasMcpReadiness, govern
     absent = readiness.never_reported if governed else ()
     if not absent:
         return False
+    _record_drops(report, readiness, absent)
+    return True
+
+
+def _record_drops(
+    report: McpSessionReport, readiness: KasMcpReadiness, absent: tuple[str, ...]
+) -> None:
+    """Record *absent* failed with :data:`GOVERNED_DROP_REASON`, the rest initialized."""
     for name in readiness.required:
         if name in absent:
             report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, name, GOVERNED_DROP_REASON)
         else:
             report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
-    return True
+
+
+def _registry_filtered_message(readiness: KasMcpReadiness) -> str:
+    """The start failure for servers the host's MCP registry dropped, undeclared.
+
+    The host named them itself, so this is a decided failure, not a timeout:
+    the session is not started without them (registry mode is not declared),
+    and the start budget is not spent waiting for servers that cannot come.
+    """
+    return (
+        "KAS managed MCP initialization failed: "
+        f"{readiness.filtered_detail}: filtered by this account's MCP registry. "
+        "The KAS backend cannot carry the registry marker for Crew's servers, so "
+        "the host drops them (see the enterprise MCP governance guide). To start "
+        "KAS sessions without Crew's servers, declare registry mode: "
+        "`kirocrew config set agent.mcp_registry_mode true`."
+    )
 
 
 def _readiness_timeout(readiness: KasMcpReadiness, timeout: float) -> AcpRequestTimeout:
@@ -433,6 +488,8 @@ async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple
             # Runtime died: re-poison so the turn that follows sees it.
             await self._queue.put(None)
             break
+        if consume_stale_compaction_status(self, msg):
+            continue
         try:
             report.record_frame(msg, owned=self._owns_mcp_frame(msg))
             self._apply_init_notification(msg, classify_notification(msg))
@@ -880,6 +937,8 @@ async def drain_init(
         stale_backlog = stale_frames > 0
         if stale_backlog:
             stale_frames -= 1
+        if consume_stale_compaction_status(self, msg):
+            continue
         try:
             action = classify_notification(msg)
             if not stale_backlog:

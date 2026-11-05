@@ -23,12 +23,19 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-vi.mock('framer-motion', () => ({
-  motion: {
-    div: ({ children, ...props }: { children?: React.ReactNode } & Record<string, unknown>) => <div {...props}>{children}</div>,
-  },
-  AnimatePresence: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
-}))
+vi.mock('framer-motion', () => {
+  // Animation and layout-animation props are framer-only; drop them so they do
+  // not reach the DOM as unknown attributes.
+  const motionOnly = new Set(['initial', 'animate', 'exit', 'transition', 'layout', 'layoutDependency'])
+  return {
+    motion: {
+      div: ({ children, ...props }: { children?: React.ReactNode } & Record<string, unknown>) => (
+        <div {...Object.fromEntries(Object.entries(props).filter(([name]) => !motionOnly.has(name)))}>{children}</div>
+      ),
+    },
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  }
+})
 
 function renderWithQuery(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -39,47 +46,139 @@ function renderWithQuery(ui: React.ReactElement) {
   )
 }
 
-describe('TipCard (single-line strip)', () => {
+// A tip first shows as a one-line pill; its title is the button that opens
+// the full card. Tests that read the card's body or actions open it first.
+function renderOpen(ui: React.ReactElement) {
+  const result = renderWithQuery(ui)
+  for (const pill of screen.queryAllByRole('button', { expanded: false })) fireEvent.click(pill)
+  return result
+}
+
+describe('TipCard (pill that opens into a card)', () => {
   const onDismiss = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('renders title, body, and Lightbulb icon (two-row clamped layout)', () => {
-    const { container } = renderWithQuery(
-      <TipCard tip={mockTip} onDismiss={onDismiss} />,
-    )
-    // The motion wrapper is `container.firstElementChild`; the card itself is
-    // the Glass host inside it (components/Glass.tsx), which carries the layout
-    // classes and the Lightbulb.
-    expect(container.firstElementChild).not.toBeNull()
-    const root = screen.getByTestId('tip-card')
-    expect(root.className).toContain('flex')
-    expect(root.className).toContain('items-start')
+  it('starts as a one-line pill: lightbulb, title, close, no body or actions', () => {
+    renderWithQuery(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+    const pill = screen.getByTestId('tip-card')
+    expect(pill.className).toContain('inline-flex')
+    const opener = screen.getByRole('button', { name: /Schedule recurring tasks/i })
+    expect(opener).toHaveAttribute('aria-expanded', 'false')
+    // Lucide lightbulb SVG present. The Glass host also renders a 0x0
+    // aria-hidden <svg> for its refraction filter, so match the lucide class.
+    expect(pill.querySelector('svg.lucide-lightbulb')).not.toBeNull()
+    expect(screen.getByLabelText('Dismiss tip')).toBeInTheDocument()
+    expect(screen.queryByTestId('tip-body')).toBeNull()
+    expect(screen.queryByRole('button', { name: /turn off tips/i })).toBeNull()
+  })
 
-    const title = screen.getByText('Schedule recurring tasks')
-    expect(title).toBeInTheDocument()
+  it('opens into the card with the full body, and collapses back to the pill', () => {
+    renderOpen(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+    const card = screen.getByTestId('tip-card')
+    // The card's content row (tile, text, top-right buttons) is top-aligned.
+    expect(card.querySelector('.items-start')).not.toBeNull()
+    expect(screen.getByText('Schedule recurring tasks')).toBeInTheDocument()
     expect(screen.getByText(/Use cron_add/)).toBeInTheDocument()
     // body may wrap to multiple lines, never cut off
     const body = screen.getByTestId('tip-body')
     expect(body.className).not.toContain('line-clamp')
     expect(body.className).not.toContain('truncate')
     // Long bodies scroll within a viewport-relative cap instead of pushing
-    // the bottom-anchored card off-screen — scroll keeps the
-    // full text reachable, so the no-truncation contract still holds.
+    // the bottom-anchored card off-screen, so the full text stays reachable.
     expect(body.className).toContain('max-h-[30vh]')
     expect(body.className).toContain('overflow-y-auto')
     expect(body.className).toContain('break-words')
+    expect(screen.getByRole('button', { name: /turn off tips/i })).toBeInTheDocument()
 
-    // Lucide lightbulb SVG present. The Glass host also renders a 0x0
-    // aria-hidden <svg> for its refraction filter, so match the lucide class.
-    const icon = root.querySelector('svg.lucide[aria-hidden="true"]')
-    expect(icon).not.toBeNull()
+    const collapse = screen.getByRole('button', { name: 'Collapse tip' })
+    expect(collapse).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(collapse)
+    expect(screen.queryByTestId('tip-body')).toBeNull()
+    expect(screen.getByRole('button', { name: /Schedule recurring tasks/i })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('opening from the pill moves focus to the card\'s collapse button', () => {
+    renderWithQuery(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+    const opener = screen.getByRole('button', { name: /Schedule recurring tasks/i })
+    opener.focus()
+    fireEvent.click(opener)
+    expect(screen.getByTestId('tip-body')).toBeInTheDocument()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Collapse tip' }))
+  })
+
+  it('collapsing the card moves focus back to the pill\'s title button', () => {
+    renderOpen(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+    const collapse = screen.getByRole('button', { name: 'Collapse tip' })
+    collapse.focus()
+    fireEvent.click(collapse)
+    expect(screen.queryByTestId('tip-body')).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Schedule recurring tasks/i }))
+  })
+
+  it('keeps the same pane element when the pill opens into the card', () => {
+    renderWithQuery(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+    const paneParent = screen.getByTestId('tip-card').parentElement
+    fireEvent.click(screen.getByRole('button', { name: /Schedule recurring tasks/i }))
+    expect(screen.getByTestId('tip-card').parentElement).toBe(paneParent)
+  })
+
+  it('a new tip does not take focus', () => {
+    const outside = document.createElement('button')
+    document.body.appendChild(outside)
+    try {
+      outside.focus()
+      const { rerender } = renderOpen(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+      // renderOpen clicked the pill, which moves focus to the card; put it back
+      // outside to model the user typing in the composer when the tip changes.
+      outside.focus()
+      const qc = new QueryClient()
+      rerender(
+        <MemoryRouter>
+          <QueryClientProvider client={qc}>
+            <TipCard tip={{ ...mockTip, id: 'next-tip', title: 'Another tip' }} onDismiss={onDismiss} />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      )
+      expect(screen.getByRole('button', { name: /Another tip/i })).toBeInTheDocument()
+      expect(document.activeElement).toBe(outside)
+    } finally {
+      outside.remove()
+    }
+  })
+
+  it('does not take focus on first render', () => {
+    const outside = document.createElement('button')
+    document.body.appendChild(outside)
+    try {
+      outside.focus()
+      renderWithQuery(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+      expect(screen.getByTestId('tip-card')).toBeInTheDocument()
+      expect(document.activeElement).toBe(outside)
+    } finally {
+      outside.remove()
+    }
+  })
+
+  it('a new tip starts closed even after the previous one was opened', () => {
+    const { rerender } = renderOpen(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+    expect(screen.getByTestId('tip-body')).toBeInTheDocument()
+    const qc = new QueryClient()
+    rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={qc}>
+          <TipCard tip={{ ...mockTip, id: 'next-tip', title: 'Another tip' }} onDismiss={onDismiss} />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    )
+    expect(screen.queryByTestId('tip-body')).toBeNull()
+    expect(screen.getByRole('button', { name: /Another tip/i })).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('renders inline markdown in the body (code + bold) instead of literal syntax', () => {
-    renderWithQuery(
+    renderOpen(
       <TipCard
         tip={{ ...mockTip, body: 'The `auto-research` app uses a **grill tree** to clarify scope.' }}
         onDismiss={onDismiss}
@@ -96,7 +195,7 @@ describe('TipCard (single-line strip)', () => {
   })
 
   it('renders a Learn more link to the doc on GitHub', () => {
-    renderWithQuery(
+    renderOpen(
       <TipCard tip={mockTip} onDismiss={onDismiss} />,
     )
     const link = screen.getByRole('link', { name: /learn more/i }) as HTMLAnchorElement
@@ -111,7 +210,7 @@ describe('TipCard (single-line strip)', () => {
   it('omits the Learn more link when doc is empty or not a plain .md filename', () => {
     // Path traversal / invented values must not produce a URL
     for (const doc of ['', '../secrets/keys.md', 'https://evil.example/x.md']) {
-      const { unmount } = renderWithQuery(
+      const { unmount } = renderOpen(
         <TipCard tip={{ ...mockTip, doc }} onDismiss={onDismiss} />,
       )
       expect(screen.queryByRole('link', { name: /learn more/i })).toBeNull()
@@ -122,7 +221,7 @@ describe('TipCard (single-line strip)', () => {
   it('renders the Learn more link from doc_link when doc is empty (dismissal-identity split)', () => {
     // A curated tip links a doc it does not own for dismissal purposes:
     // doc="" keeps the dismissal path inert, doc_link restores the link.
-    renderWithQuery(
+    renderOpen(
       <TipCard
         tip={{ ...mockTip, doc: '', doc_link: 'dynamic-subagent-sizing.md' }}
         onDismiss={onDismiss}
@@ -136,7 +235,7 @@ describe('TipCard (single-line strip)', () => {
 
   it('prefers doc_link over doc and applies the same filename validation to it', () => {
     // When both are set, the rendering-only field wins.
-    renderWithQuery(
+    renderOpen(
       <TipCard
         tip={{ ...mockTip, doc: 'cron-and-scheduling.md', doc_link: 'skills.md' }}
         onDismiss={onDismiss}
@@ -150,7 +249,7 @@ describe('TipCard (single-line strip)', () => {
 
   it('omits the Learn more link when doc_link is present but invalid (no silent doc fallback)', () => {
     for (const doc_link of ['../secrets/keys.md', 'https://evil.example/x.md']) {
-      const { unmount } = renderWithQuery(
+      const { unmount } = renderOpen(
         <TipCard tip={{ ...mockTip, doc: '', doc_link }} onDismiss={onDismiss} />,
       )
       expect(screen.queryByRole('link', { name: /learn more/i })).toBeNull()
@@ -160,7 +259,7 @@ describe('TipCard (single-line strip)', () => {
 
   it('"Turn off tips" opts out permanently (same action as the Settings toggle) and hides the card', async () => {
     const { api: mockApi } = await import('../api/client')
-    renderWithQuery(
+    renderOpen(
       <TipCard tip={mockTip} onDismiss={onDismiss} />,
     )
     fireEvent.click(screen.getByRole('button', { name: /turn off tips/i }))
@@ -170,14 +269,6 @@ describe('TipCard (single-line strip)', () => {
     await waitFor(() => {
       expect(onDismiss).toHaveBeenCalled()
     })
-  })
-
-  it('renders a Settings link pointing at the Feature Tips toggle (Settings → Chat → Discovery)', () => {
-    renderWithQuery(
-      <TipCard tip={mockTip} onDismiss={onDismiss} />,
-    )
-    const link = screen.getByRole('link', { name: /tip settings/i }) as HTMLAnchorElement
-    expect(link.getAttribute('href')).toBe('/settings/chat/discovery')
   })
 
   it('dismiss calls tipsFeedback(id, "dismiss") and hides on success', async () => {
@@ -530,14 +621,14 @@ describe('TipCard action button', () => {
   }
 
   it('renders no action button when tip.action is absent', () => {
-    renderWithQuery(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+    renderOpen(<TipCard tip={mockTip} onDismiss={onDismiss} />)
     expect(
       screen.queryByRole('button', { name: /Open Split View/i }),
     ).not.toBeInTheDocument()
   })
 
   it('renders the action button and navigates + acks on click', async () => {
-    renderWithQuery(
+    renderOpen(
       <>
         <TipCard tip={actionTip} onDismiss={onDismiss} />
         <LocationProbe />
@@ -560,7 +651,7 @@ describe('TipCard action button', () => {
       ...mockTip,
       action: { kind: 'route' as const, label: 'Evil', route: 'https://evil.com' },
     }
-    renderWithQuery(<TipCard tip={evil} onDismiss={onDismiss} />)
+    renderOpen(<TipCard tip={evil} onDismiss={onDismiss} />)
     expect(screen.queryByRole('button', { name: /Evil/i })).not.toBeInTheDocument()
   })
 })

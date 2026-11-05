@@ -103,6 +103,23 @@ describe('NotificationsPage without kind filters', () => {
     expect(screen.queryByText(/no categories selected/i)).not.toBeInTheDocument()
   })
 
+  it('draws the count cards as summaries, not as targets', () => {
+    // The cards filter nothing, so they must not look like they do: no pointer,
+    // no hover lift, no button role.
+    const store = createTestStore(stateWith([
+      mkN('cron', '2026-05-29T10:00:00Z', 'Cron Result'),
+    ]))
+    renderWithProviders(<NotificationsPage />, { store })
+
+    const cards = screen.getAllByTestId('stat-card')
+    expect(cards).toHaveLength(5)
+    for (const card of cards) {
+      expect(card).not.toHaveAttribute('role')
+      expect(card.className).not.toContain('cursor-pointer')
+      expect(card.className).not.toMatch(/(^|\s)hover:/)
+    }
+  })
+
   it('does not persist any filter selection', () => {
     const store = createTestStore(stateWith([
       mkN('cron', '2026-05-29T10:00:00Z', 'Cron Result'),

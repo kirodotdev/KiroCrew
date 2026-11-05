@@ -434,7 +434,9 @@ async def test_a_turn_on_another_agent_does_not_consult_the_binding(monkeypatch)
     def bind(ctx):
         ctx.slot.app_agent_owner = "pr-bulk-ops/deploy"
 
-    await run_turn(TurnScript(setup=bind), slot=SlotSpec())
+    record = await run_turn(TurnScript(setup=bind), slot=SlotSpec())
+    assert not _refused_rows(record)
+    assert [call for call in record.provider_calls if call.name.startswith("stream")]
 
 
 @pytest.mark.asyncio

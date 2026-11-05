@@ -835,6 +835,7 @@ describe('ArtifactPanel', () => {
       expect(second).toContain('new feedback')
       expect(second).not.toContain('tighten this heading')
       expect(second).toContain('1 comment')
+      await act(async () => { vi.advanceTimersByTime(SUBMIT_GUARD_MS) })
     })
 
     it('keeps sent comments cleared across a remount (persisted per artifact)', async () => {
@@ -907,6 +908,7 @@ describe('ArtifactPanel', () => {
       await act(async () => { vi.advanceTimersByTime(SUBMIT_GUARD_MS) })
       fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
       expect(onSubmitComments.mock.calls[1][0]).toContain('keep it short')
+      await act(async () => { vi.advanceTimersByTime(SUBMIT_GUARD_MS) })
     })
 
     it('threads an extra instruction through the message and clears it after submit', async () => {
@@ -938,6 +940,7 @@ describe('ArtifactPanel', () => {
       await screen.findByText(NAME)
       fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
       expect(onSubmitComments.mock.calls[0][0]).not.toContain('OVERALL INSTRUCTION')
+      await act(async () => { vi.advanceTimersByTime(SUBMIT_GUARD_MS) })
     })
 
     it('renders a submit bar in the fullscreen overlay too', async () => {
@@ -983,6 +986,7 @@ describe('ArtifactPanel', () => {
       await screen.findByText(NAME)
       fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
       expect(onSubmitComments).toHaveBeenCalledTimes(1)
+      await act(async () => { vi.advanceTimersByTime(SUBMIT_GUARD_MS) })
     })
   })
 })

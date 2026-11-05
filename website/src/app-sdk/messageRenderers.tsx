@@ -509,6 +509,11 @@ export interface AssistantBubbleOptions {
    *  system policy notice rather than the user's (`turnHadPolicyBlock`). The
    *  raw marker is stripped from the prose either way. */
   suppressSteerAck?: boolean
+  /** Never draw the "N files changed" chips, whatever `meta.file_changes`
+   *  holds. A host whose replies are not file work the reader reviews (a
+   *  crewmate's chat: its notes, scripts and page writes) sets it. Off
+   *  (default) the chips draw as on every other surface. */
+  hideFileChanges?: boolean
   /** Session routing for the reply's markdown: open a session chip, plus the
    *  roster and the active key the chip resolver needs. All three or none — the
    *  renderer gates on (`onSessionOpen` AND `sessions`), so a half-wired host
@@ -528,6 +533,10 @@ export interface AssistantBubbleOptions {
   /** The bubble's own Regenerate action (its hover row), for the host that
    *  can regenerate this reply. Absent: no Regenerate. */
   onRegenerate?: () => void
+  /** The LOCAL slot these rows belong to. Set, the reply draws its lock tags
+   *  from `meta.redactions` and their card offers the owner's reveal of the
+   *  removed value. A host drawing another gateway's rows leaves it unset. */
+  redactionSlot?: string
 }
 
 /**
@@ -595,9 +604,11 @@ export function renderAssistantBubble(
       variantIdx={m.variant_idx}
       turnStats={(m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined}
       decisionsStrip={decisionStripFieldOf(m)}
-      fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
-      fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
+      fileChanges={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
+      fileChangesOmittedFiles={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
       onRegenerate={opts.onRegenerate}
+      redactions={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.redactions : undefined}
+      redactionSlot={opts.redactionSlot}
       suppressSteerAck={opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
@@ -742,7 +753,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           {cronLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1"><Clock size={11} className="inline mr-0.5" />{cronLabel}</span>}
           {!cronLabel && appLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 cursor-help" title={i18nT('components.mcpApp.from_app_tooltip')}><AppWindow size={11} className="inline mr-0.5" />{i18nT('components.mcpApp.from_app', { app: appLabel.split('/')[0] })}</span>}
           <div className="mc-message-font-scope msg-content px-4 py-3 leading-relaxed rounded-lg bg-warn-subtle text-text ring-1 ring-inset forced-colors:border ring-warn/30 rounded-bl-[4px] overflow-hidden min-w-0" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
-            <MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} softBreaks /></MessageErrorBoundary>
+            <MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} onArtifactOpen={ctx.onArtifactOpen} softBreaks /></MessageErrorBoundary>
           </div>
         </>,
       )

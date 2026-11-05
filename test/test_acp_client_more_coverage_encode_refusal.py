@@ -29,14 +29,9 @@ from kiro_crew.acp.types import EVENT_TOOL_CALL, EVENT_TOOL_CALL_UPDATE, EVENT_T
 def _too_deep_to_encode(**dumps_kwargs: Any) -> Any:
     """The shallowest nesting THIS interpreter's encoder refuses for *dumps_kwargs*.
 
-    The depth is probed rather than hard-coded because the two encoders have
-    different ceilings and both move between interpreter versions: ``indent=2``
-    runs the pure-Python encoder, which spends several frames per level, and a
-    ``default=str`` call runs the C one. A hard-coded depth can be encodable on
-    another interpreter, and the test then passes having refused nothing.
-
-    Every caller holds the cyclic collector off for the whole test, probe and
-    call under test alike; see ``no_cyclic_gc_at_the_recursion_limit``.
+    Probed, not hard-coded: ``indent=2`` (pure Python) and ``default=str`` (C) have
+    different ceilings that move between versions. Callers hold the cyclic collector
+    off; see ``no_cyclic_gc_at_the_recursion_limit``.
     """
     depth = 1000
     while depth <= 262144:
@@ -66,42 +61,22 @@ def _nested_json_text(payload: Any) -> str:
 
 
 class TestClientEncodeRefusalDegrades:
-    """Every backend-shaped frame the JSON codec refuses costs ONE frame's
-    detail, never the agent turn and never a whole batch of tool results.
+    """A frame the JSON codec refuses costs that frame's detail, never the turn.
 
-    ``RecursionError`` subclasses ``RuntimeError``, so an unguarded
-    ``json.dumps`` does not catch it and neither does an
-    ``except (TypeError, ValueError)`` arm or an ``except json.JSONDecodeError``
-    arm. The agent backend chooses the shape of every ``rawInput`` /
-    ``rawOutput`` these sites serialise, so a payload past the codec's ceiling is
-    always reachable: unguarded, the raise escapes frame rendering and aborts the
-    whole turn. Same refusal posture as the ``_dispatch`` encodes, and the
-    placeholder is visible in the transcript on purpose, so the user can see that
-    detail is missing.
+    ``RecursionError`` is a ``RuntimeError``, which ``(TypeError, ValueError)`` and
+    ``json.JSONDecodeError`` arms miss, and the backend picks every ``rawInput`` /
+    ``rawOutput`` shape. The placeholder is visible so the user sees detail is missing.
     """
 
     @pytest.fixture
     def no_cyclic_gc_at_the_recursion_limit(self):
         """Keep the cyclic collector out of the frames next to the recursion limit.
 
-        Every test in this class drives real code to ``RecursionError`` on
-        purpose, so its innermost frames have no headroom left. A gen0 sweep that
-        lands there -- the allocation counter decides where, not the test -- runs
-        the finalizers of whatever cyclic garbage the worker is carrying. A
-        pending Task leaked by another test reports itself through
-        ``logger.error`` on ``__del__``; at that depth the report itself raises
-        ``RecursionError``, the interpreter hands the escaped exception to
-        ``sys.unraisablehook``, and pytest's hook overflows in the same place,
-        surfacing as ``RuntimeError: Failed to process unraisable exception``
-        against THIS test on any platform.
-
-        Collect once at depth zero so inherited garbage pays its finalizers where
-        there is stack for it, then hold the collector off for the whole test:
-        the deep walk happens twice, once in the depth probe and once in the call
-        under test, and only the second one is the product code. Reference
-        counting still frees the walk's own dicts; cycles wait for teardown.
-        Spelled as ``test_mcp_preflight`` spells it, per
-        ``docs/system-specs/common/testing-conventions.md``.
+        A gen0 sweep at the recursion limit runs other tests' finalizers with no
+        stack left, surfacing as ``RuntimeError: Failed to process unraisable
+        exception``. So collect once at depth zero, then hold the collector off
+        (as ``test_mcp_preflight`` does, per
+        ``docs/system-specs/common/testing-conventions.md``).
         """
         gc.collect()
         was_enabled = gc.isenabled()
@@ -138,17 +113,9 @@ class TestClientEncodeRefusalDegrades:
     ):
         """Rendering the frame is not the only encode the turn depends on.
 
-        A ``use_aws``-shaped ``rawInput`` reaches ``AcpEvent.shell_command``,
-        which the hook gate and the skill-read note both read while the turn is
-        still running, and that property encodes ``parameters`` itself. Guarding
-        only the extractor moves the raise one frame later instead of removing
-        it, so the guarantee is pinned end to end here.
-
-        The refusal denies rather than degrades: the parameters tail is the only
-        place a smuggled command appears, so a synthesized command without it
-        would be scanned as though it were complete. ``None`` routes the call to
-        the unconditional deny-by-default arm in ``HookManager.on_tool_call``
-        (``is_shell and not command``).
+        ``AcpEvent.shell_command`` encodes ``parameters`` itself, so this is pinned end
+        to end. It denies rather than degrades: a smuggled command hides in the tail,
+        and ``None`` hits ``HookManager.on_tool_call``'s ``is_shell and not command`` deny.
         """
         client = _client(tmp_path)
         msg = _notify(
@@ -271,15 +238,9 @@ class TestClientEncodeRefusalDegrades:
     ):
         """One refused frame costs that frame, and the per-part bound holds.
 
-        The guard wraps the encode, so the ``[:4000]`` cut still applies to what
-        the encode returns. Driven as a BATCH because that is where the cost of
-        an unguarded refusal lands: it reaches the method's catch-all arm, which
-        takes this result and every later one in the same read with it, while the
-        file offset has already advanced past them.
-
-        The bound is asserted as the behaviour that is there, not as the
-        behaviour that is right: this reader takes its cut before anything
-        redacts, which is its own defect class and its own change.
+        A batch, because an unguarded refusal hits the catch-all and drops every later
+        result after the offset advanced. The ``[:4000]`` cut is pinned as it is: it
+        runs before redaction, a separate defect.
         """
         monkeypatch.setattr(acp_client, "kiro_sessions_dir", lambda: tmp_path)
         wide = {f"key{i:04d}": "v" * 32 for i in range(200)}

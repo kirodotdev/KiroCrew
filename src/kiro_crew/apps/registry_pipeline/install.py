@@ -47,6 +47,7 @@ from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.catalog import (
     SOURCE_REGISTRY_PREFIX,
     _is_catalog_row,
+    _manifest_shell_platform_refusal,
     _resolve_install_entry,
     resolve_installed_trust_repository,
 )
@@ -225,6 +226,22 @@ def _install_script_platform_refusal() -> str | None:
     return f"install script not run: {NATIVE_WINDOWS_HOOK_REFUSAL}"
 
 
+def _adoption_pending(name: str) -> str | None:
+    """The refusal for a pinned *name* whose record is still builtin-owned, else None."""
+    from kiro_crew.apps.builtin_adoption_pins import adoption_pin
+
+    pin = adoption_pin(name)
+    if pin is None:
+        return None
+    from kiro_crew.apps.manager import builtin_owns_installed
+
+    if not builtin_owns_installed(name):
+        return None
+    from kiro_crew.apps.builtin_adoption import pending_install_refusal
+
+    return pending_install_refusal(pin)
+
+
 async def install_from_registry(
     name: str,
     log_lines: list[str] | None = None,
@@ -296,6 +313,14 @@ async def install_from_registry(
         if is_reserved_app_name(name):
             outcome_early["code"] = RESERVED_APP_NAME_CODE
         return outcome_early
+
+    # A pinned former built-in whose record is still the built-in's switches to its
+    # repository only through adoption. A registry install here would keep
+    # `origin=builtin`/`lifecycle=locked` on a registry tree, so refuse it before
+    # any clone, saying what this host does next.
+    adoption_refusal = await asyncio.to_thread(_adoption_pending, name)
+    if adoption_refusal is not None:
+        return {"ok": False, "name": name, "code": "adoption_pending", "error": adoption_refusal}
 
     entry: dict[str, Any] | None
     if resolved_entry is not None:
@@ -628,7 +653,14 @@ async def install_from_registry(
 
     # Guard: check if already installed externally (e.g. user ran setup.sh manually)
     detect_cmd = entry.get("detectInstalled", "")
-    if detect_cmd:
+    detect_refusal = _manifest_shell_platform_refusal() if detect_cmd else None
+    if detect_refusal:
+        # No /bin/sh to run the probe through. Say so in the install log the user
+        # reads, instead of a spawn error swallowed as "not installed", and go on:
+        # the install proceeded on this host before, and still does.
+        log_lines.append(f"detectInstalled not run: {detect_refusal}")
+        logger.warning("detectInstalled not run for %s: %s", name, detect_refusal)
+    elif detect_cmd:
         try:
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]

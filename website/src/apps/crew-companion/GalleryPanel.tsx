@@ -13,7 +13,9 @@
  * - Listens to gallery:active-changed and gallery:packs-changed broadcasts
  */
 import { ChevronDown, MoreHorizontal, Plus, X } from 'lucide-react'
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
+import { useInlineStyledConfirm } from '../../components/InlineStyledConfirm'
 import type { PackMeta } from '../../lib/appearancePacks/types'
 import { REQUIRED_STATES, STATUS_STATES, RANDOM_STATES, LEGACY_STATES, ALL_MOODS } from '../../lib/appearancePacks/types'
 import { toDataUri } from './animationResolver'
@@ -633,6 +635,16 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
   onBrowse: () => void
 }) {
   const ime = useImeGuard()
+  const titleId = useId()
+  // Tab stays inside; Escape is handled just below. The trap records the opener
+  // to give focus back to, then seats focus on the first control (Close); the
+  // next effect moves it on to the input the user types into. That input has no
+  // autoFocus: autoFocus runs before the trap's effect, which would record the
+  // input itself as the opener and drop focus on <body> when the dialog closes.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
+  useEffect(() => { inputRef.current?.focus({ preventScroll: true }) }, [])
   // Esc closes, like any dialog
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -643,9 +655,9 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
   return (
     <div role="presentation" style={S.detailOverlay} onClick={onClose}>
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- stopPropagation prevents backdrop dismiss when clicking inside modal */}
-      <div role="dialog" aria-modal="true" style={S.modal} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} style={S.modal} onClick={(e) => e.stopPropagation()}>
         <div style={S.modalHeader}>
-          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{i18nT('apps.crewCompanion.gallery.importPet')}</span>
+          <span id={titleId} style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{i18nT('apps.crewCompanion.gallery.importPet')}</span>
           <button onClick={onClose} aria-label={i18nT('apps.crewCompanion.gallery.close')}
             style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 15, padding: 0 }}>
             <X className="lucide-inline" aria-hidden="true" />
@@ -686,12 +698,12 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
           </div>
 
           <input
+            ref={inputRef}
             value={input}
             onChange={(e) => onInput(e.target.value)}
             {...ime.bindEnter({ onEnter: () => { if (resolved) onConfirm() } })}
             placeholder={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
             aria-label={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
-            autoFocus
             disabled={importing}
             style={{
               width: '100%', boxSizing: 'border-box', background: 'var(--cc-input-bg)',
@@ -758,6 +770,11 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
   const { meta, animations } = detail
   const sc = detail.sprite
   const [showColorCustomizer, setShowColorCustomizer] = useState(false)
+  const titleId = useId()
+  // Focus in on open, Tab stays inside. Escape keeps closing the whole gallery
+  // window (its own listener), so the trap does not claim it.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
   const isDefaultKiro = meta.id === DEFAULT_PACK
   const thumbColorMap = isDefaultKiro ? colorMap : null
 
@@ -805,11 +822,11 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
   return (
     <div role="presentation" style={S.detailOverlay} onClick={onClose}>
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- stopPropagation prevents backdrop dismiss when clicking inside modal */}
-      <div role="dialog" aria-modal="true" style={S.detailPanel} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} style={S.detailPanel} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={S.detailHeader}>
           <div style={{ flex: 1 }}>
-            <div style={S.detailTitle}>{meta.name}</div>
+            <div id={titleId} style={S.detailTitle}>{meta.name}</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
               {meta.author} · {entryFormat(meta).toUpperCase()}
             </div>
@@ -966,8 +983,15 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
  * tools need.
  */
 export const GalleryPanel: React.FC = () => {
+  const { confirm: askConfirm, confirmDialog } = useInlineStyledConfirm()
   const [packs, setPacks] = useState<PackMeta[]>([])
-  const [activePackId, setActivePackId] = useState<string>('')
+  const [activePackId, setActivePackIdState] = useState<string>('')
+  // The active pack can change while the confirmation is open.
+  const activePackIdRef = useRef(activePackId)
+  const setActivePackId = useCallback((packId: string) => {
+    activePackIdRef.current = packId
+    setActivePackIdState(packId)
+  }, [])
   const [selectedPackId, setSelectedPackId] = useState<string | null>(null)
   const [detail, setDetail] = useState<PackDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1026,7 +1050,7 @@ export const GalleryPanel: React.FC = () => {
     } catch {
       setActivePackId(DEFAULT_PACK)
     }
-  }, [])
+  }, [setActivePackId])
 
   // Initial load
   useEffect(() => {
@@ -1068,7 +1092,7 @@ export const GalleryPanel: React.FC = () => {
       offColor?.()
       offConfig?.()
     }
-  }, [fetchActiveId, fetchPacks, lang])
+  }, [fetchActiveId, fetchPacks, lang, setActivePackId])
 
   // ── Card click → fetch detail ──────────────────────────────────────────
 
@@ -1105,7 +1129,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err) {
       setError(errorText(err) || i18nT('apps.crewCompanion.gallery.applyFailed'))
     }
-  }, [detail])
+  }, [detail, setActivePackId])
 
   const [toast, setToast] = useState<string | null>(null)
   const [toastFading, setToastFading] = useState(false)
@@ -1144,9 +1168,15 @@ export const GalleryPanel: React.FC = () => {
 
   const handleDelete = useCallback(async () => {
     if (!detail) return
-    if (!confirm(i18nT('apps.crewCompanion.gallery.deleteConfirm', { name: detail.meta.name }))) return
+    const packId = detail.meta.id
+    if (!await askConfirm({
+      title: i18nT('apps.crewCompanion.gallery.deleteConfirm', { name: detail.meta.name }),
+      confirmLabel: i18nT('apps.crewCompanion.gallery.delete'),
+      backdropInset: GALLERY_PAD,
+      backdropRadius: PANEL_RADIUS.card,
+    })) return
     try {
-      const wasActive = detail.meta.id === activePackId
+      const wasActive = packId === activePackIdRef.current
       if (wasActive) {
         // Repair the reference BEFORE the delete, not after: with the delete
         // first, a failed reset or a gateway restart in between left the
@@ -1161,7 +1191,7 @@ export const GalleryPanel: React.FC = () => {
         }
         setActivePackId(DEFAULT_PACK)
       }
-      const result = await api.galleryDelete(detail.meta.id)
+      const result = await api.galleryDelete(packId)
       if (!result) {
         setError(i18nT('apps.crewCompanion.gallery.deleteFailed'))
         return
@@ -1172,7 +1202,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err) {
       setError(errorText(err) || i18nT('apps.crewCompanion.gallery.deleteFailed'))
     }
-  }, [detail, fetchPacks, activePackId])
+  }, [askConfirm, detail, fetchPacks, setActivePackId])
 
   const handleCreateNew = useCallback(() => {
     setEditingPack(undefined)
@@ -1191,7 +1221,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err) {
       setError(errorText(err) || i18nT('apps.crewCompanion.gallery.applyFailed'))
     }
-  }, [activePackId])
+  }, [activePackId, setActivePackId])
 
   // ── Import from PetDex: resolve (look it up) then confirm (save + apply) ──
   const closeImport = useCallback(() => {
@@ -1225,7 +1255,7 @@ export const GalleryPanel: React.FC = () => {
   // affordance the panel provides.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') api?.closeGallery?.()
+      if (e.key === 'Escape' && !e.defaultPrevented) api?.closeGallery?.()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -1258,7 +1288,7 @@ export const GalleryPanel: React.FC = () => {
     } finally {
       setImporting(false)
     }
-  }, [resolved, importing, fetchPacks, closeImport])
+  }, [resolved, importing, fetchPacks, closeImport, setActivePackId])
 
 
   // ── Editor mode → render PackEditor ──────────────────────────────────────
@@ -1421,6 +1451,7 @@ export const GalleryPanel: React.FC = () => {
           lang={lang}
         />
       )}
+      {confirmDialog}
     </div>
   )
 }

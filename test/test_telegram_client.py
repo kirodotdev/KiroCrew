@@ -23,6 +23,7 @@ from kiro_crew.telegram.client import TelegramClient
 from kiro_crew.telegram.commands import bot_command_payload
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+from kiro_crew.testing.wait import async_wait_until
 
 
 class TestClientSession:
@@ -998,6 +999,121 @@ class TestClientHealth:
         assert len(transitions) == 1  # deduped: repeat successes don't re-fire
 
 
+class TestMalformedUpdateDoesNotDropTheBatch:
+    """One update that makes ``_dispatch`` raise must cost only itself: every
+    other update in the same getUpdates batch is still dispatched, so a single
+    malformed envelope cannot silently lose its batch-mates (``_offset`` already
+    advanced on observation, so Telegram never redelivers them)."""
+
+    def _client(self):
+        return TelegramClient(token="12345:testtoken")
+
+    def test_later_updates_in_the_batch_still_dispatch(self, monkeypatch) -> None:
+        client = self._client()
+        dispatched: list[int] = []
+        real_dispatch = client._dispatch
+
+        def _dispatch(update):
+            # The second update raises the way a null ``message.from`` makes
+            # ``_build_inbound`` raise before the per-update guard.
+            if update.get("update_id") == 2:
+                raise AttributeError("simulated malformed-update failure")
+            dispatched.append(update.get("update_id"))
+            # Do not actually spawn handlers in this unit test.
+
+        monkeypatch.setattr(client, "_dispatch", _dispatch)
+        monkeypatch.setattr(client, "_maybe_persist_offset", lambda: None)
+
+        batch: list[Any] = [
+            {"update_id": 1, "message": {}},
+            {"update_id": 2, "message": {}},  # raises in _dispatch
+            {"update_id": 3, "message": {}},
+            {"update_id": 4, "message": {}},
+        ]
+        results: list[Any] = [batch]
+
+        async def _get_updates():
+            if not results:
+                client._closed = True
+                return []
+            return results.pop(0)
+
+        # No ``asyncio.sleep`` patch: the loop only sleeps on a failure path,
+        # and here every poll succeeds (the batch dispatches, then the empty
+        # follow-up poll closes the loop), so it never reaches a sleep.
+        monkeypatch.setattr(client, "_get_updates", _get_updates)
+        asyncio.run(client._polling_loop())
+
+        # 2 raised and was dropped; 1, 3 and 4 all still reached dispatch.
+        assert dispatched == [1, 3, 4]
+        assert real_dispatch is not None  # the real method stays intact
+
+
+class TestBuildInboundToleratesMalformedEnvelopes:
+    """``_build_inbound`` must not raise on a null or odd-typed field: a raise
+    there aborts the whole batch. A malformed envelope parses to a valid-shaped
+    ``TelegramInbound`` (an absent sender reads as ``user_id=0``, which
+    deny-by-default auth refuses) rather than costing the batch."""
+
+    def test_null_from_parses_with_user_id_zero(self) -> None:
+        inb = TelegramClient._build_inbound(
+            {"message_id": 5, "chat": {"id": 1, "type": "private"}, "from": None, "text": "hi"}
+        )
+        assert inb.user_id == 0
+        assert inb.chat_id == 1
+        assert inb.text == "hi"
+
+    def test_null_chat_parses_with_chat_id_zero(self) -> None:
+        inb = TelegramClient._build_inbound(
+            {"message_id": 5, "chat": None, "from": {"id": 7}, "text": "hi"}
+        )
+        assert inb.chat_id == 0
+        assert inb.user_id == 7
+
+    def test_non_numeric_reply_sender_id_reads_as_zero(self) -> None:
+        inb = TelegramClient._build_inbound(
+            {
+                "message_id": 5,
+                "chat": {"id": 1, "type": "private"},
+                "from": {"id": 7},
+                "text": "hi",
+                "reply_to_message": {"from": {"id": "not-a-number"}},
+            }
+        )
+        assert inb.reply_to_user_id == 0
+
+    def test_bool_reply_sender_id_is_not_read_as_one(self) -> None:
+        # bool is an int subclass; True must not become reply_to_user_id=1.
+        inb = TelegramClient._build_inbound(
+            {
+                "message_id": 5,
+                "chat": {"id": 1, "type": "private"},
+                "from": {"id": 7},
+                "text": "hi",
+                "reply_to_message": {"from": {"id": True}},
+            }
+        )
+        assert inb.reply_to_user_id == 0
+
+    def test_photo_not_a_list_is_ignored_not_indexed(self) -> None:
+        inb = TelegramClient._build_inbound(
+            {"message_id": 5, "chat": {"id": 1, "type": "private"}, "from": {"id": 7}, "photo": "x"}
+        )
+        assert inb.attachments == []
+
+    def test_a_well_formed_reply_still_reads_its_sender(self) -> None:
+        inb = TelegramClient._build_inbound(
+            {
+                "message_id": 5,
+                "chat": {"id": 1, "type": "private"},
+                "from": {"id": 7},
+                "text": "hi",
+                "reply_to_message": {"from": {"id": 99}},
+            }
+        )
+        assert inb.reply_to_user_id == 99
+
+
 class TestSetMyCommands:
     def test_empty_list_is_refused_so_the_menu_is_never_wiped(self) -> None:
         # Telegram reads an empty array as "this bot has no commands" and clears
@@ -1053,8 +1169,9 @@ class TestClientClose:
                 raise ValueError("malformed update")
 
             client._task = asyncio.create_task(_buggy_loop())
-            # flake-ok: pre-existing zero-length yield so the failing task ends before close(), moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)  # let the task actually finish before close()
+            # close() must meet a task that has already ended with its error, so wait on
+            # that state instead of on a count of loop turns.
+            await async_wait_until(client._task.done, describe=lambda: repr(client._task))
 
             try:
                 await client.close()

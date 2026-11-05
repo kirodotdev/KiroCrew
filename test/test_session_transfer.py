@@ -1,25 +1,12 @@
 """Session transfer between instances — bundle, validation, and import.
 
-Covers the two halves of the feature (``build_transfer_bundle_async`` on the
-sending side, ``api_chat_slot_import`` on the receiving side) plus the
-tunnel-manager delivery hop, with the emphasis on the invariants a reviewer would
-want pinned:
+Key invariants: copy, never move; project does not travel (the session arrives
+unscoped); unknown bundle versions are refused; the token never appears in a transfer
+response (instances.md §6).
 
-* **copy, never move** — the source is untouched and the target key is new;
-* **project does NOT travel** — the documented decision that an imported
-  session arrives unscoped so the user re-picks a checkout;
-* **unknown bundle versions are refused** rather than best-effort parsed;
-* **the token never appears in a transfer response** (instances.md §6's
-  "connect + refresh-token are the only two token-crossing routes").
-
-Bundle construction, validation, the delivery hop and the import endpoint's answers,
-redaction and transcript prefix are pinned here. Layer B, the kiro-cli context a bundle
-carries, is read, validated, written, joined and rolled back in
-``test_session_transfer_layer_b.py``; the rows an import replays, its construction window
-with the slot-cap accounting across it, and arrival filing in
-``test_session_transfer_landing.py``; the import route's body and the host bounds that admit
-it in ``test_session_transfer_import_body.py``; the transcript file's own privacy line
-withholding a bundle at and after the read, the staged upload and the staging sweep in
+Layer B lives in ``test_session_transfer_layer_b.py``, landing and filing in
+``test_session_transfer_landing.py``, the import body in
+``test_session_transfer_import_body.py``, and outbound privacy and staging in
 ``test_session_transfer_outbound.py``.
 """
 
@@ -126,14 +113,9 @@ async def test_bundle_untitled_slot_carries_empty_title():
 async def test_send_handler_sends_each_turn_exactly_once(monkeypatch):
     """Each turn is sent exactly once.
 
-    The original bug was a pre-bundle flush combined with a ``_resumed_count``
-    slice: the save wrote the tail to disk but did not touch that counter, so the
-    bundle re-appended the same turns from memory. The guard was originally
-    written as "the handler must not flush" — but the flush was the mechanism,
-    not the contract. Slicing on ``_disk_window_len`` (which the save DOES
-    advance) makes flushing correct, and a later finding showed it is required to
-    carry in-place edits. So this asserts the invariant that actually matters:
-    every turn appears exactly once.
+    The pre-bundle flush is required (it carries in-place edits), so the tail is
+    sliced on ``_disk_window_len``, which the save advances, to avoid re-appending
+    flushed turns from memory.
     """
     from kiro_crew.dashboard import handlers_instances as hi
     from kiro_crew.dashboard import session_transfer as st
@@ -544,14 +526,10 @@ async def test_bundle_redacts_the_title_on_the_way_out():
 
 @pytest.mark.asyncio
 async def test_bundle_refuses_when_the_boundary_is_ahead_of_the_window():
-    """Regression: a flush landing mid-stream leaves ``_disk_window_len`` larger
-    than the resident window, so the tail slice yields nothing.
+    """A boundary ahead of the resident window refuses the bundle.
 
-    ``_save_slot_to_history`` sets the boundary over the RAW window (streaming
-    ``chunk`` rows included); ``_flush_segment`` then shrinks ``slot.messages`` to
-    drop that chunk run and append the finalized assistant message, without
-    adjusting the boundary. A transfer started during that turn would ship only
-    the on-disk turns and still answer 200.
+    The save counts streaming ``chunk`` rows, then ``_flush_segment`` shrinks the window
+    without moving the boundary, so the tail slice would ship only on-disk turns.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -573,15 +551,10 @@ async def test_bundle_refuses_when_the_boundary_is_ahead_of_the_window():
 
 @pytest.mark.asyncio
 async def test_bundle_reads_the_transcript_key_not_the_session_key():
-    """Regression: an unbound channel slot's session key names a phantom file.
+    """The bundle reads ``slot_history_key``, not the session key.
 
-    ``surface_channel_session`` deliberately surfaces a channel-born slot
-    UNBOUND when its channel key cannot be resolved, leaving
-    ``linked_session_key`` empty. ``effective_session_key`` then falls back to
-    ``dashboard:<stem>`` — a transcript no read path uses — so bundling from it
-    would ship only the resident window and silently drop every older turn.
-    ``chat_utils`` documents the split: transcript paths use
-    ``slot_history_key``.
+    An unbound channel-born slot's ``effective_session_key`` falls back to
+    ``dashboard:<stem>``, a transcript no read path uses, so older turns would vanish.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -595,7 +568,7 @@ async def test_bundle_reads_the_transcript_key_not_the_session_key():
     slot = _slot([])
     slot.messages = []
     slot._disk_window_len = 0
-    # Channel-born but unbound: the state the finding is about.
+    # Channel-born but unbound.
     slot.linked_session_key = ""
     slot.channel_origin = True
     slot.key = "slack_1700000000"
@@ -611,14 +584,10 @@ async def test_bundle_reads_the_transcript_key_not_the_session_key():
 
 @pytest.mark.asyncio
 async def test_bundle_flushes_a_dirty_slot_so_in_place_edits_travel(monkeypatch):
-    """Regression: an edit BELOW the boundary is invisible to the tail slice.
+    """A dirty slot is flushed first, because an edit below the boundary misses the tail.
 
-    A variant switch replaces an already-persisted assistant turn in place, so
-    ``_disk_window_len`` does not move and ``messages[boundary:]`` is empty. If
-    that edit's own save failed, disk holds the previous response and the copy
-    would ship it. Flushing first closes the gap — and is safe because the save
-    advances the boundary, unlike the ``_resumed_count`` slice this originally
-    used.
+    A variant switch replaces a persisted turn in place; if its own save failed, disk
+    still holds the old response.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -713,12 +682,8 @@ async def test_send_refuses_an_app_that_does_not_own_the_slot(monkeypatch):
 
     resp = await hi.api_instances_send_session(request)
 
-    # An app token never reaches the transfer body: ``_guard`` demands the
-    # positively-identified owner, and the owner predicate treats any non-empty
-    # ``app`` claim as not-the-owner. The slot-ownership check further in
-    # (``api_instances_send_session``'s 404 for a slot another app owns) is kept as
-    # defence in depth behind that gate, so an app that does reach the body still
-    # cannot name a slot it does not own.
+    # ``_guard`` treats any non-empty ``app`` claim as not-the-owner; the 404
+    # slot-ownership check further in stays as defence in depth.
     assert resp.status == 403
     assert json.loads(resp.body)["code"] == "owner_only"
     assert sent == [], "nothing may be delivered for a slot the app does not own"
@@ -728,15 +693,9 @@ async def test_send_refuses_an_app_that_does_not_own_the_slot(monkeypatch):
 async def test_import_broadcasts_the_rollback_so_no_phantom_slot_remains(monkeypatch):
     """A refused import must leave no tab behind.
 
-    Under the fold the slot is NEVER published before success: the shared
-    materialiser hands it back retracted, and import re-registers + broadcasts
-    only at the very end of a successful import. So on the save-failure path
-    there is nothing a client ever saw — the correct rollback is simply that the
-    slot is absent from ``_slots`` and the construction count is released. A
-    broadcast here would announce the removal of a tab no client was ever told
-    about, so its ABSENCE on this path is correct, not a regression. (Before the
-    fold the slot was published at creation, so a rollback had to broadcast its
-    removal; the fold removed the early publish, and with it the need.)
+    The slot is published only on success, so on a failed save no client ever saw it:
+    it is absent from ``_slots``, the construction count is released, and no removal
+    is broadcast.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -755,11 +714,8 @@ async def test_import_broadcasts_the_rollback_so_no_phantom_slot_remains(monkeyp
     resp = await st.api_chat_slot_import(_make_request(state, _valid()))
 
     assert resp.status == 503
-    # No phantom tab, and the construction count released — the real invariant.
     assert state._slots == {}
     assert state._slots_under_construction == set()
-    # The slot was never published, so the failure path broadcasts nothing:
-    # there is no tab to retract from any client's view.
     assert pushes["n"] == 0, "a never-published slot must not broadcast a removal"
 
 
@@ -897,12 +853,8 @@ def test_validate_refuses_an_unknown_version_rather_than_guessing():
 def test_validate_imposes_no_size_ceiling():
     """Validation is STRUCTURAL only — no message count, per-message, or total cap.
 
-    A transfer is never blocked by size (the owner's decision); memory safety comes
-    from streaming the body to disk on arrival, not from refusing large sessions.
-    A bundle past each ceiling a validator could plausibly enforce (5,000 messages,
-    1 MB/message, 20 MB total) validates cleanly. Each ceiling is crossed by the
-    cheapest input that crosses it, so the fixture stays ~25 MB rather than the
-    gigabytes a naive "every message oversized" fixture would allocate.
+    Memory safety comes from streaming the body to disk. The fixture crosses 5,000
+    messages, 1 MB/message and 20 MB total with the cheapest input (~25 MB).
     """
     filler = "x" * 4_200
     huge = [{"role": "user", "content": filler, "ts": ""} for _ in range(6_000)]
@@ -1219,7 +1171,7 @@ async def test_import_refuses_past_the_slot_cap(monkeypatch):
     state._slots = {f"s{i}": object() for i in range(500)}
     resp = await st.api_chat_slot_import(_make_request(state, _valid()))
 
-    assert resp.status == 429
+    assert resp.status == 409
     assert json.loads(resp.body)["code"] == "transfer_slot_cap"
 
 
@@ -1262,12 +1214,8 @@ async def test_import_drops_an_agent_the_target_does_not_have(monkeypatch):
 async def test_import_redacts_off_the_loop_before_construction(monkeypatch):
     """A big bundle must not hold the loop in one un-yielded pass.
 
-    Redaction is regex-heavy and the content is peer-supplied. Construction is
-    synchronous, so the redaction cost runs AHEAD of construction and off the
-    event loop: import calls ``_build_redacted_rows`` via ``asyncio.to_thread``
-    before any slot exists, so the regex work runs on a worker thread and the loop
-    is free to service other turns. This pins that the redaction pass is
-    dispatched to a thread rather than run inline on the loop.
+    Redaction is regex-heavy on peer-supplied content and construction is synchronous,
+    so ``_build_redacted_rows`` runs via ``asyncio.to_thread`` before any slot exists.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -1295,11 +1243,9 @@ async def test_import_redacts_off_the_loop_before_construction(monkeypatch):
 async def test_import_persists_every_row_of_a_bundle_over_the_window(monkeypatch, tmp_path, n):
     """Every imported row reaches the transcript exactly once, in order.
 
-    Only the newest ``_IMPORT_WINDOW`` rows are hydrated into the slot; the rest
-    are written to disk as the frozen prefix the save then carries verbatim. 15k
-    is past the slot's in-memory cap (``_MAX_SLOT_MESSAGES``): hydrating every
-    row trimmed the oldest ones out of the window before the save, and nothing
-    else held them, so they were lost.
+    Only the newest ``_IMPORT_WINDOW`` rows are hydrated; the rest are written as a
+    frozen prefix. 15k is past ``_MAX_SLOT_MESSAGES``, which would trim rows before the
+    save if every row were hydrated.
     """
     from kiro_crew.dashboard import chat_persistence as cp
     from kiro_crew.dashboard import session_transfer as st
@@ -1536,11 +1482,8 @@ async def test_import_does_not_arm_the_disk_delete_won_guard(monkeypatch):
     """Import read no transcript off disk, so the delete-won identity guard must
     stay dormant.
 
-    ``_disk_meta_observed`` / ``_disk_meta_created_at`` tell a later save that this
-    slot was hydrated from an existing on-disk transcript, arming the guard that
-    refuses to overwrite a file recreated under it. Import synthesises its
-    metadata and has no pre-existing file, so setting the observed bit would arm
-    the guard against a disk read that never happened.
+    ``_disk_meta_observed`` arms a guard against overwriting a transcript recreated
+    under the slot; import has no pre-existing file to guard.
     """
     from kiro_crew.dashboard import session_transfer as st
 

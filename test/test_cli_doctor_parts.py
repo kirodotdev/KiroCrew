@@ -49,6 +49,13 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_cli_doctor_parts")
 
+SHARED_FACADE_CHECKS = (
+    "the_sweep_reports_a_global_the_namespace_does_not_bind",
+    "the_value_check_can_fail",
+    "an_owner_imports_the_facade_only_for_type_checking_and_no_project_module",
+    "the_package_init_defines_nothing",
+)
+
 FACADE = cli_doctor.__name__
 PACKAGE = cli_doctor_parts.__name__
 _PARTS_DIR = Path(cli_doctor_parts.__file__).resolve().parent
@@ -71,14 +78,17 @@ _BASE_SURFACE: dict[str, dict[str, str]] = {
         "_git_line": "(repo: 'Path', *args: 'str') -> 'str | None'",
         "_kiro_cli_signed_in": "() -> 'bool | None'",
         "_linger_enabled": "(user: 'str') -> 'bool | None'",
-        "_report_node": "(issues: 'list[str]') -> 'None'",
+        "_report_node": (
+            "(issues: 'list[str]', *, bundle_route: 'bool' = False, "
+            "bundle_node_version: 'str | None' = None) -> 'None'"
+        ),
         "_venv_deps_ok": "(venv_py: 'Path') -> 'bool'",
     },
     "kas_relay": {
         "_doctor_kas": "(issues: 'list[str]') -> 'None'",
         "_kas_relay_help": "(binary: 'str') -> 'str | None'",
         "_report_kas_backend": "(issues: 'list[str]') -> 'None'",
-        "_report_kas_bundle": "(issues: 'list[str]') -> 'None'",
+        "_report_kas_bundle": "(issues: 'list[str]', *, automatic: 'bool' = False) -> 'None'",
         "_report_kas_spec_permissions": "(issues: 'list[str]') -> 'None'",
         "_report_kas_tool_vocabulary": "(issues: 'list[str]') -> 'None'",
     },
@@ -230,15 +240,6 @@ def test_every_owner_function_runs_on_the_facade_globals_as_the_facade_binds_it(
         or vars(cli_doctor).get(fn.__name__) is not fn
     ]
     assert wrong == []
-
-
-def test_the_sweep_reports_a_global_the_namespace_does_not_bind() -> None:
-    module_code = compile(
-        "def f():\n    def g():\n        return absent\n    return present, g\n", "probe", "exec"
-    )
-    code = next(c for c in module_code.co_consts if isinstance(c, types.CodeType))
-    probe = types.FunctionType(code, {"__name__": "probe", "present": 1})
-    assert _unbound_globals(probe) == ["absent"]
 
 
 def test_every_global_an_owner_function_reads_is_bound_on_the_facade() -> None:
@@ -476,15 +477,6 @@ def test_the_owner_import_check_sees_every_spelling(source: str, flagged: bool) 
     assert bool(_bad_owner_imports(ast.parse(source))) is flagged
 
 
-def test_an_owner_imports_the_facade_only_for_type_checking_and_no_project_module() -> None:
-    bad = {
-        stem: found
-        for stem, path in _owner_paths().items()
-        if (found := _bad_owner_imports(_tree(path)))
-    }
-    assert bad == {}
-
-
 def _module_values(tree: ast.Module) -> list[str]:
     """Top-level statements that are neither the docstring, an import, the
     ``TYPE_CHECKING`` block nor a function definition."""
@@ -500,13 +492,6 @@ def _module_values(tree: ast.Module) -> list[str]:
     return found
 
 
-def test_the_value_check_can_fail() -> None:
-    assert _module_values(ast.parse('"""doc"""\nimport os\nLIMIT = 3\nclass K: ...\n')) == [
-        "3: Assign",
-        "4: ClassDef",
-    ]
-
-
 def test_no_owner_defines_a_module_level_value() -> None:
     """The doctor's constants stay on the facade: a test that rebinds one there rebinds
     what every composed row reads, and an owner copy would read stale."""
@@ -516,12 +501,6 @@ def test_no_owner_defines_a_module_level_value() -> None:
         if (values := _module_values(_tree(path)))
     }
     assert found == {}
-
-
-def test_the_package_init_defines_nothing() -> None:
-    init = _PARTS_DIR / "__init__.py"
-    assert _facade_mirror._defined_names(_tree(init)) == set()
-    assert [n for n in _tree(init).body if not isinstance(n, ast.Expr)] == []
 
 
 def _imports_an_owner(source: str) -> bool:

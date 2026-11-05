@@ -22,11 +22,12 @@ Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_
 ``_tool_call_kind``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
 ``_tool_call_tool_name``, ``_tool_dispatched``, ``_tool_output_seen``,
 ``_tool_tracker``, ``_turn_done``, ``_turn_steering_denied``, ``_working_logged_ts``,
-``last_compaction_transient``, ``last_infra_error``, ``last_prompt_stats``.
+``last_compaction_transient``, ``last_infra_error``, ``last_prompt_stats``,
+``prompts_written``.
 
-Instance fields read: ``_abandoned_steering``, ``_awaited_responses``,
-``_mode_model_unjudged``, ``_queue``, ``_runtime``, ``_session_id``,
-``_steering_cancel_tasks``.
+Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
+``_cloud_replayed_permissions``, ``_engine_fallback``, ``_mode_model_unjudged``,
+``_queue``, ``_runtime``, ``_session_id``, ``_steering_cancel_tasks``.
 """
 
 from __future__ import annotations
@@ -55,13 +56,14 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.elicitation import (
     ELICITATION_CANCEL,
-    elicitation_response,
+    elicitation_reply,
     is_elicitation_request,
 )
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
 from kiro_crew.acp.session_handle_watchdog import _WORKING_NEVER_LOGGED
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -239,6 +241,22 @@ async def prompt(
         await turn.aclose()
 
 
+def command_is_native(self: AcpSessionHandle, command: str) -> bool:
+    """Whether :meth:`stream_command` sends *command* over ``commands/execute``.
+
+    Positive capability gate: only the kiro harness implements
+    _kiro.dev/commands/execute, so native execution requires
+    acp_backend == ACP_BACKEND_KIRO — every other harness (KAS today,
+    any harness added later) fails CLOSED onto the prompt transport
+    instead of inheriting a kiro-only RPC (harness parity H5/H6). A native
+    command makes no model request; the prompt transport does.
+    """
+    cmd_name, _ = parse_slash_command(command)
+    return (
+        self._runtime.acp_backend == ACP_BACKEND_KIRO and cmd_name not in _PROMPT_TRANSPORT_COMMANDS
+    )
+
+
 async def stream_command(
     self: AcpSessionHandle, command: str, timeout: float | None = None
 ) -> AsyncIterator[AcpEvent]:
@@ -270,15 +288,7 @@ async def stream_command(
     command turn; an explicit ``timeout`` still wins.
     """
     cmd_name, cmd_args = parse_slash_command(command)
-    # Positive capability gate: only the kiro harness implements
-    # _kiro.dev/commands/execute, so native execution requires
-    # acp_backend == ACP_BACKEND_KIRO — every other harness (KAS today,
-    # any harness added later) fails CLOSED onto the prompt transport
-    # instead of inheriting a kiro-only RPC (harness parity H5/H6).
-    native = (
-        self._runtime.acp_backend == ACP_BACKEND_KIRO and cmd_name not in _PROMPT_TRANSPORT_COMMANDS
-    )
-    if not native:
+    if not command_is_native(self, command):
         async for event in self.prompt(command, timeout=timeout):
             yield event
         return
@@ -373,6 +383,10 @@ async def _run_turn(
     self._tool_dispatched = False
     self._report_evicted_attributions()
     self._tool_tracker.clear()
+    # A new turn starts a new batch window (``acp.batch_guard``).
+    batch_window = getattr(self, "_batch_window", None)
+    if batch_window is not None:
+        batch_window.reset()
     self._tool_output_seen.clear()
     self._status_rejected.clear()
     self._input_wait_emitted = False
@@ -459,6 +473,7 @@ async def _run_turn(
     _stale_terminals = 0
     _stale_reasons: list[str] = []
     _stale_owed: list[JsonRpcMessage] = []
+    _cloud_kept: set[str | int | None] = set()
     _sign_in_holds = getattr(self._runtime, "mcp_sign_in_holds", None)
     while True:
         try:
@@ -505,6 +520,14 @@ async def _run_turn(
             and stale.method is not None
             and stale.is_method(METHOD_REQUEST_PERMISSION)
         ):
+            # Only the cloud harness fills this set, so on every other host the
+            # test is false and the frame takes the reject below.
+            if stale.id in self._cloud_replayed_permissions:
+                # Kept in the set until the loop ends: a reject below hands this
+                # frame back to the queue, and this loop reads it again.
+                _cloud_kept.add(stale.id)
+                _stale_owed.append(stale)
+                continue
             # Answer with the request's OWN advertised reject option: the
             # per-turn _permission_options map was just cleared, so a bare
             # reject_tool would always take its `cancelled` fallback —
@@ -603,7 +626,7 @@ async def _run_turn(
             )
             try:
                 await self._runtime.send_response(
-                    stale.id, elicitation_response(ELICITATION_CANCEL)
+                    stale.id, elicitation_reply(stale.method, ELICITATION_CANCEL, person=False)
                 )
             except asyncio.CancelledError:
                 self._queue.put_nowait(stale)
@@ -618,6 +641,9 @@ async def _run_turn(
                 _loggable_request_id(stale.id),
             )
         else:
+            # A compaction terminal can land between turns. It still pays an
+            # unresolved idle-compaction debt before this drain discards it.
+            consume_stale_compaction_status(self, stale)
             # Everything that is not a permission request is DISCARDED, which
             # is correct (it belongs to a turn nobody is reading any more) but
             # was silent. Count it — and CLASSIFY it: a response (``method``
@@ -656,6 +682,10 @@ async def _run_turn(
                 elif stale.error is not None:
                     _stale_terminals += 1
 
+    # The held cloud replays now go to the dispatch loop, which answers them on
+    # the normal approval path; the next drain must not keep them again.
+    if _cloud_kept:
+        self._cloud_replayed_permissions.difference_update(_cloud_kept)
     for _owed in _stale_owed:
         # Order-preserving: the frames go back in the order they were read,
         # and a waiter that has since given up is harmless — the dispatch
@@ -684,6 +714,7 @@ async def _run_turn(
         )
 
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    self._engine_fallback.begin_prompt(self)
     # Credits reported between turns belong to no turn's window; this turn
     # bills them (see ``_track_metadata``).
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
@@ -733,6 +764,8 @@ async def _run_turn(
             _mark(self._session_id, True)
         req_id = await self._runtime.send_request(_method, _params)
         self._prompt_written = True
+        # getattr: a handle built with ``__new__`` has no count of its own yet.
+        self.prompts_written = getattr(self, "prompts_written", 0) + 1
     except BaseException:
         self._mcp_sign_in_ask = ""
         self._mcp_sign_in_asked.clear()

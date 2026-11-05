@@ -43,11 +43,10 @@ export function useCommandBarOverlayEngines({
   // Constructed here but INERT until the sessions view is entered: the hook's own
   // ['instances'] query would otherwise fire on a warm install the moment the root
   // opened, which is exactly the request this surface promises not to make.
-  // The sessions open right now; the search ranks their hits above history (#21290).
-  const openSessionKeys = useMemo(() => new Set(liveSlots.map(slot => slot.key)), [liveSlots])
-  // The same set as a stable string, so the cached search rows re-rank when it changes.
-  const openSessionsKey = useMemo(() => [...openSessionKeys].sort().join('\u0000'), [openSessionKeys])
-  const sessions = useSessionsProvider({ active: scope === 'sessions', openSessionKeys })
+  // The sessions open right now, as a stable string. The server marks which hits
+  // they own (#21290); a change here re-runs the search so the rows re-rank.
+  const openSessionsKey = useMemo(() => liveSlots.map(slot => slot.key).sort().join('\u0000'), [liveSlots])
+  const sessions = useSessionsProvider({ active: scope === 'sessions', openSessionsKey })
   // The sessions view's LISTING engine. Constructed here and inert: the hook reads
   // live slots out of the store and reads a localStorage preference, but issues no
   // request until `search()` is called, and the only call site is gated on the

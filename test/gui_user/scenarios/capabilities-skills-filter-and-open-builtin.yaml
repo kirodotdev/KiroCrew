@@ -29,7 +29,7 @@ steps:
   - >-
     You are on the Customize page, which has a rail of tabs on the left grouped under
     "Agent", "Knowledge & instructions" and "Automation". Under "Agent", click the tab labelled
-    "Mates" (people icon). The pane shows the mate roster (one card, "nova-sky") with an
+    "Bots" (people icon). The pane shows the mate roster (one card, "nova-sky") with an
     "Add mate" button.
   - >-
     In the same rail, click the tab labelled "Skills" (book icon, under "Custom agents"). The

@@ -36,7 +36,7 @@ CONFIG_RESERVED_TOP_KEYS: frozenset = frozenset({"meta", "agent_template_pane", 
 # round-trip instead of being silently dropped.
 #
 # INVARIANT: this set must equal the top-level keys to_dict() emits (guarded by
-# test_config_extra_sections_roundtrip's parity test). It is the *emitted* set,
+# test_known_sections_equals_emitted_sections). It is the *emitted* set,
 # not merely the *parsed* set: a section this core parses into a field must ALSO
 # be emitted by to_dict() to be listed here — otherwise it would be excluded
 # from _extra_sections capture yet dropped by to_dict(), losing it on save().
@@ -81,6 +81,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "messaging",
         "cron_history",
         "decisions",
+        "browser",
         "knowledge",
         "heartbeat",
         "monitoring",
@@ -174,6 +175,22 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     ),
     # RETIRED: the out-of-band installs the removed local STT providers needed.
     "stt": frozenset({"whisper_path", "mlx_model", "parakeet_model", "device"}),
+    # RETIRED: the built-in browser panel toggle and the browser CLI live-view
+    # port pin went with the agent browser they configured; the browser tool has
+    # one driver now. Named once at load (warn_retired_section_keys) so an
+    # operator who set them learns the setting is gone, then dropped on save.
+    "dashboard": frozenset({"use_builtin_browser", "browser_view_port"}),
+    # RETIRED: the Settings -> Browser first-run step list it hid is gone (the
+    # gateway installs the engine on its own). Only pre-release builds wrote it,
+    # so it is dropped on save without a load-time warning.
+    "browser": frozenset({"first_run_dismissed"}),
+}
+
+#: The RETIRED subset of ``_SECTION_KEYS_DELIBERATELY_DROPPED`` worth ONE load-time
+#: warning: keys an operator set by hand whose feature is gone. A renamed key is
+#: still honoured under its old spelling, so it is not listed here.
+_RETIRED_SECTION_KEYS_WARNED: dict = {
+    "dashboard": frozenset({"use_builtin_browser", "browser_view_port"}),
 }
 
 
@@ -273,6 +290,27 @@ def warn_misspelled_section_keys(data: dict, cfg: object) -> None:
             "Config: unrecognized keys inside known sections, kept in the file but "
             "not in effect: %s",
             "; ".join(hints),
+        )
+
+
+def warn_retired_section_keys(data: dict) -> None:
+    """One WARNING naming retired keys still present in the loaded document.
+
+    The keys are inert (nothing reads them) and the next ``save()`` drops them
+    (:data:`_SECTION_KEYS_DELIBERATELY_DROPPED`); this line is the only notice
+    an operator who set one gets. Silent when none is present.
+    """
+    found: list[str] = []
+    for section, keys in sorted(_RETIRED_SECTION_KEYS_WARNED.items()):
+        raw = data.get(section)
+        if not isinstance(raw, dict):
+            continue
+        found.extend(f"{section}.{key}" for key in sorted(keys) if key in raw)
+    if found:
+        logger.warning(
+            "Config: %s no longer exist and are ignored; they are dropped from "
+            "config.json on the next save",
+            ", ".join(found),
         )
 
 
@@ -391,25 +429,118 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
     return result
 
 
-def _subtract_overlay(merged: dict, overlay: dict) -> dict:
+#: Renamed keys a reader still accepts, per section: each canonical key and its
+#: older spellings, in the order the reader tries them
+#: (``sections_agent._read_dangerously_skip_permissions``,
+#: ``memory_sections._read_auto_add_documents``).
+_RENAMED_KEY_SPELLINGS: dict[str, dict[str, tuple[str, ...]]] = {
+    "agent": {"dangerously_skip_permissions": ("dangerouslySkipPermissions", "yolo")},
+    "knowledge": {"auto_add_documents": ("auto_ingest_doc_links",)},
+}
+
+#: Renamed keys whose reader skips any spelling that is not a real bool and
+#: moves on to the next one.
+_RENAMED_KEYS_READ_AS_REAL_BOOL: frozenset[tuple[str, str]] = frozenset(
+    {("agent", "dangerously_skip_permissions")}
+)
+
+
+def _reader_uses(body: dict, spelling: str, real_bool: bool) -> bool:
+    """True when a reader would take *spelling*'s value from *body*."""
+    return spelling in body and (not real_bool or isinstance(body[spelling], bool))
+
+
+def _canonical_renamed_keys(doc: dict) -> dict:
+    """*doc* with each older spelling of a renamed key under its current name.
+
+    ``save()`` emits only the current name, in the form the reader produced, so
+    :func:`_subtract_overlay` can match a renamed key only when the overlay and
+    the stored base carry it the same way. The spelling the reader would use
+    wins, as at load: the first one present, or for a key in
+    :data:`_RENAMED_KEYS_READ_AS_REAL_BOOL` the first one holding a real bool.
+    An older spelling's value is converted as its reader converts it. A current
+    name the reader would use is left alone.
+    """
+    result = dict(doc)
+    for section, renames in _RENAMED_KEY_SPELLINGS.items():
+        body = result.get(section)
+        if not isinstance(body, dict):
+            continue
+        body = dict(body)
+        for canonical, older in renames.items():
+            real_bool = (section, canonical) in _RENAMED_KEYS_READ_AS_REAL_BOOL
+            if _reader_uses(body, canonical, real_bool):
+                continue
+            for spelling in older:
+                if _reader_uses(body, spelling, real_bool):
+                    # The real-bool reader returns the value as is; the other
+                    # reader returns ``bool(value)``.
+                    body[canonical] = body[spelling] if real_bool else bool(body[spelling])
+                    break
+        result[section] = body
+    return result
+
+
+def _restore_stored_renamed_spellings(saved: dict, stored: dict, overlay: dict) -> None:
+    """Put back, under its own spelling, a renamed key the base file stores.
+
+    :func:`_subtract_overlay` drops a renamed key's current name from *saved*
+    when the overlay owns it and *stored* (``config.json``) holds it only under
+    an older spelling. The base value is written back under the spelling the
+    base used, never under the current name: the current name would outrank an
+    older spelling the overlay still uses and flip what loads.
+    """
+    for section, renames in _RENAMED_KEY_SPELLINGS.items():
+        ov_body = overlay.get(section)
+        base_body = stored.get(section)
+        if not isinstance(ov_body, dict) or not isinstance(base_body, dict):
+            continue
+        out = saved.get(section)
+        for canonical, older in renames.items():
+            real_bool = (section, canonical) in _RENAMED_KEYS_READ_AS_REAL_BOOL
+            if canonical not in ov_body or (
+                isinstance(out, dict) and _reader_uses(out, canonical, real_bool)
+            ):
+                continue
+            for spelling in (canonical, *older):
+                if _reader_uses(base_body, spelling, real_bool):
+                    if not isinstance(out, dict):
+                        out = saved[section] = {}
+                    out[spelling] = base_body[spelling]
+                    break
+
+
+def _subtract_overlay(merged: dict, overlay: dict, base: dict | None = None) -> dict:
     """Remove leaf values from *merged* that are owned by the overlay.
 
     For nested dicts, recurse. For leaf keys present in both overlay and
     merged with the same value, remove from the result so they only live
     in config.local.json.
+
+    *base* is what ``config.json`` itself stores. A leaf it holds is the base
+    file's own value, so an overlay-owned leaf goes back to that stored value
+    instead of being removed: the overlay wins at load either way, and dropping
+    the overlay later still finds the base value underneath.
     """
     result = dict(merged)
     for key, ov_value in overlay.items():
         if key not in result:
             continue
+        base_value = base.get(key) if isinstance(base, dict) else None
+        stored = isinstance(base, dict) and key in base
         if isinstance(ov_value, dict) and isinstance(result[key], dict):
-            cleaned = _subtract_overlay(result[key], ov_value)
+            cleaned = _subtract_overlay(
+                result[key], ov_value, base_value if isinstance(base_value, dict) else None
+            )
             if cleaned:
                 result[key] = cleaned
             else:
                 del result[key]
         elif result[key] == ov_value:
-            del result[key]
+            if stored:
+                result[key] = base_value
+            else:
+                del result[key]
     return result
 
 

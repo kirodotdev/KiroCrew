@@ -1345,5 +1345,8 @@ class TestHardlinkScanBudget:
     def test_generated_script_compiles_at_every_level(self):
         # Proves the rendered launcher is syntactically valid Python for every
         # sandbox level.
-        for level in ("strict", "standard", "cc"):
-            compile(_build_launcher_script(level), "<launcher>", "exec")
+        scripts = {level: _build_launcher_script(level) for level in ("strict", "standard", "cc")}
+        for script in scripts.values():
+            compile(script, "<launcher>", "exec")
+        # Each level renders its own program, so the level reaches the plan.
+        assert len(set(scripts.values())) == len(scripts)

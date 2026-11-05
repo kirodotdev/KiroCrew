@@ -24,10 +24,8 @@ from kiro_crew.dashboard.chat_utils import (
     is_harness_slash_command,
     parse_workflow_command,
 )
-from kiro_crew.dashboard.kas_local_commands import (
-    KAS_LOCAL_INSPECT_COMMANDS,
-    answer_kas_inspect_command,
-)
+from kiro_crew.dashboard.kas_local_commands import answer_kas_inspect_command
+from kiro_crew.dashboard.kas_local_commands import answers_locally as kas_answers_locally
 from kiro_crew.dashboard.session_directive_apply import _reset_conversation
 from kiro_crew.dashboard.state import (
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -72,6 +70,11 @@ if TYPE_CHECKING:
         _cleared_segment_text,
     )
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+    from kiro_crew.dashboard.chat_turn.turn_admission import (
+        _channels_judging_turn,
+        _refuse_channel_turn,
+        _source_channel_mismatch,
+    )
     from kiro_crew.dashboard.chat_turn.turn_context import _restore_skills_context_after_compaction
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _drop_wire_tail
@@ -106,6 +109,24 @@ async def _slash_command_backend(state: DashboardState, session_key: str) -> str
     return backend if isinstance(backend, str) else ACP_BACKEND_KIRO
 
 
+async def _forwards_harness_command(
+    state: DashboardState, session_key: str, first_word: str, *, cc_provider: bool
+) -> bool:
+    """Whether *first_word* reaches the harness on *session_key* as a command.
+
+    :func:`is_harness_slash_command`, with its harness-owned rule granted by the
+    backend the command would reach (``runs_own_slash_commands``) as well as by the
+    dormant ``claude_code`` label. Only a word that rule alone would forward pays for
+    the backend lookup; a kiro-cli command name or plain text never does.
+    """
+    if is_harness_slash_command(first_word, cc_provider=cc_provider):
+        return True
+    if not is_harness_slash_command(first_word, cc_provider=True):
+        return False
+    backend = await _slash_command_backend(state, session_key)
+    return capabilities_for(backend).runs_own_slash_commands
+
+
 async def _answer_slash_without_channel(
     state: DashboardState, slot: _ChatSlot, session_key: str, command: str, message: str = ""
 ) -> str:
@@ -136,21 +157,22 @@ async def _answer_slash_for_harness(
     turn boundary. Any other command gets a notice naming *backend*'s harness as a
     person reads it.
 
-    On KAS, ``/model``, ``/tools`` and ``/mcp`` are answered from the dashboard's own
-    state (``kas_local_commands``, which reads KAS's own registration); *message* is
-    the whole command line, for ``/model <id>``. Another harness gets the notice for
-    them.
+    On KAS, ``/agent``, ``/context``, ``/help``, ``/mcp``, ``/model``, ``/tools`` and
+    ``/usage`` are answered from the dashboard's own state (``kas_local_commands``,
+    which reads KAS's own registration); *message* is the whole command line, for
+    ``/model <id>`` and for the arguments ``answers_locally`` leaves to the notice.
+    Another harness gets the notice for them.
 
     Returns the outcome it records: ``discarded``, ``queued``, ``shown``,
     ``switched``, ``error``, ``no_session`` or ``unsupported_backend``.
     """
-    if backend == ACP_BACKEND_KAS and command.lower() in KAS_LOCAL_INSPECT_COMMANDS:
+    if backend == ACP_BACKEND_KAS and kas_answers_locally(message or command):
         text, outcome = await answer_kas_inspect_command(
             state, slot, session_key, message or command
         )
     elif command.lower() == "/clear":
         await _reset_conversation(slot, session_key, {})
-        torn_down = await _consume_pending_reset(state, slot, allow_discard=True)
+        torn_down = await _consume_pending_reset(state, slot, allow_discard=True, own_turn=True)
         # The consumer's True also covers a queued project reset; only a spent
         # discard flag means THIS conversation was dropped.
         cleared = torn_down and not slot._pending_discard_conversation_key
@@ -440,6 +462,18 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     slot = turn.slot
     state = turn.state
     turn_exit = turn.turn_exit
+    # A Slack channel's words run only on that channel's agent, and a local
+    # command acts before admission judges the turn: judge it here first.
+    # `/agent <the channel's agent>` stays reachable, the switch onto it.
+    if not _commands_off and message.lstrip().startswith("/"):
+        _source_channels = _channels_judging_turn(turn, slot)
+        if _source_channels:
+            _required = await _source_channel_mismatch(_source_channels, slot, session_key)
+            if _required is not None and (
+                _required == "<unknown>" or agent_switch_target(message.strip()) != _required
+            ):
+                _refuse_channel_turn(slot, "chat_runner.slash_gate")
+                return _Flow.END
     # Same call, same result, again and again: told once per call (repeat_loop).
     _repeat_loop = RepeatLoopTracker()
     turn._repeat_loop = _repeat_loop
@@ -485,8 +519,16 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # Named rather than inlined so the quick-prompt exception is one testable rule
     # instead of a condition only reachable by driving the whole of _run_chat: a macro
     # must NOT be forwarded to the harness as a command.
-    is_slash = is_harness_slash_command(first_word, cc_provider=_is_cc_provider)
+    is_slash = await _forwards_harness_command(
+        state, session_key, first_word, cc_provider=_is_cc_provider
+    )
     turn.is_slash = is_slash
+    # Linked surfaces still hear a command only the backend's own rule forwards
+    # (``runs_own_slash_commands``: Claude Code's ``/review``, a skill): it answers
+    # like a prompt. A kiro-cli command name, or a word the ``claude_code`` label
+    # forwards, keeps its echo and reply off the linked Slack thread and channels.
+    _slash_withholds_mirror = is_harness_slash_command(first_word, cc_provider=_is_cc_provider)
+    turn._slash_withholds_mirror = _slash_withholds_mirror
     _this_turn_is_clear = is_slash and first_word.lower() == "/clear"
     turn._this_turn_is_clear = _this_turn_is_clear
 
@@ -565,6 +607,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _directive_user_origin=_directive_user_origin,
                     _directive_self_wake=_directive_self_wake,
                     _directive_channel_origin=_directive_channel_origin,
+                    _directive_source_channels=getattr(turn, "_directive_source_channels", ()),
                     _turn_actor=_turn_actor,
                 )
             elif status == "blocked":
@@ -765,14 +808,16 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # model reads "/clear" as a request and the conversation stays. KAS also
     # refuses _kiro.dev/commands/execute itself, so that verb is no way out.
     # Answer here instead, before any session work: /clear takes the same discard
-    # reset_conversation queues, /model, /tools and /mcp are read from the
-    # dashboard's own state, and every other command gets a notice rather than
+    # reset_conversation queues, /agent, /context, /help, /mcp, /model, /tools and
+    # /usage are read from the dashboard's own state (kas_local_commands), and every
+    # other command gets a notice rather than
     # reaching the model. /compact passes through: on KAS the session handle
     # sends it as the engine's own compaction verb, not as prompt text. A /todos
     # that got past its own gate is on a harness that runs it natively.
     # The other harnesses in ACP_BACKENDS_LOCAL_CLEAR have no /clear of their own
-    # either, so /clear alone is answered here for them too; their other commands
-    # keep the prompt path, where those harnesses serve the ones they know.
+    # either, or (claude) run one Crew cannot observe, so /clear alone is answered
+    # here for them too; their other commands keep the prompt path, where those
+    # harnesses serve the ones they know.
     if (
         is_slash
         and not _is_cc_provider
@@ -814,6 +859,11 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     turn._mirror_active_task_title = _mirror_active_task_title
     _mirror_thread: str | None = ""
     turn._mirror_thread = _mirror_thread
+    # Where mirrored posts go: `_mirror_thread`, or None (top-level) for a Slack
+    # code channel's own session. `_mirror_thread` keeps its ownership meaning.
+    _mirror_post_ts: str | None = ""
+    turn._mirror_post_ts = _mirror_post_ts
+    turn._code_channel_turn = False
     _mirror_task_counter = 0
     turn._mirror_task_counter = _mirror_task_counter
     _memory_preparation_admitted = False

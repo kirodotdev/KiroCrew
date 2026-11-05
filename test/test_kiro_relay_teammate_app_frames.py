@@ -32,6 +32,7 @@ from kiro_crew.dashboard.kiro_relay.ingress import (
     RelayIngress,
     relay_ingress_middleware,
 )
+from kiro_crew.dashboard.notification_coordinator import unread_count
 from kiro_crew.dashboard.server_internal_paths import _STRICT_INTERNAL_API_PATHS
 from kiro_crew.dashboard.token_auth import token_auth_middleware
 from kiro_crew.dashboard.ws_event_scope import app_origin_frame
@@ -220,7 +221,6 @@ async def test_a_relayed_socket_is_marked_by_who_opened_it(tmp_path, monkeypatch
 async def test_the_notification_list_withholds_app_pushes_from_a_teammate(tmp_path, withheld, who):
     state = _make_state(tmp_path)
     state._notification_log = [dict(note) for note in _NOTES]
-    state._unread_count = 3  # three non-passive deliveries since the last clear
     ingress = _personal() if who == "owner" else _team()
     user = OWNER if who == "owner" else TEAMMATE
     async with TestClient(TestServer(_relay_app(state, ingress))) as client:
@@ -231,12 +231,13 @@ async def test_the_notification_list_withholds_app_pushes_from_a_teammate(tmp_pa
         body = await resp.json()
     sources = [note["source"] for note in body["notifications"]]
     if who == "owner":
+        # Two unread notes: ts 3 is read. The teammate's view drops the app's one.
         assert sources == ["system", "app:mochi", "system"]
-        assert body["unread"] == 3
+        assert body["unread"] == 2
         assert withheld == []
     else:
         assert sources == ["system", "system"]
-        assert body["unread"] == 2
+        assert body["unread"] == 1
         assert withheld == ["notification"]
 
 
@@ -345,7 +346,6 @@ def _feed_app(state, ingress: RelayIngress) -> web.Application:
 def _feed_state(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     state._notification_log = [dict(note) for note in _NOTES]
-    state._unread_count = 3
     broadcasts: list[tuple[str, dict]] = []
 
     async def rewrite() -> None:
@@ -376,7 +376,7 @@ async def test_a_teammates_clear_keeps_the_app_notifications_it_cannot_see(
     else:
         assert remaining == ["app:mochi"]
         assert not [kind for kind, _ in broadcasts if kind == "notifications_clear"]
-        assert state._unread_count == 1
+        assert unread_count(state._notification_log) == 1
         assert withheld == ["notifications_clear"]
 
 

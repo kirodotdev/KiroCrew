@@ -51,7 +51,7 @@ def labels_cache_lock(owner: str, repo: str, root: Path | None = None):
     path = labels_cache_path(owner, repo, root)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(".json.lock")
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
@@ -132,7 +132,7 @@ def read_labels_cache(
         return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict):
         return None
@@ -191,7 +191,7 @@ def read_members_cache(owner: str, repo: str, root: Path | None = None) -> dict 
         return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict):
         return None
@@ -255,7 +255,7 @@ def _read_labels_fetched_at(owner: str, repo: str, root: Path | None = None) -> 
     path = labels_cache_path(owner, repo, root)
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     fetched_at = data.get("fetched_at") if isinstance(data, dict) else None
     if isinstance(fetched_at, (int, float)) and not isinstance(fetched_at, bool):

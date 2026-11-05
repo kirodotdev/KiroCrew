@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpBackendShortName, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, mcpServerDeny, mcpWholeServerDeny, reportsCredits, isKiroHarness } from './acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpBackendShortName, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, kasChatOwnsMcpSignIn, mcpServerDeny, mcpWholeServerDeny, reportsCredits, isKiroHarness } from './acpBackend'
 import type { AcpBackendProbe } from './client/config'
 
 describe('isKiroBackend', () => {
@@ -21,6 +21,26 @@ describe('isKiroBackend', () => {
     expect(isKiroBackend({ agent: { acp_backend: '' } })).toBe(false)
     expect(isKiroBackend({ agent: {} })).toBe(false)
     expect(isKiroBackend({})).toBe(false)
+  })
+})
+
+describe('kasChatOwnsMcpSignIn', () => {
+  it('is true on KAS, named or by default', () => {
+    expect(kasChatOwnsMcpSignIn({ agent: { acp_backend: ACP_BACKEND_KAS } })).toBe(true)
+    expect(kasChatOwnsMcpSignIn({ agent: { acp_backend: '' } })).toBe(true)
+    expect(kasChatOwnsMcpSignIn({})).toBe(true)
+  })
+
+  it('stays true with sign-in persistence on: that vault never takes a Settings sign-in', () => {
+    // A key the slice type does not list, as the real config body carries it.
+    const cfg = { agent: { acp_backend: ACP_BACKEND_KAS, kas_persist_mcp_sign_in: true } }
+    expect(kasChatOwnsMcpSignIn(cfg)).toBe(true)
+  })
+
+  it('is false on another harness, or before the config loads', () => {
+    expect(kasChatOwnsMcpSignIn({ agent: { acp_backend: ACP_BACKEND_KIRO } })).toBe(false)
+    expect(kasChatOwnsMcpSignIn({ agent: { acp_backend: 'claude' } })).toBe(false)
+    expect(kasChatOwnsMcpSignIn(undefined)).toBe(false)
   })
 })
 

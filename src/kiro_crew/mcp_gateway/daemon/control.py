@@ -93,7 +93,7 @@ def _session_mounts_reply(frame: dict[str, Any]) -> dict[str, Any]:
 def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]) -> dict[str, Any]:
     """Yield the socket voluntarily so a daemon with a current target map can bind.
 
-    ``manager._report_adoption_drift`` can already SEE that an adopted survivor's
+    ``manager._adoption_drift`` can already SEE that an adopted survivor's
     baked target map does not cover the configured stub set; its own warning
     ends "Replace the daemon to restore them", and this frame is how that
     replacement happens without anyone unlinking a live socket.
@@ -595,7 +595,7 @@ async def _serve_control_frame(
     # Stand-down short-circuit (one-shot control connection from a STARTING
     # gateway): "your baked target map cannot resolve what my config needs --
     # yield the socket". The only frame that ends the daemon, and the mechanism
-    # that turns _report_adoption_drift's warning into an actual repair. Trust
+    # that turns _adoption_drift's warning into an actual repair. Trust
     # basis: same uid-gated owner-only socket as Register/Claim/Abort.
     # Validation, the already-covers refusal and auditing live in
     # ``_apply_stand_down``.

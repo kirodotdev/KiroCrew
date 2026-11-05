@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import type { SetURLSearchParams } from 'react-router-dom'
 
+import { BROWSER_HANDBACK_CHAT_EVENT } from '../../../api/client/browserLive'
 import type { ChatLaunchOptions } from '../../../app-sdk'
+import { chatLaunchOpensDraft } from '../../../app-sdk/chatLaunch'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import { i18nT } from '../../../i18n/t'
 import type { AppDispatch } from '../../../store'
@@ -442,7 +444,10 @@ export function useAppLaunchIntake({
   useEffect(() => {
     if (embedded || !connected) return
     const launchWindow = window as Window & {
-      __mc_chat_launch?: { ts?: number; agent?: string; message?: string; slotKey?: string; autoSend?: boolean }
+      __mc_chat_launch?: {
+        ts?: number; agent?: string; message?: string; slotKey?: string; autoSend?: boolean
+        memoryMode?: unknown; sessionFolder?: unknown
+      }
     }
     const intent = appSlotLaunch ?? launchWindow.__mc_chat_launch
     if (!intent) return
@@ -452,7 +457,7 @@ export function useAppLaunchIntake({
         return
       }
       // The controller owns existing-slot activation and fresh-draft creation.
-      if (intent.slotKey || intent.autoSend === false) return
+      if (intent.slotKey || chatLaunchOpensDraft(intent)) return
       delete launchWindow.__mc_chat_launch
     } else {
       if (slotLoading) return
@@ -517,6 +522,19 @@ export function useAutoSendIntake({
     appLaunchSendRef.current = null
     send(txt, appLaunch?.slotKey, undefined, !!appLaunch)
   }, [send, connected, autoSendTick, autoSendRef, appLaunchSendRef])
+
+  // A browser hand-back note no parked agent op was waiting for:
+  // the person typed it on the card's hand-back bar and pressed Enter, so it is
+  // their message, sent to the chat the card belongs to.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ slotKey?: unknown; text?: unknown }>).detail
+      if (typeof detail?.text !== 'string' || !detail.text.trim()) return
+      void send(detail.text, typeof detail.slotKey === 'string' && detail.slotKey ? detail.slotKey : undefined)
+    }
+    window.addEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
+    return () => window.removeEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
+  }, [send])
 
   // Widget interactivity: when a mcwidget iframe fires an action, PRE-FILL the
  // composer instead of auto-submitting. Auto-submitting would be a

@@ -126,7 +126,28 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     ``ValueError``) when TWO safe specs declare the same name. The runtime
     iterates the directory unordered, so which of them is live is undefined, and
     a writer cannot pick without risking clearing the pin nothing is reading.
+    A reader that needs the file a session runs asks :func:`session_agent_spec_path`.
     """
+    return _resolve_spec_path(name, agents_dir, follow_pin=False)
+
+
+def session_agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None:
+    """:func:`agent_spec_path` for a READER: the file a session of *name* runs.
+
+    Two or more safe specs declaring *name* resolve through ``agent.spec_pins``
+    (:func:`kiro_crew.agent_spec_pins.pin_decision`): the pinned claimant is
+    returned, a pin naming none of them raises
+    :class:`~kiro_crew.agent_discovery.AgentSpecPinError`, and no pin raises
+    :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError` naming the
+    ``kirocrew agent pin`` command for each file. Writers keep
+    :func:`agent_spec_path`: the files belong to the package installer, so a pin
+    chooses what runs and never what Kiro Crew writes.
+    """
+    return _resolve_spec_path(name, agents_dir, follow_pin=True)
+
+
+def _resolve_spec_path(name: str, agents_dir: Path | None, *, follow_pin: bool) -> Path | None:
+    """The one body of :func:`agent_spec_path` and :func:`session_agent_spec_path`."""
     if not is_registered_agent_name(name):
         return None
     if agents_dir is None:
@@ -136,6 +157,13 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     if not agents_dir.is_dir():
         return None
 
+    if follow_pin:
+        pinned = _claimed_pin_path(name, agents_dir)
+        if pinned is not None:
+            # A pinned link is no path answer: the caller falls back to its linked
+            # reader, which reads the link behind that consumer's own fence and
+            # follows the same pin, and never to the other claimant.
+            return pinned if _spec_path_is_safe(pinned, agents_dir) else None
     direct = set(agent_spec_candidates(agents_dir, name))
     declared_matches: list[Path] = []
     fallbacks: list[Path] = []
@@ -161,6 +189,8 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
             # ambiguity the
             # caller refuses rather than resolves.
             fallbacks.append(spec_path)
+    if len(declared_matches) > 1 and follow_pin:
+        return _pinned_spec_path(name, declared_matches)
     if len(declared_matches) > 1:
         # Paths are repr'd: a filename in this user-writable, tool-shared
         # directory is untrusted input, and this message is printed to a terminal.
@@ -179,6 +209,61 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     # At most one: the scan already drops a ``<name>.md`` shadowed by its
     # ``<name>.json`` twin (JSON wins), so both never reach this list.
     return fallbacks[0] if fallbacks else None
+
+
+def _claimed_pin_path(name: str, agents_dir: Path) -> Path | None:
+    """The file ``agent.spec_pins`` picks for *name*, as the session resolver sees it.
+
+    Asks :func:`kiro_crew.agent_discovery.declared_spec_claim`, the resolver KAS
+    starts the session from, so the pin picks the same claimant for a reader even
+    when it is a link the writer fence below refuses. ``None`` when there is no pin
+    or the pin has nothing to choose; a broken pin or an unpinned contest raises as
+    that resolver does.
+    """
+    from kiro_crew import agent_spec_pins
+    from kiro_crew.agent_discovery import declared_spec_claim
+
+    if agent_spec_pins.spec_pin_for(name) is None:
+        return None
+    claim = declared_spec_claim(
+        agents_dir, name, operation="session_agent_spec_path", source="unknown"
+    )
+    # Kept even when the claim is the lone claimant (``pinned`` is false then): the
+    # scan below skips a linked file, so dropping the claim here would let a
+    # filename fallback declaring another name answer instead.
+    return claim.path if claim is not None else None
+
+
+def _pinned_spec_path(name: str, declared_matches: list[Path]) -> Path:
+    """The claimant ``agent.spec_pins`` selects among *declared_matches*, or raise.
+
+    Raises :class:`~kiro_crew.agent_discovery.AgentSpecPinError` for a pin naming
+    none of them and :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError`
+    for no pin. Unlike the parse-reading resolver, identical claimants are not
+    admitted here without a pin: the caller is handed a path, not a parse.
+    """
+    from kiro_crew import agent_spec_pins
+    from kiro_crew.agent_discovery import AgentSpecPinError
+
+    file_names = [path.name for path in declared_matches]
+    decision, pin = agent_spec_pins.pin_decision(name, file_names)
+    if decision == "use":
+        return next(path for path in declared_matches if path.name == pin)
+    if decision == "broken":
+        assert pin is not None
+        raise AgentSpecPinError(
+            agent_spec_pins.broken_pin_message(name, pin, file_names),
+            pin=pin,
+            paths=declared_matches,
+            agent=name,
+        )
+    raise AmbiguousAgentSpecError(
+        agent_spec_pins.ambiguous_message(
+            name, [str(path) for path in declared_matches], file_names
+        ),
+        paths=declared_matches,
+        agent=name,
+    )
 
 
 def markdown_spec_for_agent(agent: str, work_dir: str | Path | None = None) -> Path | None:

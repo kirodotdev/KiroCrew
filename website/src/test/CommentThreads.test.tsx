@@ -137,6 +137,16 @@ describe('reading threads', () => {
     expect(screen.getByText('2 messages')).toBeTruthy()
   })
 
+  it('says whether a comment is collapsed and hides its chevron from the name', async () => {
+    mount(source([comment({ id: 'c1', body: 'Cap this' })]))
+    const toggle = screen.getByRole('button', { name: 'Collapse comment' })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    for (const svg of toggle.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+    await userEvent.click(toggle)
+    expect(screen.getByRole('button', { name: 'Expand comment' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('anchors the thread to its file and line', () => {
     mount(source([comment({ path: 'src/jar.py', line: 42 })]))
     expect(screen.getByText('src/jar.py:42')).toBeTruthy()
@@ -149,6 +159,16 @@ describe('reading threads', () => {
     ]))
     expect(screen.getByText(/1 open · 1 resolved/)).toBeTruthy()
     expect(screen.queryByText(/Settled thing/)).toBeNull()
+  })
+
+  it('says whether resolved threads are showing', async () => {
+    mount(source([
+      comment({ id: 'c1', threadId: 'T1' }),
+      comment({ id: 'c2', threadId: 'T2', body: 'Settled thing', resolved: true }),
+    ]))
+    expect(screen.getByRole('button', { name: /Show resolved/ })).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.click(screen.getByRole('button', { name: /Show resolved/ }))
+    expect(screen.getByRole('button', { name: /Hide resolved/ })).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('reveals resolved threads on request', async () => {

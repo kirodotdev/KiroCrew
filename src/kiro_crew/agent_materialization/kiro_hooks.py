@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -36,14 +36,30 @@ from kiro_crew.hooks import is_unc_shape, unc_probe_allowed
 # `D:\Users\...`, so backslash and the drive-letter colon MUST be allowed there or
 # EVERY Windows hook path is rejected (autoimport silently loads nothing). `\` and
 # `:` are not shell-injection vectors for an argv path, and the is_sensitive_path
-# + absolute-path + resolve() checks below still apply. POSIX keeps the original,
-# tighter allowlist (no backslash/colon).
+# + absolute-path + resolve() checks below still apply. A Windows profile folder is
+# often named after its owner (`C:\Users\José`), and autoimport scans under it, so
+# the Windows class also admits Unicode letters and digits: `\w` in a str pattern,
+# which still refuses the space, every shell metacharacter and their fullwidth
+# forms. POSIX keeps the original, tighter allowlist (ASCII, no backslash/colon).
 if platform_compat.IS_WINDOWS:
-    _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-\\:]+$")
+    _SAFE_PATH_RE = re.compile(r"^[\w/.\-\\:]+$")
 else:
     _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-]+$")
 _SAFE_MATCHER_RE = re.compile(r"^[a-zA-Z0-9_.*\-]+$")
 _MAX_MATCHER_LEN = 200
+
+
+def _first_refused_char(text: str) -> str:
+    """The first character of ``text`` the hook-path class refuses, rendered for a log.
+
+    A refused-path warning names it, so a user whose hook did not load can see which
+    character in the folder name stopped it. ``ascii`` keeps a control character or a
+    look-alike visible; the code point removes any doubt about which one it was.
+    """
+    for char in text:
+        if not _SAFE_PATH_RE.match(char):
+            return f"{char!a} (U+{ord(char):04X})"
+    return "none (empty path)"
 
 
 def _validate_hook_command(command: str, event: str) -> str | None:
@@ -59,8 +75,9 @@ def _validate_hook_command(command: str, event: str) -> str | None:
     # first — the same rule the SEL writer applies on its own side.
     if not _SAFE_PATH_RE.match(command):
         agent_mod.logger.warning(
-            "kiro_hooks[%s]: command contains disallowed characters: %s",
+            "kiro_hooks[%s]: command contains disallowed characters (first refused: %s): %s",
             event,
+            _first_refused_char(command),
             agent_mod._hook_diagnostic(command),
         )
         return None
@@ -88,8 +105,9 @@ def _validate_hook_command(command: str, event: str) -> str | None:
         return None
     if not _SAFE_PATH_RE.match(resolved):
         agent_mod.logger.warning(
-            "kiro_hooks[%s]: resolved path contains disallowed characters: %s",
+            "kiro_hooks[%s]: resolved path contains disallowed characters (first refused: %s): %s",
             event,
+            _first_refused_char(resolved),
             agent_mod._hook_diagnostic(resolved),
         )
         return None
@@ -393,8 +411,14 @@ def _hook_document_action(action: object, *, index: int) -> dict | None:
     return {"type": action_type, payload_key: payload}
 
 
-def _hook_document_from_document(entry: object, *, index: int) -> dict | None:
-    """Validate one KAS hook document, returning the normalized copy or None."""
+def _hook_document_from_document(
+    entry: object, *, index: int, matcher_ok: Callable[[object], bool] = _hook_matcher_ok
+) -> dict | None:
+    """Validate one KAS hook document, returning the normalized copy or None.
+
+    *matcher_ok* is the matcher rule: the object form's by default, which is what
+    kiro-cli's materialized spec receives.
+    """
     if not isinstance(entry, dict):
         _document_warning("kiro_hooks[%d]: hook document is not an object, skipping", index)
         _document_rejected(_HOOK_SPEC_AUDIT_TAG, str(entry), "hook document is not an object")
@@ -448,7 +472,7 @@ def _hook_document_from_document(entry: object, *, index: int) -> dict | None:
         _document_warning("kiro_hooks[%d]: name is empty, skipping", index)
         _document_rejected(_HOOK_SPEC_AUDIT_TAG, "", "name is empty")
         return None
-    if "matcher" in entry and not _hook_matcher_ok(entry["matcher"]):
+    if "matcher" in entry and not matcher_ok(entry["matcher"]):
         _document_warning(
             "kiro_hooks[%d]: matcher contains disallowed characters or is too long, skipping", index
         )
@@ -469,7 +493,9 @@ def _hook_document_from_document(entry: object, *, index: int) -> dict | None:
     return doc
 
 
-def _hook_documents_from_array_form(hooks: list) -> list[dict]:
+def _hook_documents_from_array_form(
+    hooks: list, matcher_ok: Callable[[object], bool] = _hook_matcher_ok
+) -> list[dict]:
     """Normalize a KAS array of hook documents to the document list."""
     if len(hooks) > _MAX_SPEC_HOOK_DOCUMENTS:
         _document_warning(
@@ -480,14 +506,20 @@ def _hook_documents_from_array_form(hooks: list) -> list[dict]:
         _document_rejected(_HOOK_SPEC_AUDIT_TAG, str(len(hooks)), "document limit exceeded")
     docs: list[dict] = []
     for index, entry in enumerate(hooks[:_MAX_SPEC_HOOK_DOCUMENTS]):
-        doc = _hook_document_from_document(entry, index=index)
+        doc = _hook_document_from_document(entry, index=index, matcher_ok=matcher_ok)
         if doc is not None:
             docs.append(doc)
     return docs
 
 
-def normalize_spec_hooks(value: object) -> list[dict]:
+def normalize_spec_hooks(
+    value: object, *, matcher_ok: Callable[[object], bool] = _hook_matcher_ok
+) -> list[dict]:
     """Normalize a KAS array of hook documents to the internal document list.
+
+    *matcher_ok* defaults to the object form's matcher rule, which kiro-cli's
+    materialized spec keeps. Crew's own spec-hook conversion passes its wider
+    rule (``agent_sdk.spec_hooks._matcher_ok``), since it fires the hooks itself.
 
     A rejected element is warned about and SEL-audited rather than raising, which
     is how a spec's ``hooks`` has always treated bad input.
@@ -501,7 +533,7 @@ def normalize_spec_hooks(value: object) -> list[dict]:
     straight to that merge instead.
     """
     if isinstance(value, list):
-        return _hook_documents_from_array_form(value)
+        return _hook_documents_from_array_form(value, matcher_ok)
     _document_warning("kiro_hooks is not an array of hook documents, ignoring")
     _document_rejected(_HOOK_SPEC_AUDIT_TAG, str(value), "hooks is not an array of hook documents")
     return []
@@ -1280,6 +1312,81 @@ def _drop_refused_kiro_hook_events(hooks: dict) -> dict:
     return kept
 
 
+def resolve_kiro_hooks_dir(agent_cfg: dict, *, audit: bool = True) -> Path:
+    """The ``~/.kiro/hooks`` directory for *agent_cfg*, HOME-contained.
+
+    ``agent.kiro_hooks_dir`` when set and safe, else the default
+    ``~/.kiro/hooks``. ``config.json`` is LLM-writable, so a custom override is
+    required to resolve UNDER the user's HOME (not equal to it) and outside a
+    sensitive location; any failure falls back to the default rather than turning
+    the directory off. Shared by the ``*.sh`` script autoimport and the standalone
+    ``*.json`` hook-file loader
+    (:func:`kiro_crew.agent_sdk.spec_hooks.user_hook_files`) so the two agree on
+    exactly one directory and its containment rule.
+
+    *audit* controls whether a rejected override writes the WARNING and the SEL
+    rejection event. The install path leaves it ``True`` (the rejection is logged
+    and audited once, where it happens). The per-turn resolution
+    (:func:`kiro_crew.agent.resolved_kiro_hooks_dir`) passes ``False``: it runs on
+    every KAS turn, so auditing there would fill the log and the SEL trail with the
+    same rejection on each turn. The fallback itself is unchanged -- only the
+    reporting is suppressed.
+    """
+    hooks_dir = agent_mod._DEFAULT_KIRO_HOOKS_DIR
+    if not isinstance(agent_cfg, dict):
+        return hooks_dir
+    custom_dir = agent_cfg.get("kiro_hooks_dir")
+    if not (isinstance(custom_dir, str) and custom_dir):
+        return hooks_dir
+    # config.json is LLM-writable; a malicious override could point hooks_dir at
+    # /tmp, a world-writable mount, or ~/Downloads. Require the resolved path to
+    # live under the user's HOME and not match a sensitive location. On any
+    # failure, log + SEL audit and fall back to the default (~/.kiro/hooks)
+    # rather than turning the directory off entirely - the safe default is still
+    # available.
+    requested = Path(os.path.expanduser(custom_dir))
+    try:
+        resolved = requested.resolve()
+        home = Path.home().resolve()
+    except (OSError, ValueError):
+        # OSError: ENAMETOOLONG, ELOOP (symlink loop), EACCES.
+        # ValueError: Path() / resolve() reject strings with null bytes
+        # (``"\x00"``) or similar malformed Unicode. An LLM-writable
+        # ``kiro_hooks_dir: "\x00"`` would otherwise propagate ValueError up
+        # through install_agent() and crash agent bootstrap (denial of service).
+        resolved = None
+        home = None
+    if (
+        resolved is None
+        or home is None
+        # Strict containment: require ``resolved`` to be *under* HOME, not equal
+        # to it. ``~`` alone would otherwise scan the entire home directory,
+        # auto-registering anything a user (or attacker) drops anywhere under
+        # ``$HOME``. ``Path.parents`` of e.g. ``/srv/op`` is ``(/, /srv)`` and
+        # does NOT include ``/srv/op`` itself, so a bare ``home not in parents``
+        # rejects ``resolved == home``.
+        or home not in resolved.parents
+        or agent_mod.is_sensitive_path(str(resolved))
+    ):
+        if audit:
+            agent_mod.logger.warning(
+                "kiro_hooks_dir %s rejected (must resolve under %s and not be "
+                "sensitive), falling back to %s",
+                agent_mod._hook_diagnostic(custom_dir),
+                home,
+                agent_mod._DEFAULT_KIRO_HOOKS_DIR,
+            )
+            agent_mod._sel_hook_rejected(
+                "autoimport", str(requested), "kiro_hooks_dir outside HOME or sensitive"
+            )
+        return agent_mod._DEFAULT_KIRO_HOOKS_DIR
+    # Return the already-resolved path, not the unresolved ``requested``. Keeping
+    # ``requested`` would leave a symlink-swap window: a path component could be
+    # swapped between this resolve() and a later one, bypassing the HOME
+    # containment check just performed.
+    return resolved
+
+
 def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
     """Merge user-defined kiro_hooks from kirocrew config into *config* (additive).
 
@@ -1309,61 +1416,7 @@ def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
     if isinstance(agent_cfg, dict):
         if "kiro_hooks_autoimport" in agent_cfg:
             autoimport_enabled = bool(agent_cfg.get("kiro_hooks_autoimport"))
-        custom_dir = agent_cfg.get("kiro_hooks_dir")
-        if isinstance(custom_dir, str) and custom_dir:
-            # config.json is LLM-writable; a malicious override could point
-            # hooks_dir at /tmp, a world-writable mount, or ~/Downloads.
-            # Require the resolved path to live under the user's HOME and
-            # not match a sensitive location.  On any failure, log + SEL
-            # audit and fall back to the default (~/.kiro/hooks) rather
-            # than turning autoimport off entirely - the safe default is
-            # still available.
-            requested = Path(os.path.expanduser(custom_dir))
-            try:
-                resolved = requested.resolve()
-                home = Path.home().resolve()
-            except (OSError, ValueError):
-                # OSError: ENAMETOOLONG, ELOOP (symlink loop), EACCES.
-                # ValueError: Path() / resolve() reject strings with null
-                # bytes (``"\x00"``) or similar malformed Unicode.  An
-                # LLM-writable ``kiro_hooks_dir: "\x00"`` would otherwise
-                # propagate ValueError up through install_agent() and
-                # crash agent bootstrap (denial of service).
-                resolved = None
-                home = None
-            if (
-                resolved is None
-                or home is None
-                # Strict containment: require ``resolved`` to be *under*
-                # HOME, not equal to it.  ``~`` alone would otherwise scan
-                # the entire home directory for executable ``*.sh`` files,
-                # auto-registering anything a user (or attacker) drops
-                # anywhere under ``$HOME``.  ``Path.parents`` of e.g.
-                # ``/srv/op`` is ``(/, /srv)`` and does NOT include
-                # ``/srv/op`` itself, so a bare ``home not in parents``
-                # rejects ``resolved == home``.
-                or home not in resolved.parents
-                or agent_mod.is_sensitive_path(str(resolved))
-            ):
-                agent_mod.logger.warning(
-                    "kiro_hooks_autoimport: kiro_hooks_dir %s rejected "
-                    "(must resolve under %s and not be sensitive), "
-                    "falling back to %s",
-                    agent_mod._hook_diagnostic(custom_dir),
-                    home,
-                    agent_mod._DEFAULT_KIRO_HOOKS_DIR,
-                )
-                agent_mod._sel_hook_rejected(
-                    "autoimport", str(requested), "kiro_hooks_dir outside HOME or sensitive"
-                )
-            else:
-                # Store the already-resolved path, not the unresolved
-                # ``requested``.  Keeping ``requested`` would leave a
-                # symlink-swap window: a path component could be swapped
-                # between this resolve() and the one inside
-                # _autoimport_kiro_hooks, bypassing the HOME containment
-                # check we just performed.
-                hooks_dir = resolved
+        hooks_dir = resolve_kiro_hooks_dir(agent_cfg)
 
     # Both spec shapes are accepted. The object form goes to the merge below
     # exactly as it is read: that merge is the object form's own validator and

@@ -49,6 +49,9 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 # no literal can narrow which files it parses.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_dashboard_files_composition_contract")
 
+SHARED_FACADE_CHECKS = ("the_globstar_matcher_reads_patterns_as_the_reviewers_do",)
+
+
 _FACADE = files.__name__
 _FACADE_PATH = Path(files.__file__).resolve()
 _OWNER_PACKAGE = file_api.__name__
@@ -261,7 +264,8 @@ _OWNER_CONSTANTS = {"git_panel": ("_GIT_PANEL_STDOUT_CAP",)}
 #: ``editor`` owners, from the base file, where each of their names had the same shape.
 #: Recaptured when ``_run_path_probe`` gained its keyword-only ``stall_path``.
 #: Recaptured when ``api_file_download`` began answering a ``web.StreamResponse``.
-_BASE_SHAPE_DIGEST = "3563ee4c4afdebcea85f7b59035a08807a91fafcc5c76832084a182db7e1b205"
+#: Recaptured when ``_browse_files_sync`` gained its ``show_hidden`` flag.
+_BASE_SHAPE_DIGEST = "2b4cc46ac8b95071222148ebc8330e87b9e6187f569c438a4c4bafe085e24feb"
 #: Definitions that stay in the facade file: the seams the owners share -- the SEL
 #: accessor, the file-send audit, the sub-agent session mapping and the request-body
 #: error code -- the search walk's clock, the file viewer's owner-view verdict, whose
@@ -389,7 +393,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         if getattr(files, getattr(route.handler, "__name__", ""), None) is not None
         and route.handler.__module__ == _FACADE
     ]
-    assert len({id(h) for h in served}) == 34
+    assert len({id(h) for h in served}) == 35
     inner = [getattr(h, "__wrapped__", h) for h in served]
     assert [h.__name__ for h in inner if getattr(files, h.__name__) is not h] == []
     assert sorted({h.__name__ for h in served if hasattr(h, "__wrapped__")}) == [
@@ -404,7 +408,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         "api_project_git_status",
     ]
     reexports = _package_reexports()
-    assert len(reexports) == 36
+    assert len(reexports) == 37
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(files, n)] == []
 
 
@@ -434,6 +438,7 @@ def test_the_seams_other_modules_import_keep_their_identity() -> None:
 #: path (or close an import cycle), so each stays function-local.
 _IMPORTED_BY_NAME = {
     "_get_config_lock": "kiro_crew.dashboard.handlers.agents",
+    "browse_denied_async": "kiro_crew.browser_harness.governance",
     "denied_sides": "kiro_crew.decisions.capability",
     "is_owner_dashboard_request": "kiro_crew.dashboard.handlers.source_providers",
     "owner_view_for_request": "kiro_crew.dashboard.handlers.source_providers",
@@ -1408,7 +1413,7 @@ def test_the_resolved_gate_dicts_name_the_owners() -> None:
     gate = guard._call_sites("is_sensitive_resolved_path")
     assert {k: v for k, v in gate.items() if "dashboard/file_api/" in k} == {
         "kiro_crew/dashboard/file_api/path_complete.py": 3,
-        "kiro_crew/dashboard/file_api/project_tree.py": 2,
+        "kiro_crew/dashboard/file_api/project_tree.py": 3,
     }
     assert "kiro_crew/dashboard/handlers/files.py" not in gate
     containment = guard._containment_claim_sites()
@@ -1536,13 +1541,6 @@ def _autosde_rules() -> list[dict]:
         for name in ("AUTOSDE.yaml", "website/AUTOSDE.yaml")
         for rule in yaml.safe_load((root / name).read_text(encoding="utf-8"))["custom-rules"]
     ]
-
-
-def test_the_globstar_matcher_reads_patterns_as_the_reviewers_do() -> None:
-    assert _globstar("src/a/**/*.py").match("src/a/b.py")
-    assert _globstar("src/a/**/*.py").match("src/a/x/y/b.py")
-    assert not _globstar("src/a/*.py").match("src/a/x/b.py")
-    assert _globstar("src/a/**").match("src/a/x/b.py")
 
 
 def test_every_review_rule_on_the_facade_also_covers_its_owners() -> None:

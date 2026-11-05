@@ -394,6 +394,9 @@ class TestRotationIsSerializedAcrossProcesses:
     def test_below_the_cap_no_cross_process_lock_is_taken(self, sel_dir, small_segments):
         """The audit hot path must not pay for a lock it does not need."""
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        # With the real lock: nothing below the cap ever creates the lock file.
+        _fill(log, 3)  # nowhere near the cap
+        assert not (sel_dir / "security_events.d" / ".rotate.lock").exists()
         with patch("kiro_crew.sel.platform_compat.try_acquire_lock") as locker:
             _fill(log, 3)  # nowhere near the cap
         locker.assert_not_called()

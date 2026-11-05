@@ -423,11 +423,8 @@ class TestToolBloatFixesRevocationsAndAliases:
         """A Connections provider (or any dashboard-added MCP entry) must land in
         `tools`, not just `mcpServers`.
 
-        `tools` is a CLOSED allowlist with no wildcard, so an entry present in
-        `mcpServers` but absent from `tools` is mounted with none of its tools
-        exposed — the model then truthfully reports it has no such integration
-        even though the provider is fully connected. This shipped unnoticed
-        because nothing asserted the registration; that is what this test pins.
+        `tools` is a CLOSED allowlist with no wildcard, so an entry missing from it
+        is mounted with none of its tools exposed.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -539,12 +536,8 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_a_malformed_store_value_does_not_confer_ownership(self, tmp_path: Path):
         """A non-dict store value must not mark a global entry as ours.
 
-        Membership is not ownership. The merge skips a malformed
-        ``kirocrew_mcp`` value entirely, so it contributes no hints and cannot be
-        the source of truth for any — yet a bare `name in kirocrew_mcp` test
-        would read the collision as "the store owns this" and delete the global
-        entry's hand-authored wire hints on behalf of a store entry that does not
-        really exist.
+        Membership is not ownership: the merge skips a malformed ``kirocrew_mcp`` value,
+        so `name in kirocrew_mcp` would delete the global entry's hand-authored hints.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -574,12 +567,8 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_a_globally_disabled_server_is_not_remounted_by_the_store_entry(self, tmp_path: Path):
         """An operator disable must survive a same-named dashboard-store entry.
 
-        `POST /api/mcp/toggle enabled:false` writes `disabled: true` into the
-        kiro-global mcp.json ONLY. The store entry for the same name carries no
-        `disabled` key, so a chain that visits the store last would re-mount the
-        server AND auto-approve it -- and auto-approve is the one path that never
-        reaches the PreToolUse gate, so the operator's disable would be silently
-        void for every tool on that server.
+        The toggle writes `disabled: true` into the kiro-global mcp.json only; visiting the
+        store last would re-mount and auto-approve the server, bypassing PreToolUse.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -608,14 +597,8 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_a_disable_strips_the_per_tool_spelling_and_duplicates(self, tmp_path: Path):
         """A disable strips bare refs and per-tool grants while preserving mounts.
 
-        ``@notion/search`` in ``allowedTools`` is a grant on the disabled
-        server, and that list never reaches the PreToolUse gate. Every grant
-        occurrence must be stripped. The same spelling in ``tools`` is a
-        selective mount that stays inert while the server entry is disabled and
-        must survive so re-enabling the entry restores the user's mount.
-
-        ``notionx`` shares the prefix without the ``/`` boundary, so its mount
-        and grants remain untouched.
+        ``allowedTools`` never reaches the PreToolUse gate, so its grants go; the same ref in
+        ``tools`` is an inert mount kept for re-enabling. ``notionx`` is untouched.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -801,11 +784,8 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_alias_keyed_sibling_keeps_mount_but_loses_family_grant(self, tmp_path: Path):
         """Alias-equivalent sources deny grants without guessed mount ownership.
 
-        Agent refs are written as ``@<mcp_server_alias(name)>``, which is
-        many-to-one: ``acme:@acme/notion`` and ``acme-notion`` are different
-        source keys in the same canonical family. The disabled slashed source
-        denies that family's auto-approval, while the alias-keyed source keeps
-        its concrete mount because spec identity is not ownership proof.
+        ``mcp_server_alias`` is many-to-one, so the disabled slashed source denies the whole
+        family's auto-approval, but the alias-keyed source keeps its mount.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -839,11 +819,8 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_an_agent_config_only_server_keeps_its_oauth_hints_verbatim(self, tmp_path: Path):
         """The agent config is a merge source, so its own entries are preserved.
 
-        A remote server can be defined only in the agent config -- added with
-        ``kiro-cli mcp add --agent kirocrew``, or hand-edited in. No mcp.json scope
-        declares it and no store entry owns it, so the file is the ONLY copy of its
-        OAuth hints. The rebuild merges onto that file, so rewriting the hints here
-        would destroy them with nothing to restore from.
+        A server added with ``kiro-cli mcp add --agent kirocrew`` lives only in that file,
+        so it holds the only copy of its OAuth hints.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -907,12 +884,8 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_a_slash_keyed_remote_survives_repeated_rebuilds(self, tmp_path: Path):
         """Key normalization and the store lookup must agree on the name form.
 
-        ``_normalize_mcp_server_keys`` rewrites a slashed key to its alias, so
-        the NEXT rebuild reads the aliased key off disk while the source still
-        declares the slashed one, and the merge re-inserts the slashed spelling
-        alongside it. Both must converge on one entry carrying the source's hints:
-        an equivalent pair collapses onto the canonical alias, so a repeated
-        rebuild neither grows ``mcpServers`` nor accumulates ``tools`` refs.
+        ``_normalize_mcp_server_keys`` writes the alias to disk while the source keeps the
+        slashed key; the pair must collapse so repeated rebuilds grow nothing.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -950,12 +923,8 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_a_slashed_store_name_owns_its_aliased_config_entry(self, tmp_path: Path):
         """The store lookup must use the same name form as the ownership test.
 
-        The store keeps its own raw (slashed) key while normalization rewrites the
-        config key to the alias. Looking the store up by the raw key alone misses
-        the owner of the aliased entry, so it reads as unmanaged and the
-        last-rendered wire hints are preserved verbatim -- an editor clear
-        answers 200 and never takes effect, and the now-divergent specs stop
-        deduping, minting a fresh sibling on every rebuild.
+        The store keeps the slashed key, the config the alias. A raw-key lookup reads the
+        entry as unmanaged: an editor clear never applies and each rebuild adds a sibling.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -987,11 +956,8 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_a_malformed_exact_name_does_not_hide_a_valid_aliased_owner(self, tmp_path: Path):
         """A malformed store value contributes nothing -- including no veto.
 
-        The store can hold a usable slashed entry whose alias collides with a
-        malformed value under the alias key itself. The malformed value states
-        nothing, so it must not stand in for the real owner: gating the alias
-        lookup on absence alone lets it shadow that owner, the entry reads as
-        unmanaged, and the last-rendered hints survive a clear.
+        A malformed value under the alias key must not shadow the usable slashed owner,
+        or the entry reads as unmanaged and stale hints survive a clear.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -1032,13 +998,9 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_an_alias_match_binds_hints_only_to_the_same_server(self, tmp_path: Path):
         """One rule for every alias binding, keyed on the direction of the effect.
 
-        ``mcp_server_alias`` is many-to-one, so two unrelated names can collide on
-        one alias. A binding that GRANTS something (OAuth hints) must therefore
-        also match transport identity -- otherwise a managed server's credentials
-        land on a different, user-owned server. A binding that DENIES something
-        (the disabled guard) deliberately stays name-only: over-matching there
-        merely over-disables, while under-matching would let an operator's disable
-        be missed, which is the hole the tightest-wins rule closes.
+        ``mcp_server_alias`` is many-to-one. A GRANT (OAuth hints) must also match
+        transport, or credentials land on another server; a DENY (disable) stays
+        name-only, since over-matching only over-disables.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -1242,12 +1204,8 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_a_suffixed_alias_keeps_its_managed_owner(self, tmp_path: Path):
         """A collision-suffixed entry is still the same server, so still owned.
 
-        When a managed name's alias is already held by a genuinely different
-        server, normalization preserves the managed one under a numeric suffix.
-        That suffixed key matches neither the store key nor its alias, so an
-        ownership lookup that stops there reads the entry as unmanaged and
-        preserves hints the store does not state -- the clear stops applying to
-        exactly the server the store owns.
+        Normalization suffixes a managed entry whose alias is taken; that key matches neither
+        the store key nor its alias, so the lookup must still find the owner.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -1284,11 +1242,8 @@ class TestToolBloatFixesRevocationsAndAliases:
     def test_two_store_owners_sharing_one_alias_both_stay_resolvable(self, tmp_path: Path):
         """An alias index must not drop an owner just because another shares its alias.
 
-        Two store entries can alias to the same slug, so keying the index by alias
-        alone keeps only one of them. The other server's collision-suffixed entry
-        then finds a candidate whose transport does not match, reads as unmanaged,
-        and keeps a grant its owner cleared -- and because the stale copy does not
-        dedup against the freshly rendered one, each rebuild mints another sibling.
+        Keyed by alias alone, the other server's suffixed entry reads as unmanaged, keeps a
+        cleared grant, and mints a new sibling on each rebuild.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"

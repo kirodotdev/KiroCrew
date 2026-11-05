@@ -358,11 +358,8 @@ def _old_pid(fake: FakeProc, pid: int, **kw) -> None:
 def test_no_tick_rate_fails_open_instead_of_claiming_absence(tmp_path, monkeypatch):
     """Off Linux the attribution is unavailable, and that must read as unknown.
 
-    ``os.sysconf`` does not exist on Windows (AttributeError, not OSError), which
-    once escaped as far as ``check_tool``'s catch-all and turned every shell
-    verdict into "oracle error". With the tick rate unreadable every descendant
-    reads as possibly-this-tool's, so the absence tag cannot fire -- the same
-    fail-open direction as a missing boot stamp.
+    ``os.sysconf`` is missing on Windows (AttributeError, not OSError). Every
+    descendant then reads as possibly this tool's, so the absence tag cannot fire.
     """
     clock = _Clock()
     fake = FakeProc(tmp_path / "proc")
@@ -389,11 +386,8 @@ def test_tick_rate_lookup_survives_a_platform_without_sysconf(monkeypatch):
 def test_absent_shell_child_is_tagged_when_every_descendant_predates_dispatch(tmp_path):
     """The sub-second command whose result frame was lost.
 
-    The oracle's first look happens at check_after_secs, by which time an ``ls |
-    grep | wc`` child is long gone — it is never observed alive, so the
-    matched-then-gone DEAD branch cannot fire. The runtime's tree still holds its
-    long-lived MCP stub children, all of them older than the dispatch, which is
-    positive evidence that nothing was started for this tool.
+    The child is gone before the first look, so matched-then-gone cannot fire; only
+    older MCP stubs remain, which shows nothing was started for this tool.
     """
     clock = _Clock()
     fake = FakeProc(tmp_path / "proc")
@@ -471,11 +465,8 @@ def test_unreadable_child_list_keeps_the_full_window(tmp_path):
 def test_every_production_dispatch_answers_both_attribution_fields():
     """Drift ratchet: both attribution inputs fail OPEN when omitted.
 
-    Without ``dispatch_boot_ts`` a never-matched shell tool silently returns to
-    the full build window; without ``dispatch_parked_secs`` a frame queued behind
-    an approval disowns its own live child. Neither shows up as a test failure
-    anywhere else, so every production ``ToolCallState`` construction must answer
-    both explicitly -- including with a 0.0 that says "this path cannot park".
+    An omitted ``dispatch_boot_ts`` or ``dispatch_parked_secs`` fails nowhere else,
+    so every production ``ToolCallState`` passes both (0.0 means "cannot park").
     """
     import ast
 
@@ -608,18 +599,11 @@ def test_missing_boot_stamp_keeps_the_full_window(tmp_path):
 
 @_needs_tick_rate
 def test_a_suspend_after_dispatch_does_not_disown_a_live_child(tmp_path):
-    """Regression: a host suspend must not age a live child out of its dispatch.
+    """A host suspend must not age a live child out of its dispatch.
 
-    ``/proc`` dates processes on the boot clock, which counts suspended time;
-    ``time.monotonic()`` does not. Deriving the start as ``monotonic_now - age``
-    therefore placed a child a full suspend EARLIER than it started, so a laptop
-    resumed mid-command saw its live child rejected as a pre-existing lookalike
-    AND counted as "nothing started since dispatch" -- the absent-child narrowing
-    would then cancel a running command. Both sides now read the boot clock, so
-    the suspend moves neither.
-
-    Here: dispatched at boot 5000, child spawned at boot 5001, then the host
-    suspends 300s (uptime jumps to 5301 while the monotonic clock does not move).
+    ``/proc`` uses the boot clock, which counts suspend; ``time.monotonic()`` does
+    not, so both sides read the boot clock. Here the host suspends 300s after the
+    child spawns (uptime 5001 -> 5301, monotonic unmoved).
     """
     hz = _hz()
     clock = _Clock()  # monotonic: unmoved by the suspend
@@ -684,17 +668,11 @@ def test_live_matched_child_still_wins_over_the_absence_test(tmp_path):
 
 @_needs_tick_rate
 def test_a_stamp_taken_late_still_owns_its_child(tmp_path):
-    """Regression: a frame queued behind an approval must not disown its child.
+    """A frame queued behind an approval must not disown its child.
 
-    The stamp is taken when the tool_call frame is PROCESSED. While the dispatch
-    loop is parked on a consumer-side await (an approval, an IM send, a hook) the
-    runtime can already have spawned, so the child predates its own stamp -- and
-    an UNMATCHABLE one (a command redacted past any usable fragment, or a shell
-    that exec'd away) would then be counted as "nothing started since dispatch".
-    The loop measures that park, so the attribution window opens by exactly it.
-
-    Here: 150s of banked parking, child spawned at boot 4900, stamp taken at
-    5000 -- 100s "before" its own dispatch, inside the 10s + 150s window.
+    The stamp is taken when the frame is processed, so the child can predate it; the
+    window opens by the measured park. Here: 150s parked, child at boot 4900, stamp
+    at 5000, inside the 10s + 150s window.
     """
     hz = _hz()
     clock = _Clock()
@@ -722,12 +700,8 @@ def test_a_stamp_taken_late_still_owns_its_child(tmp_path):
 def test_matching_but_older_child_vetoes_the_absence_claim(tmp_path):
     """A live process that looks like the command is not evidence of absence.
 
-    The dispatch stamp is taken when the tool_call frame is PROCESSED, and the
-    dispatch loop's consumer can park for minutes on an approval, an IM send or
-    a hook while kiro-cli has already spawned. Such a child predates its own
-    stamp, so it is still refused as a match (it may equally be a coincidental
-    lookalike) -- but it must keep the full window rather than being reported as
-    nothing-is-running.
+    A child older than its stamp (the loop can park on an approval) is refused as a
+    match, since it may be a lookalike, but keeps the full window.
     """
     clock = _Clock()
     fake = FakeProc(tmp_path / "proc")
@@ -968,15 +942,10 @@ def test_mcp_tool_flat_with_runtime_backend_socket_is_tagged_established_flat(tm
 
 @requires_symlinks
 def test_mcp_tool_flat_ordinary_tool_with_runtime_socket_not_tagged(tmp_path):
-    """F1 regression: a quiet ordinary MCP tool (no model-wrapping tool_name)
-    running while the runtime holds a persistent ESTABLISHED socket must NOT
-    receive the established_flat tag.
+    """A quiet ordinary MCP tool is not tagged established_flat by a runtime socket.
 
-    The runtime may hold a keepalive socket to the model service at all times;
-    the socket's presence alone is not proof that the *current tool* is waiting
-    on a model response. Without positive tool-identity attribution (tool_name
-    in _MODEL_WRAPPING_TOOLS) the oracle must fall back to plain mcp_subtree_flat
-    so the full 1h build-scale window governs, not the 15-min model-silent budget.
+    The runtime may always hold a model keepalive socket; only a tool_name in
+    _MODEL_WRAPPING_TOOLS gets the 15-min budget, others keep mcp_subtree_flat (1h).
     """
     clock = _Clock()
     fake = FakeProc(tmp_path / "proc")
@@ -1418,6 +1387,9 @@ def _no_backend_oracle(tmp_path, clock: _Clock, monkeypatch) -> LivenessOracle:
     to ``win32`` with an absent proc_root yields the Windows shape on any host.
     """
     monkeypatch.setattr(liveness.sys, "platform", "win32")
+    # The Toolhelp backend is pinned off: this is the no-backend shape,
+    # which a Windows host still reaches when that backend is not selected.
+    monkeypatch.setattr(liveness, "select_windows_backend", lambda _proc_root: None)
     return LivenessOracle(str(tmp_path / "no-proc"), now=clock, sample_min_secs=1.0)
 
 

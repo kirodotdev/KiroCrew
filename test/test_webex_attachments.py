@@ -64,6 +64,27 @@ class TestToAttachments:
         assert attachment.url == url
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("name", "mimetype", "suffix"),
+        [
+            ("voice.ogg", "audio/ogg", ".ogg"),
+            ("report.pdf", "application/pdf", ".pdf"),
+            ("archive.tar.gz", "application/gzip", ".gz"),
+            ("README", "application/pdf", ".pdf"),
+            ("", "", ".bin"),
+        ],
+    )
+    async def test_the_temp_suffix_is_the_extension(
+        self, name: str, mimetype: str, suffix: str
+    ) -> None:
+        url = "https://webexapis.com/v1/contents/C1"
+        client = FakeClient({url: (name, mimetype, 10)})
+
+        [attachment] = await to_attachments(client, (url,))
+
+        assert attachment.suffix_hint == suffix
+
+    @pytest.mark.asyncio
     async def test_a_failed_probe_still_yields_an_entry(self) -> None:
         """Silence is the wrong failure here.
 

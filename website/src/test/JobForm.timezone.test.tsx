@@ -4,7 +4,14 @@ import { renderWithProviders } from './helpers'
 import JobForm, { parseJobDefaults, buildBody } from '../components/JobForm'
 import type { CronJob } from '../types'
 
-vi.mock('../api/client', () => ({ api: { saveCron: vi.fn(), createCron: vi.fn(), updateCron: vi.fn() } }))
+vi.mock('../api/client', () => ({
+  api: {
+    saveCron: vi.fn(),
+    createCron: vi.fn(),
+    updateCron: vi.fn(),
+    crons: vi.fn().mockResolvedValue({ jobs: [], host_tz: 'Asia/Shanghai', default_tz: 'local' }),
+  },
+}))
 
 function makeJob(overrides: Partial<CronJob> = {}): CronJob {
   return {
@@ -94,7 +101,8 @@ describe('JobForm timezone render', () => {
     // Verify non-default TZ is prepended as first option
     fireEvent.click(trigger)
     const options = await screen.findAllByRole('option')
-    expect(options[0]).toHaveTextContent('Africa/Nairobi')
+    // Local leads; the job's own zone, outside the curated list, follows it.
+    expect(options[1]).toHaveTextContent('Africa/Nairobi')
   })
 
   it('saves the raw IANA id even though the label hides the underscore', async () => {
@@ -112,6 +120,94 @@ describe('JobForm timezone render', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(api.updateCron).toHaveBeenCalled())
-    expect(vi.mocked(api.updateCron).mock.calls[0][1]).toMatchObject({ timezone: 'America/New_York' })
+    expect(vi.mocked(api.updateCron).mock.calls.at(-1)![1]).toMatchObject({ timezone: 'America/New_York' })
+  })
+})
+
+describe('JobForm local zone', () => {
+  const agents = [{ name: 'gpu-dev', description: '' }]
+  const tzTrigger = () => screen.getByRole('combobox', { name: 'Timezone' })
+
+  it('buildBody sends no timezone when the picker was never set', () => {
+    const f = {
+      name: 'test', message: 'msg', agent: '', channel: '',
+      approvalMode: '', silent: false, schedMode: 'weekly' as const,
+      intVal: 1, intUnit: 'hours' as const,
+      weekDays: [1, 2, 3], weekTime: '09:00', cronExpr: '',
+    }
+    const body = buildBody(f, null, () => {})
+    expect(body).not.toBeNull()
+    expect(body!).not.toHaveProperty('timezone')
+    expect(body!.cron).toBe('0 9 * * 1,2,3')
+  })
+
+  it('a job with no zone shows the default and an unrelated edit leaves its zone unset', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.updateCron).mockClear()
+    vi.mocked(api.updateCron).mockResolvedValue({})
+    renderWithProviders(
+      <JobForm job={makeJob({ timezone: null })} agents={agents} defaultAgent="gpu-dev" onSaved={() => {}} />,
+    )
+    await waitFor(() => expect(tzTrigger()).toHaveTextContent('Local (follows this computer, now Asia/Shanghai)'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateCron).toHaveBeenCalled())
+    expect(vi.mocked(api.updateCron).mock.calls.at(-1)![1]).not.toHaveProperty('timezone')
+  })
+
+  it('choosing Local saves local', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.updateCron).mockClear()
+    vi.mocked(api.updateCron).mockResolvedValue({})
+    renderWithProviders(
+      <JobForm job={makeJob({ timezone: 'Africa/Nairobi' })} agents={agents} defaultAgent="gpu-dev" onSaved={() => {}} />,
+    )
+    fireEvent.click(tzTrigger())
+    fireEvent.click(await screen.findByRole('option', { name: 'Local (follows this computer, now Asia/Shanghai)' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateCron).toHaveBeenCalled())
+    expect(vi.mocked(api.updateCron).mock.calls.at(-1)![1]).toMatchObject({ timezone: 'local' })
+  })
+
+  it('a configured default zone is what a job with no zone shows', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.crons).mockResolvedValueOnce({ jobs: [], host_tz: 'Asia/Shanghai', default_tz: 'Europe/London' })
+    renderWithProviders(
+      <JobForm job={makeJob({ timezone: null })} agents={agents} defaultAgent="gpu-dev" onSaved={() => {}} />,
+    )
+    await waitFor(() => expect(tzTrigger()).toHaveTextContent('Europe/London'))
+  })
+
+  it('says Local runs in UTC while the computer\'s zone is not detected', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.crons).mockResolvedValueOnce({ jobs: [], host_tz: null, default_tz: 'local' })
+    renderWithProviders(
+      <JobForm job={makeJob({ timezone: 'local' })} agents={agents} defaultAgent="gpu-dev" onSaved={() => {}} />,
+    )
+    await waitFor(() => expect(tzTrigger()).toHaveTextContent('Local (zone not detected, runs in UTC)'))
+  })
+})
+
+describe('JobForm when the default zone cannot be read', () => {
+  const agents = [{ name: 'gpu-dev', description: '' }]
+  const tzTrigger = () => screen.getByRole('combobox', { name: 'Timezone' })
+
+  it('says Default zone, explains why, and still sends no zone', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.crons).mockRejectedValueOnce(new Error('offline'))
+    vi.mocked(api.updateCron).mockClear()
+    vi.mocked(api.updateCron).mockResolvedValue({})
+    renderWithProviders(
+      <JobForm job={makeJob({ timezone: null })} agents={agents} defaultAgent="gpu-dev" onSaved={() => {}} />,
+    )
+    expect(
+      await screen.findByText('Could not load the default time zone. A job left on Default zone still takes it.'),
+    ).toBeInTheDocument()
+    expect(tzTrigger()).toHaveTextContent('Default zone')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateCron).toHaveBeenCalled())
+    expect(vi.mocked(api.updateCron).mock.calls.at(-1)![1]).not.toHaveProperty('timezone')
   })
 })

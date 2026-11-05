@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -45,6 +46,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import notes, real_dashboard_state
 
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.autonudge import (
@@ -54,6 +57,7 @@ from kiro_crew.autonudge import (
     NudgeLoop,
 )
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.chat_utils_slack_options import options_records
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_CADENCE_SECS,
     DEFAULT_MONITOR_STALL_MIN_SECS,
@@ -373,10 +377,10 @@ class TestDeliverResultRouting:
     """Background-result routing for the Slack and no-dashboard arms."""
 
     @pytest.mark.asyncio
-    async def test_default_deliver_lookup_failure_falls_through(self):
+    async def test_default_deliver_lookup_failure_falls_through(self, tmp_path):
         orch = _make_orchestrator()
         orch.slack = None
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
         orch.dashboard_state = ds
         with patch.object(gw.KiroCrewConfig, "load", side_effect=RuntimeError("no config")) as load:
             await orch._deliver_result("Title", "task", "result", "")
@@ -385,8 +389,8 @@ class TestDeliverResultRouting:
             await orch._deliver_result("Title", "task", "result", "")
         assert load.call_count == 2
         # The failed lookup keeps the tagless default arm: a bell, no new slot.
-        ds.notify.assert_called_once_with("heartbeat", "Title", "task\n\nresult")
-        ds.get_or_create_slot.assert_not_called()
+        assert notes(ds) == [("heartbeat", "Title", "task\n\nresult")]
+        assert list(ds._slots) == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -447,18 +451,18 @@ class TestDeliverResultRouting:
         assert ds.notify.call_args.args[0] == "heartbeat"
 
     @pytest.mark.asyncio
-    async def test_slack_channel_arm_with_empty_channel_falls_back_to_dm(self):
+    async def test_slack_channel_arm_with_empty_channel_falls_back_to_dm(self, tmp_path):
         # A truncated tag ("slack:") has no channel to post to: posting to ""
         # would raise inside the swallowed except and lose the report, so the
         # owner-DM leg still covers it.
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
         orch.dashboard_state = ds
         orch.slack = _mock_slack(dm="D7")
         await orch._deliver_result("Title", "task", "result", "slack:")
         orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
         assert orch.slack.post_message.await_args.args[0] == "D7"
-        ds.notify.assert_called_once()
+        assert notes(ds) == [("heartbeat", "Title", "task\n\nresult")]
 
     @pytest.mark.asyncio
     async def test_default_arm_notifies_even_when_dm_unavailable(self):
@@ -926,13 +930,13 @@ class TestAutoMigrateMemory:
         assert "vector memory not initialised" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_set_memory_migrated_delegates_to_handler(self):
+    async def test_set_memory_migrated_delegates_to_handler(self, tmp_path):
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps({"memory": {"migrated": False}}), encoding="utf-8")
         orch = _make_orchestrator()
-        with patch(
-            "kiro_crew.dashboard.handlers.memory._set_migrated", AsyncMock()
-        ) as set_migrated:
+        with patch("kiro_crew.dashboard.handlers.memory.config_path", return_value=cfg_path):
             await orch._set_memory_migrated(True)
-        set_migrated.assert_awaited_once_with(True)
+        assert json.loads(cfg_path.read_text(encoding="utf-8"))["memory"]["migrated"] is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1080,7 +1084,7 @@ class TestNotifyNudgeExpired:
             stopped_at=2.0,
         )
 
-        orch._notify_nudge_expired(loop)
+        assert orch._notify_nudge_expired(loop) is True
 
         assert ds.notify.call_args.args[1] == title
         assert loop.monitor.target in ds.notify.call_args.args[2]
@@ -1292,7 +1296,7 @@ class TestNotifyNudgeExpired:
             stopped_at=2.0,
         )
 
-        orch._notify_nudge_expired(loop)
+        assert orch._notify_nudge_expired(loop) is True
 
         assert "Start a new watch with a larger budget" in ds.notify.call_args.args[2]
 
@@ -1339,7 +1343,7 @@ class TestNotifyNudgeExpired:
             max_cycles=4,
             cycle_count=4,
         )
-        orch._notify_nudge_expired(loop)
+        assert orch._notify_nudge_expired(loop) is True
         assert ds.notify.call_args.args[1] == "Monitoring loop hit its cycle cap"
 
     def test_a_terminal_subject_outranks_the_wall_clock_budget(self):
@@ -1443,7 +1447,7 @@ class TestNotifyNudgeExpired:
             ),
         )
 
-        orch._notify_nudge_expired(loop)
+        assert orch._notify_nudge_expired(loop) is True
 
         assert ds.notify.call_args.args[1] == expected_title
         assert expected_body in ds.notify.call_args.args[2]
@@ -1469,7 +1473,7 @@ class TestNotifyNudgeExpired:
             ),
         )
 
-        orch._notify_nudge_expired(loop)
+        assert orch._notify_nudge_expired(loop) is True
 
         assert ds.notify.call_args.args[1] == "Monitoring loop hit its cycle cap"
 
@@ -1630,15 +1634,15 @@ class TestRememberOptions:
 
     def test_no_ts_or_choices_records_nothing(self):
         orch = _make_orchestrator()
-        with patch.object(gw, "remember_slack_options") as remember:
-            orch._remember_options("cron:j1", "C1", "", ["A"], [{}], "Options")
-            orch._remember_options("cron:j1", "C1", "111.1", [], [{}], "Options")
-            remember.assert_not_called()
-            # The same call with both a ts and choices does record, so the
-            # absence above is the guard and not a missed patch.
-            orch._remember_options("cron:j1", "C1", "111.1", ["A"], [{}], "Options")
-        remember.assert_called_once()
-        assert remember.call_args.args[1] == "cron:j1"
+        orch.dashboard_state = SimpleNamespace(_slack_options_by_key={})
+        orch._remember_options("cron:j1", "C1", "", ["A"], [{}], "Options")
+        orch._remember_options("cron:j1", "C1", "111.1", [], [{}], "Options")
+        assert options_records(orch.dashboard_state, "cron:j1") == ()
+        # The same call with both a ts and choices does record, so the
+        # absence above is the guard and not a store that never fills.
+        orch._remember_options("cron:j1", "C1", "111.1", ["A"], [{}], "Options")
+        recorded = options_records(orch.dashboard_state, "cron:j1")
+        assert [(p.channel, p.ts, p.choices) for p in recorded] == [("C1", "111.1", ("A",))]
 
 
 class TestDeliverCronResponse:

@@ -293,6 +293,7 @@ class TestConsolidationGate:
         cons = _make_consolidator(_seed_log(tmp_path))
         with patch.object(HistoryConsolidator, "_consolidate", new=AsyncMock()) as run:
             cons.maybe_consolidate(KEY)
+            assert cons._tasks == set()
             await asyncio.sleep(0)
             run.assert_not_awaited()
 
@@ -307,6 +308,7 @@ class TestConsolidationGate:
         ) as run:
             cons.maybe_consolidate(KEY)
             await asyncio.gather(*cons._tasks)
+            assert cons._prefs_offset[KEY] == 40
             run.assert_awaited()
 
     @pytest.mark.asyncio
@@ -325,6 +327,7 @@ class TestConsolidationGate:
         cons = _make_consolidator(_seed_log(tmp_path))
         with patch.object(HistoryConsolidator, "_consolidate", new=AsyncMock()) as run:
             cons.consolidate_session(KEY)
+            assert cons._tasks == set()
             await asyncio.sleep(0)
             run.assert_not_awaited()
 

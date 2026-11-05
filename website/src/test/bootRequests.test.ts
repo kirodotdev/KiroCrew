@@ -43,11 +43,8 @@ describe('focus-refetch opt-ins via finite staleTime', () => {
 
   const optIns: Array<[string, string]> = [
     ['../components/RegistryManager.tsx', 'replace-all PUT of registries'],
-    ['../apps/meetings/SettingsView.tsx', 'full-replace PUT of meetings config'],
     ['../apps/personal-shopper/SitesTab.tsx', 'replace-all PUT of shopper sites'],
     ['../apps/papyrus/PapyrusPage.tsx', 'project deleted-in-another-tab detection'],
-    ['../apps/code-review-sage/components/LearningRail.tsx', 'replace-all PUT of active namespaces'],
-    ['../apps/ops-mission-control/SettingsPanel.tsx', 'replace-all PUT of rotation settings'],
   ]
 
   it.each(optIns)('%s sets a finite staleTime (%s)', (rel) => {

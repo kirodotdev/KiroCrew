@@ -467,11 +467,15 @@ class TestTeamIdInjection:
         before conversations_info."""
         c = self._client()
         c._web.api_call = AsyncMock(return_value={"ts": "1"})
-        c._web.conversations_info = AsyncMock()
+        # A lookup, if one ran, would answer a different team and overwrite the cache.
+        c._web.conversations_info = AsyncMock(
+            return_value=self._info_resp({"id": "C1", "context_team_id": "TOTHER"})
+        )
         c.record_channel_team("C1", "TCHANNEL_A")
 
         await c.start_stream("C1", "thread1")
 
+        assert c._channel_team == {"C1": "TCHANNEL_A"}
         c._web.conversations_info.assert_not_awaited()
         assert c._web.api_call.await_args.kwargs["json"]["team_id"] == "TCHANNEL_A"
 
@@ -487,6 +491,9 @@ class TestTeamIdInjection:
         await c.start_stream("C1", "thread1")
         await c.start_stream("C1", "thread2")
 
+        # The miss is remembered on the client, not cached as a team.
+        assert c._channel_team_unresolvable == {"C1"}
+        assert c._channel_team == {}
         assert c._web.conversations_info.await_count == 1
 
     @pytest.mark.asyncio
@@ -921,7 +928,8 @@ class TestHandleReviewEditSubmit:
                     "bind": {"type": "surface", "id": "host"},
                     "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         _review_drafts_set("C1|ts1|abc", "original", REQUESTER_ID)
         payload = _make_payload(

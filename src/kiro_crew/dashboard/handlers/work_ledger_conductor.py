@@ -63,7 +63,12 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.metrics import work as work_metrics
 from kiro_crew.validation import WORK_LEDGER_RECORD_SCHEMA, ValidationError, validate_tool_args
 from kiro_crew.work_ledger import WorkLedgerError
-from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS, WORK_MAX_DEPTH_MAX
+from kiro_crew.work_vocab import (
+    WORK_CONDUCTOR_FIELDS,
+    WORK_MAX_ARTIFACT_VALUE_CHARS,
+    WORK_MAX_DEPTH_MAX,
+    WORK_MAX_RETIRE_REASON_CHARS,
+)
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.work_ledger")
 
@@ -138,6 +143,7 @@ async def _record_conductor_write(
     operation: str,
     before_write: Callable[[], Awaitable[web.Response | None]] | None = None,
     dispatch: bool = False,
+    attested_caller: str = "",
 ) -> web.Response:
     """Probe, commit and record one conductor-owned write on *key*'s board.
 
@@ -148,7 +154,9 @@ async def _record_conductor_write(
     board lock before the snapshot; a response from it stops the write and is
     returned as is. *dispatch* marks a ``work_dispatch`` create: it never opens a
     ledger, so it is judged under the board lock like every write on an existing
-    one, and refused ``no_ledger`` when the caller owns none.
+    one, and refused ``no_ledger`` when the caller owns none. *attested_caller*
+    is ``conductor_patrol.attested_caller_slot`` for the request, passed on to a
+    bind's default patrol; callers with no request leave it blank.
     """
     # Refused BEFORE the ledger is even bootstrapped: the widest entry this action
     # can produce,
@@ -179,6 +187,7 @@ async def _record_conductor_write(
         acceptance=cleaned.get("acceptance"),
         worker_session_key=cleaned.get("worker_session_key"),
         worker_instance_id=cleaned.get("worker_instance_id"),
+        retired_bindings=(_widest_retired_bindings() if action in ("retire", "destroy") else None),
         decision=probe_decision,
         verdict=cleaned.get("verdict"),
         state="abandoned",
@@ -320,14 +329,17 @@ async def _record_conductor_write(
                 title=getattr(item, "title", None) if "title" in sets else None,
                 acceptance=getattr(item, "acceptance", None) if "acceptance" in sets else None,
                 worker_session_key=(
-                    getattr(item, "worker_session_key", None)
+                    _set_pair_field(action, getattr(item, "worker_session_key", None))
                     if "worker_session_key" in sets
                     else None
                 ),
                 worker_instance_id=(
-                    getattr(item, "worker_instance_id", None)
+                    _set_pair_field(action, getattr(item, "worker_instance_id", None))
                     if "worker_instance_id" in sets
                     else None
+                ),
+                retired_bindings=(
+                    getattr(item, "retired_bindings", None) if "retired_bindings" in sets else None
                 ),
                 decision=getattr(item, "decision", None) if "decision" in sets else None,
                 verdict=getattr(item, "verdict", None) if "verdict" in sets else None,
@@ -406,7 +418,9 @@ async def _record_conductor_write(
             # active loop; never raises, never displaces an active loop or a
             # person's stop, and a refusal does not undo the bind
             # (``conductor_patrol`` module docstring).
-            patrol, reason = await conductor_patrol.ensure_patrol(state, key)
+            patrol, reason = await conductor_patrol.ensure_patrol(
+                state, key, attested_caller=attested_caller
+            )
             payload["patrol"] = patrol
             payload["patrol_reason"] = reason
             note = conductor_patrol.patrol_note(state, key, reason)
@@ -487,11 +501,23 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         if refusal is not None:
             return refusal
 
+    # Read from THIS request before the write: only a bind arms a patrol, and only
+    # an attested member thread's own bind may take one (``conductor_patrol``).
+    attested = (
+        await conductor_patrol.attested_caller_slot(request, state) if action == "bind" else ""
+    )
     # A dispatch never opens a ledger: only ``kirocrew-work``'s own
     # ``work_ledger_record`` does, so a session without that server is refused,
     # whatever its backend.
     resp = await _record_conductor_write(
-        state, key, unit, action, cleaned, operation="work_ledger_record", dispatch=dispatch
+        state,
+        key,
+        unit,
+        action,
+        cleaned,
+        operation="work_ledger_record",
+        dispatch=dispatch,
+        attested_caller=attested,
     )
     if action == "decide" and resp.status == 200:
         resp = await _forward_remote_decide(state, key, cleaned, resp)
@@ -847,12 +873,52 @@ async def _bootstrap(key: str) -> None | web.Response:
     return None
 
 
+def _set_pair_field(action: str, value: Any) -> Any:
+    """A pair field as the entry logs it: a retire that unbound the item logs ``""``,
+    since an absent field reads as "unchanged" to the fold."""
+    if action == "retire":
+        return value or ""
+    return value
+
+
+def _widest_retired_bindings() -> list[dict[str, Any]]:
+    """A full history at every cap, so a retire's fit probe is its widest entry."""
+    entry = {
+        "worker_session_key": "w" * work_ledger.MAX_PEER_SLOT_CHARS,
+        "worker_instance_id": "c" * work_ledger.MAX_INSTANCE_ID_CHARS,
+        "branch": "b" * WORK_MAX_ARTIFACT_VALUE_CHARS,
+        "state": "destroyed",
+        "reason": "r" * WORK_MAX_RETIRE_REASON_CHARS,
+        "retired_at": _WIDEST_STAMP,
+        "destroyed_at": _WIDEST_STAMP,
+    }
+    return [dict(entry) for _ in range(work_ledger.MAX_RETIRED_BINDINGS)]
+
+
 def _ensure(key: str, depth: int, parent_item: str | None) -> work_ledger.ConductorRecord:
     return work_ledger.ensure_conductor(key, depth=depth, parent_item=parent_item)
 
 
 def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
     """Route one validated action to the store call that owns it."""
+    if action == "destroy":
+        # Reached only from the hub's own close of a retired peer slot.
+        return work_ledger.apply_remote_destroy(
+            key,
+            str(cleaned.get("item_id") or ""),
+            worker_session_key=cleaned.get("worker_session_key"),
+            worker_instance_id=cleaned.get("worker_instance_id"),
+        )
+    if action == "retire":
+        # Reached only from the hub's own remote ingest (wave 8), never from the
+        # record route: its schema has no ``retire`` action.
+        return work_ledger.apply_remote_retire(
+            key,
+            str(cleaned.get("item_id") or ""),
+            worker_session_key=cleaned.get("worker_session_key"),
+            worker_instance_id=cleaned.get("worker_instance_id"),
+            reason=cleaned.get("reason"),
+        )
     if action == "bind" and cleaned.get("worker_instance_id"):
         # Reached only from the gateway's own remote create, never from the record
         # route: its schema has no ``worker_instance_id``. The peer's slot key is

@@ -424,6 +424,11 @@ def test_sidecar_unlink_failure_retains_receipt_until_retry_and_next_start(
     def scheduler(*args):
         state.events.append(args[0])
         if args[0] == "/Query":
+            # Bare `/Query` (no /TN) reports service reachability, which holds
+            # throughout this scenario; the per-task `/Query /TN` reports task
+            # presence. `task_absent` needs both, so they must not be conflated.
+            if len(args) == 1:
+                return subprocess.CompletedProcess([], 0, "", "")
             return subprocess.CompletedProcess([], int(not scheduler_state["exists"]), "", "")
         if args[0] == "/Delete":
             existed = scheduler_state["exists"]
@@ -916,14 +921,9 @@ def test_finished_producer_still_exiting_is_retired_not_raced(startup, monkeypat
 def test_finished_producer_is_let_exit_before_it_is_ended(startup, monkeypatch):
     """The receipt is the producer's last write to the record, not its last act.
 
-    `boot` publishes the receipt from its `finally`; the caller then logs the
-    boot's failure audit, which the audit log's writer flushes as the interpreter
-    exits. A `pod up` that reads the receipt and stops the pod at once would end
-    the producer before that event lands. So `stop` first waits on the pinned
-    object for the whole stop budget and never terminates a producer that exits
-    within it; only one that outlives the budget is ended, and the wait comes
-    first. Kernel waits here are modelled, since a real producer's exit timing is
-    what this test removes from the question.
+    After the receipt the caller still flushes the boot's failure audit at exit, so
+    `stop` waits the whole stop budget first and ends only a producer that outlives
+    it. Kernel waits are modelled to take exit timing out of the test.
     """
     cfg, state = startup
     state.task_exists = True
@@ -1088,12 +1088,8 @@ def test_boot_withholds_the_receipt_when_the_drain_is_unproven(model, monkeypatc
 def test_every_exit_of_a_claimed_boot_records_a_result(model, monkeypatch, capsys):
     """`pod up` waits on the recorded result, so a claimed boot never leaves without one.
 
-    An exception that escapes the boot guards ends the process with Python's own
-    exit status 1; the result carries that failure and no receipt is published,
-    because the producer cannot vouch for how it ended. A `pod _run` whose claim is
-    refused owns no generation and writes nothing at all: the record may belong to
-    another producer still booting, and a shared result or refusal note written
-    here would make `pod up` abandon that legitimate boot.
+    An escaped exception records exit 1 with no receipt. A `pod _run` whose claim is
+    refused writes nothing: the record may belong to another producer still booting.
     """
     cfg, _state = model
     runs.reserve(cfg, "demo")

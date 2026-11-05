@@ -87,6 +87,7 @@ const { createHolderDecision } = require("./runtime/gateway/holder-decision");
 const { createShutdown } = require("./runtime/gateway/shutdown");
 const { createReconnect } = require("./runtime/gateway/reconnect");
 const { createRemoteSwitch } = require("./runtime/gateway/remote-switch");
+const { createRespawnOwner, RESPAWN_SUPERSEDED } = require("./runtime/gateway/respawn-owner");
 
 const DEFAULT_THEME_ACCENT = "#8E48FF";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -101,6 +102,8 @@ const PRUNED_STATUS = "Some app files are missing. Use Quit in the dialog, then 
 // while it runs, so the reason is the caller's to name.
 const RESTARTING_FOR_LOCAL_GATEWAY_STATUS = "Restarting Kiro Crew to start a local gateway…";
 const POLL_INTERVAL_MS = 500;
+// The failure dialog's actions that go on to start or reconnect a gateway.
+const RETRY_ACTIONS = new Set(["retry", "force-retry", "enable-retry", "configure-remote"]);
 // loadFile query that tells loading.html it is being painted by a reconnect
 // path rather than a cold boot, so it can offer its exit control at once
 // (loading.html reads `reconnect=1`). A query, not an IPC send: the splash
@@ -160,6 +163,7 @@ function createGatewaySupervisor({
   clearIntervalFn = clearInterval,
   processRef = process,
   dirname = __dirname,
+  capturePySpyDumpFn = capturePySpyDump,
 } = {}) {
   const fs = fsMod;
   const os = osMod;
@@ -227,6 +231,11 @@ function createGatewaySupervisor({
   // Set before updater shutdown begins. It keeps an intentional stop from being
   // read as a wedge and resurrected while the bundle is being replaced.
   let installingUpdate = false;
+  // Bumped when an update install is dispatched. A recovery that waited for the
+  // port compares it after the wait: an install dispatched meanwhile makes that
+  // recovery stale even after a failed install clears `installingUpdate` and
+  // starts a recovery of its own.
+  let installEpoch = 0;
   // Set while first-run setup's switch to a remote crew stops the gateway this
   // app started, for the same reason: that exit is intended, not a crash.
   let switchingToRemote = false;
@@ -279,6 +288,7 @@ function createGatewaySupervisor({
     lsofHoldsFile,
     psCommand,
     psPpid,
+    launchdJobPids,
     snapshotGatewayPortPids,
     unverifiedIncumbent,
     waitForIncumbentExit,
@@ -293,6 +303,7 @@ function createGatewaySupervisor({
     isWindows: IS_WIN,
     log: glog,
     getSpawnedExecutablePaths: () => spawnedExecutablePaths,
+    sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
   });
   const {
     holdsHomeGatewayLock,
@@ -410,11 +421,12 @@ function createGatewaySupervisor({
     resolveUnresponsiveHolder,
     resolveGatewayConflict,
   } = createHolderDecision({
-    app, store, dialog, path, processObj, port: PORT, isWindows: IS_WIN, log: glog, setTimeoutFn,
+    app, store, dialog, fs, path, processObj, port: PORT, isWindows: IS_WIN, log: glog, setTimeoutFn,
     quitting, mainWindow, sendStatus, checkBackend, waitForPortFree, probeGatewayPortBinding,
     probeGatewayPortOwner, snapshotGatewayPortPids, psCommand, unverifiedIncumbent, waitForIncumbentExit,
     sameHomeGatewayPid, runGatewayStop, probeLockHolderPid, fetchHealthInfo, fetchGatewayReadiness,
     resolveFamilyConflict, getRunLocalGateway, setGatewayOwnership,
+    launchdJobPids: IS_MAC ? launchdJobPids : null,
   });
   const {
     stopGatewayGracefully,
@@ -429,6 +441,12 @@ function createGatewaySupervisor({
     setGatewayProcess: (child) => { gatewayProcess = child; },
     setSpawnedExecutablePaths: (paths) => { spawnedExecutablePaths = paths; },
   });
+  const { respawnGateway } = createRespawnOwner({
+    startGateway,
+    getInstallEpoch: () => installEpoch,
+    isInstallingUpdate: () => installingUpdate,
+    log: glog,
+  });
   const {
     reconnectExternalGateway,
     reconnectOrRespawnAdoptedGateway,
@@ -436,7 +454,7 @@ function createGatewaySupervisor({
     app, path, dirname, port: PORT, backendUrl: BACKEND_URL, healthUrl: HEALTH_URL, log: glog,
     setTimeoutFn, quitting, sendStatus, splashQuery, checkBackend, waitForPortFree,
     probeGatewayPortBinding, probeGatewayPortOwner, snapshotGatewayPortPids, unverifiedIncumbent,
-    waitForIncumbentExit, startGateway, showLoadingThenConnect, showUnrecoverableGatewayError,
+    waitForIncumbentExit, respawnGateway, showLoadingThenConnect, showUnrecoverableGatewayError,
     probeLockHolderPid, fetchHealthInfo, fetchGatewayReadiness, getGatewayOwnership, setGatewayOwnership,
     setGatewayStartFailure: (failure) => { gatewayStartFailure = failure; },
   });
@@ -536,7 +554,9 @@ function createGatewaySupervisor({
     }
   }
 
-  function startGateway() {
+  // `isStale` is the respawn owner's view of whether an update install was
+  // dispatched since this launch began; the spawn checks it after the probes.
+  function startGateway({ isStale = () => false } = {}) {
     reresolveAttempts = 0;
     glog(`launch: port=${PORT} home=${KIROCREW_HOME} packaged=${app.isPackaged} resourcesPath=${processObj.resourcesPath || "(none)"} log=${gatewayLogPath()}`);
     sendStatus("Checking if gateway is running…");
@@ -570,7 +590,7 @@ function createGatewaySupervisor({
           return;
         }
         if (runLocalGateway) {
-          spawnGateway(resolve);
+          spawnGateway(resolve, { isStale });
           return;
         }
         glog(`no gateway on :${PORT} and local gateway is off — not starting one`);
@@ -687,13 +707,21 @@ function createGatewaySupervisor({
   // backend swapped in at the same path. resourcesPath itself is a launch-time
   // snapshot and so is every other Electron path API; there is nothing newer to
   // read.
-  function spawnGateway(resolve) {
+  function spawnGateway(resolve, { isStale = () => false } = {}) {
     // Every spawn passes through here: the first start, the start that follows a
     // takeover, and the stale-bundle respawn. Once the app has begun to quit, a
     // start whose port probes were still in flight must not launch a backend,
     // because the quit's stop has already run and nothing would stop it.
     if (quitting()) {
       glog(`not starting a gateway on :${PORT}: the app is quitting`);
+      resolve(false);
+      return;
+    }
+    // The same holds for an update install dispatched while the probes ran: its
+    // stop found no child, and a backend started now would run from the bundle
+    // being replaced. A failed install starts its own recovery.
+    if (installingUpdate || isStale()) {
+      glog(`not starting a gateway on :${PORT}: an update install was dispatched while this start was in flight`);
       resolve(false);
       return;
     }
@@ -1059,6 +1087,12 @@ function createGatewaySupervisor({
    * get a bounded wait, and only a spawned child takes the kill/respawn path.
    */
   async function recoverWedgedGateway(window, { userInitiated = false } = {}) {
+    // Read before the first await: the dump, the kill and the port wait all
+    // yield, and an install dispatched during any of them owns the gateway. A
+    // failed install starts its own recovery, so a stale one must stop before it
+    // kills, clears or spawns anything.
+    const epoch = installEpoch;
+    const stale = () => epoch !== installEpoch;
     const strategy = chooseRecoveryStrategy({ gatewayOwnership });
     if (strategy === "reconnect") {
       glog("liveness: backend unresponsive on a gateway we did not spawn (remote tunnel / external gateway) — waiting for it to recover instead of killing the port");
@@ -1075,42 +1109,64 @@ function createGatewaySupervisor({
     // Capture frozen Python stacks from outside the starved event loop before
     // killing it. This is best-effort and bounded by capturePySpyDump itself.
     if (gatewayProcess && gatewayProcess.pid) {
-      await capturePySpyDump({
+      await capturePySpyDumpFn({
         pid: gatewayProcess.pid,
         dumpDir: path.dirname(gatewayLogPath()),
         log: (message) => glog(`liveness: ${message}`),
       }).catch((error) => glog(`liveness: py-spy capture threw: ${error && error.message}`));
     }
+    if (stale()) return;
     // The frozen loop cannot service /api/shutdown. On Windows, await the tree
     // sweep before probing the port or descendants escape and retain locks.
     await killGatewayProcessTree(gatewayProcess, "SIGKILL");
+    if (stale()) return;
     gatewayProcess = null;
     spawnedExecutablePaths = [];
     let freed = true;
     let foreignHolder = false;
     let probeFailed = false;
+    let ownerUnknown = false;
     try {
-      ({ freed, foreignHolder, probeFailed = false } = await forceStopGatewayPort(PORT));
+      ({ freed, foreignHolder, probeFailed = false, ownerUnknown = false } = await forceStopGatewayPort(PORT, {
+        onBindWait: () => paintLoadingScreen(window, { reconnect: !userInitiated }),
+        isAborted: stale,
+      }));
     } catch (error) {
       // POSIX lsof may be unavailable. Let bind arbitrate, but record that the
       // pre-spawn ownership proof could not be completed.
       glog(`liveness: port probe failed (${error && error.message}); attempting respawn and letting bind confirm`);
     }
-    if (!window || window.isDestroyed() || quitting()) return;
+    // The force-stop can wait up to two minutes for the port. An update install
+    // dispatched meanwhile owns the gateway from then on: it must not race a
+    // respawn for its files, and if it fails, its own recovery takes over.
+    if (!window || window.isDestroyed() || quitting() || stale()) return;
     if (!freed) {
       const reason = probeFailed
         ? "probe failed"
-        : (foreignHolder ? "foreign holder" : "unkillable wedge");
+        : ownerUnknown
+          ? "held by an unlisted owner"
+          : (foreignHolder ? "foreign holder" : "unkillable wedge");
       glog(`liveness: port not confirmed free after force-stop (${reason}); surfacing restart-required`);
-      return showUnrecoverableGatewayError(window, PORT, { probeFailed });
+      return showUnrecoverableGatewayError(window, PORT, { probeFailed: probeFailed || ownerUnknown });
     }
     gatewayStartFailure = null;
-    await startGateway();
+    // Through the owner: a dialog Retry may already be starting a gateway.
+    if ((await respawnGateway()) === RESPAWN_SUPERSEDED) return;
     if (window.isDestroyed() || quitting()) return;
     // An update-install failure is user initiated and may raise. Autonomous
     // liveness recovery remains silent and never steals focus.
     return showLoadingThenConnect(window, BACKEND_URL, {
       reconnect: !userInitiated,
+    });
+  }
+
+  // The splash whose default line reads "Starting gateway…". Recovery paints it
+  // while it waits for a port to free, then showLoadingThenConnect paints it
+  // again for the connect itself.
+  function paintLoadingScreen(window, { reconnect = false } = {}) {
+    if (!window || window.isDestroyed()) return;
+    window.webContents.loadFile(path.join(dirname, "loading.html"), {
+      query: splashQuery(window, { reconnect, accent: currentThemeAccent() }),
     });
   }
 
@@ -1121,9 +1177,7 @@ function createGatewaySupervisor({
   ) {
     const healthUrl = `${targetBackendUrl}/api/status`;
     const webContents = window.webContents;
-    webContents.loadFile(path.join(dirname, "loading.html"), {
-      query: splashQuery(window, { reconnect, accent: currentThemeAccent() }),
-    });
+    paintLoadingScreen(window, { reconnect });
     // Cold boot and user-clicked retries raise. Autonomous liveness recovery
     // loads into the existing hidden/minimized window without touching focus.
     revealWindowForConnect(window, { reconnect });
@@ -1381,6 +1435,17 @@ function createGatewaySupervisor({
           catch { /* best effort */ }
           continue;
         }
+        // An update install dispatched while this dialog was open owns the
+        // gateway: no action may save a crew, relaunch the app, force-stop the
+        // port or start a backend under it. The dialog stays, so a Retry after
+        // a failed install still works.
+        if (
+          installingUpdate && targetBackendUrl === BACKEND_URL
+          && RETRY_ACTIONS.has(action)
+        ) {
+          glog(`${action}: an update install is in flight; leaving the dialog to the user`);
+          continue;
+        }
         if (action === "configure-remote") {
           let draft = remoteCrewDraft(getRemoteHostConfig(store, PORT) || {});
           let configured = false;
@@ -1508,27 +1573,36 @@ function createGatewaySupervisor({
         if (action === "force-retry") {
           let freed = true;
           let probeFailed = false;
+          let ownerUnknown = false;
+          const epoch = installEpoch;
           try {
-            ({ freed, probeFailed = false } = await forceStopGatewayPort(PORT));
+            ({ freed, probeFailed = false, ownerUnknown = false } = await forceStopGatewayPort(PORT, {
+              onBindWait: () => paintLoadingScreen(window),
+              isAborted: () => epoch !== installEpoch,
+            }));
           } catch (probeError) {
             glog(`force-stop: port probe failed (${probeError && probeError.message}); letting retry's bind confirm`);
           }
-          if (window.isDestroyed()) return;
+          if (window.isDestroyed() || epoch !== installEpoch) return;
           if (!freed) {
-            return showUnrecoverableGatewayError(window, PORT, { probeFailed });
+            // An owner netstat does not list is as unverifiable as a failed probe.
+            return showUnrecoverableGatewayError(window, PORT, { probeFailed: probeFailed || ownerUnknown });
           }
         }
-        if (
-          action === "retry"
-          || action === "force-retry"
-          || action === "enable-retry"
-          || action === "configure-remote"
-        ) {
+        if (RETRY_ACTIONS.has(action)) {
           gatewayStartFailure = null;
           // A primary own-port retry respawns only when no child remains. Timeouts
-          // may leave a live child; connection tabs never own one at all.
-          if (targetBackendUrl === BACKEND_URL && !gatewayProcess) {
-            await startGateway();
+          // may leave a live child; connection tabs never own one at all. The
+          // owner joins a recovery that is already starting one. An install
+          // that overtakes the launch hands the dialog back, as above: a failed
+          // install's recovery reconnects only the main window.
+          if (
+            targetBackendUrl === BACKEND_URL && !gatewayProcess
+            && (await respawnGateway()) === RESPAWN_SUPERSEDED
+          ) {
+            if (window.isDestroyed()) return;
+            glog(`${action}: an update install took over this start; leaving the dialog to the user`);
+            continue;
           }
           if (window.isDestroyed()) return;
           return showLoadingThenConnect(window, targetBackendUrl, { initialPath });
@@ -1545,6 +1619,7 @@ function createGatewaySupervisor({
     // The flag closes the interval between dispatch and stop; stopping the
     // monitor ensures nothing probes while bundle replacement is in flight.
     installingUpdate = true;
+    installEpoch += 1;
     if (livenessMonitor) {
       livenessMonitor.stop();
       livenessMonitor = null;

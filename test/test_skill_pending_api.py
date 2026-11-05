@@ -342,7 +342,7 @@ async def test_dismiss_routes_update_candidate_by_slug(loader, monkeypatch):
     """Dismiss is kind-agnostic — it deletes the pending dir by slug."""
     seen: dict = {}
 
-    def _dismiss(slug):
+    def _dismiss(slug, content_sha256=None):
         seen["slug"] = slug
         return True
 

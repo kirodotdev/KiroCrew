@@ -351,7 +351,7 @@ def test_a_non_resident_embedder_prints_a_refusal_not_a_traceback(
     monkeypatch.setattr("kiro_crew.eval.bench.run.prepare_embedder", _boom)
     monkeypatch.setattr(cli_bench, "_load_corpus", lambda key: _tiny_corpus())  # noqa: ARG005
     rc = cli_bench.bench_cmd(_retrieval_args(out_dir=str(tmp_path)))
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert rc == 1
     assert "refusing to run" in out
     assert "not resident" in out
@@ -363,17 +363,20 @@ def test_a_refused_report_write_does_not_discard_the_measurement(
 ) -> None:
     """The report is printed before it is saved, so a refused write loses only the file.
 
-    Reported as such rather than as a failed run — the numbers are on stdout.
+    Reported as such rather than as a failed run — the numbers are on stdout and
+    the refusal on stderr, so `kirocrew bench retrieval > report.txt` keeps a clean
+    report.
     """
     from kiro_crew import cli_bench
 
     monkeypatch.setattr(cli_bench, "_load_corpus", lambda key: _tiny_corpus())  # noqa: ARG005
     rc = cli_bench.bench_cmd(_retrieval_args(toy_embedder=True, out_dir=str(fake_home / ".aws")))
-    out = capsys.readouterr().out
+    cap = capsys.readouterr()
     assert rc == 1
-    assert "not saved" in out
+    assert "not saved" in cap.err
+    assert "not saved" not in cap.out
     # The measurement itself still reached the user.
-    assert "session-level" in out or "retrieval" in out
+    assert "session-level" in cap.out or "retrieval" in cap.out
 
 
 def _tiny_corpus() -> Corpus:

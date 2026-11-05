@@ -69,7 +69,7 @@ claim that a hostile in-process agent is fully contained.
 
 | Module | Role |
 |--------|------|
-| `aws.py` | The `run_aws` chokepoint for captured AWS CLI calls — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key). `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`. |
+| `aws.py` | The `run_aws` chokepoint for captured AWS CLI calls — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key), and a child environment without the gateway's Python interpreter settings (`sandbox.without_python_env`), because aws-cli v1 is a Python program. `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`. |
 | `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); tag-based stateless discovery; `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
 | `iam.py` | Least-privilege launcher policy generator (applied by the user, never by KiroCrew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). |
 | `host_policy.py` | Reads and validates the edition's `cloud_instance_policy` seam (managed policies for the EC2 instance role, plus the boundary statements they need). The one reader for the boundary document, the second launcher policy (`iam.host_policy_document`) and the template's `ExtraManagedPolicyArns`; see Security model. |
@@ -363,6 +363,22 @@ when the platform will take the VM. Because teardown acts on the stored
 process choose which VM the next delete destroys, so the file is a write-protected
 target in `security/paths_lists.py`.
 
+**What the lane borrows from an app.** Two things the lane needs ship with the
+aws-control app, and `cloud/` reaches both through seams in `kiro_crew.apps.seams`
+(see `app-kit-platform.md`, "A core feature that needs an app's code asks a seam"),
+never by importing the app. The crew runtime (`crew_runtime` seam) is the Docker build context the recipe zips, and the bundle
+digest is computed by the bundle builder that ships beside it. `recipe.runtime_path(name)`
+answers `RUNTIME_DIR`, `BASE_DOCKERFILE`, `CREW_DOCKERFILE`, `MICROVM_DOCKERFILE`,
+`SSM_AGENT_CONFIG` and `CONTAINER_DIR` through that seam on each call; none is a module
+attribute, so `recipe` holds no module `__getattr__` and mirrors no surface. With no
+provider, `runtime_path` and `bundle_digest_of` raise
+`RecipeRefused`, and `check_layout` still answers because it reads only the bundle.
+The sandbox-masked staging root that `api.staging_dir` cuts a secret's file under
+(`transfer_staging` seam) is the other one. With no provider it raises
+`RuntimeError` rather than falling back to the shared temp directory, which a
+same-UID agent could read. `test_cloud_microvm_recipe.py::TestTheRuntimeComesFromTheCrewRuntimeSeam`
+and `test_app_seams.py::TestCoreCallersWithNoProvider` pin both.
+
 ## Where launch state lives
 
 Two files, two owners. `cloud.json` is the OPERATOR's: they hand-write the `fargate` block
@@ -520,8 +536,8 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   chezmoi and `rsync --link-dest` leave behind. The strict refusal for `cloud.json`
   lives where a launch consumes the file instead
   (`require_unaliased_cloud_config`, called from the provisioner seam), so the alias
-  costs one lane's launch rather than the box. `playwright-cli` keeps main's own
-  strict DIRECTORY rule, which this change does not touch.
+  costs one lane's launch rather than the box. The sealed directory leaves keep
+  main's own strict DIRECTORY rule, which this change does not touch.
 - **An aliased `cloud.json` is refused where a launch CONSUMES it**, in
   `DefaultRemoteProvisionerProvider.engine_for`, and only warned about on the
   universal spawn path (`sandbox._warn_aliased_strict_leaves`). Refusing on the spawn
@@ -543,9 +559,14 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   AppStream `dnf` repo (the reliable primary path, validated live). The
   NodeSource fallback does NOT `curl … | bash` a remote installer; it imports
   NodeSource's GPG key over pinned TLS and writes a `gpgcheck=1` dnf repo, so RPM
-  signatures are verified before install. kiro-cli is fetched over
-  `--proto '=https' --tlsv1.2` and the binary presence is asserted afterward
-  (fail-closed WaitCondition on a broken install).
+  signatures are verified before install. kiro-cli is the musl zip of the
+  `packaging/kiro-cli-version` release, fetched from `prod.download.cli.kiro.dev`
+  over `--proto '=https' --tlsv1.2` and checked against its
+  `packaging/kiro-cli-sha256` SHA-256 before it is unzipped; the binary presence
+  is asserted afterward (fail-closed WaitCondition on a broken install). That
+  host sits outside every `*.amazonaws.com` service namespace, so no AWS service
+  endpoint's private DNS zone (Amazon Q's owns `q.<region>.amazonaws.com`) can
+  answer NXDOMAIN for it.
 - **Least-privilege, tag-/prefix-scoped IAM.** The RCE-adjacent SSM verbs
   (`ssm:StartSession` / `ssm:SendCommand` on instances) and the EC2 destructive
   verbs (`DeleteSecurityGroup` / `RevokeSecurityGroup{Ingress,Egress}` / `DeleteTags`)
@@ -849,7 +870,17 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   not reap; signal numbers come from `platform_compat` (**never** `signal.SIGKILL`,
   which is undefined on Windows — naming it inside the escalation's own
   `except Exception` swallows the `AttributeError` and skips `proc.kill()`
-  entirely, on the very platform that reaches that path). Every
+  entirely, on the very platform that reaches that path). The plugin can
+  **outlive the wrapper** — exiting on its own first, or dying on SIGTERM while
+  the plugin ignores it — and `os.getpgid` of the reaped wrapper names nothing.
+  So on POSIX `open_port_forward` records the group the wrapper leads
+  (`proc.ssm_pgid`, read while it is un-reaped) and `kill_port_forward` signals
+  that recorded group through `platform_compat.kill_process_group`: whenever
+  members remain after the wrapper is gone, already-exited wrapper included, they
+  get SIGTERM (unless the teardown already sent one), then SIGKILL, each followed
+  by a bounded wait for the group to empty (`platform_compat.pgroup_exists`). Only
+  that one group is signalled, so another forward's plugin is never touched; a
+  Popen-like object without the record keeps the pid-resolved group signal. Every
   no-URL exit reaps its tunnel too: `connect()` folds a mint failure — whether
   `mint_token` returns `""` **or raises** — into a `ready=False` Connection after
   `_terminate`; and the **social-login** paths close their callback tunnel on the

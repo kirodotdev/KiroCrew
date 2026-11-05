@@ -9,6 +9,7 @@ import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
 import { useSlotRemoteEnvironment } from './sessionEnvironmentHooks'
 import RejectDropdown from './RejectDropdown'
+import DenyOverrideDropdown, { DenyOverrideWarning } from './DenyOverrideDropdown'
 import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
@@ -20,7 +21,9 @@ import { ToolDetails } from '../pages/chat/ToolDetails'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { savePrefExplicitly } from '../lib/uiPrefs'
 import { offlineProps } from '../utils/offline'
+import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 import { motion, AnimatePresence } from 'framer-motion'
+import { COMPOSER_ROW_SPRING, ComposerSizer } from './chat-input/ComposerSizer'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
 import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
@@ -58,6 +61,7 @@ import { Glass } from './Glass'
 import type { ChatInputProps } from './chat-input/props'
 import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from './chat-input/engine'
 import { useTextareaListContinuation } from './chat-input/listContinuation'
+import { useFollowUpGhost } from './chat-input/followUpGhost'
 import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
 import { useComposerPickers } from '../chat-core/composer/pickers'
@@ -68,6 +72,7 @@ import { HoldToTalkBar, MicButton, VoiceCaptureStatus } from './chat-input/Voice
 import { AgentChip, ContextUsageControl, ModelChip, SessionControlChips, useContextPopover, useShelfMeasure } from './chat-input/ContextShelf'
 import { useAutoCompactThreshold } from './chat-input/autoCompact'
 import { AttachMenu, usePlusMenu } from './chat-input/attach'
+import { ComposerActionMenuItems, useComposerActionMenu } from './chat-input/composerActions'
 import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-input/busySend'
 import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } from './chat-input/collapse'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
@@ -80,7 +85,7 @@ import { useUndoHistory } from '../chat-core/composer/undoHistory'
 import { usePromptOptimizer } from './chat-input/optimizer'
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
-import { TypingLockBanner, typingLockLabel } from './chat-input/TypingLockBanner'
+import { RaisedBy, TypingLockBanner } from './chat-input/TypingLockBanner'
 import { useTypingLockKeys } from './chat-input/typingLockKeys'
 import { ComposerAttach } from '../chat-core/composer/Attach'
 import { afterSlide, forgetAfterSlide, slideHeld } from '../utils/panelSlide'
@@ -119,10 +124,6 @@ const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
 // gate. Extensions align the picker exactly with the verified server allowlist
 // instead of broadening the dialog to neighboring unsupported formats.
 const AUDIO_ACCEPT = '.mp3,.m4a,.wav,.ogg,.oga,.opus,.flac'
-// The box's height change between the one-row and two-row shapes and on a
-// wrapped or removed line (`inlineToolbarWhileFits`). Short and barely bouncy:
-// it fires mid-typing, so anything longer trails the caret.
-const COMPOSER_ROW_SPRING = { type: 'spring', stiffness: 520, damping: 38, mass: 0.8 } as const
 // Half the one-row box: the 44px text line plus its 1px border each side.
 const COMPOSER_ONE_ROW_RADIUS = 23
 // The one-row text line's padding, equal above and below so the line sits on
@@ -166,39 +167,6 @@ export type { ComposerBusyMode } from './chat-input/props'
 /** No Voice atom mounted: every dictation value at its idle default. */
 const NO_VOICE: Partial<ComposerVoiceInputProps> = {}
 
-/**
- * The box's height animator for `inlineToolbarWhileFits`. Enabled, it is a
- * bottom-aligned clip whose height follows `height` (the inner box's measured
- * natural height) and springs between the two shapes when `animate` is set;
- * the inner box keeps its natural height (`shrink-0`), so while the sizer is
- * still shorter it clips the TOP of the text column and the buttons at the
- * bottom never move. The clip is `overflow: clip`, never `hidden`: a `hidden`
- * box keeps a scroll position, and WebKit scrolls it to bring a caret in that
- * clipped top band into view, so the text jumps while the box opens.
- * Disabled -- every host that does not opt in -- it renders
- * its children bare, so the ordinary composer's tree is exactly what it was.
- */
-function ComposerSizer({ enabled, height, animate, className, children }: {
-  enabled: boolean
-  height: number | null
-  animate: boolean
-  className: string
-  children: React.ReactNode
-}) {
-  if (!enabled) return <>{children}</>
-  return (
-    <motion.div
-      data-testid="composer-sizer"
-      initial={false}
-      animate={{ height: height ?? 'auto' }}
-      transition={animate ? COMPOSER_ROW_SPRING : { duration: 0 }}
-      className={className}
-    >
-      {children}
-    </motion.div>
-  )
-}
-
 function ChatInput({
   aboveComposer,
   value: valueProp,
@@ -210,7 +178,7 @@ function ChatInput({
   jevAutoAvailable = false,
   busyMode = 'split',
   disabled: disabledProp = false,
-  typingLock = null,
+  typingLock = null, presence,
   placeholder = '',
   lockedPlaceholder,
   prefillHint,
@@ -249,6 +217,7 @@ function ChatInput({
   onProjectClick,
   environmentSlot,
   sessionControls,
+  composerActions,
   onSessionControlClick,
   contextPct,
   contextUsedTokens,
@@ -258,6 +227,7 @@ function ChatInput({
   showContextTokens,
   isRunning = false,
   projectLocked = false,
+  projectSwitching = false,
   compacting = false,
   stopDeclined = false,
   onStop,
@@ -269,6 +239,7 @@ function ChatInput({
   stopState,
   approvalMode,
   approvalModeRemote,
+  afterApprovalMode,
   reasoningEffort,
   effortIsDefault = false,
   hasEffort,
@@ -406,7 +377,8 @@ function ChatInput({
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
+    approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
+    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
   } = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
   const activeSlot = slotId
   // Read the composer-spellcheck preference here rather than as a prop, so every
@@ -474,7 +446,7 @@ function ChatInput({
   }, [lexicalComposer, lexicalLoadFailed, lexicalControlRevision, lexicalControlRef])
   const queryClient = useQueryClient()
   const pickerSource = usePickerSource()
-  const pickers = useComposerPickers({ source: pickerSource, project, onFileSelect, typedCommandMenus, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName })
+  const pickers = useComposerPickers({ source: pickerSource, project, onFileSelect, typedCommandMenus, hiddenCommands, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName })
   const { anyPickerOpenRef, closePickers, openPickersForText, prefetchSkills } = pickers
   const { publishLexicalSelection, recordCaret, showDictation, cancelVoiceDrain } = useDictationControls({
     composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel,
@@ -531,7 +503,7 @@ function ChatInput({
   const midTurnProjectNote = useMemo(() => {
     if (!isRunning) return ''
     const name = turnStartProject
-      ? turnStartProject.split('/').filter(Boolean).pop() || turnStartProject
+      ? pathBasename(stripTrailingSeparators(turnStartProject)) || turnStartProject
       : i18nT('components.chatInput.project')
     return `${i18nT('components.chatInput.project_switch_applies_next_turn', { project: name })}\n${i18nT('components.chatInput.project_switch_links_follow_pick')}`
   }, [isRunning, turnStartProject])
@@ -547,6 +519,7 @@ function ChatInput({
   const bindProjectPress = usePressActivation()
   const plus = usePlusMenu({ pickers, value, onChange, composerControl, fileInputRef, isTouchInput: () => touchInput })
   const { setPlusOpen, sketchOpen, setSketchOpen } = plus
+  const appActions = useComposerActionMenu({ items: terminal.active ? undefined : composerActions, value, onChange, pasteBlocks, composerControl, scopeKey: slotId, locked: typingLocked, plusBtnRef: plus.plusBtnRef, composerBoxRef: composerAnchorRef, closeMenu: () => setPlusOpen(false) })
   // The More menu's Sketch item opens a dialog. The dialog hands focus to the
   // composer itself on close (`returnFocusRef`), so only the menu half of the
   // hand-off is used here: defer the open, and skip the trigger restore.
@@ -874,11 +847,12 @@ function ChatInput({
     return () => { ro.disconnect(); forgetAfterSlide(measure) }
   }, [inlineToolbarWhileFits, value, showGhost, composerCollapsed])
   // Every status line the box draws above or below the text is a strip too:
-  // the send-held notice while an upload is in flight, and the voice bar's
-  // idle states (an error, a model download, a cancellable drain, the
-  // mic-held-elsewhere and dictation-landed notices). On the single row each
-  // would be one more flex item beside the text and squeeze it.
-  const inBoxStatusStrip = (holdSend && (composerHasDraft || hasSessionRefs)) ||
+  // the send-held notice while an upload is in flight, the voice bar's
+  // Recording strip (drawn while recording whenever the dictation panel is
+  // not), and its idle states (an error, a model download, a cancellable
+  // drain, the mic-held-elsewhere and dictation-landed notices). On the single
+  // row each would be one more flex item beside the text and squeeze it.
+  const inBoxStatusStrip = (holdSend && (composerHasDraft || hasSessionRefs)) || voiceRecording ||
     !!voiceError || !!voiceDownload || voiceDrainCancellable || micHeldElsewhere || voiceHeldLanded
   const inlineToolbar = inlineToolbarWhileFits && textFitsOneRow && !pendingFiles.length && !pendingDirs.length && !hasQuote && !hasSessionRefs && !inBoxStatusStrip && manualHeight === null &&
     !terminal.active && !voiceHoldMode && !showDictation && !lexicalLoadFailed
@@ -939,12 +913,16 @@ function ChatInput({
     return () => ro.disconnect()
   }, [inlineToolbarWhileFits, showGhost, composerCollapsed])
   const sizerPinned = inlineToolbarWhileFits && manualHeight === null && box !== null
-  const activePlaceholder = !connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : typingLock ? typingLockLabel(typingLock) : disabledProp ? (lockedPlaceholder ?? i18nT('components.chatInput.stopping')) : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder
+  // Shown only where nothing above it in the chain below would win, so Tab never fills a box whose placeholder says something else.
+  const fillFromSuggestion = useCallback((v: string) => { valueFromUserRef.current = true; onChange(v) }, [onChange])
+  const followUpGhost = useFollowUpGhost({ options: followUpOptions, value, onUserEdit: fillFromSuggestion, composerControl, claimKey: ime.claimKey,
+    enabled: !touchInput && !!onFollowUpSelect && !showGhost && connected && !typingLock && !disabledProp && !voiceRecording && !transcribingIsHonest && !continuePlaceholder && !voiceModePlaceholder && !optimizing })
+  const activePlaceholder = !connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : typingLock ? '' : disabledProp ? (lockedPlaceholder ?? i18nT('components.chatInput.stopping')) : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || followUpGhost.placeholder || resolvedPlaceholder
   // The sigil hint is a label and may be cut to one line. Every other
   // placeholder here is a sentence the user needs whole, so it still wraps —
   // including a caller's own `placeholder`, which `resolvedPlaceholder` carries.
   const placeholderIsHint = !placeholder && activePlaceholder === resolvedPlaceholder
-  const { handleInput } = useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder })
+  const { handleInput } = useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder, boxMounted: !showGhost && !composerCollapsed })
   // The send slot's busy branch: a turn runs (or a stop is under way) and there
   // is a stop or steer path. Read by the cluster below and by the "+" menu row.
   const compactingSlot = busyMode !== 'responsive' && compacting && !isRunning && !composerHasDraft && (!stopState || stopState === 'idle')
@@ -1022,7 +1000,7 @@ function ChatInput({
             <span className="min-w-0 [overflow-wrap:anywhere]" title={terminalValidation ? undefined : project || undefined}>
               {terminalValidation || (project && onProjectClick && !shelfCompact
                 ? i18nT('components.chatInput.terminal_panel')
-                : i18nT('components.chatInput.terminal_hint', { workspace: project ? (project.split('/').filter(Boolean).pop() || project) : i18nT('components.chatInput.terminal_default_directory') }))}
+                : i18nT('components.chatInput.terminal_hint', { workspace: project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.terminal_default_directory') }))}
             </span>
           </div>
           {!showGhost && !composerCollapsed && (
@@ -1145,7 +1123,7 @@ function ChatInput({
                           <div className="px-3.5 pt-2.5 pb-1">
                               <div className="inline-flex items-start gap-1 text-[13px] font-mono px-2 py-0.5">
                                   <Lock size={12} className="text-warn shrink-0" style={{ marginTop: '3px' }} />
-                                  <span className="text-muted break-words min-w-0 line-clamp-2">{approvalLabel}</span>
+                                  <span className="text-muted break-words min-w-0 line-clamp-2">{approvalLabel}</span><RaisedBy name={approvalRaisedBy} />
                               </div>
                               <ToolDetails
                                   purpose={approvalPurpose}
@@ -1170,7 +1148,7 @@ function ChatInput({
               <div className="flex items-center gap-1.5 px-3.5 py-2.5 select-none flex-wrap">
                   {!showGhost && <>
                       <Lock size={12} className="text-warn shrink-0" />
-                      <span className="text-[13px] font-mono text-muted truncate flex-1 min-w-0">{approvalLabel}</span>
+                      <span className="text-[13px] font-mono text-muted truncate flex-1 min-w-0">{approvalLabel}</span><RaisedBy name={approvalRaisedBy} />
                   </>}
                   {showGhost && <div className="flex-1 min-w-0" />}
                   {showGhost && approvalToolCallId && (
@@ -1190,14 +1168,10 @@ function ChatInput({
                       control. A `data-` hook rather than button text because every
                       catalog translates the labels. */}
                   <div data-approval-actions className="flex gap-1.5 flex-wrap items-center">
+                      {approvalDenyRule ? <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} family={approvalDenyFamily} onAction={(action) => { handleApprovalAction(action) }} /> : <>
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
-                      {/* One dropdown carries every standing grant this card can
-                          record. Trust-reads is a tier inside it, not a sibling
-                          button: the row is capped at three controls
-                          (`max-two-buttons-per-row` grandfathers Allow once +
-                          Trust + Reject and forbids a fourth), and a read-only
-                          scopeless card can offer reads and session trust at
-                          once. */}
+                      {/* One dropdown carries every standing grant (trust-reads is a tier in it):
+                          `max-two-buttons-per-row` grandfathers Allow once + Trust + Reject; no fourth. */}
                       {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) && (
                         <TrustDropdown
                             fullCommand={approvalFullCommand}
@@ -1212,6 +1186,7 @@ function ChatInput({
                             onAction={(action, pattern, ttlSeconds) => { handleApprovalAction(action, pattern, ttlSeconds) }}
                         />
                       )}
+                      </>}
                       <RejectDropdown
                           disabled={approvalSubmitting}
                           className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`}
@@ -1219,15 +1194,12 @@ function ChatInput({
                       />
                   </div>
               </div>
-              {/* A1 discoverability hint: points at the footer mode picker so a
-                  new user learns approval prompting is adjustable. Withheld for
-                  unattended sources (the mode picker governs THIS slot, not the
-                  job that raised the card), in the ghost state (the collapsed
-                  composer unmounts the picker, so the link would have nothing
-                  to open), while the B2 nudge is up (two pointers at one
-                  control), and retired forever once the user has found the
-                  picker — via this link or by adjusting the mode. */}
-              {!showGhost && !approvalIsUnattended && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
+              {approvalDenyRule && <DenyOverrideWarning rule={approvalDenyRule} family={approvalDenyFamily} detail={approvalDenyDetail} command={approvalDenyCommand} />}
+              {/* A1 hint: points at the footer mode picker. Withheld for unattended
+                  sources (the picker governs THIS slot), the ghost state (picker
+                  unmounted), an override card, the B2 nudge, and once the user has
+                  found the picker (this link or a mode change). */}
+              {!showGhost && !approvalIsUnattended && !approvalDenyRule && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
                 <div className="flex items-center gap-1.5 flex-wrap px-3.5 pb-2 -mt-1 text-[12px] text-muted select-none">
                   <span>{i18nT('components.chatInput.approval_hint_question')}</span>
                   <button
@@ -1282,12 +1254,12 @@ function ChatInput({
           />
         </div>
       )}
-      {approvalNotice && approvalNoticeKind === 'status' && (
+      {approvalNotice && (approvalNoticeKind === 'status' || approvalNoticeKind === 'settled') && (
         <div
           role="status"
           className="flex items-center gap-2 px-4 py-2 mb-1 bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] rounded-lg"
         >
-          <Lock size={12} className="text-warn shrink-0" />
+          {approvalNoticeKind === 'settled' ? <CheckCircle size={12} className="text-ok shrink-0" /> : <Lock size={12} className="text-warn shrink-0" />}
           <span className="text-muted text-[13px]">{approvalNotice}</span>
         </div>
       )}
@@ -1310,6 +1282,7 @@ function ChatInput({
       {onUploadFiles && (
         <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
+      {appActions.popover}
 
       {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
 
@@ -1468,14 +1441,15 @@ function ChatInput({
           // Composing in either editor (textarea or rich text) re-arms a
           // reclaimed session's resume prefetch; the sender throttles.
           onFocusCapture={() => emitComposeIntent(slotId)}
-          onKeyDownCapture={() => emitComposeIntent(slotId)}
+          onKeyDownCapture={e => { emitComposeIntent(slotId); followUpGhost.onKeyDownCapture(e) }}
         >
         {/* The one-row fit probe: the textarea's type and horizontal padding,
             no vertical padding, wrapping as the textarea wraps, measured at the
             single row's column width (see `textFitsOneRow`). Never painted.
-            `data-composer-typo` gives it the textarea's touch font floor
-            (16px): without it the probe measured at 14px, the textarea
-            wrapped first, and the pill grew tall before the box changed shape. */}
+            `data-composer-typo` gives it every rule the textarea's hook gets, so
+            the probe wraps exactly where the textarea does; otherwise the
+            textarea could wrap first and the pill grow tall before the box
+            changed shape. */}
         {inlineToolbarWhileFits && (
           <div ref={oneRowProbeRef} aria-hidden="true" data-composer-typo="" data-testid="composer-one-row-probe" className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre-wrap break-words px-4 mc-message-font-text font-body leading-normal [scrollbar-gutter:stable] overflow-y-auto" />
         )}
@@ -1649,7 +1623,7 @@ function ChatInput({
         <div data-testid="composer-bottom-row" className={inlineToolbar ? 'contents' : `flex items-center justify-between px-2.5 pb-2 pt-0.5${terminal.active ? ' flex-wrap gap-y-1' : ''}`}>
           {typingLock && <TypingLockBanner lock={typingLock} />}
           <div ref={leftClusterRef} className={`flex items-center gap-0.5 min-w-0${inlineToolbar ? ' order-first pl-1.5 shrink-0 relative z-[1]' : ''}${typingLocked ? ' hidden' : ''}`}>
-            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} uploadCount={uploadCount} directFilePicker={directFilePicker} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} touchInput={touchInput} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} optimizeRow={busyOptimizeRow} />
+            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} uploadCount={uploadCount} directFilePicker={directFilePicker} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} touchInput={touchInput} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} optimizeRow={busyOptimizeRow} appActionRows={appActions.rows} />
             {directFilePicker && collapsible && (
               /* The repo's own overflow mechanism, not a second spelling of it.
                  `max-two-buttons-per-row` names the two files to copy for exactly
@@ -1704,6 +1678,7 @@ function ChatInput({
                       {collapseMenuRow}
                     </DropdownMenuItem>
                   )}
+                  <ComposerActionMenuItems items={appActions.items} onPick={(item) => moreMenuLayer.openLayer(() => appActions.start(item))} />
                   {/* Mid-turn Optimize, as in the "+" menu (`busyOptimizeRow`). */}
                   {busyOptimizeOffered && (
                     <DropdownMenuItem asChild disabled={optimizeBlocked} onSelect={() => optimizeUnlessLocked()}>
@@ -1745,6 +1720,7 @@ function ChatInput({
               {!isMobile && approvalMode && (
                 <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
               )}
+              {!isMobile && afterApprovalMode}
               </div>
               {/* Edge cues: the row itself fades out at a clipped edge (`edge-fade-x`,
                   driven by data-fade-left/right). A mask fades the buttons on any
@@ -1754,6 +1730,7 @@ function ChatInput({
             {isMobile && approvalMode && (
               <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} compact onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
             )}
+            {isMobile && afterApprovalMode}
           </div>
           <div ref={rightClusterRef} className={`flex items-center gap-1 shrink-0${terminal.active ? ' ml-auto max-w-full justify-end [&>button]:shrink-0' : ''}${inlineToolbar ? ' order-last pr-1.5' : ''}`}>
             {onVoiceToggle && !typingLocked && (
@@ -1877,7 +1854,7 @@ function ChatInput({
           // An app-contributed chip is reason enough to draw the shelf. Without
           // this the chip is silently invisible whenever no other pill happens
           // to be present — the control is declared, mounted and unreachable.
-          !!sessionControls?.length ||
+          !!sessionControls?.length || !!presence ||
           !!environmentSlot) && (
         <div ref={shelfRef} data-testid="composer-context-shelf" className="glass-shelf pt-1 flex items-center gap-2 min-w-0" style={{ ['--glass-shelf-h' as string]: `${shelfHeight}px` }}>
           {/* Where the session's files and commands live. Its own separated
@@ -1911,7 +1888,7 @@ function ChatInput({
             <span className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted px-2.5" title={projectChipTitle} data-testid="composer-project-readonly">
               <FolderOpen size={13} className="shrink-0 opacity-70" aria-hidden="true" />
               {/* Compact, the name stays for screen readers: the icon alone names nothing. */}
-              <span className={shelfCompact ? 'sr-only' : 'truncate max-w-[160px]'}>{projectProp.split('/').filter(Boolean).pop() || projectProp}</span>
+              <span className={shelfCompact ? 'sr-only' : 'truncate max-w-[160px]'}>{pathBasename(stripTrailingSeparators(projectProp)) || projectProp}</span>
             </span>
           )}
           {onProjectClick && !remoteEnvironment && (
@@ -1943,14 +1920,21 @@ function ChatInput({
             disabled={projectLocked}
             title={projectLocked ? `${projectChipTitle}\n${i18nT('components.chatInput.project_locked_while_subagents_run')}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
             aria-label={projectLocked ? `${projectChipTitle}\n${i18nT('components.chatInput.project_locked_while_subagents_run')}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
+            /* A pick waits on the turn-preparation lock, which a cold spawn
+               holds for seconds: the spinner says the pick was taken, the
+               same signal as the memory-mode chip (#20351). */
+            aria-busy={projectSwitching || undefined}
+            data-testid="composer-project-chip"
           >
-            <FolderOpen size={13} className="shrink-0 opacity-70" />
+            {projectSwitching
+              ? <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden="true" data-testid="composer-project-switching" />
+              : <FolderOpen size={13} className="shrink-0 opacity-70" />}
             {/* Budget favours the branch: the folder name is also in the tooltip
                 and the picker, whereas a clipped branch ("feat/pro…") is exactly
                 the ambiguity this label exists to remove. The enclosing shelf
                 group is flex-1/min-w-0, so both segments still shrink below
                 these caps on a narrow window. */}
-            {!shelfCompact && <span className="truncate max-w-[160px]">{project ? (project.split('/').filter(Boolean).pop() || project) : i18nT('components.chatInput.project')}</span>}
+            {!shelfCompact && <span className="truncate max-w-[160px]">{projectSwitching ? i18nT('components.chatInput.switching_project') : project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.project')}</span>}
           </button>
           {!shelfCompact && !!projectBranch && (
             <>
@@ -1967,10 +1951,12 @@ function ChatInput({
             </>
           )}
           {!!project && <ProjectAwsProfileStatus project={project} shelfCompact={shelfCompact} />}
+          <span role="status" className="sr-only" data-testid="composer-project-switch-status">{projectSwitching ? i18nT('components.chatInput.switching_project') : ''}</span>
           </div>
           )}
           </div>
-          <div className="flex items-center shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
+          {presence}
           {contextPct != null && (
             <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
           )}

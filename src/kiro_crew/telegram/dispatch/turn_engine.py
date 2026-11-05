@@ -9,7 +9,8 @@ what queued behind the turn. ``_persist_turn`` is its durable transcript write a
 The dispatcher state these read is ``client``, ``approval_mode``, ``sessions``,
 ``ctx_builder``, ``conv_log``, ``dashboard_state``, ``_model_pref`` and ``_conv``; they
 write ``_active_renderers`` (the running turn's renderer, which a mid-turn steer hands
-its text to) and ``_title_tasks``. Every other step is a dispatcher call through
+its text to), ``_turn_chats`` (the chat it answers in, which the steer checks) and
+``_title_tasks``. Every other step is a dispatcher call through
 ``self``. The user-facing failure wording, ``_user_safe_failure_reason``, stays in
 ``transport_dispatch.py`` as the registered "Telegram failure reason" redaction sink
 and is read through the facade, like every name tests rebind there.
@@ -26,6 +27,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import runtime_death
+from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import mint_row_mid
@@ -60,6 +62,7 @@ from kiro_crew.messaging.script_hooks import ScriptHookTurn
 from kiro_crew.messaging.session_resume import persisted_session_agent
 from kiro_crew.messaging.session_trust import is_session_trusted
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.parent_turns import note_turn_landed
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.start_priority import person_priority
@@ -184,6 +187,10 @@ async def _run_turn(
         if not muted:
             await renderer.on_turn_start()
         _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
+        # The pick this turn starts on, read once: get_or_create applies it and
+        # the post-turn promotion follow compares against it, so a pick made
+        # while the turn prepares is left for the next turn.
+        _pick_before = self._model_pref.get(route)
         provider, is_new, resumed = await self.sessions.get_or_create(
             session_key,
             start_priority=person_priority(msg.person_origin),
@@ -200,9 +207,14 @@ async def _run_turn(
             # that conversation under a model its owner never picked, silently
             # and for every later turn. A resumed session therefore passes None
             # and lets its own persisted model resolve.
-            model=(None if resumed_key is not None else self._model_pref.get(route) or None),
+            model=(None if resumed_key is not None else _pick_before or None),
         )
         _acquired = True
+        # Whose chat this turn answers and on which provider, for the mid-turn
+        # steer check. A tuple of this turn's own, so the finally removes this
+        # record and never a later turn's that took the key after a reset.
+        turn_chat = (chat_id, provider)
+        self._turn_chats[session_key] = turn_chat
         # Taken on acquisition: a Stop from here on cancels the turn before it streams.
         hook_turn = ScriptHookTurn.stoppable(self.sessions, session_key, text)
         # Hold the provider this turn obtained, for the failure handler's
@@ -388,6 +400,10 @@ async def _run_turn(
             script_hooks=hook_turn,
         )
         accumulated = await driver.run(full_message)
+        if resumed_key is None:
+            # The route's pick is what `/model` shows and what a cold start
+            # re-applies; follow a model the engine promoted this turn.
+            follow_engine_promotion(self._model_pref, route, provider, before=_pick_before)
 
         # ── Post-turn bookkeeping (each guarded so a failure here can't
         # fall through to the except and re-record the successful turn). ──
@@ -429,6 +445,8 @@ async def _run_turn(
         # the turn completed, so the finally must NOT restore the flag --
         # unless the user cancelled it, which discards that prompt.
         _turn_landed = driver_turn_landed(driver)
+        if _turn_landed:
+            note_turn_landed(self.sessions, session_key)
         if _unfinished:
             facade.Stats().inc_message_failed()
         else:
@@ -659,6 +677,10 @@ async def _run_turn(
             )
             facade.Stats().inc_message_failed()
     finally:
+        # First, before anything here can await or raise: the turn is over, and a
+        # record left behind would steer a later message into a turn it did not start.
+        if _acquired and self._turn_chats.get(session_key) is turn_chat:
+            del self._turn_chats[session_key]
         # An approval window the driver never awaited -- the prompt went out
         # and the turn then ended before the decider -- has no wait of its own
         # to close it, so it would outlive this turn with its nonce still

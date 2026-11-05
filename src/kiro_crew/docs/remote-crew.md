@@ -242,10 +242,10 @@ confused. They are unrelated.
 |---|---|---|
 | **Kiro Crew** | The product. | Everywhere |
 | **Remote Crew** — spelled `instance` in config, routes and code (`instances.json`, `/api/instances`) | Another machine running its own gateway, reached over a tunnel. This page. | Settings → Remote Crew, the header switcher |
-| **Crew Member**, or **mate** | A named assistant you keep: its own workspace, memory, agent template and model, with a standing thread. Not a machine. | The Crew Members page — see [crew-members.md](crew-members.md) |
+| **Bot** (earlier called Crew Member or mate) | An always-on AI agent with its own workspace, memory, agent template and model, with a standing thread. Not a machine. | The Bots page — see [crew-members.md](crew-members.md) |
 | **Issue Radar crew** | An automation worker configured on a repository that claims an issue and moves it through the triage phases. Not a machine and not an assistant you chat with. | The Issue Radar Pipeline tab — see [issue-radar-pipeline.md](issue-radar-pipeline.md) |
 
-The short test: a Remote Crew is a **host**, a mate is an **assistant**,
+The short test: a Remote Crew is a **host**, a Bot is an **assistant**,
 an Issue Radar crew is a **worker on a repo**.
 
 ## Tuning
@@ -290,7 +290,7 @@ reports the first broken link, which is usually the whole answer.
 | An SSH auth error on connect | Re-add your key to `ssh-agent`. Kiro Crew never prompts for a password, so a missing credential fails immediately — and the tunnel heals itself once the key is back. |
 | A blank or black pane | The embedded dashboard never announced itself. Use **Retry** on the error panel. |
 | "local port N was taken while connecting" | Something grabbed the port first. Retry, or move `instances.tunnel_base_port` somewhere quieter. |
-| A machine that keeps dropping | The tunnel already healed itself before giving up and running a diagnosis: about two minutes when the tunnel cannot be rebuilt, or roughly attempts × (probe window + backoff), about 16 minutes at the default 8 `instances.max_recovery_attempts`, when the forward re-binds but the far end stays dead. Check the remote gateway and the link itself. |
+| A machine that keeps dropping | The tunnel already healed itself before giving up and running a diagnosis: about two minutes when the tunnel cannot be rebuilt, or roughly attempts × (probe window + backoff), about 6 minutes at the default 8 `instances.max_recovery_attempts`, when the forward re-binds but the far end stays dead. Check the remote gateway and the link itself. |
 | "the SSM session … was closed by AWS after a period with no activity" (or "AWS ended the SSM session") | AWS closed the SSM or Fargate forward. Open a new one with **Connect** on the crew's card in Settings. To allow longer idle periods, raise the Session Manager idle-timeout preference for that account and region. |
 | **unreachable — `<name>` is down** on a chained crew | The crew it is reached through is down. Fix that crew's row first; the chained one comes back with it. |
 | Every token mint fails on one machine, whose gateway is healthy | The remote's `kirocrew` on `PATH` probably points at an install that is not the one running. Reinstall it there. |
@@ -301,4 +301,4 @@ reports the first broken link, which is usually the whole answer.
 - [Native SSM vs legacy SSH](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/cloud-instance-ssm-vs-ssh.md) — how a cloud-launched machine is reached.
 - [Remote and mobile access](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-and-mobile.md) — installing and running a gateway on the far machine in the first place.
 - [dashboard.md](dashboard.md) — the dashboard the switcher sits in.
-- [crew-members.md](crew-members.md) — mates, which are not machines.
+- [crew-members.md](crew-members.md) — Bots, which are not machines.

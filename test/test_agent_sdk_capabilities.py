@@ -79,9 +79,12 @@ CAPABILITY_FIELDS = (
     "effort_via_slash_command",
     "compacts_inline",
     "crew_fires_spec_hooks",
+    "crew_fires_spec_observer_hooks",
     "supports_native_todos",
+    "runs_own_slash_commands",
     "honors_zero_tool_ban",
     "acp_client_spawnable",
+    "honors_remote_mcp_oauth",
 )
 
 
@@ -119,17 +122,9 @@ def _composed_owner_rels(rel: str) -> list[str]:
 
 #: The identity reads still standing, keyed by file and by the function they are in.
 #:
-#: One entry, and it is deliberately still here. ``api_models`` asks a question the
-#: six migrated sites do not: does this backend have a ``--list-models`` CATALOG to
-#: shell out to, or do its models only exist on a live session's advertised list?
-#: That is a pre-session question about a config value, and answering it as a
-#: capability means deciding it for KAS and for codex -- both of which take the
-#: kiro-cli branch today -- so it is a behaviour decision rather than a
-#: translation. PR 3a is scoped to translations; see the RFC's PR 3 section.
-#:
-#: Pinned by ENCLOSING FUNCTION, not by line number, so the ratchet survives an
-#: unrelated edit above it while still failing on a NEW identity read anywhere in
-#: the file.
+#: ``api_models`` asks whether a backend has a ``--list-models`` catalog, a
+#: pre-session question; a capability for it would change KAS and codex behaviour.
+#: Pinned by enclosing function, not line number.
 KNOWN_REMAINING_IDENTITY_READS = {
     "dashboard/handlers/agents.py": {"api_models"},
 }
@@ -150,14 +145,8 @@ def _enclosing_functions(tree: ast.Module) -> dict[int, str]:
 def test_no_migrated_consumer_reads_a_backend_identity(rel: str) -> None:
     """No attribute read, call or comparison in these files names the harness.
 
-    Catches all three spellings at once by walking the AST rather than the text:
-    an attribute named ``is_claude_backend``/``_is_claude`` (however it is
-    reached, including through ``getattr``), a call to ``is_claude_backend``, and
-    a load of ``ACP_BACKEND_CLAUDE``.
-
-    A read inside a function named in :data:`KNOWN_REMAINING_IDENTITY_READS` is
-    allowed and every other one is not, so this is a ratchet: the six that moved
-    cannot come back, and a seventh cannot appear beside the one that stayed.
+    AST walk for ``is_claude_backend``/``_is_claude`` (also via ``getattr``) and
+    ``ACP_BACKEND_CLAUDE``; only :data:`KNOWN_REMAINING_IDENTITY_READS` is allowed.
     """
     banned_attrs = {"is_claude_backend", "_is_claude"}
     tree = _tree(rel)
@@ -230,15 +219,8 @@ def test_the_allowance_list_is_not_stale() -> None:
 def test_each_capability_question_has_one_consumer_spelling() -> None:
     """A field is read off a capability record, never off anything else.
 
-    The point of one spelling is that the question is findable: ``grep`` for the
-    field name and you have every consumer. A read off some other object -- a
-    provider that happens to expose a same-named property, a dict, a shim -- would
-    be a second way to ask, and a second way is what drifts.
-
-    Every field in one pass over ``source_corpus``, pre-filtered to the files that
-    even mention one. Parametrizing this and walking ``src/`` per field cost five
-    full-tree parses (~24s each) for a gate whose real candidate set is a handful
-    of files.
+    One spelling keeps every consumer findable by ``grep``. All fields go in one pass
+    over ``source_corpus``: a full-tree parse per field costs about 24s each.
     """
     fields = set(CAPABILITY_FIELDS)
     allowed_roots = {"capabilities_for", "capabilities_of"}
@@ -462,17 +444,8 @@ def test_every_capability_set_has_a_disposition_row() -> None:
 def test_a_markdown_dispatching_host_must_reach_the_overlay_format_rule() -> None:
     """``overlay_project_scope`` computes its format half from ``has_mirror`` ALONE.
 
-    A host that reads the markdown spec form from a checkout ITSELF is a second
-    way for a project ``foo.md`` to be the agent a session runs, and that set is
-    deliberately not OR-ed into the decider because its only member also reads the
-    user level alone and leaves the decider before the question arises -- an OR
-    term no caller could reach is dead surface.
-
-    This assertion is what keeps that omission honest. A host in the markdown set
-    which DOES receive a project scope would dispatch a project markdown agent
-    while the decider answered ``markdown_specs=False``, so the user-level
-    overlay's stub for that name would survive, outrank the project's own
-    declaration, and run its command and credentials under the checkout's agent.
+    The markdown set is not OR-ed in because its only member reads the user level
+    alone. If one got a project scope, the user-level stub would outrank the project.
     """
     markdown = sdk_backends.ACP_BACKENDS_MARKDOWN_AGENT_SPECS
     user_level_only = sdk_backends.ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY
@@ -577,18 +550,9 @@ def test_the_provider_property_answers_for_its_own_client_backend() -> None:
 class TestTheKiroConstructionPathIsUnconditional:
     """harness-parity H13: no capability lookup may change what Kiro does.
 
-    ``acp_effective_model`` reads
-    ``namespace = capabilities_for(...).model_id_namespace`` and branches on it. The
-    branch carries a drift risk a hardcoded ``to_acp_id`` does not: the kiro arm is
-    reached through a TABLE, so an edit to
-    ``_MODEL_REGISTRY_NAMESPACE_BY_BACKEND`` can move it.
-
-    So the pin is the branch, not the value: every kiro-family backend (and any
-    stranger, which defaults to that family) must reach ``to_acp_id`` and must
-    never reach ``to_provider_id``. That is what makes "the Kiro path is
-    unconditional" a test result rather than a claim. codex is on its own
-    provider namespace like claude and takes the other arm -- pinned below so a
-    move in either direction is a deliberate edit.
+    ``acp_effective_model`` branches via ``_MODEL_REGISTRY_NAMESPACE_BY_BACKEND``, so
+    every kiro-family backend (and any stranger) must reach ``to_acp_id``, never
+    ``to_provider_id``. codex, like claude, takes the other arm.
     """
 
     @staticmethod
@@ -659,12 +623,8 @@ class TestTheKiroConstructionPathIsUnconditional:
 class TestAForeignProviderIsClassifiedThePreviousWay:
     """harness-parity H14: a provider outside ``AcpProvider`` must not be guessed at.
 
-    The ``LLMProvider`` ABC declares no ``capabilities``, so a non-``AcpProvider``
-    implementation falls through to the unknown record. That fall-through is the
-    intended answer, and it matches an ``isinstance(provider, AcpProvider)`` gate:
-    a foreign provider gets the conservative default either way. This pins that
-    equivalence against a REAL ``LLMProvider`` subclass rather than a bare object,
-    so the claim is about the ABC and not about a convenient stand-in.
+    The ``LLMProvider`` ABC declares no ``capabilities``, so it falls through to the
+    unknown record. Pinned with a real ``LLMProvider`` subclass, not a bare object.
     """
 
     @staticmethod
@@ -720,23 +680,11 @@ class TestAForeignProviderIsClassifiedThePreviousWay:
 
 
 def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
-    """``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`` membership is a JOIN of three facts,
-    not a hand-maintained list, so this recomputes the rule from its own inputs
-    and fails the moment a hand edit and the inputs disagree.
+    """``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`` is recomputed from the rule's own inputs.
 
-    A backend honours the ban iff its routing is ``Routing.AGENT_SPEC`` (the
-    harness enforces natively -- kiro, kas), OR its routing is in
-    ``tool_gate.ENFORCED_ROUTINGS`` AND something computes ``zero_tools`` for it --
-    a mirror (``providers/mirrors/registry.py``'s ``MIRRORS``), or Crew reading
-    the spec itself beside a ``ProjectionKind.BROKER_ONLY`` array, which
-    ``AcpClient._mirrorless_member_mounts`` does: pi) -- AND it is
-    NOT in ``ACP_BACKENDS_ACP_RUNTIME`` (the refusal lives only on ``AcpClient``,
-    never on the shared ``AcpRuntime`` codex and kas are served by).
-
-    Would fail if claude were re-added: its routing is ``SEEDED_SETTINGS``, which
-    ``ENFORCED_ROUTINGS`` does not carry. Would fail if codex were re-added: its
-    routing IS enforced and it has a mirror, but it is a member of
-    ``ACP_BACKENDS_ACP_RUNTIME``.
+    Rule: routing is ``Routing.AGENT_SPEC``, or it is in ``tool_gate.ENFORCED_ROUTINGS``
+    with a mirror or ``ProjectionKind.BROKER_ONLY`` mounts (pi), and the backend is
+    not in ``ACP_BACKENDS_ACP_RUNTIME`` (the refusal lives only on ``AcpClient``).
     """
     from kiro_crew.agent_sdk.tool_gate import ENFORCED_ROUTINGS
     from kiro_crew.providers.mirrors.registry import MIRRORS, ProjectionKind, projection_for
@@ -746,13 +694,24 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     # session's own directory without asking (measured, see the set's comment), so a
     # total ban cannot be honoured there even though the three facts hold.
     reads_unasked = {sdk_backends.ACP_BACKEND_COPILOT}
+    # A second ground, beside the refusal: a zero-tool session that MOUNTS NO TOOL,
+    # so no call exists for a pre-approval to run. claude's session options carry an
+    # empty ``tools`` with ``strictMcpConfig`` and an empty wire array, measured on
+    # ``claude/zero-tools-refused-live.jsonl`` (``test_claude_zero_tools.py``).
+    mounts_nothing = {sdk_backends.ACP_BACKEND_CLAUDE}
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
         routing = routing_for(backend)
-        expected = routing is sdk_backends.Routing.AGENT_SPEC or (
-            routing in ENFORCED_ROUTINGS
-            and (backend in MIRRORS or projection_for(backend).kind is ProjectionKind.BROKER_ONLY)
-            and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
-            and backend not in reads_unasked
+        expected = (
+            routing is sdk_backends.Routing.AGENT_SPEC
+            or backend in mounts_nothing
+            or (
+                routing in ENFORCED_ROUTINGS
+                and (
+                    backend in MIRRORS or projection_for(backend).kind is ProjectionKind.BROKER_ONLY
+                )
+                and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
+                and backend not in reads_unasked
+            )
         )
         actual = backend in sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
         assert actual == expected, (
@@ -765,6 +724,7 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     assert sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN == {
         sdk_backends.ACP_BACKEND_KIRO,
         sdk_backends.ACP_BACKEND_KAS,
+        sdk_backends.ACP_BACKEND_CLAUDE,
         sdk_backends.ACP_BACKEND_OPENCODE,
         sdk_backends.ACP_BACKEND_GOOSE,
         sdk_backends.ACP_BACKEND_DEEPSEEK,
@@ -774,24 +734,14 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
 
 
 def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
-    """Pins why swapping ``_is_claude`` for the effort capability changed nothing --
-    and that the capability answer for EACH zero-tool-safe backend is
-    deliberately checked rather than assumed.
+    """Each pool-eligible backend's effort capability answers are checked, not assumed.
 
-    ``AcpWorker`` constructs its ``AcpClient`` with ``acp_backend=``, and
-    ``llm_pool._get_acp_backend`` restricts the value to whatever answers both
-    ``honors_zero_tool_ban`` and ``acp_client_spawnable`` True -- today
-    kiro/opencode/goose/deepseek/pi/strands. claude is NOT a member: its routing
-    (``Routing.SEEDED_SETTINGS``) is declared but not enforced by this core, so
-    an inherited ``~/.claude`` pre-approval can skip the permission request the
-    refusal needs to run. Asking the EFFORT capabilities rather than the identity
-    in ``_apply_effort`` means each member's answers (the config option for
-    opencode and goose, the ``/effort`` slash command for kiro alone) are handled correctly
-    with no branch in the pool itself; this pin exists so a backend that newly
-    qualifies for the pool with different effort answers is caught here, not
-    assumed to inherit an existing member's.
+    ``llm_pool._get_acp_backend`` allows only backends with both ``honors_zero_tool_ban``
+    and ``acp_client_spawnable``. claude qualifies because its zero-tool session mounts
+    no tool, so an inherited ``~/.claude`` pre-approval has nothing to run.
     """
     from kiro_crew.agent_sdk.backends import (
+        ACP_BACKEND_CLAUDE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_KIRO,
@@ -817,6 +767,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     pool_safe_backends = ACP_BACKENDS_HONOR_ZERO_TOOL_BAN & ACP_BACKENDS_ACP_CLIENT_SPAWNABLE
     assert pool_safe_backends == {
         ACP_BACKEND_KIRO,
+        ACP_BACKEND_CLAUDE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
@@ -828,6 +779,9 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         "update this pin"
     )
     assert capabilities_for(ACP_BACKEND_KIRO).effort_via_config_option is False
+    # claude carries effort as its ``effort`` config option.
+    assert capabilities_for(ACP_BACKEND_CLAUDE).effort_via_config_option is True
+    assert capabilities_for(ACP_BACKEND_CLAUDE).effort_via_slash_command is False
     assert capabilities_for(ACP_BACKEND_OPENCODE).effort_via_config_option is True
     assert capabilities_for(ACP_BACKEND_GOOSE).effort_via_config_option is True
     assert capabilities_for(ACP_BACKEND_KIRO).effort_via_slash_command is True

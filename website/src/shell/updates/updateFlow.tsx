@@ -46,10 +46,6 @@ export function useUpdateFlow() {
   // yet; '' otherwise. Drives the notice above the notes.
   const [staleNotesFrom, setStaleNotesFrom] = useState('')
   const [showChangelog, setShowChangelog] = useState(false)
-  // Has the changelog effect below reached a verdict for this launch? It decides
-  // asynchronously, so "no changelog is showing" is not the same claim as "no
-  // changelog is going to show" — the startup-video gate needs the second one.
-  const [changelogDecided, setChangelogDecided] = useState(false)
   const [fullChangelog, setFullChangelog] = useState('')
   const [showFull, setShowFull] = useState(false)
   const [updateError, setUpdateError] = useState('')
@@ -65,9 +61,9 @@ export function useUpdateFlow() {
   useEffect(() => {
     if (!version || version === '—') return
     const lastSeen = localStorage.getItem('mc-last-version')
-    if (lastSeen === version) { setChangelogDecided(true); return }
+    if (lastSeen === version) return
     // First visit — no baseline to diff, just record current version
-    if (!lastSeen) { safeSetItem('mc-last-version', version); setChangelogDecided(true); return }
+    if (!lastSeen) { safeSetItem('mc-last-version', version); return }
     // Version changed — show the sections in `lastSeen < v <= version`, and
     // nothing else. Both bounds are load-bearing, and the missing UPPER one is
     // the reported bug: `main` is bumped a minor ahead of the released line and a
@@ -115,13 +111,9 @@ export function useUpdateFlow() {
       // release notes for good -- there is no second chance once the baseline says
       // the user has seen them.
       safeSetItem('mc-last-version', version)
-      setChangelogDecided(true)
     }).catch(() => {
       // A failure is not an answer. The notes may still be waiting, so leave the
-      // baseline alone for the next launch to retry, and do NOT mark the changelog
-      // decided: the startup video yields this launch rather than opening on a
-      // guess about what the user was owed.
-      setChangelogDecided(false)
+      // baseline alone for the next launch to retry.
     })
   }, [version])  
   const handleUpdate = useCallback(async () => {
@@ -143,7 +135,7 @@ export function useUpdateFlow() {
   }, [])
   return {
     updating, setUpdating, showUpdateModal, setShowUpdateModal, changes, staleNotesFrom, showChangelog, setShowChangelog,
-    changelogDecided, fullChangelog,
+    fullChangelog,
     setFullChangelog, showFull, setShowFull, updateError, setUpdateError, handleUpdate, version, affordance,
     updateCommand, updateTargetVersion,
   }
@@ -178,7 +170,7 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocusTrap(dialogRef, close)
   return (
-    <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise" onClick={e => { if (e && e.target === e.currentTarget) close() }}>
+    <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe" onClick={e => { if (e && e.target === e.currentTarget) close() }}>
       {/* Sized for a real release, not a patch note: a minor's section runs
           to hundreds of lines, and the old max-w-md / max-h-56 box showed a
           dozen of them. The dialog is bounded by the viewport and laid out as
@@ -280,7 +272,7 @@ export function UpdateErrorDialogFrame({ setError, children }: { setError: (msg:
   useDialogFocusTrap(dialogRef, dismiss)
   return (
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts; it performs no action, so there is nothing for a keyboard user to reach
-    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')} onKeyDown={isolateKeys}>
+    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')} onKeyDown={isolateKeys}>
       {children}
     </div>
   )

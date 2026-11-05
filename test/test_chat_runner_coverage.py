@@ -101,12 +101,8 @@ class TestPromptSubmitTranscriptRead:
 class TestSessionClosingQuietAbort:
     """A gateway-shutdown race during turn prep is a quiet abort, not an error.
 
-    Two dashboard slots were mid ``get_or_create`` when a restart's
-    ``close_all`` set ``_closing``; the allocation gate raised
-    ``SessionClosingError`` (by design) but the generic terminal handler then
-    logged an ERROR traceback, appended an ❌ error card to the slot, and
-    recorded a spurious session failure. The dedicated arm must swallow it: no
-    card, no record_failure, no exception out of ``_run_chat``.
+    ``SessionClosingError`` from ``close_all`` mid ``get_or_create`` gets no error card,
+    no record_failure, and no exception out of ``_run_chat``.
     """
 
     @pytest.mark.asyncio
@@ -134,13 +130,8 @@ class TestSessionClosingQuietAbort:
 class TestSessionStartFailureRowKind:
     """A session start that timed out leaves a row the Continue guard can count.
 
-    ``record_failure`` cannot count this failure: it increments a counter on the
-    REGISTERED session, and a start that never answered registered none, so the
-    call returns False and nothing anywhere remembers that the start failed.
-    The structural ``session_start_failed`` row kind is that memory -- decided
-    from the exception's tag (set at the ACP raise sites on both exception
-    families), never from the prose, so the Continue endpoint and the error card
-    can count consecutive failed starts without matching on message wording.
+    ``record_failure`` needs a registered session, which a failed start lacks, so the
+    ``session_start_failed`` row kind records it, decided from the exception's tag.
     """
 
     @pytest.mark.asyncio
@@ -917,13 +908,8 @@ _GLUED_SK = (
 class TestBlockedLinkCardRecords:
     """What the dashboard's blocked-link card lists after a flush.
 
-    The card lists the host's records in the saved reply, each under its own
-    address, and never claims which one a chip stands for
-    (``BlockedLinkCard`` in ``website/src/components/RedactionCards.tsx``).
-    Counts cannot prove that a placeholder and a record are the same URL, so
-    these pin what each record says about itself. They stream the deltas
-    through both per-delta removers in the order the streaming loop applies
-    them, then flush.
+    Counts cannot tie a placeholder to a record (``BlockedLinkCard`` in
+    ``website/src/components/RedactionCards.tsx``), so these pin each record's own content.
     """
 
     H = "h.example-sink.net"

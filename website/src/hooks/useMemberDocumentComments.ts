@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { commentsRefusedCopy, commentsSentCopy, deliveryUnconfirmedCommentsCopy } from '../chat-core/transport/receiptCopy'
 import { slotBusySteer } from '../components/chat-input/busySend'
 import { useAppStore } from '../store'
 import { useJevAutoSend } from '../pages/chat/useJevAutoSend'
+import { useStableCallbackProps } from '../pages/chat/useStableCallbackProps'
 
 /** How long the "N comments sent" status line stays up. */
 const SENT_LINE_MS = 5000
@@ -65,7 +66,10 @@ export function useMemberDocumentComments({
   const infoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => { if (infoTimerRef.current) clearTimeout(infoTimerRef.current) }, [])
 
-  const submitComments = useCallback(async (message: string, count = 0) => {
+  // Handed out as a stable forwarder to the latest handler: the side panel can
+  // keep the callback of an earlier render (it sits under AnimatePresence), and a
+  // Submit must still send with the latest Auto (Jev) answer and connection.
+  const { submitComments } = useStableCallbackProps({ submitComments: async (message: string, count = 0): Promise<boolean> => {
     if (!connected) return false
     const slot = slotRef.current
     if (!slot) return false
@@ -90,7 +94,7 @@ export function useMemberDocumentComments({
       infoTimerRef.current = setTimeout(() => setInfo(''), SENT_LINE_MS)
     }
     return true
-  }, [connected, slotRef, besideRef, appStore, jevAutoConsented, crewmateLabel, showActionError, clearActionError])
+  } })
 
   return { info, submitComments }
 }

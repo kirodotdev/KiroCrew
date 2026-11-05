@@ -408,8 +408,12 @@ def _disable_imported_script_hooks(hooks_path: Path) -> list[str]:
             return []
         if text is None:
             return []
+        # Parse exactly as the hook store does (one leading UTF-8 mark dropped):
+        # a file the store loads must never be one this sanitizer reads as inert.
+        from kiro_crew.user_json import loads_user_json
+
         try:
-            data = json.loads(text)
+            data = loads_user_json(text)
         except (ValueError, RecursionError):
             return []
         if not isinstance(data, dict) or not isinstance(data.get("hooks"), list):

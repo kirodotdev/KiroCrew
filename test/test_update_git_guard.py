@@ -257,6 +257,83 @@ class TestUpdateCheckGitGuard:
         assert json.loads(resp.body)["code"] == "git_fetch_failed"
         assert not any("pull" in c for c in calls)
 
+    def test_apply_surfaces_a_slow_preguard_fetch_as_retryable(self, monkeypatch, tmp_path):
+        # A reachable-but-slow remote must not be killed and reported as a
+        # server error: the fetch gets the same 60s bound as the fast-forward
+        # that follows it, and a genuine overrun answers 409 (retryable) with a
+        # clear reason, never a 5xx and never by skipping the fetch.
+        _init_repo(tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
+
+        async def _no_provider():
+            return None
+
+        monkeypatch.setattr("kiro_crew.platform.update_provider.apply_policy_update", _no_provider)
+        monkeypatch.setattr(updates, "update_blocked_reason", lambda url: None)
+
+        calls: list[tuple[str, ...]] = []
+
+        class _Proc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"", b"")  # clean working tree / no fetch output
+
+        async def _fake_exec(*args, **kwargs):
+            calls.append(tuple(str(a) for a in args))
+            return _Proc()
+
+        monkeypatch.setattr(updates.asyncio, "create_subprocess_exec", _fake_exec)
+        # Drive the slow-fetch branch deterministically — no real clock. The
+        # handler reaches the fetch through asyncio.wait_for; intercept it,
+        # record the deadline it asks for, and for the fetch (the first call
+        # whose bound is the network legs' — >=30s) raise the TimeoutError the
+        # real event loop would raise on overrun, exercising the handler's own
+        # timeout branch rather than asserting a constant. Every other wait runs
+        # its awaitable to completion with no bound (the stubs return at once).
+        seen_timeouts: list[float] = []
+        tripped = {"done": False}
+
+        async def _wait_for(aw, timeout):
+            seen_timeouts.append(timeout)
+            if timeout >= 30 and not tripped["done"]:
+                tripped["done"] = True
+                aw.close()  # the fetch coroutine never runs; close it cleanly
+                raise asyncio.TimeoutError
+            return await aw
+
+        monkeypatch.setattr(updates.asyncio, "wait_for", _wait_for)
+
+        async def _noop_kill(proc, **kw):
+            return None
+
+        monkeypatch.setattr(updates.platform_compat, "kill_and_reap", _noop_kill)
+
+        class _State:
+            def push_refresh(self, kind: str) -> None:
+                pass
+
+        class _Req(dict):
+            app = {"state": _State()}
+
+        resp = asyncio.run(updates.api_update_apply(_Req(app="", user="local-app")))
+        # The slow fetch is surfaced, not swallowed, and as a retryable 409.
+        assert resp.status == 409
+        body = json.loads(resp.body)
+        assert body["code"] == "git_fetch_failed"
+        assert "out" in body["error"].lower()
+        # The fetch ran (never skipped), and the handler asked for the 60s bound
+        # the fast-forward uses — a value a slow-but-reachable fetch can live in.
+        assert any("fetch" in c for c in calls)
+        fetch_bound = next(t for t in seen_timeouts if t >= 30)
+        assert fetch_bound == 60
+        # It refused before ever reaching the pull.
+        assert not any("pull" in c for c in calls)
+
     @pytest.mark.parametrize(
         "rev_list_result",
         [

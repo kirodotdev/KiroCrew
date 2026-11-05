@@ -79,15 +79,9 @@ class TestChatSlot:
     def test_trim_advances_the_durable_counter_by_durable_rows_only(self):
         """Transient rows folded into the frozen prefix advance ONLY the all-rows counter.
 
-        ``_disk_older_count`` credits every persisted trimmed row (its contract
-        with the save model), while ``_disk_older_durable_count`` counts only
-        the rows a durable read returns — the base absolute message positions
-        are built over. Counting them together is the cursor-skew defect.
-
-        Mutation guards: advancing the durable counter by ``persisted_trim``
-        re-introduces the skew; counting the slice AFTER the ``del`` counts the
-        wrong (surviving) rows — the leading transient rows here make both
-        mutants visibly wrong.
+        ``_disk_older_durable_count`` is the base for absolute message positions, so it
+        counts only rows a durable read returns. The leading transient rows make
+        counting by ``persisted_trim`` or after the ``del`` visibly wrong.
         """
         slot = _ChatSlot("s1")
         # The five oldest window rows: 2 transient, 3 durable.
@@ -114,16 +108,9 @@ class TestChatSlot:
     def test_trim_counts_evicted_durable_rows_even_when_unpersisted(self):
         """Durable rows lost to the unpersisted overflow still advance the durable counter.
 
-        ``_disk_older_count`` excludes the overflow (its save contract: it
-        claims on-disk lines, and these rows never reached disk). The durable
-        counter is a POSITION base with no disk contract: if evicted durable
-        rows were uncounted, every later absolute position would shift down and
-        a poller's ``since`` guard would pass while rows were silently skipped
-        — the silent failure a blanket refusal would make loud.
-        Counting them makes such a cursor refuse loudly (``since < base``).
-
-        Mutation guard: restricting the durable count to the persisted slice
-        (``messages[:persisted_trim]``) yields 2 here instead of 5.
+        The durable counter is a position base, not a disk count: uncounted rows would
+        shift later positions so a poller skips rows silently instead of refusing
+        (``since < base``).
         """
         slot = _ChatSlot("s1")
         for i in range(_MAX_SLOT_MESSAGES):
@@ -176,19 +163,8 @@ class TestChatSlot:
     def test_jira_issue_links_scanned_from_user_messages(self):
         """A Jira URL pasted by the USER becomes a sidebar chip.
 
-        This is the primary Jira flow: people paste the ticket they are working
-        from. The scan covers every durable role, and the serialized entry
-        carries a ready ``label`` because PROJ-123 is the whole identifier --
-        the number alone is meaningless outside its project.
-
-        ``repo`` is NOT sent. It carried Jira's project key only so that a
-        renderer predating ``label`` -- which assembles the Jira chip name as
-        ``{repo}-{number}`` -- would not print ``undefined-123`` in an
-        already-open tab, since a restart without a ``kiro_crew.__version__``
-        bump never trips the reload-on-upgrade guard. Releases have shipped past
-        the change that introduced ``label``, so no such bundle can still be
-        live. Absence is asserted rather than left unpinned so the field cannot
-        drift back in and grow a second naming rule.
+        The entry carries a ready ``label`` because PROJ-123 is the whole identifier.
+        ``repo`` is asserted absent so the chip cannot grow a second naming rule.
         """
         slot = _ChatSlot("s1")
         slot.append("user", "Please look at https://acme.atlassian.net/browse/PROJ-123", ts="t1")
@@ -302,11 +278,8 @@ class TestChatSlot:
     def test_wire_only_append_does_not_dirty_or_invalidate(self, role):
         """A streamed token must not mark the slot dirty or churn the link cache.
 
-        A wire-only row is never persisted and carries no source link, so
-        dirtying the slot would make the 5-second flush re-serialize and fsync
-        the whole transcript once per cycle while a reply streams, and bumping
-        the source-link revision would make the next broadcast rescan the whole
-        window. Neither may happen for such a row.
+        Otherwise the 5-second flush would fsync the whole transcript every cycle while
+        a reply streams, and each broadcast would rescan the window.
         """
         slot = _ChatSlot("s1")
         slot._dirty = False
@@ -431,13 +404,9 @@ class TestChatSlot:
         """A candidate's end is bounded by the NEXT occurrence, not by the end of the
         message.
 
-        Content made of adjacent `https://` prefixes has no stop character until the
-        very end, so an unbounded forward scan per occurrence is quadratic -- and
-        `to_dict` runs this synchronously during `push_slots_update`, so a single
-        crafted message could stall the gateway past its watchdog. Measured on this
-        input: 0.14s bounded vs 128s unbounded, so the absolute budget below
-        separates them by ~70x without comparing ratios (which flakes on loaded
-        runners)."""
+        An unbounded scan is quadratic here and runs synchronously in `push_slots_update`.
+        Measured 0.14s bounded vs 128s unbounded, so an absolute budget avoids flaky ratios.
+        """
         payload = "https://" * 16000 + "github.com/acme/widgets/pull/1"
         assert len(payload) > 128_000
         slot = _ChatSlot("s1")
@@ -453,12 +422,9 @@ class TestChatSlot:
     def test_pr_source_links_bound_total_parse_attempts(self, monkeypatch):
         """Every parse attempt is charged, so no flood shape can run unbounded.
 
-        `len(found)` advances only on a NEW valid url, so a message repeating one
-        REJECTED candidate never advanced it and every occurrence reached the
-        parser -- a 58 MB body froze the event loop for ~13.6s. Charging attempts
-        rather than successes is what bounds rejected, repeated and distinct floods
-        with one mechanism (a dedup set bounded only some of them, and cost
-        unbounded memory to do it)."""
+        `len(found)` advances only on a new valid url, so one repeated rejected candidate
+        would reach the parser every time (a 58 MB body froze the loop for ~13.6s).
+        """
         from kiro_crew.dashboard.handlers import source_providers
 
         calls = 0

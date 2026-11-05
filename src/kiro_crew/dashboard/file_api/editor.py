@@ -7,7 +7,6 @@ import functools
 import logging
 import os
 import subprocess
-import tempfile
 import urllib.parse
 from typing import TYPE_CHECKING
 
@@ -46,6 +45,7 @@ if TYPE_CHECKING:
         require_owner_dashboard_request,
         sniff_raster_mime,
     )
+    from kiro_crew.git_no_index_diff import no_index_diff, patch_hunks
 
 
 def _read_safe_end(text: str, cap: int) -> int:
@@ -624,43 +624,19 @@ async def api_file_diff(request: web.Request) -> web.Response:
 
         A patch shows lines out of their surrounding text, which is what the
         redactor reads, so the pass runs on whole bodies and only masked text is
-        diffed. The temp files hold masked text only, in a private dir outside
-        any repo.
+        diffed, by the shared ``no_index_diff``.
         """
-        with tempfile.TemporaryDirectory(prefix="kc-file-diff-") as tmp:
-            a = os.path.join(tmp, "a")
-            b = os.path.join(tmp, "b")
-            with open(a, "w", encoding="utf-8", newline="") as fh:
-                fh.write(old)
-            with open(b, "w", encoding="utf-8", newline="") as fh:
-                fh.write(new)
-            r = subprocess.run(
-                [*_git, "diff", "--no-index", "--no-textconv", "--no-ext-diff", "--", a, b],
-                cwd=tmp,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-                env=_env,
-            )
-        # --no-index answers 1 for "differs"; anything else is a failure, and a
-        # failure must not fall back to the raw patch.
-        if r.returncode not in (0, 1):
-            raise subprocess.CalledProcessError(r.returncode, "git diff --no-index")
-        # "\n" only: splitlines() also cuts on form feed, U+2028 and other
-        # characters that sit inside a patch line.
-        lines = r.stdout.rstrip("\n").split("\n")
-        first = next((i for i, ln in enumerate(lines) if ln.startswith("@@")), None)
+        patch = no_index_diff(old, new, git=_git, env=_env)
+        hunks = patch_hunks(patch)
         name = redact_fn(rel).replace("\n", " ")
         header = [f"diff --git a/{name} b/{name}"]
-        if first is None:
+        if hunks is None:
             # No hunks: no change, or git judged the text binary.
-            if not r.stdout.strip():
+            if not patch.strip():
                 return ""
             return "\n".join([*header, f"Binary files a/{name} and b/{name} differ"])
         header += ["--- /dev/null" if new_file else f"--- a/{name}", f"+++ b/{name}"]
-        return "\n".join([*header, *lines[first:]])
+        return "\n".join([*header, *hunks])
 
     # Same verdict as ``api_file_read`` for the same caller: the panel compares
     # the buffer that read served against this ``original``, so the two MUST be

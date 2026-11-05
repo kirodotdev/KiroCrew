@@ -54,6 +54,25 @@ class McpToolError(RuntimeError):
     """A tool call the MCP server answered with an error; the server is still usable."""
 
 
+def _joined_text(content: object) -> str:
+    """Every text block of an MCP tool result, in order, joined by newlines.
+
+    A tool may answer with more than one block, for example a leading
+    untrusted-content notice followed by the JSON payload. Returning only the
+    first block handed the script the notice and dropped the payload, so all
+    text blocks are kept, the notice included. Non-text blocks carry no text
+    and are skipped.
+    """
+    if not isinstance(content, list):
+        return ""
+    texts = [
+        block["text"]
+        for block in content
+        if isinstance(block, dict) and isinstance(block.get("text"), str)
+    ]
+    return "\n".join(texts)
+
+
 class McpToolClient:
     """Minimal MCP JSON-RPC client. Spawns server subprocess, calls tool, closes."""
 
@@ -259,12 +278,10 @@ class McpToolClient:
         if "error" in r:
             raise McpToolError(f"MCP tool error: {r['error']}")
         result = r.get("result", {})
-        if result.get("isError"):
-            content = result.get("content", [])
-            err_text = content[0].get("text", "unknown error") if content else "unknown error"
-            raise McpToolError(f"MCP tool error: {err_text}")
         content = result.get("content", [])
-        return content[0].get("text", "") if content else ""
+        if result.get("isError"):
+            raise McpToolError(f"MCP tool error: {_joined_text(content) or 'unknown error'}")
+        return _joined_text(content)
 
     def is_running(self) -> bool:
         """Whether the server process is still up and so can take another call."""

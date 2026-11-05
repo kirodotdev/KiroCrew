@@ -7,9 +7,10 @@
 //   * the page is full-bleed (no dashboard PageHeader, no page gutters),
 //   * no loading state spins.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ProjectsPage from '../pages/ProjectsPage'
+import { api } from '../api/client'
 import { BUILTIN_COMPONENT_REGISTRY, hasBuiltinComponent } from '../apps/builtinRegistry'
 import {
   COLLAPSED_RAIL_WIDTH, DEFAULT_RAIL_WIDTH, MAX_RAIL_WIDTH, MIN_RAIL_WIDTH,
@@ -57,6 +58,14 @@ function drag(handle: HTMLElement, dx: number, id = 1) {
 
 const railHandle = () => screen.getByRole('separator', { name: 'Resize sidebar' })
 
+// Renders the page and waits for its mount load (api.taskRunnerStatus) to land, so the state update
+// it causes happens inside the test rather than after it.
+async function renderShell() {
+  const result = renderWithProviders(<ProjectsPage />)
+  await waitFor(() => expect(api.taskRunnerStatus).toHaveBeenCalled())
+  return result
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
@@ -74,15 +83,15 @@ describe('Task Runner — builtin app routing', () => {
 })
 
 describe('Task Runner — workspace shell', () => {
-  it('is full-bleed: no dashboard PageHeader', () => {
+  it('is full-bleed: no dashboard PageHeader', async () => {
     // The other builtin app pages own their whole viewport rather than sitting
     // under the generic title/subtitle block.
-    renderWithProviders(<ProjectsPage />)
+    await renderShell()
     expect(screen.queryByTestId('page-header')).not.toBeInTheDocument()
   })
 
-  it('still names the app, in the rail instead of a page title', () => {
-    renderWithProviders(<ProjectsPage />)
+  it('still names the app, in the rail instead of a page title', async () => {
+    await renderShell()
     expect(screen.getByText('Task Runner')).toBeInTheDocument()
   })
 
@@ -94,22 +103,22 @@ describe('Task Runner — workspace shell', () => {
     expect(screen.getByRole('button', { name: /New Task/ })).toBeInTheDocument()
   })
 
-  it('exposes the rail edge as an accessible vertical separator', () => {
-    renderWithProviders(<ProjectsPage />)
+  it('exposes the rail edge as an accessible vertical separator', async () => {
+    await renderShell()
     const handle = railHandle()
     expect(handle.getAttribute('aria-orientation')).toBe('vertical')
   })
 })
 
 describe('Task Runner — rail resize and collapse', () => {
-  it('widens the rail on drag and persists the new width', () => {
-    renderWithProviders(<ProjectsPage />)
+  it('widens the rail on drag and persists the new width', async () => {
+    await renderShell()
     drag(railHandle(), 60)
     expect(loadRailWidth()).toBe(DEFAULT_RAIL_WIDTH + 60)
   })
 
-  it('clamps the rail to its maximum', () => {
-    renderWithProviders(<ProjectsPage />)
+  it('clamps the rail to its maximum', async () => {
+    await renderShell()
     drag(railHandle(), 5000)
     expect(loadRailWidth()).toBe(MAX_RAIL_WIDTH)
   })
@@ -123,8 +132,8 @@ describe('Task Runner — rail resize and collapse', () => {
     expect(await screen.findByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
   })
 
-  it('does not collapse when the drag merely reaches the minimum', () => {
-    renderWithProviders(<ProjectsPage />)
+  it('does not collapse when the drag merely reaches the minimum', async () => {
+    await renderShell()
     drag(railHandle(), -(DEFAULT_RAIL_WIDTH - MIN_RAIL_WIDTH))
     expect(loadRailCollapsed()).toBe(false)
     expect(loadRailWidth()).toBe(MIN_RAIL_WIDTH)
@@ -143,17 +152,17 @@ describe('Task Runner — rail resize and collapse', () => {
     expect(await screen.findByRole('button', { name: /New Task/ })).toBeInTheDocument()
   })
 
-  it('keeps the collapsed strip narrow', () => {
+  it('keeps the collapsed strip narrow', async () => {
     localStorage.setItem(RAIL_COLLAPSED_KEY, '1')
-    renderWithProviders(<ProjectsPage />)
+    await renderShell()
     const strip = screen.getByRole('button', { name: 'Expand sidebar' }).closest('aside')
     expect(strip).toHaveStyle({ width: `${COLLAPSED_RAIL_WIDTH}px` })
   })
 })
 
 describe('Task Runner — rail is keyboard operable', () => {
-  it('exposes the handle as a focusable splitter reporting its position', () => {
-    renderWithProviders(<ProjectsPage />)
+  it('exposes the handle as a focusable splitter reporting its position', async () => {
+    await renderShell()
     const handle = railHandle()
     expect(handle).toHaveAttribute('tabindex', '0')
     expect(handle).toHaveAttribute('aria-valuenow', String(DEFAULT_RAIL_WIDTH))
@@ -161,8 +170,8 @@ describe('Task Runner — rail is keyboard operable', () => {
     expect(handle).toHaveAttribute('aria-valuemax', String(MAX_RAIL_WIDTH))
   })
 
-  it('resizes on arrow keys, with a coarser Shift step', () => {
-    renderWithProviders(<ProjectsPage />)
+  it('resizes on arrow keys, with a coarser Shift step', async () => {
+    await renderShell()
     fireEvent.keyDown(railHandle(), { key: 'ArrowRight' })
     expect(loadRailWidth()).toBe(DEFAULT_RAIL_WIDTH + 16)
     fireEvent.keyDown(railHandle(), { key: 'ArrowRight', shiftKey: true })
@@ -171,8 +180,8 @@ describe('Task Runner — rail is keyboard operable', () => {
     expect(loadRailWidth()).toBe(DEFAULT_RAIL_WIDTH + 64)
   })
 
-  it('leaves vertical arrows alone so the columns either side still scroll', () => {
-    renderWithProviders(<ProjectsPage />)
+  it('leaves vertical arrows alone so the columns either side still scroll', async () => {
+    await renderShell()
     const before = loadRailWidth()
     fireEvent.keyDown(railHandle(), { key: 'ArrowDown' })
     fireEvent.keyDown(railHandle(), { key: 'ArrowUp' })
@@ -191,9 +200,9 @@ describe('Task Runner — rail is keyboard operable', () => {
     expect(await screen.findByRole('button', { name: /New Task/ })).toBeInTheDocument()
   })
 
-  it('gives the collapsed strip a visible focus ring', () => {
+  it('gives the collapsed strip a visible focus ring', async () => {
     localStorage.setItem(RAIL_COLLAPSED_KEY, '1')
-    renderWithProviders(<ProjectsPage />)
+    await renderShell()
     // It is the only keyboard route back to the expanded rail, so a Tab user
     // must be able to see it take focus.
     const expand = screen.getByRole('button', { name: 'Expand sidebar' })

@@ -338,6 +338,23 @@ reclaim thread swallows the refusal. The test suite's host-service floor
 (`test/conftest_floor_services.py`) refuses any `memory.reclaim` write under
 `/sys/fs/cgroup`.
 
+**The advisories name the ceiling their figure measured.** The posture's figure is the
+tightest of host `MemAvailable`, a container limit and this slice's headroom, so agents can
+read `critical` while the host still holds the quarter of RAM the ceiling keeps back, and the
+dashboard's memory gauge, which reads host `MemAvailable`, shows plenty free. On a pressured
+probe `resource_status_agent_ceiling.read_agent_ceiling()` checks whether the slice is the tighter reading
+(below host `MemAvailable` and below any container headroom) and, when it is, records the
+slice's ceiling, the host figure and the slice's `shmem` on `ResourceStatus.agent_ceiling`.
+The bell notes (`notifications/resource_pressure.py`) then say "Agent memory critically low"
+or "Agent memory tight" with the host figure beside the agents' headroom, the recovery note
+keeps the episode's wording, and the `[RESOURCES]` line, the `resource_status` tool and
+`admission_check`'s refusal reason (what a deferred cron firing reports) name the ceiling
+the same way. A host-bound reading keeps the "Host memory" wording. Shared memory
+is named once it holds a tenth of the ceiling (`_SLICE_SHMEM_NOTABLE_RATIO`): it is usually
+files in a tmpfs (`/dev/shm`, a tmpfs `/tmp`), charged to the slice until they are deleted,
+and no reclaim can drop it. The ample path reads nothing extra, and nothing gates on the
+attribution: posture, admission and the spawn floor read the same figure as before.
+
 The kernel enforces both ceilings at `fork()` and allocation time, so there is no reaper
 race. `--scope` execs into the target rather than forking a wrapper, so the gateway's PID
 tracking, `killpg` and descendant scan are unaffected. It composes *outside* the OS-level
@@ -388,6 +405,11 @@ with, so this is configuration, not the victim's enforced limit). A new `oom_kil
 OOM killer, and an `oom` event raised above the slice does not reach it, so this is the
 host-wide OOM killer or a limit on an enclosing slice, and the kernel log says which. A
 victim scope already gone is pointed at the kernel log, which still names the killed process.
+The worker only adds a report to those waiting for the loop, never replaces them, so a kill
+found by a probe that outlived its timeout still reaches the bell on the next tick. At most
+`MAX_PENDING_OOM_REPORTS` reports wait; older ones are counted, and the count opens the next
+note. The loop pushes them as notes that each fit the bus body limit, and a report leaves the
+stash only once its note was pushed.
 
 A **task** breach has no comparable kernel event to observe: past `pids.max` the kernel
 fails `fork()` with `EAGAIN` in whichever scope asks next, logs nothing, and every agent
@@ -421,7 +443,8 @@ and prints "ceiling unreadable", so a teardown is never published as an absent l
 Temp-directory headroom is the third figure the pull tool reports, and like the task figure
 it is reported, never gated. `resource_status.temp_headroom_lines()` measures `/tmp`, the
 first existing `TMPDIR`/`TEMP`/`TMP` directory, and the calling process's
-`tempfile.gettempdir()`. An agent's `$TMPDIR` is its own scratch dir, so `/tmp` is listed
+`tempfile.gettempdir()`. A host without `os.statvfs` (native Windows) measures free space
+through `shutil.disk_usage` and reports no inode limit. An agent's `$TMPDIR` is its own scratch dir, so `/tmp` is listed
 explicitly, and the configured directory is read from the environment because
 `gettempdir()` skips one that is full. The tool keeps a second root only when it sits on a different device,
 and flags a root below 10% free space, below 10% free inodes, or under 1,000 free inodes.

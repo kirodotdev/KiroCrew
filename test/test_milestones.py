@@ -25,6 +25,8 @@ def _home(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch) -> Path:
     # No platform context is installed in a unit test; the policy itself is
     # covered by the tests that restore the real check.
     _floor_monkeypatch.setattr(m, "_policy_permits", lambda: True)
+    # Telemetry collection on, so an Explore click stamps a recommendation.
+    _floor_monkeypatch.setattr(m, "_recommendation_consent", lambda: True)
     return tmp_path
 
 
@@ -82,7 +84,14 @@ class TestCounting:
         m.apply_now(m.op_starter_clicked("widgets", "empty_state"))
         m.record("widgets")
         reached = [a for n, a in metrics if n == m.M_REACHED]
-        assert reached == [{"group": "features", "milestone": "widgets", "via": "starter"}]
+        assert reached == [
+            {
+                "group": "features",
+                "milestone": "widgets",
+                "via": "starter",
+                "recommended_by": "explore",
+            }
+        ]
         assert (
             m.M_STARTER_CLICKED,
             {"surface": "empty_state", "milestone": "widgets", "send": "send"},
@@ -99,14 +108,18 @@ class TestCounting:
         assert m.load()["counters"]["turns-sent"]["count"] == 5
 
     def test_a_write_failure_never_raises_into_the_caller(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         def boom(_st: object) -> None:
             raise OSError("disk full")
 
         monkeypatch.setattr(m, "_save", boom)
-        m.record("widgets")  # must not raise
-        m.record_user_turn(mate_thread=True, crew_mode=True)
+        with caplog.at_level("WARNING", logger="kiro_crew.milestones"):
+            m.record("widgets")  # must not raise
+            m.record_user_turn(mate_thread=True, crew_mode=True)
+        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.milestones"]
+        # One record per failed flush; each call above flushes at least once.
+        assert sorted(set(logged)) == ["milestones state write failed"]
 
     def test_a_policy_denial_drops_hook_ops_with_no_write_and_no_metric(
         self, monkeypatch: pytest.MonkeyPatch, metrics: list
@@ -179,6 +192,7 @@ class TestCounting:
             "noticed",
             "backfilled",
             "starter_clicked",
+            "recommended",
         }
         # Only ids, numbers, dates and source labels.
         for value in json.dumps(data).split('"')[1::2]:
@@ -188,6 +202,15 @@ class TestCounting:
         m._path().write_text(json.dumps({"counters": {"widgets": 7}, "streak": [], "reached": 3}))
         m.record("widgets")
         assert m.load()["counters"]["widgets"]["count"] == 1
+
+    def test_a_file_saved_with_a_utf8_bom_reads_and_keeps_counting(self) -> None:
+        # Windows editors save UTF-8 "with BOM"; the mark is not content.
+        doc = {"counters": {"widgets": {"count": 3, "first_seen": 1.0}}}
+        m._path().write_bytes(b"\xef\xbb\xbf" + json.dumps(doc).encode("utf-8"))
+        assert m.load()["counters"] == {"widgets": {"count": 3, "first_seen": 1.0}}
+        m.record("widgets")
+        assert m.load(strict=True)["counters"].get("widgets", {}).get("count") == 4
+        assert not m._path().read_bytes().startswith(b"\xef\xbb\xbf")
 
 
 class TestReadFailures:
@@ -497,7 +520,7 @@ class TestManual:
         assert st["counters"]["slack"]["count"] == 1
         assert (
             m.M_REACHED,
-            {"group": "features", "milestone": "slack", "via": "manual"},
+            {"group": "features", "milestone": "slack", "via": "manual", "recommended_by": "none"},
         ) in metrics
 
     def test_mark_all_done_marks_open_and_skipped_feature_rows_only(self, metrics: list) -> None:
@@ -539,6 +562,108 @@ class TestManual:
         assert {i["state"] for k, i in features.items() if k != "widgets"} == {"skipped"}
         assert snap["recommended"] == []
         assert snap["features"] == {"done": 1, "total": 7}
+
+
+class TestArrival:
+    def test_arrival_after_a_click_completes_the_row_and_counts_the_day(
+        self, metrics: list
+    ) -> None:
+        today = date(2026, 11, 2)
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", today))
+        st = m.load()
+        assert st["reached"]["slack"]["source"] == "arrived"
+        assert "slack" not in st["counters"]
+        assert st["streak"] == {"current": 1, "best": 1, "last_day": "2026-11-02"}
+        snap = m.snapshot(today)
+        assert _items(snap, "features")["slack"]["state"] == "done"
+        assert snap["notices"] == []
+        assert snap["streak"] == {"current": 1, "best": 1}
+        assert (
+            m.M_REACHED,
+            {
+                "group": "features",
+                "milestone": "slack",
+                "via": "arrived",
+                "recommended_by": "explore",
+            },
+        ) in metrics
+
+    def test_arrival_without_a_click_does_nothing(self) -> None:
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 2)))
+        st = m.load()
+        assert "slack" not in st["reached"]
+        assert st["streak"]["last_day"] == ""
+
+    def test_arrival_long_after_the_click_does_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.testing.clock import ManualClock
+
+        clock = ManualClock()
+        clock.install(monkeypatch, m)
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        clock.advance(m._ARRIVAL_WINDOW_S + 1)
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 2)))
+        assert "slack" not in m.load()["reached"]
+        # Inside the window the same arrival counts, so the window is what refused it.
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        clock.advance(m._ARRIVAL_WINDOW_S - 1)
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 2)))
+        assert m.load()["reached"]["slack"]["source"] == "arrived"
+
+    def test_a_second_arrival_the_same_day_counts_nothing_more(self, metrics: list) -> None:
+        today = date(2026, 11, 2)
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", today))
+        first = m.load()
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", today))
+        st = m.load()
+        assert st["reached"] == first["reached"]
+        assert st["streak"] == first["streak"]
+        assert [a for n, a in metrics if n == m.M_REACHED] == [
+            {
+                "group": "features",
+                "milestone": "slack",
+                "via": "arrived",
+                "recommended_by": "explore",
+            }
+        ]
+
+    def test_arrival_on_the_next_day_extends_the_streak(self) -> None:
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 1)))
+        m.apply_now(m.op_starter_clicked("mate", "panel"))
+        m.apply_now(m.op_starter_arrived("mate", date(2026, 11, 2)))
+        assert m.load()["streak"] == {"current": 2, "best": 2, "last_day": "2026-11-02"}
+
+    def test_usage_milestones_keep_their_real_counters(self) -> None:
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 2)))
+        # A usage row has no starter, so it can never be completed by an arrival.
+        m.apply_now(m.op_starter_arrived("chats-opened", date(2026, 11, 2)))
+        st = m.load()
+        assert not [k for k in st["reached"] if k.startswith(("chats-opened", "turns-sent"))]
+        assert st["counters"] == {}
+        snap = m.snapshot(date(2026, 11, 2))
+        assert _items(snap, "sessions")["chats-opened"]["value"] == 0
+        assert _items(snap, "turns")["turns-sent"]["value"] == 0
+
+    def test_an_arrived_row_survives_a_reload(self, _home: Path) -> None:
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 2)))
+        raw = json.loads((_home / "milestones.json").read_text())
+        assert raw["reached"]["slack"]["source"] == "arrived"
+        assert m.load()["reached"]["slack"]["source"] == "arrived"
+
+    def test_features_completed_by_arrivals_is_not_organic(self, metrics: list) -> None:
+        rows = m.feature_rows()
+        m.apply_now(m.op_starter_clicked(rows[0].id, "panel"))
+        m.apply_now(m.op_starter_arrived(rows[0].id, date(2026, 11, 2)))
+        for row in rows[1:]:
+            m.record(row.id)
+        assert [a for n, a in metrics if n == m.M_FEATURES_COMPLETED] == [{"via": "mixed"}]
 
 
 class TestReadModel:

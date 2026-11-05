@@ -42,7 +42,7 @@ function mockGateway(hosts: string[] | null | Error, onAdd?: Answer) {
 
 async function openWebPage() {
   fireEvent.click(await screen.findByText('+ Add Source'))
-  fireEvent.click(screen.getByRole('button', { name: /Web Page/ }))
+  fireEvent.click(screen.getByRole('radio', { name: /Web Page/ }))
 }
 
 function typeUrl(value: string) {

@@ -65,7 +65,10 @@ def _sub(session_id, name, role, query, status_type, message=""):
 class TestNativeSubagentSync:
     def test_ignores_non_list(self):
         state = _make_state()
-        _native_subagent_sync(state, _make_slot(), None, {})
+        # A stale live card: a non-list update must not reconcile it away.
+        tracker: dict = {"s1": {"started": 0.0, "last_activity": 0.0, "done": False}}
+        _native_subagent_sync(state, _make_slot(), None, tracker)
+        assert tracker == {"s1": {"started": 0.0, "last_activity": 0.0, "done": False}}
         state.broadcast_ws.assert_not_called()
 
     def test_spawns_one_card_per_subagent(self):
@@ -222,7 +225,9 @@ class TestNativeSubagentSync:
 
     def test_skips_entry_without_session_id(self):
         state = _make_state()
-        _native_subagent_sync(state, _make_slot(), [{"sessionName": "x"}], {})
+        tracker: dict = {}
+        _native_subagent_sync(state, _make_slot(), [{"sessionName": "x"}], tracker)
+        assert tracker == {}
         state.broadcast_ws.assert_not_called()
 
     def test_skips_non_dict_entries_in_list(self):

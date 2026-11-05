@@ -211,33 +211,19 @@ async def _teardown_run_session_impl(
                     fallback_ran = True
                     kill_failed = join_failures(kill_failed, missing)
             if kill_failed is not None:
-                # The survivor is recorded as a LEAKED PROCESS, separate from
-                # the run's outcome, BEFORE the report publishes: the terminal
-                # report spawned ahead of this teardown waits on
-                # ``teardown_done`` (set by the caller's ``finally`` once this
-                # returns) before it builds its payload. A completed run has
-                # no tombstone yet and gets none here: until the parent
-                # acknowledges the completion its folder must stay in orphan
-                # reconciliation, which re-delivers a completion a restart
-                # dropped from the parent's queue. ``_leaked_process`` is read
-                # by the report instead: an acknowledged delivery writes the
-                # ``delivered`` tombstone with ``leaked_process``, so the next
-                # start ends the process without announcing the run a second
-                # time (``_end_leaked_processes_impl``).
+                # Record the LEAKED PROCESS, apart from the run's outcome, BEFORE
+                # the report publishes: the report waits on ``teardown_done``
+                # (set by the caller's ``finally``). A completed run gets no
+                # tombstone here, so orphan reconciliation can still re-deliver
+                # a completion a restart dropped; the acknowledged delivery
+                # writes ``delivered`` with ``leaked_process``, and the next
+                # start ends the process (``_end_leaked_processes_impl``).
                 #
-                # A run that COMPLETED keeps its clean record, by design:
-                # folding the failure into ``info.error`` for every run makes
-                # ``outcome`` read ``failed`` (it is ``failed`` whenever
-                # ``error`` is set), so a finished answer reaches the parent as
-                # a failure with its result replaced by ``Error: …; kill
-                # failed: …``. The
-                # run's work is done; the process its teardown could not end is
-                # the gateway's to clean up, not the parent's to act on. The
-                # failure stays on the ``run_finally_force_kill`` audit row
-                # below and in the log, the reap's rule for a run that
-                # completed before its kill decided (``_reap_once_impl``). A
-                # run that already failed, timed out or was stopped still
-                # gains the suffix on its error text.
+                # A COMPLETED run keeps its clean record: any ``error`` makes
+                # ``outcome`` read ``failed`` and would replace a finished
+                # answer. The leak is the gateway's to clean up; it stays on
+                # the ``run_finally_force_kill`` audit row and the log, as in
+                # ``_reap_once_impl``. Other outcomes gain the error suffix.
                 if info.outcome != "completed":
                     info.error = with_kill_failure(info.error or "", kill_failed)
                 else:
@@ -275,20 +261,12 @@ async def _teardown_run_session_impl(
                 except Exception:
                     logger.exception("Subagent %s: SEL audit failed", info.id)
         except asyncio.CancelledError as exc:
-            # The kill never decided: the cancellation landed inside the
-            # reset, the survivor probe or the signal (a gateway shutdown
-            # cancelling the run task). The report this teardown gates is
-            # released by the caller's ``finally`` either way, so the record
-            # names the undecided kill BEFORE that release -- the cron
-            # reaper's rule for its own cancelled kill awaits -- and the
-            # completion the parent receives, the ``subagent_done`` event and
-            # the delivered-or-not decision all see it: a clean record here
-            # published a success and wrote the ``delivered`` tombstone that
-            # hid a process nothing had stopped from orphan reconciliation.
-            # Not when a reap cancelled this task: the reap consumed the
-            # retained handle before cancelling and its own arm writes the
-            # kill's outcome, so a second record here would name the kill
-            # twice.
+            # The kill never decided (e.g. a shutdown cancelled the run task).
+            # The caller's ``finally`` releases the gated report anyway, so name
+            # the undecided kill BEFORE that: a clean record would publish a
+            # success and write a ``delivered`` tombstone that hides a live
+            # process from orphan reconciliation. Not when a reap cancelled this
+            # task: the reap's own arm records the kill's outcome.
             if not info._reap_started:
                 info.error = with_kill_failure(
                     info.error or "",
@@ -319,6 +297,7 @@ def _record_reap_ending_impl(
         info.user_stopped = False
         if not info.error:
             info.error = f"{info._stop_origin or 'the reaper'} — {unfinished}"
+            info._deadline_ending = True
     if not info.result and info.streaming_text:
         info.result = info.streaming_text
     info.done = True
@@ -435,6 +414,7 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
         # says the run completed rather than naming what cut its tail short.
         if not info.reaped and not info.done:
             info.error = f"Timed out after {info.timeout_secs // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
+            info._deadline_ending = True
             info.done = True
             # Armed HERE, synchronously with the flip -- not left to the
             # report task spawned later. Between this flip and that task's
@@ -467,19 +447,13 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
                 and info.tool_count == 0
             ):
                 # UNEXPECTED cancellation (not user Stop, not shutdown):
-                # one-shot auto-continue, mirroring the main path's
-                # unexpected-cancel recovery. Skip terminal
-                # finalization (via _recovering) and respawn on a fresh
-                # task — this task is being cancelled and cannot continue.
+                # one-shot auto-continue on a fresh task, skipping terminal
+                # finalization via _recovering.
                 #
-                # SIDE-EFFECT GATE (tool_count == 0): the respawn runs on a
-                # FRESH session with no ledger of prior tool calls, so the
-                # model cannot verify which side effects (files written,
-                # messages sent, commands run) already happened — a
-                # preamble alone cannot make re-running safe. Once any tool
-                # has executed, we finalize with the partial preserved
-                # instead of respawning. Text-only activity is safe to
-                # resume (the partial is preserved and re-presented).
+                # SIDE-EFFECT GATE (tool_count == 0): the respawn's FRESH
+                # session has no ledger of prior tool calls, so once any tool
+                # ran, re-running could repeat a side effect; finalize with
+                # the partial instead. Text-only activity is safe to resume.
                 info._cancel_retry_used = True
                 info._recovering = True
                 logger.warning(
@@ -531,32 +505,20 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
         else:
             logger.info("Subagent %s cancelled", info.id)
         if handed_to_recovery:
-            # The run continues on the ``<id>:recovery`` task, not this one,
-            # so this task must end CANCELLED rather than return: a waiter
-            # holding it (``await task``, ``asyncio.wait_for``,
-            # ``asyncio.timeout``) would otherwise read a clean completion
-            # while the run has neither finished nor claimed its session,
-            # and a ``wait_for`` that timed out would return instead of
-            # raising ``TimeoutError``. ``_resume``'s handshake
-            # waits with ``asyncio.wait``, which does not care how the task
-            # ended; the finally below runs either way and, while
-            # ``_recovering`` is set, reports nothing.
+            # The run continues on the ``<id>:recovery`` task, so this one
+            # must end CANCELLED: a waiter (``await task``, ``wait_for``,
+            # ``asyncio.timeout``) would otherwise read a clean completion,
+            # and a timed-out ``wait_for`` would not raise ``TimeoutError``.
+            # The finally below reports nothing while ``_recovering`` is set.
             raise
     except Exception as exc:
         if getattr(exc, "context_overflow", False):
-            # The native session that raised this cannot shrink the envelope
-            # it was already rejected on, so replaying there reproduces the
-            # rejection. A zero-activity first turn on a SHARED runtime is
-            # safe to retry once on a FRESH dedicated runtime, which
-            # rebuilds session and projection state from scratch; that
-            # rebuild is best-effort, not a diagnosis of why the first
-            # envelope was too large. A first attempt that already ran
-            # dedicated is terminal: no transition is evidenced that would
-            # be expected to make a replacement's envelope small enough or
-            # different enough to fit, so another teardown, capacity and
-            # spawn cycle is not justified. Any observed text or tool call
-            # forbids replay, and the one-shot makes a second overflow
-            # terminal.
+            # Replaying on the same native session reproduces the rejection.
+            # A zero-activity first turn on a SHARED runtime retries once on a
+            # FRESH dedicated runtime (a best-effort rebuild). An attempt that
+            # already ran dedicated is terminal: nothing suggests a replacement
+            # would fit. Any text or tool call forbids replay, and the one-shot
+            # makes a second overflow terminal.
             can_rebuild = (
                 not info._context_overflow_retry_used
                 and info._session_sharing
@@ -596,12 +558,8 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
                         f"{detail}"
                     )
                 elif info.streaming_text or info.result or info.turns:
-                    # Text, a result or a completed turn without any tool
-                    # call is side-effect-free, exactly as the
-                    # unexpected-cancel arm treats it. Replay is still
-                    # withheld, but only because the work already produced
-                    # is preserved and running the prompt again would
-                    # duplicate it -- not because state changed.
+                    # Side-effect-free, but the produced work is preserved
+                    # and a replay would duplicate it.
                     info.error = (
                         "Agent context overflowed after it had already produced "
                         "work; that work was preserved and it was not replayed "
@@ -658,34 +616,18 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
                 self._manager._write_tombstone(info, "error")
                 logger.warning("Subagent %s lost its session: %s", info.id, exc)
         elif info._reap_started and is_runtime_death(exc):
-            # The ECHO of our own teardown, not a fault of the run.
-            # ``_force_reap`` resets the run's session (or shuts its shared
-            # handle) BEFORE it cancels this task, so the in-flight stream
-            # observes the runtime it lives on being killed and raises
-            # ``AcpProcessDied`` -- "killed (provider shutdown)" -- first.
-            # Recording that text as the run's error made every user stop,
-            # every parent end and every deadline reap read as a runtime
-            # death in the tombstone and an ERROR in the gateway log; four
-            # field reports chased it to the provider and the OOM killer.
-            # Only the runtime death is the echo: any OTHER exception under
-            # a reap is a fault of the run that the teardown merely
-            # interrupted, and keeps the traceback below.
-            # The record instead names the stop: a user/parent stop stays
-            # neutral (``error`` unset, ``outcome == "stopped"``), a
-            # deadline reap is a failure that names the deadline, and the
-            # tombstone carries the reap's own cause. Setting ``done`` here
-            # is what wins the first-arrival record over the reaper's own
-            # synthesis (guard 1 in ``_force_reap``), so the whole record --
-            # error, stat, tombstone -- is written HERE, as it was before.
-            # The REPORT is not: this arm runs while the reap still awaits
-            # its reset or the fallback kill that follows it, so a report
-            # published from this task's ``finally`` would tell the parent
-            # the run was reaped before the kill has decided, and a failure
-            # the fallback then reports would reach only the in-memory
-            # error text. The reap claims the report after its kill has
-            # decided (``supersede_recovery=True``), with the failure
-            # appended and the tombstone re-written -- so it is left to
-            # the reap.
+            # The ECHO of our own teardown, not a fault of the run:
+            # ``_force_reap`` resets the session BEFORE cancelling this task,
+            # so the stream raises ``AcpProcessDied`` first. Recording that
+            # would make every stop read as a runtime death. Only the runtime
+            # death is the echo; any OTHER exception keeps the traceback below.
+            # The record names the stop instead: a user/parent stop stays
+            # neutral, a deadline reap is a failure naming the deadline.
+            # Setting ``done`` here wins the first-arrival record (guard 1 in
+            # ``_force_reap``). The REPORT is left to the reap, which claims
+            # it after its kill has decided (``supersede_recovery=True``); a
+            # report from this ``finally`` would publish before the kill
+            # decided and lose a fallback failure.
             reap_owns_report = True
             origin = info._stop_origin or "the reaper"
             if not info.done:
@@ -704,11 +646,9 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
             )
         else:
             if not info.done:
-                # Story appended INSIDE the cap: info.error reaches a WS
-                # frame and the Subagents panel, so the rendered total stays
-                # bounded by MAX_ERROR_DETAIL_LEN exactly as before — and the
-                # budget trims the ERROR text, never the story, so a verbose
-                # chain cannot push the walk out of the terminal error.
+                # Story appended INSIDE the MAX_ERROR_DETAIL_LEN cap (the text
+                # reaches a WS frame and the Subagents panel); the budget trims
+                # the error text, never the story.
                 info.error = append_fallback_story(
                     _describe_exception(exc), exc, budget=MAX_ERROR_DETAIL_LEN
                 )
@@ -747,17 +687,9 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
         # is being killed.
         self._manager._teardown_gates[info.id] = teardown_done
         if reap_owns_report:
-            # The reap-echo arm ran: the reap that tore the runtime down
-            # publishes the report once its kill has decided (its claim
-            # supersedes). The run still owns its cost sample, which the
-            # claim branch below would otherwise have recorded; the reap's
-            # own record guard is skipped for a record this arm wrote.
-            #
-            # An abnormal arm that already wrote the tombstone finalized
-            # ``info.elapsed`` there; read that single value so the record
-            # on disk and the terminal event agree. Only sample here when no
-            # writer set it (a run that ended before its folder was seeded
-            # writes no tombstone, so nothing finalized elapsed).
+            # The reap publishes the report once its kill has decided; the run
+            # still records its own cost. Keep an ``info.elapsed`` a tombstone
+            # write already set, so disk and the terminal event agree.
             if info.elapsed <= 0:
                 info.elapsed = time.time() - info.started
             self._manager._record_cost(info)
@@ -821,17 +753,10 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
 
                 await forget_subagent_environment(session_key)
 
-    # The report itself already ran (or is running) on the shielded task
-    # spawned in the finally above; block until it completes so sequencing is
-    # unchanged for callers.
-    #
-    # NOT during shutdown. `_run`'s terminal CancelledError arm deliberately
-    # does not re-raise (only the hand-off to cancel recovery does, and it
-    # spawns no report), so by the time we reach this await the cancellation has been
-    # consumed and `shield` would simply wait out the full _ON_DONE_TIMEOUT
-    # injection cap — holding `cancel_all()`'s gather for up to 20 minutes.
-    # The report is registered in `self._report_tasks`, so `cancel_all()`'s
-    # bounded drain owns it from here.
+    # Wait for the shielded report task spawned above, except during shutdown:
+    # the cancellation is consumed by now, so `shield` would wait out the full
+    # _ON_DONE_TIMEOUT (up to 20 minutes) inside `cancel_all()`'s gather. The
+    # task is in `self._report_tasks`, so `cancel_all()`'s bounded drain owns it.
     if report_task is not None and not self._manager._shutting_down:
         await self._manager._await_report(report_task)
 

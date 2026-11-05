@@ -21,6 +21,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard.chat_delivery import START_BACKGROUND_META_KEY
 from kiro_crew.dashboard.chat_runner import TURN_ACTOR_META_KEY, _run_chat
 
 
@@ -94,6 +95,29 @@ class TestSetupFailureReachesRecoveryWithoutCrashing:
         assert "UnboundLocalError" not in caplog.text
         assert "prompt refused" in caplog.text
 
+    @pytest.mark.parametrize("background", [False, True])
+    @pytest.mark.asyncio
+    async def test_a_retry_keeps_the_background_start_its_turn_asked_for(
+        self, tmp_path, background, monkeypatch
+    ) -> None:
+        """A bulk-resumed turn that dies is retried at the same BACKGROUND start
+        priority: its requeue carries ``START_BACKGROUND_META_KEY`` exactly when
+        the turn did, so the retry never claims the person-only start reserve."""
+        state, slot, _client = _state_and_slot(tmp_path)
+        state.sessions.get_or_create = AsyncMock(side_effect=AcpProcessDied("died"))
+        inserted: list[dict] = []
+        real_insert = type(slot).queue_insert
+
+        def recording_insert(self, index, content, *args, **kwargs):
+            inserted.append(dict(kwargs.get("meta") or {}))
+            return real_insert(self, index, content, *args, **kwargs)
+
+        monkeypatch.setattr(type(slot), "queue_insert", recording_insert)
+        await _run_chat(state, slot, "test message", _turn_start_background=background)
+
+        assert inserted, "the failure never reached a requeue -- the test proves nothing"
+        assert (inserted[0].get(START_BACKGROUND_META_KEY) is True) is background
+
     @pytest.mark.asyncio
     async def test_the_requeued_entry_carries_the_actor_bound_at_entry(
         self, tmp_path, caplog
@@ -113,13 +137,10 @@ class TestSetupFailureReachesRecoveryWithoutCrashing:
     async def test_a_self_wake_whose_cold_start_dies_is_not_retried_as_a_user_turn(
         self, tmp_path, caplog
     ) -> None:
-        """The narrow case a late refinement gets wrong.
+        """A self-wake that dies in cold start is recovered as itself, not as ``user``.
 
-        A self-wake turn names no ``_turn_actor`` -- the flag is what identifies it
-        -- and the ACP cold start it can die in sits between the binding and the
-        dispatch block far below. So the actor has to be complete AT the binding, or
-        this recovery is stamped ``user`` and an autonudge's retry is recorded as a
-        person's message.
+        A self-wake names no ``_turn_actor``, and cold start sits before the dispatch
+        block, so the actor must be complete AT the binding.
         """
         state, slot, _client = _state_and_slot(tmp_path)
         state.sessions.get_or_create = AsyncMock(side_effect=AcpProcessDied("cold start died"))

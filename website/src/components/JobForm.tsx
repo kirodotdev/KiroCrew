@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Zap } from 'lucide-react'
+import { Check, Zap } from 'lucide-react'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { Btn, Input, SendBtn } from './ui'
@@ -15,12 +15,15 @@ import { useFolderSortMode } from '../hooks/useFolderSortMode'
 import type { CronPrefill } from '../utils/schedulePresets'
 import { SaveCreateLabel, expandDow } from '../utils/cronUtils'
 import { adviseCronMode } from '../utils/cronModeAdvice'
-import { browserTimeZone } from '../utils/tz'
+import { LOCAL_ZONE, isLocalZone } from '../utils/tz'
+import { cronZonesQuery } from '../api/cronZonesQuery'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { fmtWeekday } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
+/** The picker's value while the default zone is unknown; Radix refuses an empty value. */
+const DEFAULT_ZONE_CHOICE = '__default__'
 export const TIMEZONES = ['America/Los_Angeles','America/Phoenix','America/Denver','America/Chicago','America/New_York','America/Sao_Paulo','Europe/London','Europe/Berlin','Europe/Paris','Asia/Kolkata','Asia/Shanghai','Asia/Tokyo','Australia/Sydney','Pacific/Auckland','UTC']
 /** Monday-first weekday labels. A function, not a module-level array: a const
  *  array of translated strings would freeze at the boot language. The index
@@ -146,7 +149,7 @@ function parseJobDefaults(job?: CronJob) {
 /** Build the API body from form state. Returns null if validation fails (sets error). */
 function buildBody(
   f: ReturnType<typeof parseJobDefaults>,
-  tz: string,
+  tz: string | null,
   setError: (e: string) => void,
   isEdit = false,
   prefill?: CronPrefill,
@@ -205,12 +208,12 @@ function buildBody(
     if (f.weekDays.length === 0) { setError(i18nT('components.jobForm.select_at_least_one_day')); return null }
     const [h, m] = f.weekTime.split(':').map(Number)
     body.cron = `${m} ${h} * * ${f.weekDays.map(d => GRID_TO_CRON_DOW[d]).join(',')}`
-    body.timezone = tz
+    if (tz !== null) body.timezone = tz
   } else {
     const expr = f.cronExpr.trim()
     if (expr.split(/\s+/).length !== 5) { setError(i18nT('components.jobForm.enter_a_valid_5_field_cron_expression')); return null }
     body.cron = expr
-    body.timezone = tz
+    if (tz !== null) body.timezone = tz
   }
   // Provenance stamp, create-only: the template this job was seeded from, plus
   // the template's prompt AS IT WAS when picked (the snapshot the Schedule page
@@ -423,13 +426,20 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [intUnit, setIntUnit] = useState(init.intUnit)
   const [weekDays, setWeekDays] = useState(init.weekDays)
   const [weekTime, setWeekTime] = useState(init.weekTime)
-  const [tz, setTz] = useState(() => job ? (job.timezone || 'UTC') : browserTimeZone())
+  // null = the picker was never touched on a job with no zone of its own: no
+  // `timezone` is sent, so a new job takes the default zone and an edit keeps
+  // the job's empty zone instead of pinning whatever the picker displayed.
+  const [tz, setTz] = useState<string | null>(() => job?.timezone || null)
+  const { data: zones, error: zonesError } = useQuery(cronZonesQuery)
+  // Until the server names the default, an untouched picker says "Default zone"
+  // rather than guessing Local: a configured zone would make that guess wrong.
+  const shownTz = tz ?? zones?.defaultTz ?? DEFAULT_ZONE_CHOICE
   const [cronExpr, setCronExpr] = useState(init.cronExpr)
   // Touched = any field diverged from what the form OPENED with. Compared
   // against `init`/`defaults` (the same sources the state seeded from), so a
   // value typed and then typed back reads as untouched again — the same rule
   // the crew editor's own dirtyPanes uses. tz is excluded: its initial value
-  // is the machine's zone, an environment fact rather than user work worth a
+  // is the default zone, an environment fact rather than user work worth a
   // discard confirm. Reported through an effect keyed on the recomputed
   // boolean, so hosts only hear about EDGES, not every keystroke.
   const dirty =
@@ -730,16 +740,27 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
    *
    *  `TIMEZONES` is a curated 15-zone fast-pick list, not the IANA set, so this
    *  is a `SimpleSelect` — the searchable variant is for the full host list
-   *  (see `TimezoneSelect`). The stored zone is unioned in at the front so a
-   *  job saved with a zone outside the curated list keeps it. */
-  const tzOptions = Array.from(new Set([tz, ...TIMEZONES]))
+   *  (see `TimezoneSelect`). 'local' leads, named with the zone the computer
+   *  Kiro Crew runs on is in now; the shown zone follows it so a job saved with
+   *  a zone outside the curated list keeps it. */
+  const tzOptions = Array.from(new Set([
+    ...(shownTz === DEFAULT_ZONE_CHOICE ? [DEFAULT_ZONE_CHOICE] : []),
+    LOCAL_ZONE,
+    shownTz,
+    ...TIMEZONES,
+  ]))
+  const localLabel = zones?.hostTz
+    ? i18nT('components.jobForm.timezone_local', { zone: zones.hostTz.replace(/_/g, ' ') })
+    : i18nT('components.jobForm.timezone_local_undetected')
   const tzSelect = (
     <SimpleSelect
       aria-label={i18nT('components.jobForm.timezone')}
       options={tzOptions}
-      optionLabels={tzOptions.map(z => z.replace(/_/g, ' '))}
-      value={tz}
-      onChange={setTz}
+      optionLabels={tzOptions.map(z => (
+        z === DEFAULT_ZONE_CHOICE ? i18nT('components.jobForm.timezone_default')
+          : isLocalZone(z) ? localLabel : z.replace(/_/g, ' ')))}
+      value={shownTz}
+      onChange={z => setTz(z === DEFAULT_ZONE_CHOICE ? null : z)}
       // The vertical (Schedule sidebar) layout runs its row at 12px; without this
       // the trigger would sit at the shared `text-sm` default while every sibling
       // stayed 12px. The horizontal layout keeps the default and takes a fixed
@@ -773,8 +794,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         </div>
       </>) : (
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
-          <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.name')} placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.message')} placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
             : runsAsField ?? <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
@@ -786,7 +807,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             clearLabel={i18nT('components.jobForm.model_inherit')}
             aria-label={i18nT('components.jobForm.model')}
           />
-          <Input placeholder={i18nT('components.jobForm.channel_id_optional')} style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.channel_id')} placeholder={i18nT('components.jobForm.channel_id_optional')} style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
           <SimpleSelect
             aria-label={i18nT('components.jobForm.approval')}
             options={['auto']}
@@ -849,7 +870,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           {...uiLocation('schedule.edit-when')}
         />
         {schedMode === 'interval' ? (<>
-          <Input type="number" min={1} style={{ flex: '0 0 70px' }} value={intVal} onChange={e => setIntVal(Math.max(1, parseInt(e.target.value) || 1))} />
+          <Input type="number" min={1} aria-label={i18nT('components.jobForm.interval_count')} style={{ flex: '0 0 70px' }} value={intVal} onChange={e => setIntVal(Math.max(1, parseInt(e.target.value) || 1))} />
           <SimpleSelect
             aria-label={i18nT('components.jobForm.every_interval')}
             options={['minutes', 'hours', 'days']}
@@ -858,17 +879,29 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             onChange={v => setIntUnit(v as 'minutes' | 'hours' | 'days')}
           />
         </>) : schedMode === 'weekly' ? (<>
-          <div className="flex gap-1 flex-wrap">{dayNames().map((d, i) => (
-            <button key={d} type="button" onClick={() => toggleDay(i + 1)} className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${weekDays.includes(i + 1) ? 'bg-accent text-accent-fg border-accent' : 'bg-bg-elevated text-muted border-border hover:border-border-strong'}`}>{d}</button>
-          ))}</div>
+          {/* Each day is a toggle: aria-pressed carries the state to assistive
+              tech, and the check mark carries it to a reader who cannot tell the
+              accent fill from the plain one. */}
+          <div role="group" aria-label={i18nT('components.jobForm.days_of_week')} className="flex gap-1 flex-wrap">{dayNames().map((d, i) => {
+            const on = weekDays.includes(i + 1)
+            return (
+              <button key={d} type="button" aria-pressed={on} onClick={() => toggleDay(i + 1)} className={`inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${on ? 'bg-accent text-accent-fg border-accent' : 'bg-bg-elevated text-muted border-border hover:border-border-strong'}`}>{on && <Check aria-hidden="true" size={11} strokeWidth={3} />}{d}</button>
+            )
+          })}</div>
           <span className="text-muted text-[13px]">{i18nT('components.jobForm.at')}</span>
-          <Input type="time" style={{ flex: '0 0 100px' }} value={weekTime} onChange={e => setWeekTime(e.target.value)} />
+          <Input type="time" aria-label={i18nT('components.jobForm.time_of_day')} style={{ flex: '0 0 100px' }} value={weekTime} onChange={e => setWeekTime(e.target.value)} />
           {tzSelect}
         </>) : (<>
-          <Input value={cronExpr} onChange={e => setCronExpr(e.target.value)} placeholder="0 9 * * 1-5" />
+          <Input aria-label={i18nT('components.jobForm.cron_expression')} value={cronExpr} onChange={e => setCronExpr(e.target.value)} placeholder="0 9 * * 1-5" />
           {tzSelect}
         </>)}
         </>)}
+        {/* No hand-off: the notice sits beside unsaved form input, which a hand-off
+            would discard. The picker says "Default zone" meanwhile, and an
+            untouched picker sends no zone, so the job still takes the default. */}
+        {zonesError && (schedMode === 'weekly' || schedMode === 'cron') && (
+          <ErrorNotice variant="inline" message={i18nT('components.jobForm.timezone_default_unavailable')} />
+        )}
         {!vertical && !externalSubmit && <SendBtn onClick={submit} disabled={saving}>{saving ? i18nT('components.jobForm.saving') : (job ? i18nT('components.jobForm.save') : i18nT('components.jobForm.add'))}</SendBtn>}
       </div>
 

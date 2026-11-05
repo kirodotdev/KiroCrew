@@ -1,18 +1,9 @@
 """The third-party execution OFF contract: turning it off REVOKES.
 
-``agent.apps_allow_third_party=false`` means the code the flag was admitting
-stops, not merely that new admissions are refused. The setting has three writers
-and only one of them sweeps: the dashboard endpoint sweeps on the falling edge,
-and the setting is excluded from the generic settings PATCH so no caller reaches
-it without that sequencing, while the CLI and a text editor reach the same value
-directly. The boot reconcile revokes at the next start, which leaves the case
-these tests cover: a backend admitted solely by the blanket flag, still serving
-under a ceiling the operator has closed.
-
-Enforcement lives at the one mechanism that already revisits every live backend.
-These tests pin that, and pin the three things it must NOT do: touch an app
-holding its own grant, touch a builtin, or flood the audit trail with one
-admission row per poll.
+``agent.apps_allow_third_party=false`` stops code the flag admitted. The CLI and a text
+editor can flip it without the dashboard's sweep, so the health sweep revokes a backend
+admitted only by the blanket flag. It must spare apps with their own grant and
+builtins, and must not write one audit row per poll.
 """
 
 from __future__ import annotations
@@ -81,16 +72,9 @@ def _write_config(**agent: Any) -> None:
 class _LiveProc:
     """A backend process that is still running.
 
-    Chosen deliberately: with a LIVE process the sweep would go on to probe health,
-    so a test that asserts ``_health_probe`` is never called proves the ceiling is
-    enforced BEFORE health is judged. A record with ``proc=None`` and no
-    ``adopted_pids`` is a different path — an adopted backend whose PIDs the stop
-    refuses to signal — exercised in
-    :class:`TestAnUnstoppableAdoptedBackendKeepsBeingRetried`.
-
-    ``pid`` is fabricated, which is why :func:`_tracked` always stubs the signal
-    calls. A low PID can belong to a live same-user process, and signalling it
-    would be an irreversible side effect on something the suite does not own.
+    A LIVE process would go on to a health probe, so asserting ``_health_probe`` never
+    runs proves the ceiling is enforced first. ``pid`` is fabricated, so
+    :func:`_tracked` always stubs the signal calls: a real PID may be someone else's.
     """
 
     pid = 4242
@@ -494,12 +478,8 @@ class TestTheExemptionIsNotReResolved:
     def test_the_poller_takes_a_name_and_offers_no_path(self) -> None:
         """A parameter nobody passes is still a door.
 
-        ``_execution_admission`` resolves an ``app_root`` when it is given one.
-        That is right at the gate, which vets the path once before the code runs,
-        and wrong at re-check time, where the path is read from a filesystem the
-        app can write. The poller form therefore accepts no such parameter: a
-        caller cannot pass what the signature does not take. The core keeps it,
-        because the gate must still vet a real path.
+        At re-check time an ``app_root`` would be read from a filesystem the app can
+        write, so the poller form takes no such parameter; only the gate's core does.
         """
         from kiro_crew.apps import execution
 
@@ -512,14 +492,8 @@ class TestTheExemptionIsNotReResolved:
 class TestASurvivingDescendantRefusesTheStop:
     """A root that exits cleanly proves nothing about what it forked.
 
-    The signal goes to the process GROUP and the wait watches only the root, so app
-    code that ignores SIGTERM in a child, or leaves the group before binding, keeps
-    serving its port while the root's exit reads as a successful stop. Under a
-    withdrawn ceiling that is the whole failure, so the revocation caller pays for a
-    probe and a port that still answers is reported as a REFUSED stop.
-
-    No second signal is sent: the root has been reaped, so its pid may already be
-    reused, and the descendant has no recorded identity of its own.
+    A child can ignore SIGTERM and keep the port, so a port that still answers is a
+    REFUSED stop. No second signal: the reaped root's pid may already be reused.
     """
 
     def test_a_still_served_port_refuses_the_spawned_stop(self, tmp_path, monkeypatch) -> None:
@@ -565,20 +539,8 @@ class TestASurvivingDescendantRefusesTheStop:
 class TestAnUnreadablePolicyFileRevokes:
     """A policy the gateway cannot read is a DENY, not a reason to keep running.
 
-    The fail-closed read was written for an admission, where the cost of an
-    unreadable `config.json` is one refused load. Here it also stops running code,
-    so it is worth stating why the same answer is still right.
-
-    Sparing a backend whenever the policy cannot be read would make deleting
-    `config.json` the one operator action guaranteed to stop nothing, which is the
-    fail-open this whole contract exists to remove. It is also the opposite of the
-    `installed.json` case: that file is the APP's, so its absence is an attack and
-    must not spare anything, while this file is the OPERATOR's, so its absence is a
-    policy signal and must be honoured as deny.
-
-    The cost is availability, it is bounded, and it is disclosed: a genuine
-    transient fault stops third-party backends for that sweep, and they return at
-    the next gateway start.
+    Otherwise deleting the operator's `config.json` would stop nothing. A transient
+    fault stops third-party backends until the next gateway start.
     """
 
     def test_a_missing_config_revokes_a_running_backend(self, tmp_path, monkeypatch) -> None:
@@ -847,11 +809,8 @@ class TestTheMcpEntryIsScrubbedBeforeTheStop:
 class TestAnAdoptedBackendThatSurvivesTheStopIsRetried:
     """The watch must not exit while un-trusted code is very likely still serving.
 
-    When an external supervisor replaces an adopted backend's PID, no recorded PID
-    matches its adoption identity, so nothing can be signalled. ``stop_app_backend``
-    reports that the way it reports its two sibling refusals -- restore tracking,
-    return False -- and the watch keeps sweeping instead of exiting on a success it
-    did not get.
+    After an external supervisor replaces an adopted PID, ``stop_app_backend`` restores
+    tracking and returns False, and the watch keeps sweeping.
     """
 
     def _adopted_with_replaced_pid(self, monkeypatch, bmod, ap):
@@ -984,11 +943,8 @@ class TestAnUnstoppableAdoptedBackendKeepsBeingRetried:
 class TestTheStartupWindowIsNotAHole:
     """The startup poll owns the record before the standing watch exists.
 
-    A spawn polls for up to `_HEALTH_CHECK_RETRIES * _HEALTH_CHECK_INTERVAL` seconds
-    and the watch only takes over afterwards, then sleeps its own first interval. An
-    operator closing the ceiling inside that window is an ordinary race, and without
-    a check here the poll would keep going and could still promote -- the step that
-    writes the app's url into mcp.json -- under a ceiling already closed.
+    A ceiling closed during the startup poll must stop it before it promotes (writes the
+    app's url into mcp.json).
     """
 
     def test_a_ceiling_closed_mid_startup_stops_the_spawn_before_it_is_promoted(
@@ -1048,17 +1004,9 @@ class TestTheStartupWindowIsNotAHole:
 class TestAdoptionCannotInheritTheBuiltinExemption:
     """An adopted listener's provenance is unverified, so it is not exempt.
 
-    The builtin classification is sound only for a process the GATEWAY launched
-    from the path the gate vetted. Adoption launches nothing -- it finds something
-    already answering the port and takes it over -- so carrying the exemption
-    across would let anything that answers a builtin's port inherit shipped
-    provenance and be skipped by the sweep for good: the next boot re-probes and
-    re-adopts to the same verdict, so it would never self-correct.
-
-    An AST ratchet rather than a behavioural test, for the same reason the
-    lifecycle-owner ratchet is one: the defect is a single keyword at a
-    construction site, and it must stay wrong-proof against an edit that never
-    runs the adoption path in a test.
+    Adoption takes over whatever answers the port, so the builtin exemption would let
+    any listener skip the sweep for good. An AST ratchet, since the defect is one keyword
+    at a construction site that tests may never reach.
     """
 
     def test_the_adoption_site_does_not_pass_the_vetted_path_classification(self) -> None:
@@ -1141,12 +1089,8 @@ class TestAdoptionCannotInheritTheBuiltinExemption:
     def test_no_shipped_builtin_can_reach_the_adoption_path(self) -> None:
         """The blast radius of the rule above, pinned so it cannot widen silently.
 
-        Losing the exemption means a revoked adopted backend is not respawned until
-        the next gateway start. That is acceptable only because no shipped builtin
-        is adoptable: adoption is gated on a manifest declaring a CONCRETE port, and
-        every shipped builtin declares ``auto`` or omits the key, which defaults to
-        ``auto``. A builtin that later declares a fixed port would take that
-        downtime, so it fails here instead and its exemption gets revisited.
+        Adoption needs a CONCRETE port, and every shipped builtin declares ``auto`` (the
+        default). A builtin with a fixed port would lose its exemption, so it fails here.
         """
         import json
         from pathlib import Path
@@ -1176,11 +1120,8 @@ class TestAdoptionCannotInheritTheBuiltinExemption:
 class TestARefusedStopIsNeverRePromoted:
     """The flap a bare fall-through would leave open.
 
-    The revocation demotes the record, so from the next sweep on ``was_healthy`` is
-    False. If the sweep were allowed to judge health while the stop keeps being
-    refused, the port an external supervisor holds open would read as a RECOVERY and
-    promote -- putting back in ``mcp.json`` the tools the revocation just scrubbed,
-    every other sweep, while the operator believes the trust is withdrawn.
+    After demotion ``was_healthy`` is False, so judging health while the stop is refused
+    would read the held port as a RECOVERY and put the tools back in ``mcp.json``.
     """
 
     def test_a_still_serving_revoked_backend_is_never_judged_healthy_again(

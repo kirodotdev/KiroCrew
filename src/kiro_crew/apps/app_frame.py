@@ -1,6 +1,7 @@
 """App frames: the one sandboxed document model every frame-backed contribution point uses.
 
-A point that draws app UI beside the conversation (today ``contributes.linkPreviews``)
+A point that draws app UI beside the conversation (``contributes.linkPreviews``,
+``contributes.messageActions``)
 never runs app code in the dashboard's document. It runs in an iframe that is
 ``sandbox="allow-scripts"`` with no ``allow-same-origin``, so its origin is opaque:
 it cannot read the dashboard's DOM, its cookies or its token, and the dashboard
@@ -59,7 +60,7 @@ import json
 import logging
 import re
 import secrets as _secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -67,6 +68,7 @@ from aiohttp import web
 
 from kiro_crew.apps.link_preview_grants import link_preview_grant_row
 from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, resolve_mcp_backend_url
+from kiro_crew.apps.message_action_grants import approved_message_action
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -101,6 +103,11 @@ FrameEntry = tuple[str, bool, str]
 #: ``resolve(app_name, point_id)``: the served entry of an enabled, granted point
 #: entry, or None. Called on every mint, frame and fetch, off the event loop.
 Resolver = Callable[[str, str], "FrameEntry | None"]
+#: ``admit(app_name, point_id, query)``: whether THIS mint's request (its query
+#: parameters, e.g. the role and format of the one act it is for) is within the
+#: live grant. Called on every mint, off the event loop, after ``resolve`` found
+#: the entry; a point without one admits every mint its resolver serves.
+Admit = Callable[[str, str, Mapping[str, str]], bool]
 
 
 @dataclass(frozen=True)
@@ -111,17 +118,30 @@ class FramePoint:
     resolve: Resolver
     #: JavaScript that defines ``const POINT = { ctx, accepts, missing, message }``.
     script: str
+    admit: Admit | None = None
 
 
 _POINTS: dict[str, FramePoint] = {}
 _signers: dict[str, PathTokenSigner] = {}
 
 
-def register_frame_point(name: str, resolve: Resolver, script: str) -> None:
-    """Register a point's resolver and its frame script. Registering a name again replaces it."""
+def register_frame_point(
+    name: str, resolve: Resolver, script: str, admit: Admit | None = None
+) -> None:
+    """Register a point's resolver, frame script and optional per-mint admission.
+
+    Registering a name again replaces it.
+    """
     if not POINT_RE.fullmatch(name):
         raise ValueError(f"not a point name: {name!r}")
-    _POINTS[name] = FramePoint(name=name, resolve=resolve, script=script)
+    _POINTS[name] = FramePoint(name=name, resolve=resolve, script=script, admit=admit)
+
+
+def _point_admits(name: str, point: str, point_id: str, query: Mapping[str, str]) -> bool:
+    registered = _POINTS.get(point)
+    if registered is None or registered.admit is None:
+        return True
+    return registered.admit(name, point_id, query)
 
 
 def registered_frame_points() -> tuple[str, ...]:
@@ -251,6 +271,15 @@ async def handle_app_frame_mint(request: web.Request) -> web.Response:
             {"code": "no_app_frame", "error": f"app {name!r} has no enabled {key!r} frame"},
             status=404,
         )
+    # The act this mint is for, checked against the live grant: a tab holding an
+    # older grant cannot mint for a reach the owner has since taken back.
+    query = {k: v for k, v in request.query.items() if k != "frame"}
+    if not await asyncio.to_thread(_point_admits, name, point, point_id, query):
+        _audit("app_frame_mint", "denied", name, "request outside the live grant", key)
+        return web.json_response(
+            {"code": "not_granted", "error": f"app {name!r} is not approved for this request"},
+            status=403,
+        )
     client = request.remote or ""
     # A renewal names the frame it is for, so the new capability is that frame's.
     frame_id = request.query.get("frame", "")
@@ -358,7 +387,9 @@ window.addEventListener('message', (e) => {
     case 'theme': CFG.theme = m.theme === 'dark' ? 'dark' : 'light'; call('theme', CFG.theme); return;
     case 'dispose': call('dispose'); handler = null; return;
     case 'invoke.cancel':
-      if (typeof m.invocationId === 'string') call('cancel', m.invocationId, String(m.reason || 'other'));
+      if (typeof m.invocationId !== 'string') return;
+      abortInvocation(m.invocationId);
+      call('cancel', m.invocationId, String(m.reason || 'other'));
       return;
     case 'result.ack': settleOffer(m, { ok: true }); return;
     case 'result.error': settleOffer(m, { ok: false, code: String(m.code || 'error') }); return;
@@ -395,9 +426,11 @@ window.open = (raw) => { const url = webUrl(raw); if (url) { try { P.postMessage
 
 # The invocation contract, for a point whose work starts with one user act. The host
 # mints `invocationId` and sends it in the point's own invoke message; the point
-# script hands its handler `invocationControls(invocationId)`. Every control is
-# frozen to that id, so a late call from an earlier invocation names the earlier id
-# and the host refuses it. Each offer carries a rising `seq` and resolves on the
+# script hands its handler `invocationControls(invocationId)`, which is null for an
+# id that is malformed or was already used, so one id starts one invocation. Every
+# control is frozen to that id, so a late call from an earlier invocation names the
+# earlier id and the host refuses it. `signal` aborts on the host's `invoke.cancel`,
+# before the handler's `cancel` is called. Each offer carries a rising `seq` and resolves on the
 # host's `result.ack` / `result.error` for that seq (handled in `_RUNTIME`); the
 # host sends `invoke.cancel` when the invocation ends without a result. Host side:
 # `website/src/appFrame/invocation.ts`.
@@ -410,7 +443,20 @@ function settleOffer(m, outcome) {
   pendingOffers.delete(m.seq);
   done(outcome);
 }
+const INVOCATION_ID = /^[A-Za-z0-9_-]{8,64}$/;
+const usedInvocations = new Set();
+const invocationAborts = new Map();
+function abortInvocation(invocationId) {
+  const ac = invocationAborts.get(invocationId);
+  if (!ac) return;
+  invocationAborts.delete(invocationId);
+  ac.abort();
+}
 function invocationControls(invocationId) {
+  if (typeof invocationId !== 'string' || !INVOCATION_ID.test(invocationId) || usedInvocations.has(invocationId)) return null;
+  usedInvocations.add(invocationId);
+  const ac = new AbortController();
+  invocationAborts.set(invocationId, ac);
   const offer = (kind, value) => new Promise((done) => {
     offerSeq += 1;
     pendingOffers.set(offerSeq, done);
@@ -418,8 +464,10 @@ function invocationControls(invocationId) {
   });
   return Object.freeze({
     invocationId,
+    signal: ac.signal,
     offerCopy: (text) => offer('copy', text),
     offerOpen: (url) => offer('open', url),
+    offerInsert: (text) => offer('insert', text),
     resize: (size) => send('invocation.resize', { invocationId, width: clampNum(size && size.width), height: clampNum(size && size.height) }),
     close: () => send('invocation.close', { invocationId }),
     error: (message) => send('invocation.error', { invocationId, message: String(message == null ? '' : message).slice(0, 200) }),
@@ -741,8 +789,114 @@ const POINT = {
 #: The link-preview frame's whole bootstrap; one name for its tests.
 _BOOTSTRAP = _RUNTIME + _INVOCATION + _LINK_PREVIEW_POINT
 
+
+# ---------------------------------------------------------------------------
+# Point: messageActions
+# ---------------------------------------------------------------------------
+
+
+def _message_action_entry(name: str, action_id: str) -> FrameEntry | None:
+    """One message action's served entry: declared, and at least one role approved."""
+    if not is_app_enabled(name):
+        return None
+    manifest = get_app_manifest(name)
+    if manifest is None or manifest.name != name:
+        return None
+    action = next((a for a in manifest.contributes.messageActions if a.id == action_id), None)
+    entry = clean_entry(action.entry) if action is not None else None
+    if entry is None:
+        return None
+    # No approved role: the action is not offered, so its frame is not served.
+    if approved_message_action(name, manifest, action_id) is None:
+        return None
+    return entry, process_backed(manifest), manifest.name
+
+
+def _resolve_message_action(name: str, action_id: str) -> FrameEntry | None:
+    return _message_action_entry(name, action_id)
+
+
+def _admit_message_action(name: str, action_id: str, query: Mapping[str, str]) -> bool:
+    """Whether the click's ``role`` and ``format`` are within the live approved row.
+
+    Every mint names both: a role outside the approved row, or ``markdown`` where
+    only plain is approved, is refused before the host sends any text.
+    """
+    role = query.get("role")
+    fmt = query.get("format")
+    if role not in ("assistant", "user") or fmt not in ("plain", "markdown"):
+        return False
+    manifest = get_app_manifest(name)
+    if manifest is None or manifest.name != name:
+        return False
+    row = approved_message_action(name, manifest, action_id)
+    if row is None or role not in row.get("roles", ()):
+        return False
+    return fmt == "plain" or row.get("format") == "markdown"
+
+
+# A message action. One invocation per click: the host's `message.invoke` carries
+# the one message's text and the invocation id, and the handler gets that
+# invocation's frozen controls (the shared contract in `_INVOCATION`).
+_MESSAGE_ACTION_POINT = r"""
+const POINT = {
+  ctx: { appName: CFG.app, theme: () => CFG.theme, fetch: capFetch },
+  accepts: (h) => !!h && typeof h.invoke === 'function',
+  missing: 'activate(ctx) returned no handler with invoke()',
+  message(m) {
+    if (m.type !== 'message.invoke' || typeof m.invocationId !== 'string') return;
+    const message = {
+      text: typeof m.text === 'string' ? m.text : '',
+      format: m.format === 'markdown' ? 'markdown' : 'plain',
+      truncated: m.truncated === true,
+      role: m.role === 'user' ? 'user' : 'assistant',
+    };
+    call('invoke', message, invocationControls(m.invocationId));
+  },
+};
+"""
+
 # Registered points. A new frame-backed point adds its resolver and script here.
 register_frame_point("linkPreviews", _resolve_link_preview, _LINK_PREVIEW_POINT)
+register_frame_point(
+    "messageActions", _resolve_message_action, _MESSAGE_ACTION_POINT, _admit_message_action
+)
+
+from kiro_crew.apps.link_open_frame import (  # noqa: E402
+    LINK_OPEN_POINT_SCRIPT,
+    admit_link_open,
+    resolve_link_open,
+)
+
+register_frame_point("linkOpen", resolve_link_open, LINK_OPEN_POINT_SCRIPT, admit_link_open)
+
+from kiro_crew.apps import composer_action_frame as _composer_action_frame  # noqa: E402
+
+
+def _resolve_composer_action(name: str, action_id: str) -> FrameEntry | None:
+    # Through the module, so a test that stands in for the resolver is what every route reads.
+    return _composer_action_frame.resolve_composer_action(name, action_id)
+
+
+register_frame_point(
+    _composer_action_frame.COMPOSER_ACTION_POINT,
+    _resolve_composer_action,
+    _composer_action_frame.COMPOSER_ACTION_SCRIPT,
+)
+
+from kiro_crew.apps.selection_action_frame import (  # noqa: E402
+    SELECTION_ACTION_SCRIPT,
+    SELECTION_ACTIONS_POINT,
+    admit_selection_action,
+    resolve_selection_action,
+)
+
+register_frame_point(
+    SELECTION_ACTIONS_POINT,
+    resolve_selection_action,
+    SELECTION_ACTION_SCRIPT,
+    admit_selection_action,
+)
 
 
 __all__: list[str] = [
@@ -751,6 +905,7 @@ __all__: list[str] = [
     "FRAME_PREFIX",
     "POINT_ID_RE",
     "POINT_RE",
+    "Admit",
     "FrameEntry",
     "FramePoint",
     "Resolver",

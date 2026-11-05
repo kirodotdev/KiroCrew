@@ -322,7 +322,10 @@ over the list.
 
 `session_digest.digest()` streams line by line and never raises on malformed,
 truncated or binary input: a store that has been interrupted mid-write is the
-normal case, not the exception, and one bad file must not blank the screen.
+normal case, not the exception, and one bad file must not blank the screen. A
+line nested past the interpreter's recursion limit is malformed input too:
+`json.loads` raises `RecursionError` on it, which is not a `ValueError`, so each
+scanner catches both and skips the line.
 
 **Turns are counted, not estimated.** `history.list_sessions()` exposes a
 `messages` field that is `st_size / 200`; presenting that as a turn count would be

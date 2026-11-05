@@ -155,9 +155,10 @@ kirocrew app install /absolute/path/to/my-dashboard
 
 Before you enable it, trust the app. Enable refuses every app that is not
 built in, even one that ships only an agent and a skill, until the operator
-trusts it in Settings → Security → Third-party apps. That setting grants this app
-(`agent.apps_trusted`) or all third-party apps (`agent.apps_allow_third_party`
-set to `true`). See
+trusts it. Enabling it from the App Store asks you to trust this app alone
+(`agent.apps_trusted`). Settings → Security → Third-party apps lists and revokes
+those grants, and holds the switch that trusts all third-party apps
+(`agent.apps_allow_third_party` set to `true`). See
 [Publishing Guide](publishing-guide.md#third-party-executable-code-is-off-by-default).
 
 ```bash
@@ -301,13 +302,13 @@ Available in `@kirocrew/app-sdk/ui`:
 `SourceBadge`, `StatCard`, `Skeleton`, `ContentSkeleton`, `EmptyState`,
 `PageHeader`, `Toggle`, `InfoTip`, `SegmentedControl`, `MarkdownRenderer`,
 `Clickable`, `Modal`, `ErrorNotice`, `SettingsSection`, `SettingsCard`,
-`SettingsInput`, `SettingsToggle`, `SettingsSelect`
+`SettingsInput`, `SettingsToggle`, `SettingsSelect`, `Select`, `guideCaution`
 
 ## Shared interaction and locale helpers
 
 The main SDK exports `useImeGuard` so app-owned inputs reuse the host's IME
-Enter protection. It also exports `activeLocale`, `fmtNumber`, `fmtDate`,
-`fmtTime`, `fmtDateTime`, `fmtRelative`, `compareText` and
+Enter protection. It also exports `activeLocale`, `fmtNumber`, `fmtCurrency`,
+`fmtDate`, `fmtTime`, `fmtDateTime`, `fmtRelative`, `compareText` and
 `useLanguageGeneration`. Subscribe with the hook when a memoized component
 needs to repaint on language changes. Apps own their translation catalogs;
 these helpers share locale selection and formatting, not permission to modify
@@ -319,6 +320,15 @@ launch appends to that session's unsent text. Omit
 `autoSend` to send automatically; without `slotKey` this starts a new session.
 `agent` applies only to new sessions. A target must activate successfully before
 its message is used; the SDK does not select another session on failure.
+`memoryMode` (`'persistent'`, `'incognito'` or `'temporary'`) and
+`sessionFolder: false` shape a new session and are ignored with `slotKey`.
+Either one opens a new draft session, like `autoSend: false`, so the message is
+staged for the user to send.
+
+To tell an older host from one with these seams, read `APP_SDK_LEVEL` through a
+namespace import (`import * as sdk from '@kirocrew/app-sdk'`; an older host has
+no such export, so `sdk.APP_SDK_LEVEL` is `undefined` there). A named import of a
+name the host lacks fails the whole bundle at load time.
 
 For Python app hooks with an existing cron grant, use
 `await ctx.cron.set_enabled_async(job_id, False)` to pause an owned job, or

@@ -274,8 +274,15 @@ class TestStaticRatchet:
 # --- behavioural proof -------------------------------------------------------
 
 
+class _NoIndexRegistry:
+    """Stand-in for FileIndexRegistry whose ensure() always falls back to walk."""
+
+    async def ensure(self, root):
+        return None
+
+
 class _State:
-    file_indexes: dict = {}
+    file_indexes = _NoIndexRegistry()
 
 
 def _app() -> web.Application:
@@ -827,6 +834,51 @@ class TestBrowseAndReveal:
             threads["stat"] == threads["launch"]
         ), f"an await separates the stat from the launch: {threads}"
         assert threads["launch"].startswith(_PROBE_THREAD_PREFIX), threads
+
+    @pytest.mark.asyncio
+    async def test_the_desktop_question_is_asked_before_the_stat_and_launch(
+        self, a_file: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Whether the host can open anything can take a ``systemctl --user``
+        lookup on a Linux gateway started outside the desktop login. Asked first,
+        off the loop, it leaves the launch a read of the kept answer, so no spawn
+        lands between the stat and the launch it guards.
+        """
+        events: list[tuple[str, str]] = []
+        monkeypatch.setattr(f, "is_direct_local_request", lambda request: True)
+
+        original_isfile = os.path.isfile
+
+        def _isfile(p: Any, *a: object, **k: object) -> object:
+            if str(p) == str(a_file):
+                events.append(("stat", threading.current_thread().name))
+            return original_isfile(p, *a, **k)
+
+        def _ask() -> bool:
+            events.append(("ask", threading.current_thread().name))
+            return True
+
+        def _launch(p: str) -> bool:
+            events.append(("launch", threading.current_thread().name))
+            return True
+
+        monkeypatch.setattr(os.path, "isfile", _isfile)
+        monkeypatch.setattr(f.platform_compat, "desktop_launcher_available", _ask)
+        monkeypatch.setattr(f.platform_compat, "open_with_default_app", _launch)
+        req = make_mocked_request("POST", "/api/reveal", app=_app())
+        req["user"] = "test-user"
+        with mock.patch.object(
+            f,
+            "read_bounded_json",
+            mock.AsyncMock(return_value=({"path": str(a_file), "action": "open"}, None)),
+        ):
+            resp = await f.api_reveal_path(req)
+
+        assert resp.status == 200
+        assert [step for step, _thread in events] == ["ask", "stat", "launch"], events
+        ask_thread = events[0][1]
+        assert ask_thread != "MainThread", "the question can spawn, so it runs off the loop"
+        assert not ask_thread.startswith(_PROBE_THREAD_PREFIX), "it stays out of the probe pool"
 
     @pytest.mark.asyncio
     async def test_reveal_action_runs_off_the_event_loop(

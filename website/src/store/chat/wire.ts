@@ -7,6 +7,7 @@ import { api } from '../../api/client'
 import type { ChatMessage, ToolPayloadCut } from '../../types'
 import { readMessageQuote, type MessageQuote } from '../../chat-core/composer/messageQuote'
 import { findTokenRanges, readStoredPaste, type PasteBlock } from '../../utils/pasteTokens'
+import { readRelay, type RelaySender } from '../../pages/chat/sessionRelay'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 export const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -107,6 +108,21 @@ export function queueEntryQuote(meta: unknown): { quote?: MessageQuote } {
   return q ? { quote: q } : {}
 }
 
+/** A scripted send's short display label (`meta.banner`), bounded like the server's cap. */
+export function queueEntryBanner(meta: unknown): { banner?: string } {
+  const b = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).banner : undefined
+  // Code points, as the server's `len` counts them; `.length` counts UTF-16 units.
+  return typeof b === 'string' && b.trim() && [...b].length <= 500 ? { banner: b } : {}
+}
+
+/** The gateway-set cross-session sender (`meta.relay`) of a queued peer send,
+ *  validated the way the transcript reads it, so the `queue_pop` rebuild draws
+ *  the same incoming card a reload does. */
+export function queueEntryRelay(meta: unknown): { relay?: RelaySender } {
+  const relay = readRelay(meta && typeof meta === 'object' ? (meta as ChatMessage['meta']) : undefined)
+  return relay ? { relay } : {}
+}
+
 /** Display correlation only; no other queue metadata grants client authority. */
 export function queueEntrySendId(meta: unknown): { sendId?: string } {
   const id = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).sendId : undefined
@@ -152,7 +168,7 @@ export function queueEntryAttachments(meta: unknown): QueueEntryAttachments {
 
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
-export type SlotQueueItem = { sendId?: string; content: string; queueId: string; ts: string; kind?: string; appLabel?: string; quote?: MessageQuote } & QueueEntryAttachments
+export type SlotQueueItem = { sendId?: string; content: string; queueId: string; ts: string; kind?: string; appLabel?: string; quote?: MessageQuote; banner?: string; restored?: boolean } & QueueEntryAttachments
 
 /** Coerce one workflow wire field to the string `WorkflowRunProgress` declares.
  *
@@ -193,5 +209,5 @@ export function normalizeSlotDetail(key: string, d: Awaited<ReturnType<Response[
  *  payload without the store, so both surfaces see one entry shape. */
 export function normalizeQueueEntries(raw: unknown): SlotQueueItem[] {
   type QueueItem = string | { content: string; id: string; meta?: unknown }
-  return ((Array.isArray(raw) ? raw : []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta), ...queueEntrySendId(q.meta) })
+  return ((Array.isArray(raw) ? raw : []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...((q.meta as Record<string, unknown> | undefined)?.restored === true ? { restored: true as const } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta), ...queueEntryBanner(q.meta), ...queueEntrySendId(q.meta) })
 }

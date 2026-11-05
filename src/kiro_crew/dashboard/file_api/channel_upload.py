@@ -69,6 +69,21 @@ def _gate_upload_file(
             error=error,
         )
 
+    # An empty value of any type still answers missing_required_fields below.
+    if (file_path and not isinstance(file_path, str)) or (
+        filename and not isinstance(filename, str)
+    ):
+        # A number, list, object, bool or null reaches redact() and Path() below,
+        # which raise TypeError: caller error, so a 400 rather than a 500.
+        _audit_denial("invalid_field_type")
+        return (
+            web.json_response(
+                {"error": "file_path and filename must be strings", "code": "invalid_field_type"},
+                status=400,
+            ),
+            None,
+            None,
+        )
     if not file_path or not filename:
         _audit_denial("missing_required_fields")
         return (
@@ -388,6 +403,15 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     if isinstance(destination, upload_destination.Skip):
         return _skip(destination.reason)
     link, deliver = destination.link, destination.deliver
+    raw_description = body.get("description", "")
+    if raw_description and not isinstance(raw_description, str):
+        # An empty value of any type reads as no description, as it always has; a
+        # non-empty non-string would reach redact_for_display() and raise.
+        _audit_file_send(leg="channel", outcome="denied", error="invalid_field_type")
+        return web.json_response(
+            {"error": "description must be a string", "code": "invalid_field_type"},
+            status=400,
+        )
     # Off-loop: the gate reads up to MAX_FILE_BYTES and regex-scans the content
     # (no-blocking-call-on-event-loop).
     error_resp, resolved, raw = await asyncio.to_thread(
@@ -405,7 +429,7 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     # a literal scan and displays as an intact key. Same boundary rule every
     # renderer sink applies (``redact_for_display``) before text reaches a
     # transport.
-    description, _ = redact_for_display(body.get("description", "") or "", redact)
+    description, _ = redact_for_display(raw_description or "", redact)
     outbound = OutboundFile(
         path=str(resolved),
         data=raw,

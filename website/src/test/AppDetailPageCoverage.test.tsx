@@ -53,6 +53,7 @@ vi.mock('../hooks/useTheme', () => ({ useTheme: () => ({ theme: theme.mode }) })
 vi.mock('../components/AppIcon', () => ({ default: () => <div data-testid="app-icon" /> }))
 
 import AppDetailPage from '../pages/AppDetailPage'
+import { i18next } from '../i18n/all'
 
 /** Not one of the first-party names in APP_MANIFEST_KEY, so display name,
  *  description and highlights fall through to the fixture instead of a catalog. */
@@ -640,6 +641,76 @@ describe('AppDetailPage — uncovered surfaces', () => {
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true))
   })
 
+  it('a disabled self-managed app pending chat-control consent can be enabled from the detail page (#23336)', async () => {
+    getApp.mockResolvedValue(installedApp({ resources: 'app', enabled: false, sessionApprovalConsentPending: true }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('Self-managed')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(enableApp).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true))
+  })
+
+  it('a disabled self-managed app keeps two controls: Enable plus an overflow menu holding Update and Uninstall', async () => {
+    getApp.mockResolvedValue(installedApp({ resources: 'app', enabled: false }))
+    listRegistry.mockResolvedValue({
+      apps: [registryRow({ installed: true, updateAvailable: true })],
+      serverPlatform: { os: 'linux', arch: 'arm64' },
+    })
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByRole('button', { name: /^enable$/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^update$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^uninstall$/i })).not.toBeInTheDocument()
+    const more = screen.getByRole('button', { name: 'More actions for Ledger Lens' })
+    fireEvent.pointerDown(more, { button: 0, ctrlKey: false })
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: /uninstall/i })).toBeInTheDocument()
+    fireEvent.click(within(menu).getByRole('menuitem', { name: /update/i }))
+    await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalled())
+  })
+
+  it('Uninstall from the overflow menu moves focus into the dialog and back to the menu button on close', async () => {
+    getApp.mockResolvedValue(installedApp({ resources: 'app', enabled: false }))
+    renderDetail()
+    await loaded()
+
+    const more = screen.getByRole('button', { name: 'More actions for Ledger Lens' })
+    // Fake timers from here, so the deferred open and Radix's deferred trigger
+    // restore both run before the assertions (LaunchpadTile.uninstallFocus).
+    vi.useFakeTimers()
+    try {
+      more.focus()
+      fireEvent.keyDown(more, { key: 'Enter' })
+      act(() => { vi.runOnlyPendingTimers() })
+      fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: /uninstall/i }))
+      act(() => { vi.runOnlyPendingTimers() })
+      act(() => { vi.runOnlyPendingTimers() })
+      const dialog = screen.getByRole('dialog', { name: /uninstall/i })
+      expect(dialog.contains(document.activeElement)).toBe(true)
+
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' })
+      act(() => { vi.runOnlyPendingTimers() })
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(document.activeElement).toBe(more)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an enabled self-managed app shows no Enable button', async () => {
+    getApp.mockResolvedValue(installedApp({ resources: 'app', enabled: true }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('Self-managed')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^enable/i })).not.toBeInTheDocument()
+  })
+
   it('cancelling the consent dialog enables nothing', async () => {
     getApp.mockResolvedValue(installedApp({ enabled: false, sessionApprovalConsentPending: true }))
     renderDetail()
@@ -650,6 +721,23 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(enableApp).not.toHaveBeenCalled()
+  })
+
+  it('lists a held selection action alone and approves it on click', async () => {
+    const entry = 'save:chat:1-8000:copy'
+    // Only a selection action is held: the notice must still show and approve it.
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', contributes: { selectionActions: [{ id: 'save', title: 'Save to notes', entry: 'dist/s.mjs' }] } },
+      selectionActionGrant: { approved: [], staged: [entry] },
+    }))
+    renderDetail()
+    await loaded()
+    // The owner reads the item, its reach and its buttons, never the raw entry.
+    const row = within(screen.getByTestId('staged-selection-actions')).getByText(/Save to notes/)
+    expect(row.textContent).toBe('Save to notes: up to 8,000 characters of text you select in chat replies, and a Copy button')
+    expect(screen.queryByText(entry)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ selectionActions: [entry] })))
   })
 
   it('lists held-back permissions and approves them on click', async () => {
@@ -684,10 +772,25 @@ describe('AppDetailPage — uncovered surfaces', () => {
     }))
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, {
-      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [],
+      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], linkOpenHosts: [], linkOpenFullUrl: [],
+      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [],
     }))
     expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
+  })
+
+  it('lists a held-back composer button and approves its grant entry', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [] } },
+      approvedGrants: { api: [], events: [] },
+      composerActionGrant: { actions: [{ id: 'insert', title: 'Insert snippet' }], staged: ['summarize'] },
+    }))
+    renderDetail()
+    await loaded()
+    expect(screen.getByText(/Composer buttons: lets the app add these buttons/)).toBeInTheDocument()
+    expect(screen.getByText('summarize')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ composerActions: ['summarize:insert'] })))
   })
 
   it('offers no approval on a disabled app, whose enable would switch it on', async () => {
@@ -830,6 +933,25 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: /uninstall/i }))
     return screen.findByRole('dialog', { name: /confirm uninstall/i })
   }
+
+  it('titles the uninstall dialog as one sentence with the quoted app name', async () => {
+    const box = await openUninstall()
+    expect(within(box).getByText('Uninstall “Ledger Lens”?')).toBeInTheDocument()
+  })
+
+  it('words the uninstall dialog title in German with the name first', async () => {
+    await act(async () => { await i18next.changeLanguage('de') })
+    try {
+      getApp.mockResolvedValue(installedApp())
+      renderDetail()
+      await loaded()
+      fireEvent.click(screen.getByRole('button', { name: 'Deinstallieren' }))
+      const box = await screen.findByRole('dialog')
+      expect(within(box).getByText('„Ledger Lens“ deinstallieren?')).toBeInTheDocument()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
+  })
 
   it('keeps app data by default and cancels without calling the API', async () => {
     const box = await openUninstall()
@@ -1021,5 +1143,85 @@ describe('AppDetailPage — uncovered surfaces', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /back to apps/i }))
     expect(await screen.findByText('apps list')).toBeInTheDocument()
+  })
+})
+
+// The Details rows are each one catalog sentence, and the origin, resources
+// and lifecycle values are shown as words, not as the raw record values.
+describe('AppDetailPage — Details rows in other languages', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    system.mockResolvedValue({ hostname: '' })
+    listRegistry.mockResolvedValue({ apps: [], serverPlatform: { os: 'darwin', arch: 'arm64' } })
+  })
+  afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
+
+  it('names the origin and lifecycle in English words', async () => {
+    getApp.mockResolvedValue(installedApp({ origin: 'builtin', lifecycle: 'locked' }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('Origin: Built-in | Resources: Gateway | Lifecycle: Locked')).toBeInTheDocument()
+  })
+
+  it('words the rows in German with no English record values', async () => {
+    await act(async () => { await i18next.changeLanguage('de') })
+    getApp.mockResolvedValue(installedApp({ origin: 'builtin', lifecycle: 'locked' }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('Ursprung: Integriert | Ressourcen: Gateway | Lebenszyklus: Gesperrt')).toBeInTheDocument()
+    expect(screen.queryByText(/builtin|locked/)).toBeNull()
+  })
+
+  it('shows a value it has no word for as it is', async () => {
+    getApp.mockResolvedValue(installedApp({ origin: 'mirror', resources: 'app', lifecycle: 'app' }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('Origin: mirror | Resources: App | Lifecycle: App')).toBeInTheDocument()
+  })
+})
+
+// The memory permission row is one catalog sentence per manifest value, not a
+// translated label glued to the raw `permissions.memory` value.
+describe('AppDetailPage — memory permission row', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    system.mockResolvedValue({ hostname: '' })
+    listRegistry.mockResolvedValue({ apps: [], serverPlatform: { os: 'darwin', arch: 'arm64' } })
+  })
+  afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
+
+  const withMemory = (memory: boolean | string) => installedApp({
+    manifest: {
+      displayName: 'Ledger Lens',
+      description: 'Reads your books and explains them.',
+      permissions: { storage: true, memory },
+    },
+  })
+
+  it.each([
+    ['app-scoped', 'Memory: app-scoped'],
+    ['shared', 'Memory: shared'],
+    [true, 'Memory: yes'],
+    ['True', 'Memory: yes'],
+    ['read', 'Memory: read'],
+  ] as const)('words memory %s as one sentence', async (memory, text) => {
+    getApp.mockResolvedValue(withMemory(memory))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText(text)).toBeInTheDocument()
+  })
+
+  it('words the memory row in German with no English value', async () => {
+    await act(async () => { await i18next.changeLanguage('de') })
+    getApp.mockResolvedValue(withMemory('app-scoped'))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('Gedächtnis: nur für diese App')).toBeInTheDocument()
+    expect(screen.queryByText(/app-scoped/)).toBeNull()
   })
 })

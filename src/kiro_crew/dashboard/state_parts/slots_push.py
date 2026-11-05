@@ -6,8 +6,9 @@ websocket fan-out delegations.
 
 Instance fields of ``DashboardState`` this module reads and writes:
 
-Writes: ``_lineage_sent``, ``_serving_loop``, ``_slots_broadcast_interval``,
-``_slots_broadcast_last``, ``_slots_broadcast_timer``, ``_slots_push_all_owed``,
+Writes: ``_lineage_sent``, ``_listing_refresh_owed``, ``_serving_loop``, ``_slot_diff_bases``,
+``_slots_broadcast_interval``, ``_slots_broadcast_last``, ``_slots_broadcast_timer``,
+``_slots_push_all_owed``,
 ``_slots_push_legacy_owed``, ``_slots_push_overlapped``, ``_slots_push_pending``,
 ``_slots_push_suspend``, ``_update_progress``.
 Reads only: ``_dynamic_cards``, ``_folders``, ``_notify_event``, ``_owner_ws_clients``,
@@ -32,18 +33,31 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
 
+from kiro_crew.dashboard.state_parts import refresh_coalesce as _refresh_coalesce
 from kiro_crew.dashboard.state_parts.dashboard_services import _persistence_for, _websocket_for
 from kiro_crew.dashboard.state_parts.sidebar_stores import _safe_folder_tree
+from kiro_crew.dashboard.state_parts.slots_diff import (
+    OWNER_VIEW,
+    USER_VIEW,
+    answer_resync,
+    diff_sockets,
+    envelope_texts_of,
+    list_text,
+    row_texts,
+    send_slot_diffs,
+    slots_frame_text,
+)
 from kiro_crew.dashboard.state_parts.slots_frame import (
     _SLOTS_BROADCAST_INTERVAL_S,
     _attach_slot_parents,
     _published_queued_by_slot,
     _slots_broadcast_interval_for,
     _slots_serialization_note,
+    _slots_ws_envelope,
     _slots_ws_frame,
 )
 from kiro_crew.dashboard.state_parts.transcript_rows import chat_message_frame
-from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG, WsPayload
+from kiro_crew.dashboard.websocket_hub import SLOT_DIFF_WS_FLAG, SLOT_PATCH_WS_FLAG, WsPayload
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
@@ -420,6 +434,18 @@ def _do_slots_broadcast(self: DashboardState) -> None:
         governance_answer_generation,
     )
 
+    # The pass runs on the serving loop. A leading-edge push from another
+    # thread lands here directly; hopping keeps the ``slots_diff`` sequence
+    # numbers and bases loop-only, so two overlapping passes cannot mint one
+    # number twice and leave a client applying a delta to the wrong list.
+    loop = self._serving_loop
+    if loop is not None and loop is not self._running_loop() and loop.is_running():
+        try:
+            loop.call_soon_threadsafe(self._do_slots_broadcast)
+            return
+        except RuntimeError:
+            pass  # closed between the check and the call: broadcast here
+
     legacy_only = self._take_slots_audience()
     if legacy_only and not self._has_legacy_slots_audience():
         # Every consumer already applied the patch this broadcast was owed
@@ -448,27 +474,45 @@ def _do_slots_broadcast(self: DashboardState) -> None:
     owner_ws_clients = getattr(self, "_owner_ws_clients", None)
     if legacy_only and owner_ws_clients:
         owner_ws_clients = {ws for ws in owner_ws_clients if not ws.get(SLOT_PATCH_WS_FLAG, False)}
-    slots_data, slots_data_ws, owner_slots = self.serialize_slot_views(owner=bool(owner_ws_clients))
-    # The evidenced way this broadcast fails is a non-serializable value in
-    # slot state: the dump raises, and the bare TypeError
-    # names neither the slot nor the field. Serialize up front and annotate
-    # the failure with the offender so one traceback is enough to find it.
-    # Both coalescing branches (leading edge and trailing timer) funnel
-    # through this method, so both report identically by construction.
-    # Diagnosis only: the exception still propagates unchanged.
-    try:
-        slots_json = json.dumps(slots_data)
-    except (TypeError, ValueError) as exc:
-        exc.add_note(_slots_serialization_note(slots_data))
-        raise
-    # Size the NEXT coalescing window from this frame, so a burst over a long
-    # list is paced by bytes rather than by the fixed floor. The generic list
-    # stands in for every audience's copy; they differ only in per-slot
-    # enrichment. Character count, not encoded bytes: close enough for pacing.
-    lock = self._slots_broadcast_lock
-    if lock is not None:
-        with lock:
-            self._slots_broadcast_interval = _slots_broadcast_interval_for(len(slots_json))
+    # A ``slots_diff`` socket already applied the ``slot_patch`` a legacy-only
+    # broadcast was owed for, and it is a patch socket, so it is left out above.
+    diff_owner, diff_user = ([], []) if legacy_only else diff_sockets(self)
+    any_diff = bool(diff_owner or diff_user)
+    if any_diff and owner_ws_clients:
+        owner_ws_clients = {
+            ws for ws in owner_ws_clients if ws.get(SLOT_DIFF_WS_FLAG, False) is not True
+        }
+    # The generic frame is skipped only when a diff socket takes the list and
+    # nothing else would receive the generic one.
+    generic = not any_diff or self._has_generic_slots_audience()
+    slots_data, slots_data_ws, owner_slots = self.serialize_slot_views(
+        owner=bool(owner_ws_clients or diff_owner),
+        # Only the generic frame and dashboard-user diff sockets read that view.
+        **({} if generic or diff_user else {"user": False}),
+    )
+    # With a diff socket open every row is serialized on its own, since the
+    # delta compares rows as text; those texts then build every other frame of
+    # the pass too, so no row is dumped twice. Without one, a whole-list dump
+    # is cheaper than a call per row, so the frames are dumped as before.
+    text_cache: dict[int, str] | None = {} if any_diff else None
+    slots_json = ""
+    if generic:
+        # The evidenced way this broadcast fails is a non-serializable value in
+        # slot state: the dump raises, and the bare TypeError
+        # names neither the slot nor the field. Serialize up front and annotate
+        # the failure with the offender so one traceback is enough to find it.
+        # Both coalescing branches (leading edge and trailing timer) funnel
+        # through this method, so both report identically by construction.
+        # Diagnosis only: the exception still propagates unchanged.
+        try:
+            slots_json = (
+                json.dumps(slots_data)
+                if text_cache is None
+                else list_text(row_texts(slots_data, text_cache))
+            )
+        except (TypeError, ValueError) as exc:
+            exc.add_note(_slots_serialization_note(slots_data))
+            raise
     mgr = getattr(self, "channel_manager", None)
     ch_trusted = bool(mgr and any(ch.trusted for ch in mgr._channels.values()))
     # ONE read, shared by the generic and owner frames below. Two independent
@@ -498,6 +542,131 @@ def _do_slots_broadcast(self: DashboardState) -> None:
     # HTTP query still runs to backfill ``history_count``; grouping does not
     # wait on it. Slicing to the fields the client's grouping needs keeps
     # this hot-path frame small and never touches the filesystem.
+    envelope_args: dict[str, Any] = {
+        "yolo": yolo_active,
+        "channel_trusted": ch_trusted,
+        "gitlab_hosts_gen": gitlab_hosts_generation(),
+        "folders": _safe_folder_tree(getattr(self, "_folders", None)),
+        "folders_gen": self.folders_generation(),
+        "governance_gen": answer_generation,
+        "tags_gen": self.tags_generation(),
+        "slots_partial": self.slot_list_rebuilding,
+        "slots_held_keys": held_keys,
+        "slots_hold_channels": hold_channels,
+    }
+    # Built once: the generic note, the owner frame and the diff senders all
+    # carry this key set, so a field added to the envelope reaches each of them.
+    envelope = _slots_ws_envelope(**envelope_args)
+    envelope_texts = envelope_texts_of(envelope)
+
+    def view_texts(rows: list[dict], path: str) -> list[str]:
+        try:
+            return row_texts(rows, {} if text_cache is None else text_cache)
+        except (TypeError, ValueError) as exc:
+            exc.add_note(_slots_serialization_note(rows, path=path))
+            raise
+
+    if generic:
+        # The dashboard-user frame, prebuilt from the same row texts; app tokens
+        # still get theirs re-filtered and re-serialized in ``_broadcast``.
+        user_frame = (
+            None
+            if text_cache is None
+            else slots_frame_text(view_texts(slots_data_ws, "ws-frame"), envelope_texts)
+        )
+        self._broadcast_slots_note(
+            slots_data, slots_data_ws, slots_json, legacy_only, envelope_args, envelope, user_frame
+        )
+    # The owner frame is the owner's ONLY slots frame — `_send_ws_all` skips
+    # owner sockets for `slots` (see there for why), so this envelope has to
+    # carry every key the generic one does: `folders` seeds the first-paint
+    # folder tree and `gitlabHostsGeneration` drives the dashboard-config
+    # invalidation, so a subset here leaves the owner without them. Both frames
+    # carry the one ``envelope`` built above, so a key cannot reach one and not
+    # the other.
+    if owner_ws_clients and owner_slots is not None:
+        self._send_ws_owners(
+            (
+                _slots_ws_frame(owner_slots, **envelope_args)
+                if text_cache is None
+                else slots_frame_text(view_texts(owner_slots, "ws-frame"), envelope_texts)
+            ),
+            **({"skip_slot_patch_clients": True} if legacy_only else {}),
+            **({"skip_slot_diff_clients": True} if any_diff else {}),
+        )
+    frame_len = len(slots_json)
+    if any_diff:
+        frame_len = max(
+            frame_len,
+            send_slot_diffs(
+                self,
+                OWNER_VIEW,
+                diff_owner,
+                owner_slots or [],
+                envelope_texts,
+                view_texts(owner_slots or [], "ws-slots-diff") if diff_owner else [],
+            ),
+            send_slot_diffs(
+                self,
+                USER_VIEW,
+                diff_user,
+                slots_data_ws,
+                envelope_texts,
+                view_texts(slots_data_ws, "ws-slots-diff") if diff_user else [],
+            ),
+        )
+    elif not legacy_only:
+        # No diff socket is open: their bases describe lists nobody holds.
+        self._slot_diff_bases = None
+    # Size the NEXT coalescing window from this frame, so a burst over a long
+    # list is paced by bytes rather than by the fixed floor. The generic list
+    # stands in for every audience's copy; they differ only in per-slot
+    # enrichment. Character count, not encoded bytes: close enough for pacing.
+    # A diff socket is paced by its full list too: each pass re-serializes
+    # every row, so the window bounds that work as well as the bytes.
+    lock = self._slots_broadcast_lock
+    if lock is not None:
+        with lock:
+            self._slots_broadcast_interval = _slots_broadcast_interval_for(frame_len)
+
+    self._emit_member_slot_transitions()
+
+
+def answer_slots_resync(self: DashboardState, ws: web.WebSocketResponse) -> None:
+    """Answer a ``slots_resync`` from diff socket *ws* (``slots_diff.answer_resync``)."""
+    answer_resync(self, ws)
+
+
+def _has_generic_slots_audience(self: DashboardState) -> bool:
+    """True when an SSE reader or a socket outside the owner and diff sets is open."""
+    if getattr(self, "_sse_queues", None):
+        return True
+    owners = getattr(self, "_owner_ws_clients", None) or set()
+    return any(
+        not ws.closed and ws not in owners and ws.get(SLOT_DIFF_WS_FLAG, False) is not True
+        for ws in list(getattr(self, "_ws_clients", None) or ())
+    )
+
+
+def _broadcast_slots_note(
+    self: DashboardState,
+    slots_data: list[dict],
+    slots_data_ws: list[dict],
+    slots_json: str,
+    legacy_only: bool,
+    envelope_args: dict[str, Any],
+    envelope: dict[str, Any],
+    user_frame: str | None = None,
+) -> None:
+    """Hand the generic ``slots`` note to SSE readers and the non-owner sockets.
+
+    The note's envelope keys come from ``envelope``, the same dict the owner
+    frame and the diff senders use, so the three cannot carry different keys.
+    ``_yolo`` and an always-present ``slotsPartial`` keep the names the SSE
+    stream and ``_broadcast`` read. *user_frame* is the dashboard-user WS frame
+    already built from this pass's row texts, sent as-is instead of a second
+    dump of the same list.
+    """
     self._broadcast(
         {
             "_type": "slots",
@@ -508,62 +677,16 @@ def _do_slots_broadcast(self: DashboardState) -> None:
             # present; SSE never reads it, so status cannot reach the
             # unfiltered stream.
             "_slots_list_ws": slots_data_ws,
-            "_yolo": yolo_active,
+            "_yolo": envelope_args["yolo"],
             "slots": slots_json,
-            "channelTrusted": ch_trusted,
-            "gitlabHostsGeneration": gitlab_hosts_generation(),
-            "slotsPartial": self.slot_list_rebuilding,
-            **({"slotsHeldKeys": held_keys} if held_keys else {}),
-            **({"slotsHoldChannels": True} if hold_channels else {}),
-            # getattr, not self._folders: this read path runs on EVERY slots
-            # push, including on a __new__-built DashboardState that seeded only
-            # the push essentials and never ran __init__ (several endpoint
-            # suites build their fixture that way). _folders is an __init__-only
-            # assignment, so a bare attribute access would AttributeError there
-            # — the exact break test_push_slots_update_survives_a_partially_
-            # constructed_state pins against. An absent/None folder store is an
-            # empty tree.
-            #
-            # Lightweight states can bypass load_folders(), so keep this hot
-            # broadcast path tolerant of malformed in-memory values.
-            "folders": _safe_folder_tree(getattr(self, "_folders", None)),
-            # Lets the client distinguish "the tree changed" from "a session
-            # blinked": this frame fires on routine slot activity, so the
-            # tree alone is not a change signal.
-            "foldersGeneration": self.folders_generation(),
-            "governanceGeneration": answer_generation,
-            "tagsGeneration": self.tags_generation(),
+            **{k: v for k, v in envelope.items() if k != "yolo"},
+            "slotsPartial": bool(envelope_args["slots_partial"]),
             # Read by ``_broadcast`` to skip sockets that already applied
             # the ``slot_patch`` this broadcast was owed for.
             "_legacy_only": legacy_only,
+            **({"_slots_ws_text": user_frame} if user_frame is not None else {}),
         }
     )
-    # The owner frame is the owner's ONLY slots frame — `_send_ws_all` skips
-    # owner sockets for `slots` (see there for why), so this envelope has to
-    # carry every key the generic one does: `folders` seeds the first-paint
-    # folder tree and `gitlabHostsGeneration` drives the dashboard-config
-    # invalidation, so a subset here leaves the owner without them. Both frames
-    # are built by `_slots_ws_frame`, so a key cannot reach one and not the
-    # other.
-    if owner_ws_clients and owner_slots is not None:
-        self._send_ws_owners(
-            _slots_ws_frame(
-                owner_slots,
-                yolo=yolo_active,
-                channel_trusted=ch_trusted,
-                gitlab_hosts_gen=gitlab_hosts_generation(),
-                folders=_safe_folder_tree(getattr(self, "_folders", None)),
-                folders_gen=self.folders_generation(),
-                governance_gen=answer_generation,
-                tags_gen=self.tags_generation(),
-                slots_partial=self.slot_list_rebuilding,
-                slots_held_keys=held_keys,
-                slots_hold_channels=hold_channels,
-            ),
-            **({"skip_slot_patch_clients": True} if legacy_only else {}),
-        )
-
-    self._emit_member_slot_transitions()
 
 
 def push_slot_title(self: DashboardState, key: str, title: str, *, full: bool = True) -> None:
@@ -662,11 +785,12 @@ def push_lineage_patch(self: DashboardState) -> None:
     live = {row["key"] for row in rows}
     for key in [k for k in sent if k not in live]:
         del sent[key]
-    stamps = _crew_stamps(self, rows)
+    stamps, mate_stamps = _crew_stamps(self, rows)
     changed: list[dict[str, Any]] = []
     for row in rows:
         crew = stamps.get(row["key"], _NO_CREW)
-        value = (row.get("parent"), bool(row.get("lineage_pending")), crew)
+        mate = mate_stamps.get(row["key"], _NO_MATE)
+        value = (row.get("parent"), bool(row.get("lineage_pending")), crew, mate)
         before = sent.get(row["key"])
         if before == value:
             continue
@@ -676,6 +800,9 @@ def push_lineage_patch(self: DashboardState) -> None:
         # its two stamps ride along only when they moved.
         if crew != (before[2] if before is not None and len(before) > 2 else _NO_CREW):
             patch["crew_root"], patch["crew_mode_root"] = crew
+        # The same for a mate tree's two stamps (inert: no client reads them yet).
+        if mate != (before[3] if before is not None and len(before) > 3 else _NO_MATE):
+            patch["mate_root"], patch["mate_dispatched_by"] = mate
         changed.append(patch)
     if not changed:
         return
@@ -785,10 +912,14 @@ def push_slot_removed(self: DashboardState, key: str) -> None:
 
 #: A row outside every Crew Mode tree: no root to name, not a root itself.
 _NO_CREW: tuple[str, bool] = ("", False)
+#: A row outside every mate tree: no ``mate_root``, no ``mate_dispatched_by``.
+_NO_MATE: tuple[str, str] = ("", "")
 
 
-def _crew_stamps(self: DashboardState, rows: list[dict[str, Any]]) -> dict[str, tuple[str, bool]]:
-    """Each live row's Crew Mode stamps (``crew_mode.live_stamps``), or none on a fault.
+def _crew_stamps(
+    self: DashboardState, rows: list[dict[str, Any]]
+) -> tuple[dict[str, tuple[str, bool]], dict[str, tuple[str, str]]]:
+    """Each live row's Crew Mode and mate stamps (``crew_mode.live_stamp_rows``).
 
     *rows* are :meth:`_lineage_rows` with their ``parent`` attached, so the stamps
     read the same edges the full frame reads. A fault costs the stamps only, as it
@@ -798,14 +929,19 @@ def _crew_stamps(self: DashboardState, rows: list[dict[str, Any]]) -> dict[str, 
 
     keys = {row["key"] for row in rows}
     try:
-        return crew_mode.live_stamps(
+        stamped = crew_mode.live_stamp_rows(
             {k: s for k, s in list(self._slots.items()) if k in keys},
             {row["key"]: row.get("parent") for row in rows},
             settled=crew_mode.lineage_is_settled(),
         )
     except Exception:  # pragma: no cover - a stamp fault must cost the stamp only
         logger.warning("Crew Mode stamps not restated", exc_info=True)
-        return {}
+        return {}, {}
+    crew = {
+        key: (str(row.get(crew_mode.WORKER_FIELD) or ""), bool(row.get(crew_mode.ROOT_FIELD)))
+        for key, row in stamped.items()
+    }
+    return crew, {key: crew_mode.mate_stamps_of(row) for key, row in stamped.items()}
 
 
 def _has_slot_patch_clients(self: DashboardState) -> bool:
@@ -816,8 +952,15 @@ def _has_slot_patch_clients(self: DashboardState) -> bool:
 
 
 def _send_slot_patch(self: DashboardState, data: dict[str, Any]) -> None:
-    """Serialize one ``slot_patch`` frame and hand it to patch-capable sockets."""
+    """Serialize one ``slot_patch`` frame and hand it to patch-capable sockets.
+
+    Every ``slot_diff.1`` socket is a patch socket and applies the patch to its
+    list, so each held diff base is marked patched: a resync answered from it
+    would put the old values back (``slots_diff.answer_resync``).
+    """
     _websocket_for(self).send_ws_slot_patch(json.dumps({"type": "slot_patch", "data": data}))
+    for base in (getattr(self, "_slot_diff_bases", None) or {}).values():
+        base.patched = True
 
 
 def ensure_dynamic_card_store(self: DashboardState) -> Any:
@@ -908,9 +1051,26 @@ def push_refresh(self: DashboardState, *kinds: str) -> None:
     client guessing on a timer.
 
     Supported kinds: ``crons``, ``lessons``, ``agents``, ``history``,
-    ``taskrunner``.
+    ``turn_end``, ``taskrunner``.
+
+    A lone ``turn_end`` goes through ``refresh_coalesce``, at most one frame per window.
     """
+    if "history" in kinds:
+        # Every tab re-reads the listing on this frame, so it pays an owed listing refresh.
+        self._listing_refresh_owed = False
+    if kinds == (_refresh_coalesce.TURN_END_KIND,):
+        _refresh_coalesce.coalescer_for(self).push()
+        return
     self._broadcast({"_type": "refresh", "kinds": ",".join(kinds)})
+
+
+def push_listing_refresh(self: DashboardState) -> None:
+    """Push a coalesced ``history`` refresh: one frame per window however many tabs open.
+
+    A bulk creator opens slots one at a time, and each tab answers a ``history``
+    frame by re-reading the Older Sessions listing.
+    """
+    _refresh_coalesce.coalescer_for(self, _refresh_coalesce.HISTORY_KIND).push()
 
 
 def push_update_progress(self: DashboardState, step: str, detail: str = "") -> None:
@@ -971,21 +1131,28 @@ def _broadcast(self: DashboardState, note: dict[str, Any]) -> None:
                 # Consumed by ``_send_ws_all``; never serialized to a client.
                 "_legacy_only": bool(note.get("_legacy_only", False)),
             }
-            # Built by `_slots_ws_frame`, NOT inline: the owner frame in
+            # A coalesced broadcast hands over the frame it already built from
+            # its row texts (``_slots_ws_text``). Any other note is built by
+            # `_slots_ws_frame`, NOT inline: the owner frame in
             # `_do_slots_broadcast` has to carry an identical key set, and it
             # cannot if each site names its own keys. See that function.
-            ws_msg = _slots_ws_frame(
-                slots_list,
-                yolo=bool(ws_data["yolo"]),
-                channel_trusted=bool(ws_data["channelTrusted"]),
-                gitlab_hosts_gen=note.get("gitlabHostsGeneration"),
-                folders=note.get("folders"),
-                folders_gen=note.get("foldersGeneration"),
-                governance_gen=note.get("governanceGeneration"),
-                tags_gen=note.get("tagsGeneration"),
-                slots_partial=bool(ws_data["slotsPartial"]),
-                slots_held_keys=ws_data["slotsHeldKeys"],
-                slots_hold_channels=bool(ws_data["slotsHoldChannels"]),
+            prebuilt = note.get("_slots_ws_text")
+            ws_msg = (
+                prebuilt
+                if isinstance(prebuilt, str)
+                else _slots_ws_frame(
+                    slots_list,
+                    yolo=bool(ws_data["yolo"]),
+                    channel_trusted=bool(ws_data["channelTrusted"]),
+                    gitlab_hosts_gen=note.get("gitlabHostsGeneration"),
+                    folders=note.get("folders"),
+                    folders_gen=note.get("foldersGeneration"),
+                    governance_gen=note.get("governanceGeneration"),
+                    tags_gen=note.get("tagsGeneration"),
+                    slots_partial=bool(ws_data["slotsPartial"]),
+                    slots_held_keys=ws_data["slotsHeldKeys"],
+                    slots_hold_channels=bool(ws_data["slotsHoldChannels"]),
+                )
             )
         elif msg_type == "slot_title":
             ws_data = {"key": note["key"], "title": note["title"]}
@@ -1072,12 +1239,17 @@ def _send_ws_all(self: DashboardState, msg_type: str, data: object, msg: str) ->
 
 
 def _send_ws_owners(
-    self: DashboardState, msg: str, *, skip_slot_patch_clients: bool = False
+    self: DashboardState,
+    msg: str,
+    *,
+    skip_slot_patch_clients: bool = False,
+    skip_slot_diff_clients: bool = False,
 ) -> None:
-    if skip_slot_patch_clients:
-        _websocket_for(self)._send_ws_owners(msg, skip_slot_patch_clients=True)
-    else:
-        _websocket_for(self)._send_ws_owners(msg)
+    skips = {
+        **({"skip_slot_patch_clients": True} if skip_slot_patch_clients else {}),
+        **({"skip_slot_diff_clients": True} if skip_slot_diff_clients else {}),
+    }
+    _websocket_for(self)._send_ws_owners(msg, **skips)
 
 
 def broadcast_ws(self: DashboardState, msg_type: str, data: WsPayload) -> None:
@@ -1092,8 +1264,20 @@ async def deliver_ws_owners(self: DashboardState, msg_type: str, data: WsPayload
     return await _websocket_for(self).deliver_ws_owners(msg_type, data)
 
 
+async def deliver_ws_owners_bytes(self: DashboardState, payload: bytes) -> int:
+    return await _websocket_for(self).deliver_ws_owners_bytes(payload)
+
+
 def broadcast_ws_owners(self: DashboardState, msg_type: str, data: WsPayload) -> None:
     _websocket_for(self).broadcast_ws_owners(msg_type, data)
+
+
+def hold_turn_heartbeat(self: DashboardState, holder: object, slot_key: str) -> None:
+    _websocket_for(self).turn_heartbeat.hold(holder, slot_key)
+
+
+def release_turn_heartbeat(self: DashboardState, holder: object) -> None:
+    _websocket_for(self).turn_heartbeat.release(holder)
 
 
 def ws_client_count(self: DashboardState) -> int:
@@ -1138,10 +1322,6 @@ def add_fold_watch_listener(
     return _websocket_for(self).add_fold_watch_listener(listener)
 
 
-def broadcast_browser_event(self: DashboardState, event_type: str, data: dict) -> None:
-    _websocket_for(self).broadcast_browser_event(event_type, data)
-
-
 def register_ws(self: DashboardState, ws: web.WebSocketResponse, *, owner: bool = False) -> None:
     _websocket_for(self).register_ws(ws, owner=owner)
 
@@ -1179,4 +1359,8 @@ def broadcast_ws_subagent_subscribers(self: DashboardState, msg_type: str, data:
 
 
 async def close_all_ws(self: DashboardState) -> None:
+    # Send any pending coalesced refresh frame before the sockets close.
+    for coalescer in (self._refresh_coalescer, self._history_coalescer):
+        if coalescer is not None:
+            coalescer.shutdown()
     await _websocket_for(self).close_all_ws()

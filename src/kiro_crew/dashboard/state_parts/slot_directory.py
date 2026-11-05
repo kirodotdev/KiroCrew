@@ -45,7 +45,8 @@ logger = logging.getLogger("kiro_crew.dashboard.state")
 
 #: The single ceiling on live slots, owned by the module that owns the slot
 #: table (see :meth:`DashboardState.live_slot_count`). Every path that allocates
-#: a slot -- session create, chat fork, session import -- tests ``live_slot_count()``
+#: a slot -- session create, chat fork, session import, the workflow result
+#: fallback (``workflow_inject``) -- tests ``live_slot_count()``
 #: against this one number, so raising the ceiling is a single edit and no entry
 #: point can silently drift to a different limit.
 MAX_LIVE_SLOTS = 500
@@ -55,7 +56,7 @@ MAX_LIVE_SLOTS = 500
 #: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
 #: distribution, so a single automated creator working through a nudge loop can
 #: reach 500 on its own and every later create -- including the person opening a
-#: new chat tab -- gets the 429. That is the availability half of the cap: a
+#: new chat tab -- gets the 409. That is the availability half of the cap: a
 #: bounded resource that one caller may exhaust entirely is not bounded from
 #: anybody else's point of view.
 #:
@@ -271,7 +272,7 @@ def get_slot(self: DashboardState, name: str) -> _ChatSlot | None:
     layer for any construction path that keeps the slot registered while it
     awaits: acquisition must not hand out a not-yet-finalized session.
     ``serialize_slots`` hides it from the payload; resume dedup reads
-    ``_slots`` directly (``_live_slot_resume_response``), so a resuming slot
+    ``_slots`` directly (``_live_slot_resume_payload``), so a resuming slot
     stays discoverable for dedup while acquisition through this door is
     refused.
     """

@@ -47,7 +47,7 @@ async def test_add_sets_and_persists_deadline(svc, tmp_path):
     loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=100)
     after = time.time()
     assert before + 100 <= loop.next_due_ts <= after + 100
-    raw = json.loads((tmp_path / "autonudge.json").read_text())
+    raw = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
     assert raw["loops"][0]["next_due_ts"] == loop.next_due_ts
     svc.stop()
 
@@ -104,7 +104,7 @@ async def test_delivered_fire_clears_deadline_then_turn_end_starts_fresh(svc, mo
     assert loop.next_due_ts == 0.0  # cleared on delivery
     # Persisted too — a restart during the nudge turn must not resume a spent
     # countdown.
-    raw = json.loads((svc._path).read_text())
+    raw = json.loads((svc._path).read_text(encoding="utf-8"))
     assert raw["loops"][0]["next_due_ts"] == 0.0
     # The nudge turn's end starts the next full cycle.
     before = time.time()
@@ -176,12 +176,12 @@ async def test_restart_resumes_persisted_countdown(tmp_path):
     await svc1.add(slot_key="chat-1-123", message="go", idle_secs=200)
     svc1.stop()
     # Simulate elapsed downtime by rewriting the persisted deadlines.
-    raw = json.loads((tmp_path / "autonudge.json").read_text())
+    raw = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
     raw["loops"][0]["next_due_ts"] = time.time() + 42
     raw["loops"].append(
         dict(raw["loops"][0], id="deadbeef", slot_key="chat-2-456", next_due_ts=time.time() - 99)
     )
-    (tmp_path / "autonudge.json").write_text(json.dumps(raw))
+    (tmp_path / "autonudge.json").write_text(json.dumps(raw), encoding="utf-8")
 
     svc2 = AutoNudgeService(base_dir=tmp_path)
     delays = _capture_arm_delays(svc2)
@@ -210,7 +210,8 @@ async def test_legacy_store_entry_without_deadline_starts_fresh(tmp_path):
                     }
                 ],
             }
-        )
+        ),
+        encoding="utf-8",
     )
     svc = AutoNudgeService(base_dir=tmp_path)
     delays = _capture_arm_delays(svc)
@@ -336,7 +337,8 @@ async def test_malformed_persisted_deadline_degrades_to_fresh(tmp_path):
                     },
                 ],
             }
-        )
+        ),
+        encoding="utf-8",
     )
     svc = AutoNudgeService(base_dir=tmp_path)
     await svc.start()  # must not raise
@@ -421,6 +423,6 @@ async def test_turn_complete_fresh_deadline_is_persisted(svc, monkeypatch):
     assert loop.next_due_ts >= before + 100
     for task in list(svc._inflight_adds):
         await task
-    raw = json.loads((svc._path).read_text())
+    raw = json.loads((svc._path).read_text(encoding="utf-8"))
     assert raw["loops"][0]["next_due_ts"] == loop.next_due_ts
     svc.stop()

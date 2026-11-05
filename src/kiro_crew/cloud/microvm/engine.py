@@ -1302,6 +1302,7 @@ class ApiVmLauncher(VmLauncher):
                         bucket,
                         key,
                         str(path),
+                        expected_bucket_owner=account_id,
                         profile=profile,
                         region=region,
                         endpoint_url=spec.endpoint_url,
@@ -1411,7 +1412,7 @@ def _staged_wheel() -> Path:
     machine. ``scripts/build_microvm_image_zip.py`` stages it; a launch that finds
     none says so and names that script.
     """
-    vendor = recipe_mod.RUNTIME_DIR / "vendor"
+    vendor = recipe_mod.runtime_path("RUNTIME_DIR") / "vendor"
     wheels = sorted(vendor.glob("*.whl"))
     if not wheels:
         raise ValueError(

@@ -59,7 +59,7 @@ def kas_selectable(monkeypatch):
 @pytest.fixture
 def pinned_cli(tmp_path, monkeypatch):
     binary = tmp_path / "kiro-cli"
-    binary.write_text("#!/bin/sh\n")
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
     return binary
 

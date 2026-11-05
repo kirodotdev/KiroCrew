@@ -58,9 +58,9 @@ describe('SearchBar', () => {
     expect(screen.getByText('3 of 5 results')).toBeInTheDocument()
   })
 
-  it('shows "1 of 1 results" for single match', () => {
+  it('shows "1 of 1 result" for single match', () => {
     renderBar({ term: 'unique', matches: [{ msgIdx: 0, occ: 0 }], currentIdx: 0 })
-    expect(screen.getByText('1 of 1 results')).toBeInTheDocument()
+    expect(screen.getByText('1 of 1 result')).toBeInTheDocument()
   })
 
   it('hides count when term is empty', () => {

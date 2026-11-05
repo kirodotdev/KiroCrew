@@ -118,7 +118,14 @@ def test_only_a_failed_lane_blocks_a_head(conclusion):
 
 @pytest.mark.parametrize(
     "name",
-    ["Opus 5.5 Review", "GPT 6.1 Review", "Design Review", "UX Review", "First Principles Review"],
+    [
+        "Opus 5.5 Review",
+        "GPT 6.1 Review",
+        "Design Review",
+        "UX Review",
+        "First Principles Review",
+        "Security Scope Review",
+    ],
 )
 def test_each_review_lane_blocks_a_head(name):
     gh = _FakeGh([_force(SHA[0]), _force(SHA[1])], {SHA[0]: [(name, "failure")]})
@@ -129,7 +136,9 @@ def test_each_review_lane_blocks_a_head(name):
     "name",
     [
         "Sensitive Change Review",
-        "Security Scope Review",
+        "Security scope candidates (Opus 5.5)",
+        "Security scope adjudication (ubuntu-latest)",
+        "Security Scope Review (same-repo lane, not applicable to forks)",
         "Backend Tests (3.12, 2)",
         "GPT 6.1 Review (same-repo lane, not applicable to forks)",
         "Reviewdog",
@@ -557,3 +566,83 @@ def test_the_seam_protocol_reference_documents_the_pr_level_count():
     assert "## PR-level count" in text
     assert "SEAM REPEAT (pr-level)" in text and "SEAM LIMIT (pr-level)" in text
     assert "3 pushes" in text and "5 pushes" in text
+
+
+# --- one definition: Security Scope Review blocks, and the GPT lane runs this same count ---
+
+SCOPE = "Security Scope Review"
+
+
+def test_a_head_blocked_only_by_security_scope_counts():
+    others = [(name, "success") for name in ("GPT 6.1 Review", "Opus 5.5 Review", "Design Review")]
+    gh = _FakeGh(
+        [_force(h) for h in SHA[:4]],
+        {h: others + [(SCOPE, "failure")] for h in SHA[:3]},
+    )
+    assert _count(gh) == 3, "three pushes replaced a head that only Security Scope blocked"
+
+
+def test_a_green_security_scope_rerun_or_an_approval_clears_the_head():
+    failed = {SHA[0]: [(SCOPE, "failure", 10)]}
+    assert _count(_FakeGh([_force(SHA[0]), _force(SHA[1])], failed)) == 1
+    rerun = {SHA[0]: [(SCOPE, "failure", 10), (SCOPE, "success", 11)]}
+    assert _count(_FakeGh([_force(SHA[0]), _force(SHA[1])], rerun)) == 0
+    approved = [_force(SHA[0]), _review(SHA[0]), _review(SHA[0], "approved"), _force(SHA[1])]
+    assert _count(_FakeGh(approved)) == 0
+
+
+def _pushes_module():
+    return _contract()._pushes
+
+
+def test_the_script_entry_prints_the_same_count_the_contract_returns(capsys):
+    history = [_force(SHA[0]), _review(SHA[0]), _review(SHA[0], "approved")]
+    history += [_force(h) for h in SHA[1:5]]
+    checks = {
+        SHA[1]: [(SCOPE, "failure")],
+        SHA[2]: [(LANE, "failure", 1), (LANE, "success", 2)],
+        SHA[3]: [("Design Review", "failure")],
+    }
+    expected = _count(_FakeGh(history, checks))
+    assert expected == 2
+
+    rc = _pushes_module().main(["--repo", "o/r", "--pr", "7"], run=_FakeGh(history, checks))
+    out = capsys.readouterr()
+    assert rc == 0, out.err
+    assert out.out == "{}\n".format(expected)
+
+
+def test_the_script_entry_stops_at_the_env_threshold_and_skips_the_later_reads(capsys, monkeypatch):
+    history = [_force(h) for h in SHA[:9]]
+    checks = {h: [(LANE, "failure")] for h in SHA[:8]}
+    monkeypatch.setenv("REVIEW_PUSHES_STOP_AT", "3")
+    gh = _FakeGh(history, checks)
+
+    assert _pushes_module().main(["--repo", "o/r", "--pr", "7"], run=gh) == 0
+    assert capsys.readouterr().out == "3\n"
+    assert gh.check_calls() == 3
+
+
+@pytest.mark.parametrize("value", ["", "0", "-2", "three", " "])
+def test_an_unusable_env_threshold_counts_in_full(capsys, monkeypatch, value):
+    history = [_force(h) for h in SHA[:9]]
+    checks = {h: [(LANE, "failure")] for h in SHA[:8]}
+    monkeypatch.setenv("REVIEW_PUSHES_STOP_AT", value)
+    gh = _FakeGh(history, checks)
+
+    assert _pushes_module().main(["--repo", "o/r", "--pr", "7"], run=gh) == 0
+    assert capsys.readouterr().out == "8\n"
+    assert gh.check_calls() == 8
+
+
+def test_the_script_entry_prints_nothing_on_an_unreadable_read_and_refuses_bad_input(capsys):
+    gh = _FakeGh([_force(SHA[0]), _force(SHA[1])])
+    gh.broken_timeline = True
+    assert _pushes_module().main(["--repo", "o/r", "--pr", "7"], run=gh) == 1
+    assert capsys.readouterr().out == "", "a failed read must never print a count"
+
+    quiet = _FakeGh([])
+    assert _pushes_module().main(["--repo", "o/r;x", "--pr", "7"], run=quiet) == 2
+    assert _pushes_module().main(["--repo", "o/r", "--pr", "0"], run=quiet) == 2
+    assert quiet.calls == [], "bad input is refused before any read"
+    assert capsys.readouterr().out == ""

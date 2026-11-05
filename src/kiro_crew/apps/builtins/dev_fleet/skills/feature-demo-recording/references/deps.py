@@ -25,6 +25,9 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _toolpath import user_bin_dirs, which_any  # noqa: E402
+
 # The deploy engine owns the repo-wide ``aws``-CLI resolution chokepoint, and
 # narrate.py's polly spawn resolves through it -- so this doctor must probe the
 # same binary, or its verdict disagrees with what the pipeline actually runs
@@ -53,10 +56,10 @@ def _home() -> pathlib.Path:
     return pathlib.Path.home()
 
 
-# ~/.local/bin is the standard user bin dir, so it is worth looking in when a tool
-# is not on PATH. Anything more specific than that is one machine's layout and does
-# not belong in a shipped skill -- point at an existing interpreter with
-# KC_VIDEO_PW_PYTHON instead of hardcoding somebody's venv.
+# The fallback directories come from _toolpath.user_bin_dirs, which narrate.py and
+# verify_align.py also use, so the doctor and the pipeline search the same places.
+# Point at an existing interpreter with KC_VIDEO_PW_PYTHON instead of hardcoding
+# somebody's venv.
 def _ffmpeg_dirs() -> list[pathlib.Path]:
     """Resolved per call, not at import.
 
@@ -64,7 +67,7 @@ def _ffmpeg_dirs() -> list[pathlib.Path]:
     home resolution, which the repo's isolation floor rejects: a test
     that imports this module would bind the operator's real home.
     """
-    return [_home() / ".local/bin"]
+    return user_bin_dirs(_home())
 
 
 def _candidate_pw_pythons() -> list[pathlib.Path]:
@@ -134,17 +137,6 @@ def _imageio_ffmpeg() -> str | None:
         return exe if exe and pathlib.Path(exe).is_file() else None
     except Exception:
         return None
-
-
-def which_any(binary: str, extra_dirs: list[pathlib.Path]) -> str | None:
-    found = shutil.which(binary)
-    if found:
-        return found
-    for d in extra_dirs:
-        cand = d / binary
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return None
 
 
 def check_speech() -> Result:

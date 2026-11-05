@@ -466,7 +466,7 @@ def _read_config_strict() -> dict:
         return {}
     try:
         data = json.loads(read_config_text(path))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise StateCorruptError(f"config.json is not readable as a JSON object: {exc}") from exc
     if not isinstance(data, dict):
         raise StateCorruptError("config.json top level is not a JSON object")
@@ -506,20 +506,26 @@ def _write_limits(patch: dict[str, Any]) -> None:
 
     Read-modify-write on the raw JSON (not ``KiroCrewConfig.to_dict()``) so an
     unrelated hand-edited or edition-contributed section is never rewritten by a
-    limits change. The caller holds the shared config lock.
+    limits change. The caller holds the in-process config lock; the write itself
+    goes through ``update_config_locked``, which holds the ``config.json.lock``
+    sidecar across the whole read-modify-write, so another process's locked
+    config write can neither land inside this one nor be reverted by it.
+    An unreadable file still raises :class:`StateCorruptError`.
     """
-    from kiro_crew.agent import _atomic_json_write
-    from kiro_crew.config.loader import config_path
+    from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
 
-    path: Path = config_path()
-    data = _read_config_strict()
-    section = data.get("computer_use")
-    if not isinstance(section, dict):
-        section = {}
-    section.update(patch)
-    data["computer_use"] = section
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_json_write(path, data)
+    def _merge(data: dict) -> dict:
+        section = data.get("computer_use")
+        if not isinstance(section, dict):
+            section = {}
+        section.update(patch)
+        data["computer_use"] = section
+        return data
+
+    try:
+        update_config_locked(config_path(), mutate=_merge)
+    except ConfigReadError as exc:
+        raise StateCorruptError(f"config.json is not readable as a JSON object: {exc}") from exc
 
 
 async def _full_payload() -> dict[str, Any]:

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from kiro_crew.config.loader import config_dir
 from kiro_crew.platform_compat import strip_extended_length_prefix
-from kiro_crew.security import is_unverifiable_path_refusal, sensitive_path_refusal
+from kiro_crew.security import canonical_path_refusal, is_unverifiable_path_refusal
 
 
 def _split_script_spec(script_path: str) -> tuple[str, str]:
@@ -200,7 +200,7 @@ def resolve_script_path(
     file_path = Path(os.path.expanduser(module_part)).resolve()
     if not file_path.exists():
         raise FileNotFoundError(f"Script file not found: {file_path}")
-    if reason := sensitive_path_refusal(str(file_path)):
+    if reason := canonical_path_refusal(str(file_path)):
         if is_unverifiable_path_refusal(reason):
             raise PermissionError(reason)
         raise PermissionError(f"Script path blocked by security policy: {file_path}")

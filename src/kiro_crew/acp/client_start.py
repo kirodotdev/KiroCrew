@@ -19,7 +19,8 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_channel_id``,
 ``_extra_env``, ``_modes_advertised``, ``_sandbox_mode``, ``_scratch_dir``,
 ``_session_key``, ``_session_mcp_snapshot``, ``_shared_scratch``, ``_side_read_only``,
-``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``, ``last_prompt_stats``.
+``_spec_zero_tools``, ``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``,
+``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.client_claude_session import (
     CLAUDE_ACP_FORK_POINT_MIN_VERSION,
     _adapter_version_at_least,
+    refuse_claude_zero_tool_mounts,
 )
 from kiro_crew.acp.client_native_children import client_capabilities_for
 from kiro_crew.acp.client_spawn_env import (
@@ -312,15 +314,6 @@ async def _spawn(self: AcpClient) -> None:
             await asyncio.to_thread(require_fork_governance, self._agent, self._work_dir)
         except ForkGovernanceUnresolved as exc:
             raise AcpError(str(exc)) from exc
-        # A harness that may read the spec file's own grants is refused on a
-        # crew-bound spec Crew does not own that the ceiling would narrow: Crew never
-        # rewrites such a file.
-        try:
-            await asyncio.to_thread(
-                require_shared_template_within_ceiling, self._agent, self.backend
-            )
-        except SharedTemplateOverCeiling as exc:
-            raise AcpError(str(exc)) from exc
         # The same cwd-first resolution makes a checkout that declares a MANAGED
         # agent name the spec that runs, whatever Kiro Crew installed under it.
         shadowed = await asyncio.to_thread(
@@ -345,7 +338,11 @@ async def _spawn(self: AcpClient) -> None:
         # element-withholding question does not arise, and a ``disabledTools``
         # naming other tools must not refuse this agent's view.
         self._native_skill_projection = await asyncio.to_thread(
-            prepare_native_skill_projection, self._work_dir, per_session_element=False
+            prepare_native_skill_projection,
+            self._work_dir,
+            per_session_element=False,
+            # One session, one agent: only its view needs holding on disk.
+            lease_agents=(self._agent,),
         )
         if self._native_skill_projection is not None:
             # The agent this process is launched as: its own FIRST ``set_mode``
@@ -358,16 +355,26 @@ async def _spawn(self: AcpClient) -> None:
             # start must find the launch agent's mode in availableModes even
             # with no prepared view (see NativeSkillProjection.frame).
             self._native_skill_projection.advertised_launch_name = self._agent
-        argv = [
-            kiro_bin,
-            KIRO_CLI_SUBCMD,
-            "--agent",
-            (
-                self._resolve_spawn_agent_argv()
-                if self._native_skill_projection is not None
-                else self._agent
-            ),
-        ]
+        launch_name = (
+            self._resolve_spawn_agent_argv()
+            if self._native_skill_projection is not None
+            else self._agent
+        )
+        # A harness that may read the spec file's own grants is refused on a
+        # crew-bound spec Crew does not own that the ceiling would narrow: Crew never
+        # rewrites such a file. Judged on the name kiro-cli is handed: a skill view is
+        # a Crew-owned copy with the ceiling applied, the authored name is the file.
+        try:
+            await asyncio.to_thread(
+                require_shared_template_within_ceiling,
+                self._agent,
+                self.backend,
+                launch_name=launch_name,
+                work_dir=self._work_dir,
+            )
+        except SharedTemplateOverCeiling as exc:
+            raise AcpError(str(exc)) from exc
+        argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", launch_name]
         spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         stderr_label = KIRO_CLI_BIN
         plan = SpawnPlan(argv=argv, spawn_label=spawn_label, stderr_label=stderr_label)
@@ -649,6 +656,9 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
     if self.backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
         new_params["mcpServers"] = await self._prune_unstartable_mcp(new_params["mcpServers"])
     if self._is_claude:
+        refuse_claude_zero_tool_mounts(
+            getattr(self, "_spec_zero_tools", False), new_params["mcpServers"]
+        )
         new_params["_meta"] = self._claude_session_meta()
 
     # The roster this session put ON THE WIRE. Distinct from the agent spec
@@ -731,6 +741,9 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
         # Rebuilt AFTER the array, from the same re-seed: the envelope carries
         # the setting sources the array was authorized under and the inline
         # settings naming the substitute model.
+        refuse_claude_zero_tool_mounts(
+            getattr(self, "_spec_zero_tools", False), new_params["mcpServers"]
+        )
         new_params["_meta"] = self._claude_session_meta()
         self._begin_session_report(_roster_of(self, new_params.get("mcpServers")))
         self._guard_unresolved_mcp_refs(_roster_of(self, new_params.get("mcpServers")))
@@ -963,6 +976,9 @@ async def _initialize_session(self: AcpClient) -> None:
                         load_params["mcpServers"]
                     )
                 if self._is_claude:
+                    refuse_claude_zero_tool_mounts(
+                        getattr(self, "_spec_zero_tools", False), load_params["mcpServers"]
+                    )
                     load_params["_meta"] = self._claude_session_meta()
                 elif self.backend not in ACP_BACKENDS_HARNESS_OWNED_SESSIONS:
                     # The kiro family reads its transcript path from _meta. A

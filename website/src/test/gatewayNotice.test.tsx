@@ -346,6 +346,7 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     expect(resolveGatewayNotice(row('error', 'session_reconnect_give_up'), [], 0)).toEqual({ card: 'error', text: GN.session_reconnect_give_up })
     expect(resolveGatewayNotice(row('error', 'compaction_retrying'), [], 0)).toEqual({ card: 'error', text: GN.compaction_retrying })
     expect(resolveGatewayNotice(row('error', 'crew_name_undispatchable'), [], 0)).toEqual({ card: 'error', text: GN.crew_name_undispatchable })
+    expect(resolveGatewayNotice(row('error', 'code_channel_worktree_not_ready'), [], 0)).toEqual({ card: 'error', text: GN.code_channel_worktree_not_ready })
   })
 
   it('draws a cancelled replay, end-of-turn or queue row as an info NoticeCard', () => {
@@ -382,7 +383,10 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     ).toBe('The last tool call was refused because the gateway was at capacity — retrying it in 9s (attempt 3).')
     expect(
       resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in Crew Mode, which stays on its conductor. The next turn restarts on the conductor.'), [], 0)?.text,
-    ).toBe('Switching to x was blocked — this chat is in Crew Mode, which stays on its conductor. The next turn restarts on the conductor.')
+    ).toBe('Switching to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.')
+    expect(
+      resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.'), [], 0)?.text,
+    ).toBe('Switching to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.')
     // A notice wording on an error row is not ours.
     expect(resolveGatewayNotice(legacy('error', 'ℹ Auto-continue cancelled — your message takes over.'), [], 0)).toBeNull()
   })
@@ -401,7 +405,7 @@ describe('wire parity with the gateway constants', () => {
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(61)
+    expect(backend).toHaveLength(65)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 

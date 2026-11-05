@@ -69,7 +69,7 @@ from kiro_crew.agent_sdk.backends import (
 #     pi's native tools too, and is not run wider than saved.
 #
 # ``test/fixtures/acp_frames/pi/saved-spec-projection-live.jsonl`` is a member session on
-# pi-acp 0.0.34 over pi 1.3.0 whose saved spec the client confirmed after
+# pi-acp 0.0.34 over pi 1.4.0 whose saved spec the client confirmed after
 # ``session/new``; the same drive with the spec edited after its save was refused.
 #
 # strands is NOT a member, although its mirror records the consumed spec and the
@@ -94,34 +94,73 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
 
 # Backends of the set above that also honour a saved member spec's per-tool
 # ``disabledTools`` on an MCP server. kiro-cli reads the field off the saved file.
-# The KAS customAgents wire accepts it and then discards it
-# (``kas_agents._KAS_DISCARDED_ENTRY_KEYS``), so a server declared with one runs
-# there with those tools on. A saved spec that uses it is refused before spawn on
-# a non-member (``capability_tool_limits_unsupported``) rather than run wider than
-# it was saved.
-ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO})
+# The KAS customAgents wire accepts the field and then discards it
+# (``kas_agents._KAS_DISCARDED_ENTRY_KEYS``), so the projection carries each
+# switched-off tool of a launched server as ``@<server>/<tool>`` in the agent's
+# ``excludedTools`` instead (``kas_tool_limits.disabled_tool_exclusions``), the same
+# carrier the crewmate worker's spec uses (``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``).
+# KAS tags each MCP tool ``@<server>/<tool>`` and drops a tool whose tag equals an
+# ``excludedTools`` entry (``@kiro/agent`` 3.0.0 ``dist/server/acp-server.js``:
+# the MCP tool wrapper's ``tags`` and the tool filter ``BM``). The live capture of
+# that field is ``test/fixtures/acp_frames/kas/worker-kit-live.jsonl`` (KAS 0.66.58,
+# a native tool withheld). claude re-expresses each switched-off tool as a
+# ``permissions.deny`` rule in the settings Crew governs (``session_mcp_deny_rules``,
+# spelled the way Claude Code names the tool, ``claude_mcp_names``), and a session
+# whose settings Crew does not govern gets no MCP array at all, so the limit never
+# rides on an ungoverned surface. Captured live on claude-agent-acp 0.94.0:
+# ``test/fixtures/acp_frames/claude/member-tool-limits-live.jsonl`` (the authored
+# seed) and ``member-tool-limits-inline-live.jsonl`` (the rules carried inline beside
+# a project-owned file). Each switched-off tool, a dotted server and tool name
+# included, stayed out of the model's tool list while its sibling asked and ran.
+# A saved spec that uses ``disabledTools`` is refused before spawn on a non-member
+# (``capability_tool_limits_unsupported``) rather than run wider than it was saved.
+ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE})
 
 # Backends that honour a crewmate WORKER's single-tool limits. The worker's spec
 # is built per session (``mate_worker.worker_session_spec``), with every tool the
 # crewmate switches off rewritten into ``excludedTools``. KAS takes that whole
 # definition over the wire (``_meta.kiro.customAgents``) and projects
-# ``excludedTools``, so the limits hold. claude mounts the worker's servers
-# whole and reports ``excludedTools`` as a projection gap, so a worker with
-# single-tool limits is refused there before
-# spawn (``capability_tool_limits_unsupported``); without limits it runs.
+# ``excludedTools``, so the limits hold. claude carries only the MCP half of them
+# (``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`` below), so a worker whose crewmate
+# file excludes a native tool is refused there before spawn
+# (``capability_tool_limits_unsupported``). codex carries the worker kit but not
+# this: its worker capture proves no limit held, so a limited worker is refused
+# there the same way.
 # KAS is captured live on KAS 0.66.58 (kiro-cli 2.33.1):
 # ``test/fixtures/acp_frames/kas/worker-kit-live.jsonl``. A crewmate file's
 # ``excludedTools [shell]``, carried in the worker's customAgents entry, withheld
 # ``shell``: the model listed only the ``read`` tools.
 ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS = frozenset({ACP_BACKEND_KAS})
 
+# Backends that honour the MCP half of a crewmate WORKER's single-tool limits: a
+# tool switched off with ``disabledTools``, and an ``@server/tool`` or ``@server``
+# entry in the crewmate file's ``excludedTools``. A native-tool exclude (``shell``,
+# ``fs_write``) or a wildcard is refused before spawn on a backend here unless it
+# is in ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`` too
+# (``mate_worker.uncarried_tool_limits_of``). KAS carries them as the worker spec's
+# ``excludedTools``, as above (``test/fixtures/acp_frames/kas/worker-kit-live.jsonl``).
+# claude carries them as ``permissions.deny`` rules
+# derived from the worker's own per-session spec, keyed by the session
+# (``session_mcp_crewmate.crewmate_worker_deny_rules``), in the settings Crew
+# governs; a session whose settings Crew does not govern gets no MCP array at all.
+# claude is captured live on claude-agent-acp 0.94.0:
+# ``test/fixtures/acp_frames/claude/worker-tool-limits-live.jsonl``. A worker whose
+# crewmate file switched off one tool by ``disabledTools``, excluded one by
+# ``@server/tool`` and excluded a third server whole by ``@server``: none of those
+# tools reached the model's tool list while their siblings asked and ran.
+# kiro-cli is not here: it never runs a worker (``ACP_BACKENDS_MATE_WORKER_KIT``).
+ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS = ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS | frozenset(
+    {ACP_BACKEND_CLAUDE}
+)
+
 # Backends that carry a crewmate WORKER's per-session spec (its kit): a spec built
 # per session from the worker base plus that crewmate's own file
 # (``mate_worker.worker_session_spec``), never one read off disk by name. KAS takes
-# it over the wire (``_meta.kiro.customAgents``); claude builds its ``session/new``
-# MCP array from ``session_mcp_projection``, which reads it by the session key.
-# codex and deepseek build theirs the same way but have no live capture of it, so
-# they are not here yet. kiro-cli is a member chat backend but is not here: it reads
+# it over the wire (``_meta.kiro.customAgents``); claude and codex build their
+# ``session/new`` MCP array from ``session_mcp_projection``, which reads it by the
+# session key (each mirror hands the key down). deepseek builds its array the same
+# way but has no live capture of it, so it is not here yet. kiro-cli is a member
+# chat backend but is not here: it reads
 # ``--agent`` off disk at spawn from ``~/.kiro/agents/``, where the worker spec is not,
 # and has no per-session channel. A worker allocated anywhere else is refused before
 # spawn (``capability_harness_unsupported``).
@@ -133,19 +172,24 @@ ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS = frozenset({ACP_BACKEND_KAS})
 # ``test/fixtures/acp_frames/claude/saved-spec-projection-live.jsonl``. The server a
 # spec declares, projected into the ``session/new`` array, ran in the session; the
 # worker's spec reaches claude through that same array.
+# codex is captured live on codex-acp 2.3.0:
+# ``test/fixtures/acp_frames/codex/worker-kit-live.jsonl``. A worker session's array,
+# built by ``codex_projection`` with the worker's session key, carried the server its
+# crewmate's file adds (the bare base carries none), and the worker called it and
+# answered as the crewmate's prompt, carried in its context block, told it to.
 # strands is NOT here, for the reason it is outside ``ACP_BACKENDS_MEMBER_CAPABILITIES``:
 # the worker's ``kirocrew-core`` would run inside the sandbox with the gateway
 # credential hidden by the enforced mask, so its control plane would be refused. A
 # worker allocated on strands is refused before spawn (``capability_harness_unsupported``).
-ACP_BACKENDS_MATE_WORKER_KIT = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE})
+ACP_BACKENDS_MATE_WORKER_KIT = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
 # Backends of the set above whose worker gets its prompt only from the
 # ``[AGENT SYSTEM PROMPT]`` context block: their mirrors project no spec prompt
 # (``Concern.PROMPT`` is ``WITHHELD``), so the block carries the worker's own
 # principles and its crewmate's prompt (``context_assembly.agent_spec
-# ._crewmate_worker_prompt``). KAS is not here: its wire spec already carries both,
-# so its block stays the base.
-ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE})
+# ._crewmate_worker_prompt``). claude and codex are both here. KAS is not: its wire
+# spec already carries both, so its block stays the base.
+ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
 # Backends that can mount a DIFFERENT MCP tool set on one session than the
 # on-disk agent template declares — the capability crew-member dispatch rides
@@ -422,7 +466,7 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
 #
 # The mount is driven, not inferred:
 # ``test/fixtures/acp_frames/pi/member-panel-mount-live.jsonl`` is a member DM session
-# key on pi-acp 0.0.34 over pi 1.3.0, in which the client's own resolver composed the
+# key on pi-acp 0.0.34 over pi 1.4.0, in which the client's own resolver composed the
 # panel element, pi registered ``kirocrew-panel`` from the handoff and listed its
 # tools, the model's ``panel_publish`` call asked ``session/request_permission``
 # through the gate first, and the panel server's own answer reached the turn: the

@@ -4,7 +4,7 @@
  * and the stored-archive list with restore. `DrivePage.tsx` re-exports
  * `BackupSection`.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 // By path, not from the app-sdk barrel: that barrel is published to third-party
 // apps through the vendor stub, and a host-namespaced cache client is not part
@@ -17,7 +17,7 @@ import {
   Btn, Badge, Toggle, Input, ContentSkeleton, Card, PanelSectionHeader,
 } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
-import { fmtBytes, fmtRelative } from '../../i18n/format'
+import { fmtBytes, fmtNumber, fmtRelative } from '../../i18n/format'
 import { awsControlApi } from './api'
 import type { BackupKind, BackupRun, BackupJobState, BackupArchive, RemoteBackup } from './types'
 import { CopyBtn, PaneHeader, AwsErrorNotice } from './shared'
@@ -132,6 +132,8 @@ const BACKUP_KIND_LABEL_KEY: Record<BackupKind, string> = {
 }
 
 const BACKUP_KINDS: BackupKind[] = ['snapshot', 'sessions']
+/** Archives of each kind shown before the reader asks for the whole listing. */
+const ARCHIVE_DISPLAY_CAP = 5
 
 /** The glyph each backup kind is recognised by. A snapshot is an archive of the
  *  workspace; the sessions archive is a database dump, so they are not the same
@@ -447,6 +449,17 @@ export function BackupSection({ account }: { account: string }) {
   // installs can publish the same label, and the confirm is about a specific
   // object.
   const [confirmKey, setConfirmKey] = useState<string | null>(null)
+  // The archive list shows each kind's newest few until the reader asks for all.
+  const [showAllArchives, setShowAllArchives] = useState(false)
+  // Focus follows the confirm strip, which unmounts the control that opened or
+  // answered it: opening moves focus to the strip's "No", and closing it hands
+  // focus back to the row's Restore (once it is enabled again after a confirm).
+  const restoreButtons = useRef(new Map<string, HTMLButtonElement>())
+  const confirmNoButtons = useRef(new Map<string, HTMLButtonElement>())
+  // `ifDropped`: the move lands after a request settles, by which time the reader
+  // may have moved on; it then only fills in focus the page dropped.
+  const [focusTarget, setFocusTarget] = useState<{ key: string; to: 'strip' | 'row'; ifDropped?: boolean } | null>(null)
+  const archiveIds = useId()
   // Restore carries the confirmed override. A row whose origin is not 'self' asks
   // first, and confirming ANY of them sends foreignOk true -- foreign, unverified
   // and legacy alike -- because the backend refuses every origin it cannot prove is
@@ -465,6 +478,7 @@ export function BackupSection({ account }: { account: string }) {
       // an error, because re-asking the question it answered would loop.
       if (!v.foreignOk && (error as Error | null)?.message === 'foreign_install_archive') {
         setConfirmKey(v.key)
+        setFocusTarget({ key: v.key, to: 'strip', ifDropped: true })
       }
     },
   })
@@ -474,7 +488,27 @@ export function BackupSection({ account }: { account: string }) {
   // under its display cap, flattened in render order. Computed ONCE so the
   // empty state, the strip-visibility invariant, and the list itself share a
   // single definition of "on screen" and cannot drift when the cap changes.
-  const renderedRows = BACKUP_KINDS.flatMap((kind) => (data?.remote?.[kind] ?? []).slice(0, 5))
+  const renderedRows = BACKUP_KINDS.flatMap((kind) =>
+    (data?.remote?.[kind] ?? []).slice(0, showAllArchives ? undefined : ARCHIVE_DISPLAY_CAP))
+  // Every archive the listing holds, so the reader can tell rows are hidden.
+  const listedArchiveCount = BACKUP_KINDS.reduce((n, kind) => n + (data?.remote?.[kind]?.length ?? 0), 0)
+
+  useEffect(() => {
+    if (focusTarget === null) return
+    const el = focusTarget.to === 'strip'
+      ? confirmNoButtons.current.get(focusTarget.key)
+      : restoreButtons.current.get(focusTarget.key)
+    // A row's Restore stays disabled while a restore is in flight; wait for it.
+    // A move that has to wait lands after the reader may have moved on, so from
+    // then on it only fills in focus the page dropped.
+    if (el?.disabled) {
+      if (!focusTarget.ifDropped) setFocusTarget({ ...focusTarget, ifDropped: true })
+      return
+    }
+    const dropped = !document.activeElement || document.activeElement === document.body
+    if (el && (!focusTarget.ifDropped || dropped)) el.focus()
+    setFocusTarget(null)
+  }, [focusTarget, confirmKey, restoreMut.isPending, renderedRows.length])
   // The first reveal scrolls against skeleton height (see `revealRemote`): the
   // rows this reader clicked for only exist once `data.remote` resolves. When
   // they do, while a reveal is still pending, scroll once more so the grown
@@ -841,6 +875,21 @@ export function BackupSection({ account }: { account: string }) {
                   {i18nT('apps.awsControl.console.backup_others_truncated', { max: data.remote.max })}
                 </p>
               )}
+              {/* A kind whose listing hit the backend page cap: the keys it could
+                  not read are its NEWEST archives, so the list must not read as
+                  complete. Only kinds this page knows how to name are shown. */}
+              {BACKUP_KINDS.filter((kind) => {
+                const capped = data.remote?.archives_truncated
+                return Array.isArray(capped) && capped.includes(kind)
+              }).map((kind) => (
+                <p
+                  key={kind}
+                  className="border-b border-border px-3 py-2 text-[12px] text-warn"
+                  data-testid="backup-archives-truncated"
+                >
+                  {i18nT('apps.awsControl.console.backup_archives_truncated', { kind: i18nT(BACKUP_KIND_LABEL_KEY[kind]) })}
+                </p>
+              ))}
               <div className="divide-y divide-border">
                 {/* A fresh install is the case this whole feature exists for -- its
                     predecessor's archives are the only copy left -- and it is
@@ -854,26 +903,37 @@ export function BackupSection({ account }: { account: string }) {
                     {i18nT('apps.awsControl.console.backup_none_from_this_install')}
                   </p>
                 )}
-                {renderedRows.map((f) => {
+                {renderedRows.map((f, i) => {
                   const asking = confirmKey === f.key
+                  // Restore is named with its archive key: every row has one.
+                  const labelId = `${archiveIds}-restore-${i}`
+                  const keyId = `${archiveIds}-key-${i}`
                   return (
                     <div key={f.key} data-testid="backup-archive-row">
                       <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-[12px]">
-                        <span className="min-w-0 flex-1 truncate font-mono text-text" data-testid="backup-archive-key">{f.key}</span>
+                        <span id={keyId} className="min-w-0 flex-1 truncate font-mono text-text" data-testid="backup-archive-key">{f.key}</span>
                         <span className="basis-full shrink-0 text-muted sm:basis-auto" data-testid="backup-archive-origin">
                           {archiveAttribution(f, data.remote)}
                         </span>
                         <span className="hidden shrink-0 text-muted sm:inline">{fmtBytes(f.size)}</span>
                         <Btn
+                          ref={(el: HTMLButtonElement | null) => {
+                            if (el) restoreButtons.current.set(f.key, el)
+                            else restoreButtons.current.delete(f.key)
+                          }}
                           onClick={() => {
                             // 'self' restores at once; anything else asks first.
                             if (f.origin === 'self') restoreMut.mutate({ key: f.key })
-                            else setConfirmKey(f.key)
+                            else {
+                              setConfirmKey(f.key)
+                              setFocusTarget({ key: f.key, to: 'strip' })
+                            }
                           }}
                           disabled={restoreMut.isPending}
+                          aria-labelledby={`${labelId} ${keyId}`}
                           data-testid="backup-restore"
                         >
-                          <Download size={13} />{i18nT('apps.awsControl.console.backup_restore')}
+                          <Download size={13} /><span id={labelId}>{i18nT('apps.awsControl.console.backup_restore')}</span>
                         </Btn>
                       </div>
                       {asking && (
@@ -903,6 +963,7 @@ export function BackupSection({ account }: { account: string }) {
                               // archive may not be this machine's.
                               restoreMut.mutate({ key: f.key, foreignOk: true })
                               setConfirmKey(null)
+                              setFocusTarget({ key: f.key, to: 'row', ifDropped: true })
                             }}
                             disabled={restoreMut.isPending}
                             data-testid="backup-restore-confirm-yes"
@@ -926,6 +987,11 @@ export function BackupSection({ account }: { account: string }) {
                                 restoreMut.reset()
                               }
                               setConfirmKey(null)
+                              setFocusTarget({ key: f.key, to: 'row' })
+                            }}
+                            ref={(el: HTMLButtonElement | null) => {
+                              if (el) confirmNoButtons.current.set(f.key, el)
+                              else confirmNoButtons.current.delete(f.key)
                             }}
                             data-testid="backup-restore-confirm-no"
                           >
@@ -937,6 +1003,27 @@ export function BackupSection({ account }: { account: string }) {
                   )
                 })}
               </div>
+              {!showAllArchives && listedArchiveCount > renderedRows.length && (
+                // The list shows each kind's newest few; without this the older
+                // archives the listing holds could not be reached at all.
+                <div className="border-t border-border px-3 py-2">
+                  <Btn
+                    onClick={() => {
+                      // This control goes away once it is used, so focus moves to
+                      // the first archive it reveals.
+                      const shown = new Set(renderedRows.map((f) => f.key))
+                      const firstHidden = BACKUP_KINDS
+                        .flatMap((kind) => data.remote?.[kind] ?? [])
+                        .find((f) => !shown.has(f.key))
+                      if (firstHidden) setFocusTarget({ key: firstHidden.key, to: 'row' })
+                      setShowAllArchives(true)
+                    }}
+                    data-testid="backup-show-all-archives"
+                  >
+                    {i18nT('apps.awsControl.console.backup_show_all_archives', { count: fmtNumber(listedArchiveCount) })}
+                  </Btn>
+                </div>
+              )}
             </div>
           )}
           {showRemote && (
@@ -979,24 +1066,30 @@ export function BackupSection({ account }: { account: string }) {
         testId="backup-restore-error"
       />
 
-      {restoreMut.data && (
-        <div className="mt-2 rounded-md border border-border bg-bg-elevated p-2.5 text-[12px]" data-testid="backup-restored">
-          {/* First and WARN-toned: in the same muted style as the note below it,
-            * this reads as one more line of a normal restore and gets skimmed.
-            * Above the note, so "the path below" there still points at the path. */}
-          {restoreMut.data.recovered && (
-            <p className="mb-2 flex items-start gap-1.5 text-warn" data-testid="backup-restore-recovered">
-              <AlertTriangle className="lucide-inline" />
-              <span>{i18nT('apps.awsControl.console.backup_restore_recovered_note')}</span>
-            </p>
-          )}
-          <div className="mb-1 text-muted">{i18nT('apps.awsControl.console.backup_restored_note')}</div>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 min-w-0 break-all rounded bg-bg px-2 py-1.5 font-mono text-[12px] text-text">{restoreMut.data.path}</code>
-            <CopyBtn text={restoreMut.data.path} />
+      {/* A live region: the restore's outcome lands away from the button that
+        * started it, so it is announced rather than left to be found. It stays
+        * mounted while empty, because a region inserted already filled is not
+        * announced by every screen reader. */}
+      <div role="status" data-testid="backup-restored-status">
+        {restoreMut.data && (
+          <div className="mt-2 rounded-md border border-border bg-bg-elevated p-2.5 text-[12px]" data-testid="backup-restored">
+            {/* First and WARN-toned: in the same muted style as the note below it,
+              * this reads as one more line of a normal restore and gets skimmed.
+              * Above the note, so "the path below" there still points at the path. */}
+            {restoreMut.data.recovered && (
+              <p className="mb-2 flex items-start gap-1.5 text-warn" data-testid="backup-restore-recovered">
+                <AlertTriangle className="lucide-inline" />
+                <span>{i18nT('apps.awsControl.console.backup_restore_recovered_note')}</span>
+              </p>
+            )}
+            <div className="mb-1 text-muted">{i18nT('apps.awsControl.console.backup_restored_note')}</div>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 min-w-0 break-all rounded bg-bg px-2 py-1.5 font-mono text-[12px] text-text">{restoreMut.data.path}</code>
+              <CopyBtn text={restoreMut.data.path} />
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </section>
   )
 }

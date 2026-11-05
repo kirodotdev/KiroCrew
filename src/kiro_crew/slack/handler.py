@@ -61,8 +61,10 @@ from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     KIRO_CLI_BUILTIN_AGENTS,
     ConfigReadError,
     KiroCrewConfig,
+    config_local_path,
     config_path,
     read_config_text,
+    read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
@@ -154,6 +156,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
     is_session_trusted,
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.parent_turns import note_turn_landed, settle_turn
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
 from kiro_crew.providers.base import (
@@ -194,6 +197,7 @@ from kiro_crew.session_lifecycle import (  # noqa: F401 - read by the owners
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.slack import script_hooks as slack_script_hooks  # noqa: F401 - read by the owners
 from kiro_crew.slack.agent_sessions.fence import (  # noqa: F401 - read by the owners
     _Reset as _TurnScopeReset,
 )
@@ -322,6 +326,7 @@ from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     build_timing_footer,
 )
 from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
+    LinkedRoute,
     _apply_privacy_mode,
     _get_agent_for_session,
     _get_default_agent,
@@ -331,13 +336,22 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     _is_slack_restricted,
     _persist_channel_config,
     _read_thread_overrides,
+    _recorded_selection,
     _set_default_agent,
     adopt_default_agent,
+    channel_agent_mismatch,
+    channel_pinned_agent,
+    closed_dashboard_owner_refused,
+    link_agent_mismatch,
+    linked_slot_channel_mismatch,
     maybe_apply_privacy_modifiers,
     maybe_route_linked_thread,
+    read_link_record,
+    route_linked_thread,
 )
 from kiro_crew.slack.handler_runtime.permission_ladder import (  # noqa: F401
     _answer_permission_request,
+    _batch_refusal_outcome,
     _reject_orphaned_tool,
     _request_approval,
     _screen_tool_call,
@@ -746,6 +760,9 @@ class _CompactionReplay:
     # Set on the one replay that follows a lost backend session; a second loss
     # inside it ends on a clear error instead of replaying again.
     session_reloaded: bool = False
+    # The first attempt's Hooks-page turn, so a replay neither fires
+    # UserPromptSubmit again nor drops the context it added.
+    hook_turn: Any = None
 
 
 # The privacy-mode machinery lives in ``messaging.privacy_mode`` so a second
@@ -918,6 +935,7 @@ async def handle_message(
     spool_attachments: int = 0,
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    user_meta: dict[str, Any] | None = None,
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
 
@@ -1041,6 +1059,7 @@ async def handle_message(
         spool_attachments=spool_attachments,
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
+        user_meta=user_meta,
         _t0=_t0,
         reply_ts=reply_ts,
         session_key=session_key,
@@ -1048,6 +1067,7 @@ async def handle_message(
     try:
         if await _dispatch_before_turn(turn) and await _run_turn(turn):
             await _deliver_answer(turn)
+            await turn.fire_stop_hooks()
     except asyncio.CancelledError:
         # A cancel (``!stop``, warm-pool reclaim, shutdown) can land at any await
         # in any phase, and ``CancelledError`` passes every ``except Exception``

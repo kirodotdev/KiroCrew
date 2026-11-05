@@ -164,3 +164,18 @@ class TestHeartbeatTaskTimeout:
         sessions.reset.assert_not_awaited()
         sessions.release.assert_called_once_with(HEARTBEAT_KEY)
         assert result == "all good"
+
+    @pytest.mark.asyncio()
+    async def test_heartbeat_turn_is_built_non_interactive(self, monkeypatch):
+        """No user reads a heartbeat turn live, so it carries no [OPTIONS:] guidance."""
+        orch, _sessions = _make_orchestrator()
+
+        async def _ok(*args, **kwargs):
+            return "all good"
+
+        monkeypatch.setattr(gw_mod, "stream_and_collect", _ok)
+
+        on_task = await _capture_task(orch)
+        await on_task("do a thing", "")
+
+        assert orch.ctx_builder.build_message.call_args.kwargs.get("interactive") is False

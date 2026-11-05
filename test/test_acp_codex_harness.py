@@ -89,13 +89,8 @@ from kiro_crew.providers.mirrors.registry import has_mirror
 def _pinned_kiro_cli_version(monkeypatch):
     """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
 
-    A runtime start here materialises the agent spec (``ensure_agent_materialized``
-    -> ``rebuild_agent_config`` -> ``_write_derived_permissions``), which reads
-    ``installed_kiro_cli_version`` function-locally from ``kiro_crew.kiro_cli``:
-    one real ``kiro-cli --version`` spawn per binary identity, process-cached, so
-    whichever test in the worker starts first pays it against the HOST's install
-    with the checkout as the child's cwd. Pinned to the floor release, as
-    ``test_agent.py`` and the generated-writer suites pin it.
+    A runtime start reads ``installed_kiro_cli_version``, which otherwise spawns the
+    host's real ``kiro-cli --version``. Pinned to the floor release, as in ``test_agent.py``.
     """
     monkeypatch.setattr(
         "kiro_crew.kiro_cli.installed_kiro_cli_version",
@@ -103,28 +98,15 @@ def _pinned_kiro_cli_version(monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
 # The fake peer
-# ---------------------------------------------------------------------------
 
 
 class FakeCodexPeer:
     """A scripted stand-in for one codex-acp process hosting N sessions.
 
-    Deliberately not a mock: it holds the two behaviours the harness's answers are
-    judged against, and a mock would assert only that a call was made rather than
-    that the peer could answer it.
-
-    * ``sessions`` is a map, like the adapter's own ``this.sessions``, so "two
-      session/new on one process" is observable as two entries rather than two calls.
-    * ``mcpCapabilities`` advertises ``http`` only, which is what the real adapter
-      advertises, and ``session/new`` ACCEPTS an ``sse`` element anyway -- recording
-      it in the session verbatim. That is the measured behaviour and it is the
-      reason the narrowing exists: the adapter raises nothing, so an unnarrowed
-      element becomes a server that is silently never wired.
-
-    Every frame is round-tripped through ``json.dumps``/``loads`` so a payload that
-    is not JSON-serialisable fails here rather than at a real pipe.
+    ``sessions`` is a map like the adapter's ``this.sessions``. Like the real adapter it
+    advertises ``http`` only yet accepts an ``sse`` element silently, which is why the
+    narrowing exists. Frames round-trip through JSON so unserialisable payloads fail here.
     """
 
     MCP_CAPABILITIES = {"http": True, "sse": False, "acp": False}
@@ -237,11 +219,8 @@ class CodexRpcError(Exception):
 def _initialize_params(adapter: CodexHarness) -> dict[str, Any]:
     """The handshake, built from the harness's own seam answers.
 
-    Assembled here rather than on the harness because the runtime owns
-    ``clientInfo``: what a harness decides is the version and the capabilities.
-    ``CLIENT_NAME``/``CLIENT_VERSION`` are imported rather than spelled out so
-    this fixture keeps matching the real handshake; the version is the package's
-    and moves every release.
+    The runtime owns ``clientInfo``; ``CLIENT_VERSION`` is imported because it moves
+    every release.
     """
     return {
         "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
@@ -282,9 +261,7 @@ def _ctx(**over: Any) -> SpawnContext:
     return SpawnContext(**base)
 
 
-# ---------------------------------------------------------------------------
 # Half one: the harness against the fake peer
-# ---------------------------------------------------------------------------
 
 
 class TestRegistry:
@@ -296,11 +273,8 @@ class TestRegistry:
     def test_registration_is_a_separate_question_from_routing(self):
         """Two different questions, and conflating them breaks both answers.
 
-        The registry answers "can the shared-process runtime drive this host?";
-        ``ACP_BACKENDS_ACP_RUNTIME`` answers "does a session take that path?". They
-        agree for codex, and they are still separate: a harness is written and
-        tested before it is routed, so a registry gated on the set would make one
-        unreachable to its own tests.
+        The registry says whether the runtime can drive a host; ``ACP_BACKENDS_ACP_RUNTIME``
+        says whether a session takes that path. A harness is tested before it is routed.
         """
         assert isinstance(harness_for(ACP_BACKEND_CODEX), CodexHarness)
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
@@ -387,13 +361,8 @@ class TestMcpArrayNarrowing:
     def test_an_unnarrowed_sse_element_is_accepted_and_silently_unwired(self, adapter):
         """Why the narrowing is not cosmetic: nothing else catches this.
 
-        The adapter advertises ``sse: false`` and then accepts an ``sse`` element,
-        answering ``session/new`` normally. So the cost of skipping the narrowing is
-        not a failed request anyone can see -- it is a session that runs with a
-        server the adapter never wired, which no downstream check can detect.
-
-        Sent deliberately unnarrowed, so this fails if the peer ever starts
-        modelling a refusal and the test above begins passing for the wrong reason.
+        The adapter advertises ``sse: false`` yet accepts an ``sse`` element, so skipping
+        the narrowing leaves a server silently unwired. Sent unnarrowed on purpose.
         """
         peer = FakeCodexPeer()
         peer.request("initialize", _initialize_params(adapter))
@@ -526,10 +495,8 @@ class TestTeardown:
         """codex evicts but does not delete: the adapter drops the session and keeps
         the Codex thread's record, the same shape as kiro-cli's ``terminate``.
 
-        The policy carries the DELIVERY beside the verb because the two are not
-        separable facts, and here the wrong delivery is silent: measured live, a
-        ``session/close`` sent as a notification is ignored and the session stays
-        resident. ``notification=False`` is the load-bearing half.
+        A ``session/close`` sent as a notification is ignored, so ``notification=False``
+        is the load-bearing half.
         """
         assert adapter.teardown == TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
 
@@ -718,9 +685,11 @@ class TestSpawn:
 
         with patch.object(
             client_mod, "_resolve_codex_acp_bin", return_value=(["/n/node", "/p/index.js"], "/s")
-        ):
+        ) as resolver:
             plan = await adapter.resolve_spawn(_ctx())
         assert plan.argv == ["/n/node", "/p/index.js"]
+        # One resolution order, so "why did it pick that one?" has one answer.
+        assert resolver.call_count == 1
 
     @pytest.mark.asyncio
     async def test_no_agent_and_no_model_flag_is_appended(self, adapter, mask_resolved):
@@ -760,17 +729,6 @@ class TestSpawn:
         assert "@agentclientprotocol/codex-acp" in message
         assert "CODEX_ACP_BIN" in message
         assert "/one" in message and "/two" in message
-
-    @pytest.mark.asyncio
-    async def test_the_resolver_is_delegated_not_duplicated(self, adapter, mask_resolved):
-        """One resolution order, so "why did it pick that one?" has one answer."""
-        from kiro_crew.acp import client as client_mod
-
-        with patch.object(
-            client_mod, "_resolve_codex_acp_bin", return_value=(["/n/node", "/p/i.js"], "/s")
-        ) as resolver:
-            await adapter.resolve_spawn(_ctx())
-        assert resolver.call_count == 1
 
     def test_the_kiro_api_key_is_taken_out_of_the_child_environment(self, adapter):
         """A foreign adapter must never receive it. Same as the AcpClient path does."""
@@ -936,9 +894,7 @@ class TestReclaimIsScopedToTheCore:
         assert policy.max_rss_mb > 522.0
 
 
-# ---------------------------------------------------------------------------
 # Half two: the transport, and the three sets that read one fact differently
-# ---------------------------------------------------------------------------
 
 
 def _build_provider(backend: str) -> AcpProvider:
@@ -1007,15 +963,9 @@ class TestOneFactReadThreeWays:
     def test_it_shares_sessions_on_the_persisted_thread_not_a_resident_one(self, adapter):
         """In, and pinned so the REASON cannot be misread as a resident session.
 
-        Three facts together. One adapter process serves N sessions, so a subagent
-        can have one on its parent's runtime. The teardown still EVICTS -- a shared
-        subagent session is closed like any other, because one left resident would
-        hold its own MCP fleet on a runtime nobody is using. And the thread codex
-        persisted survives that close, so ``spawn_continue`` reaches the conversation
-        with a ``session/load`` rather than by finding the session still there --
-        which is why membership in ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` is the
-        companion claim, asserted here so a reader cannot conclude that sharing means
-        keeping.
+        A shared subagent session is still evicted; the persisted codex thread survives,
+        so ``spawn_continue`` uses ``session/load``. Hence the
+        ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` check: sharing does not mean keeping.
         """
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_SHARING
         assert _build_provider(ACP_BACKEND_CODEX).is_session_sharing_eligible is True
@@ -1107,14 +1057,9 @@ def _effort_provider(backend: str, model: str) -> AcpProvider:
 class TestTheEffortChannelIsReadFromItsOwnTable:
     """A tuning channel is decided by its own set, never by "runs on the runtime".
 
-    ``_apply_initial_effort`` skips the live push for the kiro family because kiro
-    reads effort from the spawn-time ``cli.json`` overlay instead. Spelling that
-    skip as "is this backend on AcpRuntime?" makes the two facts one, and a codex
-    session's configured effort is then dropped silently: codex is a member of
-    ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` and ``session/set_config_option`` is
-    the only channel it has, so nothing else would apply the level and only a
-    manual ``change_effort`` recovers it. Harness-parity H6 is the rule these
-    assertions hold the gate to.
+    kiro reads effort from the spawn-time ``cli.json``; codex has only
+    ``session/set_config_option``, so gating the push on "runs on AcpRuntime" would drop
+    codex's effort silently (harness-parity H6).
     """
 
     @pytest.mark.asyncio
@@ -1165,11 +1110,8 @@ def _handle_on(backend: str) -> AcpSessionHandle:
 class TestWhatTheHandleAdvertisesForCodex:
     """The handle's own capability answers come from the tables, not from "it is kiro".
 
-    ``AcpSessionHandle`` was written when ``AcpRuntime`` served one host, so two of
-    its answers were constants. The moment the switch puts a second host on that
-    runtime a constant becomes a claim about a host that never made it -- and both
-    of these are user-visible: an advertised steer the host answers ``-32601`` to,
-    and a model picker with nothing in it.
+    A constant answer would be wrong for a second host: a steer the host answers
+    ``-32601`` to, or an empty model picker.
     """
 
     def test_codex_advertises_user_steer_over_its_own_steering_request(self):
@@ -1268,13 +1210,8 @@ class TestWhatTheHandleAdvertisesForCodex:
     def test_the_entitlement_probe_reads_the_select_too(self):
         """The probe exists to HEAL a degraded snapshot, so [] is its worst answer.
 
-        ``probe_advertised_models`` re-asks the entitlement question on a throwaway
-        session because a birth snapshot taken while a token refresh was in flight can
-        name the free-tier set forever. It returns the normalized list, and an empty
-        return is contractually "no evidence" -- ``refresh_available_models`` keeps the
-        snapshot it holds. A probe that reads only the ``models`` object therefore
-        answers [] for a host whose list is a ``configOptions`` select, which makes the
-        one snapshot it exists to correct the one it can never correct.
+        An empty return means "no evidence" and keeps the old snapshot, so a probe that
+        ignored a ``configOptions`` select could never correct a degraded one.
         """
         resp = {
             "sessionId": "probe",
@@ -1299,11 +1236,7 @@ class TestWhatTheHandleAdvertisesForCodex:
     def test_both_model_readers_answer_from_one_fold(self):
         """The session-init capture and the probe must not know different shapes.
 
-        They are the two readers of "where does this host's model list live", and the
-        asymmetry between them is exactly what shipped once already: the capture was
-        taught about the select and the probe was not. Both go through
-        ``session_models_envelope`` now, so this asserts they agree rather than
-        asserting each separately.
+        Both go through ``session_models_envelope``, so this asserts they agree.
         """
         select_only = {
             "configOptions": [
@@ -1335,28 +1268,16 @@ class TestWhatTheHandleAdvertisesForCodex:
         assert models_from_config_options(resp, ACP_BACKEND_KIRO) is None
 
 
-# ---------------------------------------------------------------------------
 # Half three: what AcpRuntime does with a codex session
-# ---------------------------------------------------------------------------
 
 
 class _ControlPlane:
     """Every control-plane request one ``create_session`` issues, in order.
 
-    THREE seams are recorded because the runtime uses three: handshake requests it
-    awaits itself (``_send_and_await`` — session/new, set_mode), requests a session
-    HANDLE sends (``send_request`` — set_config_option), and NOTIFICATIONS
-    (``send_notification`` — ``session/cancel``, which the host does not answer).
-    codex's teardown ``session/close`` is a REQUEST and lands in ``methods``; a
-    test asserting it in ``notifications`` would be asserting the leak.
-    A test that watched only the first would read a missing permission write as a
-    passing session; one that watched only the first two would make an awaited
-    teardown look correct, which is the shape that hid a full-budget stall on every
-    codex eviction.
-
-    ``notifications`` is kept separate from ``methods`` on purpose. Folding them into
-    one list would let a verb sent the wrong way still satisfy an assertion about
-    which verbs went out.
+    Three seams: ``_send_and_await`` (session/new, set_mode), ``send_request``
+    (set_config_option) and ``send_notification`` (``session/cancel``). codex's
+    ``session/close`` is a request; ``notifications`` stays separate from ``methods`` so
+    a verb sent the wrong way fails.
     """
 
     def __init__(self, new_response: dict[str, Any], *, reject_config: bool = False) -> None:
@@ -1453,11 +1374,8 @@ class TestTheRuntimeSendsCodexNoAgentMode:
     async def test_no_set_mode_goes_out_for_a_codex_session(self):
         """codex's modes are permission tiers, so a Crew agent id resolves to none.
 
-        The runtime asks ``ACP_BACKEND_ROUTING`` which hosts activate an agent by
-        ``session/set_mode``; codex is not one, so the request is never built.
-        Sent anyway it draws a fault, and the cleanup path then tears down a
-        session that had started fine -- every codex session on the shared runtime
-        failing at startup.
+        ``ACP_BACKEND_ROUTING`` says codex does not activate by ``session/set_mode``; sent
+        anyway it faults and the cleanup tears the session down.
         """
         rt = _codex_runtime()
         plane = _ControlPlane(_codex_session_new_response())
@@ -1529,11 +1447,8 @@ class TestTheRuntimeArmsCodexPermissionRouting:
     async def test_the_mode_write_goes_out_before_the_handle_is_returned(self):
         """The boundary is armed on the way out, not on the first prompt.
 
-        codex's default ``agent`` mode writes inside the workspace without asking,
-        so a session handed back before this write is a session whose first turn
-        runs ungoverned. ``session_config_issue`` reads the option list
-        ``session/new`` just advertised, which is why the call sits after that
-        response is stored.
+        codex's default ``agent`` mode writes without asking, so a handle returned before
+        this write runs its first turn ungoverned.
         """
         rt = _codex_runtime()
         plane = _ControlPlane(_codex_session_new_response())

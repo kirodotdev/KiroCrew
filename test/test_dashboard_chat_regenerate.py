@@ -44,10 +44,11 @@ class TestRegenerateAndVariants:
         slot = state.get_or_create_slot("s1")
         slot.append("user", "hi")
         slot.append("assistant", "hello")
+        release = asyncio.Event()
 
         async def _noop():
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: a stand-in task that keeps the slot busy; nothing waits on this sleep
-            await asyncio.sleep(10)
+            # The stand-in turn holds the slot busy until the test releases it.
+            await release.wait()
 
         slot.task = asyncio.create_task(_noop())
         try:
@@ -55,7 +56,7 @@ class TestRegenerateAndVariants:
                 resp = await client.post("/api/chat/slots/s1/regenerate")
                 assert resp.status == 409
         finally:
-            slot.task.cancel()
+            release.set()
 
     @pytest.mark.asyncio
     async def test_regenerate_requires_prior_assistant(self, tmp_path, monkeypatch):
@@ -404,10 +405,11 @@ class TestRegenerateAndVariants:
             {"content": "v1", "ts": "t1"},
             {"content": "v2", "ts": "t2"},
         ]
+        release = asyncio.Event()
 
         async def _noop():
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: a stand-in task that keeps the slot busy; nothing waits on this sleep
-            await asyncio.sleep(10)
+            # The stand-in turn holds the slot busy until the test releases it.
+            await release.wait()
 
         slot.task = asyncio.create_task(_noop())
         try:
@@ -415,7 +417,7 @@ class TestRegenerateAndVariants:
                 resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
                 assert resp.status == 409
         finally:
-            slot.task.cancel()
+            release.set()
 
     @pytest.mark.asyncio
     async def test_switch_variant_missing_slot(self, tmp_path, monkeypatch):
@@ -607,20 +609,25 @@ class TestRegenerateAndVariants:
         slot.append("user", "hi")
         slot.append("assistant", "reply")
         slot.drain()
+        release = asyncio.Event()
 
         async def _hang(*a, **kw):
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: the stubbed turn hangs so the request finds a turn in flight; nothing waits on this sleep
-            await asyncio.sleep(999)
+            # The stubbed turn stays in flight until the cancel below ends it,
+            # or the cleanup releases it.
+            await release.wait()
 
-        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_hang):
-            async with TestClient(TestServer(_make_app(state))) as client:
-                resp = await client.post("/api/chat/slots/s1/regenerate")
-                assert resp.status == 200
-                assert slot._pending_variants != []
-                # Cancel the task (simulates user clicking Stop)
-                slot.task.cancel()
-                for _ in range(5):
-                    await asyncio.sleep(0)
+        try:
+            with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_hang):
+                async with TestClient(TestServer(_make_app(state))) as client:
+                    resp = await client.post("/api/chat/slots/s1/regenerate")
+                    assert resp.status == 200
+                    assert slot._pending_variants != []
+                    # Cancel the task (simulates user clicking Stop)
+                    slot.task.cancel()
+                    for _ in range(5):
+                        await asyncio.sleep(0)
+        finally:
+            release.set()
         assert (
             slot._pending_variants == []
         ), "pending variants must be cleared when task is cancelled"
@@ -665,18 +672,20 @@ class TestRegenerateAndVariants:
         slot.append("user", "hi")
         slot.append("assistant", "reply")
         slot.drain()
+        release = asyncio.Event()
 
         async def _hang(*a, **kw):
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: the stubbed turn hangs so the request finds a turn in flight; nothing waits on this sleep
-            await asyncio.sleep(999)
+            # The stubbed turn stays in flight until the test releases it.
+            await release.wait()
 
-        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_hang):
-            async with TestClient(TestServer(_make_app(state))) as client:
-                r1, r2 = await asyncio.gather(
-                    client.post("/api/chat/slots/s1/regenerate"),
-                    client.post("/api/chat/slots/s1/regenerate"),
-                )
-                statuses = sorted([r1.status, r2.status])
-                assert statuses == [200, 409], f"Expected one 200 and one 409, got {statuses}"
-        if slot.task:
-            slot.task.cancel()
+        try:
+            with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_hang):
+                async with TestClient(TestServer(_make_app(state))) as client:
+                    r1, r2 = await asyncio.gather(
+                        client.post("/api/chat/slots/s1/regenerate"),
+                        client.post("/api/chat/slots/s1/regenerate"),
+                    )
+                    statuses = sorted([r1.status, r2.status])
+                    assert statuses == [200, 409], f"Expected one 200 and one 409, got {statuses}"
+        finally:
+            release.set()

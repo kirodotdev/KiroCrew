@@ -20,6 +20,7 @@ happens to usually work, and each is pinned below:
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
@@ -52,6 +53,25 @@ _CONFIG = {
 
 #: Rows every populated store here holds. Asserted as ``20`` throughout the file.
 _SEED_ROWS = 20
+
+
+@pytest.fixture
+def cyclic_gc_quiesced():
+    """Keep a cyclic-GC pass (and any finalizer it runs) out of a deep JSON parse.
+
+    The nesting test drives the parser to the bottom of the stack; a collection
+    firing there could run an inherited finalizer with no stack left. Drain
+    first, disable for the parse, then restore and drain again.
+    """
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+        gc.collect()
 
 
 def _point_home_at(monkeypatch: pytest.MonkeyPatch, data_home: Path) -> None:
@@ -527,6 +547,48 @@ class TestARestartCannotShrinkTheRetentionWindow:
         later = base + timedelta(hours=mb.MIN_BACKUP_INTERVAL_HOURS + 1)
         assert mb.back_up_all_stores(keep=7, now=later)["backed_up"] == 1
         assert len(mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))) == 2
+
+    def test_a_backup_stamped_in_the_future_does_not_stop_the_next_ones(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        """A copy taken under a wrong clock must not read as fresh once the clock is fixed."""
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        mb.back_up_all_stores(keep=7, now=base + timedelta(days=365))
+
+        result = mb.back_up_all_stores(keep=7, now=base)
+
+        assert result["backed_up"] == 1
+        assert len(mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))) == 2
+
+    def test_a_backup_stamped_in_the_future_keeps_the_interval_guard(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        """Restarts must not each copy and prune: the guard measures from the newest real copy."""
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        mb.back_up_all_stores(keep=7, now=base + timedelta(days=365))
+        assert mb.back_up_all_stores(keep=7, now=base)["backed_up"] == 1
+
+        for hours in (1, 6, mb.MIN_BACKUP_INTERVAL_HOURS - 1):
+            result = mb.back_up_all_stores(keep=7, now=base + timedelta(hours=hours))
+            assert result["backed_up"] == 0, hours
+        assert len(mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))) == 2
+
+    @pytest.mark.parametrize("keep", [1, 2])
+    def test_retention_never_evicts_the_copy_just_taken_for_a_future_stamp(
+        self, live_store: VectorMemoryStore, keep: int
+    ) -> None:
+        """Future-stamped copies take no keep slot, so the current copy survives."""
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        for days in (365, 366):
+            mb.back_up_all_stores(keep=keep, now=base + timedelta(days=days), force=True)
+
+        assert mb.back_up_all_stores(keep=keep, now=base)["backed_up"] == 1
+
+        backups = mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))
+        current = [b for b in backups if mb.snapshot_time(b) <= base]
+        assert len(current) == 1
+        # The wrong-clock copies the day-366 pass kept are still restore points.
+        assert len(backups) == 1 + keep
 
     def test_the_age_is_read_from_the_stamped_name_not_the_mtime(
         self, live_store: VectorMemoryStore
@@ -1017,6 +1079,32 @@ class TestRestoreIsNonDestructive:
         finally:
             legacy.close()
 
+    def test_named_legacy_restore_can_cancel_a_too_deeply_nested_journal(
+        self, home, cyclic_gc_quiesced
+    ):
+        """Nesting past the recursion limit is refused like any invalid journal."""
+        from kiro_crew.memory_stores import ensure_memory_store_dir
+
+        ensure_memory_store_dir(_FIN)
+        target = resolve_store_path(_FIN)
+        legacy = VectorMemoryStore(db_path=target)
+        legacy.init()
+        try:
+            legacy.set_semantic("project.before", "keep", 1.0, "user_explicit")
+            snapshot = mb.backup_store(target)
+            assert snapshot is not None
+            mb.restore_from_backup(snapshot, _FIN)
+            out = mb.backup_dir_for(target)
+            # Under the 16 KiB journal cap, deeper than the interpreter allows.
+            (out / mb._V1_PENDING).write_bytes(b"[" * 15000)
+            assert mb.pending_restore_status(target)["pending"]
+            assert mb.cancel_pending_restore(target)
+            assert not mb.pending_restore_status(target)["pending"]
+            assert _rows(target) == 1
+            assert snapshot.is_file()
+        finally:
+            legacy.close()
+
     def test_journal_permission_failure_precedes_content_and_allows_retry(
         self, live_store, monkeypatch
     ):
@@ -1225,7 +1313,9 @@ class TestRestoreIsNonDestructive:
         assert good is not None
         good.write_bytes(b"not a database either")
 
-        with pytest.raises(Exception):
+        # ValueError is what the dashboard answers 409 restore_refused for; any other
+        # type becomes a 500 that says the restore broke rather than the backup.
+        with pytest.raises(ValueError, match="not a readable memory database"):
             mb.restore_from_backup(good, DEFAULT_MEMORY_STORE)
 
         # Nothing displaced, and the store still works.

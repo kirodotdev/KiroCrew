@@ -201,9 +201,11 @@ class VerdictCache:
             self._entries[name] = CachedPreflight(
                 ran=ran,
                 caller_sensitive=value.get("callerSensitive") is True,
-                reasons=tuple(r for r in reasons if isinstance(r, str))
-                if isinstance(reasons, list)
-                else (),
+                reasons=(
+                    tuple(r for r in reasons if isinstance(r, str))
+                    if isinstance(reasons, list)
+                    else ()
+                ),
                 evaluated_at=finite_float(value.get("evaluatedAt")),
                 # A row written before identities were stored reads as identity
                 # "", which matches nothing, so it is re-measured rather than

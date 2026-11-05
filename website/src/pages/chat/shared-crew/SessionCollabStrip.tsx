@@ -1,15 +1,9 @@
-/** The open session's collaboration state, above the composer: who else is
- *  here and this session's shared decisions. Decisions show only once the
- *  session is shared: another person is present, or a decision involves
- *  someone other than the viewer. Accepted work is not listed here:
- *  a send the host holds for capacity shows on its own message bubble
- *  (`QueuedSendLabel`). Each part reads only when the Crew reports the
- *  capability behind it, and the whole strip renders nothing when there is
- *  nothing to say, so a single-operator Crew's chat is unchanged. Chips and
- *  decisions show only with the Shared Crew preview on and someone besides the
- *  owner joined. It also reports this tab's presence for the session. */
+/** Reports this tab's presence for the open session and says, once, when a
+ *  shared-session read fails. It draws nothing otherwise: who is here shows in
+ *  the composer's context row (`SessionPresence`), who is typing in the locked
+ *  composer (`TypingLockBanner`). */
 import { useEffect } from 'react'
-import { capabilityUsable, isUnknownPrincipal } from '../../../api/sharedCrewUi'
+import { capabilityUsable } from '../../../api/sharedCrewUi'
 import ErrorNotice from '../../../components/ErrorNotice'
 import {
   useSessionDecisions,
@@ -20,12 +14,9 @@ import {
   useSharedCrewMode,
   useSharedCrewPeople,
   useSharedCrewViewer,
-  useTeamAttribution,
 } from '../../../hooks/sharedCrew/useSharedCrew'
 import { usePresenceReporter } from '../../../hooks/sharedCrew/usePresenceReporter'
 import { i18nT } from '../../../i18n/t'
-import { DecisionAttributionList, involvesOthers, visibleDecisions } from './DecisionAttributionList'
-import { othersPresent, PresenceChips } from './PresenceChips'
 
 /** A composer `input` listener target: the strip tells the reporter about
  *  keystrokes without ever reading what was typed. */
@@ -45,6 +36,7 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
   const mode = useSharedCrewMode(attributionOn)
   const people = useSharedCrewPeople(attributionOn)
   const presence = useSessionPresence(sessionKey, presenceOn)
+  // Read here so its failure is said once; `useResolvedElsewhere` and `useRaisedBy` use the cache.
   const decisions = useSessionDecisions(sessionKey, attributionOn)
   // The revision this tab's next send is based on (first submit wins). Read for
   // every open session: the host settles every send against it, whichever
@@ -57,36 +49,7 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
   useEffect(() => typing?.subscribe(noteTyping), [typing, noteTyping])
   useEffect(() => typing?.subscribeSent?.(noteSent), [typing, noteSent])
 
-  const entries = presence.data?.entries ?? []
-  // Only other people draw a chip: the viewer's own entry alone must not open
-  // an empty band above the composer (it would shift the chat under the pointer).
-  // Until the viewer read settles, the viewer's own entry cannot be told apart
-  // from another person's, so no chip shows yet: a chip that flashes for the
-  // viewer and then goes would resize the band and move the chat under the pointer.
-  const viewerKnown = !(presenceOn || attributionOn) || !viewer.isPending
-  // Presence chips and who approved what are part of the Shared Crew preview,
-  // for a Crew someone besides the owner has joined (`useTeamAttribution`);
-  // alone, every line would only name the owner's own token.
-  const team = useTeamAttribution()
-  const shown = team && viewerKnown && othersPresent(entries, viewer.data).length > 0
-  const viewerId = viewer.data && !isUnknownPrincipal(viewer.data) ? viewer.data.id : ''
-  const teamDecisions = team ? decisions.data?.items ?? [] : []
-  const decisionItems = shown || involvesOthers(teamDecisions, viewerId) ? visibleDecisions(teamDecisions) : []
   const failed = [caps, viewer, mode, people, presence, decisions, sendState, typingLease].find(query => query.isError)
-  if (!sessionKey || (!failed && !shown && decisionItems.length === 0)) return null
-  return (
-    <>
-      {failed && <ErrorNotice message={failed.error instanceof Error ? failed.error.message : i18nT('sharedCrew.session_state_failed')} variant="inline" askAgent testId="session-collab-error" />}
-      {(shown || decisionItems.length > 0) && (
-        <section
-          className="w-full px-3 py-1 flex flex-col gap-1 min-w-0"
-          aria-label={i18nT('sharedCrew.collab_region')}
-          data-testid="session-collab-strip"
-        >
-          {shown && <PresenceChips entries={entries} viewer={viewer.data} />}
-          <DecisionAttributionList items={decisionItems} viewerId={viewerId} />
-        </section>
-      )}
-    </>
-  )
+  if (!sessionKey || !failed) return null
+  return <ErrorNotice message={failed.error instanceof Error ? failed.error.message : i18nT('sharedCrew.session_state_failed')} variant="inline" askAgent testId="session-collab-error" />
 }

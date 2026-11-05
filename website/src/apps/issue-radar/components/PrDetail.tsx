@@ -513,7 +513,7 @@ function AutoReviewChecks(
       {failing.length > 0 && (
         <div className="mb-2">
           <div className="text-[10.5px] uppercase tracking-wider text-danger font-medium mb-1">
-            {failing.length} {i18nT('apps.issueRadar.components.prDetail.failing')}
+            {i18nT('apps.issueRadar.components.prDetail.failing_count', { count: failing.length })}
           </div>
           <div className="flex flex-col">
             {failing.map((c, i) => <CheckRow key={checkKey(c, i)} check={c} />)}
@@ -524,7 +524,7 @@ function AutoReviewChecks(
       {running.length > 0 && (
         <div className="mb-2">
           <div className="text-[10.5px] uppercase tracking-wider text-accent font-medium mb-1">
-            {running.length} {i18nT('apps.issueRadar.components.prDetail.running')}
+            {i18nT('apps.issueRadar.components.prDetail.running_count', { count: running.length })}
           </div>
           <div className="flex flex-col">
             {running.map((c, i) => <CheckRow key={checkKey(c, i)} check={c} />)}
@@ -545,7 +545,7 @@ function AutoReviewChecks(
                 so the three counts read as one set. No status icon: the colour
                 already carries the state, and the chevron is the affordance. */}
             <span className="text-[10.5px] uppercase tracking-wider font-medium text-ok">
-              {passedCount} {i18nT('apps.issueRadar.components.prDetail.passed')}{otherCount > 0 ? ` · ${otherCount} skipped` : ''}
+              {i18nT('apps.issueRadar.components.prDetail.passed_count', { count: passedCount })}{otherCount > 0 ? ` · ${i18nT('apps.issueRadar.components.prDetail.skipped_count', { count: otherCount })}` : ''}
             </span>
           </button>
           {showPassed && (
@@ -828,7 +828,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               <StatePill state={state} draft={draft} merged={merged} />
               {/* Copy-link is an action control and lives in the overflow menu —
                   see DetailOverflowMenu. Only the outbound #number stays here. */}
-              <a href={safeHttpUrl(detail?.url ?? pull.url ?? '') ?? undefined} target="_blank" rel="noreferrer" title={`Open on ${terms.providerName}`} className="font-mono text-muted hover:text-accent hover:underline">
+              <a href={safeHttpUrl(detail?.url ?? pull.url ?? '') ?? undefined} target="_blank" rel="noreferrer" title={i18nT('apps.issueRadar.components.providerLink.open_on_provider', { provider: terms.providerName })} className="font-mono text-muted hover:text-accent hover:underline">
                 #{pull.number}
               </a>
             </>}

@@ -30,6 +30,7 @@ import {
 } from '../../components/ui/dropdown-menu'
 import type { MeetingsConfig } from './api'
 import AgentPanel from './components/AgentPanel'
+import AgentPanelSlot from './components/AgentPanelSlot'
 import AgentPillBar from './components/AgentPillBar'
 import BroadcastBar from './components/BroadcastBar'
 import MeetingTitle from './components/MeetingTitle'
@@ -39,6 +40,7 @@ import TaskSidebar from './components/TaskSidebar'
 import TranscriptPanel from './components/TranscriptPanel'
 import TranslationSidebar from './components/TranslationSidebar'
 import TaskReviewView from './TaskReviewView'
+import { useExpandedAgent } from './hooks/useExpandedAgent'
 import { useMeetingSession } from './hooks/useMeetingSession'
 
 interface Props {
@@ -108,6 +110,12 @@ export default function MeetingView({
     note,
   } = session
 
+  // The one panel enlarged to fill the workspace, or null (compact, the default).
+  // Disabling that agent clears the choice; see the hook.
+  const { expandedId, toggle: toggleExpanded } = useExpandedAgent(
+    enabledAgents.map(agent => agent.id),
+  )
+
   if (loading) return <Skeleton className="h-40 m-6" />
 
   if (error) {
@@ -132,6 +140,7 @@ export default function MeetingView({
         transcriptFull={transcriptFull}
         provider={config?.task_provider ?? ''}
         filing={pending.filing}
+        filingIds={pending.filingIds}
         onBack={actions.backToMeeting}
         onClose={() => {
           actions.stop()
@@ -405,33 +414,49 @@ export default function MeetingView({
 
         <MeetingWorkspace
           hasAgentPanels={enabledAgents.length > 0}
+          expanded={expandedId !== null}
           agentPanels={(
-            <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
+            <div
+              className={
+                expandedId !== null
+                  ? 'flex flex-col h-full'
+                  : 'grid grid-cols-1 2xl:grid-cols-2 gap-3'
+              }
+            >
               {enabledAgents.map(agent => (
-                <AgentPanel
+                // The other panels stay MOUNTED, only hidden: one of them can
+                // hold an unsaved minutes draft, which unmounting would drop.
+                <AgentPanelSlot
                   key={agent.id}
-                  agent={agent}
-                  output={outputs[agent.id] ?? ''}
-                  listening={!mutedAgents.includes(agent.id)}
-                  chatView={chatViewAgents.includes(agent.id)}
-                  edit={outputEdits[agent.id]}
-                  editSaving={editingOutput}
-                  onToggleListening={() =>
-                    actions.mute(agent.id, !mutedAgents.includes(agent.id))
-                  }
-                  onToggleChatView={() => session.toggleChatView(agent.id)}
-                  onSendMessage={text => actions.messageAgent(agent.id, text)}
-                  // Passed only for a markdown agent, and the ABSENCE is what disables
-                  // the affordance in the panel. The server enforces the same rule
-                  // (`_editable_agent`); this keeps the button from appearing where
-                  // pressing it could only produce a 409.
-                  onSaveOutput={
-                    agent.widget_type === 'markdown' || agent.widget_type == null
-                      ? content => session.saveOutput(agent.id, content)
-                      : undefined
-                  }
-                  onRevertOutput={() => session.revertOutput(agent.id)}
-                />
+                  hidden={expandedId !== null && expandedId !== agent.id}
+                  expanded={expandedId === agent.id}
+                >
+                  <AgentPanel
+                    agent={agent}
+                    expanded={expandedId === agent.id}
+                    onToggleExpanded={() => toggleExpanded(agent.id)}
+                    output={outputs[agent.id] ?? ''}
+                    listening={!mutedAgents.includes(agent.id)}
+                    chatView={chatViewAgents.includes(agent.id)}
+                    edit={outputEdits[agent.id]}
+                    editSaving={editingOutput}
+                    onToggleListening={() =>
+                      actions.mute(agent.id, !mutedAgents.includes(agent.id))
+                    }
+                    onToggleChatView={() => session.toggleChatView(agent.id)}
+                    onSendMessage={text => actions.messageAgent(agent.id, text)}
+                    // Passed only for a markdown agent, and the ABSENCE is what disables
+                    // the affordance in the panel. The server enforces the same rule
+                    // (`_editable_agent`); this keeps the button from appearing where
+                    // pressing it could only produce a 409.
+                    onSaveOutput={
+                      agent.widget_type === 'markdown' || agent.widget_type == null
+                        ? content => session.saveOutput(agent.id, content)
+                        : undefined
+                    }
+                    onRevertOutput={() => session.revertOutput(agent.id)}
+                  />
+                </AgentPanelSlot>
               ))}
             </div>
           )}

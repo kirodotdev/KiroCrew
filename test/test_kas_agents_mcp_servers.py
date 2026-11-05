@@ -768,10 +768,22 @@ class TestDiscardedRestrictionsAreReported:
         with caplog.at_level("DEBUG", logger="kiro_crew.acp.kas_agents"):
             to_client_custom_agent(
                 "kirocrew",
+                _spec(mcpServers={"srv": {"command": "x", "cwd": "/elsewhere"}}),
+                "p",
+            )
+        assert "cwd" in caplog.text
+
+    def test_a_restriction_carried_elsewhere_is_not_named(self, caplog):
+        """``disabledTools`` reaches the engine as ``excludedTools``, so the log
+        must not say it had no effect."""
+        with caplog.at_level("DEBUG", logger="kiro_crew.acp.kas_agents"):
+            out = to_client_custom_agent(
+                "kirocrew",
                 _spec(mcpServers={"srv": {"command": "x", "disabledTools": ["learn_add"]}}),
                 "p",
             )
-        assert "disabledTools" in caplog.text
+        assert "@srv/learn_add" in out["excludedTools"]
+        assert "accepts and then discards" not in caplog.text
 
     def test_a_key_crew_itself_removed_is_not_blamed_on_the_backend(self, caplog):
         """``autoApprove`` never reaches the wire, so naming it here would report
@@ -997,6 +1009,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             crew_panel=False,
             session_key="",
             skill_scope_rules=(),
+            withheld_out=None,
         ):
             seen.append(stub_server_names)
             return [{"id": agent}]
@@ -1021,6 +1034,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             crew_panel=False,
             session_key,
             skill_scope_rules=(),
+            withheld_out=None,
         ):
             seen.append((session_key, member_dispatch))
             return [{"id": agent}]
@@ -1389,16 +1403,34 @@ class TestHoistManagedServers:
         assert agents[1] is other
         assert other["mcpServers"] == {"kirocrew-work": {"command": "w"}}
 
+    def test_a_narrowed_managed_server_is_hoisted_with_its_token(self, monkeypatch):
+        # Its switched-off tools ride the agent's excludedTools, so the entry is
+        # hoistable and gets the session token its other tools need.
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        projected = to_client_custom_agent(
+            "kirocrew",
+            _spec(mcpServers={"kirocrew-core": {"command": "kc", "disabledTools": ["learn_add"]}}),
+            "p",
+        )
+        assert "disabledTools" not in projected["mcpServers"]["kirocrew-core"]
+        assert "@kirocrew-core/learn_add" in projected["excludedTools"]
+        agents, array = hoist_servers_for_session([projected], "kirocrew", [], session_token="t")
+        (core,) = [e for e in array if e["name"] == "kirocrew-core"]
+        assert {p["name"]: p["value"] for p in core["env"]}[STUB_SESSION_TOKEN_ENV] == "t"
+        assert "kirocrew-core" not in agents[0].get("mcpServers", {})
+        assert "@kirocrew-core/learn_add" in agents[0]["excludedTools"]
+
     @pytest.mark.parametrize(
         "entry",
         [
-            {"command": "kc", "disabledTools": ["learn_add"]},
             {"command": "kc", "timeout": 5},
             {"command": "kc", "type": "registry"},
             {"url": "https://example.invalid/mcp"},
             {"args": ["mcp"]},
         ],
-        ids=["disabledTools", "timeout", "registry", "remote", "no-command"],
+        ids=["timeout", "registry", "remote", "no-command"],
     )
     def test_a_restricted_or_unrepresentable_entry_keeps_the_block_path(self, entry):
         # No ``disabled: true`` case: such an entry is never declared in the first
@@ -1563,6 +1595,22 @@ class TestHoistAgentServersForResume:
         )
         assert array == []
         assert "remote" in agents[0].get("mcpServers", {})
+
+    def test_entry_with_a_relayed_reference_stays_in_the_block(self, relayed_names):
+        # KAS expands ``${NAME}`` in an agent-block entry but not in a
+        # session-level element, so a hoisted copy would start the server with
+        # the literal text and it would list no tools on the resumed session.
+        projected = self._projected(
+            **{"vendor-proxy": {"command": "vendor", "env": {"URL": "${LAUNCHER_BROKER_URL}"}}}
+        )
+        assert projected["mcpServers"]["vendor-proxy"]["env"] == {"URL": "${LAUNCHER_BROKER_URL}"}
+        agents, array = hoist_servers_for_session(
+            [projected], "kirocrew", [], include_user_servers=True
+        )
+        assert [e["name"] for e in array] == ["my-server"]
+        assert agents[0]["mcpServers"] == {
+            "vendor-proxy": {"command": "vendor", "env": {"URL": "${LAUNCHER_BROKER_URL}"}}
+        }
 
     def test_none_and_empty_pass_through(self):
         assert hoist_servers_for_session(None, "kirocrew", [], include_user_servers=True) == (

@@ -767,7 +767,7 @@ def _sign_in_provider(seen: list):
         if False:
             yield None
 
-    async def deliver(message, send, _incarnation):
+    async def deliver(message, send, _incarnation, *, requests_model=True):
         async for event in send(message):
             yield event
 

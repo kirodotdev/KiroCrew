@@ -120,6 +120,8 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             )
         # New workspace gets its own directory, named after the workspace
         ws_dir = body.get("dir", f"workspace-{name}")
+        if (not_string := string_field_error("dir", ws_dir)) is not None:
+            return not_string
         # Check for directory collision with existing workspaces
         existing_dirs = {ws.dir for ws in cfg.workspaces.values()}
         if ws_dir in existing_dirs:
@@ -169,6 +171,8 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             copy_pending = True
     else:
         ws_dir = body.get("dir", f"workspace-{name}")
+        if (not_string := string_field_error("dir", ws_dir)) is not None:
+            return not_string
     # Guard against path traversal for relative paths; absolute paths are allowed
     _abs = Path(ws_dir).expanduser().is_absolute()
     # Path constructed for validation only (never opened/read/written); the
@@ -396,6 +400,12 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     if "dir" in body:
         new_dir = body["dir"]
+        # Path() and the set lookups below raise TypeError on a number, list,
+        # object or null: caller error, so a 400 rather than a 500.
+        from kiro_crew.dashboard.handlers._shared import string_field_error
+
+        if (not_string := string_field_error("dir", new_dir)) is not None:
+            return not_string
         _abs = Path(new_dir).expanduser().is_absolute()
         # Resolved for validation only; is_relative_to + is_sensitive_path guard
         # below reject traversals before the value is stored in config.

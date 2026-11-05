@@ -193,7 +193,9 @@ def fake(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def config_file(monkeypatch: pytest.MonkeyPatch, tmp_path):
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"dashboard": {"tailscale": {"allowed_logins": []}}}))
+    path.write_text(
+        json.dumps({"dashboard": {"tailscale": {"allowed_logins": []}}}), encoding="utf-8"
+    )
     import kiro_crew.config.loader as loader
 
     monkeypatch.setattr(loader, "config_path", lambda: path)
@@ -201,7 +203,7 @@ def config_file(monkeypatch: pytest.MonkeyPatch, tmp_path):
 
 
 def _logins(path) -> list[str]:
-    return json.loads(path.read_text())["dashboard"]["tailscale"]["allowed_logins"]
+    return json.loads(path.read_text(encoding="utf-8"))["dashboard"]["tailscale"]["allowed_logins"]
 
 
 def _active_members() -> dict[str, Any]:
@@ -367,7 +369,7 @@ async def test_key_never_leaves_the_vault(fake: FakeTailscale, caplog) -> None:
     caplog.set_level(logging.DEBUG)
     view = await invites.connect(KEY, "owner")
     assert KEY not in json.dumps(view)
-    state_text = (store.root() / store.STATE_FILE).read_text()
+    state_text = (store.root() / store.STATE_FILE).read_text(encoding="utf-8")
     assert KEY not in state_text and "Zz9yYxXwWvV" not in state_text
     for path in store.root().rglob("*"):
         if path.is_file():
@@ -444,11 +446,12 @@ async def test_accept_adds_login_to_allowlist_and_binds_alias_by_user_id(fake, c
         avatar,
     )
     assert _logins(config_file) == [OWNER_LOGIN, "ann@example.com"]
-    cfg = json.loads(config_file.read_text())["dashboard"]["tailscale"]
+    cfg = json.loads(config_file.read_text(encoding="utf-8"))["dashboard"]["tailscale"]
     assert cfg["trust_identity"] is True and cfg["enabled"] is True
     assert tailnet.login_allowed("ann@example.com", (OWNER_LOGIN,)) is True
     view = await invites.status_view()
     assert view["invites"][0]["status"] == "accepted"
+    assert view["invites"][0]["transport"] == "tailscale"
     assert view["invites"][0]["accepted_login"] == "ann@example.com"
 
 
@@ -505,14 +508,16 @@ async def test_a_second_accept_by_a_member_is_recorded_and_refused_after_removal
     """A member who accepts a second invite under the same login cannot use it after removal."""
     await invites.connect(KEY, "owner")
     made = await invites.create_invites(
-        ["ann@example.com", "ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
     )
+    # The second invite for the same address is made in the admin console.
+    fake.invites["901"] = {"id": "901", "email": "ann@example.com", "multiUse": False}
     fake.accept(made[0]["id"], "u-42", "ann@example.com", "")
     await invites.sync(force=True)
-    fake.accept(made[1]["id"], "u-42", "ann@example.com", "")
+    fake.accept("901", "u-42", "ann@example.com", "")
     await invites.sync(force=True)
     member = store.load_state()["members"]["u-42"]
-    assert set(member["invite_ids"]) == {made[0]["id"], made[1]["id"]}
+    assert set(member["invite_ids"]) == {made[0]["id"], "901"}
     store.update_state(lambda s: s["members"]["u-42"].update(removed=True))
     assert (await invites.sync(force=True))["admitted"] == []
     assert store.load_state()["members"]["u-42"]["removed"] is True
@@ -524,10 +529,17 @@ async def test_revoking_a_members_second_accepted_invite_removes_them(
 ) -> None:
     await invites.connect(KEY, "owner")
     made = await invites.create_invites(
-        ["ann@example.com", "ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
     )
+    # A second Crew-made invite for the address, as an older Crew could leave.
+    fake.invites["902"] = {"id": "902", "email": "ann@example.com", "multiUse": False}
+    store.update_state(
+        lambda s: s["invites"].update(
+            {"902": {"id": "902", "email": "ann@example.com", "created_at": 1.0}}
+        )
+    )
+    made.append({"id": "902"})
     fake.accept(made[0]["id"], "u-42", "ann@example.com", "")
-    await invites.sync(force=True)
     fake.accept(made[1]["id"], "u-42", "ann@example.com", "")
     await invites.sync(force=True)
     assert store.load_state()["invites"][made[1]["id"]]["accepted_user_id"] == "u-42"
@@ -538,6 +550,56 @@ async def test_revoking_a_members_second_accepted_invite_removes_them(
     # Their other accepted invite, still listed at Tailscale, does not bring them back.
     assert (await invites.sync(force=True))["admitted"] == []
     assert "u-42" not in _active_members()
+
+
+@pytest.fixture
+def ordered_clock(monkeypatch):
+    """A clock that moves forward on every read, so creation and acceptance order is exact."""
+    import itertools
+    import time
+
+    ticks = itertools.count()
+    base = time.time()
+    monkeypatch.setattr(store, "now", lambda: base + next(ticks))
+
+
+@pytest.mark.asyncio
+async def test_a_re_invite_accepted_from_the_same_account_becomes_the_one_remove_revokes(
+    fake, config_file, ordered_clock
+) -> None:
+    await invites.connect(KEY, "owner")
+    first = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    fake.accept(first[0]["id"], "u-42", "ann@example.com", "")
+    await invites.sync(force=True)
+    # Removed on the Tailscale users page, then invited and accepted again.
+    del fake.invites[first[0]["id"]]
+    again = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    fake.accept(again[0]["id"], "u-42", "ann@example.com", "")
+    await invites.sync(force=True)
+    assert store.load_state()["members"]["u-42"]["invite_id"] == again[0]["id"]
+    assert invites.members_by_login()["ann@example.com"]["invite_id"] == again[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_reusable_link_a_member_also_opens_never_becomes_their_remove_target(
+    fake, config_file
+) -> None:
+    await invites.connect(KEY, "owner")
+    first = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    fake.accept(first[0]["id"], "u-42", "ann@example.com", "")
+    await invites.sync(force=True)
+    link = await invites.create_invites([], multi_use=True, alias="", avatar_id="", actor="o")
+    fake.accept(link[0]["id"], "u-42", "ann@example.com", "")
+    await invites.sync(force=True)
+    member = store.load_state()["members"]["u-42"]
+    assert link[0]["id"] in member["invite_ids"]
+    assert member["invite_id"] == first[0]["id"]
 
 
 @pytest.mark.asyncio
@@ -1141,3 +1203,239 @@ def test_people_rows_show_alias_by_verified_login(fake) -> None:
     assert body["people"][0]["member"]["alias"] == "Ann"
     assert "member" not in body["people"][1]
     assert "member" not in body["people"][2], "only a verified tailnet row borrows an alias"
+
+
+# ── one invite per person ──
+
+
+@pytest.mark.asyncio
+async def test_inviting_an_address_with_an_invite_waiting_returns_that_invite(fake) -> None:
+    await invites.connect(KEY, "owner")
+    first = await invites.create_invites(
+        ["Ann@Example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    again = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    assert [r["id"] for r in again] == [first[0]["id"]]
+    assert len(store.load_state()["invites"]) == 1
+    posts = [b for m, p, b in fake.requests if m == "POST" and p.endswith("/device-invites")]
+    assert len(posts) == 1, "the second request never reached Tailscale"
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_request_creates_only_the_new_addresses(fake) -> None:
+    await invites.connect(KEY, "owner")
+    first = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    both = await invites.create_invites(
+        ["ann@example.com", "bo@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    assert {r["email"] for r in both} == {"ann@example.com", "bo@example.com"}
+    assert first[0]["id"] in {r["id"] for r in both}
+    posts = [b for m, p, b in fake.requests if m == "POST" and p.endswith("/device-invites")]
+    assert [e["email"] for e in posts[-1]] == ["bo@example.com"]
+    assert len(store.load_state()["invites"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_or_revoked_address_can_be_invited_again(fake, config_file) -> None:
+    await invites.connect(KEY, "owner")
+    made = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    fake.accept(made[0]["id"], "u-1", "ann@example.com")
+    await invites.sync(force=True)
+    await invites.revoke(made[0]["id"], "owner")
+    again = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    assert again[0]["id"] != made[0]["id"]
+    assert again[0]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_a_member_s_waiting_invite_for_their_address_is_deleted_at_tailscale(
+    fake, config_file
+) -> None:
+    await invites.connect(KEY, "owner")
+    waiting = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    # Ann came in by an invite made in the admin console, not by this one.
+    fake.invites["900"] = {"id": "900", "email": "", "multiUse": False, "accepted": False}
+    fake.accept("900", "u-1", "ann@example.com")
+    result = await invites.sync(force=True)
+    assert result["resolved"] == [waiting[0]["id"]]
+    assert waiting[0]["id"] not in fake.invites
+    assert waiting[0]["id"] not in store.load_state()["invites"]
+    assert waiting[0]["id"] in store.load_state()["revoked_invite_ids"]
+    assert list(_active_members()) == ["u-1"]
+
+
+@pytest.mark.asyncio
+async def test_an_invite_accepted_from_another_account_stays_and_can_be_revoked(
+    fake, config_file
+) -> None:
+    await invites.connect(KEY, "owner")
+    made = await invites.create_invites(
+        ["ann@work.example"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    fake.accept(made[0]["id"], "u-1", "ann@home.example")
+    result = await invites.sync(force=True)
+    assert result["resolved"] == []
+    row = (await invites.status_view())["invites"][0]
+    assert (row["status"], row["accepted_login"]) == ("accepted", "ann@home.example")
+    assert (await invites.revoke(made[0]["id"], "owner"))["member_removed"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_removed_member_does_not_resolve_a_new_invite_for_their_address(
+    fake, config_file
+) -> None:
+    await invites.connect(KEY, "owner")
+    first = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    fake.accept(first[0]["id"], "u-1", "ann@example.com")
+    await invites.sync(force=True)
+    await invites.revoke(first[0]["id"], "owner")
+    again = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    result = await invites.sync(force=True)
+    assert result["resolved"] == []
+    assert again[0]["id"] in fake.invites
+
+
+@pytest.mark.asyncio
+async def test_an_invite_made_after_the_member_joined_is_kept(
+    fake, config_file, ordered_clock
+) -> None:
+    await invites.connect(KEY, "owner")
+    first = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    fake.accept(first[0]["id"], "u-1", "ann@example.com")
+    await invites.sync(force=True)
+    # Removed on the Tailscale users page: the member row stays current here.
+    again = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    result = await invites.sync(force=True)
+    assert result["resolved"] == []
+    assert again[0]["id"] in fake.invites
+    assert again[0]["id"] in store.load_state()["invites"]
+
+
+@pytest.mark.asyncio
+async def test_a_member_without_a_join_time_never_resolves_an_invite(fake, config_file) -> None:
+    await invites.connect(KEY, "owner")
+    waiting = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+
+    # Records from before times were kept prove nothing about order.
+    def _old_records(s: dict) -> None:
+        s["members"]["u-1"] = {"user_id": "u-1", "login": "ann@example.com", "invite_id": "77"}
+        s["invites"][waiting[0]["id"]].pop("created_at", None)
+
+    store.update_state(_old_records)
+    result = await invites.sync(force=True)
+    assert result["resolved"] == []
+    assert waiting[0]["id"] in fake.invites
+
+
+@pytest.mark.asyncio
+async def test_a_failed_delete_keeps_the_waiting_invite_for_the_next_sync(
+    fake, config_file, monkeypatch
+) -> None:
+    await invites.connect(KEY, "owner")
+    waiting = await invites.create_invites(
+        ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    fake.invites["900"] = {"id": "900", "email": "", "multiUse": False, "accepted": False}
+    fake.accept("900", "u-1", "ann@example.com")
+    original = TailscaleApi.delete_invite
+
+    async def refused(self: TailscaleApi, invite_id: str) -> None:
+        raise TailscaleApiError("forbidden", 403)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(TailscaleApi, "delete_invite", refused)
+        assert (await invites.sync(force=True))["resolved"] == []
+    assert TailscaleApi.delete_invite is original
+    assert waiting[0]["id"] in store.load_state()["invites"]
+    assert (await invites.sync(force=True))["resolved"] == [waiting[0]["id"]]
+
+
+def test_a_current_member_row_carries_the_invite_it_came_in_by(fake) -> None:
+    store.update_state(
+        lambda s: s["members"].update(
+            {
+                "u-1": {
+                    "user_id": "u-1",
+                    "login": "ann@example.com",
+                    "invite_id": "77",
+                    "accepted_at": 1700.0,
+                },
+                "u-2": {
+                    "user_id": "u-2",
+                    "login": "bob@example.com",
+                    "invite_id": "78",
+                    "removed": True,
+                },
+            }
+        )
+    )
+    ann = tailnet_principal("ann@example.com", "phone", Provenance.TAILSCALE_SERVE).to_public_dict()
+    bob = tailnet_principal("bob@example.com", "phone", Provenance.TAILSCALE_SERVE).to_public_dict()
+    body = routes_invites.decorate_people(
+        {
+            "people": [
+                {"principal": ann, "provenance": "tailscale_serve"},
+                {"principal": bob, "provenance": "tailscale_serve"},
+            ]
+        }
+    )
+    assert body["people"][0]["member"]["invite_id"] == "77"
+    assert "member" not in body["people"][1], "a removed member is not a current member"
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limited_delete_stops_the_resolve_pass(fake, config_file, monkeypatch) -> None:
+    await invites.connect(KEY, "owner")
+    waiting = await invites.create_invites(
+        ["ann@example.com", "ann2@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+    )
+    for uid, login in (("u-1", "ann@example.com"), ("u-2", "ann2@example.com")):
+        fake.invites[f"90{uid[-1]}"] = {"id": f"90{uid[-1]}", "email": "", "multiUse": False}
+        fake.accept(f"90{uid[-1]}", uid, login)
+    calls: list[str] = []
+
+    async def limited(self: TailscaleApi, invite_id: str) -> None:
+        calls.append(invite_id)
+        raise TailscaleApiError("rate_limited", 429, 30.0)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(TailscaleApi, "delete_invite", limited)
+        assert (await invites.sync(force=True))["resolved"] == []
+    assert len(calls) == 1, "the pass stops at the first rate limit"
+    assert {r["id"] for r in waiting} <= set(store.load_state()["invites"])
+
+
+@pytest.mark.asyncio
+async def test_two_creates_for_one_address_at_once_make_one_invite(fake) -> None:
+    await invites.connect(KEY, "owner")
+
+    def one() -> Any:
+        return invites.create_invites(
+            ["ann@example.com"], multi_use=False, alias="", avatar_id="", actor="o"
+        )
+
+    first, second = await asyncio.gather(one(), one())
+    assert first[0]["id"] == second[0]["id"]
+    assert len(store.load_state()["invites"]) == 1
+    posts = [b for m, p, b in fake.requests if m == "POST" and p.endswith("/device-invites")]
+    assert len(posts) == 1

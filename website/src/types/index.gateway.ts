@@ -486,13 +486,24 @@ export interface RemoteUpdateJob {
    *  installed nothing). `unverified`: it did not answer with a version in time. */
   state: 'running' | 'succeeded' | 'unchanged' | 'unverified' | 'failed'
   /** Where the job is, or where it failed: the remote `kirocrew update`, then
-   *  `kirocrew restart`, then reading the crew's version back. */
-  phase: 'updating' | 'restarting' | 'verifying' | 'done'
+   *  waiting for the crew's in-flight work to finish, then `kirocrew restart`,
+   *  then reading the crew's version back. */
+  phase: 'updating' | 'waiting_for_idle' | 'restarting' | 'verifying' | 'done'
   started_at: number
   finished_at: number | null
   elapsed_secs: number
   /** The remote's redacted error tail on a failure, else "". */
   error: string
+  /** Why a failed job stopped short of its restart: `still_busy` (the crew
+   *  was still running work when the wait ran out), `peer_cannot_wait` (its
+   *  build has no idle check) or `idle_check_failed` (it could not establish
+   *  that it is idle). All are retried with `force`. Else "". Absent
+   *  from a gateway that predates it. */
+  code?: '' | 'still_busy' | 'peer_cannot_wait' | 'idle_check_failed'
+  /** The crew's last in-flight counts while `waiting_for_idle`. */
+  waiting?: { turns: number; background: number }
+  /** Whether the job restarts without waiting for in-flight work. */
+  force?: boolean
   /** The crew's version before the update and after its restart; "" when it
    *  did not answer. */
   version_before: string

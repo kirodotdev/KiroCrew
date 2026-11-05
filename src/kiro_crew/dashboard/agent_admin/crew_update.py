@@ -287,6 +287,20 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
         )
+    from kiro_crew.config.sections_session import STAR_ORDER_MAX
+
+    if "star_order" in body and (
+        isinstance(body["star_order"], bool)
+        or not isinstance(body["star_order"], int)
+        or not 0 <= body["star_order"] <= STAR_ORDER_MAX
+    ):
+        return web.json_response(
+            {
+                "error": f"star_order must be an integer from 0 to {STAR_ORDER_MAX}",
+                "code": "invalid_star_order",
+            },
+            status=400,
+        )
     if "dynamic_capabilities" in body and not isinstance(body["dynamic_capabilities"], bool):
         return web.json_response(
             {
@@ -451,12 +465,12 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             except CapabilityError as exc:
                 return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         prior_memory_store = agent.memory_store
-        # A binding is immutable in both directions -- a private store is never
-        # shared or rebound, and a live V1 binding is kept until the owner opts in
-        # -- with one exception: a V1 binding whose name no resolver composes
-        # (``unusable_legacy_binding``) may move to the global store. Nothing is
-        # protected on it: the name resolves no directory, so the member cannot
-        # run a turn on it, and the same name is what refused every repair.
+        # A binding is immutable in both directions: a private store is never
+        # shared or rebound, and a live V1 binding is kept until the owner opts
+        # in. Every changed value is refused, the global store included, and so
+        # is a V1 binding whose name no resolver composes
+        # (``unusable_legacy_binding``). The CLI's ``agent update`` refuses the
+        # same way.
         if "memory_store" in body and body["memory_store"] != prior_memory_store:
             return web.json_response(
                 {
@@ -712,6 +726,15 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above, before any mutation.
             agent.starred = body["starred"]
             changed.append("starred")
+        if "star_order" in body:
+            agent.star_order = body["star_order"]
+            changed.append("star_order")
+        if not agent.starred and agent.star_order:
+            # An unstarred crew holds no dock position, so starring it again
+            # puts it at the bottom instead of back in its old slot.
+            agent.star_order = 0
+            if "star_order" not in changed:
+                changed.append("star_order")
         effort_inputs_after = _effort_inputs(agent)
         # Avatar rollback applies only to ordinary failure: cancellation may
         # arrive after the drained worker published the new avatar pin. Store
@@ -802,7 +825,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     web.json_response(
                         {
                             "error": (
-                                f"{shown} has more than one chat open. Close the mate's "
+                                f"{shown} has more than one chat open. Close the Bot's "
                                 "other chat, then change the agent harness."
                             ),
                             "code": "crewmate_harness_busy",
@@ -869,7 +892,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     denied=lambda _session_key: None,
                     busy=lambda session_key: _busy(slot, session_key),
                     notice=(
-                        "Session reloaded so this mate runs on its new agent harness. "
+                        "Session reloaded so this Bot runs on its new agent harness. "
                         "The conversation is kept."
                     ),
                     after_reset_in_lock=_after_teardown,

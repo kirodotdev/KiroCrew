@@ -2,7 +2,7 @@ import type React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Provider } from 'react-redux'
 import { createTestStore } from './helpers'
-import { render as rtlRender, screen, act, type RenderOptions } from '@testing-library/react'
+import { render as rtlRender, screen, act, fireEvent, type RenderOptions } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 // Controllable useTheme mock — each test sets `mockTheme` before rendering.
@@ -253,6 +253,48 @@ describe('ThemeExperienceLayer', () => {
     expect(setColorTheme).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(record()).toEqual(ALL_OFF)
+  })
+
+  describe('consent dialog focus', () => {
+    // jsdom does no layout, so every element reports a null offsetParent and the
+    // trap would see no visible Tab stops. Report one for the dialog's controls.
+    let offsetParent: PropertyDescriptor | undefined
+    beforeEach(() => {
+      offsetParent = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetParent')
+      Object.defineProperty(HTMLElement.prototype, 'offsetParent', { configurable: true, get: () => document.body })
+    })
+    afterEach(() => {
+      if (offsetParent) Object.defineProperty(HTMLElement.prototype, 'offsetParent', offsetParent)
+    })
+
+    it('opens on Save and keeps Tab and Shift+Tab inside the dialog', () => {
+      setTheme()
+      render(<ThemeExperienceLayer />)
+      const save = screen.getByRole('button', { name: 'Save' })
+      const first = screen.getAllByRole('checkbox')[0]
+      expect(save).toHaveFocus()
+
+      fireEvent.keyDown(save, { key: 'Tab' })
+      expect(first).toHaveFocus()
+
+      fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+      expect(save).toHaveFocus()
+    })
+
+    it('hands focus back to what was focused before the dialog opened', async () => {
+      setTheme({ colorTheme: 'emerald' })
+      const { rerender } = render(<button type="button">outside</button>)
+      const outside = screen.getByRole('button', { name: 'outside' })
+      outside.focus()
+
+      setTheme()
+      rerender(<><button type="button">outside</button><ThemeExperienceLayer /></>)
+      expect(screen.getByRole('button', { name: 'Save' })).toHaveFocus()
+
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'outside' })).toHaveFocus()
+    })
   })
 
   it('a stored record suppresses the dialog on the next load', () => {
@@ -513,6 +555,43 @@ describe('ThemeExperienceLayer', () => {
     AudioMock.mockClear()
     window.dispatchEvent(new CustomEvent('mc-theme-sound', { detail: { trigger: 'nope' } }))
     expect(AudioMock).not.toHaveBeenCalled()
+  })
+
+  it('plays a category trigger before the generic one and leaves a user-chosen category alone', () => {
+    localStorage.setItem('mc-theme-consent-bikini-bottom', 'consented-v2')
+    const AudioMock = vi.fn(() => ({
+      loop: false,
+      play: () => Promise.resolve(),
+      pause() {},
+      addEventListener() {},
+    }))
+    ;(globalThis as unknown as { Audio: unknown }).Audio = AudioMock
+    setTheme({
+      assets: l2Assets({
+        audio: {
+          triggers: {
+            'category:approval': { src: 'audio/approve.wav', volume: 0.5 },
+            notification: { src: 'audio/chime.wav', volume: 0.5 },
+          },
+          ambient: null,
+        },
+      }),
+    })
+    const { unmount } = render(<ThemeExperienceLayer />)
+    window.dispatchEvent(new CustomEvent('mc-notification', { detail: { kind: 'approval' } }))
+    expect(AudioMock).toHaveBeenCalledTimes(1)
+    expect(AudioMock).toHaveBeenCalledWith(expect.stringContaining('/audio/approve.wav'))
+    AudioMock.mockClear()
+    window.dispatchEvent(new CustomEvent('mc-notification', { detail: { kind: 'cron' } }))
+    expect(AudioMock).toHaveBeenCalledTimes(1)
+    expect(AudioMock).toHaveBeenCalledWith(expect.stringContaining('/audio/chime.wav'))
+    // A sound the user picked for this category in Settings keeps playing;
+    // the theme stays silent for it.
+    AudioMock.mockClear()
+    localStorage.setItem('mc-notification-sound', JSON.stringify({ perCategory: { all: 'chime', approval: 'ding' } }))
+    window.dispatchEvent(new CustomEvent('mc-notification', { detail: { kind: 'approval' } }))
+    expect(AudioMock).not.toHaveBeenCalled()
+    unmount()
   })
 
   // ── §3.1 manifest-driven overlay placement ──

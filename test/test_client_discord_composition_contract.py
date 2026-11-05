@@ -16,21 +16,15 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
-import logging
-import os
-import subprocess
-import sys
 from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
-import source_corpus
 
 import kiro_crew
 from kiro_crew.discord import client as FACADE_MODULE
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 FACADE = "kiro_crew.discord.client"
 STEM = "client"
@@ -44,6 +38,24 @@ FAMILY_IMPORTER = "discord/client_recheck.py"
 
 # Walks src/kiro_crew for owner imports; keep it on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_client_discord_composition_contract")
+
+SHARED_FACADE_CHECKS = (
+    "the_class_body_scan_can_fail",
+    "the_facade_installs_its_mirror_when_run_as_a_script",
+    "every_owner_logs_under_the_facades_name",
+    "a_moved_member_is_its_owners_function",
+    "every_owner_function_of_self_is_bound_on_the_class",
+    "no_bound_function_needs_the_class_body",
+    "each_guarded_construct_stays_in_the_facade",
+    "the_owners_are_every_sibling_module_in_layer_order",
+    "an_owner_imports_only_owners_below_it_and_never_its_facade",
+    "the_class_keeps_every_base_member",
+    "every_base_member_keeps_its_kind_and_signature",
+    "only_the_family_imports_an_owner",
+    "the_owner_import_scan_finds_an_outside_importer",
+    "each_moved_class_is_served_whole_from_its_owner",
+)
+
 
 #: Owner modules, lowest layer first: an owner imports only owners listed before it.
 OWNERS = (
@@ -312,91 +324,7 @@ def _class_body_reads(source: str) -> list[str]:
 # ── the owners ───────────────────────────────────────────────────────────────────
 
 
-def test_the_owners_are_every_sibling_module_in_layer_order() -> None:
-    on_disk = {path.stem for path in DISCORD_DIR.glob(f"{STEM}_*.py")}
-    assert on_disk == set(OWNERS)
-    assert FACADE_MODULE._OWNERS == tuple(f"kiro_crew.discord.{stem}" for stem in OWNERS)
-
-
-def test_an_owner_imports_only_owners_below_it_and_never_its_facade() -> None:
-    for index, stem in enumerate(OWNERS):
-        loaded = _runtime_imports(_source(stem))
-        assert FACADE not in loaded, stem
-        siblings = {
-            name.rsplit(".", 1)[-1]
-            for name in loaded
-            if name.startswith(f"kiro_crew.discord.{STEM}_") and name.count(".") == 2
-        }
-        assert siblings <= set(OWNERS[:index]), stem
-
-
-def test_every_owner_logs_under_the_facades_name() -> None:
-    assert FACADE_MODULE.logger is logging.getLogger(FACADE)
-    for stem in OWNERS:
-        logger = vars(_owner(stem)).get("logger")
-        if logger is not None:
-            assert logger is logging.getLogger(FACADE), stem
-
-
-def test_the_facade_installs_its_mirror_when_run_as_a_script(tmp_path: Path) -> None:
-    """Under ``python -m`` the facade is ``__main__``: one logger by literal name keeps
-    the family to one object per name, which the mirror's install requires."""
-    result = subprocess.run(
-        [sys.executable, "-m", FACADE],
-        capture_output=True,
-        cwd=tmp_path,
-        env=dict(os.environ),
-        timeout=120,
-        **UTF8_TEXT,
-    )
-    assert result.returncode == 0, result.stderr
-
-
 # ── the class surface ────────────────────────────────────────────────────────────
-
-
-def test_the_class_keeps_every_base_member() -> None:
-    assert sorted(set(BASE_MEMBERS) - _members(CLS)) == []
-
-
-def test_every_base_member_keeps_its_kind_and_signature() -> None:
-    members = vars(CLS)
-    for name, described in BASE_MEMBERS.items():
-        assert _describe(members[name], CLS) == described, name
-
-
-def test_a_moved_member_is_its_owners_function() -> None:
-    members = vars(CLS)
-    for stem, names in MOVED_MEMBERS.items():
-        owner = _owner(stem)
-        for name in names:
-            assert members[name] is getattr(owner, name), f"{stem}.{name}"
-            assert members[name].__module__ == owner.__name__, f"{stem}.{name}"
-            assert members[name].__qualname__ == name, f"{stem}.{name}"
-
-
-def test_every_owner_function_of_self_is_bound_on_the_class() -> None:
-    bound = {name for names in MOVED_MEMBERS.values() for name in names}
-    for stem in OWNERS:
-        owner = _owner(stem)
-        for name, value in vars(owner).items():
-            if not inspect.isfunction(value) or value.__module__ != owner.__name__:
-                continue
-            if list(inspect.signature(value).parameters)[:1] == ["self"]:
-                assert name in bound and vars(CLS)[name] is value, f"{stem}.{name}"
-
-
-def test_no_bound_function_needs_the_class_body() -> None:
-    """A function bound into the class from an owner was compiled outside it: it has no
-    ``__class__`` cell, so a zero-argument ``super()`` or a ``__class__`` read raises, and
-    a ``self.__name`` is never mangled. So no owner spells one; a method that needs one
-    stays in the class body."""
-    assert {stem: hits for stem in OWNERS if (hits := _class_body_reads(_source(stem)))} == {}
-
-
-def test_the_class_body_scan_can_fail() -> None:
-    planted = "def f(self):\n    super().g()\n    return __class__, self.__secret, self.__dict__\n"
-    assert _class_body_reads(planted) == ["2: super()", "3: __class__", "3: __secret"]
 
 
 def _top_level_names(tree: ast.Module) -> set[str]:
@@ -409,23 +337,6 @@ def _top_level_names(tree: ast.Module) -> set[str]:
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             names.add(node.target.id)
     return names
-
-
-def test_each_guarded_construct_stays_in_the_facade() -> None:
-    """The constructs ``FACADE_PINNED`` names are defined in the facade's own file."""
-    tree = ast.parse(FACADE_PATH.read_text(encoding="utf-8"))
-    cls_node = next(
-        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == CLS.__name__
-    )
-    members = {
-        node.name
-        for node in cls_node.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert sorted(FACADE_PINNED - (_top_level_names(tree) | members)) == []
-    for stem in OWNERS:
-        owned = _top_level_names(ast.parse(_source(stem)))
-        assert sorted(FACADE_PINNED & owned) == [], stem
 
 
 def _imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
@@ -451,41 +362,3 @@ def _owner_importers(sources: Iterable[tuple[Path, str]], root: Path) -> set[str
             ):
                 found.add(rel.as_posix())
     return found
-
-
-def test_only_the_family_imports_an_owner() -> None:
-    """Callers reach the owners' names through the facade, never by importing an owner."""
-    family = {f"discord/{stem}.py" for stem in (STEM, *OWNERS)}
-    sources = source_corpus.iter_candidate_sources(require_any=(f"{STEM}_",))
-    importers = _owner_importers(
-        ((path, text) for path, text in sources if path.is_relative_to(SRC)), SRC
-    )
-    assert FAMILY_IMPORTER in importers  # owners import the owners below them
-    assert importers - family == set()
-
-
-def test_the_owner_import_scan_finds_an_outside_importer(tmp_path: Path) -> None:
-    root = tmp_path / "kiro_crew"
-    owner = OWNERS[0]
-    sources = {
-        root / "pkg" / "caller.py": f"from kiro_crew.discord.{owner} import x\n",
-        root / "other.py": f"from kiro_crew.discord import {owner} as low\n",
-        root / "discord" / "relative.py": f"from .{owner} import x\n",
-        root / "discord" / "deep" / "up.py": f"from .. import {owner}\n",
-        root / "facade_user.py": f"from kiro_crew.discord.{STEM} import x\n",
-    }
-    assert _owner_importers(sources.items(), root) == {
-        "pkg/caller.py",
-        "other.py",
-        "discord/relative.py",
-        "discord/deep/up.py",
-    }
-
-
-def test_each_moved_class_is_served_whole_from_its_owner() -> None:
-    """A class that moved keeps one object: the facade serves the owner's, whose
-    ``__module__`` names the owner. Nothing keys behaviour on that module name."""
-    for name, stem in MOVED_CLASSES.items():
-        owner = _owner(stem)
-        assert getattr(FACADE_MODULE, name) is getattr(owner, name), name
-        assert getattr(owner, name).__module__ == owner.__name__, name

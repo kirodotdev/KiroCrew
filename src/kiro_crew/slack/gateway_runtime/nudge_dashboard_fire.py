@@ -785,8 +785,19 @@ async def _dashboard_mode_admits(loop: NudgeLoop, slot: Any) -> bool:
         return True
     if getattr(loop, "self_armed", False) is not True:
         return False
+    if await asyncio.to_thread(autonudge_selfarm.is_recorded_self_arm, loop.id, loop.slot_key):
+        return True
+    # A crewmate thread's gateway default patrol holds a default-patrol grant, not
+    # a self-arm record. The store is agent-writable, so the grant admits a wake
+    # only while the stored loop still carries the fixed patrol it was granted for.
+    from kiro_crew import conductor_patrol
+
+    if not conductor_patrol.is_fixed_patrol_payload(loop):
+        return False
     return bool(
-        await asyncio.to_thread(autonudge_selfarm.is_recorded_self_arm, loop.id, loop.slot_key)
+        await asyncio.to_thread(
+            autonudge_selfarm.is_recorded_default_patrol, loop.id, loop.slot_key
+        )
     )
 
 

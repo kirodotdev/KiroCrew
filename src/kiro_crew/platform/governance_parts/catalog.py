@@ -191,13 +191,15 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
         CAPABILITY, capability_default=True, scope_matchers={"agents": "identifier"}
     ),
     "capabilities.memory_writes": ScopeSpec(CAPABILITY, capability_default=True),
-    # Web browsing (the ``browser`` MCP tool driving the native panel, and the
-    # playwright-cli fallback it points at) is a governable egress surface: an
-    # enterprise policy that denies it must stop the agent browsing on the
-    # native path too, not only the shell ``commands`` path playwright-cli sits
-    # behind. Default True (on) — like memory_writes, an ordinary capability
+    # Web browsing (the ``browser`` MCP tool driving the agent's browser) is a
+    # governable egress surface: an enterprise policy that denies it must stop
+    # the agent browsing through the tool, not only through the shell
+    # ``commands`` path. Default True (on) — like memory_writes, an ordinary capability
     # that is available unless a policy explicitly sets
-    # ``{"capabilities": {"browse": {"enabled": false}}}``.
+    # ``{"capabilities": {"browse": {"enabled": false}}}``. One deny turns the whole
+    # browser off: the gateway asks this row again at every browser route and in the
+    # engine itself (``browser_harness/governance.py``), and
+    # ``GET /api/dashboard/config`` reports it as ``browse_enabled``.
     "capabilities.browse": ScopeSpec(CAPABILITY, capability_default=True),
     # Inner ``events`` ruleset (``identifier`` matcher): which hook trigger events
     # may fire a script hook once the capability is on, by event name --
@@ -519,6 +521,16 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # ``extension_governance.developer_mode_permitted`` is the one reader. RFC
     # enterprise edition, appendix row "App developer mode".
     "capabilities.app_dev_mode": ScopeSpec(CAPABILITY, capability_default=True),
+    # Kiro Cloud Sessions (``session_environments.kiro_cloud_profiles``): the session's
+    # agent and tools run in Kiro's cloud, where none of this ceiling is applied.
+    # Consulted at ONE chokepoint, the launch seam
+    # (``coder.session_launch.kiro_cloud_governance_refusal``), and only when the
+    # policy or the session's profile governs any other scope: then the start
+    # is refused unless the POLICY enables this row (a profile may withdraw it but
+    # not grant it). A ceiling that cannot be read refuses. Opt-in
+    # (capability_default=False), like messaging and publish. Data row only --
+    # CONTRACT_VERSION and the evaluator are untouched.
+    "capabilities.kiro_cloud_sessions": ScopeSpec(CAPABILITY, capability_default=False),
 }
 
 

@@ -36,6 +36,8 @@ import { slotRowByKey } from '../../store/slotIndex'
 // rather than riding in the dashboard shell, the same shape `CapabilitiesPage` uses
 // for its templates tab and `DeveloperPanel` for the memory graph.
 const CrewLogTab = lazy(() => import('./CrewLogPanel').then(m => ({ default: m.CrewLogTab })))
+// Remote-environment sessions only.
+const RemoteGitPanel = lazy(() => import('./RemoteGitPanel'))
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
 import { isNeverStarted, neverStartedKind, queuedWaitText } from './subagentQueuedReason'
@@ -405,10 +407,10 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           if (!resolvedKnown && !liveDowngrade && normalizeModelKey(display) !== 'auto') return null
           return (
             <code
-              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[7rem] truncate inline-block align-middle [direction:rtl] [unicode-bidi:plaintext] text-left${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted bg-bg-hover'}`}
+              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[10rem] inline-flex items-center align-middle${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted bg-bg-hover'}`}
               data-testid="subagent-model"
               // The downgrade meaning rides on the amber colour + the AlertCircle
-              // glyph (aria-hidden), and the chip's [direction:rtl] truncation can
+              // glyph (aria-hidden), and the id's [direction:rtl] truncation can
               // reorder how a screen reader voices the id — so mirror the tooltip
               // text into an aria-label. Otherwise AT users hear only the bare
               // (possibly truncated) model id with no requested-vs-served context,
@@ -425,8 +427,16 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
                   ? i18nT('pages.chat.activityViewer.model_label', { model: a.model })
                   : i18nT('pages.chat.activityViewer.model_effective', { model: display })}
             >
-              {liveDowngrade && <AlertCircle size={10} aria-hidden className="inline-block mr-0.5 align-middle" />}
-              {display}
+              {liveDowngrade && <AlertCircle size={10} aria-hidden className="shrink-0 mr-0.5" />}
+              {/* Left-truncate the id only: long ids share a prefix
+                  (claude-opus-…, us.anthropic.claude-…), so clipping the END hides
+                  the one part that says WHICH model. The span is rtl so its
+                  ellipsis falls on the left, and the id sits in an ltr <bdi> so its
+                  glyphs keep their order. Not `unicode-bidi: plaintext`: that
+                  re-derives the direction from the (LTR) id and puts the ellipsis
+                  back on the right. The rtl box is the span, not the chip, so the
+                  glyph stays put. */}
+              <span className="min-w-0 truncate [direction:rtl] text-left"><bdi dir="ltr">{display}</bdi></span>
             </code>
           )
         })()}
@@ -1057,7 +1067,10 @@ function ArtifactListRow({ row, busy, onOpen, onSave }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onUnpin, slotTitle, chatMode }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onUnpin, slotTitle, chatMode, remoteEnvironmentName }: {
+  /** Set when the session runs on a remote environment: the Git view then
+   *  shows the guest's checkout instead of the gateway's local one. */
+  remoteEnvironmentName?: string
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void
   navLinks?: ExtractedLink[]; navResolving?: boolean
@@ -1278,7 +1291,14 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       {/* Git: every repository this chat works in, the project's first */}
       {effectiveTab === ('git' as string) && (
         <div className="flex-1 min-h-0 overflow-hidden">
-          <GitReposPanel slotKey={slot} onFileOpen={onFileOpen} />
+          {remoteEnvironmentName && slot ? (
+            // A remote session's working tree is in its guest workspace.
+            <Suspense fallback={<ContentSkeleton rows={6} />}>
+              <RemoteGitPanel slot={slot} name={remoteEnvironmentName} />
+            </Suspense>
+          ) : (
+            <GitReposPanel slotKey={slot} onFileOpen={onFileOpen} />
+          )}
         </div>
       )}
 

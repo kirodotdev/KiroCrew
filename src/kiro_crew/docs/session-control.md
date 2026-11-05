@@ -5,7 +5,7 @@ another one, change its model, reload its agent process, color it, and take anot
 itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 40 of its tools, written for the agent that is about to use them.
+for all 39 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
@@ -18,7 +18,7 @@ owner modules. Two halves:
   `session_move_to_column`, `work_dispatch`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
-  `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
+  `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
   `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`,
   `chat_session_pin`, `chat_session_pin_move`. These organize what the person
   sees in the sidebar.
@@ -49,31 +49,34 @@ conductor: a session that can dispatch but cannot edit a file. Always pass
 | Argument | Required | Meaning |
 |---|---|---|
 | `title` | no | Short sidebar name. Say what the session is FOR. Follows `session_rename`'s character rules (`invalid_title`), then is cut to 200 characters; a title whose first 200 characters show nothing is refused |
-| `agent` | no (but always pass it) | Agent to bind the session to. In a crewmate's own chat it is not used: the session is always the crewmate's own worker, on the crewmate's memory and workspace with the worker's own tools plus whatever the crewmate's settings add. Naming another crewmate there is refused like any cross-workspace agent |
-| `agent_kind` | no | One value, `template`: run the shared template `agent` names on your own memory, even when a crewmate carries the same name. Omit for name-first resolution (a crewmate wins, with its own memory). A bare `kirocrew-worker` already means `template`, because that worker needs no memory of its own. Requires `agent` (`agent_kind_requires_agent` otherwise); a kind that does not resolve is refused `agent_unresolved` rather than falling back to whoever answers by default |
-| `folder` | no | Sidebar folder id or `/`-separated path to file it into, atomically with creation. Missing path segments are created (`mkdir -p`). The create is checked first, so a create that would be refused normally leaves no new empty folder behind (a race can still leave one) |
+| `agent` | no (but always pass it) | Agent to bind the session to. In a Bot's own chat it is not used: the session is always the Bot's own worker, on the Bot's memory and workspace with the worker's own tools plus whatever the Bot's settings add. Naming another Bot there is refused like any cross-workspace agent |
+| `agent_kind` | no | One value, `template`: run the shared template `agent` names on your own memory, even when a Bot carries the same name. Omit for name-first resolution (a Bot wins, with its own memory). A bare `kirocrew-worker` already means `template`, because that worker needs no memory of its own. Requires `agent` (`agent_kind_requires_agent` otherwise); a kind that does not resolve is refused `agent_unresolved` rather than falling back to whoever answers by default |
+| `folder` | no | Sidebar folder id or `/`-separated path to file it into, atomically with creation. Missing path segments are created (`mkdir -p`). The create is checked first, so a create that would be refused normally leaves no new empty folder behind (a race can still leave one). A folder with a project gives the new session that project; without one, the new session works in your own project |
 | `model` | no | Model the session starts on, pinned as if the person picked it in the model dropdown (same guard; refused with `model_rejected` when the picker would refuse it). Omitted, it is filled as below |
 | `reasoning_effort` | no | Reasoning effort the session starts at, one of the five standard levels: `low`, `medium`, `high`, `xhigh`, `max`. Any other value is refused with `effort_rejected` before anything is created. Omitted, it is filled as below |
 | `autocompact_pct` | no | Context-usage percent (5 to 90) at which the NEW session auto-compacts, set as its own override as if the person set "Auto-compact at" in its context meter. Only the new session gets it; the global `session.autocompact_pct` and every other session are unchanged. The tool schema refuses an out-of-range value before any request reaches the dashboard. The reply is `Error: autocompact_pct: must be <= 90.0`, or `Error: autocompact_pct: must be >= 5.0` for a value below the range. Omit to follow the agent's own default, else the global value |
+| `message` | no | The new session's first message, delivered in the same call through `session_send`'s own path: same authorization, same size limit (`message_too_long`), same `[sent by session …]` line. A message `session_send` would refuse is refused before anything is created, and so is any message from an agent that auto-approves `session_create` but not `session_send` (`message_needs_send_approval`). If the session opens but delivery fails, the reply still names the key and the delivery error, and the session is kept |
 
 An omitted `model` or `reasoning_effort` is filled from you when you are a
-mate: your profile's worker pair (`worker_model` / `worker_reasoning_effort`)
+Bot: your profile's worker pair (`worker_model` / `worker_reasoning_effort`)
 when set, else your own model and effort, else the agent's or the global
 default. A value from your profile is copied into the child when it is created
 and is the child's own pick from then on: a later change to your profile does
 not reach a child already open. Your own effort carries over only while the
 child runs your own model: under a `worker_model` or a `model` you name, the
-only level it takes is `worker_reasoning_effort`. A caller that is not a mate (a template worker a
-mate dispatched is not one) gets the agent's or the global default. A child
-that is itself a mate (an `agent` naming one) runs its own profile and
+only level it takes is `worker_reasoning_effort`. A caller that is not a Bot (a template worker a
+Bot dispatched is not one) gets the agent's or the global default. A child
+that is itself a Bot (an `agent` naming one) runs its own profile and
 inherits nothing. A stale model from your profile, one the picker would refuse
 or the worker's harness does not serve, is dropped rather than refused: the
 child starts on the default model. A model you name yourself is still refused
 with `model_rejected`. The reply names what was copied from your profile, and
 says so when that model was dropped.
 
-No argument is formally required. The new session **starts empty** — nothing runs
-in it until the person types, or until you send it a message. The reply carries
+No argument is formally required. Without `message` the new session **starts
+empty** — nothing runs in it until the person types, or until you send it a
+message. With `message`, its first turn starts on that message in this same
+call, so you never send to a key you have not read back yet. The reply carries
 the new session's key:
 
 ```
@@ -83,7 +86,7 @@ waiting in the user's sidebar; watch it with session_read_message.
 
 Pass that key as `target` to every other session tool.
 
-`session_create` always starts empty. When the new session should already know
+`session_create` never copies a transcript. When the new session should already know
 what you know — you are splitting a long investigation into several sessions —
 use `session_fork` instead.
 
@@ -434,7 +437,7 @@ that already has a parent can be adopted, and the parent it had is kept in the
 record.
 
 What you may adopt depends on who you are. A fenced session (one an agent
-created, a crewmate's chat, a scheduled run, a channel session, or the owner's
+created, a Bot's chat, a scheduled run, a channel session, or the owner's
 Conductor while `agent.session_control` is off) may adopt only
 a session it already manages: one it created and has not handed away, or one that
 was handed to it with `session_handoff`. With `agent.session_manager_chain` on,
@@ -494,7 +497,7 @@ manages itself.
 
 | Refusal | Why |
 |---|---|
-| `not_creator` | HTTP 403. You are a fenced session (one an agent created, a crewmate's chat, a scheduled run, a channel session, or the owner's Conductor while `agent.session_control` is off) and you do not manage the target or `to`. The ownership fence answers first, with this code. |
+| `not_creator` | HTTP 403. You are a fenced session (one an agent created, a Bot's chat, a scheduled run, a channel session, or the owner's Conductor while `agent.session_control` is off) and you do not manage the target or `to`. The ownership fence answers first, with this code. |
 | `not_manager` | HTTP 403. The same rule for an agent in a person's own tab, which the ownership fence does not cover (the Conductor while `agent.session_control` is off is covered, and gets `not_creator`): it cannot hand another of the person's tabs, which has no manager, to anyone. |
 | `self_manager` | `to` is the target itself. |
 | `already_manager` | `to` already manages the target. |
@@ -511,7 +514,7 @@ name it.
 A handed-over session counts against its manager's per-caller session cap and
 still counts against its creator's, so a handoff, or closing the manager, never
 frees room under the creator's cap. A handoff is refused with
-`creator_slot_cap_reached` (HTTP 429) when `to` already holds the cap.
+`creator_slot_cap_reached` (HTTP 409) when `to` already holds the cap.
 After an archive, the manager can `session_revive` the session and still manages it.
 
 ### `session_stop` vs `session_close`
@@ -550,9 +553,9 @@ peer, and it cancels the turn that asked for it, so make it your last call and
 write whatever the person should read before it. `session_close` is the only
 verb (besides `session_release`) that accepts its own caller as the target.
 
-A crewmate's own thread is the exception: it may not close itself
+A Bot's own thread is the exception: it may not close itself
 (`member_thread_self_close`, HTTP 403), because only the person dismisses it. A
-crewmate closes the workers it created without an approval prompt, under the same
+Bot closes the workers it created without an approval prompt, under the same
 ownership fence as `session_stop`.
 
 ### `session_end_wait`
@@ -770,9 +773,9 @@ Refusals only a revive gives:
 
 | Code | Meaning |
 |---|---|
-| `member_thread_target` | The match is a crew member's thread, which is not addressable |
+| `member_thread_target` | The match is a Bot's thread, which is not addressable |
 | `folder_not_found` | The `folder` you named does not exist; nothing was revived |
-| `creator_slot_cap_reached` | HTTP 429: you already hold the per-caller live-session cap |
+| `creator_slot_cap_reached` | HTTP 409: you already hold the per-caller live-session cap |
 | `resume_in_progress` | HTTP 409: the session is being resumed elsewhere. Try again |
 | `resume_conflict` | HTTP 409: the session is being deleted. Try again |
 | `resume_session_deleted` | HTTP 409: the session was deleted while it was being resumed |
@@ -792,7 +795,7 @@ takes, the title, the last activity time and the folder id. Read-only. A row is
 listed only when `session_revive` would accept that session for this caller, so
 the same containment applies: same workspace, persistent memory mode (incognito
 and temporary sessions never appear), no app-scoped, channel-linked or mirrored
-sessions, no crew member DM threads or scheduled runs. An ownership-fenced caller
+sessions, no Bot DM threads or scheduled runs. An ownership-fenced caller
 sees only sessions it created, corroborated by the crew-log lineage as for a
 revive; with the log off such a caller gets an empty list, not an error. Live
 sessions are not listed; `chat_folder_tree` shows those.
@@ -810,7 +813,7 @@ exactly as after a person renames it by hand. Nothing else about the target
 changes, and a running turn keeps running.
 
 The caller may rename itself, or any session `session_stop` would let it act
-on. A crew member, a scheduled run, an owner-DM channel session and any
+on. A Bot, a scheduled run, an owner-DM channel session and any
 agent-created session reach only the sessions they created, so a person's own
 tabs are refused to them (`not_creator`). Archived, scheduled-run, incognito,
 app-scoped, channel-linked and mirrored sessions are refused with the same codes
@@ -881,12 +884,11 @@ The sidebar tree the person organizes their sessions in.
 | Tool | Arguments | What it does |
 |---|---|---|
 | `chat_folder_tree` | none | Every folder (id, human path, project dir, default agent, declared steering directories) with the live sessions nested under it, plus an `(unfiled)` group. Listed in **sidebar order**, not alphabetically |
-| `chat_folder_create` | `name` (required), `parent` | Create a folder. `parent` is an id or a `/`-separated path; missing segments are created (`mkdir -p`). Omit or pass `root` for top level. Creating never moves anything. An app agent or crew member may nest only under a folder it owns or the folder its own session is filed in. A same-name sibling it owns is reused; any other same-name sibling is refused `409 folder_name_exists` |
+| `chat_folder_create` | `name` (required), `parent` | Create a folder. `parent` is an id or a `/`-separated path; missing segments are created (`mkdir -p`). Omit or pass `root` for top level. Creating never moves anything. An app agent or Bot may nest only under a folder it owns or the folder its own session is filed in. A same-name sibling it owns is reused; any other same-name sibling is refused `409 folder_name_exists` |
 | `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded. A move into a parent that already holds a folder of the same name (trimmed, case-folded) is refused (`folder_name_exists`): rename one of them first |
 | `chat_folder_update` | `folder` (required), `name`, `icon`, `color` | Rename a folder, set its emoji icon, or set its palette color. Cannot set `project_dir`, `default_agent` or `steering_dirs`; for steering, `propose_change(kind="folder.steering")` asks the person on a change card |
 | `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
 | `chat_folder_delete` | `folder` (required) | Delete an **empty** folder **this session created**. Refused for the person's folders, and while it holds a subfolder, a live session or an archived session |
-| `chat_folder_file_self` | `folder` | File **this** session — the caller — into a folder. Writes only its own placement |
 
 Read `chat_folder_tree` before you move anything: it renders folders in the order
 the person actually sees, which is what makes a `before` / `after` anchor safe to
@@ -907,7 +909,7 @@ would be indistinguishable by path. It is metadata only. It cannot set
 fields: those settings reach
 every future session filed in the folder, changing its working directory, agent
 and memory boundary, or its standing instructions, so the person sets them in the
-folder settings. An app agent or crew member may update only a folder it created.
+folder settings. An app agent or Bot may update only a folder it created.
 Channel agents cannot call it, and neither can any agent in a session linked to a
 channel: a resumed `/sessions` pick, a channel mirror, a linked Slack thread, or a
 channel-born tab. A resumed conversation keeps the dashboard session's key, so
@@ -915,17 +917,15 @@ the folder endpoint checks those links rather than the key, using the same
 predicate that gates creating peer sessions, and while one
 exists the person renames folders from the sidebar instead.
 
-`chat_folder_file_self` is the verb a conductor wants: file yourself in the
-goal's folder first, then create each worker with
-`folder="<goal>/<worker agent>"`, and the person finds the conductor and every
-worker under one heading. It can write no placement but its own, which is why it
-is safe to grant where `chat_folder_move_session` is withheld.
+Dispatchers (conductors and Bots) get no folder tool without an approval,
+and their guidance does not use them: the person's folders are the person's to
+arrange. Ordinary agents keep every folder tool.
 
 Folder moves are metadata only: the session keeps its transcript, its model, and
 any running turn. Archived (history) sessions cannot be moved — bring one back
 with `session_revive` first.
 
-`chat_folder_delete` is how a conductor cleans up after its own work. It removes
+`chat_folder_delete` is how an agent cleans up after its own work. It removes
 only a folder that the calling session created and that has nothing in it.
 
 A folder created through an agent's MCP call records the creating session's key
@@ -939,7 +939,7 @@ before this field existed carry no mark, so no agent can delete them.
 The dashboard checks the mark, subfolders and live sessions in the same locked
 step that removes the folder, and refuses rather than unfiling anything. Empty
 the folder first with `chat_folder_move` and `chat_folder_move_session`. The
-dashboard refuses an app agent or a crew member outright.
+dashboard refuses an app agent or a Bot outright.
 
 ## Pinned order
 
@@ -958,7 +958,7 @@ never reordered follow in most-recent-activity order, and the first call
 stores that order for every one of them: the person's own sidebar sort lives in
 their browser, where the gateway cannot read it. The call only reorders: it
 does not pin, unpin, or move a session between folders. The order is the
-person's own preference, so an app agent, a crew member, or an agent in a
+person's own preference, so an app agent, a Bot, or an agent in a
 session a channel can reach is refused; the person can still reorder from the
 browser even when that session has a channel link.
 
@@ -1017,7 +1017,7 @@ column list is part of the person's own layout, shared by every session.
 
 `tag`, `column`, `before` and `after` take an id or an exact name. There is
 no delete or retag verb: removing a column or changing its filter removes a view
-the person built. An app agent and a crew member can list columns but not
+the person built. An app agent and a Bot can list columns but not
 write them; the `/api/chat/tag-columns` write endpoints refuse both.
 
 `session_move_to_column` gives the session the one status tag the column
@@ -1030,7 +1030,7 @@ status the person reserved or made add-only cannot be entered, and one it
 cannot remove cannot be left. If the session's tags change between the tool's
 read and its write, nothing is written and the tool asks you to call it again.
 `column` matches a column name case-insensitively. An app agent moves only
-its own sessions and a crew member only a session it owns or created.
+its own sessions and a Bot only a session it owns or created.
 
 ## Pins
 
@@ -1041,7 +1041,7 @@ its own sessions and a crew member only a session it owns or created.
 `session` takes the same slot key, `dashboard:<slot>` key or unique exact title
 as `chat_folder_move_session`. Asking for the state the session already has
 writes nothing and says so. `chat_folder_tree` marks pinned sessions
-`[pinned]`. An app agent pins only its own sessions and a crew member only a
+`[pinned]`. An app agent pins only its own sessions and a Bot only a
 session it owns or created; the `PATCH /api/chat/slots/<slot>/pin` endpoint
 enforces both. Archived sessions cannot be pinned.
 
@@ -1056,7 +1056,7 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `target_already_live` | session_revive only: the session is open already. The message carries its live key — address it directly |
 | `ambiguous_target` | The string matches more than one session across the three forms below. Address it by its session key |
 | `self_target` | A session cannot control itself. session_close and session_release are the exceptions: both accept the caller as the target |
-| `not_creator` | The caller is fenced to sessions it created itself (a crew member's DM slot, a scheduled run, and anything either of them created) |
+| `not_creator` | The caller is fenced to sessions it created itself (a Bot's DM slot, a scheduled run, and anything either of them created) |
 | `workspace_mismatch` | Peers must be in the same workspace — that is the memory boundary |
 | `ephemeral_target` | Incognito and temporary sessions are not addressable |
 | `app_scoped_target` | App-scoped sessions are not addressable, in either direction |
@@ -1076,7 +1076,7 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `caller_unidentified` | The calling session could not be resolved from the connection, so nothing was done |
 | `caller_changed_mid_read` | session_status: the calling session moved workspace while its roster was read. Call again |
 | `linked_session_caller` / `mirrored_caller` | session_create from a channel-linked or channel-mirrored session. A Discord or Telegram owner DM is exempt; the refusal names which fact withheld the exemption. After a gateway restart, send one message in that DM first |
-| `memory_delegation_denied` | HTTP 403: session_create named a crew member's agent the caller may not bind (a cron, a fenced deputy, a peer member, a member thread on the shared store naming a member with private memory). The member's memory binding cannot be changed in Settings. Re-send with `agent_kind: "template"` to run that name's shared template on your own memory (a `kirocrew-worker` needs no memory of its own), or ask the owner to make the create from their own tab. The tool reply says the same |
+| `memory_delegation_denied` | HTTP 403: session_create named a Bot's agent the caller may not bind (a cron, a fenced deputy, a peer member, a member thread on the shared store naming a member with private memory). The member's memory binding cannot be changed in Settings. Re-send with `agent_kind: "template"` to run that name's shared template on your own memory (a `kirocrew-worker` needs no memory of its own), or ask the owner to make the create from their own tab. The tool reply says the same |
 | `agent_kind_requires_agent` | `agent_kind` was given without `agent`. The namespace qualifies an explicit selection, not an inherited caller agent |
 | `invalid_agent_kind` | `agent_kind` is not `template`, the one value it takes |
 | `model_owner_only` | HTTP 403: `auto` and **Auto (Jev)** can only be picked by the owner from the model picker |
@@ -1134,10 +1134,10 @@ retry.
 
 | Knob | Default | Effect |
 |---|---|---|
-| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec, except crew member DM sessions and the owner's own-tab Conductor, which keep driving workers they created unless `agent.member_dispatch` is also off |
+| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec, except Bot DM sessions and the owner's own-tab Conductor, which keep driving workers they created unless `agent.member_dispatch` is also off |
 | `agent.session_manager_chain` | `false` | Let a session reach the whole line of sessions under it through `session_handoff`, and hand a closed manager's sessions up |
-| `agent.member_dispatch` | `true` | A crew member's DM session, and the Conductor in the owner's own dashboard tab, drive workers they created even when session control is off. Turn it off to put both back under the switch |
-| `agent.crew_panel` | `true` | A crew member publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |
+| `agent.member_dispatch` | `true` | A Bot's DM session, and the Conductor in the owner's own dashboard tab, drive workers they created even when session control is off. Turn it off to put both back under the switch |
+| `agent.crew_panel` | `true` | A Bot publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session
 creates (forks included), **10** folder creates, **10** tag creates, **10** board-column creates. Capacity ceilings sit behind
@@ -1181,7 +1181,7 @@ What carries over is **conversation only**:
 The giver's agent must mount `kirocrew-dashboard` (see the top of this page).
 The usual reach rules apply, because forking is a read of the taker: same
 workspace, a source that is not incognito, temporary, app-scoped or
-channel-linked, and a giver that is an eligible creator. A crew member's DM
+channel-linked, and a giver that is an eligible creator. A Bot's DM
 session reaches only sessions it created, so it cannot be the giver for an
 unrelated chat.
 

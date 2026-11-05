@@ -1,15 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { i18nT } from '../../i18n/t'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { ALL_UNAVAILABLE, type PeopleResponse } from '../../api/sharedCrewUi'
 import type { CrewModeResponse } from '../../api/sharedCrewMode'
 import { PeoplePanel } from './PeoplePanel'
 import { sharedCrewKeys } from '../../hooks/sharedCrew/sharedCrewSocket'
+import { tailscaleInvitesKey } from './TailscaleInvites'
 
 vi.mock('../../api/client', () => ({
-  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), tailscaleInvites: vi.fn(), sharedCrewSetPersonDisplay: vi.fn(), kirocrewConfig: vi.fn(), patchConfig: vi.fn() },
+  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), tailscaleInvites: vi.fn(), tailscaleRevokeInvite: vi.fn(), sharedCrewSetPersonDisplay: vi.fn(), kirocrewConfig: vi.fn(), patchConfig: vi.fn() },
 }))
 vi.mock('../../components/settingRef/useConfigSchema', () => {
   const schema = new Map([
@@ -54,11 +56,6 @@ function actionButtons() {
   return screen.queryAllByRole('button').filter(b => b.getAttribute('aria-label') !== 'More information')
 }
 
-/** The text of the ⓘ inside the element with this test id. */
-function tipText(testId: string) {
-  return screen.getByTestId(testId).querySelector('button[aria-label="More information"]')?.getAttribute('title') ?? ''
-}
-
 function mount() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(<QueryClientProvider client={qc}><PeoplePanel /></QueryClientProvider>)
@@ -84,6 +81,10 @@ const SHARED = {
   },
 }
 
+/** Capabilities, then People and mode, then the invite read: waits that span
+ *  that chain get this ceiling. */
+const OWNER_CHAIN_TIMEOUT_MS = 5000
+
 describe('PeoplePanel', () => {
   it('lists observed people apart from the directory, with sources and usage, read-only', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available', membership_link: 'tailscale_admin' })
@@ -100,7 +101,7 @@ describe('PeoplePanel', () => {
     expect(screen.queryByText('Assigned users')).toBeNull()
     expect(screen.queryByText('Who can connect')).toBeNull()
     expect(screen.queryByTestId('share-hero-manage')).toBeNull()
-    expect(tipText('people-tip')).toMatch(/remove them in Tailscale/)
+    expect(screen.queryByTestId('people-tip')).toBeNull()
     // Nothing on this surface manages membership.
     expect(actionButtons()).toHaveLength(0)
     expect(screen.queryByText(/add|remove|role|admin/i, { selector: 'button' })).toBeNull()
@@ -111,7 +112,7 @@ describe('PeoplePanel', () => {
     people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] })
     mount()
     expect(await screen.findByTestId('console-pointer')).toBeInTheDocument()
-    expect(tipText('people-tip')).toMatch(/cannot report how much work/)
+    expect(screen.queryByTestId('people-tip')).toBeNull()
   })
 
   it('shows a capabilities read failure with agent recovery, never unavailable attribution', async () => {
@@ -150,13 +151,26 @@ describe('PeoplePanel', () => {
     expect(screen.getByText(/runs as the same user as this Crew/)).toBeInTheDocument()
   })
 
-  it('notes when Tailscale was not running at start', async () => {
+  it('says in one inline line, with no tip icon, when Tailscale was not running at start', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'degraded', reasons: { attribution: 'daemon_not_found' } })
-    people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] })
+    people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: true, people: [] })
     mount()
-    await screen.findByTestId('people-tip')
-    expect(tipText('people-tip')).toMatch(/not running/i)
-    expect(screen.getByTestId('people-panel')).toBeInTheDocument()
+    const note = await screen.findByTestId('people-note')
+    expect(note).toHaveTextContent(/not running/i)
+    expect(screen.getAllByTestId('people-note')).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: 'More information' })).toBeNull()
+  })
+
+  it('says inline when this Crew cannot report work per person, and not when it can', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
+    people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [row('p_a', 'Ann')] })
+    const first = mount()
+    expect(await screen.findByTestId('people-note')).toHaveTextContent(/cannot report how much work/i)
+    first.unmount()
+    people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: true, people: [row('p_a', 'Ann')] })
+    mount()
+    expect(await screen.findByTestId('people-list')).toBeInTheDocument()
+    expect(screen.queryByTestId('people-note')).toBeNull()
   })
 
   it('lists teammates instead of the setup state once someone else has connected', async () => {
@@ -374,7 +388,6 @@ describe('PeoplePanel layout C', () => {
     expect(me.querySelector('[aria-label="Here now"]')).not.toBeNull()
     expect(me.querySelector('[data-testid="person-edit"]')).not.toBeNull()
     expect(screen.getByTestId('share-hero-here')).toHaveTextContent('1 here now')
-    expect(tipText('people-tip')).toMatch(/^To remove someone, remove them in Tailscale\./)
   })
 
   it('shows the setup state and no link while the listener is off', async () => {
@@ -388,16 +401,22 @@ describe('PeoplePanel layout C', () => {
     expect(screen.queryByTestId('share-hero-here')).toBeNull()
   })
 
-  it('offers Invite... to the owner, opens the dialog, and lists a pending invite dimmed with Revoke', async () => {
+  it('offers Invite... to the owner, opens the dialog, and lists a pending invite under Invites with a Sent tag and Remove', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
     modeApi.mockResolvedValue(modeBody('network'))
     invitesApi.mockResolvedValue(INVITES as never)
     mount()
-    const pending = await screen.findByTestId('invite-inv1')
-    expect(pending.className).toMatch(/opacity-60/)
-    expect(pending).toHaveTextContent('Revoke')
-    expect(pending).not.toHaveTextContent('Resend')
+    const pending = await screen.findByTestId('invite-inv1', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })
+    expect(within(pending).getByText('Sent')).toBeInTheDocument()
+    // Its own sub-heading, below the people it is not counted in.
+    expect(screen.getByTestId('panel-section-header')).toHaveTextContent('Invites1')
+    expect(screen.getByTestId('people-waiting')).toContainElement(pending)
+    expect(pending).not.toHaveTextContent('Waiting')
+    expect(pending).toHaveTextContent('Remove')
+    expect(pending).not.toHaveTextContent('Revoke')
+    // N counts people; the invite is not one yet.
+    expect(screen.getByText('People · 1')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('share-hero-invite'))
     expect(await screen.findByTestId('invite-dialog')).toBeInTheDocument()
     expect(screen.getByTestId('invite-form')).toBeInTheDocument()
@@ -422,7 +441,7 @@ describe('PeoplePanel layout C', () => {
     invitesApi.mockResolvedValue(INVITES as never)
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={qc}><PeoplePanel /></QueryClientProvider>)
-    expect(await screen.findByTestId('share-hero-invite')).toBeInTheDocument()
+    expect(await screen.findByTestId('share-hero-invite', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })).toBeInTheDocument()
     expect(screen.getByTestId('invite-inv1')).toBeInTheDocument()
     caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT, invites: { state: 'unavailable', reason: 'governance_pinned_off' } })
     await act(async () => { await qc.refetchQueries({ queryKey: sharedCrewKeys.capabilities }) })
@@ -436,9 +455,9 @@ describe('PeoplePanel layout C', () => {
     modeApi.mockResolvedValue(modeBody('network'))
     invitesApi.mockResolvedValue({ ...INVITES, connected: false, invites: [] } as never)
     mount()
-    fireEvent.click(await screen.findByTestId('share-hero-invite'))
+    fireEvent.click(await screen.findByTestId('share-hero-invite', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS }))
     const dialog = await screen.findByTestId('invite-dialog')
-    expect(dialog).toHaveTextContent('Connect a Tailscale API key first')
+    expect(dialog).toHaveTextContent('Connect a Tailscale API key first.')
     expect(screen.getByTestId('invite-key-input')).toBeInTheDocument()
     expect(screen.queryByTestId('invite-form')).toBeNull()
   })
@@ -520,7 +539,9 @@ describe('PeoplePanel layout C', () => {
     mount()
     fireEvent.click(await screen.findByTestId('person-edit'))
     fireEvent.change(await screen.findByTestId('person-edit-picture-input'), { target: { files: [new File(['x'], 'x.svg', { type: 'image/svg+xml' })] } })
-    expect(await screen.findByTestId('person-edit-hint')).toBeInTheDocument()
+    const hint = await screen.findByTestId('person-edit-hint')
+    expect(hint).toHaveAttribute('role', 'status')
+    expect(screen.getByRole('button', { name: i18nT('sharedCrew.edit_picture') })).toHaveAttribute('aria-describedby', hint.id)
     expect(api.sharedCrewSetPersonDisplay).not.toHaveBeenCalled()
   })
 
@@ -549,9 +570,6 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     row('p_c', 'Cleo', { last_seen_at: null, devices: 0 }),
   ]
 
-  // Capabilities, then People and mode, then the invite read: waits that span
-  // that chain get this ceiling.
-  const OWNER_CHAIN_TIMEOUT_MS = 5000
 
   async function mountOwner(over: Partial<PeopleResponse> = {}) {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
@@ -563,20 +581,28 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     return screen.getByTestId('share-hero')
   }
 
-  it('gives the owner two steps: share on Tailscale, then send the Crew link', async () => {
-    await mountOwner()
-    const share = screen.getByTestId('share-hero-step-share')
-    const send = screen.getByTestId('share-hero-step-send')
-    expect(share).toHaveTextContent('Share this machine on Tailscale')
-    expect(share).toContainElement(screen.getByTestId('share-hero-invite'))
-    expect(share).toContainElement(screen.getByTestId('share-hero-manage'))
-    expect(send).toHaveTextContent('Send them the Crew link')
+  it('gives the owner one Invite… entry beside the Tailscale link, with labels only', async () => {
+    const hero = await mountOwner()
+    const entry = screen.getByTestId('share-hero-invite')
+    expect(entry).toHaveTextContent('Invite…')
+    expect(screen.getAllByTestId('share-hero-invite')).toHaveLength(1)
+    expect(screen.getByTestId('share-hero-manage')).toBeInTheDocument()
     expect(screen.getByTestId('share-hero-link')).toHaveValue('http://100.64.0.1:5476/')
     expect(screen.getByTestId('share-hero-copy-message')).toHaveTextContent('Copy invite message')
     expect(screen.queryByTestId('share-hero-copy')).toBeNull()
-    // Two steps, nothing explaining them.
-    expect(screen.getByTestId('share-hero').querySelectorAll('ol > li')).toHaveLength(2)
-    expect(screen.getByTestId('share-hero').querySelector('details')?.textContent).toContain('crew.tail1234.ts.net')
+    // No numbered steps and no step prose.
+    expect(hero.querySelector('ol')).toBeNull()
+    expect(hero.textContent).not.toMatch(/Share this machine on Tailscale|Send them the Crew link/)
+    expect(hero.querySelector('details')?.textContent).toContain('crew.tail1234.ts.net')
+  })
+
+  it('opens no invite form until Invite… is chosen, and then only inside the dialog', async () => {
+    await mountOwner()
+    expect(screen.queryByTestId('invite-form')).toBeNull()
+    fireEvent.click(screen.getByTestId('share-hero-invite'))
+    const dialog = await screen.findByTestId('invite-dialog')
+    expect(within(dialog).getByTestId('invite-form')).toBeInTheDocument()
+    expect(screen.getAllByTestId('invite-form')).toHaveLength(1)
   })
 
   it('copies the invite message: owner name, IPv4 link, then the MagicDNS fallback, with the email line', async () => {
@@ -603,7 +629,10 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
       { id: 'l1', kind: 'link', email: '', multi_use: false, alias: '', avatar_id: '', created_at: 0, status: 'pending', accepted_login: '', invite_url: inviteUrl },
     ]) as never)
     mount()
+    // A link names nobody, so it is held in the invite dialog and not listed as a person.
+    fireEvent.click(await screen.findByTestId('share-hero-invite', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS }))
     await screen.findByTestId('invite-l1')
+    expect(screen.queryByTestId('people-list')?.querySelector('[data-testid="invite-l1"]') ?? null).toBeNull()
     fireEvent.click(screen.getByTestId('share-hero-copy-message'))
     await waitFor(() => expect(copy).toHaveBeenCalledTimes(1))
     const text = copy.mock.calls[0][0]
@@ -618,14 +647,14 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(await screen.findByTestId('share-hero-copy-message-error')).toHaveAttribute('role', 'alert')
   })
 
-  it('labels the owner row "You · Owner" and a never-seen sharee "Not joined"; others never seen carry no narration', async () => {
+  it('labels the owner row "You · Owner" and a never-seen sharee "Sent"; others never seen carry no narration', async () => {
     await mountOwner()
     const me = screen.getByTestId('person-p_me')
     expect(me).toHaveTextContent('You · Owner')
     expect(me).toHaveTextContent('Here now')
-    expect(screen.getByTestId('person-p_s')).toHaveTextContent('Not joined')
+    expect(screen.getByTestId('person-p_s')).toHaveTextContent('Sent')
     const cleo = screen.getByTestId('person-p_c')
-    expect(cleo).not.toHaveTextContent('Not joined')
+    expect(cleo).not.toHaveTextContent('Sent')
     expect(cleo).not.toHaveTextContent('Not seen')
     expect(cleo.querySelector('[data-testid="person-activity"]')?.textContent).toBe('p_c@example.test')
   })
@@ -709,6 +738,48 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(await screen.findByTestId('people-advanced-save-error')).toHaveAttribute('role', 'alert')
   })
 
+  it('keeps a typed number in its field when the save fails, and clears it once a save lands', async () => {
+    configApi.mockResolvedValue({ dashboard: { shared_crew: { principal_concurrency: 2 } } } as never)
+    patchApi.mockRejectedValueOnce(new Error('nope'))
+    await mountOwner()
+    const input = await screen.findByTestId('people-advanced-principal_concurrency')
+    await waitFor(() => expect(input).toHaveValue(2))
+
+    fireEvent.change(input, { target: { value: '6' } })
+    fireEvent.blur(input)
+    expect(await screen.findByTestId('people-advanced-save-error')).toHaveAttribute('role', 'alert')
+    await waitFor(() => expect(input).not.toBeDisabled())
+    // The failed number is still there to retry, not the stored 2.
+    expect(input).toHaveValue(6)
+
+    patchApi.mockResolvedValueOnce({} as never)
+    configApi.mockResolvedValue({ dashboard: { shared_crew: { principal_concurrency: 6 } } } as never)
+    fireEvent.blur(input)
+    await waitFor(() => expect(patchApi).toHaveBeenLastCalledWith('dashboard.shared_crew.principal_concurrency', 6))
+    await waitFor(() => expect(input).not.toBeDisabled())
+    expect(input).toHaveValue(6)
+  })
+
+  it('drops a failed number once another control saves, so it never shows without its error', async () => {
+    configApi.mockResolvedValue({ dashboard: { shared_crew: { principal_concurrency: 2, admission_enabled: false } } } as never)
+    patchApi.mockRejectedValueOnce(new Error('nope'))
+    await mountOwner()
+    const input = await screen.findByTestId('people-advanced-principal_concurrency')
+    await waitFor(() => expect(input).toHaveValue(2))
+    fireEvent.change(input, { target: { value: '6' } })
+    fireEvent.blur(input)
+    expect(await screen.findByTestId('people-advanced-save-error')).toBeInTheDocument()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    expect(input).toHaveValue(6)
+
+    patchApi.mockResolvedValueOnce({} as never)
+    fireEvent.click(screen.getByRole('switch', { name: 'Fair admission' }))
+    await waitFor(() => expect(patchApi).toHaveBeenLastCalledWith('dashboard.shared_crew.admission_enabled', true))
+    await waitFor(() => expect(screen.queryByTestId('people-advanced-save-error')).toBeNull())
+    // The number that never saved is gone with its error; the stored 2 shows.
+    expect(screen.getByTestId('people-advanced-principal_concurrency')).toHaveValue(2)
+  })
+
   it('locks every Advanced control through a save and its config read-back', async () => {
     const stale = { dashboard: { shared_crew: { admission_enabled: false } } }
     const accepted = { dashboard: { shared_crew: { admission_enabled: true } } }
@@ -771,5 +842,224 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     invitesApi.mockResolvedValue(connected() as never)
     mount()
     expect(await screen.findByTestId('people-advanced')).toBeInTheDocument()
+  })
+})
+
+describe('People: one row per person, one invite entry', () => {
+  const EMPTY: PeopleResponse = { schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] }
+  const DIRECT = {
+    state: 'active' as const, reason: '', method: 'localapi_unix', owner_login: 'owner@example.test',
+    urls: ['http://100.64.0.1:5476/'], addresses: ['100.64.0.1'],
+  }
+  const invite = (id: string, over: Record<string, unknown> = {}) => ({
+    id, transport: 'tailscale', kind: 'email' as const, email: 'a@example.test', multi_use: false, alias: '', avatar_id: '',
+    created_at: 1_700_000_000, status: 'pending' as const, accepted_login: '', ...over,
+  })
+  const connected = (invites: unknown[]) => ({
+    connected: true, tailnet: 'example', key_expires: '', key_expires_soon: false, key_expired: false, admin_share_url: '', invites,
+  })
+  const kyleLogin = { principal: { id: 'p_k', kind: 'human' as const, display: { name: 'Kyle', login: 'kyleseaman@gmail.com', captured_at: null } } }
+  /** Kyle, connected but not admitted by any invite. */
+  const kyleSeen = () => row('p_k', 'Kyle', kyleLogin)
+  /** Kyle, a current member: the invite he came in by is bound to his row. */
+  const kyleMember = (inviteId = 'i0') => row('p_k', 'Kyle', { ...kyleLogin, member: { alias: '', avatar_id: '', profile_pic_url: '', invite_id: inviteId } })
+  const owner = () => row('p_o', 'Owner', { is_viewer: true, is_owner: true })
+
+  async function mountNetwork(rows: PeopleResponse['people'], invites: unknown[], qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
+    people.mockResolvedValue({ ...EMPTY, people: rows })
+    modeApi.mockResolvedValue(modeBody('network'))
+    invitesApi.mockResolvedValue(connected(invites) as never)
+    render(<QueryClientProvider client={qc}><PeoplePanel /></QueryClientProvider>)
+    await screen.findByTestId('share-hero-invite', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })
+    return qc
+  }
+
+  it('lists a pending invite the server still holds for a current member, and it can be removed', async () => {
+    const revokeApi = vi.mocked(api.tailscaleRevokeInvite)
+    revokeApi.mockResolvedValue({ revoked: 'i1', member_removed: false })
+    await mountNetwork([owner(), kyleMember()], [invite('i1', { email: 'KyleSeaman@Gmail.com' })])
+    await screen.findByTestId('person-p_k')
+    // The server deletes a superseded invite in sync; one that is still returned is live.
+    const pending = await screen.findByTestId('invite-i1')
+    expect(screen.getByText('People · 2')).toBeInTheDocument()
+    fireEvent.click(within(pending).getByTestId('invite-revoke'))
+    fireEvent.click(within(pending).getByTestId('invite-revoke-confirm'))
+    await waitFor(() => expect(revokeApi).toHaveBeenCalledWith('i1'))
+  })
+
+  it('keeps a live invite listed when its address is only a seen or named row, and counts people only', async () => {
+    await mountNetwork(
+      [owner(), kyleSeen(), row('p_s', 'Sam', { sources: ['tailscale_share' as const], principal: { id: 'p_s', kind: 'human' as const, display: { name: 'Sam', login: 'sam@example.test', captured_at: null } } })],
+      [invite('i1', { email: 'kyleseaman@gmail.com' }), invite('i2', { email: 'SAM@example.test' }), invite('i3', { email: 'new@example.test' })],
+    )
+    for (const id of ['i1', 'i2', 'i3']) expect(within(await screen.findByTestId(`invite-${id}`)).getByText('Sent')).toBeInTheDocument()
+    expect(screen.getByText('People · 3')).toBeInTheDocument()
+    // The invites are counted under their own heading, never in People · N.
+    expect(screen.getByTestId('panel-section-header')).toHaveTextContent('Invites3')
+    expect(within(screen.getByTestId('people-list')).getAllByRole('listitem')).toHaveLength(3)
+    expect(within(screen.getByTestId('people-waiting')).getAllByRole('listitem')).toHaveLength(3)
+  })
+
+  it('turns an Invites row into the person once they are a member', async () => {
+    const qc = await mountNetwork([owner()], [invite('i1', { email: 'kyleseaman@gmail.com' })])
+    expect(await screen.findByTestId('invite-i1')).toBeInTheDocument()
+    expect(screen.getByText('People · 1')).toBeInTheDocument()
+    people.mockResolvedValue({ ...EMPTY, people: [owner(), kyleMember('i1')] })
+    invitesApi.mockResolvedValue(connected([invite('i1', { email: 'kyleseaman@gmail.com', status: 'accepted', accepted_login: 'kyleseaman@gmail.com' })]) as never)
+    await act(async () => { await qc.refetchQueries({ queryKey: sharedCrewKeys.people }); await qc.refetchQueries({ queryKey: sharedCrewKeys.all }) })
+    await screen.findByTestId('person-p_k')
+    expect(screen.queryByTestId('invite-i1')).toBeNull()
+    expect(screen.getByText('People · 2')).toBeInTheDocument()
+  })
+
+  it('refreshes People when a poll shows an invite accepted, so the person is there when the invite row goes', async () => {
+    const qc = await mountNetwork([owner()], [invite('i1', { email: 'kyleseaman@gmail.com' })])
+    expect(await screen.findByTestId('invite-i1')).toBeInTheDocument()
+    const reads = people.mock.calls.length
+    invitesApi.mockResolvedValue(connected([invite('i1', { email: 'kyleseaman@gmail.com', status: 'accepted', accepted_login: 'kyleseaman@gmail.com' })]) as never)
+    people.mockResolvedValue({ ...EMPTY, people: [owner(), kyleMember('i1')] })
+    await act(async () => { await qc.refetchQueries({ queryKey: tailscaleInvitesKey }) })
+    await screen.findByTestId('person-p_k')
+    expect(people.mock.calls.length).toBeGreaterThan(reads)
+    expect(screen.queryByTestId('invite-i1')).toBeNull()
+  })
+
+  it('does not list a reusable link as a person; the dialog holds it', async () => {
+    await mountNetwork([owner(), kyleSeen()], [invite('l1', { kind: 'link', email: '', multi_use: true, status: 'accepted' })])
+    await screen.findByTestId('person-p_k')
+    expect(screen.queryByTestId('invite-l1')).toBeNull()
+    expect(screen.getByText('People · 2')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('share-hero-invite'))
+    expect(await within(await screen.findByTestId('invite-links')).findByTestId('invite-l1')).toHaveTextContent('Reusable link')
+  })
+
+  it('offers the owner Remove on a person who came in by a single-use invite', async () => {
+    const revokeApi = vi.mocked(api.tailscaleRevokeInvite)
+    revokeApi.mockResolvedValue({ revoked: 'i0', member_removed: true })
+    await mountNetwork([owner(), kyleMember('i0')], [invite('i0', { status: 'accepted', accepted_login: 'kyleseaman@gmail.com', email: 'kyleseaman@gmail.com' })])
+    const kyle = await screen.findByTestId('person-p_k')
+    expect(within(kyle).queryByTestId('person-remove')).toBeNull()
+    expect(within(kyle).getByTestId('invite-revoke')).toHaveTextContent('Remove')
+    expect(kyle).not.toHaveTextContent('Revoke')
+    fireEvent.click(within(kyle).getByTestId('invite-revoke'))
+    expect(revokeApi).not.toHaveBeenCalled()
+    expect(within(kyle).getByTestId('invite-revoke-confirm')).toHaveTextContent('Yes, remove')
+    fireEvent.click(within(kyle).getByTestId('invite-revoke-confirm'))
+    await waitFor(() => expect(revokeApi).toHaveBeenCalledWith('i0'))
+    expect(within(screen.getByTestId('person-p_o')).queryByTestId('invite-revoke')).toBeNull()
+  })
+
+  it('links a member who came in by a reusable link to the Tailscale users page, never revoking the link', async () => {
+    await mountNetwork(
+      [owner(), row('p_m', 'Mia', { principal: { id: 'p_m', kind: 'human' as const, display: { name: 'Mia', login: 'mia@example.test', captured_at: null } }, member: { alias: '', avatar_id: '', profile_pic_url: '', invite_id: 'l1' } })],
+      [invite('l1', { kind: 'link', email: '', multi_use: true, status: 'accepted' })],
+    )
+    const mia = await screen.findByTestId('person-p_m')
+    const link = within(mia).getByTestId('person-remove')
+    expect(link).toHaveAttribute('href', 'https://login.tailscale.com/admin/users')
+    expect(link).toHaveTextContent('Remove in Tailscale')
+    expect(within(mia).queryByTestId('invite-revoke')).toBeNull()
+    expect(within(screen.getByTestId('person-p_o')).queryByTestId('person-remove')).toBeNull()
+  })
+
+  it('offers no Remove on a row that is not someone Tailscale shares with: merely seen, a session creator, or only named by a display record', async () => {
+    await mountNetwork([owner(), kyleSeen(), row('p_c', 'Cleo', { sources: ['session_creator' as const], last_seen_at: null }), row('p_d', 'Dee', { member: { alias: 'Dee', avatar_id: '', profile_pic_url: '' } })], [])
+    await screen.findByTestId('person-p_k')
+    expect(screen.queryByTestId('person-remove')).toBeNull()
+    expect(screen.queryByTestId('invite-revoke')).toBeNull()
+  })
+
+  it('names the person in the Remove confirm, in plain consequences', async () => {
+    await mountNetwork([owner(), kyleMember('i0')], [invite('i0', { status: 'accepted', accepted_login: 'kyleseaman@gmail.com', email: 'kyleseaman@gmail.com' })])
+    const kyle = await screen.findByTestId('person-p_k')
+    fireEvent.click(within(kyle).getByTestId('invite-revoke'))
+    expect(within(kyle).getByText('Kyle loses access.')).toBeInTheDocument()
+    expect(kyle).not.toHaveTextContent('Access follows Tailscale rules')
+  })
+
+  it('keeps an accepted share removable under Invites until its person has a row', async () => {
+    const qc = await mountNetwork([owner()], [invite('i0', { status: 'accepted', accepted_login: 'kyleseaman@gmail.com', email: 'kyleseaman@gmail.com' })])
+    const share = await screen.findByTestId('invite-i0')
+    expect(share).toHaveTextContent('kyleseaman@gmail.com')
+    expect(share).toHaveTextContent('Accepted, not connected yet')
+    expect(within(share).queryByText('Sent')).toBeNull()
+    expect(share).toHaveTextContent('Remove')
+    expect(screen.getByText('People · 1')).toBeInTheDocument()
+    people.mockResolvedValue({ ...EMPTY, people: [owner(), kyleMember('i0')] })
+    await act(async () => { await qc.refetchQueries({ queryKey: sharedCrewKeys.people }) })
+    await screen.findByTestId('person-p_k')
+    expect(screen.queryByTestId('invite-i0')).toBeNull()
+    expect(within(screen.getByTestId('person-p_k')).getByTestId('invite-revoke')).toBeInTheDocument()
+  })
+
+  it('offers a teammate no Remove', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_o', 'Owner', { is_owner: true }), row('p_me', 'Pat', { is_viewer: true }), kyleSeen()] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    mount()
+    await screen.findByTestId('person-p_k')
+    expect(screen.queryByTestId('person-remove')).toBeNull()
+    expect(screen.queryByTestId('invite-revoke')).toBeNull()
+  })
+
+  it('says when the person who got in used a different address than the one invited', async () => {
+    await mountNetwork(
+      [owner(), kyleMember('i0')],
+      [invite('i0', { email: 'kyle@work.example', status: 'accepted', accepted_login: 'kyleseaman@gmail.com' })],
+    )
+    expect(await screen.findByTestId('person-other-account')).toHaveTextContent('Invited as kyle@work.example, accepted with another account.')
+  })
+
+  it('stays quiet when they came in under the address invited', async () => {
+    await mountNetwork(
+      [owner(), kyleMember('i0')],
+      [invite('i0', { email: 'KyleSeaman@gmail.com', status: 'accepted', accepted_login: 'kyleseaman@gmail.com' })],
+    )
+    await screen.findByTestId('person-p_k')
+    expect(screen.queryByTestId('person-other-account')).toBeNull()
+  })
+
+  it('keeps the edit button out of the row while the Remove confirm shows, so a row never holds three buttons', async () => {
+    await mountNetwork(
+      [owner(), { ...kyleMember('i0'), tailscale_user_id: '2' }],
+      [invite('i0', { status: 'accepted', accepted_login: 'kyleseaman@gmail.com', email: 'kyleseaman@gmail.com' })],
+    )
+    const kyle = await screen.findByTestId('person-p_k')
+    expect(within(kyle).getByTestId('person-edit')).toBeInTheDocument()
+    fireEvent.click(within(kyle).getByTestId('invite-revoke'))
+    expect(within(kyle).queryByTestId('person-edit')).toBeNull()
+    expect(within(kyle).getAllByRole('button')).toHaveLength(2)
+  })
+
+  it('personal mode lists an unused email invite under the entry, still removable', async () => {
+    caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
+    people.mockResolvedValue(EMPTY)
+    invitesApi.mockResolvedValue(connected([invite('i1', { email: 'new@example.test' }), invite('l1', { kind: 'link', email: '' })]) as never)
+    mount()
+    const waiting = await screen.findByTestId('people-waiting', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })
+    expect(within(within(waiting).getByTestId('invite-i1')).getByText('Sent')).toBeInTheDocument()
+    expect(within(waiting).getByTestId('invite-i1')).toHaveTextContent('Remove')
+    expect(within(waiting).queryByTestId('invite-l1')).toBeNull()
+  })
+
+  it('has one Invite… entry on the page, and the form only in its dialog', async () => {
+    await mountNetwork([owner(), kyleMember()], [invite('i2', { email: 'qq@example.test' })])
+    expect(screen.getAllByRole('button', { name: /^Invite…/ })).toHaveLength(1)
+    expect(screen.queryByTestId('tailscale-invites')).toBeNull()
+    expect(screen.queryByTestId('invite-form')).toBeNull()
+  })
+
+  it('a Crew in personal mode offers the same single Invite… entry', async () => {
+    caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
+    people.mockResolvedValue(EMPTY)
+    invitesApi.mockResolvedValue(connected([]) as never)
+    mount()
+    expect(await screen.findByTestId('share-hero-invite', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })).toBeInTheDocument()
+    expect(screen.getAllByTestId('share-hero-invite')).toHaveLength(1)
+    expect(screen.queryByTestId('tailscale-invites')).toBeNull()
+    expect(screen.queryByTestId('invite-form')).toBeNull()
+    fireEvent.click(screen.getByTestId('share-hero-invite'))
+    expect(await screen.findByTestId('invite-form')).toBeInTheDocument()
   })
 })

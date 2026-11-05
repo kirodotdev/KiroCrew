@@ -40,6 +40,9 @@ from kiro_crew.apps.manifest_containment import (  # noqa: F401
 from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _COMMAND_AGENT_RE,
     _COMMAND_SLUG_RE,
+    _COMPOSER_ACTION_ICON_RE,
+    _COMPOSER_ACTION_KEYS,
+    _COMPOSER_ACTION_POPOVER,
     _FILE_MENU_KINDS,
     _HOST_RE,
     _MAX_ARGUMENT_HOSTS,
@@ -47,33 +50,63 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_FILE_MENU_ITEMS_PER_APP,
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
+    _MAX_LINK_OPEN_HOSTS,
     _MAX_LINK_PREVIEW_HOSTS,
+    _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
+    _MAX_SELECTION_TITLE,
     _MAX_TITLE,
+    _MESSAGE_ACTION_KEYS,
+    _MESSAGE_ACTION_POPOVER_HEIGHT,
+    _MESSAGE_ACTION_POPOVER_WIDTH,
     _PANEL_TAB_ID_RE,
+    _POPOVER_KEYS,
+    _SELECTION_ICON_RE,
+    _SELECTION_POPOVER_HEIGHT,
+    _SELECTION_POPOVER_WIDTH,
     _SESSION_CONTROL_ID_RE,
     _SESSION_CONTROL_STATUS_PATH_RE,
     _TEXT_PATTERN_FLAGS_RE,
     _TEXT_PATTERN_KEYS,
     ARGUMENT_TOKEN,
     FILE_MENU_SURFACES,
+    MAX_COMPOSER_ACTION_STRING,
+    MAX_COMPOSER_ACTION_TITLE,
+    MAX_COMPOSER_ACTIONS_PER_APP,
+    MAX_LINK_OPEN_PER_APP,
     MAX_LINK_PREVIEW_TEXT_PATTERN_LEN,
     MAX_LINK_PREVIEW_TEXT_PATTERNS,
     MAX_LINK_PREVIEWS_PER_APP,
+    MAX_MESSAGE_ACTION_CHARS,
+    MAX_MESSAGE_ACTIONS_PER_APP,
+    MAX_SELECTION_ACTIONS_PER_APP,
+    MAX_SELECTION_TEXT,
     MAX_SESSION_CONTROLS_PER_APP,
+    MESSAGE_ACTION_FORMATS,
+    MESSAGE_ACTION_ROLES,
+    SELECTION_EFFECTS,
+    SELECTION_SOURCES,
     CommandArgument,
     CommandContribution,
+    ComposerActionConfig,
     Contributes,
     FileMenuItemConfig,
     FileMenuWhen,
+    LinkOpenConfig,
     LinkPreviewConfig,
+    MessageActionConfig,
     PanelTabConfig,
+    SelectionActionConfig,
     SessionControlContribution,
+    _int_field,
     _mirrored_len,
+    _name_list,
     _normalize_status_path,
+    _strict_int,
 )
 from kiro_crew.apps.manifest_names import (  # noqa: F401
+    APP_NAME_MAX_LENGTH,
     KEBAB_RE,
     RESERVED_APP_NAME_CODE,
     RESERVED_APP_NAMES,
@@ -86,9 +119,17 @@ from kiro_crew.apps.manifest_names import (  # noqa: F401
 )
 from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _CHANNEL_PRIORITIES,
+    _L10N_QUOTED_CHARS,
+    _L10N_QUOTED_KEYS,
     _OVERLAY_SLUG_RE,
+    L10N_LOCALE_RE,
+    L10N_TEXT_CAPS,
     LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT,
     LIFECYCLE_SCRIPT_TIMEOUT_MAX,
+    MAX_L10N_HIGHLIGHT_CHARS,
+    MAX_L10N_HIGHLIGHTS,
+    MAX_L10N_LOCALES,
+    MAX_L10N_WARNINGS,
     MAX_NOTIFICATION_CHANNELS,
     BackendConfig,
     CapabilityDependencies,
@@ -96,6 +137,8 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     CronEntry,
     Dependencies,
     HooksConfig,
+    L10nConfig,
+    L10nEntry,
     NotificationChannel,
     NotificationsConfig,
     Permissions,
@@ -107,11 +150,14 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     UIPage,
     UISidebar,
     _granted_list,
+    _l10n_quoted,
+    _sidebar_order,
     clamp_lifecycle_timeout,
     lifecycle_timeout_error,
     lifecycle_timeout_seconds,
     logger,
 )
+from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
 
@@ -350,6 +396,7 @@ _KNOWN_FIELDS = frozenset(
         "publishProvider",
         "notifications",
         "contributes",
+        "l10n",
     }
 )
 
@@ -423,6 +470,9 @@ class AppManifest:
     # ``extra`` is by definition the un-checked bucket. Being a known field is what
     # makes ``validate()`` see it on every parse.
     contributes: Contributes = field(default_factory=Contributes)
+
+    # --- Listing copy per locale (content, never trust; see L10nConfig) ---
+    l10n: L10nConfig = field(default_factory=L10nConfig)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -520,6 +570,30 @@ class AppManifest:
             refusal = path_refusal(preview.entry)
             if refusal:
                 report_path(refusal, f"contributes.linkPreviews entry {refusal}: {preview.entry!r}")
+        # A message-action entry is imported by the same frame bootstrap.
+        for action in self.contributes.messageActions:
+            refusal = path_refusal(action.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
+                )
+        for link_open in self.contributes.linkOpen:
+            refusal = path_refusal(link_open.entry)
+            if refusal:
+                report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
+        # A composer-action entry is imported by the same frame bootstrap.
+        for composer in self.contributes.composerActions:
+            refusal = path_refusal(composer.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.composerActions entry {refusal}: {composer.entry!r}"
+                )
+        for selection in self.contributes.selectionActions:
+            refusal = path_refusal(selection.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.selectionActions entry {refusal}: {selection.entry!r}"
+                )
 
         # UI page validation
         for page in self.ui.pages:
@@ -757,6 +831,13 @@ class AppManifest:
             # A link-preview `entry` is an ESM module the dashboard imports and runs
             # in its own origin, like a panel tab's: same reason to sign it.
             or self.contributes.linkPreviews
+            # A message action's roles and format decide which text the app is handed.
+            or self.contributes.messageActions
+            # A link-open `entry` is the same kind of module, and `hosts` decides which
+            # clicked links the app is handed.
+            or self.contributes.linkOpen
+            or self.contributes.composerActions
+            or self.contributes.selectionActions
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -892,6 +973,12 @@ class AppManifest:
             # Included only when non-empty so manifests signed before platform was
             # covered keep producing the identical payload.
             body["platform"] = platform_d
+        publish_provider_d = self.publishProvider.to_dict()
+        if publish_provider_d:
+            # `endpoint` is where the artifact page POSTs the reader's artifact, like the
+            # signed `contributes.fileMenuItems[].endpoint`. Non-empty only, so manifests
+            # that never declared it keep producing the identical payload.
+            body["publishProvider"] = publish_provider_d
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------
@@ -955,6 +1042,9 @@ class AppManifest:
         contrib_d = self.contributes.to_dict()
         if contrib_d:
             d["contributes"] = contrib_d
+        l10n_d = self.l10n.to_dict()
+        if l10n_d:
+            d["l10n"] = l10n_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -975,6 +1065,12 @@ class AppManifest:
     def from_dict(cls, data: dict[str, Any]) -> AppManifest:
         """Parse from dict, preserving unknown fields in ``extra``."""
         extra = {k: v for k, v in data.items() if k not in _KNOWN_FIELDS}
+        if "links" in extra:
+            # Store-page links stay in ``extra`` (display copy, outside the signed
+            # body), but only the entries ``sanitize_links`` keeps get that far.
+            links = sanitize_links(extra.pop("links"), app_name=str(data.get("name", "")))
+            if links:
+                extra["links"] = links
 
         config_keys_raw = data.get("config_keys", [])
         if not isinstance(config_keys_raw, list):
@@ -1092,6 +1188,7 @@ class AppManifest:
             publishProvider=publish_provider,
             notifications=notifications,
             contributes=contributes,
+            l10n=L10nConfig.from_value(data.get("l10n")),
             tags=[
                 str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
             ],

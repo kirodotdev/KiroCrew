@@ -34,6 +34,7 @@ import re
 import sys
 from pathlib import Path
 
+import composition_contract_checks
 import pytest
 from source_corpus import repo_files_named, repo_root
 from test_link_screen_hold_pin import SCREENS
@@ -255,7 +256,7 @@ _LOADER_SIGNATURES = {
     "credit_skill_reads": "(self, keys: 'list[str]') -> 'None'",
     "delete_skill": "(self, name: 'str') -> 'bool'",
     "dismiss_all_pending": "(self) -> 'int'",
-    "dismiss_pending_skill": "(self, slug: 'str') -> 'bool'",
+    "dismiss_pending_skill": "(self, slug: 'str', content_sha256: 'str | None' = None) -> 'bool'",
     "dismiss_pending_slugs": "(self, slugs: 'list[str]') -> 'int'",
     "find_similar": "(self, description: 'str', threshold: 'float' = 0.85, *, exclude: 'str' = '') -> 'str | None'",
     "get_always_skills": "(self, project_dir: 'str | Path | None' = None) -> 'list[str]'",
@@ -304,7 +305,7 @@ AUTO_SKILL_NAMESPACE AUTO_SKILL_SOURCE_VALUE AUTO_SLUG_CLAIM_LOCK_NAME
 AUTO_SLUG_CLAIM_LOCK_TIMEOUT_SECS AutoSkillProvenance CRON_SOURCE_DIVERGED
 CRON_SOURCE_IN_SYNC CRON_SOURCE_UNVERIFIABLE ClaimRefusal CronScriptSource
 InstalledSkillCurrency MAX_SKILL_VERSIONS PINNED_SKILL_BODIES_CAP PROJECT_SKILL_BODY_CAP
-PendingApprovalRefused RETIRED_CONDUCTOR_SKILL_SHA256 SKILLS_DIR_NAME
+PendingApprovalRefused PendingDismissRefused RETIRED_CONDUCTOR_SKILL_SHA256 SKILLS_DIR_NAME
 SKILL_INSTALL_BEHIND SKILL_INSTALL_EDITED SKILL_INSTALL_IN_SYNC
 SKILL_INSTALL_UNVERIFIABLE SkillContextCapacityError SkillsLoader VERSIONS_DIRNAME
 _AUTO_NAME_PATTERN _BUILTIN_SKILLS_DIR _CATALOG_READ_BATCH _CATALOG_READ_WORKERS
@@ -435,9 +436,10 @@ def _sibling_name_imports(source: str) -> list[str]:
     return hits
 
 
-class TestSurface:
-    def test_the_runtime_package_holds_exactly_the_composed_modules(self) -> None:
-        assert set(_runtime_sources()) == RUNTIME_MODULES
+class TestSurface(
+    composition_contract_checks.TheRuntimePackageHoldsExactlyTheComposedModules,
+    composition_contract_checks.ThePackageShipsWithTheWheel,
+):
 
     def test_every_loader_member_keeps_its_name_and_kind(self) -> None:
         current: dict[str, list[str]] = {}
@@ -501,24 +503,16 @@ class TestSurface:
         public += [name for name in _IMPORTED_KIRO_CREW_NAMES if not name.startswith("_")]
         assert [name for name in public if not hasattr(probe, name)] == []
 
-    def test_the_package_ships_with_the_wheel(self) -> None:
-        """``packages = find:`` (not ``find_namespace:``) only ships a directory that
-        carries an ``__init__.py``; an editable install would import it anyway."""
-        import configparser
-
-        config = configparser.ConfigParser()
-        config.read(FACADE_PATH.parents[2] / "setup.cfg", encoding="utf-8")
-        assert config.get("options", "packages").strip() == "find:"
-        assert config.get("options.packages.find", "where").strip() == "src"
-        assert (RUNTIME_DIR / "__init__.py").is_file()
-
 
 #: Every spelling a test uses to reach the facade module: ``import kiro_crew.skills``
 #: (aliased or not) and ``from kiro_crew import ..., skills, ...``.
 _MENTIONS_THE_FACADE = re.compile(r"kiro_crew\.skills\b|from kiro_crew import [^\n]*\bskills\b")
 
 
-class TestPlacement:
+class TestPlacement(
+    composition_contract_checks.NoRuntimeModuleReadsASeamAsABareGlobal,
+    composition_contract_checks.NoRuntimeModuleDefinesAnAsyncFunction,
+):
     """The rules that keep a facade patch effective once the code has moved."""
 
     def test_the_facade_imports_every_runtime_module_when_it_loads(self) -> None:
@@ -689,14 +683,6 @@ class TestPlacement:
                     hits.append(f"{node.lineno}: {node.id}")
         return sorted(hits, key=lambda hit: (int(hit.split(":")[0]), hit))
 
-    def test_no_runtime_module_reads_a_seam_as_a_bare_global(self) -> None:
-        offenders = {
-            stem: hits
-            for stem, source in _runtime_sources().items()
-            if (hits := self._bare_seam_loads(source))
-        }
-        assert offenders == {}
-
     def test_the_seam_scan_catches_a_planted_bare_read(self) -> None:
         planted = (
             "def f(loader, path: 'validate_file_path') -> 'sel':\n"
@@ -813,12 +799,6 @@ class TestPlacement:
             module = _runtime_module(stem)
             if "logger" in vars(module):
                 assert module.logger is logging.getLogger(FACADE_LOGGER)
-
-    def test_no_runtime_module_defines_an_async_function(self) -> None:
-        for stem, source in _runtime_sources().items():
-            assert not [
-                n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.AsyncFunctionDef)
-            ], stem
 
     def test_no_runtime_module_anchors_a_path_on_its_own_file(self) -> None:
         """``Path(__file__).parent`` in the facade is the ``kiro_crew`` package; in a

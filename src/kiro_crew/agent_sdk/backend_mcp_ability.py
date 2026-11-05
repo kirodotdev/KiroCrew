@@ -118,7 +118,7 @@ ON_CARD_CONCERNS: Tuple[str, ...] = (
 #:
 #: Read by the completeness test, so an entry here is a recorded decision rather
 #: than an omission -- the same arrangement as ``backend_cards.OFF_CARD_SETS``, and
-#: it exists because these two would otherwise put a false claim in front of a
+#: it exists because the first two would otherwise put a false claim in front of a
 #: reader: every mirror rules them WITHHELD, and rendering that verbatim would say
 #: the agent never receives its own instructions.
 OFF_CARD_CONCERNS: Mapping[str, str] = {
@@ -136,6 +136,14 @@ OFF_CARD_CONCERNS: Mapping[str, str] = {
         "file:// steering is not loaded from the spec, and that is told where it applies, "
         "as a session-start notice naming the custom agent's entries "
         "(providers.mirrors.base.RESOURCES_NO_READER)"
+    ),
+    "TOOLS_SETTINGS": (
+        "no mirrored harness applies toolsSettings (its subagent.availableAgents aside, "
+        "which Crew's spawn gate reads on every backend, and claude's shell and write "
+        "allowlists, which Crew's gate applies), so every mirror line would read nearly "
+        "the same and tell a reader choosing between them nothing; what reaches the "
+        "person who wrote the field is a session-start notice naming what of it goes "
+        "unapplied, on every mirrored backend"
     ),
 }
 
@@ -272,7 +280,10 @@ def _dispositions(backend: str) -> Mapping[str, str] | None:
     """Card id -> disposition value for every concern *backend*'s mirror rules on.
 
     Empty for every kind but ``mirror``: a mirror is what performs the projection, so
-    it is the only kind that can answer per concern.
+    it is the only kind that can answer per concern. One exception, a ``broker-only``
+    harness Crew does not fire spec hooks for (pi): no mirror hands it the spec, and
+    Crew's turn loop does not run the ``hooks`` field there, so that one concern is
+    ruled ``withheld`` (:func:`_broker_only_dispositions`).
 
     ``None`` is the third answer and it is not the same as ``{}``: the rulings could
     not be READ. An empty map says this harness withholds nothing, which is a claim;
@@ -286,13 +297,34 @@ def _dispositions(backend: str) -> Mapping[str, str] | None:
 
         mirror = mirror_for(backend)
         if mirror is None:
-            return {}
+            return _broker_only_dispositions(backend)
         return {
             concern_id(concern): str(ruling.disposition.value)
             for concern, ruling in mirror.rulings().items()
         }
     except Exception:
         return None
+
+
+def _broker_only_dispositions(backend: str) -> Dict[str, str]:
+    """The rulings an unmirrored *backend* still has: ``hooks`` on a broker-only one.
+
+    A ``broker-only`` projection is handed no agent spec, so the spec's ``hooks``
+    field reaches the harness by no route. Unless Crew fires that field itself
+    (``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``), nothing runs it, and an empty map would
+    tell the card and the session-start notice the opposite. Every other kind keeps
+    its ``{}``, as before this ruling: this answers the broker-only kind alone.
+    """
+    # circular import -- see :func:`_declaration`.
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    from kiro_crew.providers.mirrors import Concern, Disposition, ProjectionKind
+
+    declared = _declaration(backend)
+    if declared is None or declared.kind is not ProjectionKind.BROKER_ONLY:
+        return {}
+    if backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS:
+        return {}
+    return {concern_id(Concern.HOOKS): str(Disposition.WITHHELD.value)}
 
 
 def _on_card_ids() -> Tuple[str, ...]:
@@ -363,7 +395,8 @@ def ability_payload(backend: str) -> Dict[str, object]:
       withheld/no-channel split is a maintainer's distinction between a settled
       ruling and an open gap; the reader's question is the same either way -- does
       the thing I wrote in my file happen -- and each setting's own sentence says
-      what becomes of it.
+      what becomes of it. ``hooks`` is the one line answered by what Crew fires
+      as well as by the ruling (:data:`HOOKS_PRE_TOOL_USE_CARD_ID`).
 
     The projection KIND is deliberately absent: ``native``/``mirror``/``external``
     names the route Crew takes, which costs the reader nothing and cannot be acted
@@ -389,8 +422,35 @@ def ability_payload(backend: str) -> Dict[str, object]:
         # Stated only where it HOLDS, so a harness that honours the whole file sends an
         # empty list and renders nothing: a reader never reads a row of "delivered"
         # marks that mean "as expected".
-        "ineffective": [*ability.withheld, *ability.no_channel],
+        "ineffective": _card_ineffective(backend, [*ability.withheld, *ability.no_channel]),
     }
+
+
+#: The card line the ``hooks`` one narrows to where Crew fires every spec hook event
+#: but ``preToolUse`` (``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`` without
+#: ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``, claude). The mirror still rules ``hooks``
+#: no-channel there, which is the route's truth and what ``kirocrew doctor`` prints,
+#: but "your hooks will not run" would tell the reader the opposite of what happens.
+HOOKS_PRE_TOOL_USE_CARD_ID = "hooks_pre_tool_use"
+
+
+def _card_ineffective(backend: str, ineffective: list[str]) -> list[str]:
+    """*ineffective* as the card says it: ``hooks`` narrowed where only preToolUse is lost."""
+    # circular import -- see :func:`_declaration`.
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+        ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
+    )
+    from kiro_crew.providers.mirrors import Concern
+
+    observer_only = (
+        backend in ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS
+        and backend not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    )
+    if not observer_only:
+        return ineffective
+    hooks = concern_id(Concern.HOOKS)
+    return [HOOKS_PRE_TOOL_USE_CARD_ID if cid == hooks else cid for cid in ineffective]
 
 
 def spec_keys() -> Dict[str, str]:

@@ -48,6 +48,8 @@ from kiro_crew.atomic_write import (  # noqa: F401 - read by the pinned_writes o
     _XATTR_UNSUPPORTED_ERRNOS,
     _is_access_control_xattr,
     _should_carry_xattr,
+    read_bytes_with_retry,
+    replace_with_retry_checked,
 )
 from kiro_crew.config import paths as _config_paths
 
@@ -104,6 +106,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _rule_sensitive_bash,
     _rule_sensitive_path,
     _spec_builtin_names,
+    _spec_command_composed,
     _spec_command_granted,
     _tier_app_own_server,
     _tier_deny_rules,
@@ -242,10 +245,11 @@ from kiro_crew.hook_runtime.windows_paths import (  # noqa: F401
 # simulate a host where a descriptor's path cannot be read.
 from kiro_crew.pinned_fs import fd_real_path as _fd_real_path  # noqa: F401
 from kiro_crew.platform import current_context, redact_via_context
-from kiro_crew.platform.governance import (
+from kiro_crew.platform.governance import (  # noqa: F401  (read by hook_runtime owners)
     CU_CLASS_OBSERVE,
     computer_use_action_classes,
     computer_use_action_from_title,
+    mcp_title_to_ref,
 )
 
 # The bounded, depth-aware target-path walk lives one layer below both this
@@ -416,6 +420,37 @@ def uncounted_gate():
         yield
     finally:
         _GATE_UNCOUNTED.reset(token)
+
+
+#: Set by :func:`unattended_turn`; read by ``_governance_denial``.
+_UNATTENDED_TURN: ContextVar[bool] = ContextVar("kirocrew_unattended_turn", default=False)
+
+
+@contextmanager
+def unattended_turn(active: bool = True):
+    """Judge the gate calls made inside this block as an UNATTENDED turn's.
+
+    For a turn no person is watching: a cron job, a heartbeat task, a monitor
+    wake. The one thing it changes is what the governance tier does when its own
+    evaluation raises: an unattended call is refused, because nobody is there to
+    notice that policy went unchecked, while an attended call keeps "no
+    governance opinion" so a transient fault never refuses an ordinary user
+    action. Every other tier judges the call exactly as before.
+
+    The marker is a ContextVar, so it reaches the tool-gate pool thread (which
+    runs the call in a copy of the caller's context) and nothing outside this
+    block. Wrap the single gate consultation, not a whole turn, so a task the
+    turn spawns does not inherit it. ``active=False`` is a no-op, for a call site
+    that only sometimes runs unattended.
+    """
+    if not active:
+        yield
+        return
+    token = _UNATTENDED_TURN.set(True)
+    try:
+        yield
+    finally:
+        _UNATTENDED_TURN.reset(token)
 
 
 #: The reason a call is refused when the gate itself raised while judging it.
@@ -674,6 +709,7 @@ class HookManager:
         app: str = "",
         classifier_only: bool = False,
         trust_reads: bool = False,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> ToolHookResult:
         """Whether *call* is auto-approved, denied, or handled normally.
 
@@ -726,6 +762,14 @@ class HookManager:
         ``read_only`` auto-approve for one of those tools, never the reverse, and
         an operator ``confirm_tools`` match still asks first. Default ``False``:
         every other mode and surface judges an MCP call as before.
+
+        ``deny_waivers`` are the refusal keys a person overrode on the dashboard
+        approval card (``docs/request-for-change/rfc-deny-session-override.md``).
+        Only the ``deny-rules`` tier reads them, after dropping every
+        governance-pinned key, and each one it uses is audited or refuses; every
+        other tier judges the call exactly as without them. Default empty: only
+        the dashboard's override path and the transport floor it approves through
+        pass any.
         """
         if _GATE_TABLE_PROBLEMS:
             return ToolHookResult.deny(GATE_TABLE_UNSOUND_REASON)
@@ -737,6 +781,7 @@ class HookManager:
             app=app,
             classifier_only=classifier_only,
             trust_reads=trust_reads,
+            deny_waivers=frozenset(deny_waivers),
         )
         for tier in GATE_TIERS:
             verdict = tier.judge(facts, tier)
@@ -744,7 +789,7 @@ class HookManager:
                 if not verdict.tier:
                     verdict.tier = tier.name
                 return verdict
-        return ToolHookResult.allow()
+        return ToolHookResult.allow(facts.ask_note)
 
     @_fail_closed_on_gate_crash
     def on_tool_call(
@@ -775,6 +820,7 @@ class HookManager:
         resolved_agent: str = "",
         classifier_only: bool = False,
         trust_reads: bool = False,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> ToolHookResult:
         """:meth:`judge`, for a caller that holds the call as keywords.
 
@@ -823,6 +869,7 @@ class HookManager:
             app=app,
             classifier_only=classifier_only,
             trust_reads=trust_reads,
+            deny_waivers=deny_waivers,
         )
 
     def _effective_denied(self, ctx: object) -> list[str]:
@@ -1440,6 +1487,12 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # no value is returned. The audit is owed regardless, because the file holds
     # live credential material whatever this reader touches.
     "kiro_cli.idc_identity_probe": ".local/share/kiro-cli/data.sqlite3",
+    # Same store, read by ``kiro_crew.enterprise_sign_in`` (the shared sign-in
+    # resolver) when Crew's vault holds no sign-in: the token rows and the
+    # ``api.codewhisperer.profile`` row, for the enterprise rules fetch and account
+    # lock and for the oss KAS spawn owner. Read-only, never logged; a token is
+    # handed back only once its ``success`` audit is recorded.
+    "enterprise_sign_in.kiro_cli_store": ".local/share/kiro-cli/data.sqlite3",
     # Same store, read by ``kiro_crew.kiro_prerequisite.identity_fingerprint`` to
     # answer one question on the turn path: does the account signed in NOW differ
     # from the one the running kiro-cli children loaded? Only stable account

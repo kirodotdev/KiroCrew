@@ -49,13 +49,13 @@ reaches a fold by its bus scope and a tree fold has none. A fold marked
 | `radar` | slot | An issue crew's items, counts, phase lines and recorded skips |
 | `work` | slot | A conductor's board: the header, every work item, and what the fold dropped |
 | `panel` | slot | The publisher's own record, in the shape the crew drawer consumes |
-| `agentic` | slot | Which dashboard fields this crewmate filled itself, with what value, of what declared type and when |
-| `mistakes` | slot | Which dashboard writes of this crewmate's were refused, grouped by reason and field, how often, and what worked instead |
-| `workstreams` | slot | Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session |
-| `goal` | slot | This crewmate's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts |
-| `waiting` | slot | What this crewmate waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count |
-| `custom` | slot | The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed, which job wrote it, when it goes stale and whether that job's run has failed since |
-| `workers` | slot | The worker sessions this crewmate created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said |
+| `agentic` | slot | Which dashboard fields this Bot filled itself, with what value, of what declared type and when |
+| `mistakes` | slot | Which dashboard writes of this Bot's were refused, grouped by reason and field, how often, and what worked instead |
+| `workstreams` | slot | Every workstream this Bot is running: each board's goal and counts, each task's result, and what each task cost its own worker session |
+| `goal` | slot | This Bot's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts |
+| `waiting` | slot | What this Bot waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count |
+| `custom` | slot | The latest record per type a script cron bound to this Bot appended with ctx.crew_log_append: the record's data, when it landed, which job wrote it, when it goes stale and whether that job's run has failed since |
+| `workers` | slot | The worker sessions this Bot created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said |
 | `worker` *(internal)* | slot | One worker session's own row, the part of `workers` read from that worker's own log; not bound by a page |
 | `worktree` *(package only)* | tree | The shape of a fleet: every work board the tree reaches, which board each one hangs under, and which boards are its roots |
 
@@ -312,7 +312,7 @@ Moved by: `panel/published`.
 
 ## `agentic`
 
-Which dashboard fields this crewmate filled itself, with what value, of what declared type and when.
+Which dashboard fields this Bot filled itself, with what value, of what declared type and when.
 
 Moved by: `dashboard/agentic_value`.
 
@@ -324,7 +324,7 @@ Moved by: `dashboard/agentic_value`.
 
 ## `mistakes`
 
-Which dashboard writes of this crewmate's were refused, grouped by reason and field, how often, and what worked instead.
+Which dashboard writes of this Bot's were refused, grouped by reason and field, how often, and what worked instead.
 
 Moved by: `dashboard/agentic_refused`.
 
@@ -336,7 +336,7 @@ Moved by: `dashboard/agentic_refused`.
 
 ## `workstreams`
 
-Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session.
+Every workstream this Bot is running: each board's goal and counts, each task's result, and what each task cost its own worker session.
 
 Moved by: `background/completed`, `session/opened`, `subagent/completed`, `subagent/failed`, `turn/completed`, `work/charged`, `work/recorded`.
 
@@ -354,7 +354,7 @@ Moved by: `background/completed`, `session/opened`, `subagent/completed`, `subag
 
 ## `goal`
 
-This crewmate's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts.
+This Bot's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts.
 
 Moved by: `dashboard/goal_recorded`.
 
@@ -372,7 +372,7 @@ Moved by: `dashboard/goal_recorded`.
 
 ## `waiting`
 
-What this crewmate waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count.
+What this Bot waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count.
 
 Moved by: `dashboard/waiting_changed`.
 
@@ -387,7 +387,7 @@ Moved by: `dashboard/waiting_changed`.
 
 ## `custom`
 
-The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed, which job wrote it, when it goes stale and whether that job's run has failed since.
+The latest record per type a script cron bound to this Bot appended with ctx.crew_log_append: the record's data, when it landed, which job wrote it, when it goes stale and whether that job's run has failed since.
 
 Moved by: `dashboard/custom_failed`, `dashboard/custom_value`.
 
@@ -401,7 +401,7 @@ Moved by: `dashboard/custom_failed`, `dashboard/custom_value`.
 
 ## `workers`
 
-The worker sessions this crewmate created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said.
+The worker sessions this Bot created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said.
 
 Moved by: `message/received`, `message/sent`, `session/adopted`, `session/closed`, `session/opened`, `session/released`, `session/spawned`, `turn/completed`, `turn/started`, `work/recorded`.
 

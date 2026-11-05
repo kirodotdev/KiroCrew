@@ -36,12 +36,8 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """ "It is only a link" describes what the scan saw, not what the name holds now.
 
-        The link pass removes recorded links on the reasoning that removing one destroys
-        nothing. That holds for the link that was scanned; it does not hold for whatever
-        occupies the name by the time the unlink runs. A regular file moved there in
-        between is data, and unlinking it would be exactly the loss the file pass's
-        identity check exists to prevent -- so the link pass now demands the same thing:
-        still a link, and still the one recorded.
+        A regular file moved onto the name before the unlink is data, so the link pass
+        unlinks only if the name is still a link and still the one recorded.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")
@@ -80,11 +76,8 @@ class TestEmptyTrashRemoval:
     def test_deletes_only_what_the_manifest_names(self, stores: tuple[Path, Path]) -> None:
         """Files are named by the manifest, never discovered by walking the batch.
 
-        A walk has to decide per entry whether to descend, and on Windows a junction
-        is not a symlink -- os.path.islink reports False for one, so os.walk would
-        descend into it and unlink the files it points at, outside the trash. Naming
-        the files means traversal never happens. Asserted here with a symlinked
-        subdirectory, the portable stand-in for that shape.
+        On Windows os.path.islink is False for a junction, so os.walk would descend into
+        it and unlink files outside the trash. A symlinked subdirectory stands in here.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
@@ -209,15 +202,10 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """A batch mid-staging must not be selectable, so it cannot grow before delete.
 
-        `list_trash` does not take the mutation lock, so an unlocked read can see a
-        batch whose directory and manifest header exist while its sessions are still
-        moving in. Selecting that id makes the delete wait for staging to finish and
-        then destroy the FINISHED batch - sessions the user never saw included.
-
-        Asserted on the mechanism rather than by racing staging, which on a quiet
-        machine would pass either way: while the snapshot is reading, a FRESH
-        descriptor on the same lock file must not be able to take it, which is exactly
-        what excludes a concurrent `move_to_trash`.
+        An unlocked `list_trash` could show a batch still being filled, and deleting it
+        would destroy sessions the user never saw. Asserted on the mechanism, since a
+        race passes either way on a quiet machine: while the snapshot reads, a fresh
+        descriptor on the lock file cannot take it.
         """
         pytest.importorskip("fcntl")
         import fcntl
@@ -257,11 +245,8 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """A NUL is the one bad name that raised ValueError, not OSError.
 
-        JSON can carry `\\u0000`, so a tampered or corrupted manifest can hold one, and
-        every `os` call then raises ValueError - which the delete's `except OSError` did
-        not catch. It escaped mid-loop, after earlier files were already unlinked, so an
-        irreversible operation stopped halfway. Two guards now: the validator refuses the
-        name, and the loop treats an unusable name as costing its own file only.
+        A manifest can carry `\\u0000`, and an escaping ValueError would stop the delete
+        halfway. The validator refuses the name, and the loop skips only that file.
         """
         assert session_storage._plain_parts("a\x00b") is None
         assert session_storage._plain_parts("ok/a\x00b") is None
@@ -362,12 +347,8 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """The mechanism, not the outcome: no staged file is removed BY PATH.
 
-        This is what closes the swap race, and it is not observable from the result -
-        a path-based unlink deletes the same file on a quiet system. So it is asserted
-        directly: every removal names a file relative to an already-open directory
-        descriptor, which is a handle to the directory that was opened, not a name
-        re-resolved at unlink time. `Path.unlink()` cannot satisfy this, which is why
-        a resolve-then-unlink version fails this test.
+        This closes the swap race but is invisible in the result on a quiet system, so
+        every removal must name a file relative to an already-open directory descriptor.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("this platform cannot delete by descriptor; it takes rmtree")
@@ -494,11 +475,8 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """The manifest is not deletable as one of its own entries.
 
-        Same defect as keeping it out of the sweep, by a different route: an entry
-        reading `manifest.jsonl` passes the plain-name check, so the per-file loop
-        would unlink it before the sweep proved the batch empty - and a batch with no
-        readable manifest is omitted from `list_trash()`, so any file that survived
-        becomes data the user can neither see nor restore.
+        An entry reading `manifest.jsonl` passes the plain-name check. Unlinking it early
+        hides the batch from `list_trash()`, stranding any file that survives.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("this platform cannot delete by descriptor; it takes rmtree")
@@ -541,11 +519,8 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """Deleting the manifest early strands data: visible nowhere, restorable never.
 
-        The manifest is the only thing that makes a batch restorable - `list_trash()`
-        omits a batch without a readable one. Removing it before the sweep proved the
-        batch empty meant a listed file that survived (unwritable staged directory, a
-        file held open) left the user with data on disk they could neither see nor put
-        back. So it goes last, and only if nothing else remains.
+        `list_trash()` omits a batch without a readable manifest, so the manifest goes
+        last, and only if nothing else remains.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("this platform cannot delete by descriptor; it takes rmtree")
@@ -628,13 +603,10 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """The descriptor path knows from its own sweep - no second look needed.
 
-        Its files can all go and the final `rmdir` still fail, which is the same
-        outcome for the user: a batch still listed after asking for it to be destroyed.
+        Its files can all go and the final `rmdir` still fail, leaving the batch listed.
 
-        The removal addresses a staging name rather than the batch id -- the batch is
-        renamed and re-pinned first -- so the refusal here has to recognise both, or it
-        would stop simulating anything and the test would pass on a batch that was
-        happily deleted.
+        The batch is renamed before removal, so the refusal must match the staging name
+        too, or it would simulate nothing.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("this platform cannot delete by descriptor; it takes rmtree")
@@ -665,14 +637,10 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """The batch's own name gets the same treatment its interior directories get.
 
-        The final scan proves the batch empty by DESCRIPTOR; a removal that addressed a
-        NAME instead would let a swap in between remove an empty replacement. That is the
-        worst of the name-addressed removals rather than the mildest: by then the
-        manifest has already been moved aside, so the real batch is left holding data
-        with nothing to list it -- and the caller reports success.
+        Removing by NAME would let a swap remove an empty replacement, while the real
+        batch, its manifest already moved aside, keeps data nothing lists.
 
-        Here the manifest move is the trigger, which puts the swap exactly in that
-        interval.
+        The manifest move triggers the swap, putting it exactly in that interval.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("this platform cannot delete by descriptor; it takes rmtree")
@@ -758,11 +726,8 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """`O_NOFOLLOW` refuses a LINK; a renamed real directory is not a link.
 
-        Pinning the batch does not pin its interior - the batch inode is unchanged by a
-        rename that happens inside it - so moving a live directory onto a staged
-        directory's name redirected the per-file unlinks at live files sharing a staged
-        name. Each component is now admitted only as the inode its pinned parent
-        reported for that name.
+        Pinning the batch does not pin its interior, so each component is admitted only
+        as the inode its pinned parent reported for that name.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("this platform cannot delete by descriptor; it takes rmtree")
@@ -858,11 +823,8 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """The manifest and the batch directory go together, or neither goes.
 
-        A file created after the sweep read clear makes the final `rmdir` fail. Unlinking
-        the manifest before that point turned the failure into silent loss: the batch
-        disappeared from `list_trash()` with that file inside it, unreachable and
-        unrestorable. The manifest is moved aside instead, and renamed back when the
-        removal does not complete.
+        A file created after the sweep makes the final `rmdir` fail, so the manifest is
+        moved aside and renamed back when the removal does not complete.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("this platform cannot delete by descriptor; it takes rmtree")
@@ -896,12 +858,9 @@ class TestEmptyTrashRemoval:
     def test_the_coarse_path_also_refuses_a_swapped_batch(self, stores: tuple[Path, Path]) -> None:
         """Dropping the check on the weakest removal is the wrong way round.
 
-        The coarse path has no descriptor to bind to, so it renames the batch first and
-        verifies the RENAMED directory: a swap that happened before the rename is caught,
-        the impostor is put back rather than destroyed, and the name finally removed is one
-        that existed for microseconds. Refusing outright instead would make emptying the
-        Trash impossible on that platform, which is a worse answer than a window an
-        attacker has to guess their way into.
+        With no descriptor, it renames the batch and verifies the RENAMED directory, so
+        an earlier swap is caught and the impostor put back. Refusing outright would make
+        emptying the Trash impossible on that platform.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
@@ -955,11 +914,8 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """The approval fixes the interior too, not just the batch directory.
 
-        This is the real window: the mutation lock is released between the snapshot the
-        user acted on and the worker's open, and a map built at DELETE time records
-        whatever is there by then - impostor included - so it cannot be what authorises
-        the delete. No patching here; the swap simply happens between the two calls, which
-        is exactly what an actor with write access to the trash gets for free.
+        The lock is released between the user's snapshot and the worker's open, so a map
+        built at delete time would record an impostor. The swap happens between the calls.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("this platform cannot delete by descriptor; it takes rmtree")
@@ -1002,16 +958,10 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """The removal must not be handed the name whose identity was checked.
 
-        Checking a path and then handing the SAME path to `rmtree` re-resolves it, so a
-        swap in between is followed. The rename removes that: by the time anything is
-        removed the approved name does not exist, and the name being removed is one that
-        existed for microseconds.
+        Handing the checked path to `rmtree` re-resolves it, so a swap would be followed.
 
-        Asserted structurally rather than by racing. A test that tries to land a swap
-        between the check and the removal has to intercept a syscall to find that instant,
-        and an earlier attempt at exactly that fired on an unrelated `stat` under a
-        different Python. The observable property is "the removal is given a staging name,
-        and the approved name is already gone".
+        Asserted structurally, since landing a race needs a syscall hook that is fragile
+        across Pythons: the removal gets a staging name and the approved name is gone.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
@@ -1043,11 +993,8 @@ class TestEmptyTrashRemoval:
     def test_a_deeply_nested_batch_does_not_break_the_walk(self, stores: tuple[Path, Path]) -> None:
         """A deep staged tree must not raise `RecursionError`.
 
-        It is not `OSError`, so it escaped every caller that turns a failed read into a
-        refusal and reached the request handler as an unexplained snapshot failure - and
-        that handler would answer a named selection by deleting it unchecked. Depth is
-        reachable by anything that can write into the trash, so the walk is iterative:
-        deep enough still fails, but with `EMFILE`, which is an `OSError` and is handled.
+        It is not `OSError`, so it would escape the refusal path. The walk is iterative:
+        deep enough still fails, but with `EMFILE`, an `OSError` that is handled.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("this platform cannot delete by descriptor; it takes rmtree")
@@ -1137,15 +1084,9 @@ class TestEmptyTrashRemoval:
     ) -> None:
         """The check and the removal must not address the same name.
 
-        The sibling test above swaps BEFORE the removal pass, which the chain check
-        catches. This one swaps inside the pass -- after that check has passed and before
-        the directory goes -- which is the interval a plain `rmdir` by name leaves open:
-        it would remove whatever holds the name by then, on the approval of a different
-        directory.
-
-        The removal now renames the name to one nothing can predict and re-checks the
-        identity there, so a swap in that interval gets the intruder moved within its own
-        parent rather than deleted, and is then put back under the listed name.
+        This swaps inside the removal pass, after the chain check, where a plain `rmdir`
+        by name would remove whatever holds the name. The removal renames to an
+        unpredictable name and re-checks identity, so an intruder is put back.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")

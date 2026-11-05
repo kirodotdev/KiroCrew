@@ -35,6 +35,7 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 from crew_log_fold_eager_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     GATEWAY,
     WORK_SLOT,
@@ -206,23 +207,11 @@ def test_an_eager_fold_with_an_affects_set_is_accepted():
 
 
 def test_every_fold_with_a_warm_path_is_eager_and_the_rest_say_why_not():
-    """The rule is "eager unless written down", and the TREE folds and the internal slot
-    folds write it down.
+    """Every fold is eager unless written down; the tree and internal slot folds say why.
 
-    An internal slot fold (``worker``) is a part of an advertised one, read only when
-    that one is read, so folding it eagerly would fold for every session's turns.
-
-    The session-keyed folds are what the dashboard's panel reads, so they are eager like
-    the slot folds; each family is advanced along its own memo, and together the two are
-    every fold that HAS a memo to be advanced along.
-
-    The third key kind has neither. A tree fold joins the logs of many slots, so its
-    value is stale when any member's log grows -- including a member that was not in the
-    closure when the value was built -- and no publisher raises that event. Eager would
-    mean waking on the root's own log and then serving a tree missing every change made
-    in a child's, which is worse than folding cold. So each one is lazy WITH a stated
-    reason, which is the pin here: an empty ``LAZY_FOLD_REASONS`` was the old assertion
-    and it cannot tell "no exception" from "an exception nobody wrote down".
+    An internal slot fold (``worker``) is read only through an advertised one. A tree fold
+    joins many slots' logs and no event fires when a member's log grows, so eager would serve
+    a stale tree. An empty ``LAZY_FOLD_REASONS`` cannot tell "no exception" from "unstated".
     """
     lazy = set(crew_log.TREE_PROJECTION_NAMES) | set(crew_log.INTERNAL_SLOT_PROJECTION_NAMES)
     assert set(crew_log.EAGER_FOLD_NAMES) == set(crew_log.FOLD_NAMES) - lazy
@@ -283,12 +272,8 @@ def test_an_unrelated_entry_does_not_wake_the_work_fold():
 def test_a_full_queue_drops_and_counts_instead_of_blocking(monkeypatch):
     """Overflow is dropped and counted; the append path is never made to wait.
 
-    The consumer is stubbed out rather than merely stopped. ``note_commit`` starts the
-    worker itself, so a test that only stopped it would have its own first wake start a
-    thread that drains while the test fills -- and the drop count would then depend on
-    which of the two won, which is a stopwatch race rather than a statement about the
-    bound. With ``_run`` replaced the queue has no consumer at all, so the overflow is
-    exactly the number of wakes past the bound.
+    ``_run`` is stubbed, not just stopped: ``note_commit`` starts the worker itself, so a
+    live consumer would make the drop count a race instead of the bound.
     """
     eager.stop_for_tests()
     monkeypatch.setattr(eager, "_run", lambda: None)
@@ -318,12 +303,8 @@ def test_a_dropped_wake_is_recovered_by_the_next_read():
 class _CountingLog:
     """A crew log handle that counts the entries a caller PARSES through it.
 
-    The number every cost claim here is made in. A warm read still opens each unit and
-    reads its TAIL for the newest seq, which is what tells it the file has not moved --
-    O(the slot's unit count), and the cold read pays it too. What the cold read pays on
-    top, and the warm read must not, is one parse per line of every unit. That is the cost
-    eager folding removes, so that is the number measured, rather than a wall-clock time
-    that would report the machine instead of the change.
+    Warm and cold reads both read each unit's tail; only the cold read parses every line.
+    That parse count is what eager folding removes, so it is measured instead of wall time.
     """
 
     def __init__(self, inner, counter: list[int]) -> None:
@@ -354,14 +335,10 @@ def parsed(monkeypatch):
 
 
 def test_a_fold_after_an_eager_fold_parses_no_entries(parsed):
-    """The whole point, as a number: the eager fold already paid the parse.
+    """The eager fold already paid the parse, so a later fold parses no entries.
 
-    Measured at :func:`fold_slot_warm`, with the unit list handed in, because that is
-    exactly the span eager folding changes. The read route's other half -- discovering
-    WHICH units name this board -- parses the conductor's log on every read by its own
-    design (``test_work_fold_warm_read.py`` says so and measures it separately), and it
-    is unaffected by this change either way. Folding it into this number would report
-    someone else's cost as this one's.
+    Measured at :func:`fold_slot_warm` with the unit list handed in: unit discovery parses
+    the conductor's log on every read by design (see ``test_work_fold_warm_read.py``).
     """
     slot = WORK_SLOT
     handle = _slot_log("s-measured", slot)
@@ -454,7 +431,7 @@ def test_the_real_append_path_wakes_the_eager_fold(monkeypatch):
     emit.on_session_opened(
         "s-emitted", agent="kirocrew", slot=slot, model="opus", cwd="/w", owner="raymond"
     )
-    assert emit.flush(timeout=10.0)
+    assert_drained()
 
     emit._write(
         "s-emitted",
@@ -469,7 +446,7 @@ def test_the_real_append_path_wakes_the_eager_fold(monkeypatch):
         },
         src="gateway",
     )
-    assert emit.flush(timeout=10.0)
+    assert_drained()
     assert eager.drain(timeout=10.0)
 
     assert (slot, "work") in _memo_keys()
@@ -499,16 +476,10 @@ def test_drain_waits_for_a_wake_it_has_not_folded_yet():
 
 
 def test_a_burst_of_entries_costs_the_worker_one_pass(parsed):
-    """What the WORKER pays, measured, because the append path's share is not the whole cost.
+    """A burst of queued wakes is coalesced, so the worker pays one fold pass.
 
-    "One ``put_nowait``" is the calling thread's share. The worker then folds, and its fold
-    goes through the read path -- including the unit discovery that parses the conductor's
-    log. So a burst's real cost is the question, and the answer is the batch: every wake
-    already queued is coalesced into one, so a turn that writes several entries pays one
-    pass rather than one per entry.
-
-    Measured against a long conductor log, so the per-pass cost is the thing that would
-    multiply if batching failed.
+    The worker's fold includes unit discovery over a long conductor log, so the per-pass cost
+    is what would multiply if batching failed.
     """
     slot = WORK_SLOT
     handle = _slot_log("s-burst", slot)
@@ -592,13 +563,10 @@ def test_a_worker_report_advances_the_conductors_board_not_its_own():
 
 
 def test_the_real_emitter_sends_a_worker_report_to_the_conductors_board(monkeypatch):
-    """End to end, through the emitter, with the board DIFFERENT from the unit's header.
+    """End to end through the emitter, with the board different from the unit's header.
 
-    The sibling end-to-end test writes a conductor's own entry, where the header slot and
-    the board are the same string -- so it cannot tell whether the emitter passes the board
-    or the folder guesses it. This one writes a WORKER's report: the unit's header names
-    the worker's slot and the payload names the conductor's, and only the conductor's board
-    may advance.
+    A worker's report names the conductor's board while its header names the worker's slot,
+    so only this case tells whether the emitter passes the board or the folder guesses it.
     """
     monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
     emit.reset_caches()
@@ -621,7 +589,7 @@ def test_the_real_emitter_sends_a_worker_report_to_the_conductors_board(monkeypa
     emit.on_session_opened(
         "s-e2e-w", agent="kirocrew", slot=worker_slot, model="opus", cwd="/w", owner="raymond"
     )
-    assert emit.flush(timeout=10.0)
+    assert_drained()
 
     emit._write(
         "s-e2e-w",
@@ -637,7 +605,7 @@ def test_the_real_emitter_sends_a_worker_report_to_the_conductors_board(monkeypa
         },
         src="gateway",
     )
-    assert emit.flush(timeout=10.0)
+    assert_drained()
     assert eager.drain(timeout=10.0)
 
     warm = _memo_keys()
@@ -683,18 +651,11 @@ def test_one_unit_writing_two_boards_folds_both():
 
 
 def test_two_concurrent_folds_never_pair_one_passs_seq_with_anothers_state():
-    """MUTATION-SENSITIVE: the (state, seq) a pass returns describes one moment.
+    """The (state, seq) a pass returns describes one moment.
 
-    Two passes on one slot share the cell -- the continuation drives ``memo.registry`` and
-    the checkpoint then reads that live cell beside the CALLER's own ``reached``. So a pass
-    that read a shorter tail can return the other's newer state under its own older seq,
-    and seq is what a reader truncates against.
-
-    The interleaving is FORCED rather than raced for, because a race that only sometimes
-    happens is a test that only sometimes measures. Pass A is held inside its stream by an
-    event; while it is held, a further entry is appended and pass B runs to completion on
-    the shared cell; only then is A released. Without serialization A returns B's state
-    under A's seq, deterministically.
+    Two passes on one slot share the memo cell, so without serialization a pass could return
+    the other's newer state under its own older seq. The interleaving is forced with an event,
+    not raced for, so pass A deterministically sees pass B's state if the lock is missing.
     """
     slot = WORK_SLOT
     handle = _slot_log("s-race", slot)
@@ -765,16 +726,10 @@ def test_two_concurrent_folds_never_pair_one_passs_seq_with_anothers_state():
 
 
 def test_a_finished_fold_keeps_no_lock_for_the_slot_it_folded():
-    """MUTATION-SENSITIVE: the lock table holds passes IN FLIGHT, not slots ever folded.
+    """The lock table holds passes in flight, not every slot ever folded.
 
-    The per-key lock closes the pairing race, and it has to outlive a pass that is
-    WAITING for it -- hand the next caller a different object and the race is open again.
-    Both together mean the table is keyed on the passes running right now: one entry while
-    a fold is inside it, and nothing at all once the last holder leaves.
-
-    The alternative is a table keyed on every (home, slot, fold) the process has ever
-    folded, which nothing bounds -- ``SLOT_FOLD_CACHE_SLOTS`` caps the memos beside it and
-    says nothing about this.
+    The per-key lock must outlive a waiting pass, but a table keyed on every fold ever run is
+    unbounded (``SLOT_FOLD_CACHE_SLOTS`` caps only the memos).
     """
     inner_vouched = crew_log._vouched
     inside: list[int] = []
@@ -804,17 +759,12 @@ def test_a_finished_fold_keeps_no_lock_for_the_slot_it_folded():
 
 
 def test_a_worker_that_will_not_stop_fails_the_case_instead_of_outliving_it():
-    """MUTATION-SENSITIVE: a stop that cannot finish is reported, never assumed.
+    """A stop that cannot finish raises instead of being assumed.
 
-    The worker is a process-wide daemon and a case's data home is pinned by an env var
-    that its ``monkeypatch`` undoes on teardown. So a batch still folding after
-    :func:`eager.stop_for_tests` returns is a write landing in whatever home the
-    environment names once that pin is gone -- and the case that leaked the batch is never
-    the case that fails.
-
-    A join that expires therefore RAISES, which is what ``drain_breadcrumb_writes`` does
-    in ``test/conftest.py`` for the same shape of leak: the stop is the only moment at
-    which the leak is still attributable.
+    The worker is a process-wide daemon; a batch still folding after
+    :func:`eager.stop_for_tests` writes into whatever home the env names once ``monkeypatch``
+    undoes the pin. The stop is the only point where the leak is attributable, as in
+    ``drain_breadcrumb_writes`` in ``test/conftest.py``.
     """
     monkeypatch = pytest.MonkeyPatch()
     inside = threading.Event()
@@ -848,17 +798,10 @@ def test_a_worker_that_will_not_stop_fails_the_case_instead_of_outliving_it():
 
 
 def test_an_entry_after_the_closer_leaves_its_fold_warm(monkeypatch):
-    """MUTATION-SENSITIVE: one batch applies the closer and a LATER entry in that order.
+    """One batch applies a closer and a later entry in commit order, ending warm.
 
-    A ``session/closed`` is not the end of a unit's file -- an append after it is accepted
-    (a reset closes a session and leaves its id mapped). So a batch can hold a closer AND
-    an entry committed after it, and the two mean opposite things about the same memo:
-    the closer says drop it, the entry says advance it.
-
-    Applied by commit order the answer is both, in that order, and the fold ends warm at
-    the newer entry. Applied by neither, the closer wins the key, the later entry's wake is
-    discarded, and the drop erases what nothing then refolds -- so the next dashboard read
-    pays the whole history for an entry this process had already seen.
+    An append after ``session/closed`` is accepted (a reset keeps the id mapped). If the
+    closer won the key, the later wake would be discarded and the next read refolds it all.
     """
     slot = WORK_SLOT
     handle = _slot_log("s-after-close", slot)
@@ -937,15 +880,10 @@ def test_a_later_entry_of_another_type_does_not_hide_a_slot_folds_advance(monkey
 
 
 def test_a_closer_in_the_same_batch_as_an_earlier_entry_still_drops_the_slot(monkeypatch):
-    """MUTATION-SENSITIVE: the closer is matched to its UNIT, not to a board it never names.
+    """The closer is matched to its unit, not to a board it never names.
 
-    The emitter passes a board only for the types that carry one: a ``work/recorded`` names
-    the board in its own field, a ``session/closed`` has no such field and its wake carries
-    none. So inside one batch the two wakes for a single unit arrive under different keys,
-    and a closer looked up by (unit, board) is not found for the work wake it must suppress.
-
-    What that costs is the whole point of the drop: the slot is forgotten and then folded
-    again from the entry the closer already outranks, so a closed session is left warm.
+    ``work/recorded`` wakes carry a board; ``session/closed`` wakes carry none. Looked up by
+    (unit, board), the closer would miss the work wake and leave a closed session warm.
     """
     slot = WORK_SLOT
     handle = _slot_log("s-close-batch", slot)
@@ -979,19 +917,11 @@ def test_a_closer_in_the_same_batch_as_an_earlier_entry_still_drops_the_slot(mon
 def test_a_workers_last_report_still_reaches_the_conductors_board_when_the_worker_closes(
     monkeypatch,
 ):
-    """MUTATION-SENSITIVE: closing a unit drops ITS board, never a board it only writes to.
+    """Closing a unit drops its own board, never a board it only writes to.
 
-    A worker's final act is usually two entries: the report that names the CONDUCTOR's
-    board, then its own ``session/closed``. Both land in one batch, and they are about
-    different cells -- the closer about the worker's own slot, the report about the
-    conductor's.
-
-    So a wake is outranked by a closer on two conditions together, and each is load-bearing.
-    The closer must be the wake's OWN unit's, because a seq numbers one unit's file and
-    another unit's is not comparable to it. And the wake's target slot must be that unit's
-    own board, because closing the worker says nothing about what the conductor's board
-    should show. Drop either condition and the conductor's board loses a report it was
-    handed -- the dashboard then refolds the whole history to find it.
+    A worker's report (naming the conductor's board) and its ``session/closed`` often share a
+    batch. A closer outranks a wake only when both are the same unit (seqs are per unit) and
+    the wake's target is that unit's own board; otherwise the conductor loses the report.
     """
     conductor_slot = WORK_SLOT
     worker_slot = "dashboard:52"
@@ -1054,19 +984,11 @@ def test_a_workers_last_report_still_reaches_the_conductors_board_when_the_worke
 
 
 def test_a_wake_after_retirement_starts_no_worker_until_the_next_test_resumes():
-    """MUTATION-SENSITIVE: the gap between tests is fenced, the test itself is not.
+    """The gap between tests is fenced; the test itself is not.
 
-    A retirement stops the worker, but the append writer is a thread of its own: an append
-    can land after the stop returns, and ``note_commit`` would answer it by starting a
-    replacement daemon -- which resolves the data home when it folds, by then whatever the
-    environment names rather than the home the caller pinned. Draining the writer first
-    narrows that window and cannot close it, because a test whose subject is a writer that
-    cannot write owes entries forever.
-
-    So retirement sets a fence and a wake inside it is dropped. What makes that safe rather
-    than a silent switch-off is the other side: ``resume_for_tests`` lifts it before a test
-    runs, so every test still meets a live worker and the real append path is still
-    exercised.
+    An append can land after the stop returns, and ``note_commit`` would start a daemon that
+    resolves the data home after the pin lifts. Retirement fences such wakes, and
+    ``resume_for_tests`` lifts the fence so every test still meets a live worker.
     """
     eager.retire_for_tests()
     eager.note_commit(SESSION, "work/recorded", 1, board=WORK_SLOT)
@@ -1084,23 +1006,12 @@ def test_a_wake_after_retirement_starts_no_worker_until_the_next_test_resumes():
 
 
 def test_a_late_wake_during_the_stop_starts_no_worker():
-    """MUTATION-SENSITIVE: the fence covers the STOP window, not just after it.
+    """The fence covers the stop window, not just after it.
 
-    ``retire_for_tests`` drains the writer, then stops the worker, then fences. The bug
-    the fence must close is not only a wake AFTER retirement returns -- it is a wake
-    DURING the stop. ``flush`` waits a bounded 5s and discards its result, so the emit
-    writer can still be live when ``stop_for_tests`` runs; a wake it lands between the old
-    worker's ``join`` returning and the reset taking ``_lock`` would pass ``note_commit``
-    and reach ``_ensure_worker``, which clears ``_stopping`` and starts a replacement
-    daemon that the reset then orphans -- and that orphan resolves the data home once the
-    caller's pin lifts.
-
-    Setting the fence BEFORE the stop closes it: a wake landing anywhere inside the stop
-    window is dropped and starts nothing. This drives that exact moment by injecting a
-    ``note_commit`` from inside ``stop_for_tests`` -- the mid-stop late append -- and
-    asserts no worker survives. Reverting the fence-before-stop ordering (setting
-    ``_retired`` only after ``stop_for_tests`` returns) leaves the injected wake unfenced
-    and this test catches the orphaned worker.
+    ``flush`` waits only 5s, so the emit writer can wake between the old worker's ``join``
+    and the reset taking ``_lock``, and ``_ensure_worker`` would start a daemon the reset
+    orphans. The fence is set before the stop; this injects a ``note_commit`` from inside
+    ``stop_for_tests`` and asserts no worker survives.
     """
     real_stop = eager.stop_for_tests
 
@@ -1129,21 +1040,12 @@ def test_a_late_wake_during_the_stop_starts_no_worker():
 
 
 def test_worker_creation_under_the_fence_hands_back_a_queue_and_starts_nothing():
-    """MUTATION-SENSITIVE: the fence is re-read where the worker is CREATED, not only at the gate.
+    """The fence is re-read where the worker is created, not only at the gate.
 
-    ``note_commit``'s gate drops every wake that arrives after the latch goes up. It
-    cannot cover the one already past it: a wake that read the latch as clear a few
-    bytecodes earlier is still on its way into ``_enqueue``, and ``_enqueue`` asks for the
-    queue -- which is where a worker gets started -- before it re-checks anything. So
-    ``_ensure_worker`` reads the latch again under ``_lock``, the same lock retirement's
-    reset takes, and refuses to start a replacement the reset would then orphan.
-
-    Driven at the seam rather than through a thread race, because that race cannot be
-    scheduled from a test: the fence is set and ``_ensure_worker`` is called directly, the
-    way ``_enqueue`` calls it. BOTH halves are the contract. It must still hand back a
-    queue, because the caller's ``put_nowait`` has to land somewhere and the queue is
-    reaped by the next stop, and it must leave the worker stopped. Dropping the re-read
-    starts a daemon right here, which this catches.
+    A wake that read the latch as clear just before it went up still reaches ``_enqueue``, so
+    ``_ensure_worker`` re-reads it under ``_lock``. Driven at the seam since the race cannot be
+    scheduled: it must still return a queue (the caller's ``put_nowait`` needs one) and must
+    leave the worker stopped.
     """
     eager.retire_for_tests()
     assert eager._worker is None, "retirement left a worker running"
@@ -1161,21 +1063,11 @@ def test_worker_creation_under_the_fence_hands_back_a_queue_and_starts_nothing()
 
 
 def test_a_late_wake_after_the_reset_leaves_the_progress_counters_consistent():
-    """MUTATION-SENSITIVE: a wake counted after retirement's reset must not skew parity.
+    """A wake counted after retirement's reset must not skew the progress counters.
 
-    A wake that passed ``note_commit``'s fence check in the few bytecodes before
-    ``retire_for_tests`` set the latch is still on its way into ``_enqueue``. If its
-    ``_queued += 1`` lands AFTER the reset zeroes the counters, ``_queued`` sits at 1 with
-    ``_settled`` at 0 and no worker to settle it (``_ensure_worker`` refuses to restart
-    under the fence), so ``drain`` reads ``_settled >= _queued`` as forever false -- the
-    counter corruption the second fenced finding named.
-
-    ``_enqueue`` re-checks the fence inside ``_progress`` -- the same lock the reset takes
-    -- so a wake arriving after the reset is dropped rather than counted. This drives that
-    exact ordering: retire (which sets the fence and resets the counters to zero), then a
-    late ``_enqueue`` past the entry gate, and asserts the counters stay consistent and
-    ``drain`` reaches parity. Removing the in-``_progress`` fence re-check leaves
-    ``_queued`` at 1 and ``drain`` never reaches parity, which this catches.
+    A late ``_queued += 1`` after the reset would leave ``_queued`` at 1 with no worker to
+    settle it, so ``drain`` never reaches parity. ``_enqueue`` re-checks the fence inside
+    ``_progress``, the lock the reset takes.
     """
     eager.retire_for_tests()
     assert eager._queued == 0 and eager._settled == 0, "retirement did not zero the counters"
@@ -1194,26 +1086,12 @@ def test_a_late_wake_after_the_reset_leaves_the_progress_counters_consistent():
 
 
 def test_a_stale_enqueue_onto_a_replaced_queue_does_not_skew_the_next_test(monkeypatch):
-    """MUTATION-SENSITIVE: a wake holding a queue the reset replaced must not count.
+    """A wake holding a queue the reset replaced must not count.
 
-    This is the window the ``_retired`` flag alone CANNOT close. A wake enters
-    ``_enqueue`` and captures ``pending`` from ``_ensure_worker``, then pauses. Between
-    that capture and its resume a whole test cycle turns over: teardown's
-    ``stop_for_tests`` replaces ``_queue`` (a fresh queue for the next case) and the next
-    ``resume_for_tests`` CLEARS ``_retired``. So when the wake resumes and re-checks the
-    fence, ``_retired.is_set()`` reads False -- the flag has been cleared again -- and a
-    fence-only guard would wave it through to ``pending.put_nowait`` + ``_queued += 1`` on
-    the ORPHANED queue, incrementing the NEW test's counter for a wake no live worker will
-    ever settle. ``drain`` then reads ``_settled >= _queued`` as forever false.
-
-    The identity check ``pending is not _queue`` closes it: it asks whether the queue this
-    call holds is still the live one, which stays true across the flag's set/clear cycle.
-    Here the module is in a live, non-retired state (fresh queue, fence clear, exactly as
-    it is when the paused wake resumes), and ``_ensure_worker`` is made to hand back a
-    FOREIGN queue -- standing in for the queue the wake captured before it was replaced.
-    With the identity check the stale wake is dropped and ``_queued`` stays 0; removing it
-    leaves ``_queued`` at 1 against a queue no worker drains, which this catches via
-    ``drain`` never reaching parity.
+    The ``_retired`` flag alone cannot close this: between the wake capturing ``pending`` and
+    resuming, teardown replaces ``_queue`` and ``resume_for_tests`` clears the flag. The check
+    ``pending is not _queue`` drops it. Here ``_ensure_worker`` hands back a foreign queue to
+    stand in for the captured one; without the check ``_queued`` sticks at 1.
     """
     eager.resume_for_tests()
     eager.stop_for_tests()  # zero the counters and null the queue, as between cases
@@ -1243,17 +1121,11 @@ def test_a_stale_enqueue_onto_a_replaced_queue_does_not_skew_the_next_test(monke
 
 
 def test_a_stop_wakes_the_parked_worker_instead_of_waiting_out_its_poll(monkeypatch):
-    """MUTATION-SENSITIVE: the stop wakes the worker; it does not wait for the poll to lapse.
+    """The stop wakes a parked worker instead of waiting out its poll.
 
-    An idle worker is parked in ``queue.get(timeout=_POLL_SECONDS)``, and a
-    ``threading.Event`` cannot interrupt a blocking ``get``. So setting the stop flag and
-    joining does not stop the worker -- it waits for the current poll to time out, and the
-    teardown of every case that started a worker pays that interval.
-
-    The stop therefore puts a sentinel on the queue: the parked ``get`` returns at once, the
-    loop sees the flag and leaves. Measured against a poll interval made LONG on purpose, so
-    the margin is the whole interval rather than a few milliseconds -- a loaded runner cannot
-    turn that into a false pass.
+    A ``threading.Event`` cannot interrupt ``queue.get(timeout=_POLL_SECONDS)``, so the stop
+    puts a sentinel on the queue. The poll interval is made long so a loaded runner cannot
+    turn the margin into a false pass.
     """
     parked = 30.0
     monkeypatch.setattr(eager, "_POLL_SECONDS", parked)
@@ -1283,13 +1155,10 @@ def test_a_stop_wakes_the_parked_worker_instead_of_waiting_out_its_poll(monkeypa
 
 
 def test_every_fold_is_eager_or_carries_a_reason_to_be_lazy():
-    """MUTATION-SENSITIVE: the posture is decided in the declaration, never by omission.
+    """The posture is decided in the declaration, never by omission.
 
-    The flip this pins is not a list of folds -- it is where the burden sits. ``mode``
-    defaults to ``"eager"`` and ``_Fold`` REFUSES a lazy fold with no ``lazy_reason``, so a
-    fold added without thinking about its posture is eager, and one that stays lazy has
-    said why in its own declaration. Before the flip the default was lazy, which is how
-    four slot folds a dashboard polls on a timer stayed lazy with nobody having decided.
+    ``mode`` defaults to ``"eager"`` and ``_Fold`` refuses a lazy fold with no
+    ``lazy_reason``, so staying lazy requires a stated reason.
     """
     for name, fold in crew_log._FOLDS.items():
         assert fold.mode in ("eager", "lazy"), f"{name} declares mode {fold.mode!r}"
@@ -1406,7 +1275,7 @@ def test_an_advanced_fold_is_pushed_with_its_value_and_revision(pushed):
     ], f"the pushed value is not this board's record: {value}"
 
 
-def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed):
+def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed, monkeypatch):
     """MUTATION-SENSITIVE: the worker's coalesce is what bounds the frames, not a timer.
 
     A turn writes several entries. The worker drains its whole queue per batch and folds
@@ -1415,8 +1284,11 @@ def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed):
     """
     slot = WORK_SLOT
     handle = _slot_log("s-push-2", slot)
-    # Queued while the worker is stopped, so all three are in ONE batch.
+    # Queued while the worker consumes nothing, so all three are in ONE batch. Stopping
+    # is not enough on its own: ``note_commit`` restarts a stopped worker, and a live one
+    # that takes the first wake before this test drains the rest splits the burst.
     eager.stop_for_tests()
+    monkeypatch.setattr(eager, "_run", lambda: None)
     bus.reset_for_tests()
     seen: list[tuple[str, str, int, dict]] = []
     _subscribe_slot_events(seen)

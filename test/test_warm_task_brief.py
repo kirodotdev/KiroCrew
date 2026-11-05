@@ -22,7 +22,6 @@ class _State:
         self._warm_task_brief_model_active: set[str] = set()
         self._warm_task_brief_abandoned: set[str] = set()
         self._warm_task_brief_opened: set[str] = set()
-        self._warm_task_brief_hidden_left: dict[int, str] = {}
         self.frames: list[tuple[str, dict]] = []
         self.preparing_pushes: list[dict[str, bool]] = []
         # The real registry is ``_slots``; one dict serves both names.
@@ -514,9 +513,14 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
     slot = _Slot()
     state.slots[slot.key] = slot
     state._foreground_slots[1] = slot.key
-    snapshot = _snapshot()
+    snapshot = replace(_snapshot(), pending_options="[OPTIONS: Old]")
+    # A note with new choices lands during the model call: the brief copies
+    # the choices of the last re-read, not of the read before the call.
+    after_call = replace(_claimed(snapshot), pending_options="[OPTIONS: Push | Hold]")
 
     async def read_snapshot(*args, **kwargs):
+        if call_kwargs:
+            return after_call
         return _claimed(snapshot) if slot.flushed else snapshot
 
     kinds_at_call = []
@@ -526,8 +530,8 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
         kinds_at_call.extend(row["meta"]["kind"] for row in slot.rows)
         call_kwargs.update(kwargs)
         call_kwargs["prompt"] = args[1]
-        # The model's own progress numbers are ignored: the card shows the
-        # gateway's count from the snapshot's work items.
+        # A progress count the model returns is ignored: the brief draws no
+        # count at all.
         return json.dumps(
             {
                 "status": "needs_you",
@@ -574,6 +578,8 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
     }
     result = slot.rows[-1]
     assert result["role"] == "assistant"
+    # What the brief stood on, so an unchanged return is not sent again.
+    assert len(result["meta"].pop("facts_digest")) == 64
     assert result["meta"] == {
         "kind": "warm_task_brief_result",
         "fingerprint": "fp",
@@ -581,7 +587,6 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
             "status": "needs_you",
             "headline": "I reproduced the failure.",
             "asked": "Fix the failing test",
-            "progress": {"accepted": 0, "total": 1},
             "remaining": "Push the fix and rerun CI",
             "done": ["Reproduced the failure"],
             "needs_you": ["Approve the push so CI can run"],
@@ -594,19 +599,21 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
     assert result["content"] == (
         "Waiting on you: I reproduced the failure.\n"
         "Needs you:\n- Approve the push so CI can run\n"
-        "Progress: 0 of 1 done\n"
         "Left: Push the fix and rerun CI\n"
         "You asked: Fix the failing test\n"
         "Done so far:\n- Reproduced the failure\n"
         "Next:\n1. Apply the fix\n2. Rerun CI\n"
-        "Risk:\n- The fix touches a shared helper"
+        "Risk:\n- The fix touches a shared helper\n\n"
+        # The owner's pending choices stay as working buttons under the brief.
+        "[OPTIONS: Push | Hold]"
     )
     prompt = call_kwargs["prompt"]
     assert '"goal": "Fix the test"' in prompt
     # The model sees the gateway's goal-scoped count so its text agrees with it.
     assert '"goal_progress": {"accepted": 0, "total": 1}' in prompt
     assert "checked since HH:MM" in prompt and "add, drop or rename one" in prompt
-    assert '"needs_you"' in prompt and "No markdown, HTML, links or\n[OPTIONS] lines" in prompt
+    assert '"needs_you"' in prompt and '"lines"' in prompt
+    assert "No links,\nimages or [OPTIONS] lines" in prompt
     # The user's reply-style choice reaches the prompt.
     assert warm_task_brief._STYLE_HINTS["answer_only"] in prompt
 
@@ -656,6 +663,41 @@ async def test_model_failure_posts_an_ordinary_failure_message(monkeypatch):
     assert [row["content"] for row in _posted(slot)] == [
         "Sorry, I couldn't pull that together just now. Ask me where things stand.",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_picture_naming_an_unknown_pr_drops_the_model_fields(monkeypatch):
+    state = _State()
+    slot = _Slot()
+    state.slots[slot.key] = slot
+    state._foreground_slots[1] = slot.key
+    snapshot = _snapshot()
+
+    async def read_snapshot(*args, **kwargs):
+        return _claimed(snapshot) if slot.flushed else snapshot
+
+    async def run_model(*args, **kwargs):
+        return json.dumps(
+            {
+                "status": "on_track",
+                "headline": "The fix is in.",
+                "body": "```mermaid\nflowchart LR\nA[#31337 merged] --> B[done]\n```",
+            }
+        )
+
+    monkeypatch.setattr(warm_task_brief, "_snapshot", read_snapshot)
+    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    monkeypatch.setattr(
+        warm_task_brief.KiroCrewConfig,
+        "load",
+        lambda: SimpleNamespace(agent=SimpleNamespace(resolve_model=lambda role: "background")),
+    )
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    (row,) = _posted(slot)
+    # A diagram naming a pull request the input never named is a grounding
+    # miss: only the gateway's own cards and the failure line post.
+    assert row["meta"]["brief"]["headline"] == warm_task_brief._FAILURE_TEXT["en"]
+    assert "31337" not in row["content"]
 
 
 @pytest.mark.asyncio
@@ -1046,7 +1088,6 @@ def test_every_text_label_language_has_every_label():
         assert set(labels) == set(warm_task_brief._TEXT_LABEL_KEYS)
         assert set(warm_task_brief._STATUSES) <= set(labels)
         assert all(labels.values())
-        assert labels["count"].format(accepted=1, total=2) != labels["count"]
 
 
 @pytest.mark.parametrize("kind", [[], {}, ["warm_task_brief_result"], None, 3])
@@ -1505,7 +1546,7 @@ def test_structured_brief_survives_a_transcript_round_trip(tmp_path):
     from kiro_crew.history import ConversationLog
 
     brief = warm_task_brief._parse_result(
-        '{"asked":"Fix it","headline":"Ready.","needs_you":[],"next":["Review"]}', "", (1, 1)
+        '{"asked":"Fix it","headline":"Ready.","needs_you":[],"next":["Review"]}', ""
     )
     assert brief is not None
     log = ConversationLog(base_dir=tmp_path / "sessions")
@@ -1522,9 +1563,7 @@ def test_structured_brief_survives_a_transcript_round_trip(tmp_path):
     )
     (row,) = log.derive_messages_chained("dashboard:thread-x")
     assert row["meta"]["brief"] == brief.as_meta()
-    assert row["content"] == (
-        "On track: Ready.\nProgress: 1 of 1 done\nYou asked: Fix it\nNext:\n1. Review"
-    )
+    assert row["content"] == "On track: Ready.\nYou asked: Fix it\nNext:\n1. Review"
 
 
 class _CrewmateState(_State):
@@ -1742,3 +1781,132 @@ async def test_work_item_closing_during_the_model_call_still_publishes(monkeypat
 
     assert items[0].state == "accepted"
     assert _brief_kinds(slot) == _FULL_BRIEF
+
+
+_WAITING_ITEM = {
+    "item_id": "it_1",
+    "state": "open",
+    "status": "question",
+    "reason": "needs_human",
+    "title": "Pick a layout",
+    "summary": "Grid or list?",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "miss"),
+    [
+        ({"headline": "Back. #31337 merged", "body": "- ok"}, "unknown_pr"),
+        ({"headline": "Back.", "body": "| key AKIA**IOSFODNN7EXAMPLE** |"}, "secret"),
+        # Rejoined only by cleaning: the run scans what it would post.
+        ({"headline": "Back.", "body": "| key AK<im<img>g>IAIOSFODNN7EXAMPLE |"}, "secret"),
+        ({"headline": "Back.", "body": "| built at 23&#58;47 |"}, "unbacked_fact"),
+    ],
+)
+async def test_every_grounding_miss_keeps_the_waiting_cards_and_is_not_a_catch_up(
+    monkeypatch, result, miss
+):
+    state = _State()
+    slot = _Slot()
+    state.slots[slot.key] = slot
+    state._foreground_slots[1] = slot.key
+    snapshot = replace(_snapshot(), work_items=(_WAITING_ITEM,))
+
+    async def read_snapshot(*args, **kwargs):
+        return _claimed(snapshot) if slot.flushed else snapshot
+
+    async def run_model(*args, **kwargs):
+        return json.dumps(result)
+
+    monkeypatch.setattr(warm_task_brief, "_snapshot", read_snapshot)
+    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    # The "as of" minute is pinned so the body's 23:47 is never the known clock.
+    monkeypatch.setattr(warm_task_brief.inputs, "clock", lambda *args, **kwargs: "12:00")
+    monkeypatch.setattr(
+        warm_task_brief.KiroCrewConfig,
+        "load",
+        lambda: SimpleNamespace(agent=SimpleNamespace(resolve_model=lambda role: "background")),
+    )
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    (row,) = _posted(slot)
+    meta = row["meta"]
+    # One exit for every miss: the gateway's own cards, the failure line.
+    assert meta["kind"] == "warm_task_brief_result"
+    assert meta["grounding_miss"] == miss
+    assert meta["brief"]["headline"] == warm_task_brief._FAILURE_TEXT["en"]
+    assert meta["brief"]["waiting"] == [{"title": "Pick a layout", "ask": "Grid or list?"}]
+    assert "body" not in meta["brief"]
+    # The fallback did not catch the owner up, so the next return is not quiet.
+    assert warm_task_brief._claim_digest(slot.rows) == ""
+
+
+def test_a_delivered_catch_up_still_sets_the_claim_digest():
+    rows = [
+        {"meta": {"kind": "warm_task_brief_claim", "ledger_digest": "d1"}},
+        {"meta": {"kind": "warm_task_brief_result"}},
+    ]
+    assert warm_task_brief._claim_digest(rows) == "d1"
+
+
+def _quiet_snapshot():
+    return warm_task_brief.TaskSnapshot(
+        slot_key="thread-x",
+        history_key="dashboard:thread-x",
+        original_request="Fix it",
+        fingerprint="fp2",
+        session_state={},
+        conductor=None,
+        work_items=(),
+        previous_claim="",
+        ledger_digest="d1",
+    )
+
+
+@pytest.mark.parametrize(
+    ("result_meta", "quiet"),
+    [
+        ({"kind": "warm_task_brief_result"}, True),
+        ({"kind": "warm_task_brief_result", "grounding_miss": "unknown_pr"}, False),
+        ({"kind": "warm_task_brief_result", "grounding_miss": "secret"}, False),
+        ({"kind": "warm_task_brief_result", "grounding_miss": "unbacked_fact"}, False),
+    ],
+)
+def test_only_a_delivered_catch_up_lets_the_next_unchanged_return_be_quiet(result_meta, quiet):
+    rows = [
+        {"meta": {"kind": "warm_task_brief_claim", "ledger_digest": "d1"}},
+        {"meta": result_meta},
+    ]
+    digest = warm_task_brief._claim_digest(rows)
+    assert warm_task_brief._is_quiet(_quiet_snapshot(), digest, 0.0) is quiet
+
+
+@pytest.mark.asyncio
+async def test_a_note_in_the_live_window_wins_over_the_settled_disk_read(monkeypatch):
+    state = _State()
+    slot = _Slot()
+    state.slots[slot.key] = slot
+    state._foreground_slots[1] = slot.key
+    snapshot = replace(_snapshot(), pending_options="[OPTIONS: Push | Hold]")
+
+    async def read_snapshot(*args, **kwargs):
+        return _claimed(snapshot) if slot.flushed else snapshot
+
+    async def run_model(*args, **kwargs):
+        # A note lands in memory during the call; the disk re-read misses it.
+        slot.rows.append(
+            {"role": "inject", "content": "[OPTIONS: New | Cancel]", "cls": "reconcile-note"}
+        )
+        return json.dumps(
+            {"status": "on_track", "headline": "Back.", "asked": "Fix the failing test"}
+        )
+
+    monkeypatch.setattr(warm_task_brief, "_snapshot", read_snapshot)
+    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    monkeypatch.setattr(
+        warm_task_brief.KiroCrewConfig,
+        "load",
+        lambda: SimpleNamespace(agent=SimpleNamespace(resolve_model=lambda role: "background")),
+    )
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    assert _posted(slot)[-1]["content"].endswith("\n\n[OPTIONS: New | Cancel]")

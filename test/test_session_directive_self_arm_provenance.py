@@ -7,8 +7,9 @@ or the delivered wake of this slot's own loop (``_directive_self_wake``). The tu
 ``user`` actor is the attribution fallback for a dispatcher that named nobody, so it
 must never be read as authority. These pin the runner side of that rule:
 
-- an untagged dispatcher (spec_builder's ``_dispatch_turn``) and an untagged live
-  queue entry reach the applier with no producer mark;
+- an untagged dispatcher turn and an untagged live queue entry reach the applier
+  with no producer mark (an app's own dispatcher pins in its tests that it sets
+  none);
 - a human-started turn reaches it as user-facing, and the slot's own loop wake as
   a self-wake;
 - the applier receives exactly the known producer flags, so no flag derived from
@@ -157,30 +158,6 @@ async def test_an_untagged_dispatcher_turn_reaches_the_applier_with_no_producer_
     assert kwargs["producer_is_self_wake"] is False
     assert kwargs["producer_wake_loop_id"] == ""
     assert kwargs["producer_turn_actor"] == ""
-
-
-@pytest.mark.asyncio
-async def test_spec_builder_dispatch_sets_no_positive_producer_mark(tmp_path, monkeypatch):
-    """spec_builder relays app-composed seed, task and handoff turns with no actor
-    tag. That must grant nothing: the dispatch passes no human origin and no wake."""
-    from kiro_crew.apps.builtins.spec_builder.backend import runtime as sb_runtime
-
-    state = _runner_state(tmp_path)
-    slot = state.get_or_create_slot("spec-worker")
-    captured: list[dict] = []
-
-    async def _fake_run_chat(_state, _slot, _message, **kwargs):
-        captured.append(kwargs)
-
-    monkeypatch.setattr(cr, "_run_chat", _fake_run_chat)
-    task = sb_runtime._dispatch_turn(state, slot, "seed the spec")
-    assert task is not None
-    await task
-
-    (kwargs,) = captured
-    assert kwargs.get("_directive_user_origin") is False
-    assert not kwargs.get("_directive_self_wake")
-    assert not kwargs.get("_turn_actor")
 
 
 @pytest.mark.asyncio

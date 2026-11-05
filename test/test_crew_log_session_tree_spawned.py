@@ -15,6 +15,7 @@ import shutil
 from types import SimpleNamespace
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, emit
@@ -180,7 +181,7 @@ def test_mint_then_restart_with_no_child_first_turn_still_nests_the_child():
     """Mint, restart before the child's first turn, cold seed: the child still nests."""
     _open_creator("s-l", "L")
     emit.on_session_spawned("s-l", creator_slot="L", child_slot="W")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     # In process the fold already has it, from the emitter's own apply.
     assert stp.projection().nodes()["W"].parent_slot == "L"
 
@@ -210,7 +211,7 @@ def test_spawned_creator_resolves_a_logless_child_but_not_once_it_has_a_log():
     of its own, and declines once the child opens one (its own records then decide)."""
     _open_creator("s-l", "L")
     emit.on_session_spawned("s-l", creator_slot="L", child_slot="W")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     proj = stp.projection()
     # Child W has no log yet -> the trusted spawn names its creator.
     assert proj.spawned_creator("W") == "L"
@@ -218,7 +219,7 @@ def test_spawned_creator_resolves_a_logless_child_but_not_once_it_has_a_log():
     assert proj.spawned_creator("unknown-child") == ""
     # Once the child opens its own log, its own records decide and the spawn is skipped.
     _open_creator("s-w", "W")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert stp.projection().spawned_creator("W") == ""
 
 
@@ -230,7 +231,7 @@ def test_a_childs_first_turn_after_a_restart_cites_the_creator_from_the_spawn():
     creator's spawn being dropped."""
     _open_creator("s-l", "L")
     emit.on_session_spawned("s-l", creator_slot="L", child_slot="W")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
 
     revived = _restart()
     # The child's first turn runs post-restart: no predecessor log (head_sid == "").
@@ -240,7 +241,7 @@ def test_a_childs_first_turn_after_a_restart_cites_the_creator_from_the_spawn():
     emit.on_session_opened(
         "s-w", agent="kirocrew", slot="W", model="opus", cwd="/w", owner="o", parent_slot=resolved
     )
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert stp.projection().nodes()["W"].parent_slot == "L"
 
     # The edge now lives in the child's own log: dropping the creator's spawn leaves it.
@@ -251,7 +252,7 @@ def test_a_childs_first_turn_after_a_restart_cites_the_creator_from_the_spawn():
 def test_the_spawn_survives_a_restart_through_the_checkpoint_too():
     _open_creator("s-l", "L")
     emit.on_session_spawned("s-l", creator_slot="L", child_slot="W")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     first = _restart()
     assert first.flush_checkpoint() is True
     payload = json.loads(_checkpoint_path().read_text(encoding="utf-8"))
@@ -264,7 +265,7 @@ def test_the_spawn_survives_a_restart_through_the_checkpoint_too():
 def test_a_cold_scan_reads_the_spawn_like_the_projection():
     _open_creator("s-l", "L")
     emit.on_session_spawned("s-l", creator_slot="L", child_slot="W")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     reading = SessionTree().reading(with_edges=True)
     assert reading.nodes["W"].parent_slot == "L"
     assert not reading.incomplete
@@ -273,7 +274,7 @@ def test_a_cold_scan_reads_the_spawn_like_the_projection():
 def test_removing_the_creator_unit_drops_its_spawns():
     _open_creator("s-l", "L")
     emit.on_session_spawned("s-l", creator_slot="L", child_slot="W")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     proj = stp.projection()
     assert "W" in proj.nodes()
     proj.forget("s-l")
@@ -283,7 +284,7 @@ def test_removing_the_creator_unit_drops_its_spawns():
 def test_a_creator_with_no_log_writes_nothing():
     """No ACP session for the creator: today's in-memory behavior, nothing on disk."""
     emit.on_session_spawned("s-none", creator_slot="L", child_slot="W")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert "W" not in stp.projection().nodes()
 
 
@@ -294,7 +295,7 @@ def _spawn_many(creator_sid: str, creator: str, children: list[str]) -> None:
     _open_creator(creator_sid, creator)
     for child in children:
         emit.on_session_spawned(creator_sid, creator_slot=creator, child_slot=child)
-    assert emit.flush(timeout=10.0) is True
+    assert_drained()
 
 
 def test_a_cut_read_keeps_the_newest_spawns_and_says_it_was_cut(_floor_monkeypatch):
@@ -339,7 +340,7 @@ def test_a_cut_read_of_spawns_whose_children_self_record_stays_complete(_floor_m
             parent_slot="L",
             parent_sid="s-l",
         )
-    assert emit.flush(timeout=10.0) is True
+    assert_drained()
 
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-l")
     # The held set is ALWAYS the newest ``limit`` spawns -- a pure function of the
@@ -388,7 +389,7 @@ def test_the_self_parented_filter_never_drops_a_spawn_from_the_held_set(_floor_m
             parent_slot="L",
             parent_sid="s-l",
         )
-    assert emit.flush(timeout=10.0) is True
+    assert_drained()
 
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-l")
     kept_all = [e.data["child"]["slot"] for e in crew_store.find_spawned_entries(directory, 5)[0]]
@@ -438,7 +439,7 @@ def test_a_capped_scan_is_never_cached_even_when_self_parented_suppresses_the_cu
             parent_slot="L",
             parent_sid="s-l",
         )
-    assert emit.flush(timeout=10.0) is True
+    assert_drained()
 
     first = _restart()
     assert first.flush_checkpoint() is True
@@ -456,7 +457,7 @@ def test_a_cut_replay_is_not_cached_as_the_units_whole_answer(_floor_monkeypatch
     _floor_monkeypatch.setattr(stp_session_tree, "SPAWNED_PER_UNIT_CAP", 1)
     for child in ["W2", "W3"]:
         emit.on_session_spawned("s-l", creator_slot="L", child_slot=child)
-    assert emit.flush(timeout=10.0) is True
+    assert_drained()
 
     stp.reset_for_tests()
     emit.reset_caches()
@@ -530,7 +531,7 @@ def test_the_create_is_answered_only_after_the_spawn_is_on_disk():
     from kiro_crew.dashboard import session_control as sc
 
     _open_creator("s-l", "L")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     minted = SimpleNamespace(key="W", _lineage_minted=True, _created_by="L", _created_by_sid="s-l")
     assert asyncio.run(sc._record_spawn("L", minted)) is True
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-l")

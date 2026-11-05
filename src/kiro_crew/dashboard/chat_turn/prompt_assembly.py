@@ -613,6 +613,13 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
     slot = turn.slot
     state = turn.state
     user_typed_len = turn.user_typed_len
+    if turn._agent_started:
+        # The agent started this turn and is answering no prompt, so nothing is
+        # built and no one-shot input (a held note, a replay, the first-turn
+        # history) is spent on it: the next prompt still carries them.
+        full_message = ""
+        turn.full_message = full_message
+        return
     if is_slash:
         full_message = message
         turn.full_message = full_message
@@ -1016,6 +1023,9 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 steering_dirs=_folder_steering_dirs,
                 context_provider=client,
                 skill_trigger_text=_trigger_text,
+                # The same provenance the directive applier reads, so the
+                # prompt offers no tool that applier would refuse.
+                directive_user_origin=bool(turn._directive_user_origin),
             )
             turn.full_message = full_message
         slot_ctx_omitted = dict(_ctx_omitted)

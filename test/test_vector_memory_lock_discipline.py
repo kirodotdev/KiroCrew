@@ -12,11 +12,11 @@ runtime modules. The rule that async code offloads lock-taking store calls is pi
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 
 import pytest
 
+from kiro_crew.testing.wait import default_timeout, drained_progress
 from kiro_crew.vector_memory import (
     _HAS_FAISS,
     _HAS_NUMPY,
@@ -50,45 +50,51 @@ def _join_stress_threads(
     duration.
 
     Each worker records its completed-iteration count in ``progress`` (keyed by
-    ``threading.get_ident()``). We observe in ``window``-second slices: a thread
-    is only declared deadlocked if it is still alive AND the workers made zero
-    forward progress across ``stall_windows`` consecutive windows. A stalled
-    lock never advances; a slow-but-live worker keeps incrementing its counter
-    and is simply waited on. Slowness alone is never a failure.
+    ``threading.get_ident()``). ``drained_progress`` waits for the threads and
+    fails only when the summed counter stands still for ``stall_windows`` x
+    ``window`` seconds (~60s at the defaults, safely under the pytest
+    ``--timeout`` kill). A stalled lock never advances; a slow-but-live worker
+    keeps incrementing its counter and is simply waited on, so slowness alone is
+    never a failure. The run as a whole is held to three quarters of the test's
+    timeout, which still names a hang before the harness kills the worker.
 
     Each observation window costs ~``window`` seconds *in total*, not per
-    thread: the per-thread join timeout is divided by the live-thread count and
-    the window is capped by a monotonic deadline. Joining N threads for the full
-    ``window`` each would make one window take ``window * N`` — with 8 stalled
-    workers that is 240s, past the pytest ``--timeout`` kill, so a real deadlock
-    would hang to the harness kill instead of failing cleanly. Bounding the
-    window keeps the ``stall_windows * window`` no-progress budget (~60s at the
-    defaults) safely under that timeout.
+    thread: every call joins the first live thread for at most the rest of the
+    window. Joining N threads for the full ``window`` each would make one window
+    take ``window * N`` — with 8 stalled workers that is 240s, past the pytest
+    ``--timeout`` kill, so a real deadlock would hang to the harness kill
+    instead of failing cleanly.
     """
-    stalled_windows = 0
-    last_total = -1
-    while any(t.is_alive() for t in threads):
-        # flake-ok: pre-existing monotonic deadline bounding each join slice, moved verbatim
-        deadline = time.monotonic() + window
+
+    def _joined(budget: float) -> bool:
         for t in threads:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if t.is_alive():
+                t.join(timeout=budget)
                 break
-            live = sum(1 for x in threads if x.is_alive()) or 1
-            t.join(timeout=min(remaining, window / live))
-        total = sum(progress.values())
-        if any(t.is_alive() for t in threads):
-            if total == last_total:
-                stalled_windows += 1
-                if stalled_windows >= stall_windows:
-                    raise AssertionError(
-                        f"{label}: no progress across {stall_windows} x "
-                        f"{window:g}s windows ({total} iterations done) — "
-                        f"genuine deadlock, not slow runner"
-                    )
-            else:
-                stalled_windows = 0
-            last_total = total
+        return not any(t.is_alive() for t in threads)
+
+    drained_progress(
+        # list(): a worker may still be adding its own key to ``progress``.
+        lambda: sum(list(progress.values())),
+        done=_joined,
+        window=window * stall_windows,
+        cap=default_timeout() * 1.5,
+        describe=lambda: (
+            f"{label}: {sum(1 for t in threads if t.is_alive())} of {len(threads)} "
+            f"stress threads still alive"
+        ),
+    )
+
+
+def _join_all(threads: list[threading.Thread], what: str) -> None:
+    """Join ``threads`` under the lost-run bound; a thread that never finishes fails by name.
+
+    The bound only names a hang: a worker blocked on the store's lock would
+    otherwise hold the test until the harness kills the whole worker.
+    """
+    for t in threads:
+        t.join(timeout=default_timeout())
+        assert not t.is_alive(), f"{what}: {t.name} still running at the lost-run bound"
 
 
 @pytest.mark.xdist_group("vector_memory_concurrency")
@@ -144,9 +150,7 @@ class TestVectorStoreConcurrency:
         ]
         for t in threads:
             t.start()
-        for t in threads:
-            # flake-ok: pre-existing thread join with no timeout, moved verbatim
-            t.join()
+        _join_all(threads, "write/search stress")
 
         assert not errors, f"concurrent write/search raised: {errors!r}"
 
@@ -252,8 +256,7 @@ class TestVectorStoreConcurrency:
         def _writer(n: int, tag: str) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for i in range(n):
                     store.set_semantic(f"project.stress.{tag}{i:03d}", f"gamma {i}", 1.0, "tool")
@@ -264,8 +267,7 @@ class TestVectorStoreConcurrency:
         def _context_reader(n: int) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for i in range(n):
                     # Alternate branches: query-scored path and recency path.
@@ -286,6 +288,7 @@ class TestVectorStoreConcurrency:
         for t in threads:
             t.start()
         _join_stress_threads(threads, progress, "semantic write/context stress")
+        assert not start_barrier.broken, "a stress thread never reached the start barrier"
         assert not errors, f"concurrent set_semantic/get_semantic_context raised: {errors!r}"
 
         # Coherence: a post-stress read returns the seeded entries intact.
@@ -317,8 +320,7 @@ class TestVectorStoreConcurrency:
         def _lesson_writer(n: int, tag: str) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             for i in range(n):
                 try:
                     store.write_lesson(
@@ -333,8 +335,7 @@ class TestVectorStoreConcurrency:
         def _lesson_reader(n: int) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for _ in range(n):
                     store.get_lessons_context()
@@ -351,6 +352,7 @@ class TestVectorStoreConcurrency:
         for t in threads:
             t.start()
         _join_stress_threads(threads, progress, "lesson write/context stress")
+        assert not start_barrier.broken, "a stress thread never reached the start barrier"
         assert not reader_errors, f"get_lessons_context raised: {reader_errors!r}"
 
     def test_stem_words_thread_safe(self) -> None:
@@ -374,8 +376,7 @@ class TestVectorStoreConcurrency:
         def _stemmer_worker() -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for _ in range(40):
                     for ws, exp in zip(word_sets, expected):
@@ -388,6 +389,7 @@ class TestVectorStoreConcurrency:
         for t in threads:
             t.start()
         _join_stress_threads(threads, progress, "stemmer stress")
+        assert not start_barrier.broken, "a stress thread never reached the start barrier"
         assert not errors, f"concurrent _stem_words raised/diverged: {errors!r}"
 
 
@@ -484,9 +486,7 @@ class TestSearchLastAccessedLocking:
         threads = [threading.Thread(target=_searcher, args=(50,)) for _ in range(4)]
         for t in threads:
             t.start()
-        for t in threads:
-            # flake-ok: pre-existing thread join with no timeout, moved verbatim
-            t.join()
+        _join_all(threads, "search/update stress")
 
         # The locked, transactional UPDATE must not surface 'database is locked'
         # or interleave into a crash under concurrent search load.
@@ -663,9 +663,7 @@ class TestSharedConnectionLockDiscipline:
         threads.append(threading.Thread(target=_writer))
         for t in threads:
             t.start()
-        for t in threads:
-            # flake-ok: pre-existing thread join with no timeout, moved verbatim
-            t.join()
+        _join_all(threads, "search/semantic-write stress")
 
         assert not errors, f"concurrent search/write raised: {errors!r}"
         entry = store.get_semantic("project.notes.findings_doc")
@@ -1203,8 +1201,7 @@ class TestReaderConcurrency1947:
         def _writer(n: int, tag: str) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for i in range(n):
                     store.set_semantic(f"project.stress.{tag}{i:03d}", f"gamma {i}", 1.0, "tool")
@@ -1216,8 +1213,7 @@ class TestReaderConcurrency1947:
         def _reader(n: int) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for i in range(n):
                     store.get_semantic("project.seed.k00")
@@ -1241,6 +1237,7 @@ class TestReaderConcurrency1947:
         for t in threads:
             t.start()
         _join_stress_threads(threads, progress, "unlocked-reader/writer stress")
+        assert not start_barrier.broken, "a stress thread never reached the start barrier"
         assert not errors, f"concurrent reader/writer stress raised: {errors!r}"
 
         # Post-stress coherence: counts add up and a fresh read round-trips.

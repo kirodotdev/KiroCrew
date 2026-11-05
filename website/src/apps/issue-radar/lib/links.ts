@@ -84,7 +84,9 @@ interface ProviderDescriptor {
 }
 
 export interface ProviderTerms {
-  /** "pull request" / "merge request" — mid-sentence. */
+  /** "pull request" / "merge request" — mid-sentence. The four change-request
+   * nouns are translated: `providerTerms()` resolves them through the catalog on
+   * every call, in the active language. */
   changeRequest: string
   /** "Pull Request" / "Merge Request" — a title or a label. */
   changeRequestTitle: string
@@ -121,10 +123,8 @@ export interface ProviderTerms {
   /** Catalog KEY for "Issues" / "Work Items" — a heading, a search placeholder,
    * or an empty state.
    *
-   * A key rather than a literal, unlike the changeRequest family above: that
-   * family is frozen debt the i18n ceilings already account for, and adding to
-   * it would ship a fourth English-only noun. Resolved with `i18nT()` where it
-   * renders, the same shape as `FILTER_LABEL_KEY` in chat-sidebar/SearchDock.tsx. */
+   * Resolved with `i18nT()` where it renders, the same shape as
+   * `FILTER_LABEL_KEY` in chat-sidebar/SearchDock.tsx. */
   trackedItemPluralTitleKey: string
   /** "GitHub" / "GitLab" / "Azure DevOps". */
   providerName: string
@@ -358,8 +358,10 @@ export function sameRepoRef(a: RepoRef, b: RepoRef): boolean {
 
 /** Display vocabulary for a ref's provider.
  *
- * Mirrors `backend/provider.py:_TERMS`, so the UI, the notifications, and the AI
- * prompts all call a merge request the same thing.
+ * Mirrors `backend/provider.py:_TERMS`, so the UI and the notifications call a
+ * merge request the same thing. The four change-request nouns are UI copy and
+ * resolve through the catalog in the active language, so an AI prompt must not
+ * read them: `review.prompt.ts` keeps its own English noun for that reason.
  *
  * Azure DevOps SPREADS the GitHub vocabulary rather than restating it: it calls a
  * change request a pull request in exactly the words GitHub does, and only the
@@ -389,10 +391,10 @@ export function providerTerms(ref?: Pick<RepoRef, 'provider'>): ProviderTerms {
   }
   return isGitlab(ref)
     ? {
-        changeRequest: 'merge request',
-        changeRequestTitle: 'Merge Request',
-        changeRequestPlural: 'merge requests',
-        changeRequestPluralTitle: 'Merge Requests',
+        changeRequest: i18nT('apps.issueRadar.lib.links.merge_request'),
+        changeRequestTitle: i18nT('apps.issueRadar.lib.links.merge_request_title'),
+        changeRequestPlural: i18nT('apps.issueRadar.lib.links.merge_requests'),
+        changeRequestPluralTitle: i18nT('apps.issueRadar.lib.links.merge_requests_title'),
         changeRequestShort: 'MR',
         sigil: '!',
         emptyDetailKey: 'apps.issueRadar.workspace.select_an_issue_to_see_its_details',
@@ -403,10 +405,10 @@ export function providerTerms(ref?: Pick<RepoRef, 'provider'>): ProviderTerms {
         loginCommand: 'glab auth login',
       }
     : {
-        changeRequest: 'pull request',
-        changeRequestTitle: 'Pull Request',
-        changeRequestPlural: 'pull requests',
-        changeRequestPluralTitle: 'Pull Requests',
+        changeRequest: i18nT('apps.issueRadar.lib.links.pull_request'),
+        changeRequestTitle: i18nT('apps.issueRadar.lib.links.pull_request_title'),
+        changeRequestPlural: i18nT('apps.issueRadar.lib.links.pull_requests'),
+        changeRequestPluralTitle: i18nT('apps.issueRadar.lib.links.pull_requests_title'),
         changeRequestShort: 'PR',
         sigil: '#',
         emptyDetailKey: 'apps.issueRadar.workspace.select_an_issue_to_see_its_details',

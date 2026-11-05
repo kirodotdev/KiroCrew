@@ -67,6 +67,9 @@ class SectionReader:
 
 DEFAULT_MODEL = "auto"
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
+# ``session.harness_background_hold_secs``: how long after a harness launches
+# background work the idle sweep and the RSS recycle still keep its session.
+DEFAULT_HARNESS_BACKGROUND_HOLD_SECS = 3600
 # Auto-compaction threshold, as a percentage of the context window. Named
 # because two code paths need it — the dataclass field default (used only when
 # there is no config file) and the dict-load fallback in ``load()`` (used when
@@ -132,3 +135,8 @@ DEFAULT_WATCHDOG_RSS_MAX_MB = 4096
 # process holds. Measured on such a host: 250-504 unowned pids per pass against 4
 # genuine strays in 6.5 hours. Setting 0 takes the reading without the signal.
 DEFAULT_RECONCILE_MAX_KILLS = 5
+# session.search_scan_window -- how many of the most recently changed transcripts
+# a session search reads. The fold and snippet memos are
+# capped in bytes, so the count bounds per-search I/O, not memory; this default
+# keeps the default window of ordinary sessions inside the fold budget.
+DEFAULT_SEARCH_SCAN_WINDOW = 2000

@@ -27,13 +27,17 @@ _Refresher = Callable[[Callable[[], Awaitable[bool]]], Awaitable[Any]]
 _refresher: _Refresher | None = None
 
 #: Fingerprint inputs a refresh is EXPECTED to differ in: the agent specs it
-#: exists to pick up, the settings file beside them, the approval digest, and the
-#: overlay directory (a probe pass writes to a scratch one). Every other input --
+#: exists to pick up, the crewmate files beside them (``mate_sources``), the
+#: settings file, the approval digest, and the overlay directory (a probe pass
+#: writes to a scratch one). Every other input --
 #: socket, work dir, sandbox and approval modes, stub set, sharing, forwarded
 #: env, identity keys, read limit, interpreter -- is fixed when the broker
 #: starts, and a pass that sees a different value would apply a restart-only
-#: setting early.
-_REFRESH_VOLATILE_INPUTS = frozenset({"sources", "settings", "overlay_dir", "launch_approvals"})
+#: setting early. A crewmate file whose stub needs a target the running daemon
+#: does not hold is still refused, by the probe's target check.
+_REFRESH_VOLATILE_INPUTS = frozenset(
+    {"sources", "mate_sources", "settings", "overlay_dir", "launch_approvals"}
+)
 
 
 def set_overlay_refresher(refresher: _Refresher | None) -> None:

@@ -115,6 +115,20 @@ describe('MobileConnectModal', () => {
     expect(screen.queryByText(/not set up/i)).not.toBeInTheDocument()
   })
 
+  it.each([
+    ['pinned', /security policy pins tailnet access off/],
+    ['policy_off', /Tailnet is off by policy/],
+  ] as const)('a %s tailnet names the policy as a plain notice, not a link to setup', async (step, policyText) => {
+    mocks.tailnetMobile.mockResolvedValue({ step })
+    const onClose = vi.fn()
+    mount(['tailnet_qr'], onClose)
+    const notice = await screen.findByText(policyText)
+    expect(screen.queryByText(/Finish setup/)).not.toBeInTheDocument()
+    expect(notice.closest('button')).toBeNull()
+    fireEvent.click(notice)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it('login_link mints only on click and shows the URL', async () => {
     mocks.mobileLoginLink.mockResolvedValue({ url: 'https://ext/?token=once', expires_in: 300 })
     mount(['login_link'])

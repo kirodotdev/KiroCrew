@@ -31,19 +31,20 @@ _STATUS_SHAPED = "    print(json.dumps({'status': 'done', 'found': 0}), flush=Tr
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- same passthrough as TestRunScriptSandboxed; no test here calls monkeypatch.undo()
-def _passthrough_sandbox(monkeypatch):
+def _passthrough_sandbox(_floor_monkeypatch):
     """Run the launcher directly, with ``src/`` importable in the child."""
     src_dir = str(Path(__file__).resolve().parents[1] / "src")
-    monkeypatch.setenv("PYTHONPATH", src_dir)
-    monkeypatch.setattr("kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None))
+    _floor_monkeypatch.setenv("PYTHONPATH", src_dir)
+    _floor_monkeypatch.setattr(
+        "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None)
+    )
 
 
 def _run_body(tmp_path: Path, body: str) -> dict:
     crons = tmp_path / ".kirocrew" / "crons"
     crons.mkdir(parents=True)
     script = crons / "scan.py"
-    script.write_text("import json, os, sys\n" + body, newline="\n")
+    script.write_text("import json, os, sys\n" + body, newline="\n", encoding="utf-8")
     with patch("pathlib.Path.home", return_value=tmp_path):
         return run_script_sandboxed(f"{script}:check", "sj1", timeout=60)
 

@@ -26,11 +26,12 @@ from kiro_crew.agent_sdk.backends import (
     effort_config_option_value,
     resolve_selected_backend,
     routing_for,
+    selectable_backends,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config import live
-from kiro_crew.config.loader import read_config_text
+from kiro_crew.config.loader import read_merged_config_files
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import (
     EFFORT_LEVELS,
@@ -117,27 +118,28 @@ _VALID_SANDBOX_MODES = frozenset({"auto", "standard", "strict", "cc", "off"})
 
 
 def _read_config() -> dict:
-    """Read the data home's ``config.json`` once; ``{}`` on any error.
+    """Read the data home's config once; ``{}`` on any error.
 
     ``config_dir()`` resolves to ``~/.kiro/crew`` (or ``$KIROCREW_HOME``), so
-    this reads ``<data home>/config.json``.
+    this reads ``<data home>/config.json`` with ``config.local.json`` merged over
+    it, the way the loader merges the overlay.
 
     Synchronous disk read — call from a thread (e.g. ``asyncio.to_thread``) when
     on the event loop, then thread the returned dict into the pure parsers below
     so worker construction never blocks the loop.
     """
     try:
-        config_path = config_dir() / "config.json"
-        if config_path.exists():
-            data = json.loads(read_config_text(config_path))
-            if isinstance(data, dict):
-                # Coerce nested sections to dicts so the pure parsers' chained
-                # ``.get(...).get(...)`` never hits a hand-edited leaf value
-                # (e.g. ``{"agent": "acp"}``) and raises AttributeError.
-                for key in ("agent", "knowledge"):
-                    if not isinstance(data.get(key, {}), dict):
-                        data[key] = {}
-                return data
+        home = config_dir()
+        # config.local.json is an overlay whose keys win, as the loader merges it.
+        data = read_merged_config_files(home / "config.json", home / "config.local.json")
+        if data:
+            # Coerce nested sections to dicts so the pure parsers' chained
+            # ``.get(...).get(...)`` never hits a hand-edited leaf value
+            # (e.g. ``{"agent": "acp"}``) and raises AttributeError.
+            for key in ("agent", "knowledge"):
+                if not isinstance(data.get(key, {}), dict):
+                    data[key] = {}
+            return data
     except Exception:
         pass
     return {}
@@ -186,6 +188,59 @@ def _get_sandbox_mode(config: Optional[dict] = None) -> str:
     return "auto"  # present but malformed -> fail secure, never silently unsandboxed
 
 
+class KnowledgeHarnessUnavailable(RuntimeError):
+    """An enterprise knowledge pool would fall back to the Kiro CLI harness.
+
+    Enterprise only (RFC D6): KAS is the floor and the Kiro CLI harness is being
+    retired, so an enterprise build never falls back to it. The pool cannot run on
+    KAS (it needs a client KAS has no arm in), so it runs on Kiro CLI only when the
+    user picked Kiro CLI (``agent.acp_backend`` ``"kiro"``) and the remote
+    ``agent_backend`` policy allows it. Otherwise it refuses before any process.
+    """
+
+    code = "knowledge_harness_unavailable"
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(
+            f"{self.code}: knowledge extraction cannot run here ({reason}). Kiro Crew "
+            "does not fall back to the Kiro CLI harness in an enterprise build. Run "
+            "`kiro-cli update` to get a kiro-cli that supports `--agent-engine v3`, "
+            "and to run knowledge extraction on the Kiro CLI harness, pick it "
+            '(agent.acp_backend "kiro") and ask your administrator to allow `kiro` '
+            "in the agent_backend policy, then restart Kiro Crew. Nothing runs on "
+            "another harness in its place."
+        )
+
+
+def _kiro_fallback(reason: str) -> str:
+    """``ACP_BACKEND_KIRO`` as the pool's FALLBACK harness: ``oss`` only.
+
+    Every automatic move to Kiro CLI in this module goes through here. In an ``oss``
+    build it returns Kiro CLI, as before. In an enterprise build it always raises
+    :class:`KnowledgeHarnessUnavailable`: there is no automatic fallback to Kiro CLI
+    there (RFC D6), and an explicit Kiro CLI pick never reaches this function.
+    """
+    from kiro_crew import edition
+
+    if edition.is_enterprise():
+        raise KnowledgeHarnessUnavailable(reason)
+    return ACP_BACKEND_KIRO
+
+
+def _kiro_pick_allowed() -> str:
+    """``ACP_BACKEND_KIRO`` for a worker that STARTS on Kiro CLI again (a restart).
+
+    Kiro CLI reaches a worker only as an explicit pick (``_get_acp_backend``), so a
+    restart repeats that pick. In an enterprise build the pick must still be one the
+    governed selection allows (``selectable_backends()``); otherwise it refuses.
+    """
+    from kiro_crew import edition
+
+    if edition.is_enterprise() and ACP_BACKEND_KIRO not in selectable_backends():
+        raise KnowledgeHarnessUnavailable("the agent_backend policy does not allow `kiro`")
+    return ACP_BACKEND_KIRO
+
+
 def _get_acp_backend(config: Optional[dict] = None) -> str:
     """Configured ``agent.acp_backend``, through the one selection gate (H3),
     then narrowed to a backend this pool's zero-tool workers can trust.
@@ -195,11 +250,11 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
     that already routes by backend). Two capability questions decide whether a
     resolved backend is safe to hand it, asked rather than enumerated so a
     backend that later earns both answers needs no change here:
-    ``SessionCapabilities.honors_zero_tool_ban`` (kiro-cli/KAS natively, plus
-    opencode/goose/deepseek/pi via ``AcpClient._deny_zero_tools``; not claude,
-    whose routing is unenforced so an inherited pre-approval can skip the
-    permission request; not codex, whose sessions run on ``AcpRuntime`` with no
-    such refusal) and ``.acp_client_spawnable`` (not
+    ``SessionCapabilities.honors_zero_tool_ban`` (kiro-cli/KAS natively, claude
+    because a zero-tool session there mounts no tool at all, plus
+    opencode/goose/deepseek/pi via ``AcpClient._deny_zero_tools``; not codex, whose
+    sessions run on ``AcpRuntime`` with no such refusal) and
+    ``.acp_client_spawnable`` (not
     kas/codex, which need ``AcpRuntime`` and have no arm in ``AcpClient._spawn``).
 
     The pool reads raw ``config.json``, which never passed the loader's
@@ -226,11 +281,16 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
             declared,
             "does not honor a zero-tool spec (honors_zero_tool_ban is False)",
         )
-        return ACP_BACKEND_KIRO
+        return _kiro_fallback(f"{_label(resolved)} does not honor a zero-tool spec")
     if not capabilities_for(resolved).acp_client_spawnable:
         _log_capability_fallback(resolved, declared, "is not acp_client_spawnable")
-        return ACP_BACKEND_KIRO
+        return _kiro_fallback(f"{_label(resolved)} cannot run the knowledge pool's client")
     return resolved
+
+
+def _label(backend: str) -> str:
+    """The policy id of *backend*, for messages (Kiro CLI is ``kiro``, not ``""``)."""
+    return POLICY_ID_BY_BACKEND.get(backend, backend)
 
 
 def _log_capability_fallback(resolved: str, declared: bool, reason: str) -> None:
@@ -375,16 +435,20 @@ def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
     return eligible[-1] if eligible else None
 
 
-def _repair_agent_spec() -> bool:
+def _repair_agent_spec(tolerate_registered_injection: bool = False) -> bool:
     """Rewrite the installed :data:`AGENT_NAME` spec from its template if it drifted.
 
-    True when the file was rewritten. ``kiro_crew.agent`` is imported here, not at
-    the top, because nothing else in this module needs it. Blocking: callers run it
-    with ``asyncio.to_thread``.
+    True when the file was rewritten. *tolerate_registered_injection* leaves a file
+    whose only change is an injection an edition-registered filter removes exactly
+    alone (``repair_knowledge_agent_spec``). ``kiro_crew.agent`` is imported here,
+    not at the top, because nothing else in this module needs it. Blocking: callers
+    run it with ``asyncio.to_thread``.
     """
     from kiro_crew import agent as agent_mod
 
-    return agent_mod.repair_knowledge_agent_spec()
+    return agent_mod.repair_knowledge_agent_spec(
+        tolerate_registered_injection=tolerate_registered_injection
+    )
 
 
 class Worker(ABC):
@@ -480,6 +544,12 @@ class AcpWorker(Worker):
             if self._acp_backend is not None
             else await asyncio.to_thread(_get_acp_backend)
         )
+        if acp_backend == ACP_BACKEND_KIRO:
+            # A worker restarts with the backend it chose before (a recycle or a
+            # stalled client), or a caller hands one in, so every start that would
+            # run Kiro CLI asks the same enterprise check as the first pick does.
+            # In-memory; unchanged in an oss build.
+            acp_backend = _kiro_pick_allowed()
         logger.info(
             "AcpWorker: starting with agent=%s backend=%s",
             AGENT_NAME,
@@ -503,8 +573,11 @@ class AcpWorker(Worker):
                 await self._client.shutdown()
             except Exception:
                 logger.debug("AcpWorker: unsafe-backend client shutdown failed", exc_info=True)
-            acp_backend = ACP_BACKEND_KIRO
-            self._acp_backend = ACP_BACKEND_KIRO
+            self._client = None
+            acp_backend = _kiro_fallback(
+                f"{_label(acp_backend)} did not confirm the zero-tool spec"
+            )
+            self._acp_backend = acp_backend
             self._client, authored_before_spawn = await self._spawn_client(
                 acp_backend, sandbox_mode
             )
@@ -522,12 +595,35 @@ class AcpWorker(Worker):
         # before the spawn and again after start, and both reads must declare an
         # empty list. A worker that cannot confirm the ban does not start: Kiro is
         # the last fallback.
-        if routing_for(acp_backend) is Routing.AGENT_SPEC and not (
+        confirmed = routing_for(acp_backend) is not Routing.AGENT_SPEC or (
             await asyncio.to_thread(
                 self._client.effective_spec_declares_zero_tools,
                 authored_before_spawn=authored_before_spawn,
             )
+        )
+        if (
+            not confirmed
+            and not authored_before_spawn
+            and getattr(self._client, "_native_skill_projection", None) is None
+            and await asyncio.to_thread(self._viewless_spec_repaired)
         ):
+            # No view was prepared (the projection is off, or its alias lock was
+            # busy), so kiro-cli loaded the authored file, where the pre-spawn repair
+            # left a registered injection for a view to drop. That file now declares
+            # zero tools: start once more on it.
+            try:
+                await self._client.shutdown()
+            except Exception:
+                logger.debug("AcpWorker: viewless client shutdown failed", exc_info=True)
+            self._client = None
+            self._client, authored_before_spawn = await self._spawn_client(
+                acp_backend, sandbox_mode
+            )
+            confirmed = await asyncio.to_thread(
+                self._client.effective_spec_declares_zero_tools,
+                authored_before_spawn=authored_before_spawn,
+            )
+        if not confirmed:
             logger.warning(
                 'AcpWorker: agent=%s backend=%s spec does not declare "tools": []; '
                 "refusing to start the worker",
@@ -560,6 +656,17 @@ class AcpWorker(Worker):
             getattr(self._client, "_pid", "unknown"),
         )
 
+    def _viewless_spec_repaired(self) -> bool:
+        """Repair the authored spec without tolerance; True when it now declares zero tools.
+
+        Judged by reading the file again, not by whether this call rewrote it:
+        another worker starting at the same moment may have repaired it first.
+        Blocking.
+        """
+        _repair_agent_spec()
+        assert self._client is not None
+        return bool(self._client.authored_spec_declares_zero_tools())
+
     async def _spawn_client(self, acp_backend: str, sandbox_mode: str) -> tuple[AcpClient, bool]:
         """Build the client for *acp_backend*, bring it up, and return it with the pre-spawn read.
 
@@ -584,7 +691,10 @@ class AcpWorker(Worker):
         startup model application scopes it to this backend (a model another
         harness serves falls back to the backend default rather than being sent).
         """
-        await asyncio.to_thread(_repair_agent_spec)
+        # Only kiro-cli launches from the native skill projection's view, which is
+        # built from the template when the file carries only a registered injection;
+        # every other harness parses the file itself, so it still gets it rewritten.
+        await asyncio.to_thread(_repair_agent_spec, routing_for(acp_backend) is Routing.AGENT_SPEC)
         if routing_for(acp_backend) is Routing.AGENT_SPEC:
             client = AcpClient(
                 agent=AGENT_NAME,
@@ -1437,6 +1547,10 @@ class LLMPool:
         async def _do_one(idx: int, prompt: str) -> None:
             try:
                 results[idx] = await self.send(prompt, timeout=timeout)
+            except KnowledgeHarnessUnavailable:
+                # Not a failed item: no prompt in the batch can run, and an empty
+                # reply would let the ingest commit a document with no extraction.
+                raise
             except Exception as e:
                 logger.warning("LLMPool: batch item %d failed: %s", idx, e)
                 results[idx] = ""

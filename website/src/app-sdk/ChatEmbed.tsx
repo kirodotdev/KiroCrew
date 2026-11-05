@@ -42,7 +42,8 @@
  *
  * `hide` lets a host remove parts (`ChatEmbedHideKey`). Each key gates the one
  * place its part mounts, and a hidden part is not mounted at all. Hiding never
- * adds: every grant check still applies to what stays.
+ * adds: every grant check still applies to what stays. `renderers` restyles
+ * transcript rows through the list's registry and removes nothing.
  */
 import { useRef, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient, focusManager } from '@tanstack/react-query'
@@ -79,6 +80,7 @@ import { Composer, type ComposerCapabilities } from '../chat-core/composer/Compo
 import { ComposerEditor, ComposerSend } from '../chat-core/composer/atoms'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
 import { EMBED_HIDDEN_COMMANDS, useEmbedPickers } from './useEmbedPickers'
+import { useEmbedSendRefocus } from './useEmbedSendRefocus'
 import { sendFailureCopy, deliveryUnconfirmedCopy } from '../chat-core/transport/receiptCopy'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { drainEmbedRecovery, stashEmbedRecovery, subscribeEmbedRecovery, type PendingEmbedRecovery } from './embedSendRecovery'
@@ -87,6 +89,7 @@ import { embedReadPath, isEmbedCursor, mergeEmbedRead, type EmbedCursor } from '
 import { useSlotPush } from './slotPush'
 import type { ChatMessage } from '../types'
 import type { ChatEmbedHideKey } from './chatEmbedHide'
+import type { MessageRenderer } from './messageRenderers'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../components/QueueStack'
 import { hydrateQueuedBubbles, normalizeQueueEntries } from '../store/chatSlice'
@@ -184,6 +187,23 @@ export interface ChatEmbedProps {
    * stays off either way. Omitted, every part shows as before.
    */
   hide?: readonly ChatEmbedHideKey[]
+  /**
+   * Transcript row renderers, handed straight to `ChatMessageList` and merged
+   * by `mergeRenderers`: searched after the kind-matched built-ins and before
+   * the role-keyed ones. An entry reusing a built-in id replaces it, and with
+   * it every role that entry drew; a role claim without `match` outranks that
+   * role's built-in refinement rows (an assistant claim takes the compaction
+   * notice too). One claiming an undrawn role adds a row type. To restyle the
+   * reply, claim exactly what the built-in `assistant` entry resolves and wrap
+   * its render (docs/app-kit/api-reference.md, "Restyling rows"). They change
+   * how rows look only;
+   * the composer, Stop, queue, approvals and follow-ups stay, and removing a
+   * part is `hide`'s job. The list memoizes the merged registry on this
+   * array's identity, so pass a stable array (a module constant or a
+   * `useMemo`): a fresh array every render re-merges and redraws every row.
+   * Omitted, the built-in rows render as before.
+   */
+  renderers?: readonly MessageRenderer[]
 }
 
 /** Stable empty transcript. A fresh `[]` fallback would be a new identity on every
@@ -389,6 +409,7 @@ function ChatEmbed({
   onFileOpen,
   onArtifactOpen,
   hide,
+  renderers,
 }: ChatEmbedProps) {
   const api = useAppApi()
   const hidden = (key: ChatEmbedHideKey) => hide?.includes(key) === true
@@ -1069,6 +1090,8 @@ function ChatEmbed({
     onSettled: () => { void refetch() },
   })
 
+  const { rowRef: composerRowRef, armRefocus } = useEmbedSendRefocus(sendMutation.isPending, textareaRef)
+
   /** `override` carries the text a follow-up chip's send arrow supplies (double-click
    *  or the send segment); without it the draft is the source of truth. Every call
    *  site wraps this in an arrow, so a click event can never arrive here as the
@@ -1097,6 +1120,7 @@ function ChatEmbed({
       setDraft('')
       closePickers()
       pastes.install([])
+      armRefocus()
     }
     // A fresh id and the slot the send belongs to: the yardstick for "did the
     // poll show THIS send", and the address a receipt is delivered to if this
@@ -1138,7 +1162,7 @@ function ChatEmbed({
       before,
     }])
     sendMutation.mutate({ msg, meta, files, resized, sentPastes, draftText, override: override != null, sendId, slot: slotKey, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
-  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers, pastes])
+  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers, pastes, armRefocus])
 
   const pickerLabel = attachments.uploading
     ? i18nT('appSdk.chatEmbed.uploading_files')
@@ -1304,6 +1328,7 @@ function ChatEmbed({
         toolDetails={!hidden('toolDetails')}
         onFileOpen={onFileOpen}
         onArtifactOpen={onArtifactOpen}
+        renderers={renderers}
         // No hand-off: the embed's composer draft is unsaved local state that
         // the hand-off's navigation to the main chat would discard.
         handOff={false}
@@ -1473,6 +1498,7 @@ function ChatEmbed({
 
       <Composer slotKey={slotKey} value={draft} onChange={setDraft} pastes={pastes} capabilities={EMBED_CAPABILITIES}>
         <div
+          ref={composerRowRef}
           className={`flex items-end gap-2 px-3 py-2 shrink-0 ${frameless ? '' : `${attachments.notice || attachments.files.length || attachments.uploadingNames.length || stopError || pressHint ? '' : 'border-t'} border-border bg-bg-accent`}`}
         >
           {attachments.granted && (

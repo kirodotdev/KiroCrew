@@ -69,6 +69,7 @@ from kiro_crew.config.memory_sections import (
     kind_routing_mode_from,
 )
 from kiro_crew.config.sections import (
+    CODE_CHANNEL_DEFAULT_MAX,
     DEDUP_EVERY_N_SWEEPS_MAX,
     EMBED_RATE_LIMIT_MAX,
     EXTRACTION_POOL_SIZE_MAX,
@@ -76,6 +77,7 @@ from kiro_crew.config.sections import (
     FOLDER_INGEST_CHUNK_BUDGET_MAX,
     IMPORT_CHUNK_BUDGET_MAX,
     SWEEP_CHUNK_BUDGET_MAX,
+    CodeChannelDefaultsConfig,
     DiscordConfig,
     FeishuConfig,
     IMessageConfig,
@@ -96,6 +98,7 @@ from kiro_crew.config.sections import (
     _coerce_whatsapp_groups,
     _parse_telegram_accounts,
     _threshold_pct,
+    _validate_allowed_users,
     _validate_telegram_activation,
     _validate_tracking_channels,
     _validated_stt_model,
@@ -112,6 +115,7 @@ from kiro_crew.config.service_sections import (
     WorkLedgerConfig,
     normalize_on_battery,
 )
+from kiro_crew.effort import is_valid_effort
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT
 from kiro_crew.instances.crew_ref import clean_crew_ref
@@ -204,7 +208,10 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
 
 
 def _positive_gb(data: dict, key: str) -> float:
-    """``work_ledger.<key>`` as a positive finite number, else the field default."""
+    """``work_ledger.<key>`` as a positive finite number, else the field default.
+
+    Named for the two estimates; the retire timeout (minutes) reads the same way.
+    """
     default = float(field_default(WorkLedgerConfig, key))
     value = _safe_float(data.get(key, default), default)
     return value if value > 0 else default
@@ -216,6 +223,9 @@ def _build_work_ledger_config(work_ledger_data: dict) -> WorkLedgerConfig:
         remote_dispatch=_safe_bool(work_ledger_data.get("remote_dispatch"), False),
         remote_dispatch_memory_gb=_positive_gb(work_ledger_data, "remote_dispatch_memory_gb"),
         remote_dispatch_disk_gb=_positive_gb(work_ledger_data, "remote_dispatch_disk_gb"),
+        remote_dispatch_retire_minutes=_positive_gb(
+            work_ledger_data, "remote_dispatch_retire_minutes"
+        ),
     )
 
 
@@ -637,9 +647,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
     section = SectionReader(SlackConfig, slack_data)
     return SlackConfig(
         session_folder=_coerce_session_folder(section.get("session_folder")),
-        allowed_users=[
-            u for u in section.get("allowed_users") if isinstance(u, dict) and u.get("slack_id")
-        ],
+        allowed_users=_validate_allowed_users(section.get("allowed_users")),
         tracking_channels=_validate_tracking_channels(section.get("tracking_channels")),
         open_channels=[c for c in section.get("open_channels") if isinstance(c, str)],
         command=section.get("command"),
@@ -673,8 +681,43 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         # Default False: a missing or unparseable value must mean "open no
         # thread", never the reverse.
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
-        # Default False: an unparseable value must never declare the app an agent.
+        # Default False for both: an unparseable value must never declare the app
+        # an agent or open code channels.
         agent_sessions=section.read("agent_sessions", _safe_bool),
+        code_channels=section.read("code_channels", _safe_bool),
+        code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
+    )
+
+
+def _code_channel_default_str(raw: object) -> str | None:
+    """A stored default as a trimmed string, or ``None`` for unset/invalid.
+
+    ``None`` is the one "no default" spelling: an empty string, a non-string and
+    an over-long value all read as unset rather than as a value that would then
+    fail every lookup downstream.
+    """
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value or len(value) > CODE_CHANNEL_DEFAULT_MAX:
+        return None
+    return value
+
+
+def _build_code_channel_defaults(raw: object) -> CodeChannelDefaultsConfig:
+    """``slack.code_channel_defaults`` with every field normalized.
+
+    A non-object reads as all-unset. An effort outside the shared level ladder is
+    dropped (``None``) rather than kept: the session layer would refuse it anyway,
+    and keeping it would make the settings page show a level nothing applies.
+    """
+    data = _safe_dict(raw)
+    effort = _code_channel_default_str(data.get("reasoning_effort"))
+    return CodeChannelDefaultsConfig(
+        folder=_code_channel_default_str(data.get("folder")),
+        agent=_code_channel_default_str(data.get("agent")),
+        model=_code_channel_default_str(data.get("model")),
+        reasoning_effort=effort if is_valid_effort(effort) else None,
     )
 
 

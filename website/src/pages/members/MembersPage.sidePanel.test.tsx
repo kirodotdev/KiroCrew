@@ -165,8 +165,8 @@ vi.mock('../../components/crew/useCrewEditor', () => ({
 // The Files body exposes the directory it was rooted in: one case below pins
 // that it is the slot's RESOLVED project, never the crew's workspace NAME.
 vi.mock('../chat/FilesHomePanel', () => ({
-  default: ({ projectDir }: { projectDir?: string }) => (
-    <div data-testid="files-home-stub" data-project-dir={projectDir ?? ''} />
+  default: ({ projectDir, title }: { projectDir?: string; title?: string }) => (
+    <div data-testid="files-home-stub" data-project-dir={projectDir ?? ''} data-title={title ?? ''} />
   ),
 }))
 vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
@@ -591,6 +591,16 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.queryByRole('tab', { name: 'Schedules' })).toBeNull()
     // Side Chat remains dynamic rather than standing.
     expect(screen.queryByRole('tab', { name: 'Side Chat' })).toBeNull()
+  })
+
+  it('the Workspace tab heads its file browser "Workspace" too, not "Files" (issue #28031)', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-dashboard')
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+    const body = await screen.findByTestId('files-home-stub')
+    expect(body).toHaveAttribute('data-title', 'Workspace')
   })
 
   it('the Dashboard is the mate\'s generated page, with no repeated identity row', async () => {
@@ -1062,6 +1072,56 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByTestId('crewmate-switcher-needs-you')).toBeInTheDocument()
   })
 
+  it("a session a crewmate dispatched badges that crewmate's row while it waits on the person", async () => {
+    const { store } = await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research', bound: true, slot_key: 'member-research' }),
+    ])
+    await rosterRow('oncall')
+    act(() => {
+      store.dispatch(sseConnected())
+      store.dispatch(sseSlots([
+        { key: 'member-oncall', mode: 'member', running: false, messages: 3 },
+        { key: 'member-research', mode: 'member', running: false, messages: 3 },
+        // A grandchild of oncall's thread, parked on a tool approval.
+        { key: 'chat-w1', mode: '', running: false, messages: 1, mate_root: 'member-oncall', pending_approval: true },
+        // A Crew Mode worker and a plain chat, both waiting: no crewmate's row lights.
+        { key: 'chat-w2', mode: '', running: false, messages: 1, crew_root: 'chat-root', pending_approval: true },
+        { key: 'chat-w3', mode: '', running: false, messages: 1, needs_input: true },
+      ] as never))
+    })
+    const cue = await screen.findByTestId('member-needs-you')
+    expect(screen.getAllByTestId('member-needs-you')).toHaveLength(1)
+    expect(cue.closest('li')).toHaveTextContent('oncall')
+    // The session's question badges it too, and the badge goes with the prompt.
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: 'member-oncall', mode: 'member', running: false, messages: 3 },
+        { key: 'member-research', mode: 'member', running: false, messages: 3 },
+        { key: 'chat-w1', mode: '', running: false, messages: 1, mate_root: 'member-research', needs_input: true },
+      ] as never))
+    })
+    await waitFor(() => expect(screen.getByTestId('member-needs-you').closest('li')).toHaveTextContent('research'))
+    expect(screen.getAllByTestId('member-needs-you')).toHaveLength(1)
+  })
+
+  it("a crewmate's row lights for its waiting session while the crewmate's own tab is closed", async () => {
+    const { store } = await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research', bound: true, slot_key: 'member-research' }),
+    ])
+    await rosterRow('oncall')
+    act(() => {
+      store.dispatch(sseConnected())
+      store.dispatch(sseSlots([
+        { key: 'chat-w1', mode: '', running: false, messages: 1, mate_root: 'member-oncall', needs_input: true },
+      ] as never))
+    })
+    const cue = await screen.findByTestId('member-needs-you')
+    expect(screen.getAllByTestId('member-needs-you')).toHaveLength(1)
+    expect(cue.closest('li')).toHaveTextContent('oncall')
+  })
+
   it('the identity pill shows only the display name, never the ID', async () => {
     await renderPage([
       row({ name: 'kiro', slug: 'kiro', display_name: 'Kiro', bound: true, slot_key: 'member-kiro' }),
@@ -1094,7 +1154,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // Command Center (the Dashboard tab is the one dashboard entrance here),
     // Artifacts — pinned on the chat page, but this page's standing set is
     // Dashboard + Files —, Subagents, Workflows, Git and the diagnostics group
-    // (Logs, Context, Crew log). Terminal, Browser, Side Chat and app tabs
+    // (Logs, Context, Crew log). Terminal, Preview, Side Chat and app tabs
     // stay reachable from +.
     expect([...MEMBERS_UNFED_VIEWS].sort()).toEqual(['changes', 'issues', 'links', 'pins', 'summary'])
     expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual(
@@ -1127,7 +1187,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
     )
     const menu = await screen.findByRole('menu')
-    for (const name of ['Side Chat', 'Terminal', 'Browser']) {
+    for (const name of ['Side Chat', 'Terminal', 'Preview']) {
       expect(within(menu).getByRole('menuitem', { name })).toBeInTheDocument()
     }
     for (const name of [
@@ -1174,7 +1234,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await rosterRow('oncall')
     await openAddMenu()
     const menu = await screen.findByTestId('member-add-menu')
-    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New mate', 'Import from file'])
+    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New Bot', 'Import from file'])
   })
 
   it('the roster header "+" menu\'s New mate opens the card as a modal with Advanced settings folded, and they unfold inline — no trip to the crew manager', async () => {
@@ -1202,7 +1262,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     // A modal named "New crewmate", holding the form — no in-place page region.
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('New mate')
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('New Bot')
     expect(screen.getByRole('dialog')).toContainElement(screen.getByTestId('crewmate-create-form'))
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('/capabilities'))
   })

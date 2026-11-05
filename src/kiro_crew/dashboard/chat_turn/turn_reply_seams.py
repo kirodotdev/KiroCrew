@@ -6,12 +6,15 @@ stream watchdogs post, and the whole reply read back from its rows (``_turn_full
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from kiro_crew.constants import reflow_and_label_glued_option_marker
 from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, chunk_generation, slot_history_key
 from kiro_crew.dashboard.state import row_mid
+from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
@@ -22,6 +25,7 @@ if TYPE_CHECKING:
         logger,
         provider_last_turn_usage,
         read_turn_model,
+        run_to_completion,
         save_slot_off_loop,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
@@ -40,6 +44,7 @@ if TYPE_CHECKING:
         _broadcast_turn_stats,
         _last_reply_row,
         _persist_abnormal_turn_usage,
+        _session_selected_auto,
         turn_stats_meta,
     )
 
@@ -165,17 +170,24 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
         # the recovery rows below, so the restart reconciles exactly the text
         # the user watched stream.
         try:
-            await save_slot_off_loop(
-                state,
-                slot,
-                force=True,
-                expected_history_key=slot_history_key(slot),
-                expected_slot_name=slot.key,
+            await run_to_completion(
+                save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    expected_history_key=slot_history_key(slot),
+                    expected_slot_name=slot.key,
+                )
             )
         except (Exception, asyncio.CancelledError):
             # A cancel delivered on this await is swallowed for the reason
             # _persist_abnormal_turn_usage swallows one: re-raised, it skips
             # the usage row below and the calling arm's card and recovery.
+            # ``run_to_completion`` ensures the executor thread finishes the
+            # transcript rename before the cancel re-raises here; without it
+            # the thread could still hold the jsonl open via ``os.replace``
+            # when the turn's reset reads the file back (Windows: sharing
+            # violation → PermissionError on the read).
             logger.debug("Saving the partial reply at shutdown failed", exc_info=True)
     # The usage row is written whether or not the turn produced partial text
     # -- a turn cut after many tool calls bills credits with no final
@@ -325,7 +337,12 @@ def _attach_abnormal_turn_stats(
             elapsed_ms,
             float(usage.credits or 0.0),
             float(usage.cost_usd or 0.0),
-            (read_turn_model(turn.client) if model is None else model) or "",
+            (
+                (read_turn_model(turn.client) or _session_selected_auto(slot))
+                if model is None
+                else model
+            )
+            or "",
         )
         row = _last_reply_row(slot, turn._turn_msg_boundary, turn._turn_start_mid)
         if stats is None or row is None:
@@ -387,6 +404,24 @@ def _flush_text_stream(turn) -> None:
 # `wait` the same way (slack/handler_runtime/stream.py: move_back, _give_back).
 
 
+#: A run that is one short plain word closing a sentence ("settled.", "they've.").
+#: The text before a tool call usually ends this way, and holding the word made
+#: every such row show without its last word until the model wrote again, often
+#: minutes later. No credential can start in or run through such a word: a
+#: credential's run either begins with a mixed-case, digit or symbol prefix this
+#: shape excludes (``AKIA``, ``eyJ``, ``SG.``, ``ghp_``, ``?token=``), or is an
+#: unbroken base64-class run, which a ``.`` ends. The length cap keeps the
+#: Discord shape ([MNO] then 22 or more characters, then ``.``) out as well.
+_PLAIN_SENTENCE_END_RE = re.compile(r"[A-Za-z][a-z]{0,18}(?:'[a-z]{1,3})?\.")
+
+
+def _ends_plain_sentence(run: str) -> bool:
+    """Whether *run*, the raw run the redactor withholds at a boundary, is one
+    plain word ending a sentence, which no text after the boundary can turn into
+    part of a credential, so the cut saves and streams it at once."""
+    return bool(_PLAIN_SENTENCE_END_RE.fullmatch(run)) and redact(run) == run
+
+
 def _held_continued(turn) -> bool:
     """Whether text reached _wsred after the run it holds for a boundary."""
     _wsred = turn._wsred
@@ -445,7 +480,10 @@ def _cut_segment(turn, *, broadcast: bool = True) -> None:
 
     Held only while the whole segment saves that run as it was written: a run
     the segment already redacts ends a value it holds whole, so the window
-    ends here as it does at the reply's end."""
+    ends here as it does at the reply's end. Nor is a run held when it is one
+    plain word ending a sentence (_ends_plain_sentence) and no earlier cut
+    holds a run for it to join: no later text can make it part of a credential,
+    and holding it hid the row's last word until the model wrote again."""
     _wsred = turn._wsred
     slot = turn.slot
     state = turn.state
@@ -456,6 +494,7 @@ def _cut_segment(turn, *, broadcast: bool = True) -> None:
     kept = None
     if (
         own
+        and (before or not _ends_plain_sentence(own))
         and raw is not None
         and redact(reflow_and_label_glued_option_marker(raw)[0]).endswith(own)
     ):
@@ -675,3 +714,98 @@ def _turn_reply_segments(turn: "_ChatTurn") -> list[str]:
         if row_mid(row) in wanted and row.get("role") == "assistant"
     ]
     return [p for p in parts if p]
+
+
+#: Channel for the bell entry a dying turn raises (notifications/bus.py).
+_TURN_DIED_CHANNEL = "system.turn"
+#: Legacy ``kind`` on the note. NOT "turn": the frontend's per-kind sound
+#: selector reads ``kind`` (``presetForKind``), and "turn" is the
+#: conversation-ready chime category, so a dead-turn alert would play the
+#: hand-back sound (or none, if that category is muted) rather than being
+#: controlled by its own ``system.turn`` channel. "agent" is the neutral kind
+#: ``system.monitor`` and ``system.member`` notes use for the same reason; the
+#: mute/priority that actually govern this note travel on the channel.
+_TURN_DIED_KIND = "agent"
+
+
+def _notify_turn_died(turn, body: str) -> None:
+    """Raise a notification-bell entry for a turn that DIED and needs the user.
+
+    When a turn ends in an error the user must
+    act on -- a provider 5xx / throttle, a content-filter refusal, or a
+    terminal transport death -- the transcript shows the inline error card with
+    its Resume/Continue control, but nothing reaches the bell, so an operator
+    working in another session learns work has stopped only by opening it. This
+    reuses the one notification-bus publish path (``state.notify`` ->
+    ``payload_from_legacy`` -> ``NotificationBus.push``, the same path
+    ``send_notification`` uses) rather than adding a new surface.
+
+    Called ONLY from the TERMINAL arms (never a ``will_retry`` recovery, which
+    needs nothing from the user): the turn is over and the next move is the
+    operator's. Minimal by design -- a default-priority bell entry on
+    ``system.turn`` with a deep link to the session. "When/how loud" the issue
+    left open, so there is no new sound category or settings beyond the channel
+    itself; a user who wants it louder (or muted) raises (or mutes) the channel
+    in Settings -> Notifications.
+
+    Two scopings keep it from firing where it is not wanted:
+
+    * An APP-owned chat (``slot._app``) is skipped -- an app owns its chat's
+      continuation, so a dead turn there is the app's to handle, not an
+      operator's to be alerted to.
+    * ``group_key`` is one entry per session, so a session that dies, is
+      resumed, and dies again stacks into a single bell row instead of a pile;
+      ``publisher_session`` attributes the note to the session so THAT session's
+      own mute applies -- a session the user has muted is silenced, which is the
+      honest answer to "only when it is not the session in focus" without the
+      backend inventing per-client focus tracking the bell has never had.
+
+    Best-effort: ``state.notify`` already swallows a validation error, and the
+    whole call is guarded so a notification failure never disturbs the dying
+    turn's teardown, which owns the recoverable work.
+    """
+    slot = turn.slot
+    state = turn.state
+    # An app owns its chat's continuation; a human-created session has _app "".
+    if getattr(slot, "_app", ""):
+        return
+    session_key = turn.session_key
+    try:
+        # A dashboard-internal path (NotificationBus validates: leading "/",
+        # no scheme, no protocol-relative "//"). ``sid`` keys on the slot, the
+        # shape the SPA reads (chat_backfill.session_deep_link); quoted because
+        # a channel/cron session key is not guaranteed URL-safe.
+        url = f"/chat?sid={quote(slot.key, safe='')}" if slot.key else None
+        # Build the payload and set group_key on it, the way every other legacy
+        # producer stacks a note (member_message_notes._publish,
+        # terminal_lifecycle, member_goals): group_key is a schema field the bus
+        # drops from meta, and threading a second way to pass it through the
+        # adapter layers would be a duplicate mechanism.
+        payload = payload_from_legacy(
+            _TURN_DIED_KIND,
+            "⚠️ A chat stopped",
+            body,
+            # Name the dying slot so the banner gate scopes to it: a banner is
+            # suppressed only while the operator is viewing THAT slot
+            # (targetsCurrentView's n.slot === activeSlot branch), not whenever
+            # they are on any /chat page -- which is the whole "in another
+            # session" case this exists for. Same key member_message_notes uses.
+            {"slot": slot.key} if slot.key else None,
+            url=url,
+            channel=_TURN_DIED_CHANNEL,
+            # The session's own mute applies to its dead-turn alert. Keyed on
+            # slot.key, NOT session_key: session_is_muted resolves the publisher
+            # through caller_slot_key, which matches a slot's key / history key /
+            # stem -- never an unbound channel-born slot's effective session key
+            # (`dashboard:slack_<ts>`), which would read as unmuted. Same key
+            # member_message_notes publishes under.
+            publisher_session=slot.key or None,
+        )
+        # One stacked bell row per session, not one per death.
+        if session_key:
+            payload.group_key = f"turn-died:{session_key}"
+        state.notification_bus.push(payload)
+    except NotificationValidationError:
+        logger.debug("Dead-turn notification dropped for slot %s", slot.key, exc_info=True)
+    except Exception:
+        logger.debug("Dead-turn notification failed for slot %s", slot.key, exc_info=True)

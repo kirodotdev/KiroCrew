@@ -271,3 +271,30 @@ export function fmtRelativeMinute(ts: string): string {
  *  token leads because the i18n lint recognises an arbitrary-value class
  *  cluster by its FIRST bracketed token carrying a comma or underscore. */
 export const MAC_ACTION_BTN_CLASS = 'bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)] px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer font-body whitespace-nowrap transition-colors backdrop-blur border border-[color-mix(in_srgb,var(--border)_45%,transparent)] hover:bg-bg-hover'
+
+/** The sentence a failed Approve/Reject press shows, on a feed row and in the
+ *  detail panel alike. A quoted reason is the decide route's own sentence.
+ *  Anything else (a 5xx, or no response) may have landed. A row that names
+ *  its request (`targeted`: slot and instance) is refused once that request
+ *  is settled, so it says pressing again is safe. A row decided by id alone
+ *  could reach a later request under a recurring id, so it keeps the chat
+ *  card's plain hedge. After a frame ended the request (`ended`, shown
+ *  beside "no longer pending") there is nothing to retry, so an unquoted
+ *  failure adds nothing beside that line. */
+export function decisionFailedCopy(reason: string, opts: { ended?: boolean; targeted?: boolean } = {}): string | null {
+  if (reason) return i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
+  if (opts.ended) return null
+  if (!opts.targeted) return i18nT('components.approvalCard.decision_failed')
+  return i18nT('components.notifications.notificationFeed.decision_failed_retry')
+}
+
+/** The sentence a stored note whose DELETE failed after a landed decision
+ *  shows, in the feed row and the detail panel alike. The retry is the
+ *  row's close control in the list, so the sentence names it both by the ✕
+ *  a sighted reader sees and by its accessible name, which a screen reader
+ *  announces for it. */
+export function decidedClearFailedCopy(): string {
+  return i18nT('components.notifications.notificationFeed.decided_clear_failed', {
+    button: i18nT('components.notifications.notificationFeed.dismiss_notification'),
+  })
+}

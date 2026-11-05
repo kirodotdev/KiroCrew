@@ -406,6 +406,24 @@ def _restore_autonudge_singleton():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_aws_bin_dir_trust(_floor_monkeypatch):
+    """Start each test with the deploy engine's empty fallback-directory trust state.
+
+    ``deploy.engine`` keeps two process globals for the AWS tooling dirs: the
+    ``_TRUSTED_AWS_BIN_DIRS`` snapshot that every resolver walk, ``run_aws`` and
+    ssh spawn republishes, and ``_WARNED_AWS_BIN_DIR_REFUSALS``, the refusals
+    already logged. A test that builds a child env from an absolute head reads
+    the snapshot, so one an earlier test on the same worker left would decide
+    what that child's PATH holds. Patched only when the module is already
+    imported: importing it here would load the deploy engine into every test.
+    """
+    engine = sys.modules.get("kiro_crew.deploy.engine")
+    if engine is not None:
+        _floor_monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+        _floor_monkeypatch.setattr(engine, "_WARNED_AWS_BIN_DIR_REFUSALS", set())
+
+
+@pytest.fixture(autouse=True)
 def _reset_cjk_segmenter():
     """Forget session search's registered Chinese segmenter around each test.
 
@@ -1115,6 +1133,7 @@ def _reset_materialized_agents_snapshot():
             ("_MATERIALIZED_AGENTS", frozenset()),
             ("_MATERIALIZED_AGENTS_READY", False),
             ("_MATERIALIZED_COMPLETE", False),
+            ("_MATERIALIZED_SKIPPED", None),
             ("_MATERIALIZED_MATE_ONLY", frozenset()),
             ("_MATERIALIZED_AGENTS_GENERATION", 0),
             ("_MATERIALIZED_REFRESH_APPLIED", 0),
@@ -1128,6 +1147,11 @@ def _reset_materialized_agents_snapshot():
         for name in ("_MATERIALIZED_SEEN", "_MATERIALIZED_STEMS"):
             if hasattr(loader_mod, name):
                 setattr(loader_mod, name, {})
+        # The agent catalog's scan gate remembers a stamp of a snapshot this reset
+        # just dropped; a fresh gate makes the next fetch scan.
+        catalog_mod = sys.modules.get("kiro_crew.dashboard.handlers.agent_catalog")
+        if catalog_mod is not None and hasattr(catalog_mod, "_REFRESH_GATE"):
+            catalog_mod._REFRESH_GATE = catalog_mod._RefreshGate()
 
     clear()
     try:

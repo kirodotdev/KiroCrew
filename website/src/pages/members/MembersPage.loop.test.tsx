@@ -141,7 +141,7 @@ describe('MembersPage — on-watch loop indicator', () => {
     await waitFor(() => expect(within(card).queryByTestId('crew-profile-loop-indicator')).toBeNull())
     expect(within(card).queryByTestId('crew-patrol-row')).toBeNull()
     // Silence here would read as "nothing wakes this mate": the failure is said instead.
-    expect(await within(card).findByTestId('crew-patrol-read-error')).toHaveTextContent('Could not read what wakes this mate on its own.')
+    expect(await within(card).findByTestId('crew-patrol-read-error')).toHaveTextContent('Could not read what wakes this Bot on its own.')
     expect(within(card).getByTestId('crew-schedule-heading-self')).toBeInTheDocument()
   })
 
@@ -249,5 +249,20 @@ describe('MembersPage — on-watch loop indicator', () => {
     expect(betaRow).toHaveAttribute('data-state', 'running')
     expect(within(betaCard).queryByTestId('crew-patrol-error')).toBeNull()
     expect(within(betaRow).getByTestId('crew-patrol-toggle')).toBeEnabled()
+  })
+})
+
+describe('MembersPage — a mate session breadcrumb lands on Sessions', () => {
+  it('opens the named crewmate\'s Profile on Sessions, once', async () => {
+    await renderPage({ pathname: '/members', search: '?member=beta', state: { openMateSessions: true } } as never)
+    const card = await screen.findByTestId('crew-profile-panel')
+    expect(card).toHaveAttribute('data-tab', 'sessions')
+    expect(within(card).getByTestId('crew-profile-name')).toHaveTextContent('beta')
+  })
+
+  it('a plain member link leaves the Profile closed', async () => {
+    await renderPage('/members?member=beta')
+    await screen.findByTestId('chat-pane-stub')
+    expect(screen.queryByTestId('crew-profile-panel')).toBeNull()
   })
 })

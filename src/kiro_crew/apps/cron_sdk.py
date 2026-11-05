@@ -255,9 +255,9 @@ class CronSDK:
         Raises ``ValueError`` on rejection (SEL-audited).
         """
         if command:
-            from kiro_crew.mcp_cron import _vet_shell_command
+            from kiro_crew.mcp_cron import _command_cron_platform_refusal, _vet_shell_command
 
-            err = _vet_shell_command(command)
+            err = _vet_shell_command(command) or _command_cron_platform_refusal()
             if err:
                 sel().log_api_access(
                     caller="cron_sdk",
@@ -376,6 +376,10 @@ class CronSDK:
         # memory by naming it. The name is passed through as ``agent_id``, so an
         # app cron behaves exactly as it does on main and can only reach global
         # V1 memory.
+        # Read here, as the store reads them, so an unreadable value (an infinite
+        # float included) is the store's ValueError, not an OverflowError.
+        from kiro_crew.cron_service.fields import whole_seconds
+
         kwargs: dict[str, Any] = dict(
             name=name,
             message=message,
@@ -392,8 +396,8 @@ class CronSDK:
             timezone=timezone or "",
             skip_dates=skip_dates or None,
             approval_mode=approval_mode or "",
-            timeout_secs=int(timeout_secs) if timeout_secs else 0,
-            timeout=int(timeout) if timeout else 0,
+            timeout_secs=whole_seconds("timeout_secs", timeout_secs) if timeout_secs else 0,
+            timeout=whole_seconds("timeout", timeout) if timeout else 0,
             folder_id=folder_id or "",
             created_by=self._owner_prefix,
         )

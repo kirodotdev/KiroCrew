@@ -1,13 +1,7 @@
 """Tests for warm session pool (session.pool_size / session.pool_agent).
 
-This module pins how the pool fills and which session may claim a warm provider: the
-fill and its liveness drain, the agent, TTL and model matches a claim needs, the config
-that sizes the pool, and the sessions (resumed, stateless, side read-only, or on a
-disabled pool) that never claim. How a provider leaves the pool and its process dies
-lives in ``test_session_pool_reaping.py``; how the pool refills after a factory reload
-or a defaults refresh, in which workspace, and around the fill lock in
-``test_session_pool_refill.py``; the shared fixture and stand-ins in
-``session_pool_helpers.py``.
+How the pool fills and which session may claim a warm provider. Reaping is in
+``test_session_pool_reaping.py``, refill in ``test_session_pool_refill.py``.
 """
 
 from __future__ import annotations
@@ -28,9 +22,7 @@ from session_pool_helpers import (  # noqa: F401 -- the autouse fixture register
 from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.start_priority import StartPriority
 
-# ---------------------------------------------------------------------------
 # _fill_warm_pool
-# ---------------------------------------------------------------------------
 
 
 class TestMemberContextAllocation:
@@ -146,18 +138,10 @@ class TestFillWarmPool:
         provider.shutdown = AsyncMock(side_effect=asyncio.CancelledError)
         factory.side_effect = lambda *a, **kw: provider
 
-        # The cancellation handler can neither await nor block the loop, so it
-        # dispatches the hard kill fire-and-forget. Production sends it to
-        # `subprocess_executor()`, a process-wide 8-worker singleton shared by
-        # every test in this xdist worker, and a started run_in_executor future
-        # cannot be cancelled -- so sibling tests holding those threads (a real
-        # `taskkill` or descendant scan on Windows, a wedged PTY close) make
-        # this kill queue behind them for as long as they run. A private
-        # executor owns the capacity this assertion depends on; draining it with
-        # shutdown(wait=True) also guarantees the worker thread has returned and
-        # call_args is recorded before the assertion reads it. unittest.mock
-        # increments call_count before writing call_args, so waiting on
-        # call_count alone is a data race on any scheduler.
+        # The hard kill goes fire-and-forget to `subprocess_executor()`, shared by every
+        # test on this xdist worker, so it could queue behind sibling tests. A private
+        # executor drained with shutdown(wait=True) also ensures call_args is written:
+        # mock bumps call_count first, so waiting on call_count alone races.
         with (
             ThreadPoolExecutor(max_workers=1) as private_executor,
             patch("kiro_crew.session._sync_kill_provider") as mock_kill,
@@ -170,9 +154,7 @@ class TestFillWarmPool:
         assert mgr._warm_pool.qsize() == 0
 
 
-# ---------------------------------------------------------------------------
 # Liveness drain loop
-# ---------------------------------------------------------------------------
 
 
 class TestLivenessDrainLoop:
@@ -198,12 +180,8 @@ class TestLivenessDrainLoop:
     async def test_unanswerable_liveness_probe_is_discarded_fail_closed(self):
         """A provider whose liveness probe fails is discarded, not recycled.
 
-        The TTL recycle reads the same process check, and an unusable answer
-        is treated as dead (WARNING, discard) so a broken provider never
-        reaches a session. Under the declared-ABC liveness contract a real
-        provider always answers ``is_process_alive`` (the ABC defaults it to
-        ``is_alive``), so the only remaining unanswerable case is a probe
-        that raises — which this models.
+        The ABC defaults ``is_process_alive`` to ``is_alive``, so the only unanswerable
+        probe is one that raises; it is treated as dead (WARNING, discard).
         """
         mgr, _ = _make_manager(pool_agent="kirocrew", pool_ttl_secs=1)
 
@@ -220,9 +198,7 @@ class TestLivenessDrainLoop:
         assert pooled is healthy
 
 
-# ---------------------------------------------------------------------------
 # _claim_from_pool
-# ---------------------------------------------------------------------------
 
 
 class TestClaimFromPool:
@@ -243,7 +219,6 @@ class TestClaimFromPool:
         assert mgr._warm_pool.qsize() == 0
 
     def test_claim_empty_agent_matches_empty_pool_agent(self):
-        """Empty agent matches empty pool_agent."""
         mgr, _ = _make_manager(pool_agent="")
         provider = _make_provider()
         mgr._warm_pool.put_nowait((provider, time.monotonic()))
@@ -330,9 +305,7 @@ class TestPoolAgentResolvesLikeASession:
         assert mgr._warm_pool.qsize() == 0
 
 
-# ---------------------------------------------------------------------------
 # _schedule_replenish
-# ---------------------------------------------------------------------------
 
 
 class TestScheduleReplenish:
@@ -352,9 +325,7 @@ class TestScheduleReplenish:
         assert len(mgr._background_tasks) == 0
 
 
-# ---------------------------------------------------------------------------
 # Pool drain on shutdown (close_all)
-# ---------------------------------------------------------------------------
 
 
 class TestPoolDrainOnShutdown:
@@ -372,9 +343,7 @@ class TestPoolDrainOnShutdown:
         assert mgr._warm_pool.qsize() == 0
 
 
-# ---------------------------------------------------------------------------
 # Config wiring
-# ---------------------------------------------------------------------------
 
 
 class TestConfigWiring:
@@ -419,9 +388,7 @@ class TestConfigWiring:
         assert mgr._pool_size == 10
 
 
-# ---------------------------------------------------------------------------
 # get_or_create integration with pool
-# ---------------------------------------------------------------------------
 
 
 class TestGetOrCreatePoolIntegration:
@@ -641,9 +608,7 @@ class TestGetOrCreatePoolIntegration:
         pooled.client.set_model.assert_awaited_once_with("custom-model")
 
 
-# ---------------------------------------------------------------------------
 # TTL expiration
-# ---------------------------------------------------------------------------
 
 
 class TestTTLExpiration:
@@ -727,9 +692,7 @@ class TestTTLExpiration:
         stale_dead.shutdown.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
 # Model-matches-pool-default bypass (effective_model normalization)
-# ---------------------------------------------------------------------------
 
 
 class TestModelMatchesPoolDefault:
@@ -1144,12 +1107,8 @@ class TestModelMatchesPoolDefault:
     async def test_namespaced_pin_resolves_on_claim_like_a_cold_start(self):
         """A warm claim must run exactly what a cold start of the pin runs.
 
-        The pin carries a stale `<namespace>::` qualifier while the pooled
-        session advertises the bare id. The cold-start spawn resolves it via
-        resolve_pin_spelling and sends the advertised spelling; withholding it
-        here instead would make whether the pinned model runs depend on whether
-        a pooled process happened to exist — the exact failure class the
-        withhold test above guards from the other direction.
+        The pin has a stale `<namespace>::` qualifier; like a cold start, the claim resolves
+        it via resolve_pin_spelling and sends the advertised bare id.
         """
         from kiro_crew.providers.acp import AcpProvider
 
@@ -1175,9 +1134,7 @@ class TestModelMatchesPoolDefault:
         assert provider is pooled
 
 
-# ---------------------------------------------------------------------------
 # Stateless sessions must not claim from pool
-# ---------------------------------------------------------------------------
 
 
 class TestStatelessSkipsPool:
@@ -1219,9 +1176,7 @@ class TestStatelessSkipsPool:
             assert provider is not pooled, prefix
 
 
-# ---------------------------------------------------------------------------
 # pool_size=0 must not attempt pool claim
-# ---------------------------------------------------------------------------
 
 
 class TestPoolDisabledSkipsClaim:

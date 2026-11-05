@@ -1,17 +1,8 @@
 """OPTIONS lifecycle on the Slack surface.
 
-Two behaviours are locked in by this file and its siblings:
-
-* every outbound path renders a trailing ``[OPTIONS: …]`` tag as a control,
-  never as literal text — including the link-time backfill;
-* a control stops being answerable once the conversation moves past the question
-  it asked, whichever surface the next turn arrives on.
-
-This file pins a control recorded after its expiry window closed being spent on the
-spot. ``test_slack_options_lifecycle_expiry.py`` pins the expiry primitives, the slot
-lifecycle and the expiry on each turn entry, ``test_slack_options_lifecycle_link.py``
-the link-time backfill, unlinking and several outstanding controls, and
-``slack_options_lifecycle_helpers.py`` holds the record and block helpers they share.
+Every outbound path renders a trailing ``[OPTIONS: …]`` tag as a control, and a control
+stops being answerable once the conversation moves past its question. The ``_expiry``
+and ``_link`` siblings cover the expiry primitives and the link-time backfill.
 """
 
 from __future__ import annotations
@@ -131,23 +122,17 @@ def _posted_texts(slack: MagicMock) -> list[str]:
 class TestControlPostedAfterTheWindowIsSpent:
     """A control recorded after its expiry window closed must be spent on the spot.
 
-    Both sites post the control AFTER the point where a concurrent turn's expiry
-    pass would have seen it — the native handler releases the session permit long
-    before the timing footer goes up, and the link backfill awaits a Slack post per
-    replayed message. In both cases the superseding turn's expiry runs over a record
-    that does not exist yet, so nothing else will ever spend it. Each site therefore
-    re-checks after recording and expires immediately if the conversation moved on.
+    The native footer and the link backfill both post after a concurrent turn's expiry
+    pass may have run, so each re-checks after recording and expires at once if the
+    conversation moved on.
     """
 
     def test_options_are_recorded_under_the_threads_live_owner(self):
         """Structural: the record and the expiry must key off the SAME owner.
 
-        A thread linked to a dashboard mid-turn changes owner. Recording under the
-        key the turn started with files the control where the next turn's expiry
-        — which resolves the current owner — will never look, leaving it clickable
-        into a question the conversation has already passed. Both Slack posting
-        paths have to resolve the live owner, and the footer path has to resolve it
-        ONCE so a link landing between its record and its cleanup cannot split them.
+        A thread linked mid-turn changes owner, so recording under the starting key hides
+        the control from the next expiry. The footer path resolves the owner ONCE so a
+        link between its record and its cleanup cannot split them.
         """
         import inspect
 
@@ -180,18 +165,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_a_non_conversational_command_does_not_spend_a_live_control(self):
         """`ping`/`status`/denial must not expire a still-pending question.
 
-        Purely an ordering guarantee, so asserted on source order. The entry
-        expiry must not run before the shortcuts: a pending
-        ``[OPTIONS: Deploy | Abort]`` plus a `ping` in the thread struck the
-        control through, posted `pong`, and returned without running the agent --
-        so the conversation had NOT moved, yet the buttons were spent and the
-        question became unanswerable. That is the inverse of the stale click this
-        whole lifecycle prevents.
-
-        The expiry must therefore sit BELOW every short-circuit that answers
-        without starting a turn, in both entry points. One position below them all
-        (rather than a guard per command) also means a shortcut added later
-        inherits the correct behaviour.
+        Asserted on source order: in both entry points the expiry sits BELOW every
+        short-circuit that answers without a turn, so a shortcut added later inherits it.
         """
         import inspect
 
@@ -284,11 +259,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     ):
         """The drain's own cleanup must not spend a control a newer turn recorded.
 
-        The turn that makes the replayed question stale can finish DURING the
-        drain and record its own live control in the same slot. A session-wide
-        expiry would strike that newer question through as well, silencing the
-        very question the conversation is now waiting on — so the drain narrows
-        its cleanup to the ts it posted itself.
+        A turn can finish DURING the drain and record its own control in the same slot,
+        so the drain expires only the ts it posted itself.
         """
         from kiro_crew.dashboard import chat_slack
         from kiro_crew.dashboard.chat_backfill import BackfillSelection
@@ -421,11 +393,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     async def test_backfill_expiry_survives_a_slot_at_the_trim_cap(self, tmp_path, monkeypatch):
         """At the message cap, a new turn does not change len(slot.messages).
 
-        add_message trims from the front once the list exceeds
-        _MAX_SLOT_MESSAGES, so a slot sitting at the cap appends and trims in the
-        same step and its length is identical before and after. Comparing lengths
-        would miss the advancement on exactly the busiest slots — where the race
-        is most likely. total_messages is a lifetime counter, so it still moves.
+        add_message trims from the front past _MAX_SLOT_MESSAGES, so the length stays the
+        same; total_messages is a lifetime counter and still moves.
         """
         from kiro_crew.dashboard import chat_slack
         from kiro_crew.dashboard.chat_backfill import BackfillSelection
@@ -475,11 +444,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     ):
         """A turn in flight for the WHOLE drain moves neither baseline.
 
-        A long cron or injected turn that is already running when the drain starts
-        and still running when it ends leaves slot.running identical at both ends,
-        and it may not have appended a row yet — so a before/after comparison sees
-        nothing. The agent is mid-reply the entire time, which is precisely when
-        the replayed question is stale, so the control must still be spent.
+        slot.running is the same at both ends and no row may be appended yet, but the
+        agent is mid-reply, so the replayed question is stale and must still be spent.
         """
         from kiro_crew.dashboard import chat_slack
         from kiro_crew.dashboard.chat_backfill import BackfillSelection
@@ -524,12 +490,9 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_an_ansi_split_credential_in_a_choice_does_not_reach_slack(self):
         """A credential broken up by escapes must not survive into a choice.
 
-        The guarantee lives in `slack.format.build_options_blocks`, which redacts
-        every choice
-        through `redact_for_display`, which canonicalises the form Slack actually
-        DISPLAYS (ANSI, emphasis, backticks, link markup) before scanning. That
-        is strictly stronger, so the test asserts against the real owner rather
-        than keeping a second copy of the pipeline alive to test.
+        `slack.format.build_options_blocks` redacts every choice through
+        `redact_for_display`, which scans the form Slack DISPLAYS (ANSI, emphasis,
+        backticks, link markup).
         """
         from kiro_crew.slack.format import strip_ansi
 
@@ -549,12 +512,9 @@ class TestControlPostedAfterTheWindowIsSpent:
     async def test_expiry_marks_the_control_terminal(self, tmp_path):
         """A click queued behind a successful expiry must not dispatch.
 
-        The once-only claim defends click-against-click. It does not, on its own,
-        defend click-against-completed-expiry: a Send queued behind the expiry
-        would find the claim unheld, take it, and answer the very question the
-        expiry just struck through. The expiry therefore marks the control terminal
-        while it still holds the message's edit lock, so the queued click is refused
-        by exactly the check a duplicate click hits.
+        The once-only claim stops only a second click; a Send queued behind the expiry
+        would find it unheld. So the expiry marks the control terminal under the edit
+        lock, and the queued click hits the same check a duplicate click does.
         """
         from kiro_crew.dashboard.chat_utils import (
             expire_slack_options,
@@ -582,11 +542,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_a_submission_that_rendered_nothing_gives_the_claim_back(self):
         """A wholly failed submit must not consume the answer forever.
 
-        If neither the in-place edit nor the replacement post lands, nothing
-        happened: the buttons are still on screen. Holding the claim would refuse
-        every retry, leaving a control permanently visible and permanently
-        unanswerable. Once the selection IS rendered the claim stays, even if a
-        later step stumbles.
+        If neither the edit nor the replacement post lands, the buttons are still on
+        screen and a held claim would refuse every retry. Once rendered, the claim stays.
         """
         import inspect
 
@@ -608,15 +565,11 @@ class TestControlPostedAfterTheWindowIsSpent:
 
     @pytest.mark.asyncio
     async def test_the_dashboard_mirror_files_its_control_under_the_live_owner(self):
-        """The dashboard mirror path must do what the other two already do.
+        """The dashboard mirror files its control under the live owner, as the others do.
 
-        Rounds 23 and 26 gave the native footer and the transport path an
-        owner-resolved record plus owner-change supersession. Through the real
-        ``_run_chat``: the thread is relinked to another session WHILE the mirror's
-        ``post_blocks`` is in flight, and that session records a control of its own
-        meanwhile. The control just posted must be filed under the new owner and
-        struck at once -- the question would be answered into a conversation that
-        moved on -- and only OUR control struck: the new owner's survives.
+        The thread is relinked WHILE the mirror's ``post_blocks`` is in flight and the
+        new owner records its own control. Ours is filed under the new owner and struck
+        at once; the new owner's survives.
         """
         newer = PostedOptions(channel="C-1", ts="opt-newer", choices=("X",), blocks=())
         slack, record, state = await _mirror_turn(relink_to="dashboard:other", newer=newer)
@@ -721,12 +674,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_send_message_options_use_the_safe_fallback_stub(self):
         """The `send_message` control must not carry the agent's body as fallback.
 
-        Slack parses entities in a message's top-level ``text``, which is what
-        notifications render, so an agent-authored body containing `<!channel>`
-        would ping the whole channel -- and the expiry replays the STORED text on
-        its edit, so it would ping again on every retirement. Nothing is lost by
-        using the stub: the body is already posted as its own Slack message
-        immediately above, so on the control it was pure duplication.
+        Slack parses entities in top-level ``text``, so a body with `<!channel>` would
+        ping the channel, again on each expiry edit. The body is already posted above.
         """
         import inspect
         from pathlib import Path
@@ -763,11 +712,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     async def test_a_local_dashboard_command_does_not_spend_the_control(self, command):
         """`/goal` and `/prompts` answer without an agent turn.
 
-        Each SLACK entry point's expiry runs below its short-circuits; the
-        dashboard path once kept its expiry at the very top of ``_run_chat``, so a
-        local command that never starts a turn still struck a pending question
-        through -- leaving valid choices unanswerable with nothing on the way to
-        answer them.
+        The expiry in ``_run_chat`` runs below these short-circuits, as in each Slack
+        entry point, so a command that starts no turn leaves the question answerable.
         """
         slack, record, state, _seen = await _live_control_turn(command)
         assert record.allocations == [], "a local command acquires no session"
@@ -852,11 +798,9 @@ class TestControlPostedAfterTheWindowIsSpent:
     ):
         """A relink to a DIFFERENT thread during the expiry must not be torn down.
 
-        The existing round-27 guard covers a same-thread relink; this is the other
-        branch, where the slot's in-memory fields moved too. Naming this honestly:
-        it is the compare-and-clear-free path -- what protects the replacement is
-        the compare of the slot's live fields against the ones captured before the
-        await, not any check inside the clear.
+        Here the slot's in-memory fields moved too. The replacement is protected by
+        comparing the slot's live fields with those captured before the await, not by
+        any check inside the clear.
         """
         from kiro_crew.dashboard import chat_slack
         from kiro_crew.dashboard.chat_slack import api_chat_slot_slack_unlink
@@ -888,11 +832,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_a_one_click_answer_takes_the_shared_guarded_path(self):
         """A choice button answers through ``_answer_options``, like the modal does.
 
-        That one path holds every guarantee pinned above -- the edit lock against
-        the turn-start expiry, the once-only claim taken before the first edit,
-        the pre-edit owner snapshot, the escaped fallback text with a raw answer.
-        A one-click branch that rendered or dispatched on its own would have none
-        of them, which is how a second click once meant a second turn.
+        That path holds the edit lock, the once-only claim, the pre-edit owner snapshot
+        and the escaped fallback text; a branch of its own would have none of them.
         """
         import inspect
 
@@ -907,11 +848,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_an_unsettled_answer_claim_is_never_evicted(self):
         """The claim map's bound must not re-admit a click on live buttons.
 
-        Eviction is by insertion order across the WHOLE workspace, so traffic in
-        busy channels could drop the claim on a control still sitting unanswered
-        in a quiet thread. When the render or the strike-through failed those
-        buttons really are still on screen, and this entry is the only thing
-        standing between a second click and a duplicate turn.
+        Eviction is by insertion order across the WHOLE workspace, so busy channels could
+        drop the claim on buttons still on screen in a quiet thread.
         """
         from kiro_crew.slack import outbound
 
@@ -955,12 +893,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_a_live_control_is_never_evicted_to_bound_the_store(self):
         """No cap may drop a record for a control that is still clickable.
 
-        An earlier revision capped the store with FIFO eviction. That is worse than
-        unbounded: evicting a live record means no later turn can retire that
-        control, which is exactly the untracked control this lifecycle exists to
-        eliminate -- so the bound would reintroduce the defect at scale, silently,
-        on the busiest instances. The only bound is the lifecycle itself: a key
-        exists while a question is unanswered and is pruned the moment it is not.
+        An evicted live record can never be retired. The only bound is the lifecycle: a
+        key exists while its question is unanswered and is pruned once it is not.
         """
         import inspect
 
@@ -988,12 +922,9 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_the_store_is_not_held_on_the_slot(self):
         """Structural: one store, keyed by session key, on DashboardState.
 
-        A slot-held record is the defect: a plain Slack thread has no slot,
-        so the control was dropped and no later turn could expire it. It also must
-        not be a slot field PLUS a keyed fallback -- a slot can come into existence
-        at any moment (the channel-surface reconciler creates one), so a fallback
-        map would go invisible the instant one appeared, and two stores are how a
-        record gets filed under one index and cleared under another.
+        A plain Slack thread has no slot. A slot field plus a keyed fallback fails too:
+        a slot can appear at any moment (the channel-surface reconciler), and two stores
+        let a record be filed under one and cleared under the other.
         """
         import inspect
         import sys
@@ -1056,15 +987,9 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_only_the_first_click_on_a_control_is_answered(self):
         """A second Send on the same message must dispatch nothing.
 
-        Two rapid clicks produce two handler tasks. Both serialize on
-        ``options_edit_lock``, so without a once-only claim the first renders the
-        selection and dispatches it and the second dispatches the same answer
-        again -- a duplicate turn, or a superseded one once the first has moved on.
-
-        The claim is deliberately NOT "is a record still tracked":
-        ``remember_slack_options`` no-ops when the session has no dashboard slot,
-        which is the normal state for a plain Slack conversation, so keying
-        validity on record presence would reject every legitimate click there.
+        Both clicks serialize on ``options_edit_lock``, so the lock alone would dispatch
+        twice. The claim is not "is a record tracked": ``remember_slack_options`` no-ops
+        without a dashboard slot, the normal state of a plain Slack conversation.
         """
         from kiro_crew.slack.outbound import claim_options_answer
 
@@ -1101,14 +1026,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_the_slack_fallback_text_is_escaped_but_the_answer_is_not(self):
         """A mention must not survive into the message's top-level `text`.
 
-        The mrkdwn BLOCKS are escaped, but Slack parses entities in a message's
-        `text` argument too -- and `text` is what notifications and block-less
-        clients show -- so the submit handler handing the raw selection to
-        `update_message` / `post_blocks` left the notification path open even
-        though the rendered blocks were safe.
-
-        The escape must NOT touch the copy echoed back into the session: that is
-        the answer the user picked, and escaping it would change it.
+        Slack parses entities in `text` too, which notifications show. The copy echoed
+        into the session stays raw: it is the answer the user picked.
         """
         import inspect
 

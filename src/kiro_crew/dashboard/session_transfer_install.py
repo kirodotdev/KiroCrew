@@ -398,12 +398,14 @@ async def _install_arrived_bundle(
             resources=f"slot_count={state.live_slot_count()}",
             error="slot cap reached",
         )
+        # 409, not 429: the cap clears only when a session is closed, so a retry
+        # cannot win.
         return web.json_response(
             {
                 "error": f"slot cap reached ({MAX_LIVE_SLOTS})",
                 "code": "transfer_slot_cap",
             },
-            status=429,
+            status=409,
         )
 
     body, body_err = await _read_bundle_body(request, keep)
@@ -470,7 +472,7 @@ async def _install_arrived_bundle(
     # tree and is dropped, and ``folder_id`` is deliberately absent HERE so
     # placement is resolved after the slot exists (see the filing call below) --
     # a folder created in front of the post-await slot-cap re-check is left
-    # behind when that check answers 429.
+    # behind when that check answers 409.
     meta = {
         "title": f"{_IMPORT_TITLE_MARKER}{source_title}{suffix}",
         "agent": resolved_agent,
@@ -501,7 +503,7 @@ async def _install_arrived_bundle(
                 "error": f"slot cap reached ({MAX_LIVE_SLOTS})",
                 "code": "transfer_slot_cap",
             },
-            status=429,
+            status=409,
         )
 
     # The shared materialiser mints the key (name=None), registers the slot and
@@ -615,7 +617,7 @@ async def _install_arrived_bundle(
         # Here rather than in ``meta`` above for two reasons, both load-bearing.
         #
         # The slot already exists, so the post-await slot-cap re-check above
-        # cannot answer 429 from here on -- a folder write standing in front of
+        # cannot answer 409 from here on -- a folder write standing in front of
         # that check is left behind when it fires, which is folder-store
         # exhaustion with a narrower trigger than the loop an app token would
         # otherwise run.

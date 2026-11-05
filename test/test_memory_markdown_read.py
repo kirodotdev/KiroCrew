@@ -564,7 +564,7 @@ class TestAtomicMemoryWrites:
         ms = _store(tmp_path)
         ms.init()
 
-        def boom(src: object, dst: object) -> None:
+        def boom(src: object, dst: object, **kwargs: object) -> None:
             raise OSError("simulated replace failure")
 
         # Patch the rename step inside the atomic_write helper the memory
@@ -998,15 +998,22 @@ class TestMemoryCliWiring:
         ns = mock_cmd.call_args[0][0]
         assert (ns.target, ns.format, ns.since) == (None, "md", None)
 
-    def test_memory_export_include_markdown_defaults_off(self) -> None:
+    def test_memory_export_include_markdown_defaults_off(self, tmp_path: Path) -> None:
+        out = tmp_path / "export.json"
+        ms = _populated_store(tmp_path)
         with (
-            patch.object(sys, "argv", ["kirocrew", "memory", "export"]),
-            patch("kiro_crew.cli_commands._memory_cmd") as mock_cmd,
+            patch.object(sys, "argv", ["kirocrew", "memory", "export", "--output", str(out)]),
+            patch.object(cli_commands, "declared_store", _EmptyVectorStore),
+            patch.object(cli_commands, "_markdown_memory_store", lambda: ms),
         ):
             from kiro_crew.cli import main
 
             main()
-        assert mock_cmd.call_args[0][0].include_markdown is False
+        assert list(json.loads(out.read_text(encoding="utf-8"))) == [
+            "semantic",
+            "episodic",
+            "events",
+        ]
 
 
 # ── memory search: the markdown layer is reachable by keyword ──

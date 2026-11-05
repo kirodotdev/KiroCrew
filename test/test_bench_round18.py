@@ -53,9 +53,7 @@ def test_the_atomic_writer_refuses_a_linked_ancestor_when_it_cannot_pin(
     assert not (victim / "report.json").exists()
 
 
-def test_the_creating_writer_refuses_the_same_chain(
-    tmp_path: Path, unpinnable: None
-) -> None:
+def test_the_creating_writer_refuses_the_same_chain(tmp_path: Path, unpinnable: None) -> None:
     """Both writers, one rule -- that is the whole finding."""
     out, victim = _linked_out_dir(tmp_path)
 
@@ -65,9 +63,7 @@ def test_the_creating_writer_refuses_the_same_chain(
     assert not (victim / "corpus.json.part").exists()
 
 
-def test_a_real_directory_chain_is_still_written(
-    tmp_path: Path, unpinnable: None
-) -> None:
+def test_a_real_directory_chain_is_still_written(tmp_path: Path, unpinnable: None) -> None:
     """The ordinary case on that platform must keep working.
 
     A guard that refused every write where pinning is unavailable would satisfy the

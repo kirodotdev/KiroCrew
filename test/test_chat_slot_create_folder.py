@@ -1,17 +1,9 @@
 """POST /api/chat/slots files a new slot into its folder BEFORE announcing it.
 
-The bug these pin: ``get_or_create_slot`` broadcasts the whole slot list while
-still inside the create handler, i.e. before the HTTP response reaches the
-browser. So a folder applied *after* creation (the old client-side
-``setSlotFolder`` PATCH) could never win the race — the dashboard received a
-slots frame for an unfiled slot, rendered the new session at the top level, and
-only ~200ms later moved it into the folder. Measured in a real browser: the new
-row's first paint was at root every time.
-
-The fix is ordering, so the tests assert ordering: the create handler wraps its
-whole set-up in ``suspend_slots_push()``, which means exactly ONE coalesced
-``slots`` broadcast is emitted and it already carries ``folder_id``. Asserting
-only the final state would pass even with the race reintroduced.
+``get_or_create_slot`` broadcasts before the HTTP response, so a folder set after creation
+paints the row at root first. The handler wraps set-up in ``suspend_slots_push()``, so the
+tests assert ONE ``slots`` broadcast that already carries ``folder_id``; the final state
+alone would not catch the race.
 """
 
 from __future__ import annotations
@@ -722,11 +714,8 @@ class TestFolderTagInheritance:
     async def test_malformed_folder_tag_entry_does_not_crash_slot_creation(self, tmp_path):
         """A non-string entry in a folder's persisted tags is skipped, never raised on.
 
-        folders.json is hand-editable: a dict (or any unhashable) in `tags`
-        would blow up the set-membership test AFTER the slot was inserted,
-        turning one malformed store row into a 500 on every chat created in
-        that folder. The isinstance guard skips it and still copies the valid
-        sibling ids.
+        folders.json is hand-editable; an unhashable entry would 500 every chat created in
+        that folder. Valid sibling ids are still copied.
         """
         state = _make_state(tmp_path)
         state._folders[0]["tags"] = [{}, None, 42, "t1"]
@@ -744,17 +733,9 @@ class TestFolderTagInheritance:
 class TestDurableWriteOrdering:
     """The durable write runs INSIDE the suspension, ahead of the broadcast.
 
-    ``suspend_slots_push``'s ``__exit__`` flushes the owed push, and on the
-    coalescing window's LEADING edge that flush broadcasts synchronously — so an
-    exception there escapes ``__exit__`` and unwinds the rest of the handler.
-    With the forced save sitting after the ``with`` block, that unwind skipped a
-    metadata mutation the request had already acknowledged, and this save is the
-    only durable record of a recreate's folder filing or pinned title.
-
-    ``session_control.py``'s create span already keeps its persist inside the
-    suspension for the same reason ("a slot whose birth write fails is never
-    broadcast at all"); these pin the ordering here, not the exception, so any
-    future raise from the flush is covered too.
+    ``suspend_slots_push``'s ``__exit__`` can broadcast synchronously and raise, so a save
+    after the ``with`` block could be skipped; it is the only durable record of a
+    recreate's folder or pinned title. These pin the ordering, not one exception.
     """
 
     @pytest.mark.asyncio
@@ -817,12 +798,8 @@ class TestDurableWriteOrdering:
 class TestFreshFolderCreateStaysOffTheExecutor:
     """A brand-new session filed into a project-less folder skips the project probe.
 
-    The sidebar's "New chat" inside a folder sends ``folder_id`` and no ``name``.
-    Validating a folder's project ``stat``s the directory, so it belongs on a
-    worker thread; but most folders declare no project, and a thread hop that
-    resolves to ``""`` queues on the gateway's shared default executor inside the
-    process-wide ``suspend_slots_push``, before the response. The chain walk runs
-    on the loop and only a declared project's ``stat`` is sent to a thread.
+    A thread hop would queue on the shared executor inside the process-wide
+    ``suspend_slots_push``, so only a declared project's ``stat`` goes to a thread.
     """
 
     @pytest.mark.asyncio
@@ -894,13 +871,8 @@ class TestFreshFolderCreateStaysOffTheExecutor:
 class TestOwnerFolderCreatePersistsTheFiling:
     """A fresh owner-dashboard create in a folder has a durable writer for its filing.
 
-    On the owner path the member assignment publishes the newborn's execution
-    context through ``bind_session_execution``, whose ``update_metadata_if``
-    UPSERTS the session's metadata line. From then on the forced birth save has
-    a line to merge into, and it is the only writer of ``folder_id`` (and the
-    inherited tags, pinned title, project and colour) before the first message:
-    ``slot._dirty`` stays False, so no periodic flush would write them later. A
-    restart before the first message must rehydrate the tab filed, not at root.
+    ``slot._dirty`` stays False before the first message, so the forced birth save is the
+    only writer of ``folder_id``; a restart then must rehydrate the tab filed.
     """
 
     @pytest.mark.asyncio

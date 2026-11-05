@@ -1,19 +1,10 @@
 """An owner-DM channel session may act as a conductor; every other channel caller stays contained.
 
-Three gates decide whether a caller's turns may reach another session or the work
-ledger: the creator gate (``_refuse_ineligible_creator``), the target gate
-(``authorize_target``'s caller half) and the ledger gate
-(``handlers/work_ledger._caller_key``). Before this predicate existed they keyed
-on three different facts — the live ``linked_session_key``, the key prefix, the
-mirror store — and refused every channel-born session alike, which made a Discord
-or Telegram DM whose only human is the configured owner unusable as a conductor.
-
-The suite pins the one predicate all three now consult (``owner_dm_refusal``, the
-clause walk that answers ``""`` for an admitted owner DM and otherwise names the
-first fact that failed), its fail-closed edges, and that the gates cannot disagree
-about a slot -- for both shapes that reach the owner's own DM: the channel-born DM
-session itself, and a dashboard-born session whose outbound mirror is that DM, whose
-peer the predicate reads off the transport's own record (``direct_peer_of``).
+The creator gate (``_refuse_ineligible_creator``), the target gate (``authorize_target``)
+and the ledger gate (``handlers/work_ledger._caller_key``) all consult one predicate,
+``owner_dm_refusal``: ``""`` for an admitted owner DM, else the first fact that failed.
+Pinned for the channel-born DM and for a dashboard session mirrored to that DM, whose
+peer comes from the transport's own record (``direct_peer_of``).
 """
 
 from __future__ import annotations
@@ -72,11 +63,8 @@ class _Transport:
     """The two transport surfaces the predicate reads: ``configured_targets()`` and
     ``direct_peer_of()``.
 
-    Shaped like the real Discord and Telegram transports — one ``user:`` target
-    per allow-listed identity, one ``thread:`` target per allow-listed thread, and
-    a DM conversation names its peer only when this process holds the pairing
-    (Discord's ``create_dm_channel`` / inbound-DM record; Telegram's identity
-    ``chat_id == user_id``, which a test spells as ``{peer: peer}``).
+    Like the real transports, a DM names its peer only when this process holds the
+    pairing; Telegram's ``chat_id == user_id`` is spelled ``{peer: peer}``.
     """
 
     def __init__(
@@ -130,14 +118,9 @@ def _state(tmp_path, monkeypatch):
 def _with_real_mirror_store(state, tmp_path, monkeypatch) -> SessionMap:
     """Back the mirror rows with a real ``SessionMap`` rather than the helper's dict.
 
-    The shared double keeps mirrors in a plain dict, so an unlink there leaves
-    nothing behind. The real map is what the predicate reads in production, and
-    its shape is the point: a channel session's first turn writes the namespaced
-    bucket into the legacy ``slack_channel_id`` field, ``clear_mirror_link`` pops
-    only ``mirror``, and ``get_mirror_link`` must read that threadless row as no
-    mirror at the source -- the row every unlinked channel session carries. The two
-    ``SessionManager`` one-liners the dispatchers and the in-channel unlink call
-    are re-spelled on the double the way the manager spells them.
+    The real shape matters: the first turn leaves the bucket in the legacy
+    ``slack_channel_id`` field, ``clear_mirror_link`` pops only ``mirror``, and
+    ``get_mirror_link`` must read that threadless row as no mirror.
     """
     monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
     store = SessionMap()
@@ -177,13 +160,10 @@ def _set_channel_bucket(store: SessionMap, key: str, channel_id: str) -> None:
 
 
 def _channel_slot(state, session_key: str, *, origin: ChannelLink | None, mirror=...):
-    """A channel-born slot the way ``surface_channel_session`` builds one, after the
-    dispatcher's first inbound turn.
+    """A channel-born slot as ``surface_channel_session`` builds it after the first turn.
 
-    That turn stamps the conversation's namespaced bucket on the session
-    (``set_channel``), records *origin* -- the conversation the session lives in --
-    and binds it as the outbound mirror; *mirror* is that binding, equal to the
-    origin unless a test retargets it.
+    *origin* is the conversation the session lives in; *mirror* is the outbound
+    binding, equal to the origin unless a test retargets it.
     """
     name = session_key.replace(":", "_")
     slot = state.get_or_create_slot(name, linked_session_key=session_key, channel_origin=True)
@@ -458,13 +438,9 @@ def test_an_unknown_origin_conversation_fails_closed(tmp_path, monkeypatch):
 def test_a_restart_cold_owner_dm_is_told_to_send_a_message(tmp_path, monkeypatch, open_ledger_gate):
     """The one refusal a correctly configured owner DM still meets, and it names itself.
 
-    The origin is recorded per inbound turn and held in memory only, while the slot
-    and its mirror are persisted and re-surfaced at boot — so between a gateway
-    restart and the owner's next channel message every other clause holds and this
-    one does not. The exemption stays withheld (a mirror without the recorded
-    origin cannot be told from a retarget), but all three gates say WHICH fact is
-    missing and what clears it, rather than reporting a channel link the caller
-    cannot do anything about.
+    The origin lives in memory only while the mirror is persisted, so after a restart
+    only this clause fails. A mirror without an origin cannot be told from a retarget,
+    so it stays refused, but all three gates name the missing fact and its fix.
     """
     state = _state(tmp_path, monkeypatch)
     _owner_discord(state)
@@ -490,13 +466,10 @@ def test_a_restart_cold_owner_dm_is_told_to_send_a_message(tmp_path, monkeypatch
 
 
 def test_a_group_key_naming_the_owner_is_refused_on_its_chat_type(tmp_path, monkeypatch):
-    """The mutation pin for the DIRECT clause: the ONLY thing wrong here is the chat type.
+    """The DIRECT clause alone refuses this key: the chat type is the only thing wrong.
 
-    Every other negative case in this file is independently killed by another
-    clause (a thread key's scope element is the thread, a forum key carries two
-    scope segments), so deleting ``chat_type != CHAT_TYPE_DIRECT`` would red none
-    of them. This key names the sole owner as its scope, with a matching origin
-    and mirror, so the chat type is the one fact left to refuse it.
+    Every other negative case here also fails another clause, so only this one pins
+    ``chat_type != CHAT_TYPE_DIRECT``.
     """
     state = _state(tmp_path, monkeypatch)
     _owner_discord(state)
@@ -807,14 +780,11 @@ def test_the_mirrored_shape_fails_closed_on_every_edge_it_cannot_answer(tmp_path
 def test_a_read_records_the_readers_audience_so_a_retarget_before_publication_withholds(
     tmp_path, monkeypatch
 ):
-    """The read is authorized against the reader's audience as it holds NOW, and what
-    it returns becomes part of a reply the reader's turn publishes to its mirror
-    LATER, resolved live. So ``session_read_message`` records the reader's own
-    containment at its gate, and the publisher (``cross_surface_withheld``) withholds
-    the cross-surface legs when a constraint newly holds at delivery: the owner-DM
-    mirror retargeted to a guild thread, or a Slack thread bound beside it. Exact --
-    a mirror that did not move, or moved back, publishes -- and a retarget is also
-    refused outright at the reader's next call."""
+    """A mirror retargeted between a read and its reply withholds the cross-surface legs.
+
+    The read is judged against the audience now but published later, so the gate
+    records it and ``cross_surface_withheld`` compares at delivery. A mirror that did
+    not move, or moved back, publishes."""
     from kiro_crew.dashboard.chat_runner import cross_surface_withheld
 
     state = _state(tmp_path, monkeypatch)
@@ -940,19 +910,11 @@ def test_polling_records_one_audience_entry_per_turn_not_one_per_call(tmp_path, 
 def test_a_retarget_landing_between_validation_and_record_is_never_the_admitted_audience(
     tmp_path, monkeypatch, open_ledger_gate, gate, retarget_lands_after_read
 ):
-    """The gate validates the mirror row and records the audience it admitted; if
-    those are two reads, a retarget landing between them -- a link handler on
-    another thread -- is recorded as the admitted audience without having been
-    judged, and the publisher, comparing the live row against that record, finds
-    nothing changed and publishes the privately-read transcript into the new room.
-    So the admission reads the row ONCE: the row it judged is the row it records,
-    and a retarget landing after that read is a difference the publisher sees.
+    """The admission reads the mirror row once, so the row it judged is the row it records.
 
-    Driven by a store that answers the owner's DM (A) for the first N reads of the
-    reader's row during the admission and a guild thread (B) after -- N walks the
-    retarget across every read the gate might make -- and pinned from the outside:
-    whatever the gate decided, if it admitted, the audience it recorded is A and a
-    reply under the live row B is withheld; and the admission read the row once."""
+    With two reads, a retarget between them would be recorded unjudged and the
+    publisher would find nothing changed. The store answers the DM (A) for N reads and
+    a guild thread (B) after, N walking every read the gate might make."""
     from kiro_crew.dashboard.chat_runner import cross_surface_withheld
 
     state = _state(tmp_path, monkeypatch)
@@ -1014,21 +976,11 @@ def test_a_retarget_landing_between_validation_and_record_is_never_the_admitted_
 def test_a_retarget_landing_during_publication_never_reaches_the_new_room(
     tmp_path, monkeypatch, retarget_lands_after_read
 ):
-    """The publisher decides whether a reply may cross surfaces and then delivers
-    it; if those are two reads of the mirror row, a retarget landing between them
-    -- the mirror-link writer runs off the loop, in ``asyncio.to_thread`` -- is
-    judged on one row and delivered to another: the decision sees the owner's DM
-    the transcript was read under and the send resolves the guild thread that
-    replaced it. So the channel-neutral leg reads the binding ONCE, judges that row
-    against the turn's recorded admissions and resolves its transport from the same
-    row.
+    """The channel-neutral leg reads the binding once, judging and delivering to one row.
 
-    Driven by a store that answers the owner's DM (A) for the first N reads of the
-    reader's row during publication and a guild thread (B) after -- N walks the
-    retarget across every read the leg might make, including before the first --
-    and pinned from the outside: B never receives the reply; when the leg
-    delivers, it delivers to A, the room it judged; and the publication read the
-    row once."""
+    The mirror-link writer runs in ``asyncio.to_thread``, so with two reads a retarget
+    could be judged on one row and sent to another. The store answers the DM (A) for N
+    reads and a guild thread (B) after; B never receives the reply."""
     from kiro_crew.dashboard.chat_runner import _deliver_cross_surface_reply
 
     state = _state(tmp_path, monkeypatch)
@@ -1076,15 +1028,11 @@ def test_a_retarget_landing_during_publication_never_reaches_the_new_room(
 
 
 def test_the_slack_legs_judge_the_thread_they_cached_not_the_live_binding(tmp_path, monkeypatch):
-    """The Slack legs post to the ``(channel, thread)`` they read at turn start. An
-    operator who unlinks that shared thread mid-turn and mirrors the tab to their own
-    DM before the tab reads a peer's transcript leaves a record naming the DM alone;
-    the live binding names the DM alone too, so the live comparison
-    (``cross_surface_withheld``) finds nothing changed -- and the cached thread, in
-    neither side of it, would receive the transcript. The legs therefore also judge
-    the destination they actually post to (``slack_publication_withheld``): a room no
-    recorded admission saw is withheld, while a thread still linked when the read was
-    admitted -- recorded as part of its audience -- publishes as before."""
+    """The Slack legs judge the thread they cached at turn start, not only the live binding.
+
+    Unlinking the thread mid-turn leaves record and live binding both naming the DM, so
+    ``cross_surface_withheld`` sees no change; ``slack_publication_withheld`` refuses a
+    room no recorded admission saw."""
     from kiro_crew.dashboard.chat_runner import (
         cross_surface_withheld,
         slack_publication_withheld,
@@ -1141,19 +1089,11 @@ def test_the_slack_legs_judge_the_thread_they_cached_not_the_live_binding(tmp_pa
 
 
 def test_a_binding_that_moves_after_turn_start_is_judged_per_destination(tmp_path, monkeypatch):
-    """The Slack legs publish to the thread cached at turn start and the
-    channel-neutral leg to the row it reads at delivery, so the two destinations can
-    name different rooms once the binding moves mid-turn. Each is judged as the room
-    it is, against every admission the turn recorded:
+    """Each leg's destination is judged against every admission the turn recorded.
 
-    * the record was made while the binding named thread B -- the cached thread A
-      is a room no admission saw and is refused, while B, admitted, publishes;
-    * the record was made under A and the binding then moved to B -- A was admitted
-      (the cached destination alone would publish), but B newly holds against the
-      record, so the live comparison refuses the Slack legs and the channel-neutral
-      leg's one-read judgement refuses the row it would deliver to.
-
-    Either way no room the turn's admissions never saw receives the reply."""
+    The Slack legs use the thread cached at turn start and the channel-neutral leg the
+    row read at delivery, so a mid-turn move gives them different rooms. Either way no
+    room the admissions never saw receives the reply."""
     from kiro_crew.dashboard.chat_runner import (
         cross_surface_withheld,
         slack_publication_withheld,
@@ -1196,16 +1136,10 @@ def test_a_binding_that_moves_after_turn_start_is_judged_per_destination(tmp_pat
 def test_a_channel_turn_records_no_audience_so_a_later_dashboard_reply_is_not_withheld(
     tmp_path, monkeypatch, open_ledger_gate, gate
 ):
-    """A channel-born owner DM conducts from its OWN turns, which the messaging
-    driver runs -- not the dashboard runner, whose teardown is the only thing that
-    empties the audience record. An admission recorded there would outlive its turn:
-    when the operator later changes the slot's mirror and drives a reply from the
-    dashboard, the publisher would compare the live row against a stale admission
-    that was never about that reply and withhold its mirror leg. So the record is
-    written only under the marker the runner publishes for its own turns; a channel
-    turn's admission leaves nothing, and nothing is lost -- the dispatcher publishes
-    its replies to the conversation the turn came from, and the runner's publisher is
-    this record's only reader."""
+    """The audience is recorded only under the dashboard runner's own turn marker.
+
+    Only the runner's teardown empties the record, so a channel turn's admission would
+    go stale and later withhold an unrelated dashboard reply."""
     from kiro_crew.dashboard.chat_runner import cross_surface_withheld
 
     state = _state(tmp_path, monkeypatch)
@@ -1518,14 +1452,10 @@ def test_an_owner_dm_stays_admitted_after_it_unlinks_its_own_mirror(
 def test_a_slack_thread_bound_beside_the_origin_mirror_is_a_second_audience(
     tmp_path, monkeypatch, open_ledger_gate
 ):
-    """The dashboard's slack-link on a channel-born slot writes the thread onto the
-    slot's EFFECTIVE key -- the channel session itself (``DashboardState.link_slack``)
-    -- while the origin mirror row stays. ``get_mirror_link`` then still answers the
-    origin, because the explicit ``mirror`` row wins over Slack fields it never
-    reads, so the mirror clause alone keeps admitting a DM whose every dashboard
-    turn the runner also posts into that thread. The thread is read on its own and
-    refuses all three gates; unlinking it restores the DM, since the mirror row was
-    never the problem."""
+    """A Slack thread linked on a channel-born DM refuses all three gates until unlinked.
+
+    ``get_mirror_link`` still answers the origin, since the ``mirror`` row wins over
+    Slack fields, so the thread must be read on its own."""
     state = _state(tmp_path, monkeypatch)
     _owner_discord(state)
     dm = _channel_slot(state, DISCORD_DM, origin=DISCORD_DM_CONVERSATION)
@@ -1676,14 +1606,10 @@ def test_the_probe_reads_a_store_without_a_thread_accessor_as_no_thread():
 
 
 def test_the_predicate_reads_every_audience_accessor_the_reply_delivery_legs_read():
-    """The dashboard delivers a session's reply to its outbound audiences through two
-    legs, and each reads the audience off the store itself: the non-Slack mirror
-    through ``_resolve_mirror_target`` (``get_mirror_link``) and the Slack thread
-    through ``_deliver_linked_slack_message`` (``get_slack_link``). The predicate
-    must consult every accessor those legs consult -- a row the store hands to one
-    reader and not the other is an audience the gate cannot see, which is exactly
-    the Slack-thread gap this suite pins. Read off the source, so a delivery leg
-    that starts reading a new accessor reds this test rather than the operator."""
+    """The predicate consults every ``get_*_link`` accessor the delivery legs read.
+
+    An accessor only a delivery leg reads is an audience the gate cannot see. Read off
+    the source, so a leg that starts reading a new accessor fails here."""
     import inspect
     import re
 
@@ -1725,18 +1651,12 @@ def test_the_predicate_reads_every_audience_accessor_the_reply_delivery_legs_rea
 
 
 def test_every_owner_dm_surface_opens_the_crew_log_from_its_dispatcher():
-    """A surface joins ``OWNER_DM_CONDUCTOR_SURFACES`` by verifying the facts the
-    predicate rests on -- and by opening its own sessions' crew logs, because the
-    work ledger an admitted DM holds appends to that log and rolls back a write with
-    nowhere to land. The dashboard runner opens logs for its own turns only; a
-    channel dispatcher runs its own turn loop and must call the shared opener, with
-    the predecessor read that keeps a recycled conversation's history on the
-    succession chain, and the workspace read off the slot the dashboard surfaces
-    the conversation under -- the source a tab on it states the same fact from, so
-    the two writers of one log never take turns recording a move. Pinned off the
-    dispatcher's source, so the next surface admitted as a conductor cannot re-open
-    the gaps this suite's opener tests closed. A dispatcher riding the shared channel
-    pipeline declares ``Drift.OPENS_CREW_LOG`` and the pipeline makes the call."""
+    """Every ``OWNER_DM_CONDUCTOR_SURFACES`` dispatcher opens its sessions' crew logs.
+
+    The DM's work ledger appends to that log and rolls back a write with nowhere to
+    land. The dispatcher must pass the predecessor and the slot's workspace, so two
+    writers of one log agree. A dispatcher on the shared pipeline declares
+    ``Drift.OPENS_CREW_LOG`` instead."""
     import ast
     import importlib
     import importlib.util
@@ -1783,18 +1703,11 @@ def test_every_owner_dm_surface_opens_the_crew_log_from_its_dispatcher():
 
 @pytest.mark.asyncio
 async def test_mirror_unlink_clears_the_mirror_and_nothing_else(tmp_path, monkeypatch):
-    """The dashboard's unlink clears the OUTBOUND mirror binding only. The slot
-    stays channel-born (``linked_session_key`` untouched), so it neither detaches
-    the session from its channel nor changes what the gates decide about it: a
-    thread session is refused before and after, an owner DM is admitted before
-    and after.
+    """The dashboard's unlink clears the outbound mirror only; the gates decide the same.
 
-    "Cleared" is the store's word, not an empty row: the first turn's
-    ``set_channel`` left the namespaced bucket in the legacy ``slack_channel_id``
-    field, and ``get_mirror_link`` filters that threadless Slack row at the source,
-    so every reader -- the gates, ``bind_origin_mirror``, the link projection --
-    sees no mirror, and the unlink that "changes nothing" cannot refuse the owner's
-    own DM.
+    The row is not empty after it: ``set_channel`` left the bucket in the legacy
+    ``slack_channel_id`` field, and ``get_mirror_link`` must read that threadless row
+    as no mirror or the unlink would refuse the owner's own DM.
     """
     from kiro_crew.dashboard.chat_mirror import api_chat_slot_mirror_unlink
 

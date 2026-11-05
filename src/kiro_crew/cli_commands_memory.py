@@ -653,13 +653,27 @@ def _interactive_terminal() -> bool:
 
 
 def _refuse_forget_outside_owner_terminal() -> None:
-    """Refuse ``memory forget`` from an agent session's shell or with no terminal.
+    """Refuse ``memory forget`` on native Windows, from an agent session's shell,
+    or with no terminal.
 
-    These are the CLI's own refusals, checked before any store opens. They keep an
-    agent from running the verb; they are not what authorizes the delete. That is
-    the gateway's owner gate on the dashboard delete route, which the verb calls
-    (``memory_forget_client``), so an empty answer here grants nothing by itself.
+    These are the CLI's own refusals, checked before any store opens. The first is
+    the platform: the verb reaches the gateway only over the dashboard's Unix
+    socket, and a Python with no ``socket.AF_UNIX`` (native Windows) cannot open
+    one. That is the same condition ``loopback_http.unix_socket_urlopen`` fails on,
+    so the refusal comes before the value is shown or a confirmation is asked for.
+    The other two keep an agent from running the verb; they are not what
+    authorizes the delete. That is the gateway's owner gate on the dashboard delete
+    route, which the verb calls (``memory_forget_client``), so an empty answer here
+    grants nothing by itself.
     """
+    import socket
+
+    if not hasattr(socket, "AF_UNIX"):
+        raise ValueError(
+            "`kirocrew memory forget` is not available on native Windows (it needs "
+            "the dashboard's Unix socket); nothing was forgotten. Delete the key "
+            "from the dashboard Memory page."
+        )
     from kiro_crew.mcp_caller import resolve_own_identity
 
     identity = resolve_own_identity()

@@ -52,6 +52,7 @@ class Concern(Enum):
     PROMPT = "prompt"
     RESOURCES = "resources"
     HOOKS = "hooks"
+    TOOLS_SETTINGS = "toolsSettings"
 
 
 class Disposition(Enum):
@@ -84,6 +85,21 @@ RESOURCES_NO_READER = (
     "serves only the provider=claude_code seam (folder steering and crew member "
     "context are separate routes); a custom agent's new session gets a notice "
     "naming those entries"
+)
+
+
+#: The ``TOOLS_SETTINGS`` channel on a mirror that does not carry the field. KAS is
+#: the one backend Crew applies ``toolsSettings`` on, through ``permissions`` rules
+#: and the gate tiers that read the spec's shell and write allowlists
+#: (``acp/kas_agents.py``); the same tiers run on every backend's permission
+#: requests, and of the mirrored sessions only claude's are handed its allowlists
+#: (``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS``). The field's
+#: ``subagent.availableAgents`` is the exception, read by Crew's spawn gate on every
+#: backend (``subagent_parts/agent_policy.py``).
+TOOLS_SETTINGS_GATE_CHANNEL = (
+    "the spec-shell-allowlist and spec-write-allowlist tiers of Crew's own gate "
+    "(hooks.py), fed this session's allowlists on its own permission requests as "
+    "the KAS session handle feeds them"
 )
 
 

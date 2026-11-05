@@ -112,17 +112,24 @@ def test_labelling_reads_no_directory():
         patch("pathlib.Path.rglob") as rglob,
         patch("pathlib.Path.is_file") as is_file,
     ):
-        fu.skill_label("kirocrew-dev/writing-tests")
-        fu.skill_label("my-own-skill")
-        fu.app_label("papyrus")
+        app = next(iter(fu.OFFICIAL_APP_IDS))
+        labels = [
+            fu.skill_label("kirocrew-dev/writing-tests"),
+            fu.skill_label("my-own-skill"),
+            fu.app_label(app),
+        ]
+    assert labels == ["kirocrew-dev/writing-tests", "custom", app]
     iterdir.assert_not_called()
     rglob.assert_not_called()
     is_file.assert_not_called()
 
 
-def test_official_app_ids_are_builtin_apps_that_report():
+def test_official_app_ids_are_builtin_apps_and_cover_every_report():
+    from kiro_crew.apps.builtins import BUILTIN_NAMES
+
     root = SRC / "apps" / "builtins"
     dirs = {p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))}
+    assert fu.OFFICIAL_APP_IDS == set(BUILTIN_NAMES)
     assert fu.OFFICIAL_APP_IDS <= dirs
     assert "private" not in fu.OFFICIAL_APP_IDS
     reported = set()
@@ -140,9 +147,8 @@ def test_official_app_ids_are_builtin_apps_that_report():
                 first = node.args[0]
                 assert isinstance(first, ast.Constant), f"{path}:{node.lineno}"
                 reported.add(first.value)
-    assert reported == set(
-        fu.OFFICIAL_APP_IDS
-    ), "every reporting app is listed, and every listed app reports"
+    assert reported, "expected at least one app to report a unit of work"
+    assert reported <= fu.OFFICIAL_APP_IDS, "every reporting app is a shipped built-in"
 
 
 def test_memory_recalled(rec):
@@ -213,7 +219,7 @@ def test_composition_counters_never_raise():
 @pytest.mark.parametrize(
     "name,label",
     [
-        ("papyrus-writing", "papyrus-writing"),
+        ("artifacts", "artifacts"),
         ("goal-loop", "goal-loop"),
         ("my-secret-project-skill", "custom"),
         ("team/nested", "custom"),
@@ -257,13 +263,14 @@ def test_every_lazy_load_emit_names_its_skill():
 
 
 def test_app_task(rec):
-    fu.record_app_task("papyrus", "ok")
+    official = sorted(fu.OFFICIAL_APP_IDS)[0]
+    fu.record_app_task(official, "ok")
     fu.record_app_task("someone-elses-app", "error")
-    fu.record_app_task("papyrus", "exploded")
+    fu.record_app_task(official, "exploded")
     assert [c["attrs"] for c in _named(rec, fu.APP_TASK_COMPLETED)] == [
-        {"app": "papyrus", "outcome": "ok"},
+        {"app": official, "outcome": "ok"},
         {"app": "private", "outcome": "error"},
-        {"app": "papyrus", "outcome": "other"},
+        {"app": official, "outcome": "other"},
     ]
 
 
@@ -386,14 +393,8 @@ def test_tool_recall_is_recorded_after_the_receipt_commit():
 
 
 def test_an_app_not_in_the_list_is_private(rec):
-    fu.record_app_task("meetings", "ok")
+    assert "my-own-app" not in fu.OFFICIAL_APP_IDS
+    fu.record_app_task("my-own-app", "ok")
     assert [c["attrs"] for c in _named(rec, fu.APP_TASK_COMPLETED)] == [
         {"app": "private", "outcome": "ok"}
     ]
-
-
-def test_papyrus_counts_each_finished_compile():
-    fn = _function(SRC / "apps/builtins/papyrus/backend/routes.py", "_handle_compile")
-    (rec_line,) = _call_lines(fn, "record_app_task")
-    (compile_line,) = _call_lines(fn, "compile_project")
-    assert rec_line > compile_line

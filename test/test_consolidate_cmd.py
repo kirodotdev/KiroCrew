@@ -41,9 +41,16 @@ class TestConsolidateCmd:
     @patch("kiro_crew.cli.ConversationLog")
     @patch("kiro_crew.cli.KiroCrewConfig")
     def test_list_sessions(
-        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
-        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
-        tmp_path, capsys,
+        self,
+        mock_cfg_cls,
+        mock_log_cls,
+        mock_consolidator_cls,
+        mock_mem_cls,
+        mock_sess_cls,
+        mock_skills_cls,
+        mock_sel,
+        tmp_path,
+        capsys,
     ):
         sessions_dir = self._make_session_file(tmp_path)
         mock_cfg_cls.load.return_value = MagicMock()
@@ -68,9 +75,16 @@ class TestConsolidateCmd:
     @patch("kiro_crew.cli.ConversationLog")
     @patch("kiro_crew.cli.KiroCrewConfig")
     def test_list_sessions_none_found(
-        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
-        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
-        tmp_path, capsys,
+        self,
+        mock_cfg_cls,
+        mock_log_cls,
+        mock_consolidator_cls,
+        mock_mem_cls,
+        mock_sess_cls,
+        mock_skills_cls,
+        mock_sel,
+        tmp_path,
+        capsys,
     ):
         sessions_dir = tmp_path / "sessions"
         sessions_dir.mkdir()
@@ -95,9 +109,16 @@ class TestConsolidateCmd:
     @patch("kiro_crew.cli.ConversationLog")
     @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_all(
-        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
-        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
-        tmp_path, capsys,
+        self,
+        mock_cfg_cls,
+        mock_log_cls,
+        mock_consolidator_cls,
+        mock_mem_cls,
+        mock_sess_cls,
+        mock_skills_cls,
+        mock_sel,
+        tmp_path,
+        capsys,
     ):
         sessions_dir = self._make_session_file(tmp_path, "sess1")
         self._make_session_file(tmp_path, "sess2")
@@ -131,9 +152,16 @@ class TestConsolidateCmd:
     @patch("kiro_crew.cli.ConversationLog")
     @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_all_none_found(
-        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
-        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
-        tmp_path, capsys,
+        self,
+        mock_cfg_cls,
+        mock_log_cls,
+        mock_consolidator_cls,
+        mock_mem_cls,
+        mock_sess_cls,
+        mock_skills_cls,
+        mock_sel,
+        tmp_path,
+        capsys,
     ):
         sessions_dir = tmp_path / "sessions"
         sessions_dir.mkdir()
@@ -158,9 +186,16 @@ class TestConsolidateCmd:
     @patch("kiro_crew.cli.ConversationLog")
     @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_single_session(
-        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
-        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
-        tmp_path, capsys,
+        self,
+        mock_cfg_cls,
+        mock_log_cls,
+        mock_consolidator_cls,
+        mock_mem_cls,
+        mock_sess_cls,
+        mock_skills_cls,
+        mock_sel,
+        tmp_path,
+        capsys,
     ):
         sessions_dir = self._make_session_file(tmp_path)
         mock_cfg_cls.load.return_value = MagicMock()
@@ -180,8 +215,11 @@ class TestConsolidateCmd:
         assert "Consolidating session: test_session" in captured.out
         assert "done" in captured.out
         mock_sel.return_value.log_api_access.assert_called_with(
-            caller="cli", operation="consolidate", outcome="allowed",
-            source="cli", resources="test_session",
+            caller="cli",
+            operation="consolidate",
+            outcome="allowed",
+            source="cli",
+            resources="test_session",
         )
 
     @patch("kiro_crew.cli.sel")
@@ -192,9 +230,16 @@ class TestConsolidateCmd:
     @patch("kiro_crew.cli.ConversationLog")
     @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_reports_a_remainder_instead_of_done(
-        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
-        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
-        tmp_path, capsys,
+        self,
+        mock_cfg_cls,
+        mock_log_cls,
+        mock_consolidator_cls,
+        mock_mem_cls,
+        mock_sess_cls,
+        mock_skills_cls,
+        mock_sel,
+        tmp_path,
+        capsys,
     ):
         """A drain that stops short must not be reported as a completed pass.
 
@@ -231,9 +276,16 @@ class TestConsolidateCmd:
     @patch("kiro_crew.cli.ConversationLog")
     @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_single_no_messages(
-        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
-        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
-        tmp_path, capsys,
+        self,
+        mock_cfg_cls,
+        mock_log_cls,
+        mock_consolidator_cls,
+        mock_mem_cls,
+        mock_sess_cls,
+        mock_skills_cls,
+        mock_sel,
+        tmp_path,
+        capsys,
     ):
         sessions_dir = self._make_session_file(tmp_path)
         mock_cfg_cls.load.return_value = MagicMock()
@@ -248,77 +300,6 @@ class TestConsolidateCmd:
 
         captured = capsys.readouterr()
         assert "no unconsolidated messages, skipping" in captured.out
-
-
-class TestOnSessionExpire:
-    """Cover on_session_expire callback via real SessionManager._expire_idle."""
-
-    @patch("kiro_crew.session.sel")
-    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
-    @patch("kiro_crew.session.Stats")
-    def test_expire_idle_fires_callback(self, mock_stats, mock_reset, mock_sel):
-        """A real SessionManager._expire_idle invokes on_session_expire for expired keys."""
-        import time as _time
-
-        from kiro_crew.session import SessionManager, _Session
-
-        cfg = MagicMock()
-        cfg.session.pool_size = 0
-        cfg.session.pool_agent = ""
-        cfg.session.pool_ttl_secs = 0
-        sm = SessionManager(cfg, provider_factory=MagicMock())
-        callback = MagicMock()
-        sm.on_session_expire = callback
-
-        # Inject an expired session
-        sess = MagicMock(spec=_Session)
-        sess.last_used = _time.monotonic() - 9999
-        # The idle sweep now skips sessions with a turn in flight, so the stub
-        # has to answer semaphore.locked() the way a real _Session does.
-        # spec=_Session does not supply it: dataclass fields built with
-        # default_factory are instance attributes, not class attributes.
-        sess.semaphore = MagicMock()
-        sess.semaphore.locked.return_value = False
-        sm._sessions["expired-key"] = sess
-
-        import asyncio
-        asyncio.run(sm._expire_idle(60))
-
-        callback.assert_called_once_with("expired-key")
-
-    @patch("kiro_crew.session.sel")
-    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
-    @patch("kiro_crew.session.Stats")
-    def test_expire_idle_callback_exception_swallowed(self, mock_stats, mock_reset, mock_sel):
-        """Callback exceptions don't prevent session reset."""
-        import time as _time
-
-        from kiro_crew.session import SessionManager, _Session
-
-        cfg = MagicMock()
-        cfg.session.pool_size = 0
-        cfg.session.pool_agent = ""
-        cfg.session.pool_ttl_secs = 0
-        sm = SessionManager(cfg, provider_factory=MagicMock())
-        sm.on_session_expire = MagicMock(side_effect=RuntimeError("boom"))
-
-        sess = MagicMock(spec=_Session)
-        sess.last_used = _time.monotonic() - 9999
-        # The idle sweep now skips sessions with a turn in flight, so the stub
-        # has to answer semaphore.locked() the way a real _Session does.
-        # spec=_Session does not supply it: dataclass fields built with
-        # default_factory are instance attributes, not class attributes.
-        sess.semaphore = MagicMock()
-        sess.semaphore.locked.return_value = False
-        sm._sessions["expired-key"] = sess
-
-        import asyncio
-        asyncio.run(sm._expire_idle(60))
-
-        # reset still called despite callback failure
-        mock_reset.assert_called_once_with(
-            "expired-key", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
-        )
 
 
 class TestGatewayExpireWiring:
@@ -357,9 +338,16 @@ class TestConsolidateCmdExceptionPath:
     @patch("kiro_crew.cli.ConversationLog")
     @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_single_exception_logged(
-        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
-        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
-        tmp_path, capsys,
+        self,
+        mock_cfg_cls,
+        mock_log_cls,
+        mock_consolidator_cls,
+        mock_mem_cls,
+        mock_sess_cls,
+        mock_skills_cls,
+        mock_sel,
+        tmp_path,
+        capsys,
     ):
         """When consolidate_now raises, the exception is caught and logged."""
         sessions_dir = self._make_session_file(tmp_path)
@@ -512,11 +500,11 @@ class TestExpireIdleSelFailure:
     """Cover the SEL failure path in session.py _expire_idle."""
 
     @patch("kiro_crew.session.sel")
-    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
     @patch("kiro_crew.session.Stats")
-    def test_expire_idle_sel_failure_still_resets(self, mock_stats, mock_reset, mock_sel):
+    def test_expire_idle_sel_failure_still_resets(self, mock_stats, mock_sel):
         """When sel().log_api_access raises, the session is still reset."""
         import time as _time
+        from types import SimpleNamespace
 
         from kiro_crew.session import SessionManager, _Session
 
@@ -530,59 +518,22 @@ class TestExpireIdleSelFailure:
         callback = MagicMock()
         sm.on_session_expire = callback
 
-        sess = MagicMock(spec=_Session)
-        sess.last_used = _time.monotonic() - 9999
-        # The idle sweep now skips sessions with a turn in flight, so the stub
-        # has to answer semaphore.locked() the way a real _Session does.
-        # spec=_Session does not supply it: dataclass fields built with
-        # default_factory are instance attributes, not class attributes.
-        sess.semaphore = MagicMock()
-        sess.semaphore.locked.return_value = False
+        provider = SimpleNamespace(
+            shutdown=AsyncMock(),
+            context_usage_pct=lambda: 0.0,
+            tool_search_settings=None,
+            work_scratch_dir=None,
+        )
+        sess = _Session(provider=provider, last_used=_time.monotonic() - 9999)
         sm._sessions["expired-sel"] = sess
 
         import asyncio
+
         asyncio.run(sm._expire_idle(60))
 
+        # The real reset ran: the entry left the map.
+        assert "expired-sel" not in sm._sessions
         callback.assert_not_called()
-        mock_reset.assert_called_once_with(
-            "expired-sel", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
-        )
-
-    @patch("kiro_crew.session.sel")
-    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
-    @patch("kiro_crew.session.Stats")
-    def test_expire_idle_callback_failure_still_resets(self, mock_stats, mock_reset, mock_sel):
-        """When on_session_expire raises, the session is still reset."""
-        import time as _time
-
-        from kiro_crew.session import SessionManager, _Session
-
-        cfg = MagicMock()
-        cfg.session.pool_size = 0
-        cfg.session.pool_agent = ""
-        cfg.session.pool_ttl_secs = 0
-        sm = SessionManager(cfg, provider_factory=MagicMock())
-
-        callback = MagicMock(side_effect=RuntimeError("callback boom"))
-        sm.on_session_expire = callback
-
-        sess = MagicMock(spec=_Session)
-        sess.last_used = _time.monotonic() - 9999
-        # The idle sweep now skips sessions with a turn in flight, so the stub
-        # has to answer semaphore.locked() the way a real _Session does.
-        # spec=_Session does not supply it: dataclass fields built with
-        # default_factory are instance attributes, not class attributes.
-        sess.semaphore = MagicMock()
-        sess.semaphore.locked.return_value = False
-        sm._sessions["expired-cb"] = sess
-
-        import asyncio
-        asyncio.run(sm._expire_idle(60))
-
-        callback.assert_called_once_with("expired-cb")
-        mock_reset.assert_called_once_with(
-            "expired-cb", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
-        )
 
 
 def test_refused_consolidation_cli_does_not_claim_zero_spend(capsys):

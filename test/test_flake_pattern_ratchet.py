@@ -5,48 +5,14 @@ the shapes a test must not use. ``semgrep/test-determinism.yaml`` refuses the
 commonest of them on a new line (a sleep as a barrier, a ``time`` patch, a bare
 ``monkeypatch.undo()``, a reload, a naive local-time read, an unseeded draw, an autouse
 fixture on the shared ``monkeypatch``, a promise-sleep, ``waitForTimeout``). This module
-counts per file only the shapes those patterns miss: patches of ``asyncio.sleep`` or
-the ``datetime`` classes, ``sys.modules`` evictions,
-raw environment writes, duration bounds, short literal waits, literal listener ports,
-crew-log flush ceilings, unpaused removals, Event waits a test parks on an executor
-(``to_thread(<obj>.wait, ...)`` and ``run_in_executor(<any>, <obj>.wait, ...)``,
-whatever the bound, none included), and five frontend shapes (promise-sleeps
-only in the Electron tests, which the semgrep rule does not read). So no site needs
+counts per file only the shapes those patterns miss; see below.  So no site needs
 both ``# nosemgrep`` and ``# flake-ok``. In a file the pinned semgrep reads no line of
 (one over its size limit, or one it cannot parse; see ``semgrep_cannot_read``), the
 ``time`` patches its rule would refuse are counted too. The tree already holds
-thousands of these, so
-each file a change touches is held to its own count at the change's merge-base.
+thousands; each file a change touches is held to its count at its merge-base.
 
-* A file's count may not rise; a new file starts at zero, a deleted file passes, and
-  a rename git detects keeps its count. A rise is forgiven only for a site that
-  moved: the same class in an identical enclosing function (the same line in
-  TypeScript) that left another file in the same change, chains of moves included. A
-  function edited in place, or a site a ``flake-ok`` still excuses, has not left. The
-  working tree is judged, untracked files included.
-* The base and the changed-file set are read through ``scripts/ratchet_scope.py``'s
-  shared helpers (``change_merge_base``, ``change_files``, ``show_at``), the same
-  module ten other diff-scoped gates read. Precedence: ``FLAKE_RATCHET_BASE`` when
-  set; on CI the first parent of the merge commit a pull request, push or merge
-  queue run checks out; else the newer of the merge-bases with ``upstream/<base>``
-  and ``origin/<base>``, or the local ``<base>`` branch. CI's Backend Tests checkout
-  is depth 2 so that first parent is readable. When none is readable (a depth-1
-  clone), the ratchet warns and compares nothing: judging against a stored count
-  would red a change for sites that other, already merged changes added. The early,
-  fail-closed run is ``fast-gate.yml``'s ``flake-pattern-ratchet`` job: a depth-2
-  checkout whose first parent this resolver reads, and a ``compared nothing`` there
-  fails the job.
-* A line that keeps a shape on purpose carries ``# flake-ok: <reason>`` (``//
-  flake-ok: <reason>`` in TypeScript) with a reason of ten characters or more, words
-  not punctuation, on a line of the finding.
-* ``python test/test_flake_pattern_ratchet.py`` prints each file's current counts
-  as the burn-down view; no committed file holds them.
+* A file's count may not rise; a new file starts at 0, a deleted file passes.
 
-The Python detectors read the AST, so a shape named in a docstring or a comment is not
-counted; the TypeScript and JavaScript ones are line patterns. Each detector has a
-positive and a negative case below, and a mutation proof that a detector finding
-nothing fails its positive case. Only the files a change touches are read, so the
-gate costs a git diff plus those files.
 """
 
 from __future__ import annotations
@@ -527,6 +493,117 @@ def _k18_xfail_strict_false(module: _Module) -> Iterable[ast.AST]:
                     break
 
 
+#: Duration keyword names.  Only ``timeout`` exactly, or names with a time-unit suffix.
+_DURATION_KW_SECS = re.compile(
+    r"^(timeout|.+(_s|_sec|_secs|_second|_seconds))$",
+    re.IGNORECASE,
+)
+_DURATION_KW_MS = re.compile(
+    r"(_ms|_msec|_msecs|_millisecond|_milliseconds)$",
+    re.IGNORECASE,
+)
+
+
+_K9_CALLEE_ENDS = frozenset({"wait_for", "wait", "result", "join"})
+FUNC_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+#: Kwarg names whose component is a wait-bound word (setattr keeps _is_duration_kw).
+_KWARG_WAIT_BOUND = re.compile(
+    r"(?:^|_)(?:timeout|deadline|ttl|grace)(?:_|$)"
+    r"|(?:^|_)budget_(?:s|secs?|seconds?|ms|msecs?|milliseconds?)$",
+    re.IGNORECASE,
+)
+
+
+def _is_duration_kw(name: str) -> bool:
+    return bool(_DURATION_KW_MS.search(name) or _DURATION_KW_SECS.match(name))
+
+
+def _kc_testing_names(module: _Module) -> frozenset[str]:
+    names: set[str] = set()
+    for node in ast.walk(module.tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "kiro_crew.testing" or node.module.startswith("kiro_crew.testing."):
+                for alias in node.names:
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname and alias.name.startswith("kiro_crew.testing"):
+                    names.add(alias.asname)
+    return frozenset(names)
+
+
+def _enclosing_param_names(module: _Module, node: ast.AST) -> frozenset[str]:
+    fn = module.enclosing_function(node)
+    if fn is None:
+        return frozenset()
+    a = fn.args
+    pool = a.args + a.posonlyargs + a.kwonlyargs
+    if a.vararg:
+        pool.append(a.vararg)
+    if a.kwarg:
+        pool.append(a.kwarg)
+    return frozenset(x.arg for x in pool)
+
+
+def _kc_testing_val(node: ast.AST, kc_names: frozenset[str], param_names: frozenset[str]) -> bool:
+    if isinstance(node, ast.Constant):
+        v = node.value
+        return v is None or (not isinstance(v, bool) and isinstance(v, (int, float)) and v == 0)
+    if isinstance(node, ast.Name):
+        return node.id in kc_names or node.id in param_names
+    if isinstance(node, ast.Attribute):
+        dotted = _dotted(node)
+        if dotted.startswith("kiro_crew.testing."):
+            return True
+        root = dotted.split(".")[0]
+        return bool(root) and root in kc_names
+    if isinstance(node, ast.Call):
+        return _kc_testing_val(node.func, kc_names, frozenset())
+    return False
+
+
+def _k19_short_literal_duration_arg(module: _Module) -> Iterable[ast.AST]:
+    """Non-kc-testing value on a duration-named kwarg or ``setattr`` attr."""
+    kc_names = _kc_testing_names(module)
+
+    for node in module.calls:
+        callee_end = node.func.attr if isinstance(node.func, ast.Attribute) else _dotted(node.func)
+
+        # ── setattr(mod, "attr_name", value) shape ───────────────────
+        if callee_end == "setattr" and len(node.args) >= 3:
+            attr_arg = node.args[1]
+            if isinstance(attr_arg, ast.Constant) and isinstance(attr_arg.value, str):
+                if _is_duration_kw(attr_arg.value):
+                    val_node = node.args[2]
+                    params = _enclosing_param_names(module, node)
+                    if not _kc_testing_val(val_node, kc_names, params):
+                        yield node
+            continue  # never also check setattr's own keyword args
+
+        # ── skip K9 bounded-wait primitives ───────────────────────────
+        if callee_end in _K9_CALLEE_ENDS:
+            continue
+
+        # ── duration-named keyword arg ────────────────────────────────
+        params = _enclosing_param_names(module, node)
+        fn_names = {n.name for n in module.tree.body if isinstance(n, FUNC_TYPES)}
+        for kw in node.keywords:
+            if kw.arg is None:
+                continue
+            if not _KWARG_WAIT_BOUND.search(kw.arg):
+                continue
+            if isinstance(kw.value, ast.Lambda):
+                continue
+            if isinstance(kw.value, ast.Name) and kw.value.id in fn_names:
+                continue
+            if _kc_testing_val(kw.value, kc_names, params):
+                continue
+            yield node
+            break
+
+
 def _kiro_crew_module_names(module: _Module) -> frozenset[str]:
     """Lowercase names imported from ``kiro_crew.*`` at module scope.
 
@@ -836,6 +913,7 @@ PY_TRIGGERS: dict[str, tuple[str, ...]] = {
     "K15-parked-pool-wait": ("to_thread", "run_in_executor"),
     "K16-module-async-state": ("create_task", "call_later", "ensure_future", "call_at"),
     "K18-xfail-strict-false": ("xfail",),
+    "K19-short-literal-duration-arg": ("(",),
 }
 
 #: The classes whose detector also reads the source text.
@@ -854,6 +932,7 @@ PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K15-parked-pool-wait": _k15_parked_pool_wait,
     "K16-module-async-state": _k16_module_async_state,
     "K18-xfail-strict-false": _k18_xfail_strict_false,
+    "K19-short-literal-duration-arg": _k19_short_literal_duration_arg,
 }
 
 
@@ -1360,6 +1439,35 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         "@pytest.mark.xfail(strict=True, reason='known')\ndef test_y():\n    pass\n"
         "def test_z(strict=False):\n    pass\n"
         "def test_w():\n    obj.configure(strict=False)\n",
+    ),
+    "K19-short-literal-duration-arg": (
+        (
+            "def test_x():\n    run(timeout=1.5)\n",
+            "_T = 30\ndef test_x():\n    run(timeout=_T)\n",
+            "def test_x(mp):\n    mp.setattr(m, '_UPDATE_DRAIN_TIMEOUT_SECS', 1)\n",
+            "def test_x():\n    run(_UPDATE_DRAIN_TIMEOUT_SECS=1)\n",
+            "def test_x():\n    run(timeout=some_other_call())\n",
+            "def test_x():\n    t = 30\n    run(timeout=t)\n",
+            "def test_x():\n    run(read_timeout=5)\n",
+            "def test_x():\n    Cfg(log_budget_secs=20)\n",
+            "def test_x():\n    x(ttl_secs=30)\n",
+            "def test_x():\n    call(deadline=5)\n",
+            "def test_x():\n    run(on_timeout=5)\n",
+        ),
+        "import kiro_crew.testing.wait as kc_wait\n"
+        "from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, default_timeout\n"
+        "from kiro_crew.testing import wait\n"
+        "def cb(): pass\n"
+        "def test_x(monkeypatch, tmo):\n"
+        "    run(timeout=0)\n    run(timeout=None)\n"
+        "    run(timeout=FALLBACK_TIMEOUT_SECS)\n"
+        "    run(timeout=wait.FALLBACK_TIMEOUT_SECS)\n    run(timeout=kc_wait.FALLBACK_TIMEOUT_SECS)\n"
+        "    run(timeout=default_timeout())\n    run(timeout=wait.default_timeout())\n"
+        "    run(timeout=tmo)\n    pool.submit(task).result(timeout=60)\n"
+        "    monkeypatch.setattr(m, 'timeout_secs', 0)\n    monkeypatch.setattr(m, 'timeout_secs', FALLBACK_TIMEOUT_SECS)\n"
+        "    asyncio.wait_for(coro, timeout=30)\n    t.join(timeout=5)\n"
+        "    every_secs=60\n    idle_secs=60\n    elapsed_ms=1.0\n    age_secs=5\n    duration_ms=10\n"
+        "    run(on_timeout=cb)\n    run(on_timeout=lambda: None)\n",
     ),
 }
 

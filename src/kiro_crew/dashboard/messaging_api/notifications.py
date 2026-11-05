@@ -17,11 +17,15 @@ if TYPE_CHECKING:
         DashboardState,
         audit_teammate_withheld,
         body_not_object_error,
+        clear_cron_item_recorded,
+        cron_note_transition,
         is_app_channel,
         is_relay_teammate,
         logger,
         notification_source_app,
+        recorded_cron_item,
         refuse_relayed,
+        unread_count,
     )
 
 
@@ -29,16 +33,17 @@ async def api_notifications(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if is_relay_teammate(request):
         # A relayed teammate has no app surface, so an app's push notifications are
-        # withheld, as the live WebSocket and SSE feeds withhold them. Unread is the
-        # delivery counter capped at what this view still counts.
+        # withheld, as the live WebSocket and SSE feeds withhold them. Unread is
+        # counted over the notes this view returns.
         notes = [note for note in state._notification_log if not _is_app_note(note)]
         if len(notes) != len(state._notification_log):
             audit_teammate_withheld("notification")
-        counted = sum(1 for note in notes if note.get("priority") != "passive")
-        unread = min(state._unread_count, counted)
-        return web.json_response({"notifications": notes, "unread": unread})
+        return web.json_response({"notifications": notes, "unread": unread_count(notes)})
     return web.json_response(
-        {"notifications": state._notification_log, "unread": state._unread_count}
+        {
+            "notifications": state._notification_log,
+            "unread": unread_count(state._notification_log),
+        }
     )
 
 
@@ -91,8 +96,6 @@ async def api_notifications_clear(request: web.Request) -> web.Response:
             # Clear what the teammate sees and keep what they are withheld: no
             # whole-feed clear, and no clear broadcast that would empty the owner's.
             state._notification_log = hidden
-            still_counted = sum(1 for note in hidden if note.get("priority") != "passive")
-            state._unread_count = min(state._unread_count, still_counted)
             await state._rewrite_notifications_async()
             audit_teammate_withheld("notifications_clear")
             return web.json_response({"ok": True})
@@ -136,22 +139,28 @@ async def api_notification_unack(request: web.Request) -> web.Response:
     refused = _refuse_hidden_note(request, state, ts, "notifications.unack")
     if refused is not None:
         return refused
-    # If this is a cron notification, also remove the last acked item from the job
-    for n in state._notification_log:
-        if n.get("ts") == ts and n.get("kind") == "cron" and n.get("job_id"):
+    # Take back the exact entry this note's cron ack added, and nothing for a
+    # note read any other way (see dashboard.cron_note_ack). One step per
+    # note, so it cannot interleave with that note's ack.
+    async with cron_note_transition(state, ts):
+        recorded = recorded_cron_item(state, ts)
+        if recorded is not None:
+            job_id, ack_id = recorded
             try:
-                await state.crons.unack_job_async(n["job_id"])
+                await state.crons.unack_job_async(job_id, ack_id)
+                # Removed now, or already gone from the job: either way the
+                # record has nothing left to take back.
+                clear_cron_item_recorded(state, ts)
             except (CronStoreBusy, CronStoreUnreadable) as exc:
-                # Store transiently contended, or refusing writes outright — the
-                # notification-level unack below still succeeds; the acked-item
-                # trim is best-effort. Unreadable degrades here rather than
-                # surfacing a 409: the person unacking a notification asked
-                # nothing of the cron store, so failing their request for a
-                # bookkeeping trim they did not request would be the wrong
-                # trade. Escaping instead becomes a 500 on a request that does
-                # not depend on the store at all.
-                logger.warning("unack_job skipped: %s (job %s)", type(exc).__name__, n["job_id"])
-            break
+                # Store transiently contended, or refusing writes outright —
+                # the notification-level unack below still succeeds; the
+                # acked-item trim is best-effort. Unreadable degrades here
+                # rather than surfacing a 409: the person unacking a
+                # notification asked nothing of the cron store, so failing
+                # their request for a bookkeeping trim they did not request
+                # would be the wrong trade. Escaping instead becomes a 500 on
+                # a request that does not depend on the store at all.
+                logger.warning("unack_job skipped: %s (job %s)", type(exc).__name__, job_id)
     ok = await state.unack_notification(ts)
     return web.json_response({"ok": ok})
 

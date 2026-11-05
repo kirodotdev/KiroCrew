@@ -73,6 +73,14 @@ describe('CrewModeChip', () => {
     expect(onTurnOn).not.toHaveBeenCalled()
   })
 
+  it('fills the bolt only while on, so on and off differ at a glance', () => {
+    const { rerender } = render(<CrewModeChip onTurnOn={vi.fn()} onTurnOff={vi.fn()} />)
+    const bolt = () => screen.getByTestId('crew-mode-chip').querySelector('.lucide-zap')
+    expect(bolt()).toHaveAttribute('fill', 'none')
+    rerender(<CrewModeChip onTurnOn={vi.fn()} onTurnOff={vi.fn()} pressed />)
+    expect(bolt()).toHaveAttribute('fill', 'currentColor')
+  })
+
   it('keeps the accessible name Ultra Mode', () => {
     render(<CrewModeChip onTurnOn={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Ultra Mode', pressed: false })).toBeInTheDocument()
@@ -97,14 +105,14 @@ describe('CrewModeWelcome', () => {
     expect(within(page).getByRole('button', { name: 'Board' })).toBeInTheDocument()
     expect(within(page).getAllByRole('button')).toHaveLength(1)
     // Every visible word on the page, in order: nothing beyond these.
-    expect(page.textContent).toBe('Ultra ModeYou set the goal. Your crew does the work.GoalSplitOwn chatsBoardNeeds youBoard')
+    expect(page.textContent).toBe('Ultra ModeYou set the goal. Your crew does the work.ProjectsSplitOwn chatsBoardNeeds youBoard')
   })
 
   it('reads the flow as an ordered list a screen reader can follow', () => {
     render(<CrewModeWelcome />)
     const flow = screen.getByRole('list', { name: 'How Ultra Mode works' })
     const steps = within(flow).getAllByRole('listitem').map(li => li.textContent)
-    expect(steps).toEqual(['Goal', 'Split', 'Own chats', 'Board', 'Needs you'])
+    expect(steps).toEqual(['Projects', 'Split', 'Own chats', 'Board', 'Needs you'])
   })
 
   it('keeps the art and the arrows out of the accessibility tree', () => {

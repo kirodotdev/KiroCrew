@@ -12,12 +12,13 @@ import { Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
 import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { DecisionsCard } from './DecisionsCard'
+import { RemoteDispatchCard } from './RemoteDispatchCard'
 import { i18nT } from '../../i18n/t'
 
 
@@ -120,10 +121,12 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_ARTIFACT_DEPLOY: return i18nT('pages.developer.featurePreviewsTab.artifact_deploy')
     case PREVIEW_WEBHOOKS: return i18nT('pages.developer.featurePreviewsTab.webhooks')
     case PREVIEW_CREW_MODE: return i18nT('pages.developer.featurePreviewsTab.crew_mode')
+    case PREVIEW_EXPLORE: return i18nT('pages.developer.featurePreviewsTab.explore')
     case PREVIEW_REMOTE_CREW_CHAT: return i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')
     case PREVIEW_LAYOUT_HARNESS: return i18nT('pages.developer.featurePreviewsTab.layout_harness')
     case PREVIEW_FOLDER_CONDUCTOR: return i18nT('pages.developer.featurePreviewsTab.folder_conductor')
     case PREVIEW_CREWMATE_HARNESS: return i18nT('pages.developer.featurePreviewsTab.crewmate_harness')
+    case PREVIEW_MATE_SESSIONS: return i18nT('pages.developer.featurePreviewsTab.mate_sessions')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
   }
@@ -152,8 +155,10 @@ export function FeaturePreviewsSection() {
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
   const crewmateHarness = usePreviewFlag(PREVIEW_CREWMATE_HARNESS)
+  const mateSessions = usePreviewFlag(PREVIEW_MATE_SESSIONS)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
+  const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const writeError = usePreviewFlagWriteError()
   const [gatewayRestarting, setGatewayRestarting] = useState(false)
   const [restartFailed, setRestartFailed] = useState(false)
@@ -247,7 +252,7 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.artifact_deploy')}
-          description={i18nT('pages.developer.featurePreviewsTab.artifact_deploy_desc')}
+          description={i18nT('pages.developer.featurePreviewsTab.artifact_deploy_desc_summary')} hint={i18nT('pages.developer.featurePreviewsTab.artifact_deploy_desc')}
           checked={artifactDeploy}
           onChange={v => setPreviewFlag(PREVIEW_ARTIFACT_DEPLOY, v)}
         />
@@ -305,9 +310,23 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.crew_mode')}
-          description={i18nT('pages.developer.featurePreviewsTab.crew_mode_desc')}
+          description={i18nT('pages.developer.featurePreviewsTab.crew_mode_desc_summary')}
+          hint={i18nT('pages.developer.featurePreviewsTab.crew_mode_desc')}
           checked={crewMode}
           onChange={v => setPreviewFlag(PREVIEW_CREW_MODE, v)}
+        />
+      </SettingsCard>
+      {/* Explore (flag key `mc-preview-explore`): the top-bar pill, its sheet,
+          the milestone notice, the Try today card and Display > Explore. A
+          plain switch, like Ultra Mode's; on, Display > Explore is the inner
+          switch. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.explore')}
+          description={i18nT('pages.developer.featurePreviewsTab.explore_desc_summary')}
+          hint={i18nT('pages.developer.featurePreviewsTab.explore_desc')}
+          checked={explore}
+          onChange={v => setPreviewFlag(PREVIEW_EXPLORE, v)}
         />
       </SettingsCard>
       {/* Shared Crew (People, invites, shared sessions). Unlike the flags above, the
@@ -363,7 +382,8 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')}
-          description={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc')}
+          description={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc_summary')}
+          hint={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc')}
           checked={remoteCrewChat}
           onChange={v => setRemoteCrewChat(v)}
         />
@@ -381,7 +401,8 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.layout_harness')}
-          description={i18nT('pages.developer.featurePreviewsTab.layout_harness_desc')}
+          description={i18nT('pages.developer.featurePreviewsTab.layout_harness_desc_summary')}
+          hint={i18nT('pages.developer.featurePreviewsTab.layout_harness_desc')}
           checked={layoutHarness}
           onChange={v => setPreviewFlag(PREVIEW_LAYOUT_HARNESS, v)}
         />
@@ -403,7 +424,8 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.folder_conductor')}
-          description={i18nT('pages.developer.featurePreviewsTab.folder_conductor_desc')}
+          description={i18nT('pages.developer.featurePreviewsTab.folder_conductor_desc_summary')}
+          hint={i18nT('pages.developer.featurePreviewsTab.folder_conductor_desc')}
           checked={folderConductor}
           onChange={v => setPreviewFlag(PREVIEW_FOLDER_CONDUCTOR, v)}
         />
@@ -414,11 +436,30 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.crewmate_harness')}
-          description={i18nT('pages.developer.featurePreviewsTab.crewmate_harness_desc')}
+          description={i18nT('pages.developer.featurePreviewsTab.crewmate_harness_desc_summary')}
+          hint={i18nT('pages.developer.featurePreviewsTab.crewmate_harness_desc')}
           checked={crewmateHarness}
           onChange={v => setPreviewFlag(PREVIEW_CREWMATE_HARNESS, v)}
         />
       </SettingsCard>
+      {/* A crewmate's sessions leave the person's lists for the mate's Sessions
+          tab. NO ingress button: the change is to lists the reader already sees. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.mate_sessions')}
+          description={i18nT('pages.developer.featurePreviewsTab.mate_sessions_desc_summary')}
+          hint={i18nT('pages.developer.featurePreviewsTab.mate_sessions_desc')}
+          checked={mateSessions}
+          onChange={v => setPreviewFlag(PREVIEW_MATE_SESSIONS, v)}
+        />
+      </SettingsCard>
+      {/* Conductor remote dispatch (`work_ledger.remote_dispatch`). Like the KAS card
+          below, its switch is the gateway's own config value, not a preview flag:
+          every remote-dispatch path reads it per call, so it gates the server and
+          not only the UI. Renders nothing until the config read answers. */}
+      <ErrorBoundary scope="feature-preview-remote-dispatch" fallback={null}>
+        <RemoteDispatchCard />
+      </ErrorBoundary>
       {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
           and the Install button for the pinned engine. It lives here, not on the
           KAS harness row, while the route is in shadow testing, so the one click
@@ -437,7 +478,8 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('sessionEnvironments.title')}
-          description={i18nT('sessionEnvironments.description')}
+          description={i18nT('sessionEnvironments.description_summary')}
+          hint={i18nT('sessionEnvironments.description')}
           checked={sessionEnvironments}
           onChange={value => setPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS, value)}
         />

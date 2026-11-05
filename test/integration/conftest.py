@@ -134,7 +134,7 @@ cross-home flake three tests later.
    * ``sandbox._SHIM_ARGV_CACHE`` -- the spawn shim's resolved argv, derived
      from the boot's config and home.
    * ``config.loader`` materialized-agent snapshot (``_MATERIALIZED_AGENTS``,
-     ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_SEEN``, ``_MATERIALIZED_COMPLETE``,
+     ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_SEEN``, ``_MATERIALIZED_COMPLETE``, ``_MATERIALIZED_SKIPPED``,
      ``_MATERIALIZED_AGENTS_READY``) -- the declared names, file-name map,
      removal evidence and scan completeness of the home's
      ``kiro/agents`` directory, which the next boot would read as its own until
@@ -143,9 +143,6 @@ cross-home flake three tests later.
      ``auto_update_effect``, read from the boot's install root and policy; a
      stale one is served on the next boot's status frames, and it is also what
      arms the status path's background re-derivation.
-   * ``browser_cli.launch._warned_lifecycle_losses`` -- the warn-once set for
-     browser-socket lifecycle losses; carried across boots it would silence
-     the second boot's first diagnostic.
    * ``sandbox`` cgroup-counter baselines (``_SLICE_THROTTLE_PROBE_SEEN``,
      ``_SLICE_THROTTLE_EDGE_AT``, ``_SLICE_MEMHIGH_EVENTS_SEEN``,
      ``_SLICE_OOM_SEEN``) -- each is "seeded from the first read in this
@@ -208,8 +205,8 @@ cross-home flake three tests later.
 
 4. **Reaped** by ``_teardown_boot``: every asyncio task the boot created that
    ``_shutdown()`` did not end. Production never needs to -- ``os._exit``
-   follows -- so the MCP probe, the terminal-title poller, the browser-snapshot
-   pruner, the follow-up sweep and their kin keep running against a home the
+   follows -- so the MCP probe, the terminal-title poller, the follow-up sweep
+   and their kin keep running against a home the
    test has discarded. Teardown snapshots ``asyncio.all_tasks()`` before the
    boot, cancels every survivor the boot added, and fails the test if one
    refuses to end within ``TASK_REAP_SECS``.
@@ -284,7 +281,7 @@ from kiro_crew import (
 )
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.browser_cli import launch as browser_launch
+from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV, load_adoption_pins
 from kiro_crew.config import live as config_live
 from kiro_crew.config import loader as config_loader
 from kiro_crew.config.loader import CREDENTIAL_KEYS
@@ -805,12 +802,12 @@ def _reset_home_bound_globals() -> None:
     config_loader._MATERIALIZED_STEMS.clear()
     config_loader._MATERIALIZED_SEEN.clear()
     config_loader._MATERIALIZED_COMPLETE = False
+    config_loader._MATERIALIZED_SKIPPED = None
     config_loader._MATERIALIZED_AGENTS_READY = False
     governance._CONFIRM_PATTERNS_MEMO = None
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
-    browser_launch._warned_lifecycle_losses.clear()
     # Cleared in place, never rebound: the security facade re-exports
     # ``_path_resolve_degraded`` by identity, and the second-boot witness
     # compares each container's identity.
@@ -878,12 +875,12 @@ def home_bound_globals_are_clear() -> bool:
         and not config_loader._MATERIALIZED_STEMS
         and not config_loader._MATERIALIZED_SEEN
         and not config_loader._MATERIALIZED_COMPLETE
+        and config_loader._MATERIALIZED_SKIPPED is None
         and not config_loader._MATERIALIZED_AGENTS_READY
         and governance._CONFIRM_PATTERNS_MEMO is None
         and config_loader._boot_raw_env is None
         and not config_loader._env_owned_keys
         and dashboard_updates._auto_effect is None
-        and not browser_launch._warned_lifecycle_losses
     )
 
 
@@ -1269,7 +1266,7 @@ def isolate_credentials(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
 @pytest.fixture
 def integration_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unpinned_agent_spec_home: Any
-) -> Path:
+) -> Iterator[Path]:
     """A fresh, isolated ``KIROCREW_HOME`` with the fake model wired in.
 
     Modelled on ``kiro_crew.testing.harness.spawn_feature_gateway``'s
@@ -1323,9 +1320,16 @@ def integration_home(
     # raise instead of warn, the same discipline the other gateway-booting jobs
     # enforce.
     monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_PERSIST", "1")
+    # The adoption pin table is this test's own (``harness_environment`` sets the
+    # same name for a subprocess gateway): absent, so empty, unless the test
+    # writes a fixture pin to ``tmp_path / "adoption-pins.json"``. Read once per
+    # process, so the cache is cleared on the way in and on the way out.
+    monkeypatch.setenv(HARNESS_PINS_ENV, str(tmp_path / "adoption-pins.json"))
+    load_adoption_pins.cache_clear()
     # Nor any credential the environment carries (``isolate_credentials``).
     isolate_credentials(monkeypatch, home)
-    return home
+    yield home
+    load_adoption_pins.cache_clear()
 
 
 @pytest.fixture

@@ -76,6 +76,7 @@ def state(tmp_path, log):
         SLACK_KEY if stem == SLACK_STEM else DISCORD_KEY if stem == DISCORD_STEM else ""
     )
     st.push_slots_update = MagicMock()
+    st.push_listing_refresh = MagicMock()
     st._restricted_keys = set()
     st._ephemeral_keys = set()
     st._slack_to_slot = {}

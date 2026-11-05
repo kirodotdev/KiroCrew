@@ -136,8 +136,9 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration; the import path of the owners below |
 | `knowledge/ingestion_budget.py` | `ImportChunkBudget` / `ImportChunkBudgetError` — the explicit-import cross-file chunk ceiling and its refusal |
 | `knowledge/ingestion_rebuild.py` | `rebuild_embeddings` — the signature-gated corpus re-embed; `start_rebuild_job` (its single-flight job row), `count_stale_items` (the watcher's trigger count) |
+| `knowledge/ingestion_jobs.py` | `reclaim_interrupted_ingest_jobs` — the startup sweep that moves source-ingest job rows a stopped gateway left `processing` to `abandoned` |
 | `knowledge/dedup.py` | Cross-source deduplication |
-| `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
+| `knowledge/connectors/` | `BaseConnector`, `local_folder` + `bedrock_kb` source connectors |
 | `mcp_tools/knowledge.py` | `local_knowledge_search` MCP tool handler |
 | `mcp_core.py` | Cached `(KnowledgeStore, embedder)` accessor the tool reads |
 | `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API: the facade every route below is imported and patched through; it keeps no code of its own |
@@ -152,6 +153,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `dashboard/handlers/knowledge_lifecycle.py` | `setup_knowledge_routes`, the source watcher, artifact auto-ingest, live config reloads, the pools' shutdown |
 | `agent_materialization/service_agents.py:_install_knowledge_agent` | Installs the `kirocrew-knowledge` kiro-cli agent used by the pool |
 | `agent_materialization/service_agents.py:repair_knowledge_agent_spec` | Rewrites that spec from the same template before each pool worker spawn when the file on disk is not it |
+| `agent_materialization/service_agents.py:knowledge_view_without_registered_injection` | Builds the spec's native skill view from the template when the file's only change is an injection an edition-registered filter (`agent_spec_injections.py`) removes exactly, so a Kiro worker launches with zero tools and the file is not rewritten |
 
 `KnowledgeStore`'s behaviour lives in the `knowledge/store_parts/` owners in the table above,
 one responsibility each. A member's body is a module-level function there whose first
@@ -273,6 +275,7 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
 - **`.kiroignore` (`kiroignore.py`)**: when the SOURCE ROOT holds a `.kiroignore`, its rules are compiled once per sweep and applied on top of everything above. Matching **directories are pruned in place** during `os.walk`, so a generated tree (`cdk.out`, coverage output) is never descended rather than filtered file by file. The rule file itself is never indexed — its extensionless name is in `FileReader.SUPPORTED`, so it would otherwise be ingested as a document.
   - Syntax is a documented SUBSET of gitignore: `#` comments, blank lines, trailing `/` (directories only), leading `/` (root-anchored), any other embedded `/` (also anchored; a separator-free pattern matches that basename at any depth), `*` / `?` / `**`, and `!` negation where the last matching rule wins. NOT supported: `[a-z]` character classes (brackets match literally), backslash escapes other than a leading `\#` / `\!`, nested `.kiroignore` files in subdirectories, and re-including a path underneath an excluded directory (as in git).
   - **Defensive by contract**: the file is user-authored and re-read every sweep, so an unreadable, oversized (> `MAX_FILE_BYTES` = 64 KiB) or undecodable one degrades to "no extra exclusions" and never raises mid-scan; a single unusable pattern is dropped and the rest of the file still applies. Rules are capped at `MAX_RULES` = 1000.
+  - **Encoding**: a file starting with a UTF-16 LE/BE BOM (Windows PowerShell 5.1's `Out-File` and `>` default) is decoded as UTF-16; anything else as UTF-8 with an optional BOM stripped, `errors="replace"` in both cases. Decoded text containing NUL (BOM-less UTF-16, binary) logs one WARNING per sweep naming the file and asking for UTF-8, since no rule can contain NUL and its rules match nothing.
   - **`.gitignore` is deliberately NOT read as a fallback.** A scan treats a file that stops being discovered as DELETED and archives its items (`_handle_deleted`), so honouring `.gitignore` implicitly would, on the next sweep, drop already-indexed documents out of every existing folder source whose root happens to be a repository. Creating a `.kiroignore` is an explicit act, so the same removal is the user's intent.
 - **Extension filter**: keeps a file only if its lower-cased suffix is in `FileReader.SUPPORTED` **or** equals `.canvas` (Obsidian canvas files).
 - **Sensitive-path guard**: resolves each candidate (`Path.resolve()`) and skips it if `is_sensitive_path()` matches.
@@ -592,7 +595,7 @@ sites plus that one, the Add button held until it is listed).
 
 Entity extraction (`EntityExtractor`) acquires workers from **workload-isolated** `LLMPool` instances — provider-agnostic, bounded pools of **long-lived** ACP workers (the extraction pool sized by `knowledge.extraction_pool_size`, default `DEFAULT_POOL_SIZE` = 3). A `Worker` ABC has two concrete paths:
 
-- **Default (kiro-cli)** — `AcpWorker` drives the `kirocrew-knowledge` agent over ACP (`AGENT_NAME`). That agent is installed by `agent_materialization/service_agents.py:_install_knowledge_agent`. Its model resolves `knowledge.extraction_model` → `agent.model` → `"auto"` (`kiro_crew.agent.knowledge_agent_model`; the installer writes it into the spec, which kiro-cli reads, and `AcpWorker._spawn_client` hands the same pin as `model=` to every other harness, which reads no spec of Crew's), and it declares no MCP servers and no tools (`mcpServers: {}`, `tools: []`, `includeMcpJson: false`). That spec is meant as a total ban. The agents directory is shared, and a tool that rewrites every spec in it (a launcher adding its own MCP server to `tools`, `allowedTools` and a `permissions` block) would otherwise leave the pool refusing every batch until the next rebuild re-derives the spec. So `AcpWorker._spawn_client` first calls `service_agents.repair_knowledge_agent_spec` off the event loop, on every backend, before each spawn. It compares the file, parsed and type-strict, against the governed template, and rewrites it through the same governed tail when the two differ or the file cannot be read as a spec, logging a WARNING that names the differing top-level keys and never their values. A write this data home may not make (`SharedAgentHomeRefused`) or one that fails leaves the file as it is, and the confirmation below still decides. The harness is `agent.acp_backend`, read per worker by `_get_acp_backend()` through `resolve_selected_backend` (H3) and then narrowed to a backend that answers two `SessionCapabilities` questions True: `honors_zero_tool_ban` (kiro-cli/KAS natively; opencode/goose/deepseek/pi via `AcpClient._deny_zero_tools`, which refuses every permission request — MCP or the harness's own native Bash/Read/Write — on an `AcpClient` session of an enforced-routing backend whose `SessionMcpProjection.zero_tools` is set from the same spec parse as the MCP array, by the backend's mirror or, for pi, which has none, beside its member mounts; claude's routing is declared but not enforced by this core, so an inherited `~/.claude` pre-approval can skip the permission request and the refusal never runs; codex is served by `AcpRuntime`, which carries no such refusal at all) and `acp_client_spawnable` (kiro, claude, opencode, goose, pi, deepseek — not kas/codex, which need `AcpRuntime` and have no arm in `AcpClient._spawn`). Today that intersection is `{kiro, opencode, goose, deepseek, pi}`. The resolved backend is passed to `AcpClient` as `acp_backend=`; an unselectable, malformed, or not-yet-qualifying value degrades to Kiro, and `_get_acp_backend` logs a warning naming the configured backend and which capability failed, once per backend per process. Once the session is ready, `AcpWorker.start()` confirms the ban instead of assuming it. A backend not routed through `Routing.AGENT_SPEC` must have the session's consumed projection (its mirror's, or pi's mirror-less parse) confirm `zero_tools` (`AcpClient.spec_zero_tools`), and if it does not — a missing, malformed, or shadowed spec — the worker restarts on Kiro before any prompt is sent. A worker that ends on a `Routing.AGENT_SPEC` backend (Kiro, originally or after that restart) has no mirror to confirm through, and kiro resolves `--agent` against `<cwd>/.kiro/agents` before the global directory while the pool's cwd is `config_dir()/workspace`, so a project-level `kirocrew-knowledge.json` carrying tools would shadow the installed spec. It therefore confirms the ban with `AcpClient.effective_spec_declares_zero_tools`. With a prepared projection the `NativeSkillProjection` hands the harness a view through `--agent` before the spawn, under the alias it published to the user-level agents directory, and the confirmation requires `"tools": []` in both: the captured view, and the published alias file, read after start because that file is what kiro-cli loads (a checkout cannot claim an alias name, `acp/managed_agent_shadow.py`). The authored spec is not read on this branch, so an edit to it after the view was prepared cannot change the answer. With no prepared projection (the `agent.native_skill_projection: false` / `KIROCREW_NATIVE_SKILL_PROJECTION=0` rollback, or an alias that could not be taken) kiro-cli loads the named spec itself, so `AcpWorker._spawn_client` reads the authored spec (`AcpClient.authored_spec_declares_zero_tools`, project checkout first) before each Kiro client's spawn and the confirmation reads it again after start; both reads must declare `"tools": []`. On either branch the read after start narrows a change to the file kiro-cli loads but cannot close one made and restored inside the spawn window. The confirmation runs off the event loop because both branches read a file. `AcpWorker.start()` raises `RuntimeError` without sending a prompt when the ban is not confirmed; no safer backend remains after Kiro. Effort follows the backend's capability rather than its identity (`effort_via_config_option`, `effort_via_slash_command`); a backend answering neither logs that the provider default applies and sends nothing. An effort option offering `off` alone (goose on a model with no extended thinking) sends nothing either, and neither does an opencode model with no variants, which advertises no `effort` option at all. `AcpWorker.send_message` shuts its client down on any failed send and re-raises, so the next `acquire` respawns it: a timed-out turn is still running in the child, and a reused client would answer "Prompt already in progress".
+- **Default (kiro-cli)** — `AcpWorker` drives the `kirocrew-knowledge` agent over ACP (`AGENT_NAME`). That agent is installed by `agent_materialization/service_agents.py:_install_knowledge_agent`. Its model resolves `knowledge.extraction_model` → `agent.model` → `"auto"` (`kiro_crew.agent.knowledge_agent_model`; the installer writes it into the spec, which kiro-cli reads, and `AcpWorker._spawn_client` hands the same pin as `model=` to every other harness, which reads no spec of Crew's), and it declares no MCP servers and no tools (`mcpServers: {}`, `tools: []`, `includeMcpJson: false`). That spec is meant as a total ban. The agents directory is shared, and a tool that rewrites every spec in it (a launcher adding its own MCP server to `tools`, `allowedTools` and a `permissions` block) would otherwise leave the pool refusing every batch until the next rebuild re-derives the spec. So `AcpWorker._spawn_client` first calls `service_agents.repair_knowledge_agent_spec` off the event loop, on every backend, before each spawn. It compares the file, parsed and type-strict, against the governed template, and rewrites it through the same governed tail when the two differ or the file cannot be read as a spec, logging a WARNING that names the differing top-level keys and never their values. A write this data home may not make (`SharedAgentHomeRefused`) or one that fails leaves the file as it is, and the confirmation below still decides. One change can be left in the file for a Kiro worker. A tool that rewrites every spec on each of its launches would otherwise take turns on the file with this repair forever, so a downstream edition may register a filter for that tool's exact injection (`agent_spec_injections.register_spec_injection_filter`). The public core registers none. When a registered filter turns the file back into exactly the governed template, the repair leaves the file alone, logs that once per filter per process, and the native skill projection builds the agent's view from the template itself, never from the filter's output, so the view and its published alias still declare `"tools": []`. A lookalike entry, or any other change beside the injection, is repaired as before. Every other backend parses the file itself, so it is still repaired there, and a Kiro worker that got no view (projection off, or no alias) repairs the file and starts once more on it. The harness is `agent.acp_backend`, read per worker by `_get_acp_backend()` through `resolve_selected_backend` (H3) and then narrowed to a backend that answers two `SessionCapabilities` questions True: `honors_zero_tool_ban` (kiro-cli/KAS natively; claude because a zero-tool session there is started with no tool mounted at all, so no inherited `~/.claude` allow rule has one to pre-approve; opencode/goose/deepseek/pi via `AcpClient._deny_zero_tools`, which refuses every permission request — MCP or the harness's own native Bash/Read/Write — on an `AcpClient` session of an enforced-routing backend whose `SessionMcpProjection.zero_tools` is set from the same spec parse as the MCP array, by the backend's mirror or, for pi, which has none, beside its member mounts; codex is served by `AcpRuntime`, which carries no such refusal at all) and `acp_client_spawnable` (kiro, claude, opencode, goose, pi, deepseek — not kas/codex, which need `AcpRuntime` and have no arm in `AcpClient._spawn`). Today that intersection is `{kiro, claude, opencode, goose, deepseek, pi, strands}`. The resolved backend is passed to `AcpClient` as `acp_backend=`; an unselectable, malformed, or not-yet-qualifying value degrades to Kiro, and `_get_acp_backend` logs a warning naming the configured backend and which capability failed, once per backend per process. Once the session is ready, `AcpWorker.start()` confirms the ban instead of assuming it. A backend not routed through `Routing.AGENT_SPEC` must have the session's consumed projection (its mirror's, or pi's mirror-less parse) confirm `zero_tools` (`AcpClient.spec_zero_tools`), and if it does not — a missing, malformed, or shadowed spec — the worker restarts on Kiro before any prompt is sent. A worker that ends on a `Routing.AGENT_SPEC` backend (Kiro, originally or after that restart) has no mirror to confirm through, and kiro resolves `--agent` against `<cwd>/.kiro/agents` before the global directory while the pool's cwd is `config_dir()/workspace`, so a project-level `kirocrew-knowledge.json` carrying tools would shadow the installed spec. It therefore confirms the ban with `AcpClient.effective_spec_declares_zero_tools`. With a prepared projection the `NativeSkillProjection` hands the harness a view through `--agent` before the spawn, under the alias it published to the user-level agents directory, and the confirmation requires `"tools": []` in both: the captured view, and the published alias file, read after start because that file is what kiro-cli loads (a checkout cannot claim an alias name, `acp/managed_agent_shadow.py`). The authored spec is not read on this branch, so an edit to it after the view was prepared cannot change the answer. With no prepared projection (the `agent.native_skill_projection: false` / `KIROCREW_NATIVE_SKILL_PROJECTION=0` rollback, or an alias that could not be taken) kiro-cli loads the named spec itself, so `AcpWorker._spawn_client` reads the authored spec (`AcpClient.authored_spec_declares_zero_tools`, project checkout first) before each Kiro client's spawn and the confirmation reads it again after start; both reads must declare `"tools": []`. On either branch the read after start narrows a change to the file kiro-cli loads but cannot close one made and restored inside the spawn window. The confirmation runs off the event loop because both branches read a file. `AcpWorker.start()` raises `RuntimeError` without sending a prompt when the ban is not confirmed; no safer backend remains after Kiro. Effort follows the backend's capability rather than its identity (`effort_via_config_option`, `effort_via_slash_command`); a backend answering neither logs that the provider default applies and sends nothing. An effort option offering `off` alone (goose on a model with no extended thinking) sends nothing either, and neither does an opencode model with no variants, which advertises no `effort` option at all. `AcpWorker.send_message` shuts its client down on any failed send and re-raises, so the next `acquire` respawns it: a timed-out turn is still running in the child, and a reused client would answer "Prompt already in progress".
 - **`agent.provider="claude_code"` (legacy seam)** — `CCWorker` drives a long-lived `claude` CLI subprocess over stream-json I/O (haiku model, `bypassPermissions`); URL-fetch tools are opt-in via `KIROCREW_KNOWLEDGE_FETCH_TOOLS`. Its stdout stream is opened with a 10 MiB line limit (`STDOUT_LINE_LIMIT`, the ACP transports' ceiling, pinned equal by a test) rather than asyncio's 64 KiB, and stderr goes to `DEVNULL`, so the limit sizes the one pipe that is read and an unread stderr can neither hold memory nor stall the CLI; the reader drops a line over the limit, or one that is not a JSON object, and keeps reading. `_collect_response` skips values of the wrong type, takes the CLI's non-empty string `result` (the final answer) as the reply and joins the assistant text only when the result carries none, so the narration of an earlier tool-use turn never reaches the caller, and fails the message on `is_error: true`. The worker outlives a message only when that message's result event was consumed; anything else (a timeout, a dead reader, a cancelled caller, including one cancelled while the prompt write is still draining, which the same timeout bounds) retires the process so a later prompt cannot read this one's leftovers. A respawn that fails retires the old process as well, since its reader is already gone, and `is_alive()` reports a worker whose reader ended as dead. Kiro Crew's provider enum is `["acp"]`, so this branch is dormant in practice.
 
 ### Sweep shielding + audit source
@@ -611,6 +614,10 @@ Entity extraction (`EntityExtractor`) acquires workers from **workload-isolated*
 `LLMPool.start()` reads config once off the event loop and spawns all workers; `acquire()` blocks on a semaphore when all workers are busy and transparently replaces a dead worker (`is_alive()` false) on acquire. `send()` is the acquire→send→release convenience; `send_batch()` runs prompts concurrently bounded by pool size. A failed spawn during `start()` tears down all already-started workers. After `knowledge.pool_idle_ttl_secs` (default 300; `0` disables it) of full idleness — no worker checked out — the pool scales to zero, shutting every worker down; the next `acquire()` respawns lazily. A config write reaches a running pool through `reconfigure()`, which adopts the new idle TTL at once and a new pool size at the next idle boundary.
 
 **Untrusted-chunk delimiters (CWE-94).** `EntityExtractor` wraps each untrusted chunk in **per-request nonce-suffixed** delimiters (`<<<BEGIN_UNTRUSTED_CHUNK_{nonce}>>>` / `<<<END_UNTRUSTED_CHUNK_{nonce}>>>`, `nonce = uuid4().hex`), so content that embeds a legacy static delimiter cannot forge the boundary and inject instructions. Both `extract` (single) and `extract_batch` (the ingestion path) apply this, and the batch path mints a **distinct nonce per chunk**.
+
+**Extraction failures are logged, never the text.** An extraction batch whose pool call fails, or whose chunks get an empty or unparseable reply, stores those chunks with no entities and no summary and logs one WARNING naming the source id (set by `IngestionPipeline` through `extractor.extraction_source`), the exception type or the empty/unparseable counts. A failed or unusable source summary (`generate_source_summary`) logs a WARNING the same way. No warning carries document text, the model's reply, an exception message or a document name.
+
+**Interrupted ingest jobs.** An ingest writes its `ingestion_jobs` row as `processing` before any work. A gateway that stops mid-ingest leaves that row behind, so `setup_knowledge_routes` registers `_reclaim_interrupted_ingest_jobs` as the first knowledge startup hook. The hook only schedules a tracked background task (`_run_ingest_job_reclaim`), so startup does not wait on a scan that grows with job history; the task moves every row with a `source_id` still `processing` and created before this process's boot timestamp to `abandoned`. Rebuild rows (`source_id IS NULL`) keep `start_rebuild_job`'s staleness sweep. Nothing is re-ingested; an interrupted folder file is picked up by the next scan through its scan marker. Two gateways sharing one data home is not a supported layout; if it happens, a restart of one marks the other's live ingests `abandoned`, which only mislabels rows that hold no lock.
 
 ## 4. FTS5 + graph + vector retrieval (`retrieval.py`, `store.py`)
 
@@ -656,6 +663,402 @@ The retrieval benchmark builds a disposable corpus with one embedding callable
 for both ingestion and queries. It explicitly uses `ANY_EMBEDDING_SPACE` because
 those synthetic rows have no persisted model signature and never share a store
 with user data. Production retrieval still requires the active signature.
+
+### Remote sources: `bedrock_kb` (`knowledge/connectors/bedrock_kb.py`)
+
+A `bedrock_kb` source points at one or more **Amazon Bedrock Knowledge Bases**
+in the user's own AWS account and holds **no local items**: the KB keeps its
+own index and embeddings, so Kiro Crew queries it live at search time instead
+of ingesting it (issue #7947). Consequences, in the order the code enforces
+them:
+
+- **Config, no secrets.** `properties` carry `kb_ids` (comma-separated; a
+  full KB ARN is accepted and normalized to its trailing ID so one knowledge
+  base has one spelling in the dedupe, the result ids and the audit rows),
+  `region`, optional `profile`. `kb_ids` is the one caller-supplied field a
+  source retains and re-parses on every search, so it is bounded where it is
+  parsed (`_parse_kb_ids`): at most `_MAX_KB_IDS` entries (also the
+  per-search fan-out cap), each raw entry at most `_MAX_KB_ID_ENTRY_CHARS`,
+  each normalized id exactly the `[0-9A-Za-z]{10}` shape the Retrieve API
+  accepts. `validate_config` parses strictly and refuses the first violation
+  by name before any probe, and the insert only runs after validation, so
+  nothing out of bounds is probed or stored; the search-time parse of a
+  stored row drops what fails and truncates. The insert stores the
+  connector's `retained_properties(config)`: exactly those three keys, each
+  in the VALIDATED form the gates judged rather than the caller's raw
+  spelling -- `kb_ids` as the canonical comma-joined bare ids the strict
+  parse produced, `region` and `profile` as the stripped strings the
+  grant-equality check matched. Every gate strips or parses before it
+  judges, so a whitespace-padded value (or an ARN spelling) passes them
+  all; retaining the raw copy would store what nothing validated, bounded
+  only by the request-body cap. So the row's size follows the gates' own
+  bounds, its spelling is the one every later compare and result id uses,
+  and an extra field in the body, flat or nested, never reaches storage.
+  The row's `uri` -- the UNIQUE dedup key -- is likewise the server's
+  `canonical_source_uri(retained)` (`bedrock-kb://<region>/<sorted kb ids,
+  +-joined>`), never the caller's: a caller who chose the handle could mint
+  a row per request for one knowledge base, each carrying a `name` up to
+  the body cap, whereas the derived handle is one per distinct SET of
+  knowledge bases: the same ids in any order dedupe to one row (`409
+  source_exists`), so a search pays one Retrieve per KB rather than one per
+  spelling, while a set that shares a first id with an existing row (`A` vs
+  `A,B`) is a different source, not a false `409`. The form therefore posts
+  no `uri` for this type, and its default `name` (when the owner leaves the
+  field blank) is `Bedrock KB <bare first id>`, the trailing segment of a
+  pasted ARN: an ARN also carries the account id, and `name` is a column
+  every authenticated caller reads off the sources list. `add_source`
+  resolves the stored name once, after the uri is final, as `name or uri`.
+  For `bedrock_kb` only, it cuts that name rather than refusing it, to the
+  connector's `_MAX_RESULT_SOURCE_NAME_CHARS` (200). A name written by the
+  gateway therefore reads back unchanged through `_BOUNDED_ROW_SELECT`. If an
+  in-sandbox database writer later enlarges it, the SELECT returns NULL rather
+  than a clipped prefix, and result and conflict displays use
+  `Bedrock KB <validated kb id>` instead. Every other
+  source type stores the name as sent, explicit or uri-derived, because the
+  Markdown panel, the Knowledge tab and md-notebook can send longer names.
+  Credentials
+  resolve through
+  the standard AWS chain for the named profile at call time; nothing
+  credential-shaped is stored. boto3 ships in the optional `[bedrock]` extra
+  (same pin as `[voice-aws]`) and is imported lazily, and never on the event
+  loop: the module imports boto3 at its top, so the consent POST names it
+  only inside the worker that records the grant and only for `bedrock-kb`
+  (a Polly or Transcribe confirmation never loads it); without it the source
+  reports the missing extra on add instead of breaking core imports.
+- **Consent precedes every request.** Bedrock KB retrieval is registered as a
+  gated paid service in `kiro_crew.aws_consent` (`SERVICE_BEDROCK_KB`): the
+  add-time probe and every retrieval first pass the account-bound
+  authorization check (grant keyed on service+profile+region, live account
+  re-checked), refusing fail-closed — a repointed profile cannot receive so
+  much as an access check, and a revoked grant silently removes the source
+  from search results (logged by the consent layer) instead of billing an
+  unconfirmed account. One search runs the consent probe and the client's
+  STS verify once per (profile, region) and shares the client across every
+  source on that target (`search_remote_sources`), so several sources fit
+  the 5-second budget; each Retrieve still rechecks the grant and its own
+  source's attestation. **The sandboxed MCP server never evaluates consent
+  in-process**: the sandbox seals `aws_service_consent.json` with an
+  inode-pinning self-bind, so a host-side withdrawal (atomic rename) is
+  invisible to a sandboxed reader — its remote leg therefore calls the
+  gateway's internal `POST /api/knowledge/remote-search` (loopback +
+  `X-Internal-Secret`), and authorization, credential freeze-verify, and
+  per-retrieve rechecks all run in the gateway process against the live
+  keystone store. The per-retrieve recheck (`_refusal_reason`) runs
+  immediately before every paid request and reads one local snapshot of the
+  keystone store, deriving both facts from that same complete file version:
+  the grant is still the one the frozen credentials were verified against,
+  AND the row the search runs for is still attested under it. The
+  enumeration checks the registration once when it starts, but a
+  delete landing during a search revokes the attestation and leaves the
+  grant in place, so a recheck that read only the grant would let the rest
+  of that search keep billing for a source the owner had just removed. A
+  retrieve the recheck refuses writes its own SEL `aws_consent.denied` event
+  naming the KB and which check refused (grant withdrawn or replaced, or
+  source registration withdrawn), so the audit log records every paid
+  request that did not happen, not only the ones the front gate turned
+  away; the freeze-verify refusal in `_get_client` (no grant, credentials
+  resolving to an account other than the confirmed one, or a grant confirmed
+  for a different profile/region) writes the same `denied` event naming the
+  target and which check refused, before any client is built. The grant is recorded from the **add-source form's own
+  consent card**: `bedrock-kb` is the one service whose target is taken from
+  the request (the source exists only in the form until saved), which is safe
+  because the shown account is probed fresh from that exact target, the POST
+  409s on any echo mismatch, and `is_granted` demands exact (profile, region)
+  equality at call time — a grant for a target nothing uses is inert. The
+  form's submit stays disabled until that grant exists (it subscribes to the
+  same consent query the card polls), so the server-side refusal is never a
+  first-time user's first signal — the card above the button is the visible
+  reason and the order. **The request body's shape is checked once, first**
+  (`_add_source_shape_error`): every text field `add_source` reads (`name`,
+  `source_type`, `uri`, `namespace`) must be a string or absent/`null`, and
+  `properties` an object, else 400 `<field> must be a string` / `properties
+  must be an object` before any field is used. Per-field checks at each
+  first use would leave one gap per field: a connector's `validate_config`
+  may ignore `url`, so a JSON object in `uri` would pass validation and
+  reach `str.startswith` as a 500. **Registering the source is an owner action**, the
+  same rule the consent endpoints apply (`is_owner_dashboard_request`, via
+  `_shared.require_owner_dashboard_request`): `add_source` refuses a
+  `bedrock_kb` body from a non-owner dashboard caller (an allow-listed
+  messaging user reaches the route with `app == ""`) or an app token with
+  403 `owner_only` BEFORE validation, because validation probes the KB with
+  the owner's credentials and the insert registers a KB the gateway then
+  queries on the owner's account against the owner's grant. Local sources
+  keep `add_source`'s existing, ungated behaviour. The bundle routes are not
+  a way around the rule: `/api/knowledge/import` is open to every
+  authenticated caller and carries no consent, validation or target check,
+  so `KnowledgeStore.import_bundle` refuses a `bedrock_kb` row, and a row of
+  any type whose `uri` starts with `bedrock-kb://` (it would squat the
+  handle the owner's add dedupes on), counted as
+  `sources_refused` in the result and the `knowledge.import` SEL line; and
+  `export_all` leaves `bedrock_kb` rows out -- a live account binding with no items is
+  not knowledge (`_ACCOUNT_BOUND_SOURCE_TYPE`). "No items" is enforced at
+  the writer, not assumed: `KnowledgeStore.add_item` and
+  `add_source_location_in_txn` raise `LiveSourceHoldsNoItems` for a
+  `source_id` naming an account-bound row (one primary-key read inside the
+  write transaction), and the agent's `POST
+  /api/knowledge/sources/{id}/ingest-text` refuses such a target with 409
+  `live_source_holds_no_items` before the body is read, so the caller sees a
+  coded refusal rather than the store's as a 500 after extraction. Without
+  the writer-side rule the export filter would be the defect: an item
+  written under a `bedrock_kb` row (its id is readable by any authenticated
+  caller, and the ingest-text route takes any existing id) would travel
+  while its source row does not, and a clean store's import would trip
+  `items.source_id`'s foreign key and roll the whole bundle back. The
+  export holds the same line for what the writer rule cannot reach:
+  `knowledge.db` is agent-writable in-sandbox, so a row planted under a
+  `bedrock_kb` source by a direct write bypasses `add_item`, and
+  `export_all` leaves such items out together with the locations,
+  mentions and relations riding on them (the set `import_bundle` refuses,
+  ids compared as text), so an export never names a row it dropped. The
+  deletion paths hold the same line: when a source is deleted
+  (`delete_source_cascade`) or drops its copy of a document
+  (`delete_items_batch_in_txn`), a surviving item's new owner comes from
+  `_reassignment_candidates`, the holders of the item that are not
+  account-bound, so a planted `source_locations` row never makes a
+  `bedrock_kb` row the owner of a local document (the document would
+  survive live and vanish from every bundle); an item whose only other
+  holders are account-bound goes with its owner, as if no other holder
+  existed, and the planted row goes with it. The
+  refusal extends to
+  what depends on such a row: a bundle item whose `source_id` names a
+  refused row OR an already-registered account-bound source (its id is
+  readable by any authenticated caller off the sources list) is refused and
+  counted as `items_refused`, and the locations, mentions and relations
+  riding on that item are dropped with it -- so no local content ever lands
+  under a live-only source, and a crafted bundle cannot fail the whole
+  import on that item's FK. Only a refused row or item that carries an id
+  joins its refused set, and a dependent is matched only when its own id is
+  not null: `str(None)` is the text "None", which a bundle can also spell as
+  a source or item id, so a local source called "None" keeps its items and
+  an evidence-free relation is not dropped because a refused item was
+  called "None". **The row itself is not the registration; the attestation
+  is.** `knowledge.db` is agent-writable in-sandbox (the MCP server ingests
+  into it in-process, and the sandbox seals neither `workspace/knowledge` nor
+  the file), so a `bedrock_kb` row on its own proves nothing about who put
+  it there: an agent could clone one, or point a clone at any KB the granted
+  profile reaches, and the enumeration would pay to query it. So the
+  owner-gated, consent-checked insert also records the row in
+  `aws_service_consent.json` (`aws_consent.record_source_attestation`, under
+  the `bedrock-kb.sources` key beside the grants, written under the same
+  lock; the file is in `sandbox._CREW_READONLY_LEAVES`, so only the gateway
+  writes it), pinned to the row's id, uri and retained `kb_ids`/`region`/
+  `profile`, AND to the account the grant confirms at that moment: a
+  profile name is not an account (the reason `authorize` re-verifies it on
+  every call), and re-pointing the profile then confirming again keeps the
+  same profile and region, so without the account the old registration
+  would authorize paid retrieval of the same KB id in the new account.
+  `attested_sources` therefore returns only entries recorded under the
+  CURRENT grant's account; a grant confirmed for another account leaves
+  every earlier registration unattested until the owner removes the source
+  and adds it again. A plain re-add is not that recovery: it dedupes on the
+  row's `uri` (`409 source_exists`, the code and id every type answers
+  with) and only a row the add CREATES is attested, so for this type the
+  409's text names the remove-then-add path (`_source_exists_response`)
+  instead of the generic "source already exists" the form would otherwise
+  show. The two writes of an add (row, attestation) and of a delete are not
+  one transaction, so each fails in the safe direction: an attestation
+  write that fails undoes the insert (`bedrock_kb_attestation_failed`, no
+  row), and a delete revokes the attestation FIRST (a failed revoke deletes
+  nothing: `bedrock_kb_attestation_revoke_failed`), so a failure between the
+  two leaves at worst a dark row a retry removes, never an attestation
+  without a row that a later row minted under the same id and values would
+  inherit. `revoke_source_attestation` reads the store strictly for the
+  same reason `revoke_for_profile` does: an unreadable store must raise
+  (the route answers the coded 500 and deletes nothing) rather than read as
+  "nothing attested", which would delete the row and leave the attestation
+  on disk for a re-minted row to inherit; only a missing store is the
+  ordinary nothing-attested case. Deleting a `bedrock_kb` row is owner-only
+  like adding one
+  (`knowledge.delete_source.bedrock_kb`); a local source's delete is not
+  gated. Whether a row IS a Bedrock row is decided from the sealed
+  attestation under its id (`has_source_attestation`, read strictly, any
+  account, before the row's type is trusted) OR from its `source_type`,
+  never from the type alone: that column lives in the agent-writable
+  `knowledge.db`, so a registered row an agent re-labelled as a local one
+  would otherwise skip both the owner gate and the revoke and leave its
+  attestation for a row re-minted under the same id and values to inherit.
+  An unreadable store refuses the delete (the same coded 500) before
+  anything is mutated. Every field the row retains carries its own bound at the retention
+  site: `kb_ids` through `_parse_kb_ids`, and `region`/`profile` through
+  `aws_consent.target_is_well_formed` (the shapes a grant can be confirmed
+  under: profile at most 128 characters, region at most 64), checked by
+  `validate_config` before any probe and again by `retained_properties`
+  (`bedrock_kb_config_invalid`), so no value a grant could never name
+  reaches the row or the attestation. `search_remote_sources` reads
+  the attestations once per enumeration and searches only rows that still
+  match one; a row that does not (a clone, or an attested row whose stored
+  KB set was widened afterwards) is skipped before any consent or credential
+  work, with an `aws_consent.denied` SEL line naming the row id (not its KBs
+  or the account). Registration and enumeration share
+  `MAX_BEDROCK_KB_SOURCES` (64). Under `target_change_lock`, add first
+  rechecks the canonical URI, so an existing registration still answers
+  `source_exists` when the population is full. A new registration then
+  strictly counts `recorded_source_attestations` across every account and,
+  at the limit, returns `bedrock_kb_source_limit` (409) before either the
+  database row or the sealed attestation is written; the response tells the
+  owner to remove a source first. Before it refuses, a full population
+  revokes each attestation whose row is gone (one SEL
+  `knowledge.source.attestation_reclaim` line each): the delete route answers
+  404 for a missing row, so a row removed outside the dashboard routes would
+  otherwise hold its slot for good. An unreadable consent store refuses the
+  check with `bedrock_kb_conflict_check_failed` (503) and adds nothing.
+  `search_remote_sources` pins at most the same number of current-account
+  attestations and applies that constant as its SQL limit. Pinned ids sort
+  first and cannot be dropped by the limit because their count is no larger
+  than it. Only an over-cap attestation written outside the gated insert can
+  fall outside an unscoped window; that legacy or external state logs one
+  warning per call with the number of omitted ids. The SQL bound is still
+  needed because the table is agent-writable and each unattested row the
+  loop reaches costs one synchronous SEL write. Planted rows can crowd the
+  registered sources out of neither the window nor the budget, and the
+  search budget is checked before any per-row work, so a spent budget buys
+  the planter no audit write either. A row count bounds memory only when
+  every field a read keeps is bounded too, so both reads of `bedrock_kb`
+  rows (this enumeration and the target lookup below) start from one SELECT.
+  It admits an id or uri only when it equals its bounded projection, so a
+  NUL-suffixed or oversized stored identity cannot become an attested identity
+  after `substr`: id is bounded to 64 characters and uri to 256. Properties are
+  cut to 1024. A name at most 200 characters is returned whole; any larger or
+  NUL-suffixed name is returned as NULL for the safe KB-id fallback above.
+  Each ceiling is above the largest value a gateway insert writes, so a
+  registered row reads back unchanged. The
+  consent store holds ONE grant per service, so v1 supports one Bedrock
+  account at a time (keying grants per (service, profile, region) is the
+  follow-up #14337, which removes both guards below) — ENFORCED at add: a
+  second source whose (profile, region) differs from a registered
+  bedrock_kb source is refused with
+  `bedrock_kb_target_conflict` (409), because letting it in would let its
+  re-confirmation silently disable the first source's retrievals — and
+  ENFORCED at confirm: the consent POST refuses (409, same code) a
+  bedrock-kb target that differs from a registered source's, since
+  recording it would overwrite the single per-service grant in place: the
+  registered source would go silently dark while the new target still
+  could not be added past the add-time guard. What that follow-up inherits
+  needs no migration: an attestation under `bedrock-kb.sources` is keyed by
+  the row's id and records the row's `uri`, its retained `kb_ids`, `region`
+  and `profile`, and the `account` the grant confirmed when the row was
+  registered; it holds no grant id and nothing that names the
+  one-grant-per-service layout. Keyed grants read existing entries as they
+  are: the grant covering an entry is the one keyed (`bedrock-kb`,
+  `entry.profile`, `entry.region`), and the account pin compares against
+  that grant's account the way `bedrock_authorization_snapshot` compares
+  against the single grant's today; an entry whose keyed grant is absent or
+  names another account stays unattested until the owner removes the source
+  and adds it again, the recovery that exists today. With one grant per
+  target the one-target code has no case left, so the follow-up deletes
+  `registered_target_mismatch` and both `bedrock_kb_target_conflict`
+  refusals (add and confirm). The `bedrock_kb_grant_changed` recheck in the
+  locked insert stays and reads the keyed grant for the source's target;
+  `_reclaim_rowless_attestations` and the remove-then-add text in
+  `_source_exists_response` serve the registration limit and the account pin,
+  which keyed grants do not change. A registered source for both
+  guards is a row a gateway attestation pins, under any account
+  (`aws_consent.recorded_source_attestations`): a row written straight into
+  `knowledge.db` is never searched, so it holds no target, and the lookup
+  fetches only the attested ids (at most `MAX_BEDROCK_KB_SOURCES`), so
+  planted rows are never read at all. Same-target re-confirmation
+  stays allowed (the mid-probe re-confirmation path depends on it). Both
+  refusals name the source that holds the other target, and that name is a
+  `sources` row an in-sandbox agent can write directly, past the handler's
+  name bound; the compare renders it through the platform shim
+  `kiro_crew.platform.redact_via_context` (a composed companion policy's
+  extra shapes on top of the OSS baseline, which runs the URL pass before
+  the credential pass) before either payload is built, so a planted
+  credential or exfiltration URL reaches the operator as the redaction tag
+  and the `(profile, region)` stays readable. Both
+  gates run their compare-and-write as ONE critical section under the
+  connector's `target_change_lock` (the slow probes/validation stay
+  outside), so a concurrent add and confirm cannot interleave between check
+  and write; the locked insert also re-checks the LIVE grant for the
+  source's exact target (`bedrock_kb_grant_changed`, 409) so a source can
+  never be registered against a grant that moved during validation, and
+  requires the grant's ACCOUNT to be the one validation verified (same
+  code). `BedrockKBConnector.validate_registration` returns that account:
+  STS resolved the frozen credentials to it, the grant read after that call
+  named it, and every probe rechecked that the store still held exactly
+  that grant. An account read before validation began is not enough, since
+  the grant can move to another account and back while the probes run, and
+  that read would then match the final grant for a KB proven only in the
+  other account. Same target is not the same account either: a
+  profile can be re-pointed and re-confirmed for the same (profile, region)
+  while validation was probing the KB in the account before, and the
+  attestation pins the account the grant confirms at insert, so without
+  the account check the row would authorize paid retrieval of a KB never
+  validated there. A same-target, same-account re-confirmation (a fresh
+  `grant_id`) still passes. `record_source_attestation` takes that
+  `expected_account` and refuses to pin any other, so the attestation cannot
+  name an account the KB was not probed in whatever ran between validation
+  and the write; and the compare FAILS CLOSED — a sources-table lookup error
+  refuses with `bedrock_kb_conflict_check_failed` (503) rather than reading
+  as "no conflict"; that code covers the lookup alone, so a grant write
+  that fails propagates as the unhandled error it is, for every service,
+  the way the other consent writes do. The remote-leg
+  budget (`REMOTE_SEARCH_TIMEOUT_SECS`) explicitly absorbs the uncached
+  per-search STS consent probe, and is enforced INSIDE the worker as a
+  monotonic deadline checked before each enumerated row's attestation check
+  and before each per-source and per-KB request —
+  the pool future's `result(timeout)` alone only abandons the waiter,
+  leaving the worker issuing paid Retrieve calls it can no longer deliver.
+  A budget skip is fail-open silence, never a validate-visible KB failure.
+- **Probe on add.** `validate_config` issues a 1-result `Retrieve` per KB, so
+  a bad id, region, or profile is refused at add time. Authorization-class
+  errors fail validation; service-side errors (throttling, 5xx) prove the KB
+  exists and pass.
+- **Retrieve with the managed fallback.** Retrieval tries
+  `vectorSearchConfiguration` first and retries with
+  `managedSearchConfiguration` only when the ValidationException names it —
+  MANAGED-type KBs reject the vector key (`implicitFilterConfiguration` is
+  never sent on the managed path). Both keys are members of the Retrieve
+  request's `retrievalConfiguration`
+  ([KnowledgeBaseRetrievalConfiguration](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_agent-runtime_KnowledgeBaseRetrievalConfiguration.html));
+  the rejection the fallback matches is `MANAGED_ERR` in
+  `test/test_bedrock_kb_connector.py`, recorded from a live Retrieve against a
+  MANAGED-type KB: "vectorSearchConfiguration is not supported for managed
+  knowledge bases. Use managedSearchConfiguration instead." The fallback is its own paid request and
+  gets the same two checks the per-KB loop applies before each request: the
+  grant is re-asserted, and a rejection slow enough to spend the search
+  budget leaves the fallback unissued (empty result, not an error). Multi-KB
+  sources fan out one Retrieve per
+  KB and merge by relevance score; one unreachable KB is logged and skipped
+  rather than sinking the others. The query text is the one part of a
+  knowledge search that leaves the host, and it is caller-supplied free
+  text, so it goes out through the same platform shim,
+  `kiro_crew.platform.redact_via_context`, never `security.redact`
+  directly: on a host whose profile composes a companion credential
+  policy the companion's shapes apply too, and the baseline runs the URL
+  pass before the credential pass; a credential inside a URL's query
+  string blanked ahead
+  of the URL pass leaves a placeholder the URL matcher does not recognise,
+  and the URL's host and remaining query would reach the Retrieve API.
+  Local search legs keep the raw text; only this egress redacts.
+- **Citations from document metadata.** Each result's URL comes from the
+  `source_uri` metadata attribute (the convention KB-building crawlers write),
+  falling back to the reserved `x-amz-bedrock-kb-source-uri` key and then the
+  raw storage location — so hits cite the original document, not an S3 object.
+  Retrieved content, metadata titles, citation URLs and complete source names
+  pass through `kiro_crew.platform.redact_via_context` before any connector
+  length bound. The summary is derived from the already-redacted content. This
+  order prevents a bound from leaving a credential fragment too short for the
+  downstream MCP and dashboard redactors to recognize; a source name SQL could
+  not return whole uses the validated KB-id fallback described above.
+- **Query path: async callers only, bounded, fail-open.** The remote leg runs
+  in `local_knowledge_search` (MCP) and `search_for_context` (dashboard) via
+  `search_remote_sources_bounded` — a shared worker pool plus
+  `REMOTE_SEARCH_TIMEOUT_SECS` wall-clock budget over per-request boto
+  connect/read timeouts. Any failure or timeout returns `[]` and local results
+  stand alone. It never runs inside `HybridRetriever.search` (sync, and the
+  scoped-search exhaustion loop would multiply remote round trips). An
+  install with no `bedrock_kb` rows pays one indexed `SELECT ... LIMIT 1` and
+  no thread. On the MCP tool, a `source_id` scope keeps the leg (the
+  enumeration applies `sources.id = ?`) and a `namespace` scope skips it
+  entirely: namespaces live on `items.namespace` and a `bedrock_kb` source
+  holds no items, so no remote hit can fall inside one.
+- **Merge by rank, not score.** Local RRF scores (~0.01–0.06) and Bedrock
+  relevance scores (0–1) are not comparable, so `merge_by_rank` interleaves
+  the two legs positionally (local first) instead of sorting on raw score.
+- **Sync is a no-op.** `detect_changes` is always `False`, so `SyncScheduler`
+  never ingests the source; the dashboard shows it as connected rather than
+  synced.
 
 ### On-loop connection guard (`on_loop_db.py`)
 
@@ -795,7 +1198,9 @@ Two properties make the numbers auditable:
   bucket is never one of them.
 
 `kirocrew knowledge stats` prints the totals line plus a `SOURCE / DOCS / ITEMS`
-table; `--json` emits `{sources, documents, items, per_source:[{id, name,
+table, its name column padded by `messaging.tables.display_width` so a CJK or
+accented source name keeps the count columns aligned; `--json` emits
+`{sources, documents, items, per_source:[{id, name,
 documents, items}]}` with `id: null` for the bucket. A missing DB is reported
 (SEL `not_configured`), as JSON under `--json` so a script parses one shape
 either way; every call emits an SEL event under tool name `knowledge_stats`.
@@ -839,6 +1244,9 @@ Research Lab (the `auto-research` builtin app) reaches this module twice: a camp
 | `campaign/watchdog.py` | The watchdog loop body: disabled-app suspension, the 24h trust expiry, question pauses, the stall verdict, terminal settlement |
 | `campaign/grill.py` | The question-tree planner behind the grill endpoint |
 | `session_keys.py`, `subquestion_queue.py`, `workflow_template.py` | Worker-slot identity, the emergent-question queue, the Dynamic Workflow template |
+| `seams.py` | The app's provider for the core's `stopped_loop_tombstone` seam (see "Repository boundary" below) |
+
+**Repository boundary.** Research Lab is to leave this repository whole, so no module under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports `kiro_crew.apps.builtins.auto_research`. The one core decision that depends on the app is the autonudge stop of a legacy loop: on a canonical `research-<campaign id>` worker slot carrying the persisted `auto-research` provenance it deactivates the loop with `AUTONUDGE_STOP_REASON` (the tombstone the watchdog reads as a deliberate finish) instead of removing it. `session_directive_apply_monitor._keeps_stopped_loop` asks the `stopped_loop_tombstone` seam in `kiro_crew/apps/seams.py` with the slot key and the slot's persisted `_app`. The app's `seams.py` holds that seam and answers with `session_keys.is_owned_research_slot`, so a slot keeps a tombstone exactly when it did under the old import, with the app enabled or not. With no provider, or a provider that raises, nothing is kept and the stop removes the row. `test_app_seams_stopped_loop_tombstone.py` pins that equivalence. `test_core_auto_research_decoupling.py` is the gate, on the shared `test/core_app_independence.py` scanner: the only core strings left naming the app are the `security_posture.py` rows classifying its backend modules, a pinned list that may only shrink. Its dashboard half is `website/src/apps/auto-research/researchLabBoundary.test.ts`: outside `src/apps/auto-research/`, only `apps/builtinRegistry.ts` imports the UI, and the page's tests live beside it. What still names the app in core, deliberately for this wave: the `kirocrew-research` service agent (`agent_materialization/service_agents._install_research_agent`, whose rewrite folds into the ceiling-hold of `agent_parts/spec_rebuild.py`), the dashboard API owner `website/src/api/client/autoResearch.ts`, the app-store row in `appManifest.ts`, the `apps.autoResearch.*` catalog keys, the packaged `docs/research-lab.md` and its tip, and the `research-<id>` slot fixtures core tests use.
 
 **The add-to-knowledge row in §2b is `publication._ingest_findings`.** It calls `ingest_file` with the default `count_toward_import_budget`, so the export counts against the explicit-import ceiling, and an `ImportChunkBudgetError` parks the source `pending` rather than `error`. What is ingested is the scrubbed copy `findings_for_knowledge.md`, never the raw `FINDINGS.md`, and its resolved path is the dedup key the status probe reads.
 

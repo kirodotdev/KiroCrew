@@ -83,38 +83,19 @@ class TestRetryGating:
 
 # ── 6. Durable task queue at scale ───────────────────────────────────
 
-# Ceiling for the whole-queue drain below. The drain is a THROUGHPUT budget,
-# not a race: every row costs one claim + finalize round trip through the
-# store's writer thread, so the wall clock tracks the runner's per-row cost and
-# nothing about ordering. Measured on this Linux host: 0.58-0.60 s for 199 rows
-# idle and 0.86 s worst with eight copies of the test running at once — ~3-4 ms
-# per row, ~9 rows landing per poll wake. The Windows CI shard that reported
-# this drained 165 rows in under 30 s, i.e. ~180 ms per row, ~50x this host, so
-# all 199 want ~36 s there. 150 s is the measured worst case x 175, which is
-# also ~4x the shard's own projected time. It is a LOST-RUN guard, never the
-# barrier — the wait returns the instant the last row lands, so a healthy run
-# pays only what the drain costs.
+# Ceiling for the whole-queue drain below: a throughput budget, not a race. Measured
+# ~3-4 ms per row on Linux (0.6-0.86 s for 199 rows) and ~180 ms per row on a Windows CI
+# shard (~36 s for 199). 150 s is a lost-run guard; the wait returns as soon as the last
+# row lands.
 _DRAIN_CEILING_SECS = 150.0
 
 
 async def _await_drained(mgr, store, started: list[str], expected: int) -> None:
     """Wait until *mgr* has drained *expected* queued rows, or fail saying so.
 
-    The completion of the drain is its OWN assertion. A bounded loop that
-    exits silently on its ceiling hands the next assertion a SHORT list, and
-    the run then fails as ``assert started == ids[1:]`` — "Right contains 34
-    more items" — which reads as a queue that lost or reordered rows when
-    every row it did drain was in FIFO order and the drain was merely
-    unfinished. So the ceiling raises here instead, naming how many of the rows
-    landed and how long it waited, and the order assertion runs only on a
-    complete drain.
-
-    What is waited on is the conjunction the assertions then read: rows
-    started, the window emptied, the running count back to zero and the
-    store's own DONE count. ``_release_slot`` → ``_drain_queue`` is what
-    advances the queue in production (the pump coalesces a request that lands
-    mid-pass into one more pass), so this polls that path rather than pumping
-    it — measured identical, 23 wakes and 0.6 s either way.
+    The ceiling raises with the landed count, so an unfinished drain is not misread by the
+    order assertion as lost or reordered rows. It polls the production path
+    (``_release_slot`` → ``_drain_queue``) rather than pumping; both measured the same.
     """
     from kiro_crew.taskq import model
 
@@ -222,13 +203,8 @@ class TestDurableQueueScale:
 class TestRunIdMinting:
     """The width of a run id is what keeps it unique, and one draw site owns it.
 
-    At 8 hex characters an id was 32 bits, so 2000 spawns on one host collided
-    about once in 2,100 times, and the collision did not read as one: identity
-    is assigned before registration, so the caller was handed the id and the
-    accept then failed on the duplicate primary key, reaching the user as
-    ``task store write failed``. 16 characters is 64 bits, which puts the same
-    2000 draws at about 1 in 10**13 -- no registry to seed, nothing to read, and
-    no place for a spawn path to forget the check.
+    32 bits collides about once in 2,100 runs of 2000 spawns, surfacing as ``task store
+    write failed``; 64 bits (16 hex characters) puts it near 1 in 10**13.
     """
 
     @pytest.mark.asyncio
@@ -307,15 +283,9 @@ class TestRunIdMinting:
 class TestQueuedDepthReachesZero:
     """The ``subagent_queued`` depth a parent receives must end at 0.
 
-    The pump emits the parent's depth right after popping a row from the
-    window. That row's durable state is still QUEUED until its claim lands,
-    and it is in none of the store count's exclusion sets (not windowed, not
-    registered, not admitting). Counting it there makes every emit between
-    pop and claim one higher than the window: a 4-cap, 5-spawn wave reads
-    4, 3, 2, 1 and stops, and the dashboard chip clears its "waiting" count
-    only on 0, so one agent stays "waiting" under a finished turn. The pump
-    marks the popped row dispatching and the count excludes it until
-    ``spawn`` has answered for it.
+    A popped row is still QUEUED until its claim lands, so the pump marks it dispatching
+    and the count excludes it; otherwise a 4-cap, 5-spawn wave stops at 1 and the
+    dashboard chip, which clears only on 0, stays "waiting".
     """
 
     @pytest.mark.asyncio

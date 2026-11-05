@@ -6,7 +6,8 @@ reached, like every prompt and skill route, through the ``prompts`` facade.
 the user, so a candidate staged after the confirmation dialog is never dismissed, and a
 missing, empty or malformed ``slugs`` list dismisses nothing. ``POST
 /api/skills/-/pending/{slug}/dismiss`` refuses a slug that is not a plain stem and answers a
-coded 404 for an unknown one. Every outcome leaves a SEL record, and a failure is answered
+coded 404 for an unknown one. Given the detail read's ``content_sha256``, it dismisses
+the candidate only while it is still those bytes and answers a coded 409 otherwise. Every outcome leaves a SEL record, and a failure is answered
 with a 500, not an unhandled error. The list route still answers when the store cannot be
 read. The owner gate on these routes has its own coverage in ``test_skill_write_guard.py``.
 """
@@ -194,7 +195,7 @@ async def test_a_slug_that_names_no_candidate_dismisses_nothing(
 async def test_a_failed_single_dismissal_is_audited_and_answered_with_a_500(
     loader, events, monkeypatch
 ):
-    def _boom(_slug):
+    def _boom(_slug, _content_sha256=None):
         raise OSError("read-only skills dir")
 
     monkeypatch.setattr(loader, "dismiss_pending_skill", _boom)
@@ -207,6 +208,81 @@ async def test_a_failed_single_dismissal_is_audited_and_answered_with_a_500(
     assert [(e["tool_name"], e["outcome"]) for e in events] == [
         ("api_skill_pending_dismiss", "error")
     ]
+
+
+def _dismiss_req(loader: SkillsLoader, slug: str, body: object = _OMITTED) -> _Req:
+    req = _Req(loader, body=body)
+    req.match_info = {"slug": slug}
+    return req
+
+
+@pytest.mark.asyncio
+async def test_a_dismissal_naming_the_read_digest_deletes_the_candidate(loader, events):
+    seen = loader.get_pending_skill("deploy-helper")["content_sha256"]
+
+    resp = await H.api_skill_pending_dismiss(
+        _dismiss_req(loader, "deploy-helper", {"content_sha256": seen})
+    )
+
+    assert resp.status == 200
+    assert _payload(resp) == {"dismissed": "deploy-helper"}
+    assert _pending_slugs(loader) == {"triage-helper"}
+
+
+@pytest.mark.asyncio
+async def test_a_dismissal_naming_a_stale_digest_keeps_the_candidate(loader, events):
+    seen = loader.get_pending_skill("deploy-helper")["content_sha256"]
+    skill_md = loader._pending_root() / "deploy-helper" / "SKILL.md"
+    skill_md.write_text(skill_md.read_text(encoding="utf-8") + "\n3. edited\n", encoding="utf-8")
+
+    resp = await H.api_skill_pending_dismiss(
+        _dismiss_req(loader, "deploy-helper", {"content_sha256": seen})
+    )
+
+    assert resp.status == 409
+    assert _payload(resp)["code"] == "pending_skill_changed"
+    assert _pending_slugs(loader) == {"deploy-helper", "triage-helper"}
+    assert [(e["tool_name"], e["outcome"], e["metadata"]) for e in events] == [
+        (
+            "api_skill_pending_dismiss",
+            "rejected",
+            {"slug": "deploy-helper", "reason": "content_changed"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_dismissal_refused_for_another_reason_is_a_coded_409(loader, events, monkeypatch):
+    from kiro_crew.skills import PendingDismissRefused
+
+    def _refuse(_slug, _content_sha256=None):
+        raise PendingDismissRefused("lock_unavailable")
+
+    monkeypatch.setattr(loader, "dismiss_pending_skill", _refuse)
+
+    resp = await H.api_skill_pending_dismiss(
+        _dismiss_req(loader, "deploy-helper", {"content_sha256": "0" * 64})
+    )
+
+    assert resp.status == 409
+    assert _payload(resp)["code"] == "pending_dismiss_refused"
+    assert _payload(resp)["reason"] == "lock_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [_OMITTED, {}, {"content_sha256": ""}, {"content_sha256": 7}, []],
+    ids=["no-body", "no-field", "empty-field", "non-string-field", "array-body"],
+)
+async def test_a_dismissal_without_a_digest_deletes_the_candidate_as_found(loader, events, body):
+    skill_md = loader._pending_root() / "deploy-helper" / "SKILL.md"
+    skill_md.write_text(skill_md.read_text(encoding="utf-8") + "\n3. edited\n", encoding="utf-8")
+
+    resp = await H.api_skill_pending_dismiss(_dismiss_req(loader, "deploy-helper", body))
+
+    assert resp.status == 200
+    assert _pending_slugs(loader) == {"triage-helper"}
 
 
 @pytest.mark.asyncio

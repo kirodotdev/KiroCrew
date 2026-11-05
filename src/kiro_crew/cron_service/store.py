@@ -34,13 +34,19 @@ from kiro_crew.cron_service.model import (
     CronJob,
     CronSchedule,
 )
+from kiro_crew.cron_service.zone_default_migration import (
+    LOCAL_DEFAULT_STORE_VERSION,
+    predates_local_default,
+)
 
 logger = logging.getLogger("kiro_crew.cron")
 
 _CRONS_FILE = "crons.json"
 
 
-_STORE_VERSION = 2
+#: 3: an empty job zone under an empty config zone is the host's zone, not UTC
+#: (``zone_default_migration`` keeps an older store's jobs on UTC).
+_STORE_VERSION = LOCAL_DEFAULT_STORE_VERSION
 
 #: The top-level keys of the store document this build writes itself. Any other
 #: top-level key came from a newer build and is written back unchanged.
@@ -56,23 +62,16 @@ _FILE_LOCK_POLL_SECS = 0.02  # sleep between non-blocking acquire attempts
 class CronStoreUnreadable(ValueError):
     """A mutation could not be persisted because the last load failed.
 
-    Derives from ``ValueError`` rather than ``RuntimeError`` so a refusal lands in
-    the per-item handlers callers already have. The onboarding importer's apply
-    loop catches ``(OSError, ValueError, TypeError, sqlite3.Error)`` per item; a
-    ``RuntimeError`` escaped that tuple, so ONE corrupt ``crons.json`` failed the
-    whole apply request with a 500 and lost every later item in the plan, instead
-    of rejecting the single schedule it actually blocks. The three sites that
-    catch both classes list ``CronStoreUnreadable`` BEFORE ``ValueError``, so they
-    keep binding their own arm and their messages do not change.
+    Derives from ``ValueError`` so per-item handlers catch it: the onboarding
+    importer's apply loop catches ``(OSError, ValueError, TypeError,
+    sqlite3.Error)``, so one corrupt ``crons.json`` rejects one item, not the
+    whole plan. Sites that catch both classes list this one BEFORE ``ValueError``.
 
     Raised by :meth:`CronService._save` when ``_load`` could not read
-    ``crons.json``. The in-memory job list is empty for that reason rather than
-    because the store is empty, so writing it would overwrite records that are
-    still on disk. Persisting is refused AND the refusal is raised, so a
-    user-initiated mutation reports failure instead of returning success for a
-    write that never happened. Background writers (the reaper merge, the job
-    result merge, the deferred-removal drain) catch it and degrade: a corrupt
-    store must not take down the scheduler loop.
+    ``crons.json``: the empty in-memory list would overwrite records still on
+    disk, so the write is refused and the caller sees the failure. Background
+    writers (reaper merge, result merge, deferred-removal drain) catch it so a
+    corrupt store cannot take down the scheduler loop.
 
     Also raised by :func:`dispatched_agents_from_disk` when the store is PRESENT
     but nothing loads from it, so a reader that must fail CLOSED (the template
@@ -98,19 +97,13 @@ class CronPendingMismatch(RuntimeError):
 class CronStoreBusy(TimeoutError):
     """Raised when a cron-store mutator cannot acquire the store lock in time.
 
-    This is the DEFINED failure contract of the store mutators (:meth:`add_job`,
-    :meth:`update_job`, :meth:`remove_job`, :meth:`enable_job`, :meth:`ack_job`,
-    :meth:`unack_job` and their ``*_async`` variants): under sustained lock
-    contention they raise this instead of blocking forever. It subclasses
-    :class:`TimeoutError` so the existing ``except TimeoutError`` guards (the
-    reaper sweep, the timer tick, the read-path degrade) keep catching it, while
-    giving the public scheduling boundaries a named, greppable type to translate
-    into a clean *retryable* error — HTTP 409 at the dashboard handlers, a
-    structured ``Error:`` string at the MCP tools, a "store busy, try again"
-    reply at the Slack surfaces — rather than surfacing an opaque 500 / tool
-    crash. Contention is transient (a large atomic save on network storage, the
-    CLI process, or the off-loop batch-remove worker holding the lock), so the
-    correct caller response is to retry, not to fail permanently.
+    The store mutators (:meth:`add_job`, :meth:`update_job`, :meth:`remove_job`,
+    :meth:`enable_job`, :meth:`ack_job`, :meth:`unack_job` and their ``*_async``
+    variants) raise this under lock contention instead of blocking forever.
+    Subclasses :class:`TimeoutError` so ``except TimeoutError`` guards (reaper
+    sweep, timer tick, read-path degrade) still catch it. Public boundaries turn
+    it into a retryable error (HTTP 409, an MCP ``Error:`` string, a Slack "store
+    busy" reply): contention is transient, so callers retry.
     """
 
 
@@ -120,20 +113,14 @@ def cron_store_lock(
 ) -> Iterator[None]:
     """The cron store's cross-process advisory lock, for a caller with no service.
 
-    ONE implementation of the store lock: :meth:`CronService._file_lock` (every
-    store mutator, loop-safety guard included) delegates here, and the Agent
-    templates delete guard takes it directly around its reference check and the
-    file rename, so a schedule cannot be written between "nothing dispatches this
-    template" and the template going -- the two writers exclude each other on
-    the same ``.crons.lock`` file the mutators use. The reader side mirrors
-    :func:`dispatched_agents_from_disk`: a walk over the store file, so holding
-    the store lock across walk + rename is exactly what makes the pair atomic.
+    :meth:`CronService._file_lock` delegates here. The Agent templates delete
+    guard holds it across its :func:`dispatched_agents_from_disk` check and the
+    file rename, so no schedule can be written between "nothing dispatches this
+    template" and the template going.
 
-    Off the event loop ONLY (the guard runs on a worker thread; the mutators go
-    through their ``*_async`` variants): the spin sleeps. Bounded -- raises
-    :class:`CronStoreBusy` after *timeout* rather than parking the caller on a
-    slow holder. Non-truncating create-or-open (GH-9248): a contending opener on
-    Windows must not crash at open() before the spin starts.
+    Off the event loop ONLY: the spin sleeps. Raises :class:`CronStoreBusy` after
+    *timeout*. The lock file is opened without truncating so a contending opener
+    on Windows does not crash at open() before the spin starts.
     """
     store_dir.mkdir(parents=True, exist_ok=True)
     lock = store_dir / ".crons.lock"
@@ -152,16 +139,10 @@ def cron_store_lock(
 def _is_representable_number(value: Any) -> bool:
     """True when *value* is a real number every consumer can hold.
 
-    The numeric half of the load-time type-shape contract: ``bool`` is
-    rejected (a stored ``true`` is not a count), non-``(int, float)`` is
-    rejected, a non-finite float is rejected (``json.loads`` parses
-    ``NaN``/``Infinity`` by default; NaN breaks comparison ordering and the
-    pair emits invalid JSON tokens), and an int too large to convert to a
-    float is rejected via ``try/except OverflowError`` -- the same predicate
-    shape as ``monitoring.models.is_finite_non_negative_number``, minus its
-    sign bound (a value bound has no place at load; see ``_job_from_record``).
-    Raises nothing, so nothing can leak outside ``_load``'s
-    ``(KeyError, TypeError)`` per-entry isolation.
+    Rejects ``bool``, non-numbers, ``NaN``/``Infinity`` (``json.loads`` accepts
+    them; they break ordering and emit invalid JSON), and ints too large for a
+    float. No sign bound: load checks shape, not value. Raises nothing, so nothing
+    escapes ``_load``'s ``(KeyError, TypeError)`` per-entry isolation.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
@@ -174,11 +155,8 @@ def _is_representable_number(value: Any) -> bool:
 def _record_user_paused(j: dict[str, Any]) -> bool:
     """Single owner for the user-pause predicate of a serialized job.
 
-    The legacy ``!enabled`` fallback covers stores written before ``user_paused``
-    existed, where the only record of a pause was the ``enabled`` flag. Every
-    reader routes through here for the same reason :func:`_record_is_enabled`
-    exists: a future pause-state change must not land in one spelling of this
-    derivation and miss another.
+    The ``!enabled`` fallback covers stores written before ``user_paused``
+    existed. Every reader routes through here so the derivation has one owner.
     """
     return bool(j.get("user_paused", not j.get("enabled", True)))
 
@@ -186,14 +164,18 @@ def _record_user_paused(j: dict[str, Any]) -> bool:
 def _record_is_enabled(j: dict[str, Any]) -> bool:
     """Single owner for the effective-enabled predicate of a serialized job.
 
-    A job is enabled when it is neither user-paused nor auto-paused, with the
-    legacy ``!enabled`` fallback for stores written before those fields existed.
-    Both ``_load`` (the scheduler deserialization path) and
-    ``count_enabled_from_disk`` (the off-thread dashboard count) MUST route
-    through here so the semantics have exactly one implementation and cannot
-    drift when a future pause-state change lands in only one reader.
+    Enabled = neither user-paused nor auto-paused. ``_load`` and
+    ``count_enabled_from_disk`` MUST both route through here so the two readers
+    cannot drift.
     """
     return not _record_user_paused(j) and not j.get("auto_paused", False)
+
+
+def _ack_ids_field(value: Any) -> list[str]:
+    """``acked_item_ids`` as stored: a list of strings, else no ids at all."""
+    if isinstance(value, list) and all(isinstance(i, str) for i in value):
+        return value
+    return []
 
 
 def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> CronJob:
@@ -209,30 +191,18 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
 
     - **Required identity/payload** (``id``, ``name``, ``message``,
       ``schedule.kind``) and **execution selectors** (``script``, ``command``,
-      ``agent_id``, plus the ``agent_sequence`` / ``skip_dates`` lists) raise
-      ``TypeError`` on a non-string value, so the record is skipped whole.
-      Coercing a selector instead would fail OPEN: a script job whose
-      ``script`` degraded to ``""`` silently becomes an LLM agent job
-      (``_cron_callback`` picks the mode from which selector is non-empty),
-      executing the job's message through the default agent — worse than not
-      loading the record at all.
-    - **Everything else string-typed** coerces to the field's own unset value
-      (``""``, or ``None`` for ``Optional[str]`` fields), and every field
-      whose stored value was destroyed by that coercion is named in one
-      WARNING, because ``_save`` rewrites ``jobs[]`` wholesale and the coerced
-      value replaces the operator's stored one on the next write — the log
-      line is the recovery window, exactly like the skip warning in ``_load``.
+      ``agent_id``, the ``agent_sequence`` / ``skip_dates`` lists) raise
+      ``TypeError``, skipping the record. Coercing a selector would fail OPEN:
+      a ``script`` degraded to ``""`` turns the job into an LLM agent job.
+    - **Everything else string-typed** coerces to its unset value (``""``, or
+      ``None`` for ``Optional[str]``), and the coerced fields are named in one
+      WARNING: ``_save`` rewrites ``jobs[]`` wholesale, so the log line is the
+      only record of the lost value.
 
-    It does NOT raise ``AttributeError`` for any record ``json.loads`` can
-    produce: every ``.get()`` below is dominated by a ``[...]`` subscript on the
-    same object, and only a ``dict`` survives a string subscript. An
-    ``AttributeError`` from this function therefore signals a defect in this
-    code, not bad data, so :meth:`CronService._load` deliberately lets it
-    propagate rather than catching it: catching it there would reclassify a
-    valid job as malformed, and because ``_save`` rewrites ``jobs[]`` from
-    ``self._jobs`` the next write would erase that job from disk permanently —
-    turning a code defect into silent, unrecoverable data loss. Letting it
-    propagate trades a loud failure at load for that silent loss.
+    No ``AttributeError`` is possible for ``json.loads`` output (every ``.get()``
+    follows a ``[...]`` subscript, which only a ``dict`` survives), so one here
+    is a code defect. ``_load`` lets it propagate: treating it as a malformed
+    record would erase a valid job from disk on the next save.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
@@ -247,9 +217,8 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         return value
 
     def _selector_str(field: str) -> str:
-        # Absent key = legacy record, defaults to "". A PRESENT non-string
-        # (null included) is malformed: an execution selector has no safe
-        # fallback value — see the docstring.
+        # Absent = legacy record, "". A present non-string (null included) is
+        # malformed: a selector has no safe fallback.
         if field not in j:
             return ""
         value = j[field]
@@ -260,10 +229,8 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         return value
 
     def _str_list(field: str) -> list[str]:
-        # Absent field: a legacy record predating the field -- default empty.
-        # Explicit null is NOT the same thing: no writer produces it, and
-        # treating it as empty flips a multi-agent job onto the single-agent
-        # fallback -- an execution-path change, so the record skips whole.
+        # Absent = legacy record, empty. Explicit null skips the record: read
+        # as empty it would flip a multi-agent job onto the single-agent path.
         if field not in j:
             return []
         value = j[field]
@@ -281,29 +248,19 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         return value if isinstance(value, str) else ""
 
     def _guard_opt_str(field: str) -> str | None:
-        # Optional[str] sibling: None means "never set" and is semantically
-        # distinct from "" (e.g. last_status gates rendering on `is None`),
-        # so a non-string degrades to None, never to an invented "".
+        # None ("never set") differs from "" (last_status gates on `is None`),
+        # so a non-string degrades to None.
         value = j.get(field)
         if value is not None and not isinstance(value, str):
             coerced.append(field)
         return value if isinstance(value, str) else None
 
     def _guard_num(field: str, default: Any) -> Any:
-        # The numeric half of split-by-cost: telemetry numerics COERCE to
-        # their declared unset value (never skip -- coercion drops no record,
-        # satisfying the data-loss rule unconditionally), joining the same
-        # coerced list and single WARNING as the string fields. This is what
-        # keeps a NaN/bignum in a telemetry field out of every consumer at
-        # once: the JSON envelope (bare NaN/Infinity tokens), timer and
-        # due-decision arithmetic (OverflowError / due-every-tick), delivery
-        # dedup arithmetic, subprocess budgets, and the secret-grant CAS
-        # (NaN != NaN is always true, permanently blocking approval).
-        # Absent field: a legacy record -- the declared default, silently.
-        # Explicit null is a present value: where the declared unset IS None
-        # (last_run_ts) it is the writer's own serialization of "never ran"
-        # and passes through; everywhere else it is malformed like any other
-        # non-number and joins the coerced list so the load names it.
+        # Telemetry numerics coerce to their default (never skip), joining the
+        # string fields' WARNING. This keeps NaN/bignum out of the JSON output,
+        # timer arithmetic and the secret-grant CAS (NaN != NaN blocks approval).
+        # Absent = legacy, silent default. Null passes only where the default
+        # is None (last_run_ts: "never ran"); elsewhere it is coerced and named.
         if field not in j:
             return default
         value = j[field]
@@ -317,26 +274,18 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
             return default
         return value
 
-    # Schedule sub-fields decide WHEN the job fires and feed format_schedule
-    # on the listing path unguarded, so like the execution selectors they fail
-    # CLOSED: a mistyped value skips the record whole. The kind subscript runs
-    # first — only a dict survives a string subscript, so the .get() calls
-    # below can never raise AttributeError (see the docstring).
+    # Schedule sub-fields decide WHEN the job fires, so like the selectors a
+    # mistyped value skips the record. The kind subscript runs first, so the
+    # .get() calls below cannot raise AttributeError.
     sched = j["schedule"]
     sched_kind = _required_str(sched, "kind")
     for _numeric_field in ("every_secs", "at_ts"):
         _numeric_value = sched.get(_numeric_field)
         if _numeric_value is not None and not _is_representable_number(_numeric_value):
-            # Representability is TYPE SHAPE for a schedule numeric: NaN and
-            # Infinity break comparison ordering (a NaN at_ts is due every
-            # tick) and emit invalid JSON tokens, and a bignum int crashes
-            # int-float arithmetic on the timer-arming path (`at_ts - now` ->
-            # OverflowError, aborting gateway startup). No write path can
-            # persist any of these -- _build_job and _update_job_locked refuse
-            # them at the persistence chokepoints, so this reader-side skip
-            # provably drops no writer-producible record. Deliberately no
-            # FINITE value bound: extreme representable values load intact
-            # and are tolerated at their consumers.
+            # A NaN at_ts is due every tick and a bignum makes `at_ts - now`
+            # raise OverflowError at gateway startup. _build_job and
+            # _update_job_locked refuse both, so this skip drops no record a
+            # writer can produce. No value bound: extreme finite values load.
             raise TypeError(
                 f"cron record schedule field {_numeric_field!r} must be a representable finite number"
             )
@@ -356,16 +305,9 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         ),
         channel=_guard_opt_str("channel"),
         thread_ts=_guard_opt_str("thread_ts"),
-        # Effective enabled is derived from the two "reasons a job is
-        # off": an explicit user pause and an execution auto-pause
-        # (repeated failures). Deriving it — rather than trusting the
-        # stored `enabled` — is what makes an auto-pause survive a
-        # restart: the failing run sets auto_paused=True, and a
-        # recurring job's `enabled` is otherwise never persisted, so a
-        # naive `enabled` read would resurrect the job on reload.
-        # The predicate (incl. the legacy !enabled fallback) has one
-        # owner, `_record_is_enabled`, shared with
-        # count_enabled_from_disk so the two readers cannot drift.
+        # Derived from user_paused/auto_paused, not the stored `enabled`, so
+        # an auto-pause survives a restart (a recurring job's `enabled` is
+        # not persisted on failure).
         enabled=seams._record_is_enabled(j),
         user_paused=_record_user_paused(j),
         auto_paused=j.get("auto_paused", False),
@@ -379,17 +321,18 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         last_result_stamp=_guard_str("last_result_stamp"),
         context_enabled=j.get("context_enabled", False),
         agent_id=_selector_str("agent_id"),
-        # member_id / memory_store are memory-identity selectors: they decide
-        # WHOSE memory and protected runtime identity the job runs with, and
-        # resolve_cron_memory raises on a malformed binding rather than
-        # falling back -- so a present non-string skips the record whole,
-        # exactly like the execution selectors. Coercing to "" would silently
-        # strip a member binding and run the job unbound.
+        # Memory-identity selectors (WHOSE memory the job runs with): like the
+        # execution selectors, a non-string skips the record. Coercing to ""
+        # would run the job unbound.
         member_id=_selector_str("member_id"),
         memory_store=_selector_str("memory_store"),
         execution_context=j.get("execution_context"),
         approval_mode=_guard_str("approval_mode"),
         acked_items=j.get("acked_items", []),
+        # Anything but a list of strings (null from an imported archive, a hand
+        # edit) loads as no ids, so the job still saves and no id names an entry.
+        acked_item_ids=_ack_ids_field(j.get("acked_item_ids")),
+        acked_item_ids_digest=_guard_str("acked_item_ids_digest"),
         created_by=_guard_str("created_by"),
         source_preset=_guard_str("source_preset"),
         source_template_prompt=_guard_str("source_template_prompt"),
@@ -410,6 +353,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         hide_in_chat=j.get("hide_in_chat", False),
         folder_id=_guard_str("folder_id"),
         chat_folder_id=_guard_str("chat_folder_id"),
+        project_path=_guard_str("project_path"),
         model=_guard_str("model"),
         last_retry_count=_guard_num("last_retry_count", 0),
         last_retry_run_ts=_guard_num("last_retry_run_ts", 0.0),
@@ -446,18 +390,12 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
 def _is_loadable_record(j: dict[str, Any]) -> bool:
     """True when the SCHEDULER could build a job from *j*. NEVER raises.
 
-    :func:`_job_from_record` is the authority on that — it raises
-    ``KeyError``/``TypeError``/``AttributeError`` on a record that is not shaped
-    like a job — so asking it is the only honest test. ``isinstance(j, dict)``
-    is a weaker stand-in: ``{}`` is a dict the loader rejects. Wrapped here so
-    :func:`_read_job_records` keeps its non-raising contract.
+    Asks :func:`_job_from_record` itself; ``isinstance(j, dict)`` is too weak
+    (``{}`` is a dict the loader rejects).
     """
     try:
-        # warn_on_coercion=False: this probe runs at WS status-pusher cadence
-        # (count_enabled_from_disk on every push cycle, per connected
-        # dashboard) and never precedes a store rewrite, so the coercion
-        # recovery-window WARNING belongs to _load alone — emitting it here
-        # would repeat it indefinitely for one bad record.
+        # No WARNING: this probe runs on every status push and never precedes
+        # a rewrite, so the coercion warning belongs to _load alone.
         _job_from_record(j, warn_on_coercion=False)
     except Exception:
         return False
@@ -468,56 +406,32 @@ def _read_job_records(path: Path) -> tuple[list[dict[str, Any]], bool]:
     """Read *path*, returning ``(records, loadable)``. NEVER raises.
 
     ``loadable`` is False only when the store is PRESENT but the scheduler can
-    build nothing from it. It exists for the DIAGNOSTIC caller, which must tell
-    "you have no crons" (fine) from "your crons stopped loading" (a fault);
-    runtime readers take ``[0]`` and keep degrading quietly, so the records
-    half is unchanged by it.
+    build nothing from it, so a diagnostic can tell "no crons" from "crons
+    stopped loading". Runtime readers take ``[0]``.
 
-    Single owner of the read-parse-shape prologue for the three readers that
-    deliberately bypass the scheduler so they work with no running gateway
-    (:func:`referenced_skill_names`, :func:`unhealthy_jobs_from_disk`,
-    :meth:`CronService.count_enabled_from_disk`). Each had grown its own
-    spelling of this prologue and they had drifted in WHICH corruption they
-    survived, so a store that one reader shrugged off crashed another. This is
-    NOT every reader of the file — see the exclusions below.
-
-    Every failure mode collapses to "no records", because all three callers
-    degrade quietly by contract rather than propagate:
+    Shared read-parse-shape prologue for the readers that work with no running
+    gateway (:func:`referenced_skill_names`, :func:`unhealthy_jobs_from_disk`,
+    :meth:`CronService.count_enabled_from_disk`), so they survive the same
+    corruption. Every failure mode collapses to "no records":
 
     * ``OSError`` — no file at all (every fresh install), permissions, or a
       directory where the file should be.
-    * ``UnicodeError`` — the store is bytes on disk and can hold invalid
-      UTF-8. Reading with an explicit encoding also pins the decode to the
-      one :func:`~kiro_crew.atomic_write.atomic_write` writes, rather than to
-      the caller's locale.
+    * ``UnicodeError`` — invalid UTF-8 on disk. The explicit encoding matches
+      :func:`~kiro_crew.atomic_write.atomic_write`, not the caller's locale.
     * ``ValueError`` / ``TypeError`` — unparseable JSON.
-    * ``RecursionError`` — deeply nested JSON. It subclasses ``RuntimeError``,
-      NOT ``ValueError``, so it escapes a decode-error tuple and would abort
-      the caller from inside the read it expected to be safe.
-    * Shape — a document that parses but is not an object holding a ``jobs``
-      list (a top-level ``[]``, a scalar, ``{"jobs": null}``).
+    * ``RecursionError`` — deeply nested JSON; it is a ``RuntimeError``, not a
+      ``ValueError``, so a decode-error tuple would miss it.
+    * Shape — not an object holding a ``jobs`` list (``[]``, a scalar,
+      ``{"jobs": null}``).
 
-    Non-dict entries are dropped here so that no caller repeats the check.
-    All three already discarded them — two by an explicit ``isinstance``
-    guard, one by letting :func:`_job_from_record` reject them — so
-    filtering centrally preserves each caller's behaviour exactly.
+    Non-dict entries are dropped here so no caller repeats the check.
 
-    Three readers are deliberately NOT served, because each owes the user or
-    the scheduler a louder reaction than a quiet degrade:
-
-    * :meth:`CronService._load` reads bytes handed over by ``_sync``, logs a
-      warning naming the corruption, and resets the store fingerprint — those
-      are scheduler-state side effects folding in here would silence.
-    * :func:`~kiro_crew.portability._sanitize_imported_crons` rewrites an
-      unreadable import to an empty store and reports it to the caller.
-    * :func:`~kiro_crew.snapshot._merge_crons` prints which path it could not
-      read, skips the merge, and answers ``False`` so its caller can report
-      the refusal instead of a success.
-
-    The latter two still guard on ``(OSError, ValueError)`` only, so a deeply
-    nested store aborts an import or a snapshot merge there. That is a real
-    remaining gap, left for separate work: both owe the user a message naming
-    the file, which this quiet loader cannot give them.
+    Not used by readers that owe a louder reaction: :meth:`CronService._load`
+    (logs the corruption and resets the store fingerprint),
+    :func:`~kiro_crew.portability._sanitize_imported_crons` and
+    :func:`~kiro_crew.snapshot._merge_crons` (both report the file to the user).
+    The latter two guard only ``(OSError, ValueError)``, so a deeply nested
+    store still aborts an import or snapshot merge.
     """
     try:
         raw = path.read_text(encoding="utf-8")
@@ -646,12 +560,21 @@ def job_record(j: CronJob) -> dict[str, Any]:
         record["managed_by"] = j.managed_by
     if j.app_manifest_digest:
         record["app_manifest_digest"] = j.app_manifest_digest
+    # The per-entry ack ids follow the same rule: a job whose acks carry no id
+    # (every ack before this key, and every Slack ack) writes nothing new.
+    if any(j.acked_item_ids):
+        record["acked_item_ids"] = j.acked_item_ids
+        record["acked_item_ids_digest"] = j.acked_item_ids_digest
+    # A job with no project directory saves to the bytes an older build wrote.
+    if j.project_path:
+        record["project_path"] = j.project_path
     return record
 
 
 #: Every key :func:`job_record` can write, read off the encoder itself so the two
 #: cannot drift: a job that sets each conditionally written key
-#: (``user_pause_generation``, ``managed_by``, ``app_manifest_digest``, and a
+#: (``user_pause_generation``, ``managed_by``, ``app_manifest_digest``,
+#: ``acked_item_ids`` with ``acked_item_ids_digest``, ``project_path``, and a
 #: non-default ``auto_pause_after_failures`` and ``alert_after_failures``, which
 #: are omitted at the default). A record key outside this set came from a newer
 #: build. A key inside it is this build's to write or to omit, so a value this
@@ -666,8 +589,11 @@ _KNOWN_JOB_KEYS = frozenset(
             user_pause_generation=1,
             managed_by="-",
             app_manifest_digest="-",
+            project_path="-",
             auto_pause_after_failures=0,
             alert_after_failures=2,
+            acked_item_ids=["-"],
+            acked_item_ids_digest="-",
         )
     )
 )
@@ -723,7 +649,8 @@ def encode_store(
     written back fill-only, the rule ``KiroCrewConfig.to_dict`` applies to unknown
     config keys: a key this build writes itself is never overwritten, and only a job
     still in ``jobs`` gets its unknown keys back, so a job this build deleted is gone
-    with them. The version is never written lower than the one read. A store with no
+    with them. ``version`` is written as given: the decoder's, never lower than the
+    one read, or the older version a store whose upgrade had to wait keeps. A store with no
     unknown keys encodes exactly as it did before.
     """
     fields_by_job = unknown_fields or {}
@@ -738,7 +665,7 @@ def encode_store(
                 record.setdefault(key, value)
         records.append(record)
     data: dict[str, Any] = {
-        "version": max(_STORE_VERSION, version),
+        "version": version,
         "jobs": records,
     }
     for key, value in (extra or {}).items():
@@ -767,6 +694,8 @@ class StoreDocument:
     version: int
     extra: Mapping[str, Any]
     unknown_fields: Mapping[str, UnknownFields]
+    #: Written before an unset zone followed the host; see ``zone_default_migration``.
+    predates_local_default: bool = False
 
 
 def _unknown_fields_of(record: dict[str, Any]) -> tuple[UnknownFields, int] | None:
@@ -824,18 +753,9 @@ def decode_store(raw: bytes) -> StoreDocument | None:
             kept_total = extra_size
     unknown_fields: dict[str, UnknownFields] = {}
     past_total = 0
-    # Per-entry isolation: one malformed or legacy record must not
-    # discard the whole registry. Each record is built in its own
-    # try block; a bad one is warned about and skipped, and every
-    # well-formed job survives. The whole-store reset in CronService._load
-    # is reserved for a file that yields nothing parseable at all, where
-    # there is nothing to salvage.
-    #
-    # The caught tuple is deliberately NARROWER than the exceptions
-    # _job_from_record can raise: KeyError and TypeError are its two
-    # bad-data signals, and AttributeError is not reachable from JSON.
-    # See _job_from_record's docstring for why, and for what catching it
-    # would cost.
+    # Per-entry isolation: a bad record is warned about and skipped, the
+    # rest survive. Only KeyError/TypeError are bad-data signals; an
+    # AttributeError is a code defect and propagates (see _job_from_record).
     jobs: list[CronJob] = []
     for j in records:
         try:
@@ -867,7 +787,13 @@ def decode_store(raw: bytes) -> StoreDocument | None:
             past_total,
             MAX_UNKNOWN_FIELDS_STORE_BYTES,
         )
-    return StoreDocument(jobs=jobs, version=version, extra=extra, unknown_fields=unknown_fields)
+    return StoreDocument(
+        jobs=jobs,
+        version=version,
+        extra=extra,
+        unknown_fields=unknown_fields,
+        predates_local_default=predates_local_default(read_version),
+    )
 
 
 #: Infix between the store's file name and the UTC stamp of a quarantine copy:

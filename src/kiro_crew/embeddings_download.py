@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from kiro_crew import asset_downloader
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.embeddings_model import (
     _sha256_file,
     default_model_path,
@@ -261,7 +262,7 @@ class ModelDownloadManager:
             else:
                 # Cross-filesystem safe: shutil.move copies when rename fails.
                 shutil.move(str(src), str(staging))
-            os.replace(staging, self._target)
+            replace_with_retry(staging, self._target)
         finally:
             staging.unlink(missing_ok=True)
 

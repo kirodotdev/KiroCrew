@@ -21,16 +21,9 @@ from kiro_crew.decisions.types import Answer
 def _restore_judge_process_globals():
     """Restore the judge module's process-wide stash state around every test.
 
-    ``_PR_BODIES``, ``_PR_BODIES_DROPPED`` and ``_PR_BODIES_FORGOTTEN`` are module
-    globals, and a forgotten loss notice makes EVERY loop's take report a loss until
-    the pending notices drain -- deliberately, since the owner of a forgotten notice
-    is unknown and firing is the only direction that cannot withhold a wake. That is
-    sound for the process and poison for a test suite: a test that overflows the
-    notice store leaves the next test's unrelated loop reading as short.
-
-    Autouse at module scope rather than per class, because any test reaching the judge
-    can publish a stash. Restored rather than merely cleared, so a test that sets up
-    state for itself is not fighting the fixture.
+    The ``_PR_BODIES*`` globals are process-wide, and a forgotten loss notice makes
+    EVERY loop's take report a loss by design, so one test's overflow would leak into
+    the next. Restored rather than cleared, so a test's own setup is kept.
     """
     saved = (
         dict(judge._PR_BODIES),

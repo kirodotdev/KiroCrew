@@ -255,6 +255,7 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
     cap_project_root_walk,
     close_skills_loaders,
     close_subagent_managers,
+    command_crons_run_here,
     drain_breadcrumb_writes,
     forget_env_at_teardown,
     healthy_host_memory,
@@ -279,6 +280,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _forget_enterprise_profile_pin,
     _forget_legacy_auth_sweep_clean_roots,
     _forget_sandbox_launch_mark,
+    _fresh_aws_bin_dir_trust,
     _fresh_reexec_environment,
     _fresh_released_sessions_warning,
     _history_cleanup_throttle_closed,
@@ -528,6 +530,7 @@ def _fresh_update_ownership(_floor_monkeypatch):
     _floor_monkeypatch.setattr(update_ownership, "_live", registry)
     _floor_monkeypatch.setattr(update_ownership, "_deferred_restart_until", None)
     _floor_monkeypatch.setattr(update_ownership, "_restart_refusal", None)
+    _floor_monkeypatch.setattr(update_ownership, "_refusal_probe_clears", True)
     yield
     open_steps = [entry.step.label for entry in registry]
     assert not open_steps, f"the test left update steps open: {open_steps}"
@@ -549,6 +552,62 @@ def _fresh_host_unservable_backends(_floor_monkeypatch):
     _floor_monkeypatch.setattr(backends, "_host_unservable", dict(backends._host_unservable))
     _floor_monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
     _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_mcp_oauth_provenance(_floor_monkeypatch):
+    """Give every test its own record of the MCP sign-in links children sent.
+
+    ``mcp_oauth_provenance`` is process state that every emitted banner adds to,
+    and a read shows a banner's link only for a recorded URL. Rebound per test, so
+    a link one test emitted is not vouched for in the next.
+    """
+    from collections import OrderedDict
+
+    from kiro_crew.dashboard import mcp_oauth_provenance
+
+    _floor_monkeypatch.setattr(mcp_oauth_provenance, "_emitted", OrderedDict())
+
+
+@pytest.fixture(autouse=True)
+def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
+    """Start every test with KAS's automatic bundle switch closed and no install state.
+
+    A KAS spawn takes Crew's own engine automatically when kiro-cli's relay cannot
+    run on the host (``acp/kas_route.py``), and the gateway then installs the engine
+    from the network. Whether that happens depends on the runner's own kiro-cli and
+    its sign-in store, so it is pinned closed here: a test that spawns KAS gets the
+    relay or the configured route, as it states them. The tests of the switch open
+    it with their own ``monkeypatch``. The last spawn's route and the installer's
+    state are process slots, rebound per test so one test's spawn is not the next
+    one's.
+    """
+    from kiro_crew.acp import kas_engine_install, kas_route
+
+    _floor_monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda: False)
+    _floor_monkeypatch.setattr(kas_route, "_LAST_SPAWN_ROUTE", None)
+    _floor_monkeypatch.setattr(
+        kas_engine_install,
+        "_STATE",
+        {"running": False, "done": 0, "total": 0, "error": ""},
+    )
+
+
+@pytest.fixture(autouse=True)
+def _registry_governance_reachability_unknown(_floor_monkeypatch):
+    """Answer "governance may reach this sign-in" unless a test says otherwise.
+
+    The real answer reads the runner's kiro-cli store and runs ``kiro-cli
+    whoami``, so registry-mode tests would depend on who is signed in on the host.
+    "May reach" keeps the registry marker on every managed server, which is what
+    a registry-mode spec carried before the control-plane exception. The tests of
+    that exception and of the probe set their own answer with ``monkeypatch``.
+    """
+    from kiro_crew import kiro_cli
+
+    _floor_monkeypatch.setattr(kiro_cli, "registry_governance_known_unreachable", lambda: False)
+    _floor_monkeypatch.setattr(kiro_cli, "_governance_unreachable_cache", None)
+    _floor_monkeypatch.setattr(kiro_cli, "_governance_warm_running", False)
 
 
 @pytest.fixture
@@ -924,6 +983,24 @@ def _reset_overlay_refresher():
     from kiro_crew.mcp_gateway import overlay_refresh
 
     overlay_refresh.set_overlay_refresher(None)
+
+
+@pytest.fixture(autouse=True)
+def _undetected_host_timezone():
+    """Give every test a host zone that was never detected (``kiro_crew.host_timezone``).
+
+    An unset cron or config zone follows the host's zone, which is the zone of
+    whichever machine runs the suite. Undetected, it resolves to UTC on every
+    machine, as an unset zone did before ``local`` existed. A test about the
+    host zone publishes one (``publish_host_timezone``) or detects it
+    (``detect_host_timezone``, which this does not touch).
+    """
+    from kiro_crew import host_timezone
+
+    host_timezone.reset_host_timezone()
+    host_timezone.freeze_host_timezone("")
+    yield
+    host_timezone.reset_host_timezone()
 
 
 @pytest.fixture(autouse=True)
@@ -1367,3 +1444,62 @@ def _cloud_guard_ignores_the_runners_agent_markers(_floor_monkeypatch):
     aws_mod = sys.modules.get("kiro_crew.cloud.aws")
     if aws_mod is not None and hasattr(aws_mod, "_agent_confinement"):
         _floor_monkeypatch.setattr(aws_mod, "_agent_confinement", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def release_engine_installs(_floor_monkeypatch):
+    """Record the KAS engine step of every release apply instead of running it.
+
+    ``release_apply.apply_release`` ends each update with the new release's own
+    ``kirocrew kas install --if-in-use``, a child that downloads a few hundred MB
+    from the release bucket whenever the install uses KAS -- and a stock test home
+    does, since KAS is the default backend. Every update-path test that stubs only
+    the package install would otherwise spawn that download. Stubbing it here makes
+    the engine step opt-in for the whole suite: the recorder returns as a successful
+    install does, and a test can request this fixture by name to assert on the
+    ``(interpreter, trusted_env)`` pairs. A test of the step itself patches
+    ``release_apply._install_engine`` again, or holds the real function it imported
+    at collection time.
+    """
+    from kiro_crew.platform import release_apply
+
+    calls: list[tuple[pathlib.Path, bool]] = []
+
+    def _record(python: pathlib.Path, ctx) -> None:
+        calls.append((pathlib.Path(python), bool(ctx.trusted_env)))
+
+    _floor_monkeypatch.setattr(release_apply, "_install_engine", _record)
+    yield calls
+
+
+@pytest.fixture(autouse=True)
+def _drain_dashboard_verify_slot() -> None:
+    """A verify thread that outlived its route's reply window still owns its browser
+    profile; the test that started it waits for it so the profile is removed within
+    the test's own scope.
+
+    ``dashboard_verify._SLOT`` is the authoritative drain signal: ``shutil.rmtree``
+    runs inside ``_drive``'s ``finally`` block before ``_SLOT.release()`` is called
+    in ``_run_in_slot``, so ``_SLOT.locked() == False`` means the profile is already
+    gone. This fixture covers every file that exercises the dashboard save, snapshot
+    or verify paths, including ``test_dashboard_save_tool*.py``,
+    ``test_dashboard_snapshot.py``, ``test_dashboard_verify.py``,
+    ``test_agent_panel_routes_dashboard.py``, ``test_agent_panel_routes_page.py``,
+    ``test_dashboard_preview_keep.py``, ``test_dashboard_gallery_approvals.py``,
+    ``test_session_dashboard.py`` and ``test_change_cards_settings.py``.
+
+    The import is deferred so the ~34 k tests that never touch the dashboard
+    browser runner pay no import cost: ``sys.modules`` lookup at teardown is
+    effectively free.
+    """
+    yield
+    dv = sys.modules.get("kiro_crew.dashboard_verify")
+    if dv is None or not dv._SLOT.locked():
+        return
+    from kiro_crew.testing.wait import wait_until
+
+    wait_until(
+        lambda: not dv._SLOT.locked(),
+        timeout=dv.RUN_TIMEOUT_SECONDS + 5.0,
+        describe=lambda: "dashboard verify slot still locked after test ended",
+    )

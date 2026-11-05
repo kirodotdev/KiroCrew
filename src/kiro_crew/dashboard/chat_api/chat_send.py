@@ -12,10 +12,13 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
+from kiro_crew import turn_timing
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _CREATABLE_MODES,
         _SSE_WRITE_DEADLINE_SECS,
+        CHAT_BANNER_META_KEY,
         HUMAN_TURN_META_KEY,
         RESERVED_ROW_META_KEYS,
         STEER_AUTO,
@@ -29,10 +32,13 @@ if TYPE_CHECKING:
         _app_claim_refused,
         _app_slot_acquisition_denial,
         _app_slot_acquisition_recheck,
+        _arm_pending_reset_retry,
         _build_stream_chunk,
+        _channel_pin_refusal,
         _ChatSlot,
         _deny_app_session_settings,
         _emit_agent_assignment,
+        _forwards_harness_command,
         _history_key_for,
         _maybe_auto_title,
         _normalize_slot_key,
@@ -40,6 +46,7 @@ if TYPE_CHECKING:
         _redact_meta,
         _run_chat,
         _start_next_queued_turn,
+        _wake_pending_reset_retry,
         app_slot_is_local_user_session,
         attachment_meta,
         audit_app_slot_denial,
@@ -50,7 +57,6 @@ if TYPE_CHECKING:
         drained_to_thread,
         effective_session_key,
         is_claude_code,
-        is_harness_slash_command,
         is_registered_agent_name,
         load_window_off_loop,
         logger,
@@ -78,6 +84,7 @@ if TYPE_CHECKING:
         steer_into_running_turn,
         string_field_error,
         subagents_hold_user_messages,
+        teardown_hold_active,
         warm_project_agent_names,
         warn_if_not_durable,
     )
@@ -135,10 +142,10 @@ def _send_writes_persona(body: dict) -> bool:
     return "color_theme" in body
 
 
-async def _send_harness_command(message: str) -> str:
+async def _send_harness_command(message: str, state: DashboardState, slot: _ChatSlot) -> str:
     """The harness slash command *message* opens with, or ``""`` for plain text.
 
-    The same predicate the runner forwards on (``is_harness_slash_command``), so
+    The same predicate the runner forwards on (``_forwards_harness_command``), so
     what this refuses is exactly what would reach the harness as a command. The
     config is read only for a first word that starts with ``/``.
     """
@@ -147,7 +154,9 @@ async def _send_harness_command(message: str) -> str:
         return ""
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     cc_provider = is_claude_code(cfg.agent.provider)
-    return first_word if is_harness_slash_command(first_word, cc_provider=cc_provider) else ""
+    key = effective_session_key(slot)
+    forwarded = await _forwards_harness_command(state, key, first_word, cc_provider=cc_provider)
+    return first_word if forwarded else ""
 
 
 def steer_is_auto(value: object) -> bool:
@@ -487,6 +496,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
 async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
+    _timing_t0 = turn_timing.now()
     state: DashboardState = request.app["state"]
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
@@ -555,6 +565,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             user_meta.update(bounded_quote)
         if not user_meta:
             user_meta = None
+    # A short display label for the transcript row; the row's content and the
+    # turn's input stay the full message. Same validator as a monitor loop's
+    # banner, so the cap and the credential redaction are shared.
+    from kiro_crew.autonudge_authz import normalize_banner
+
+    banner, banner_err = normalize_banner(body.get("banner"), absent_ok=True)
+    if banner_err is not None:
+        return web.json_response({"error": banner_err, "code": "invalid_banner"}, status=400)
+    if banner:
+        user_meta = {**(user_meta or {}), CHAT_BANNER_META_KEY: banner}
     theme_consent = body.get("theme_consent") is True
     # Content-bound persona consent: the sha256 hex the user
     # granted in the consent modal. Injection is gated on this matching the
@@ -672,13 +692,13 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         requested_memory_mode = None
 
     # Honor mode from the body when auto-creating a slot, mirroring memory_mode
-    # above: an app whose worker slot lives only in gateway memory (e.g. Design
-    # Critique) repeats mode on send(), so a slot recreated here after a
-    # gateway restart keeps its non-"" surface and stays out of the chat
-    # sidebar's surface allowlist. Only creation-allowlisted values pass;
-    # anything else is dropped so get_or_create_slot uses its default. Unlike
-    # memory_mode there is no mismatch error: get_or_create_slot ignores mode
-    # for an already-existing slot.
+    # above: an app whose worker slot lives only in gateway memory repeats mode
+    # on send(), so a slot recreated here after a gateway restart keeps its
+    # non-"" surface and stays out of the chat sidebar's surface allowlist.
+    # Only creation-allowlisted values pass; anything else is dropped so
+    # get_or_create_slot uses its default. Unlike memory_mode there is no
+    # mismatch error: get_or_create_slot ignores mode for an already-existing
+    # slot.
     requested_mode = body.get("mode")
     if not isinstance(requested_mode, str) or requested_mode not in _CREATABLE_MODES:
         requested_mode = ""
@@ -778,7 +798,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # an agent other than the one named would be a silent substitution. A
         # harness slash command is refused here, above the busy branch, so a
         # queued copy cannot run it later.
-        command = await _send_harness_command(message)
+        command = await _send_harness_command(message, state, slot)
         # The slot may have closed, or a cron or channel binder may have
         # re-linked it, during the permission and config reads; the grant
         # reaches only a local user session.
@@ -988,6 +1008,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 {"error": "cannot set agent on running slot"},
                 status=409,
             )
+        # A slot linked to a pinned Slack channel's thread adopts only that
+        # channel's agent, the same rule the switch route holds.
+        pinned = _channel_pin_refusal(slot, agent, getattr(slot, "agent_kind", "") or "")
+        if pinned is not None:
+            return pinned
         slot.agent = agent
         _emit_agent_assignment(slot.key, agent)
     else:
@@ -1034,7 +1059,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # it" notice. The person reopens the conductor to keep working.
             return web.json_response(
                 {
-                    "error": "this crew member's conductor is closed; reopen it to keep working",
+                    "error": "this Bot's conductor is closed; reopen it to keep working",
                     "code": "crew_root_closed",
                     "root": _crew_root,
                 },
@@ -1186,6 +1211,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 # manual steer, which is what keeps that row byte-identical.
                 decision_strip=_auto_strip,
                 attachments=user_meta,
+                banner=banner,
                 **_responsive_steer_kwargs,
             )
             if _crew_owns_hold and outcome not in (STEER_STEERED, STEER_REQUEUED):
@@ -1266,6 +1292,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
             attachments=attachment_meta(user_meta),
             quote=quote_meta(user_meta).get("quote"),
+            banner=banner,
             # The receipt travels whichever way the send went, including the one
             # case where the two disagree: `auto` answered steer and the steer was
             # UNAVAILABLE, so this path runs with a record saying steer. That is the
@@ -1297,11 +1324,18 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # goes idle while children run). Without the hold, this message would start a
     # main turn immediately and interleave with the [Subagent completion event]
     # injections. Queue it instead (reusing the slot queue) — the queue drain
-    # releases it after the last sub-agent finishes (see chat_runner _hold_users).
+    # releases it after the last sub-agent finishes (see subagents_hold_user_messages).
     # Opt-out: if the user explicitly chose steer mode, honour it — start a new
     # turn immediately so the message is processed without waiting for children.
     # An app on a session it does not own has no opt-out (`steer` is None there),
     # and an agent-origin send has none either: it waits like any queued turn.
+    # The opt-out covers the SUB-AGENT hold only. It is a choice about waiting,
+    # not about which conversation answers, so it cannot waive a deferred
+    # discard: the composer's Steer action on an idle slot with children running
+    # is exactly the state that defers one, and answering there would use the
+    # conversation the person asked to drop. `_turn_admit` consumes without
+    # ``allow_discard``, so nothing later in the turn drops it either.
+    _teardown_hold = bool(not slot.running and teardown_hold_active(state, slot))
     _sub_key = effective_session_key(slot)
     _held = subagents_hold_user_messages(state, _sub_key)
     # Messages parked while a child was live stay parked once it is flagged
@@ -1313,7 +1347,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         and state.subagents is not None
         and state.subagents.running_agents_for(_sub_key)
     )
-    if not (steer and not _agent_origin) and (_held or _behind_parked):
+    if (not (steer and not _agent_origin) and (_held or _behind_parked)) or _teardown_hold:
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
@@ -1340,6 +1374,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _hold_attachments = attachment_meta(user_meta)
         _hold_meta.update(_hold_attachments)
         _hold_meta.update(quote_meta(user_meta))
+        if banner:
+            _hold_meta[CHAT_BANNER_META_KEY] = banner
         if request_app or cron_creator or _agent_origin:
             # Same reason as the busy-slot queue above: this entry is drained
             # later, so only its meta can name the actor. One stamp for all,
@@ -1388,7 +1424,14 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _hold_push.setdefault("meta", {})["sendId"] = _hold_sid
         if _hold_meta.get("quote"):
             _hold_push.setdefault("meta", {})["quote"] = _hold_meta["quote"]
+        if banner:
+            _hold_push.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
         state.broadcast_ws("queue_push", _hold_push)
+        if _teardown_hold:
+            # Deduped, so this only matters when no decline armed one: the retry
+            # is what lands the discard and drains the queue this send joined.
+            _arm_pending_reset_retry(state, slot)
+            _wake_pending_reset_retry(slot)
         if _behind_parked:
             await _start_next_queued_turn(state, slot)
         elif not subagents_hold_user_messages(state, _sub_key):
@@ -1460,8 +1503,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         return admission_entry.chat_replay_response(turn_admission, slot_key=slot.key)
 
     # No per-message browse marker: browsing is a capability, not a per-turn
-    # gate. The agent drives a browser by running `playwright-cli` shell
-    # commands, so the capability is simply whether that binary is on PATH. The
+    # gate. The agent drives a browser through the `browser` tool, which checks
+    # the capability itself on every call. The
     # agent itself decides whether to operate a browser or read with web_fetch
     # (the system prompt and the kirocrew-commands / web-browse skills tell it
     # how), so the backend injects nothing here.
@@ -1576,6 +1619,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _actor,
             prior_user_turns=sum(1 for m in slot.messages if m.get("role") == "user"),
         )
+        from kiro_crew.dashboard.slot_buffers import flush_restored_hold
+
+        # A hold a restart restored into this idle slot is owed to this turn.
+        # Its rows reach an SSE reader through `_pending`, which the stale-frame
+        # drain below empties, so drain first and keep the flush's own frames.
+        _restored_frames: list[dict[str, Any]] = []
+        if slot._deferred_notes:
+            slot.drain()
+            flush_restored_hold(slot, logger=logger)
+            _restored_frames = slot.drain()
         _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
         _send_race.commit_request(
             request, message_id=str(_user_row.get("meta", {}).get("mid") or _send_id_of(user_meta))
@@ -1588,10 +1641,13 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             target=str(_user_row.get("meta", {}).get("mid") or ""),
         )
         _user_mid = _user_row.get("meta", {}).get("mid")
-        if not may_configure or (ws_mode and user_meta and user_meta.get("sendId")):
+        if not may_configure or not ws_mode or (user_meta and user_meta.get("sendId")):
             # Raw user content belongs on the per-client slot-authorized WS path.
-            # The global SSE queues have no slot gate. In-band sends keep
-            # their existing stream contract and must not gain an extra WS echo.
+            # The global SSE queues have no slot gate. The one send left out is a
+            # `?ws=1` send with no `sendId`: a composer may have drawn that row and
+            # could not match an echo to it. No dashboard composer sends on the
+            # bare SSE endpoint, so no open tab drew a row sent there, and its
+            # stream to the caller is unchanged: the echo goes to WS clients only.
             # An app's turn on a user's session always reaches the user's open tabs,
             # whose composer never drew it.
             state.broadcast_ws(
@@ -1610,6 +1666,12 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # after their SSE reader disconnected. Must happen BEFORE _run_chat
         # so we don't discard the new turn's output.
         slot.drain()
+        # Only the slot's own reader gets them back: an app's turn-scoped stream
+        # may send on this session but not read the note, which reached the
+        # user's tabs through the flush's own broadcast.
+        if _restored_frames and not turn_scoped_stream:
+            slot._pending[:0] = _restored_frames
+            slot.event.set()
 
         # Kick off LLM titling now, from the first user message, so the title lands
         # *during* the first turn instead of waiting for the whole response to
@@ -1620,7 +1682,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         if may_configure and not slot._titled and not slot._title_in_flight:
             _tt = asyncio.create_task(_maybe_auto_title(state, slot))
             # Expose the handle so chat_done's chained title→refresh pass can wait
-            # for this attempt to settle (see _title_then_refresh in chat_runner).
+            # for this attempt to settle (see title_then_refresh in chat_title).
             slot._title_task = _tt
             state._background_tasks.add(_tt)
             _tt.add_done_callback(state._background_tasks.discard)
@@ -1724,6 +1786,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             note_admission_ended(slot, turn_admission)
             state.push_slots_update()
 
+        # Opened here so the turn task's copied context carries the record.
+        turn_timing.begin(slot.key, "ws" if ws_mode else "sse", _timing_t0)
+        turn_timing.mark("dispatched")
         with _turn_initiated_by("" if request_app else _turn_actor_budget(request)):
             task = spawn_guarded_turn(
                 state,
@@ -1809,6 +1874,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                         continue
                     chunk = _build_stream_chunk(msg)
                     await write_sse_or_abort(request, resp, f"data: {chunk}\n\n".encode())
+                    turn_timing.sse_first_frame(slot.key)
                 try:
                     await asyncio.wait_for(slot.event.wait(), timeout=30)
                 except asyncio.TimeoutError:

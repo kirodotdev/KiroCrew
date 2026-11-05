@@ -75,8 +75,9 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     if remote_on:
         # Remote dispatch (preview): pull each open remote item's peer copy and file
         # what is new BEFORE the snapshot below, outside its lock (the pull is network).
-        from kiro_crew.dashboard.handlers import remote_ingest
+        from kiro_crew.dashboard.handlers import remote_ingest, remote_puller
 
+        remote_puller.ensure_running(request.app["state"])
         await remote_ingest.ingest_board(request.app["state"], key)
     # Under the board lock for the same reason the brief read is: a write's
     # cache commit and its record append are two steps, and a read between them
@@ -127,14 +128,23 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             board=key,
             remote_live=remote_live.get(item.item_id),
         )
-        if item.worker_instance_id:
+        if item.worker_instance_id or item.retired_bindings:
             row.update(await asyncio.to_thread(_remote_row_fields, key, item))
         if compact:
             compact_row = {name: row[name] for name in _COMPACT_ROW_FIELDS}
-            if item.worker_instance_id:
-                from kiro_crew.dashboard.handlers.remote_ingest import REMOTE_ROW_FIELDS
+            if item.worker_instance_id or item.retired_bindings:
+                from kiro_crew.dashboard.handlers.remote_ingest import (
+                    REMOTE_ROW_FIELDS,
+                    RETIRED_ROW_FIELDS,
+                )
 
-                compact_row.update({name: row[name] for name in REMOTE_ROW_FIELDS})
+                compact_row.update(
+                    {
+                        name: row[name]
+                        for name in REMOTE_ROW_FIELDS + RETIRED_ROW_FIELDS
+                        if name in row
+                    }
+                )
             rows.append(compact_row)
             continue
         events = event_tails[item.item_id]
@@ -157,8 +167,8 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
     # ``goal_items_used`` and ``cap_exceeded`` are derived, never stored: the
-    # number the conductor's "items used: N of <item_cap>" line reports, and
-    # whether that line has gone past its cap, both read off the same header.
+    # goal's item count, and whether it has gone past ``item_cap`` (which the
+    # conductor tells the user once), both read off the same header.
     # Advisory: the compact read carries them so a patrol that reads only the
     # status columns still sees a goal spending past what the user expected.
     # ``max_depth`` is the conducting depth cap in force right now (never stored),

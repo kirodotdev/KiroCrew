@@ -282,8 +282,8 @@ class CodexHarness(MembershipHarness):
         # Every ``codex app-server`` opens the same SQLite files by default and
         # they lock each other out: Codex Desktop plus a Crew runtime fail new
         # sessions with ``database is locked``. So each runtime gets its own
-        # CODEX_SQLITE_HOME (the runtime's per-process scratch dir). Only the
-        # databases move: config, auth and the thread rollouts stay in CODEX_HOME,
+        # CODEX_SQLITE_HOME (a per-process directory no other process is handed).
+        # Only the databases move: config, auth and the thread rollouts stay in CODEX_HOME,
         # and a thread resumes from its rollout (measured on codex 0.159), so
         # spawn_continue still works across runtimes. Seed the private index
         # from a completed SQLite snapshot so a large rollout history does not
@@ -383,6 +383,7 @@ class CodexHarness(MembershipHarness):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        worker_stub_names: frozenset[str] | None = None,
     ) -> SessionExtras:
         """Empty. codex has no custom-agent channel to register anything on.
 
@@ -479,61 +480,25 @@ class CodexHarness(MembershipHarness):
     def teardown(self) -> TeardownPolicy:
         """The standard ACP ``session/close``, awaited, and it evicts.
 
-        Neither kiro-family verb applies here: kiro-cli's
-        ``_kiro.dev/session/terminate`` and KAS's ``_kiro/session/delete`` are
-        extensions, and sending either would draw a method-not-found while the
-        session stayed on the process. codex-acp implements the standard verb
-        instead, and what it does with it is the fact this policy records.
+        kiro-cli's ``_kiro.dev/session/terminate`` and KAS's ``_kiro/session/delete``
+        are extensions codex-acp answers with method-not-found. Measured on
+        codex-acp 1.11.0 (``session/set_config_option`` as the liveness oracle):
+        after close the oracle answers ``-32603``, a second close returns ``{}``
+        again (double-terminate is safe), and a fresh ``session/new`` still works.
+        ``session/cancel`` only interrupts a turn and leaves the session resident,
+        so a harness tearing down with it does not belong in
+        ``ACP_BACKENDS_SESSION_EVICTION``.
 
-        **What ``session/close`` does, measured.** The adapter drops the session from
-        its local map and unsubscribes the Codex thread. Measured on
-        codex-acp 1.11.0, with ``session/set_config_option`` on the same sessionId as
-        the liveness oracle:
+        Evict, not delete: the thread record survives under ``CODEX_HOME``, and
+        ``session/load`` on the closed id replays the conversation, also from a
+        restarted adapter. ``ACP_BACKENDS_SESSION_SHARING`` membership rests on
+        this. ``session/delete`` would ARCHIVE the thread and make later loads fail.
 
-        * before close: answers with the refreshed ``configOptions``;
-        * after close (request): ``{"result": {}}`` back, then the same oracle answers
-          ``-32603`` -- the sessionId is gone;
-        * close again on the same id: ``{}`` again, so a double-terminate is safe;
-        * a fresh ``session/new`` afterwards succeeds, so the process is unharmed.
-
-        ``session/cancel``, on the same wire and the same oracle, leaves the session
-        answering: it interrupts a turn, it does not end a session. A harness that
-        sends it as its teardown does not belong in ``ACP_BACKENDS_SESSION_EVICTION``
-        -- every path that creates and destroys a session on the shared process (the
-        entitlement probe, warm pooled reuse, a refused routing write) leaves one
-        resident under it. Sending the verb that
-        evicts is what closes all of those at once.
-
-        Evict, not delete, and the difference is what makes a codex subagent
-        continuable. The Codex thread's own record survives under ``CODEX_HOME``, the
-        same shape as kiro-cli's ``terminate`` leaving its transcript on disk --
-        measured on the same run as the eviction above: a ``session/load`` on the
-        CLOSED id succeeds, replays the conversation and then answers a question about
-        the first turn, and it succeeds the same way from a RESTARTED adapter process
-        over the same ``CODEX_HOME`` (330 input tokens against 9786 cached-read, so
-        the context came from the thread and not from the prompt). That is what
-        ``ACP_BACKENDS_SESSION_SHARING`` membership rests on, and why no keep-alive
-        variant of this verb is needed: a shared subagent's session is closed at
-        teardown like any other and its conversation is reached again by loading it.
-
-        ``session/delete`` would ARCHIVE the thread -- measured too: a load afterwards
-        refuses with ``session ... is archived``. So it is the verb a release means,
-        never the verb dropping a session means, and sending it here would take the
-        continuation away.
-
-        **A REQUEST, and that is not cosmetic.** Measured on the same run: the
-        adapter answers ``session/close`` with ``{}``, and sent as a NOTIFICATION it
-        ignores it -- the session stays addressable exactly as it did under
-        ``cancel``. So ``notification=False`` is load-bearing in the direction that
-        looks like nothing is wrong: the notification form would log no error and
-        leak every session. The runtime awaits this bounded by ``_TERMINATE_TIMEOUT``
-        like the kiro family's verbs, and the adapter answers promptly, so the
-        refusal path pays one round-trip rather than a budget.
-
-        The gated test ``test_codex_session_mcp.py::test_real_codex_acp_session_close_evicts``
-        repeats the measurement above on every install that has the adapter, so an
-        adapter release that changes what ``close`` does goes red there rather than
-        silently re-opening the leak.
+        Must be a REQUEST (``notification=False``): sent as a notification the
+        adapter ignores it silently and every session leaks. Bounded by
+        ``_TERMINATE_TIMEOUT``. The gated test
+        ``test_codex_session_mcp.py::test_real_codex_acp_session_close_evicts``
+        repeats the measurement against each installed adapter.
         """
         return TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
 

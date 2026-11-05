@@ -104,19 +104,40 @@ def _is_valid_folder_color(s: str) -> bool:
     return s in _FOLDER_COLOR_PALETTE
 
 
-async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
+#: The most already-shown emoji one preview may ask the model to avoid. The
+#: modal sends the icons it showed this session, so a person clicking
+#: Auto-generate again gets a different pick; the bound keeps the prompt small.
+MAX_ICON_PREVIEW_AVOID = 8
+
+
+def icon_preview_avoid(avoid: tuple[str, ...]) -> list[str]:
+    """The emoji a preview asks the model to avoid: the last
+    :data:`MAX_ICON_PREVIEW_AVOID` single-emoji entries of ``avoid``. The
+    prompt and the route's repeat check both read this one list, so a pick is
+    only refused for an emoji the model was told to skip."""
+    return [a for a in avoid if _is_single_emoji(a)][-MAX_ICON_PREVIEW_AVOID:]
+
+
+async def generate_emoji_for_name(
+    state: DashboardState, name: str, *, avoid: tuple[str, ...] = ()
+) -> str:
     """Ask the background session for ONE emoji representing a folder ``name``.
 
     Shared by chat folders and artifact-library folders. Serialized via a
     module-level lock so concurrent folder creations don't interleave streams
     on the shared BACKGROUND_KEY session. Returns ``""`` on any failure or
-    when the reply isn't exactly one emoji grapheme.
+    when the reply isn't exactly one emoji grapheme. ``avoid`` names emoji the
+    caller already showed, so a repeat request asks for a different one; only
+    single-emoji entries reach the prompt.
     """
 
     prompt = (
         f'Reply with exactly ONE emoji that best represents a project folder named "{name}". '
         "No text, no explanation, just the single emoji character."
     )
+    shown = icon_preview_avoid(avoid)
+    if shown:
+        prompt += " Pick a different emoji from these: " + " ".join(shown) + "."
 
     # Folder icon is a trivial single-emoji task — run on the session's governed
     # default model (``_FOLDER_ICON_MODEL`` is "auto") via the shared background
@@ -155,6 +176,13 @@ _CHAT_FOLDER_ICON_TASKS: set[asyncio.Task[None]] = set()
 #: the done callback (identity-checked, so a superseded task's callback never
 #: evicts its successor).
 _CHAT_FOLDER_PENDING_ICON_TASKS: dict[str, asyncio.Task[None]] = {}
+
+#: Folder ids with an icon PREVIEW in flight (POST .../icon-preview). The same
+#: one-live-call-per-folder rule as the pending-task index above: a preview is
+#: refused while another preview, or a background generation, is pending for
+#: that folder, so a looping caller cannot queue model calls behind the
+#: serialized generator.
+_CHAT_FOLDER_ICON_PREVIEWS: set[str] = set()
 
 #: Per-folder icon epoch, bumped under the folder-store lock by every
 #: user-visible mutation the generated icon must not outlive: a manual icon

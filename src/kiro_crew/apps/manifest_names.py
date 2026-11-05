@@ -87,6 +87,19 @@ RESERVED_APP_NAME_CODE = "reserved_app_name"
 # is tested directly with no case folding.
 UNPORTABLE_APP_NAMES = WINDOWS_DEVICE_STEMS
 
+# Longest admissible app name, in characters (the kebab grammar is ASCII, so
+# also in bytes). The gateway builds path components from the name plus a
+# suffix: ``<name>.lock``, ``.<name>-data-tmp``, ``.<name>-update-old-<pid>-<hex>``
+# and, longest, ``.<name>-deps-doomed.kirocrew-deps-staging-<pid>-<hex>``, which
+# adds up to 55 characters with a 10-digit process id. NTFS, APFS, ext4 and
+# other common filesystems cap one component at 255, so a name near that limit
+# installs and then fails with an OSError. 128 leaves room for every suffix,
+# with headroom for suffixes added later. The cap bounds one path component;
+# it does not bound the whole path length. Lowering the cap is the one-way
+# door (an installed app would lose its name); raising it later costs nothing.
+# ``test_app_name_length`` builds every derived component at this length.
+APP_NAME_MAX_LENGTH = 128
+
 
 def app_name_error(name: str) -> str | None:
     """Return why *name* is inadmissible as an app identifier, else ``None``.
@@ -105,6 +118,11 @@ def app_name_error(name: str) -> str | None:
     # too and reach a backend that stores and joins the RAW name.
     if not KEBAB_RE.fullmatch(name):
         return f"app name must be kebab-case (lowercase alphanumeric + hyphens): {name!r}"
+    if len(name) > APP_NAME_MAX_LENGTH:
+        return (
+            f"app name is {len(name)} characters long; the limit is "
+            f"{APP_NAME_MAX_LENGTH}, because the name is used in file names"
+        )
     if name in RESERVED_APP_NAMES:
         return (
             f"app name {name!r} is reserved (would shadow the "

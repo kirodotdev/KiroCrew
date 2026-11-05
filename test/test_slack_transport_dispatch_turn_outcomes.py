@@ -31,6 +31,7 @@ from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_EN
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.slack import handler as _handler
 from kiro_crew.slack import transport_dispatch
+from kiro_crew.testing.wait import await_until
 
 
 class TestConversationLogAgentMetadata:
@@ -282,8 +283,12 @@ def _run_transport_titling(monkeypatch, *, restricted=False, conversation_log=No
         loop = asyncio.get_running_loop()
         pending = [t for t in list(_handler._background_tasks) if t.get_loop() is loop]
         if pending:
-            # flake-ok: drains this loop's auto-title tasks whose fakes answer at once; moved verbatim
-            await asyncio.gather(*pending, return_exceptions=True)
+            # The join is bounded, so a title task that never finishes fails
+            # this test by name.
+            await await_until(
+                asyncio.gather(*pending, return_exceptions=True),
+                what="this loop's auto-title tasks to finish",
+            )
 
     asyncio.run(_drive())
     return slack, sessions, provider
@@ -466,12 +471,8 @@ class TestTransportTrustedBotErrorSuppression:
 class TestTransportPartialProgressRescue:
     """A turn killed mid-flight must persist what the model already produced.
 
-    Without this, the user row is durable but partial assistant output lives
-    only in the renderer, so every retry re-reads a transcript that ends at the
-    question and starts over. A transient backend outage can then burn several
-    consecutive attempts on one Slack thread, each re-deriving the same ticket
-    ids before dying again, with the session file never growing past the user
-    row.
+    Otherwise the partial output lives only in the renderer, and every retry
+    re-reads a transcript that ends at the question and starts over.
     """
 
     def _run_dying_turn(
@@ -611,14 +612,9 @@ class TestTransportPartialProgressRescue:
         """A receipt append that RAISED leaves the row's fate unknowable, so the
         rescue must write nothing rather than guess.
 
-        ``ConversationLog.append`` writes the row and only then invalidates
-        caches and calls ``_maybe_rotate``, whose own guard covers just the
-        ``stat``. So a rotation fault on an oversized transcript raises with the
-        row already durable, while the lock timeout simulated here raises with
-        nothing written — and the dispatcher cannot tell them apart. Writing both
-        rows would duplicate the question in the first case; writing the
-        assistant row alone would orphan the answer in the second. Recording
-        nothing leaves the retry exactly where it was before this change.
+        A rotation fault in ``ConversationLog.append`` raises with the row durable;
+        the lock timeout simulated here raises with nothing written. Writing both
+        rows would duplicate the question; the assistant row alone would orphan it.
         """
         rows, _ = self._run_dying_turn(
             monkeypatch,
@@ -638,13 +634,9 @@ class TestTransportPartialProgressRescue:
     ):
         """The receipt append can raise with the row ALREADY on disk.
 
-        ``append`` writes the row, then invalidates caches, then rotates; only
-        the ``stat`` inside the rotation is guarded. An oversized transcript
-        whose rewrite faults therefore raises after the question is durable, and
-        ``_logged_user_turn`` stays False. A rescue that read that flag as
-        "no question on disk" and wrote both rows would append a SECOND copy of
-        the user's prompt — a corrupted transcript, worse than the missed rescue
-        this PR exists to fix.
+        ``append`` rotates after writing, so a rotation fault raises after the
+        question is durable and ``_logged_user_turn`` stays False. Reading that flag
+        as "no question on disk" would append a second copy of the prompt.
         """
         rows, _ = self._run_dying_turn(
             monkeypatch,
@@ -673,11 +665,8 @@ class TestTransportPartialProgressRescue:
     def test_a_completed_reply_is_not_persisted_as_partial(self, monkeypatch, tmp_path):
         """A fault AFTER the stream finished must not stamp the cutoff marker.
 
-        ``on_done`` having run means the reply is whole; a later failure (a footer
-        post that 4xxs) still unwinds through the rescue's ``except``. Marking
-        that complete text as cut off would be worse than not rescuing at all —
-        the marker is a standing instruction to resume, so the next turn would
-        continue work that had in fact finished.
+        A later failure (a footer post that 4xxs) still unwinds through the rescue.
+        The marker tells the next turn to resume, so it would redo finished work.
         """
         from kiro_crew.slack.renderer import PARTIAL_TURN_MARKER
 

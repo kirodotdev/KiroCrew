@@ -441,8 +441,10 @@ def _liveness_platform_line() -> str:
         )
     if sys.platform.startswith("win"):
         return (
-            "windows — no process-tree backend; shell and MCP tool calls read "
-            "UNKNOWN platform_limited and are bounded by the no-progress budget"
+            "windows Toolhelp — shell-tool CPU movement proves life only; "
+            "command exit, STUCK_INPUT and socket evidence absent (a flat shell "
+            "tree, an unreadable tree and every MCP tool call read UNKNOWN "
+            "platform_limited and are bounded by the no-progress budget)"
         )
     return f"{sys.platform} — no process-tree backend; UNKNOWN platform_limited"
 

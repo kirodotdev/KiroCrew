@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _hot_reload_helpers import write_config as _write
+from config_live_helpers import (  # noqa: F401 -- fixtures are used by name
+    cfg_file_fixture,
+)
 
 from kiro_crew.config.loader import DashboardConfig, KiroCrewConfig
+from kiro_crew.testing.wait import async_wait_until
 
 
 class TestBrandingConfig:
@@ -200,17 +207,25 @@ class TestBrandingEndpoint:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("display", "expected"),
-        [(None, False), (":0", True)],
-        ids=["headless", "desktop-session"],
+        ("display", "manager", "expected"),
+        [
+            (None, None, False),
+            (None, ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"], False),
+            (":0", None, True),
+            (None, ["WAYLAND_DISPLAY=wayland-0"], True),
+        ],
+        ids=["headless", "headless-with-a-user-bus", "desktop-session", "service-under-a-desktop-login"],
     )
     async def test_branding_says_a_linux_host_needs_a_desktop_session(
-        self, monkeypatch, display, expected
+        self, monkeypatch, tmp_path, display, manager, expected
     ):
         # The whole chain the dashboard reads, on a Linux host that HAS xdg-open:
-        # without a display server named in the gateway's environment there is
-        # nothing to open a file manager into, so the rows must not be offered.
-        from kiro_crew import platform_compat
+        # without a display server named in the gateway's environment or by the
+        # user's systemd manager there is nothing to open a file manager into, so
+        # the rows must not be offered. The installed service names none of its
+        # own, so a desktop login reaches it through the manager. `manager` is
+        # that manager's environment (None: no manager to ask).
+        from kiro_crew import platform_compat, platform_compat_trust
         from kiro_crew.dashboard.handlers import api_branding
 
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
@@ -218,6 +233,12 @@ class TestBrandingEndpoint:
             monkeypatch.delenv("DISPLAY", raising=False)
         else:
             monkeypatch.setenv("DISPLAY", display)
+        (tmp_path / "wayland-0").touch()
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            platform_compat_trust, "_user_manager_environment", lambda: manager, raising=False
+        )
+        monkeypatch.setattr(platform_compat_trust, "_desktop_session_cache", None, raising=False)
         req = MagicMock()
         with patch(
             "kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=KiroCrewConfig()
@@ -228,6 +249,74 @@ class TestBrandingEndpoint:
         ):
             resp = await api_branding(req)
         assert json.loads(resp.body)["desktop_launcher"] is expected
+
+
+class TestBrandingReadsTheLiveConfig:
+    """api_branding() serves the watcher's adopted config instead of rebuilding one.
+
+    ``build_config`` is the step that constructs every section dataclass, so the
+    tests count its calls rather than timing the route.
+    """
+
+    @staticmethod
+    def _count_builds():
+        from kiro_crew.config import loader_pipeline
+
+        return patch.object(
+            loader_pipeline, "build_config", side_effect=loader_pipeline.build_config
+        )
+
+    @pytest.mark.asyncio
+    async def test_unchanged_requests_build_the_config_once(self, cfg_file: Path) -> None:
+        from kiro_crew.config import live
+        from kiro_crew.dashboard.handlers import api_branding
+
+        _write(cfg_file, {"dashboard": {"bot_name": "Jarvis"}})
+        with self._count_builds() as build:
+            await live.watch().refresh_now()
+            for _ in range(100):
+                resp = await api_branding(MagicMock())
+                assert json.loads(resp.body)["bot_name"] == "Jarvis"
+        assert build.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_config_write_reaches_the_next_request(self, cfg_file: Path) -> None:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import update_config_locked
+        from kiro_crew.dashboard.handlers import api_branding
+
+        watcher = live.watch()
+        await watcher.start()
+        try:
+            resp = await api_branding(MagicMock())
+            assert json.loads(resp.body)["bot_name"] == "Kiro Crew"
+
+            def _rename(doc: dict) -> dict:
+                doc.setdefault("dashboard", {})["bot_name"] = "Jarvis"
+                return doc
+
+            # The loader's writer wakes the started watcher, which reloads off the
+            # loop; the route reads whatever it adopted.
+            await asyncio.to_thread(update_config_locked, cfg_file, mutate=_rename)
+            await async_wait_until(
+                lambda: (snap := live.snapshot()) is not None
+                and snap.dashboard.bot_name == "Jarvis"
+            )
+            resp = await api_branding(MagicMock())
+            assert json.loads(resp.body)["bot_name"] == "Jarvis"
+        finally:
+            await watcher.stop()
+
+    @pytest.mark.asyncio
+    async def test_without_a_watcher_each_request_loads_from_disk(self, cfg_file: Path) -> None:
+        from kiro_crew.dashboard.handlers import api_branding
+
+        _write(cfg_file, {"dashboard": {"bot_name": "Jarvis"}})
+        resp = await api_branding(MagicMock())
+        assert json.loads(resp.body)["bot_name"] == "Jarvis"
+        _write(cfg_file, {"dashboard": {"bot_name": "Friday"}})
+        resp = await api_branding(MagicMock())
+        assert json.loads(resp.body)["bot_name"] == "Friday"
 
 
 class TestLogoAssetInvariant:

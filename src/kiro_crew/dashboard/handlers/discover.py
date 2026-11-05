@@ -23,6 +23,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers._shared import _get_skills
+from kiro_crew.discovery_featured import featured_entries
 from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
@@ -31,6 +32,8 @@ from kiro_crew.skill_providers.base import (
     ProviderRegistry,
     SkillProvider,
     SkillProviderError,
+    SkillSearchResponse,
+    SkillSearchResult,
     provider_available,
 )
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
@@ -184,8 +187,33 @@ def _get_registry() -> ProviderRegistry:
     return _registry
 
 
+def _featured_response(
+    registry: ProviderRegistry, provider_filter: str | None, limit: int
+) -> SkillSearchResponse:
+    """The bundled featured skills, as a search response with no provider calls.
+
+    Only rows whose provider is registered AND available are kept, so a
+    discovery policy that refuses a provider also hides its featured rows.
+    """
+    admitted = set(registry.available_provider_names)
+    rows = [
+        SkillSearchResult(
+            id=e["id"],
+            name=e["name"],
+            description=e.get("description", ""),
+            provider=e["provider"],
+            repo_url=e.get("repo_url", ""),
+            author=e.get("author", ""),
+        )
+        for e in featured_entries("skills")
+        if e["provider"] in admitted
+        and (provider_filter is None or e["provider"] == provider_filter)
+    ]
+    return SkillSearchResponse(results=rows[:limit], provider_outcomes=[])
+
+
 async def api_skills_discover(request: web.Request) -> web.Response:
-    """GET /api/skills/-/discover?q=<query>[&provider=<name>][&limit=N]
+    """GET /api/skills/-/discover?q=<query>[&provider=<name>][&limit=N][&featured=1]
 
     Multi-provider skill search. Fans out to all available providers
     (or a specific one if ``provider`` param is given) and returns
@@ -221,7 +249,11 @@ async def api_skills_discover(request: web.Request) -> web.Response:
     except ValueError:
         limit = 20
 
-    if not query:
+    # ``featured=1`` with no query asks for the dialog's starting list.
+    # Without the flag an empty query keeps its old empty answer, so no other
+    # caller of this route changes behavior.
+    featured = not query and request.query.get("featured") == "1"
+    if not query and not featured:
         return web.json_response({"results": [], "providers": []})
 
     registry = await asyncio.to_thread(_get_registry)
@@ -233,9 +265,12 @@ async def api_skills_discover(request: web.Request) -> web.Response:
     all_skills = await asyncio.to_thread(skills.list_skills)
     local_keys = {s["key"] for s in all_skills}
 
-    search_response = await registry.search_with_outcomes(
-        query, provider=provider_filter, limit=limit
-    )
+    if featured:
+        search_response = _featured_response(registry, provider_filter, limit)
+    else:
+        search_response = await registry.search_with_outcomes(
+            query, provider=provider_filter, limit=limit
+        )
 
     # Resolve installed state and build response items.
     registered_names = set(registry.provider_names)
@@ -304,19 +339,21 @@ async def api_skills_discover(request: web.Request) -> web.Response:
         if outcome.code
     )
 
-    _sel().log_tool_invocation(
-        session_key=request.get("session_key", "dashboard"),
-        tool_name="discover_skills",
-        tool_kind="skill_provider_search",
-        outcome="success",
-        metadata={
-            "query": query,
-            "provider_filter": provider_filter or "all",
-            "result_count": str(len(items)),
-            "failed_provider_count": str(failed_provider_count),
-            **({"failure_codes": failure_codes} if failure_codes else {}),
-        },
-    )
+    # The featured list reads a bundled file and calls no provider: nothing to audit.
+    if not featured:
+        _sel().log_tool_invocation(
+            session_key=request.get("session_key", "dashboard"),
+            tool_name="discover_skills",
+            tool_kind="skill_provider_search",
+            outcome="success",
+            metadata={
+                "query": query,
+                "provider_filter": provider_filter or "all",
+                "result_count": str(len(items)),
+                "failed_provider_count": str(failed_provider_count),
+                **({"failure_codes": failure_codes} if failure_codes else {}),
+            },
+        )
     return web.json_response(
         {
             "results": items,
@@ -366,7 +403,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             {
                 "error": (
                     "Installing a registry skill is a user action — do it from "
-                    "Settings → Skills → Discover. Use skill_fetch to read a "
+                    "Customize → Skills → Add Skill. Use skill_fetch to read a "
                     "skill without installing it."
                 ),
                 "code": "human_only",

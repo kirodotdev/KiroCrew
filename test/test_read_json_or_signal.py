@@ -274,31 +274,3 @@ def test_two_paths_each_get_their_own_line(tmp_path, logger, monkeypatch, caplog
             aw.read_json_or(b, None, logger=logger, what="x")
 
     assert len([r for r in caplog.records if r.name == logger.name]) == 2
-
-
-# -- one converted site proves the wiring end to end --------------------------
-
-
-def test_converted_site_read_signals_emits_the_degrade(tmp_path, monkeypatch, caplog):
-    """issue_radar ``read_signals`` (site 14) now signals a read-degrade.
-
-    Before this change its ``except (OSError, json.JSONDecodeError): return {}``
-    folded the Windows sharing-violation window into the same silent ``{}`` a
-    genuinely absent cache returns.
-    """
-    from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime
-
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-    monkeypatch.setattr(aw, "on_event_loop", lambda: True)
-    path = crew_runtime.signals_path("o", "r", tmp_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"schema": crew_runtime.SIGNALS_SCHEMA, "items": {}}), "utf-8")
-
-    with caplog.at_level(logging.WARNING, logger=crew_runtime.logger.name):
-        with read_sharing_violation(match=path.name, times=10_000):
-            result = crew_runtime.read_signals("o", "r", tmp_path)
-
-    assert result == {}  # unchanged fallback
-    recs = [r for r in caplog.records if r.name == crew_runtime.logger.name]
-    assert len(recs) == 1
-    assert "outcome=default_returned" in recs[0].getMessage()

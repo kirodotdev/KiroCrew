@@ -1,6 +1,6 @@
-import { memo, useState, useMemo, useCallback, useEffect, useId, useRef } from 'react'
+import { memo, useState, useMemo, useCallback, useEffect, useId, useRef, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Film, Music, Sparkles } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Film, Moon, Music, Sparkles, Sun } from 'lucide-react'
 import DOMPurify from 'dompurify'
 
 import { i18nT } from '../i18n/t'
@@ -11,6 +11,7 @@ import { useCanOpenFile, useCopyAck } from './FilePathMenu'
 import { fileStreamUrl, fileOfficePreviewUrl, fileOfficeSlidesUrl, fileOfficeSlideUrl } from '../utils/fileReadUrl'
 import { sendErrorToChat } from '../utils/errorReport'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { useIsDark } from '../hooks/useIsDark'
 import { pathBasename } from '../utils/pathBasename'
 import { AUDIO_EXTS, VIDEO_EXTS } from '../utils/mediaExts'
 import { guideUntrusted, stripGuideMarkers } from '../guide/untrustedContent'
@@ -24,6 +25,7 @@ import {
   MD_TABLE_HEAD_CELL_CLS,
   MD_UL_CLS,
 } from './markdown/typography'
+import { RadioChipGroup, radioChip } from './RadioChipGroup'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.avif', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
@@ -81,18 +83,65 @@ export function detectFileType(filePath: string): FileType {
 
 function extOf(fp: string) { const i = fp.lastIndexOf('.'); return i >= 0 ? fp.slice(i).toLowerCase() : '' }
 
+/* ── Light/dark backdrop for the image and SVG viewers (#25815) ──
+ * A diagram drawn in dark lines is hard to read on a dark theme, and a light
+ * one on a light theme. One button flips only this pane's backdrop to the
+ * opposite of the theme; the dashboard theme is never touched. The choice is
+ * kept in sessionStorage, so it holds for every image opened in this tab and
+ * starts fresh in a new one. The colours are fixed on purpose: the point is a
+ * plain white or near-black sheet behind the picture, whatever the theme. */
+export const VIEWER_BACKDROP_KEY = 'mc-viewer-backdrop-flipped'
+
+function readBackdropFlipped(): boolean {
+  try { return sessionStorage.getItem(VIEWER_BACKDROP_KEY) === '1' } catch { return false }
+}
+
+function ViewerBackdrop({ children, render }: {
+  children?: ReactNode
+  /** For a body that owns its own element (the sanitized SVG): gets the backdrop class. */
+  render?: (backdropCls: string) => ReactNode
+}) {
+  const isDark = useIsDark()
+  const [flipped, setFlipped] = useState(readBackdropFlipped)
+  const toggle = useCallback(() => {
+    const next = !flipped
+    setFlipped(next)
+    try { sessionStorage.setItem(VIEWER_BACKDROP_KEY, next ? '1' : '0') } catch { /* storage off: the flip still holds for this view */ }
+  }, [flipped])
+  const backdropCls = !flipped ? 'bg-bg-elevated' : isDark ? 'bg-white' : 'bg-[#1e1e1e]'
+  // The button names the backdrop it gives: on a dark theme it offers light, on a light theme dark.
+  const label = isDark ? i18nT('components.fileRenderers.light_background') : i18nT('components.fileRenderers.dark_background')
+  const Icon = isDark ? Sun : Moon
+  const body = `flex items-center justify-center h-full overflow-auto p-4 rounded-md border border-border ${backdropCls}`
+  return (
+    <div className="relative h-full">
+      {render ? render(body) : <div className={body} data-testid="viewer-backdrop">{children}</div>}
+      <button
+        type="button"
+        onClick={toggle}
+        aria-pressed={flipped}
+        aria-label={label}
+        title={label}
+        className={`absolute top-2 right-2 inline-flex items-center justify-center w-7 h-7 rounded-md border border-border bg-bg/80 hover:bg-bg-hover focus-ring-accent ${flipped ? 'text-accent' : 'text-muted hover:text-text'}`}
+      >
+        <Icon size={14} aria-hidden="true" />
+      </button>
+    </div>
+  )
+}
+
 /* ── Image viewer ── */
 export const ImageViewer = memo(function ImageViewer({ filePath }: { filePath: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   return (
-    <div className="flex items-center justify-center h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border">
+    <ViewerBackdrop>
       <img
         src={'/api/file-raw?path=' + encodeURIComponent(filePath)}
         alt={pathBasename(filePath)}
         className="max-w-full max-h-full object-contain"
         draggable={false}
       />
-    </div>
+    </ViewerBackdrop>
   )
 })
 
@@ -107,10 +156,15 @@ export const SvgViewer = memo(function SvgViewer({ content }: { content: string 
     [content],
   )
   return (
-    <div
-      className="flex items-center justify-center h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border"
-      {...guideUntrusted}
-      dangerouslySetInnerHTML={{ __html: safe }}
+    <ViewerBackdrop
+      render={cls => (
+        <div
+          className={cls}
+          data-testid="viewer-backdrop"
+          {...guideUntrusted}
+          dangerouslySetInnerHTML={{ __html: safe }}
+        />
+      )}
     />
   )
 })
@@ -168,7 +222,7 @@ export const CsvViewer = memo(function CsvViewer({ content, filePath }: { conten
           ))}
         </tbody>
       </table>
-      {body.length > 500 && <div className="text-center text-muted text-[11px] py-2">{i18nT('components.fileRenderers.showing_500_of')} {body.length} {i18nT('components.fileRenderers.rows')}</div>}
+      {body.length > 500 && <div className="text-center text-muted text-[11px] py-2">{i18nT('components.fileRenderers.showing_first_rows', { shown: 500, count: body.length })}</div>}
     </div>
   )
 })
@@ -254,8 +308,10 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
 
   return (
     <span>
-      <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none font-mono text-sm" onClick={() => setOpen(!open)}>
-        {open ? '▼' : '▶'} {bracket[0]}{!open && <span className="text-muted"> {entries.length} {i18nT('components.fileRenderers.items')} {bracket[1]}</span>}
+      <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none font-mono text-sm" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open
+          ? <ChevronDown size={12} className="lucide-inline" aria-hidden="true" />
+          : <ChevronRight size={12} className="lucide-inline" aria-hidden="true" />} {bracket[0]}{!open && <span className="text-muted"> {i18nT('components.fileRenderers.items_count', { count: entries.length })} {bracket[1]}</span>}
       </button>
       {open && (
         <div style={{ paddingLeft: 16 }}>
@@ -266,7 +322,7 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
               <JsonNode value={v} depth={depth + 1} />
             </div>
           ))}
-          {entries.length > 200 && <div className="text-muted">… {entries.length - 200} {i18nT('components.fileRenderers.more')}</div>}
+          {entries.length > 200 && <div className="text-muted">… {i18nT('components.fileRenderers.more_count', { count: entries.length - 200 })}</div>}
         </div>
       )}
       {open && <span className="text-muted">{bracket[1]}</span>}
@@ -293,7 +349,7 @@ export const JsonlViewer = memo(function JsonlViewer({ content }: { content: str
 
   return (
     <div ref={containerRef} onScroll={onScroll} className="h-full overflow-auto p-3 bg-bg-elevated border border-border rounded-md space-y-2">
-      <div className="text-muted text-[11px]">{lines.length} {i18nT('components.fileRenderers.lines')}</div>
+      <div className="text-muted text-[11px]">{i18nT('components.fileRenderers.lines_count', { count: lines.length })}</div>
       {lines.slice(0, visible).map((line, i) => (
         <div key={i} className="border-b border-border/50 pb-2">
           <JsonViewer content={line} />
@@ -1266,18 +1322,19 @@ export const SheetViewer = memo(function SheetViewer({ filePath }: { filePath: s
   return (
     <div className="h-full flex flex-col border border-border rounded-md bg-bg-elevated overflow-hidden">
       {payload.sheets.length > 1 && (
-        <div className="flex gap-1 px-2 pt-2 pb-0 bg-chrome border-b border-border overflow-x-auto shrink-0">
+        <RadioChipGroup className="flex gap-1 px-2 pt-2 pb-0 bg-chrome border-b border-border overflow-x-auto shrink-0" ariaLabel={i18nT('components.fileRenderers.sheet_tabs_label')}>
           {payload.sheets.map((s, i) => (
             <button
               key={i}
-              aria-pressed={i === active}
+              type="button"
+              {...radioChip(i === active)}
               onClick={() => setActive(i)}
               className={`px-3 py-1.5 rounded-t text-[12px] whitespace-nowrap cursor-pointer border border-b-0 ${
                 i === active ? 'bg-bg-elevated text-text border-border font-semibold' : 'bg-transparent text-muted border-transparent hover:text-text'
               }`}
             >{s.name}</button>
           ))}
-        </div>
+        </RadioChipGroup>
       )}
       {sheet && hasFormulas && (
         <div className="text-center text-muted text-[12px] py-1.5 border-b border-border bg-chrome shrink-0">

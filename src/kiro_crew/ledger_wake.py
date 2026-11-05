@@ -32,6 +32,7 @@ import time
 from typing import Any
 
 from kiro_crew import irq, platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.work_vocab import WORK_WAKE_STATUSES, wake_statuses
 
 logger = logging.getLogger(__name__)
@@ -584,7 +585,7 @@ def _write_rate(conductor_key: str, current: dict[str, Any]) -> bool:
                 # Insertion order is kept: a seen map's order is its write order,
                 # which is what its eviction reads.
                 json.dump(current, handle)
-            os.replace(tmp_name, path)
+            replace_with_retry(tmp_name, path)
         except BaseException:
             # Nothing sweeps this directory, so a temporary left behind by a failed
             # write is permanent: the cleanup is load-bearing, not boilerplate.

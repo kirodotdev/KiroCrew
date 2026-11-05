@@ -54,13 +54,28 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Per-channel session folders**: optional, off by default — every messaging channel's settings panel can file conversations that start there into a named sidebar folder, marked with the channel's brand mark. Config key: `<channel>.session_folder` ("" = off). The folder is created when the setting is saved, so the surfacing path only ever reads the folder store; a configured folder that no longer exists (config.json hand-edited, or the folder deleted) leaves conversations unfiled until the next save recreates it. Filing applies as each conversation is first surfaced; a session moved by hand afterwards stays where it was put.
 - **Session colors**: per-session color picker for visual organization.
 
+#### Tags
+
+Tags are labels you put on sessions. Every session shares one list of tags, so a change to a tag shows wherever that tag appears.
+
+- **Create a tag**: type a name in the **New tag…** box at the bottom of the tag picker or of the **Manage tags…** panel, and press Enter. A new tag gets the default gray color; change it afterwards in **Manage tags…**.
+- **Assign tags to a session**: choose **Tags…** from the session's `⋮` menu (on its sidebar row, or right-click the row) or from the chat header menu. In **Assign tags**, click a tag to add it to the session, and click it again to remove it.
+- **Manage tags**: open the `⋮` (**More options**) menu at the top of the Sessions list and choose **Manage tags…**. Each row in the panel is one tag:
+  - **Recolor**: click the color square at the start of the row, then pick a color from the palette that opens below the row. Picking a color saves it, and Escape closes the palette without a change.
+  - **Rename**: click the tag's name and type. Enter or clicking away saves the new name, and Escape puts the old one back. An empty name is not saved.
+  - **Status tag**: click the ⚡ to flag the tag as a status tag, and click it again to make it a regular tag. A status tag marks a workflow state, such as the one a board column filters on, so a session normally carries one at a time. The ⚡ of a regular tag shows when you hover the row or move to it with Tab, and on a device without hover it is always shown while it can be used.
+  - **Delete**: hover the row (or move to it with Tab) and click the ✕ at its end. The dashboard asks you to confirm first. Deleting a tag removes it from every session, folder and board column that has it. On a device without hover, such as a phone, the ✕ is always shown.
+  - **Agent permissions**: below each tag, choose **Human only**, **Agent: add only** or **Agent: add & remove** to set whether agents may put the tag on sessions or take it off. An older tag shows **Set up agent permissions** instead; press it before choosing a permission or flagging the tag as a status tag.
+
+A board column's **Filter & manage tags** view lists the same tags. There you can rename and delete a tag, but clicking its color square adds it to or removes it from the column's filter rather than recoloring it. Agents work with tags through their own tag tools, described in [Session control](session-control.md#tags); those tools cannot delete a tag.
+
 ### Settings (`/settings/*`)
 
 Settings uses tabbed panels for Overview, Import / Export, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Remote Crew, Privacy, Security, Connections, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
 
 ### Customize (`/capabilities`)
 
-Tabbed management for mates, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.
+Tabbed management for Bots, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.
 
 ### Schedule (`/schedule`)
 
@@ -68,7 +83,7 @@ Create and manage cron jobs, organize them in folders, and switch between list, 
 
 ### Developer (`/settings/developer`)
 
-**Settings → Developer** lists its pages beside the content: Feature Previews first, then the developer views for logs, system metrics, telemetry, storage, MCP pooling, memory, configuration, debug tools, and the session archive (`/settings/developer/<page>`, e.g. `/settings/developer/system`). Every page is always listed. An old `/developer?tab=<page>` link redirects to the same page here, and `/developer?tab=agent-backend` forwards to **Settings → Agent Harness**.
+**Settings → Developer** lists its pages beside the content: Feature Previews first, then the developer views for logs, system metrics, telemetry, storage, memory, configuration, debug tools, and the session archive (`/settings/developer/<page>`, e.g. `/settings/developer/system`). Every page is always listed. An old `/developer?tab=<page>` link redirects to the same page here, and `/developer?tab=agent-backend` forwards to **Settings → Agent Harness**. MCP Management is no longer a Developer page: `/developer?tab=mcp-pool` and `/settings/developer/mcp-pool` redirect to **Customize → Connections → MCP Servers**, where it is a section below the servers list.
 
 ### Logs (`/logs`)
 

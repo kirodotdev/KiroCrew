@@ -76,10 +76,12 @@ function telegramSpec(): BotChannelSpec {
     showThinking: {
       label: i18nT('pages.settings.telegramPanel.show_thinking_label'),
       description: i18nT('pages.settings.telegramPanel.show_thinking_description'),
+      summary: i18nT('pages.settings.telegramPanel.show_thinking_description_summary'),
     },
     voiceReplies: {
       label: i18nT('pages.settings.telegramPanel.voice_replies_label'),
       description: i18nT('pages.settings.telegramPanel.voice_replies_description'),
+      summary: i18nT('pages.settings.telegramPanel.voice_replies_description_summary'),
     },
     forum: {
       toggleLabel: i18nT('pages.settings.telegramPanel.forum_toggle_label'),

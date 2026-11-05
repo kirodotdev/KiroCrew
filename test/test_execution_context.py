@@ -463,8 +463,8 @@ def test_cancelled_persistent_selection_withdraws_the_vouched_identity(members):
     #
     # `restore_agent_selection` routes every rollback through this one seam before
     # it touches the record, so the seam is where the withdrawal belongs. The cost
-    # is that own-store dispatch waits for the owner to re-select the agent, which
-    # binds afresh through the durable path -- the recovery the spec documents.
+    # is that own-store dispatch waits for a gate-verified admission to re-vouch the
+    # session -- the recovery the spec documents.
     admitted = execution.resolve_member_execution(members, "alice")
     published = execution.resolve_member_execution(members, "bob")
     key = "dashboard:cancelled-persistent"
@@ -530,8 +530,12 @@ def test_every_binder_declares_whether_it_vouches():
             actual[(path.relative_to(root).as_posix(), enclosing)] = keywords.get("vouch", "ABSENT")
 
     # ABSENT means the default: publish the record, claim NO own-store authority.
-    # The fork carries its store from the SOURCE session's record, and the subagent
-    # binder runs on keys that never reach the vouch, so neither may vouch.
+    # The subagent binders run on keys that never reach the vouch, so they may not.
+    #
+    # The fork carries its store from the SOURCE session's record, so it never
+    # vouches on that record's word: `source_vouch_agrees` answers True only when
+    # this gateway already vouches the source for the same member and store, and a
+    # source that rewrote its record to a peer's store carries nothing.
     #
     # The vouched population is CALLERS whose session key can reach `create_session`
     # -- a real dashboard slot key that `caller_slot_key` can resolve -- because a
@@ -561,7 +565,9 @@ def test_every_binder_declares_whether_it_vouches():
     expected = {
         ("cron_service/identity.py", "rebind_cron_session_template"): "False",
         ("mate_config_migration.py", "_repoint_member_threads"): "False",
-        ("dashboard/chat_fork.py", "_bind_fork_execution"): "ABSENT",
+        ("dashboard/chat_fork.py", "_bind_fork_execution"): (
+            "source_vouch_agrees(source[0], execution)"
+        ),
         (
             "dashboard/chat_persistence_parts/member_store.py",
             "_pin_private_agent_assignment",
@@ -572,6 +578,12 @@ def test_every_binder_declares_whether_it_vouches():
         ("session_agent_selection.py", "record_agent_selection"): "vouch",
         ("subagent_manager/run_turn.py", "publish_execution"): "ABSENT",
         ("subagent_persistence_state.py", "bind_session_memory_mode"): "ABSENT",
+        # A test of the auto-improvement app publishing each role's execution on a
+        # test-owned key, which never reaches the vouch.
+        (
+            "apps/builtins/auto_improvement/tests/test_auto_improvement_members.py",
+            "test_owner_recovery_preserves_healthy_role",
+        ): "ABSENT",
     }
     assert actual == expected
 
@@ -636,6 +648,18 @@ def test_a_publication_does_not_vouch_unless_it_asks(members):
     # that asks does get vouched.
     execution.bind_session_execution(asked, alice, vouch=True)
     assert execution.read_vouched_session_execution(asked).member_id == alice.member_id
+
+
+def test_a_fork_source_vouch_agrees_only_for_the_same_memory_mode(members):
+    # The fork's vouch check compares the memory mode, as the restart self-heal
+    # does. Only a persistent session is ever vouched, so a child asking under
+    # another mode gets no vouch from it.
+    source = "dashboard:persistent-source"
+    alice = execution.resolve_member_execution(members, "alice")
+    execution.bind_session_execution(source, alice, vouch=True)
+
+    assert execution.source_vouch_agrees(source, alice) is True
+    assert execution.source_vouch_agrees(source, alice.with_mode("incognito")) is False
 
 
 def test_old_close_cannot_clear_reused_session_identity(members):

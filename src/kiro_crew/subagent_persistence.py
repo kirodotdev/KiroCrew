@@ -29,6 +29,10 @@ from typing import TYPE_CHECKING, Callable, NamedTuple, Protocol
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
+from kiro_crew.agent_sdk.claude_transcripts import (
+    delete_claude_session_files,
+    is_claude_provider_label,
+)
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.execution_context import ExecutionContext
@@ -603,13 +607,22 @@ def _tombstone_cleanup_identities(agent_id: str) -> list[tuple[str, str, str]]:
     return identities
 
 
-def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600) -> int:
+def prune_stale_tombstones(
+    max_age_days: int = 7,
+    delivered_ttl_secs: int = 3600,
+    keep: Callable[[str, dict], bool] | None = None,
+) -> int:
     """Delete tombstoned folders past their retention window. Returns count pruned.
 
     Two windows: abnormal-exit tombstones (timeout / error / orphan) are kept for
     *max_age_days* for post-mortem diagnostics; ``cause="delivered"`` tombstones
     (successful deliveries retained so the parent can read the full transcript)
     are pruned after the shorter *delivered_ttl_secs* to bound disk growth.
+
+    *keep*, given the agent id and the tombstone, says a folder is retained past
+    its window regardless: the caller's own knowledge of what the tombstone is
+    still the only record of (the reaper keeps a refusal tombstone whose task
+    row has not settled, since the boot reconcile reads the row's ending from it).
     """
     now = time.time()
     default_cutoff = now - (max_age_days * 86400)
@@ -637,6 +650,8 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
             if ts.get("leaked_process") is True:
                 # The folder is the only record of a process still owed its end
                 # (``list_leaked_processes``); it is pruned once that flag clears.
+                continue
+            if keep is not None and keep(d.name, ts):
                 continue
             cutoff = delivered_cutoff if ts.get("cause") == "delivered" else default_cutoff
             died = _tombstone_died(ts, ts_path, now)
@@ -827,9 +842,10 @@ def _cleanup_session_files_sync(
     future provider cleanup implementation or transient filesystem recovery can
     retry instead of making the leaked transcript permanently unreachable.
 
-    Only the kiro-cli backend stores transcripts where this function can reach
-    them. Any other *provider* is logged and its files are left in place, since
-    reporting success without deleting anything hides the leak.
+    The kiro-cli backend's replay log and Claude Code's own store (spelled from
+    the recorded *cwd*, ``agent_sdk.claude_transcripts``) are the transcripts this
+    function can reach. Any other *provider* is logged and its files are left in
+    place, since reporting success without deleting anything hides the leak.
     """
     if not session_id:
         return True
@@ -857,6 +873,8 @@ def _cleanup_session_files_sync(
                         exc_info=True,
                     )
             return succeeded
+        if is_claude_provider_label(provider):
+            return delete_claude_session_files(session_id, cwd)
         # Every other backend owns its own session storage, which this function
         # has no route to. Report failure so prune retains retry metadata.
         logger.debug(

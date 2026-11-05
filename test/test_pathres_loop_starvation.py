@@ -233,7 +233,10 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # entry when a store sits at or beneath the directory. Each is handed the
     # ``os.path.realpath`` computed on the line itself. The walk runs inside
     # ``api_project_tree``'s ``asyncio.to_thread`` worker, never the event loop.
-    "kiro_crew/dashboard/file_api/project_tree.py": 2,
+    # ``_project_tree_ignored_dotfiles`` (``hidden=1``): each git-ignored dot-file
+    # it would add, on the ``os.path.realpath`` computed on the same line, in the
+    # same worker.
+    "kiro_crew/dashboard/file_api/project_tree.py": 3,
     # ``_validate_spec_path``: ``validate_file_path`` has already rejected the
     # candidate without following a UNC/link-laundered target.  This call only
     # recovers the 403 classification for a lexically named sensitive path; an

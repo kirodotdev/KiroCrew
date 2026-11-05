@@ -18,6 +18,7 @@ import { SettingsTab } from './SettingsTab'
 import { useIngestionJobs } from './useIngestionJobs'
 import type { KnowledgeItem, Entity, Source, NamespaceInfo, IngestionJob } from './types'
 import { fmtNumber } from '../../i18n/format'
+import { itemTypeLabel } from './helpers'
 
 /**
  * Visible label per knowledge status. FULL literal keys, resolved at render —
@@ -37,10 +38,16 @@ const STATUS_LABEL_KEY = {
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { editableEventTarget } from '../../utils/editableTarget'
+import { useRovingTabs } from '../../components/Tablist'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
 
 const TABS = ['list', 'graph', 'sources', 'settings'] as const
 type Tab = typeof TABS[number]
+const ROVING_TABS = TABS.map(key => ({ key }))
+/** The one panel every tab controls: the body below the rail is a single
+ *  subtree parameterised by `tab`, not a panel per tab. */
+const TAB_PANEL_ID = 'knowledge-tabpanel'
+const tabId = (t: Tab) => `knowledge-tab-${t}`
 
 // Backend list_items() hard-caps page size at 100 (dashboard/handlers/knowledge.py).
 // The unfiltered list must request exactly that so totalPages math and Prev/Next stay correct.
@@ -104,16 +111,42 @@ function failureText(error: unknown): string {
   return errMessage(error) || i18nT('pages.knowledge.index.error_no_reason')
 }
 
-function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>; items: KnowledgeItem[]; onDone: () => void }) {
+/**
+ * Send every request of a bulk action, wait for all of them, then fail with the
+ * first refusal. `Promise.all` would reject on the first refusal while the rest
+ * are still in flight, so the rollback and its refetch could run before those
+ * writes land.
+ */
+async function settleAll(requests: Promise<unknown>[]): Promise<void> {
+  const results = await Promise.allSettled(requests)
+  const refused = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+  if (refused) throw refused.reason
+}
+
+// Each bulk action carries the ids it was started on, and on success drops
+// only those from the selection (`onActed`). The optimistic update hides those
+// rows, which empties the selection while the requests run, so any row checked
+// in that window is a new pick of the user's, not part of the action.
+function BulkActions({ selectedIds, items, onDone, onActed }: { selectedIds: Set<string>; items: KnowledgeItem[]; onDone: () => void; onActed: (ids: string[]) => void }) {
   const queryClient = useQueryClient()
+  // A bulk action that failed part-way still changed the items whose requests
+  // went through. The snapshot puts every selected row back; this refetch takes
+  // away the ones the server did archive or delete, so they are not shown as
+  // live rows that a retry would only fail on again. Awaited by `onError`, so
+  // the mutation stays pending (its buttons disabled) until the reads finish:
+  // a retry's own `cancelQueries` could otherwise cancel this refetch.
+  const refetchAfterPartialFailure = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['knowledge-items'] }),
+    queryClient.invalidateQueries({ queryKey: ['knowledge-stats'] }),
+  ])
 
   const bulkArchiveMutation = useMutation({
-    mutationFn: async (status: string) => {
-      await Promise.all(Array.from(selectedIds).map(id =>
+    mutationFn: async ({ status, ids }: { status: string; ids: string[] }) => {
+      await settleAll(ids.map(id =>
         knowledgeApi(`/items/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })
       ))
     },
-    onMutate: async () => {
+    onMutate: async ({ ids }) => {
       // Each action clears the other's failure, so the notice names the latest one.
       bulkDeleteMutation.reset()
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
@@ -122,28 +155,29 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
       // whose payload has no `items` array. Only rewrite item-shaped entries.
       queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old => {
         if (!old || !Array.isArray(old.items)) return old
-        const kept = old.items.filter(i => !selectedIds.has(i.id))
+        const kept = old.items.filter(i => !ids.includes(i.id))
         return { ...old, items: kept, total: old.total - (old.items.length - kept.length) }
       })
       return { prev }
     },
-    onError: (_err, _vars, ctx) => {
+    onError: async (_err, _vars, ctx) => {
       ctx?.prev.forEach(([key, data]) => queryClient.setQueryData(key, data))
+      await refetchAfterPartialFailure()
     },
-    onSuccess: () => {
+    onSuccess: (_data, { ids }) => {
       queryClient.invalidateQueries({ queryKey: ['knowledge-items'] })
       queryClient.invalidateQueries({ queryKey: ['knowledge-stats'] })
-      onDone()
+      onActed(ids)
     },
   })
 
   const bulkDeleteMutation = useMutation({
-    mutationFn: async () => {
-      await Promise.all(Array.from(selectedIds).map(id =>
+    mutationFn: async ({ ids }: { ids: string[] }) => {
+      await settleAll(ids.map(id =>
         knowledgeApi(`/items/${id}`, { method: 'DELETE' })
       ))
     },
-    onMutate: async () => {
+    onMutate: async ({ ids }) => {
       // Each action clears the other's failure, so the notice names the latest one.
       bulkArchiveMutation.reset()
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
@@ -152,18 +186,19 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
       // whose payload has no `items` array. Only rewrite item-shaped entries.
       queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old => {
         if (!old || !Array.isArray(old.items)) return old
-        const kept = old.items.filter(i => !selectedIds.has(i.id))
+        const kept = old.items.filter(i => !ids.includes(i.id))
         return { ...old, items: kept, total: old.total - (old.items.length - kept.length) }
       })
       return { prev }
     },
-    onError: (_err, _vars, ctx) => {
+    onError: async (_err, _vars, ctx) => {
       ctx?.prev.forEach(([key, data]) => queryClient.setQueryData(key, data))
+      await refetchAfterPartialFailure()
     },
-    onSuccess: () => {
+    onSuccess: (_data, { ids }) => {
       queryClient.invalidateQueries({ queryKey: ['knowledge-items'] })
       queryClient.invalidateQueries({ queryKey: ['knowledge-stats'] })
-      onDone()
+      onActed(ids)
     },
   })
 
@@ -185,9 +220,9 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
         mutations that own it must stay mounted without one. */}
     {selectedIds.size > 0 && (
     <div className="flex items-center gap-2 px-3 py-2 bg-accent/5 border border-accent/20 rounded-lg mb-3">
-      <span className="text-[13px] text-text-strong font-medium">{selectedIds.size} {i18nT('pages.knowledge.index.selected')}</span>
-      <Btn disabled={pending} onClick={() => bulkArchiveMutation.mutate('archived')}>{i18nT('pages.knowledge.index.archive')}</Btn>
-      <Btn disabled={pending} onClick={() => { if (confirm(`Delete ${selectedIds.size} items permanently?`)) bulkDeleteMutation.mutate() }}>{i18nT('pages.knowledge.index.delete')}</Btn>
+      <span className="text-[13px] text-text-strong font-medium">{i18nT('pages.knowledge.index.selected_count', { count: selectedIds.size })}</span>
+      <Btn disabled={pending} onClick={() => bulkArchiveMutation.mutate({ status: 'archived', ids: Array.from(selectedIds) })}>{i18nT('pages.knowledge.index.archive')}</Btn>
+      <Btn disabled={pending} onClick={() => { if (confirm(i18nT('pages.knowledge.index.delete_items_permanently', { count: selectedIds.size }))) bulkDeleteMutation.mutate({ ids: Array.from(selectedIds) }) }}>{i18nT('pages.knowledge.index.delete')}</Btn>
       <Btn onClick={copySelected}><Copy size={12} /> {copied ? i18nT('pages.knowledge.index.copied') : i18nT('pages.knowledge.index.copy_content')}</Btn>
       <button onClick={onDone} className="ml-auto text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.index.clear')}</button>
     </div>
@@ -227,6 +262,8 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   const [uploadNamespace, setUploadNamespace] = useState('default')
   const [showAutocomplete, setShowAutocomplete] = useState(false)
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
+  const selectTab = (t: Tab) => { setTab(t); setSelectedId(null); setSelectedItems(new Set()) }
+  const rovingTab = useRovingTabs(ROVING_TABS, tab, selectTab)
   // Items currently rendered by each expanded SourceGroup. Selection-wide
   // actions read this instead of the react-query cache, so they can never reach
   // an item that is not on screen (a retained cache from a previously expanded
@@ -449,9 +486,13 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
         else if (selectedItems.size > 0) { setSelectedItems(new Set()); e.preventDefault() }
       } else if (e.key === 'ArrowRight' && !e.altKey && !e.ctrlKey) {
         // Arrow paging drives the flat search pager only; in source-first mode
-        // each group owns its own pager and `page` is unread.
+        // each group owns its own pager and `page` is unread. A focused tab
+        // claims the arrows for itself (preventDefault before this window
+        // listener sees the event), so the same press never also turns a page.
+        if (e.defaultPrevented) return
         if (!sourceFirst && !selectedId && page < Math.ceil(total / limit)) { setPage(p => p + 1); e.preventDefault() }
       } else if (e.key === 'ArrowLeft' && !e.altKey && !e.ctrlKey) {
+        if (e.defaultPrevented) return
         if (!sourceFirst && !selectedId && page > 1) { setPage(p => p - 1); e.preventDefault() }
       } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && tab === 'list' && !selectedId) {
         if (listContainerRef.current?.contains(document.activeElement || target)) {
@@ -538,7 +579,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
           takes its visible label from the matching `optionLabels` slot. */}
       <SimpleSelect
         options={['', ...ITEM_TYPES]}
-        optionLabels={[i18nT('pages.knowledge.index.all_types'), ...ITEM_TYPES.map(t => t.replace(/_/g, ' '))]}
+        optionLabels={[i18nT('pages.knowledge.index.all_types'), ...ITEM_TYPES.map(itemTypeLabel)]}
         value={typeFilter}
         onChange={v => { setTypeFilter(v); setPage(1) }}
         aria-label={i18nT('pages.knowledge.index.filter_by_type')}
@@ -605,14 +646,22 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
       )}
 
       {/* Tabs — horizontally scrollable on narrow viewports so the active
-          underline never spills past the container. */}
+          underline never spills past the container. A WAI-ARIA tablist on
+          the shared roving-tab keyboard model, so the selected tab is
+          announced and the arrow keys move between tabs; the Help button
+          sits outside it because a tablist may only own tabs. */}
       <div className="flex gap-1 px-4 md:px-6 border-b border-border overflow-x-auto">
-        {TABS.map(t => (
-          <button key={t} onClick={() => { setTab(t); setSelectedId(null); setSelectedItems(new Set()) }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
-            {TAB_ICON[t]} {i18nT(TAB_LABEL_KEY[t])}
-          </button>
-        ))}
+        <div role="tablist" aria-label={i18nT('pages.knowledge.index.knowledge_library')} className="flex gap-1">
+          {TABS.map((t, i) => (
+            <button key={t} type="button" role="tab" id={tabId(t)}
+              aria-selected={tab === t} aria-controls={TAB_PANEL_ID}
+              {...rovingTab(i)}
+              onClick={() => selectTab(t)}
+              className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
+              {TAB_ICON[t]} {i18nT(TAB_LABEL_KEY[t])}
+            </button>
+          ))}
+        </div>
         {embedded && (
           <span className="ml-auto self-center shrink-0 pb-0.5">
             <Btn onClick={() => setShowHelp(true)}><HelpCircle size={14} /> {i18nT('pages.knowledge.index.help')}</Btn>
@@ -620,7 +669,8 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
         )}
       </div>
 
-      <div className={`flex-1 px-4 md:px-6 py-4 min-h-0 ${tab === 'graph' ? 'flex flex-col' : 'overflow-y-auto'}`} ref={listContainerRef}>
+      <div id={TAB_PANEL_ID} role="tabpanel" aria-labelledby={tabId(tab)}
+        className={`flex-1 px-4 md:px-6 py-4 min-h-0 ${tab === 'graph' ? 'flex flex-col' : 'overflow-y-auto'}`} ref={listContainerRef}>
         <EmbeddingStatus />
         {isEmpty && tab === 'list' ? (
           <>
@@ -638,7 +688,15 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
               {listFilterBar}
 
               {/* Mounted with no selection too: it owns the bulk failure notice. */}
-              <BulkActions selectedIds={selectedItems} items={visibleItems} onDone={() => setSelectedItems(new Set())} />
+              <BulkActions
+                selectedIds={selectedItems}
+                items={visibleItems}
+                onDone={() => setSelectedItems(new Set())}
+                onActed={ids => setSelectedItems(prev => {
+                  const kept = new Set([...prev].filter(id => !ids.includes(id)))
+                  return kept.size === prev.size ? prev : kept
+                })}
+              />
 
               <ErrorNotice
                 askAgent

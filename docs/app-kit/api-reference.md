@@ -98,6 +98,32 @@ permission denials into refresh attempts or automatically replay writes.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
 
+`useChatLauncher().openChat(options)` also accepts two options for a NEW session,
+both ignored when `slotKey` is set:
+
+- `memoryMode`: `'persistent'`, `'incognito'` or `'temporary'`, in place of the
+  owner's default. An unknown value is ignored.
+- `sessionFolder: false`: keep the session out of a per-chat session folder even when
+  the owner turned those on.
+
+Either one opens a new draft session, as `autoSend: false` does: the `message` is
+staged in the composer for the user to send. A host older than these options opens an
+ordinary new chat instead.
+
+Level-1 additions to the SDK, each also re-exported by the vendor stub an app's bundle
+resolves through:
+
+| Export | From | What |
+|---|---|---|
+| `fmtCurrency(value, currency = 'USD', options?)` | `@kirocrew/app-sdk` | Money in the host's locale. |
+| `APP_SDK_LEVEL` | `@kirocrew/app-sdk` | The seam level, equal to the gateway's `ctx.sdk_level`. |
+| `Select` | `@kirocrew/app-sdk/ui` | A themed inline dropdown: `options`, `optionLabels?`, `value`, `onChange`, `clearLabel?`, `disabled?`, `aria-label?`, `title?`, `className?`. Native list on touch devices. |
+| `guideCaution` | `@kirocrew/app-sdk/ui` | Spread onto a control that removes something (`<Btn {...guideCaution}>`), so a dashboard guide shows its caution line before a press there. |
+
+A bundle that must also load on an older host reads these through a namespace import
+(`import * as sdk from '@kirocrew/app-sdk'`) and falls back when one is `undefined`. A
+named import of a name the host lacks fails the whole bundle at load time.
+
 ## Embedded Chat
 
 `ChatEmbed` mounts Kiro Crew's native transcript and compact composer for an
@@ -128,6 +154,58 @@ shown as text, only as the header's hover tooltip.
 | `onFileOpen` | `(path: string, opts?: { line?: number; endLine?: number }) => void` | none | Opens a file the transcript names; without it the tool-row file chip is hidden and path links stay plain (see below). |
 | `onArtifactOpen` | `(slug: string) => void` | none | Opens a saved artifact from a link in a reply; without it artifact links follow their href. |
 | `hide` | `readonly ChatEmbedHideKey[]` | none | Parts of the embed not to mount (see [Hiding parts](#hiding-parts)). |
+| `renderers` | `readonly MessageRenderer[]` | none | Transcript row renderers, handed to the embed's `ChatMessageList` and merged over the built-ins (see [Restyling rows](#restyling-rows)). |
+
+### Restyling rows
+
+`renderers` changes how transcript rows look while the embed keeps its
+composer, Stop, queue, approvals and follow-up chips. It takes the same entries
+as [`ChatMessageList`](#chat-transcript-rendering), merged by
+`mergeRenderers`: kind-matched built-ins (stop events, sub-agent results)
+first, then your entries, then the role-keyed built-ins. Renderers only draw
+rows; to remove a part of the embed use `hide`.
+
+Two things decide what an entry takes over:
+
+- Reusing a built-in `id` removes that built-in entirely, with every role it
+  drew. The built-in `assistant` entry draws both `assistant` and the live
+  `streaming` tail, so an `id: 'assistant'` entry claiming only `assistant`
+  leaves the reply invisible until the turn ends.
+- A role claim without `match` outranks that role's role-keyed refinements. An
+  entry claiming `assistant` with no `match` also takes the compaction and
+  session-reload notices, which the built-ins fold into a card.
+
+To restyle the reply, claim exactly the rows the built-in `assistant` entry
+draws and wrap its own render, so the bubble content, the streaming caret and
+the notice cards all stay as they are:
+
+```tsx
+import {
+  ChatEmbed,
+  defaultMessageRenderers,
+  resolveRenderer,
+  type MessageRenderer,
+} from '@kirocrew/app-sdk'
+
+const BUILTIN_ASSISTANT = defaultMessageRenderers.find(r => r.id === 'assistant')!
+
+// A module constant (or a useMemo): the list merges the registry once per
+// array identity, so a new array on every render redraws every row.
+const RENDERERS: MessageRenderer[] = [{
+  id: 'bubbled-assistant',
+  roles: BUILTIN_ASSISTANT.roles,
+  match: m => resolveRenderer(m, defaultMessageRenderers) === BUILTIN_ASSISTANT,
+  render: (m, ctx) => BUILTIN_ASSISTANT.render(m, {
+    ...ctx,
+    wrapper: (children, isUser) => ctx.wrapper(
+      <div className="flex gap-2"><AgentAvatar /><div className="bubble">{children}</div></div>,
+      isUser,
+    ),
+  }),
+}]
+
+<ChatEmbed slotKey="coder-abc123" renderers={RENDERERS} />
+```
 
 ### Hiding parts
 
@@ -811,6 +889,22 @@ WebSocket event types include `chat_chunk`, `chat_thinking`, `chat_status`,
 emitted types and how each is scoped to an app; read it rather than this list
 when you need every type.
 
+An `approval_resolved` frame says a pending approval is no longer waiting. Its
+`data` carries:
+
+- `id`: the approval id. The id is the requester's and can recur, so it alone
+  does not name one request.
+- `approved`: `true` when the request was approved. `false` covers a
+  rejection and an expiry alike, so read `decision` before reporting a
+  rejection.
+- `slot`: the owning session, on an expiry of an approval that has one and on
+  a slot-level decision. A decided coordinator approval's frame carries no
+  `slot`, so match those by `id` and `instance`.
+- `instance`: present on a coordinator approval. It names the one request that
+  ended, so a card raised for a later request under the same id stays live.
+- `decision`: absent for an ordinary decision. `"expired"` means the wait timed
+  out and the request was denied.
+
 The app `slots` event (`mc:app:slots`) fires after the dashboard applies each
 `slots` or `slot_patch` frame. Its `detail` is `null`: the event says the slot
 list changed, not what it now holds. Re-read slots through your own scoped
@@ -1061,7 +1155,7 @@ return. Only the SDK call takes `params`: the HTTP start route
 (`POST /api/apps/{app}/_jobs/{kind}/start`) accepts a `dedupe_key` and no
 parameters.
 
-### Crewmate proposals (`ctx.crewmate`)
+### Bot proposals (`ctx.crewmate`)
 
 > **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards lands (#21718). The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
 
@@ -1083,7 +1177,7 @@ state = await ctx.crewmate.status(card_id)     # {"status": "pending"} ... {"sta
 | `needs_mate_config` | any `mcpServers` or `skills` entry, until the mate-owned agent file exists (RFC §5.7) |
 | `rules_unsupported` | non-empty rules, which this version cannot import yet |
 
-The card creates the crewmate from the `kirocrew` template with a fresh member id, its own empty memory and workspace, and `approval_mode: "normal"` in the create. It writes the long-term goal when the bundle has one. It lists the crons, key results, picture or face, model or effort hints and dashboard template a bundle carries under "Not brought over", as codes the dashboard words, and memory, history, credentials and the sender's approval settings under "Stays with the sender". A taken name becomes the first free `<name> 2` to `<name> 9`, and the owner can edit it.
+The card creates the Bot from the `kirocrew` template with a fresh member id, its own empty memory and workspace, and `approval_mode: "normal"` in the create. It writes the long-term goal when the bundle has one. It lists the crons, key results, picture or face, model or effort hints and dashboard template a bundle carries under "Not brought over", as codes the dashboard words, and memory, history, credentials and the sender's approval settings under "Stays with the sender". A taken name becomes the first free `<name> 2` to `<name> 9`, and the owner can edit it.
 
 The card is stored under the key `app:<name>` with no conversation, so an app's open cards count against one per-app cap. `status` reads only this app's own cards. The dashboard view where the owner presses an app card is not built yet.
 
@@ -1128,6 +1222,83 @@ hook does not hand the object to a teardown whose startup never held it. Declare
 `on_shutdown` whenever you declare `on_startup`: anything you spawn outlives the
 startup call, and teardown is the only thing that stops it.
 
+### Owner gate (`ctx.require_owner`)
+
+Refuses a write to anyone but the dashboard owner, with the host's own refusal:
+
+```python
+async def save_item(request, ctx):
+    denied = await ctx.require_owner(request, "save_item")
+    if denied is not None:
+        return denied          # the host's 403 owner_only, or 401 for a stale session
+    ...
+```
+
+It returns `None` when the caller is the dashboard owner and the response to return
+otherwise. That response is the one the host's own owner-only routes send: a 403 with
+code `owner_only`, or a 401 when a pre-owner session is stale. A denial is audited
+with operation `<app>.<operation>`. The app half comes from the context, so a row
+cannot be attributed to another app. An `operation` that is not a short identifier
+(letters, digits, `_ . : -`, at most 64 characters) is recorded as `<app>.unnamed`;
+the request is still denied.
+
+The gate is strict: an app token is not the owner, so it is refused too. To keep an
+app token (which the token middleware already confines to your `permissions.api`)
+on its existing path, call the gate only for dashboard callers, which carry no app
+claim:
+
+```python
+if not request.get("app"):
+    denied = await ctx.require_owner(request, "save_item")
+```
+
+No permission gates it, because it only removes access. On a host without it, refuse
+the write (fail closed) rather than allow it:
+
+```python
+gate = getattr(ctx, "require_owner", None)
+if gate is None:
+    return web.json_response({"error": "owner authorization required", "code": "owner_only"}, status=403)
+```
+
+### Shared embedder (`ctx.embed`)
+
+The model the host's own memory embeds with, and the bounded pool its embedding work
+runs on. Use it so your stored vectors share the host's model and width, and so your
+app does not load a second copy of the model.
+
+```python
+def _index(store, text):            # runs on the embed pool, off the event loop
+    vector = ctx.embed.embed_sync(text)   # None: no model can serve; use keywords
+    store.save(text, vector, model=ctx.embed.model_id)
+
+async def add_item(request, ctx):
+    await ctx.embed.run(_index, store, text)
+```
+
+| Member | Returns |
+|---|---|
+| `available()` | `True` when the model is loaded, or can load on demand. May read model metadata, so call it off the loop. |
+| `model_id` | The vector space's model id, or `""` with no backend. Store it with each vector; a different value later means old vectors are not comparable. |
+| `embed_sync(text)` | A `list[float]`, or `None` when no model can serve or the embed failed. **Blocking**: call it only inside `run()` or another worker. Called on the event loop it returns `None`. |
+| `await run(func, *args, **kwargs)` | `func(*args, **kwargs)`, run on the host's bounded embed pool. |
+
+It never raises into your code: a missing embedding extra, a model that cannot load
+and a failing embed all read as `None`, and the first failure is logged once per
+process. It is always present, like `ctx.scrub`, because it adds no reach your
+in-gateway code lacks. On an older host, `getattr(ctx, "embed", None)` is `None`;
+fall back to `asyncio.to_thread` and keyword search.
+
+### App Kit seam level (`ctx.sdk_level`)
+
+An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,
+the shared embedder, structural routes (see `backend.hooks.routes` in
+[manifest-reference.md](manifest-reference.md)) and the dashboard SDK additions
+listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Read it
+with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
+`ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
+The dashboard exports the same number as `APP_SDK_LEVEL`.
+
 ### Lessons
 
 | Method | Returns | Description |
@@ -1146,8 +1317,8 @@ startup call, and teardown is the only thing that stops it.
 
 ### Member records
 
-An installed app can put a value on a crewmate's Dashboard page by appending one
-record to that crewmate's own crew log. There is no client method; call the
+An installed app can put a value on a Bot's Dashboard page by appending one
+record to that Bot's own crew log. There is no client method; call the
 endpoint with the app's token:
 
 ```
@@ -1160,7 +1331,7 @@ POST /api/member-records/{slug}
   The owner approves it at install, or on the app's detail page when an update adds
   it; until then the token middleware denies the path like every undeclared one. The
   route is outside the app's own `/api/apps/<name>` namespace on purpose, so owning
-  that namespace grants nothing here. The grant reaches any crewmate the app names by
+  that namespace grants nothing here. The grant reaches any Bot the app names by
   slug; there is no per-crewmate form of it.
 - **Who wrote it.** The gateway stamps `writer` from the token's app claim and `member`
   from the path. The body is read for `type` and `data` only; a `writer`, `member`,
@@ -1176,18 +1347,18 @@ POST /api/member-records/{slug}
   `.` nor `-`), and the whole `<app>__<type>` key is at most 64 characters; `data` is an
   object of at most 8 KiB serialized and 8 levels deep; 30 records a minute per app
   (`429 quota_exceeded`). Those caps refuse, never truncate.
-- **64 types per crewmate, shared.** The page keeps the 64 most recently written
-  types across every writer on that crewmate: your app, other apps and script crons.
+- **64 types per Bot, shared.** The page keeps the 64 most recently written
+  types across every writer on that Bot: your app, other apps and script crons.
   A 65th type is accepted and drops the least recently written type, whoever wrote
   it; the fold's `types_omitted` counts each drop. A value you wrote can therefore
   leave the page when other writers add types, so write it again if it must stay.
 - **Refusals.** `403 app_token_required` (no app claim: the owner and internal callers
   have their own write paths), `403 crew_panel_disabled`, `404 member_not_found`,
-  `409 ambiguous_slug` (two crewmates share the slug), `409 crew_log_unavailable`
-  (the crewmate's chat has never started), `400 bad_record_type` / `invalid_record` /
+  `409 ambiguous_slug` (two Bots share the slug), `409 crew_log_unavailable`
+  (the Bot's chat has never started), `400 bad_record_type` / `invalid_record` /
   `record_too_deep` / `record_too_large`, `503 crew_log_off`.
 - **What it is not.** The record is text a page draws. It is never read into an
-  agent's context as an instruction; a crewmate sees at most a one-line fold summary
+  agent's context as an instruction; a Bot sees at most a one-line fold summary
   of it through `dashboard_fields`, marked as fold-sourced. It is the same door a
   script cron's `ctx.crew_log_append` uses, with the app as the writer.
 
@@ -1536,7 +1707,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/chat/slots/{slot}/context` | Inject silent context |
 | GET | `/api/chat/slots/{slot}/question` | Read an owned slot's pending question cards (needs `permissions.sessionApproval`) |
 | POST | `/api/chat/slots/{slot}/question/answer` | Answer or decline an owned slot's blocking question (needs `permissions.sessionApproval`) |
-| POST | `/api/member-records/{slug}` | Append one record to a crewmate's Dashboard fold (needs the `/api/member-records/*` grant; see [Member records](#member-records)) |
+| POST | `/api/member-records/{slug}` | Append one record to a Bot's Dashboard fold (needs the `/api/member-records/*` grant; see [Member records](#member-records)) |
 
 ### App Management
 

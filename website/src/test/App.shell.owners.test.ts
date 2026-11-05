@@ -66,7 +66,6 @@ describe('app shell composition', () => {
       'useWebSocket()',
       'useDashboardHealthProbe(forceReconnect)',
       'useUpdateFlow()',
-      'useStartupVideo({',
       'useNativeNotification(botName, avatar)',
       'useRequestFeature(colorTheme)',
       'useRouteActiveModel(',

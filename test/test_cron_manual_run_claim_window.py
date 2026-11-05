@@ -1,18 +1,11 @@
 """Cancel must reach a manual run from the instant Run accepted it.
 
-``POST /api/crons/{id}/run`` hands the task it creates to the job's run claim
-and returns; ``CronService.run_job`` then sits in its first ``await`` -- the
-offloaded ``_synced_snapshot``, up to a full store-lock spin. ``cancel()``'s
-guard reads that claim, so a claim taken only after that await opens a window
-in which ``POST /api/crons/{id}/cancel`` answers 409 "job is not running"
-while a second Run answers 409 "job is already running" about the same job,
-and the run then executes anyway. The claim is therefore taken synchronously
-while ``run_job(job_id)`` is evaluated, before the route's ``create_task`` has
-scheduled anything.
+``run_job``'s first ``await`` is the offloaded ``_synced_snapshot``. A claim taken
+after it would let Cancel answer 409 "job is not running" while the run executes,
+so the claim is taken synchronously, before the route's ``create_task``.
 
-The window is only open while the snapshot is held, which no product route
-holds on demand, so this harness is the bar: a gate parks ``run_job``'s
-refresh in its worker thread and the requests land inside the window.
+No product route holds the snapshot on demand, so a gate parks ``run_job``'s refresh
+in its worker thread and the requests land inside the window.
 """
 
 from __future__ import annotations
@@ -72,14 +65,9 @@ async def _parked(event: threading.Event, message: str) -> None:
 class _TrackedClaims(dict):  # type: ignore[type-arg]
     """``_claims`` that reports the release ``cancel()`` makes of a live wrapper's claim.
 
-    ``cancel()`` pops the taken claim and cancels its task in one synchronous
-    step and then yields to its persist; the wrapper's cancellation is
-    delivered at the next loop step. The event is set inside the release,
-    BEFORE that ``task.cancel()``, so the waiter's wake-up is registered ahead
-    of the wrapper's and ``call_soon`` callbacks run in registration order: a
-    test awaiting :attr:`live_popped` resumes in the step after ``cancel()``'s
-    release, with the wrapper's teardown still queued behind it -- no polling,
-    no sleep.
+    The event is set inside the release, BEFORE ``task.cancel()``. ``call_soon``
+    callbacks run in registration order, so a test awaiting :attr:`live_popped`
+    resumes with the wrapper's teardown still queued behind it, with no sleep.
     """
 
     def __init__(self) -> None:
@@ -136,11 +124,8 @@ def _persisted(tmp_path: Path, job_id: str) -> CronJob:
 class _SnapshotGate:
     """Let the route's lookup through; park ``run_job``'s refresh until released.
 
-    Runs in the ``asyncio.to_thread`` worker. The route resolves the job through
-    ``get_job_async`` first (call 1); ``run_job``'s own refresh is call 2 and is
-    held until :attr:`release` is set, which keeps the claim window open for as
-    long as the test needs to land requests inside it. ``park_call`` names a
-    later refresh instead when the parked run is not the first one.
+    The route's ``get_job_async`` is call 1; ``run_job``'s refresh is call 2 and is
+    held until :attr:`release`. ``park_call`` names a later refresh instead.
     """
 
     def __init__(self, svc: CronService, park_call: int = 2) -> None:
@@ -163,11 +148,9 @@ class _SnapshotGate:
 class _FirstCallGate:
     """Park the first call of a worker-thread function until released; later calls pass.
 
-    Wraps a function ``_run_job_isolated``'s ``finally`` offloads through
-    ``asyncio.to_thread`` -- ``cron_inflight.clear_marker`` before its marker
-    pops, ``_merge_job_result`` after them -- so that run's finalizer stays
-    pending exactly there for as long as the test holds :attr:`release`. The
-    same seam parks ``cancel()`` in its offloaded ``_merge_terminal_state_locked``.
+    Wraps ``cron_inflight.clear_marker`` or ``_merge_job_result`` (offloaded by
+    ``_run_job_isolated``'s ``finally``), or ``cancel()``'s
+    ``_merge_terminal_state_locked``, so the finalizer waits there on :attr:`release`.
     """
 
     def __init__(self, delegate: Callable[..., Any]) -> None:
@@ -235,12 +218,9 @@ class _EachCallGate:
 async def _run_inside_the_gap(svc: CronService, app: web.Application, job_id: str) -> web.Response:
     """Drive the real Run route without yielding to the loop.
 
-    Used where a test has just been woken ahead of a queued teardown (see
-    :class:`_TrackedTasks`) and must claim the job before that teardown gets
-    its turn: the route's fresh-store lookup is an executor hop, and any yield
-    here would let the queued teardown run first. The lookup is made await-free;
-    everything after it (the guard, the claim, the tracked task) is the route's
-    own code.
+    The test must claim the job before a queued teardown runs, and any yield would
+    let it run first. Only the fresh-store lookup is made await-free; the guard, the
+    claim and the tracked task are the route's own code.
     """
 
     async def await_free_lookup(job_id: str) -> CronJob | None:
@@ -370,23 +350,12 @@ class TestCancelInsideTheClaimWindow:
     ) -> None:
         """A Run accepted while cancel() tears down the previous one keeps its claim.
 
-        cancel() pops the taken claim and cancels the parked wrapper in one
-        synchronous step, then yields to persist. The cancelled wrapper's
-        teardown -- the ``except`` around its refresh -- runs at the wrapper's
-        next scheduling, so a Run landing between the two passes the route's
-        guard and claims the job first. The teardown must see that the stored
-        claim is not its own and leave it alone; releasing it anyway erases the
-        replacement run's claim, so that run is either dropped by its own claim
-        re-check after the route answered "started", or executes with Cancel
-        answering 409 "job is not running".
+        A Run landing between cancel()'s release and the wrapper's teardown claims the
+        job first. The teardown must leave a claim that is not its own, or the
+        replacement is dropped after "started" or runs with Cancel answering 409.
 
-        The handoff is the release itself: ``_TrackedClaims`` sets an event
-        inside cancel()'s release, ahead of its ``task.cancel()``, so this
-        coroutine is registered to resume before the wrapper is (callbacks run
-        in registration order). The replacement is then driven through the real
-        route without yielding -- its fresh-store lookup is made await-free
-        (``_run_inside_the_gap``) -- so it claims the job before the wrapper's
-        teardown gets its turn.
+        ``_TrackedClaims`` wakes this coroutine ahead of the wrapper, and
+        ``_run_inside_the_gap`` claims without yielding.
         """
         started = asyncio.Event()
         executed: list[str] = []
@@ -465,15 +434,9 @@ class TestCancelInsideTheClaimWindow:
     ) -> None:
         """A Run accepted while a cancelled run is still finalizing keeps its claim.
 
-        cancel() takes the run it found and then pops its claim -- start stamp,
-        tracked task and all -- and that run's own ``finally`` then spends a
-        full executor round trip (``cron_inflight.clear_marker``) before its
-        release, so a Run accepted through the real route during that trip
-        claims the job first. The prior run's finalizer must leave that claim
-        alone: popping it anyway drops the replacement's claim and tracked task,
-        so its claim re-check returns without dispatching after the route
-        answered "started" -- or, past the re-check, it runs with Cancel
-        answering 409 and a further Run accepted beside it.
+        The cancelled run's ``finally`` spends an executor round trip
+        (``cron_inflight.clear_marker``) before its release, and a Run accepted then
+        claims first. The prior finalizer must not pop the replacement's claim.
         """
         started = asyncio.Event()
         executed: list[str] = []
@@ -566,16 +529,9 @@ class TestCancelInsideTheClaimWindow:
     ) -> None:
         """A replacement run's in-flight marker survives the prior run's finalizer.
 
-        ``cron_inflight`` markers are the breaker's only evidence of which job
-        was executing when the gateway hard-exits. cancel() releases the run it
-        found, and that run's ``finally`` reaches its marker clear only after its
-        cancellation has unwound -- for an agent job through the callback's own
-        session teardown -- and then spends an executor round trip in the clear
-        itself. A Run accepted through the real route in that window dispatches
-        and writes ITS marker before the prior clear runs. A clear keyed by job id
-        alone unlinks that file: a hard exit during the replacement then leaves no
-        marker, the breaker names no job, and the crashing job runs again on
-        restart. Keyed by run, the prior run's clear removes only its own file.
+        ``cron_inflight`` markers are the breaker's only record of what ran at a hard
+        exit. A replacement writes ITS marker before the prior run's late clear, so the
+        clear is keyed by run: by job id it would unlink the replacement's marker.
         """
         started = asyncio.Event()
         executed: list[str] = []
@@ -652,15 +608,9 @@ class TestCancelInsideTheClaimWindow:
     ) -> None:
         """Two cancellations in flight at once each finalize as cancelled.
 
-        cancel() flags the run it takes, and that run's ``finally`` reads the
-        flag only after a full executor round trip (``clear_marker``).
-        While the first run's finalizer is still in that trip, a replacement Run
-        is accepted through the real route, dispatches, and is cancelled too;
-        then the first finalizer resumes. A marker keyed by job id alone is ONE
-        marker for both cancellations: the first finalizer consumes it, the
-        replacement's finalizer finds none and treats its run as completed --
-        merging the job and appending a ``failure`` row (the cancel message as
-        its summary) after the ``cancelled`` row cancel() already wrote for it.
+        The first finalizer reads its cancel flag after a ``clear_marker`` round trip,
+        while a replacement is accepted and cancelled too. A flag keyed by job id would
+        be consumed once, and the replacement would add a ``failure`` row.
         """
         started = asyncio.Event()
         executed: list[str] = []
@@ -744,12 +694,8 @@ class TestCancelInsideTheClaimWindow:
     ) -> None:
         """A Run accepted between a run's own release and its wrapper's resume keeps its claim.
 
-        ``_run_job_isolated`` releases the run's claim in its finally and then
-        awaits its result merge and history append; the manual wrapper awaiting
-        that task resumes only once it is done. A Run accepted in between claims
-        the job, and the wrapper's backstop -- there for a finally cut short --
-        must not discard that run's claim or its tracked task.
-        The gap is held open by parking the first run's merge in its worker.
+        The wrapper's backstop, there for a finally cut short, must not discard a newer
+        claim. The gap is held open by parking the first run's merge in its worker.
         """
         executed: list[str] = []
 
@@ -837,15 +783,9 @@ class TestCancelInsideTheClaimWindow:
     ) -> None:
         """A run's history row and persisted status are its own, not the next run's.
 
-        Every run of a job shares one ``CronJob`` object. A completed run releases
-        its claim in its ``finally`` and only then merges its result (an executor
-        round trip under the store lock) and appends its history row; a Run
-        accepted through the real route in that window dispatches and its
-        ``_execute`` resets ``last_status`` and the result-produced flag on the
-        shared object. A finalizer that reads the object after the release files
-        the completed run as a failure with no summary and persists the
-        replacement's blank status as the completed run's. The record is taken
-        before the release, so the replacement's start changes nothing about it.
+        Every run shares one ``CronJob``, and a replacement's ``_execute`` resets
+        ``last_status`` after the release. The record is taken before the release, so
+        the completed run is not filed with the replacement's blank status.
         """
         started = asyncio.Event()
         calls = 0
@@ -918,13 +858,9 @@ class TestCancelInsideTheClaimWindow:
     ) -> None:
         """A terminal merge that lands after a later run's leaves the store the later run's.
 
-        The merge in ``_run_job_isolated``'s ``finally`` is an executor round trip
-        behind the release, under a store lock other writers contend for, so a
-        Run accepted in that window can complete and merge first. The older
-        run's record then has to be discarded: applied, its status, error,
-        result and failure counter land over the replacement's -- a succeeded
-        run persisted as the failure before it, its result gone and the
-        auto-pause budget spent -- until some later run merges again.
+        A Run accepted after the release can complete and merge first. The older
+        record is discarded, or its status, result and failure counter would land over
+        the replacement's.
         """
         calls = 0
 
@@ -996,12 +932,8 @@ class TestCancelInsideTheClaimWindow:
     ) -> None:
         """``cancel()``'s terminal merge sits behind its release too, and is fenced the same way.
 
-        ``cancel()`` pops the taken claim with its tracked task, then
-        persists its "Cancelled by user" record through an offloaded
-        ``_merge_terminal_state_locked``. A Run accepted between the two can
-        complete and merge first; the cancel's record then has to be
-        discarded, or the replacement's success is persisted as the
-        cancellation before it. The reaper's terminal merge is the same helper.
+        A Run accepted before the offloaded ``_merge_terminal_state_locked`` can merge
+        first; the cancel's record is then discarded. The reaper uses the same helper.
         """
         started = asyncio.Event()
         calls = 0
@@ -1074,10 +1006,7 @@ class TestCancelInsideTheClaimWindow:
         """A completed one-shot's merge that lost the race to a replacement's still retires it.
 
         The generation fence covers the record's FIELDS; the ``delete_after_run``
-        consume is owed by the completion whatever landed since. A replacement
-        run's cancel writes status fields and retires nothing, so a stale merge
-        that skipped the consume would leave the fired at-job enabled on disk --
-        past due, so due again on every tick.
+        consume is owed regardless, or the fired at-job stays enabled and due every tick.
         """
         recorder = _SelRecorder()
         monkeypatch.setattr(cron_module, "sel", SimpleNamespace(sel=lambda: recorder))
@@ -1197,20 +1126,10 @@ class TestCancelInsideTheClaimWindow:
     ) -> None:
         """Cancel between the due-scan's ``create_task`` and that task's first step.
 
-        The due-scan claims the job -- one claim carrying the trigger, the
-        start stamp and the tracked task -- synchronously and returns with the
-        task still unstarted; a Cancel whose handler was queued behind the timer
-        step runs next. ``cancel()`` finds the claim, takes it, marks the
-        cancellation for THAT claim, and then awaits the process kill before it
-        reaches ``task.cancel()``: that await is the loop iteration in which the
-        unstarted task takes its first step. A task that read its claim back
-        from the store there would find one that is not its own, run on
-        until the cancellation lands, and its finally would ask the markers
-        about the wrong run -- the marker, keyed to the taken claim, misses, and
-        the run is filed as a failure beside the cancelled row ``cancel()``
-        writes. The dispatcher hands the claim to the task instead; a first step
-        that finds the claim taken does nothing: no stamps, no marker file, no
-        second row.
+        ``cancel()`` takes the claim and awaits the process kill before
+        ``task.cancel()``; the unstarted task takes its first step in that await. The
+        dispatcher hands the claim to the task, and a first step that finds it taken
+        does nothing: no stamps, no marker file, no second row.
         """
         executed: list[str] = []
 

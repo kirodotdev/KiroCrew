@@ -61,15 +61,14 @@ describe('page zoom is off on the touch shell', () => {
 // fields go through the `<Input>` / `<Textarea>` components rather than a native
 // tag, so a guard grepping for `<input>` cannot see them and reports green.
 //
-// What such a rule was for -- WebKit's focus zoom, which reads the FIELD's size and
-// does not zoom back out on blur -- is a pre-existing condition rather than
-// something the zoom suppression introduces, and whether it fires at all under an
-// authored `maximum-scale=1` needs a real device to answer.
+// What such a rule would be for -- WebKit's focus zoom, which reads the FIELD's
+// size -- is already held off by the authored `maximum-scale=1` pinned above: it
+// clamps the focus-zoom scale to 1, and a 14px field (the Settings search) does
+// not zoom on an iPhone.
 describe('no app-wide coarse-pointer field size rule', () => {
   it('does not set a blanket font-size on touch form fields', async () => {
     const s = await css()
-    // The composer's own hook-scoped rule is expected and pre-dates this change;
-    // what must stay absent is a rule reaching fields by ELEMENT.
+    // What must stay absent is a rule reaching fields by ELEMENT.
     const blanket = s.match(/@media \(pointer: coarse\)[^}]*\b(?:input|textarea|select)\b[^{]*\{[^}]*font-size/)
     expect(
       blanket?.[0],

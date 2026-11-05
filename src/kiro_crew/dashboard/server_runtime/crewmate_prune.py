@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         _CREWMATE_PRUNE_GATE_SAFE_METHODS,
         _CREWMATE_PRUNE_GATE_TIMEOUT_S,
         DashboardState,
+        KiroCrewConfig,
         logger,
         migrate_channel_transcripts,
         prune_synced_crewmates,
@@ -107,7 +108,7 @@ def _register_crewmate_prune_gate(app: web.Application, state: DashboardState) -
             except asyncio.TimeoutError:
                 return web.json_response(
                     {
-                        "error": "Mates are being tidied; retry shortly.",
+                        "error": "Bots are being tidied; retry shortly.",
                         "code": "prune_in_progress",
                     },
                     status=503,
@@ -156,7 +157,31 @@ def _kick_crewmate_prune(state: DashboardState) -> None:
     beside this one -- its pass waits on that lock (its writers held by its
     own barrier meanwhile) and then finds the marker. On every boot but the
     first after the upgrade the pass is that lock and one marker stat.
+
+    Each removed crewmate then gets the teardown ``DELETE /api/agents/{name}``
+    runs (``_remove_member_leftovers``), before the event is set: a staged
+    avatar and the goal check-ins switched on from its Goals tab go with the
+    row. A removed row is exactly what the sync wrote -- its name is its
+    ``kiro_agent`` and every other field sits at its default -- so that record
+    is put back into the config the teardown resolves its slug from.
     """
+
+    async def _remove_leftovers(removed: list[str]) -> None:
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+        from kiro_crew.dashboard.handlers.agents import _remove_member_leftovers
+
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        # A name back in the config is a crewmate made since the pass; its
+        # avatar and worktrees are its own.
+        gone = [name for name in removed if name not in cfg.agents]
+        for name in gone:
+            cfg.agents[name] = KiroCrewAgentConfig(kiro_agent=name)
+        crons = getattr(state, "crons", None)
+        for name in gone:
+            leftovers = await _remove_member_leftovers(name, cfg, name, crons, "startup")
+            for outcome, kind, _detail in leftovers:
+                if outcome == "failed":
+                    logger.warning("crewmate prune: could not remove the %s of %r", kind, name)
 
     async def _run() -> None:
         try:
@@ -167,12 +192,13 @@ def _kick_crewmate_prune(state: DashboardState) -> None:
             )
             if prune.removed:
                 logger.info(
-                    "removed %d unused auto-generated crewmates: %s",
+                    "removed %d unused auto-generated Bots: %s",
                     len(prune.removed),
                     ", ".join(prune.removed),
                 )
+                await _remove_leftovers(prune.removed)
         except Exception:  # noqa: BLE001 -- the pass never raises for unreadable history
-            logger.warning("crewmate prune migration failed", exc_info=True)
+            logger.warning("Bot prune migration failed", exc_info=True)
         finally:
             state.crewmate_prune_settled.set()
 
@@ -207,8 +233,8 @@ async def await_crewmate_prune_settled(state: DashboardState, *, before: str) ->
     except asyncio.TimeoutError:
         state.crewmate_prune_abandon.set()
         logger.warning(
-            "crewmate prune has not settled in %.0fs; it will keep its unjudged "
-            "crewmates, and %s starts once it has returned",
+            "Bot prune has not settled in %.0fs; it will keep its unjudged "
+            "Bots, and %s starts once it has returned",
             _CREWMATE_PRUNE_GATE_TIMEOUT_S,
             before,
         )
@@ -238,7 +264,7 @@ def _kick_deferred_transcript_removal(state: DashboardState, claimed: frozenset[
             )
             if removed:
                 logger.info(
-                    "Removed %d leftover channel transcript copies after the crewmate prune",
+                    "Removed %d leftover channel transcript copies after the Bot prune",
                     removed,
                 )
         except Exception:  # noqa: BLE001 -- the copies stay for the next start

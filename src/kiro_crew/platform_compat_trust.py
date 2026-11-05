@@ -21,6 +21,8 @@ import stat
 import struct
 import subprocess
 import sys
+import threading
+import time
 from ctypes import wintypes
 from pathlib import Path
 from typing import Optional
@@ -502,8 +504,16 @@ def traversed_components_and_links(
     return [Path(component) for component in visited], [Path(link) for link in links]
 
 
-def _group_shared_with_another_account(gid: int) -> Optional[str]:
+def _group_shared_with_another_account(gid: int, *, trust_root: bool = False) -> Optional[str]:
     """Why group ``gid`` admits an account other than this one, or ``None`` if it does not.
+
+    When *trust_root* is true, root and the accounts that can become root by
+    default do not count as another account. Root already controls root-owned
+    components accepted by that caller, so group membership adds no writer outside
+    its trust boundary. On macOS the accounts that can become root by default are
+    the members of group ``admin``, because stock sudoers lets them use sudo: its
+    supplementary members and every account whose primary group it is. When that
+    group cannot be read, nobody beyond root counts as trusted.
 
     A group-writable directory is a foreign writer's door only when the GROUP holds
     somebody else. A host with user-private groups leaves ordinary directories
@@ -542,12 +552,31 @@ def _group_shared_with_another_account(gid: int) -> Optional[str]:
         me = pwd.getpwuid(os.geteuid()).pw_name
     except (KeyError, OSError):
         return f"group {entry.gr_name!r}, which cannot be compared to this account"
+    trusted_names = {me}
+    if trust_root:
+        try:
+            trusted_names.add(pwd.getpwuid(0).pw_name)
+        except (KeyError, OSError):
+            return f"group {entry.gr_name!r}, which cannot be compared to root"
+        if sys.platform == "darwin":
+            try:
+                admin = grp.getgrnam("admin")
+                admins = {
+                    name
+                    for g in [admin, *grp.getgrall()]
+                    if g.gr_gid == admin.gr_gid
+                    for name in g.gr_mem
+                }
+                admins |= {p.pw_name for p in pwd.getpwall() if p.pw_gid == admin.gr_gid}
+            except (KeyError, OSError):
+                admins = set()
+            trusted_names |= admins
     try:
         same_gid = [g for g in grp.getgrall() if g.gr_gid == gid]
     except OSError:
         return f"group {entry.gr_name!r}, whose entries this host will not enumerate"
     members = {name for g in [entry, *same_gid] for name in g.gr_mem}
-    supplementary = sorted(members - {me})
+    supplementary = sorted(members - trusted_names)
     if supplementary:
         return f"group {entry.gr_name!r}, shared with {len(supplementary)} other account(s)"
     try:
@@ -556,7 +585,15 @@ def _group_shared_with_another_account(gid: int) -> Optional[str]:
         everyone = []
     if not any(person.pw_name == me for person in everyone):
         return f"group {entry.gr_name!r}, whose membership this host will not enumerate"
-    primary = sorted({p.pw_name for p in everyone if p.pw_gid == gid and p.pw_name != me})
+    primary = sorted(
+        {
+            p.pw_name
+            for p in everyone
+            if p.pw_gid == gid
+            and p.pw_name != me
+            and not (trust_root and (getattr(p, "pw_uid", None) == 0 or p.pw_name in trusted_names))
+        }
+    )
     if primary:
         return f"group {entry.gr_name!r}, the primary group of {len(primary)} other account(s)"
     return None
@@ -573,8 +610,13 @@ _NO_ACL_ERRNOS = frozenset(
 )
 
 
-def _acl_admits_another_account(node: Path, mine: int) -> Optional[str]:
+def _acl_admits_another_account(
+    node: Path, mine: int, *, trust_root: bool = False
+) -> Optional[str]:
     """Why ``node``'s POSIX access ACL lets another account write it, or ``None``.
+
+    When *trust_root* is true, root members of named ACL groups are inside the
+    caller's trust boundary. Named uid 0 entries remain trusted for every caller.
 
     With an extended ACL the mode's group bits show the ACL mask, so a named entry
     can give a peer write access behind a group bit that looks private. Only an
@@ -605,14 +647,24 @@ def _acl_admits_another_account(node: Path, mine: int) -> Optional[str]:
         if tag == _ACL_USER and ident not in (mine, 0):
             return f"an ACL entry for another account (uid {ident})"
         if tag == _ACL_GROUP:
-            shared = _group_shared_with_another_account(ident)
+            shared = (
+                _group_shared_with_another_account(ident, trust_root=True)
+                if trust_root
+                else _group_shared_with_another_account(ident)
+            )
             if shared is not None:
                 return f"an ACL entry for {shared}"
     return None
 
 
-def group_write_admits_another_account(path: Path, gid: int) -> Optional[str]:
+def group_write_admits_another_account(
+    path: Path, gid: int, *, trust_root: bool = False
+) -> Optional[str]:
     """Whom the group write bit on *path* admits besides this account, or ``None``.
+
+    When *trust_root* is true, membership of root and of the accounts that can
+    become root by default, on macOS the ``admin`` group's members, does not count
+    as another account. The default preserves the trust policy used by existing callers.
 
     *gid* is the group *path* belongs to, its ``st_gid``. ``None`` means the bit
     admits this account alone, so a trust question may count it as the owner's own
@@ -640,6 +692,9 @@ def group_write_admits_another_account(path: Path, gid: int) -> Optional[str]:
     the link rule runs only on Linux.
     """
     mine = os.geteuid()
+    if trust_root:
+        acl = _acl_admits_another_account(path, mine, trust_root=True)
+        return acl or _group_shared_with_another_account(gid, trust_root=True)
     return _acl_admits_another_account(path, mine) or _group_shared_with_another_account(gid)
 
 
@@ -820,8 +875,14 @@ def desktop_launcher_available() -> bool:
     The launcher must be present, and off macOS and Windows it must also have a
     desktop session to open into: ``xdg-open`` hands the folder to whatever the
     running session registered, which shows nothing unless the environment the
-    spawn inherits (:func:`_reveal_env` keeps it) names a display server. Both are
-    facts about this gateway process; no request decides either.
+    spawn inherits (:func:`_reveal_env` builds it) names a display server. The
+    gateway's own environment answers first. When it names no display server, as
+    under the installed Linux service (a system unit inherits no login
+    environment), :func:`_user_manager_desktop_session` asks the user's systemd
+    manager which session the desktop login exported. A reachable session bus
+    alone never counts: a headless host's manager names no live display, and the
+    answer stays ``False``. All of these are facts about this host; no request
+    decides any of them.
 
     The launchers ask this same function, so the dashboard's answer and what a
     click does cannot drift. It reports readiness, not a launch: a launcher that
@@ -829,17 +890,270 @@ def desktop_launcher_available() -> bool:
     still degrades. On Windows it names the reveal's launcher; the open verb is
     refused there whatever this says, and the dashboard already hides it on that
     platform.
+
+    It can spawn ``systemctl``, bounded by :data:`_DESKTOP_SESSION_TIMEOUT_SECS`,
+    so every caller runs it off the event loop.
     """
 
     if sys.platform == "darwin":
         return os.path.isfile("/usr/bin/open")
     if IS_WINDOWS:
         return os.path.isfile(r"C:\Windows\explorer.exe")
+    if not os.path.isfile("/usr/bin/xdg-open"):
+        return False
     # The display servers a launcher reaches a desktop session through, X11 and
     # Wayland; an empty value names neither.
-    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    return bool(_user_manager_desktop_session())
+
+
+#: ASCII letters and digits, the base of each character set a session value may use.
+_ASCII_ALNUM = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+#: The characters a Wayland compositor socket name may use.
+_WAYLAND_NAME_CHARS = _ASCII_ALNUM | frozenset("_.-")
+#: The characters the X cookie file's path may use.
+_XAUTHORITY_CHARS = _ASCII_ALNUM | frozenset("_.+/-")
+#: The characters one desktop name may use.
+_DESKTOP_NAME_CHARS = _ASCII_ALNUM | frozenset("_-")
+
+
+def _ascii_digits(text: str, longest: int) -> bool:
+    """Whether *text* is 1 to *longest* ASCII digits.
+
+    ``str.isdigit`` alone also accepts digits from other scripts (``٠``, ``１``),
+    which no display number or version uses.
+    """
+
+    return 1 <= len(text) <= longest and text.isascii() and text.isdigit()
+
+
+def _x11_display_number(value: str) -> int | None:
+    """The number of a display on THIS machine (``:0``, ``:1.0``), or ``None``.
+
+    A host part (``box:0``) would send the window to another machine, so such a
+    value has no number here.
+    """
+
+    if not value.startswith(":"):
+        return None
+    number, dot, screen = value[1:].partition(".")
+    if not _ascii_digits(number, 4) or (dot and not _ascii_digits(screen, 4)):
+        return None
+    return int(number)
+
+
+def _is_local_x11_display(value: str) -> bool:
+    """Whether *value* names a display on this machine (:func:`_x11_display_number`)."""
+
+    return _x11_display_number(value) is not None
+
+
+def _is_wayland_socket_name(value: str) -> bool:
+    """Whether *value* is a compositor socket NAME (``wayland-0``), never a path.
+
+    The name is resolved under the session runtime directory
+    (:func:`_wayland_display_is_live`): 1 to 64 characters, the first a letter,
+    digit or ``_``.
+    """
+
+    return (
+        1 <= len(value) <= 64
+        and (value[0] in _ASCII_ALNUM or value[0] == "_")
+        and set(value) <= _WAYLAND_NAME_CHARS
+    )
+
+
+def _is_xauthority_path(value: str) -> bool:
+    """Whether *value* is an absolute X cookie path in plain characters, with no ``..`` part."""
+
+    return (
+        2 <= len(value) <= 1024
+        and value.startswith("/")
+        and set(value) <= _XAUTHORITY_CHARS
+        and ".." not in value.split("/")
+    )
+
+
+def _is_desktop_names(value: str) -> bool:
+    """Whether *value* is 1 to 8 colon-separated desktop names (``ubuntu:GNOME``)."""
+
+    names = value.split(":")
+    return 1 <= len(names) <= 8 and all(
+        1 <= len(name) <= 64 and set(name) <= _DESKTOP_NAME_CHARS for name in names
+    )
+
+
+def _is_kde_session_version(value: str) -> bool:
+    """Whether *value* is a Plasma major version (``5``, ``6``): 1 or 2 ASCII digits."""
+
+    return _ascii_digits(value, 2)
+
+
+#: The desktop-session variables a launcher may take from the user's systemd
+#: manager when this gateway's own environment names no display server, each with
+#: the check its value must pass to be copied: the X11 and Wayland displays, the X
+#: cookie, the desktop name ``xdg-open`` picks its opener by, and the Plasma
+#: version its KDE opener needs (without it, ``xdg-open`` calls Konqueror's
+#: ``kfmclient``, which Plasma does not install). Nothing else in that environment
+#: is read.
+_DESKTOP_SESSION_CHECKS = {
+    "DISPLAY": _is_local_x11_display,
+    "WAYLAND_DISPLAY": _is_wayland_socket_name,
+    "XAUTHORITY": _is_xauthority_path,
+    "XDG_CURRENT_DESKTOP": _is_desktop_names,
+    "KDE_SESSION_VERSION": _is_kde_session_version,
+}
+
+#: Where an X server on this machine listens for display ``:N``, as ``X<N>``.
+_X11_SOCKET_DIR = "/tmp/.X11-unix"
+
+#: Seconds one answer from the user's manager is reused. Short, so a desktop login
+#: after the gateway started is seen on a later request without a restart.
+_DESKTOP_SESSION_TTL_SECS = 30.0
+
+#: Seconds ``systemctl --user show-environment`` may take; past that there is no
+#: session.
+_DESKTOP_SESSION_TIMEOUT_SECS = 2.0
+
+_desktop_session_lock = threading.Lock()
+#: ``(monotonic expiry, well-formed variables)`` from the last lookup, or ``None``
+#: before one.
+_desktop_session_cache: tuple[float, dict[str, str]] | None = None
+
+
+def _user_manager_desktop_session() -> dict[str, str]:
+    """The live desktop session the user's systemd manager names, or ``{}``.
+
+    A desktop login (GNOME, KDE) exports its display variables to the user's
+    systemd manager. A gateway started outside that login, like the installed
+    system service, inherits none of them, so it asks the manager. Only
+    :data:`_DESKTOP_SESSION_CHECKS` keys are returned, and only with a live
+    display among them (:func:`_live_desktop_session`).
+
+    The manager's answer is kept for :data:`_DESKTOP_SESSION_TTL_SECS`, the empty
+    one included, so a headless host does not spawn ``systemctl`` per request.
+    Whether its display is live is checked again on every use of a kept answer, so
+    a logout is seen at once. One lookup runs at a time: a caller arriving during
+    one waits for it and shares its answer. Asked only off macOS and Windows; the
+    callers ask it only when the gateway's own environment names no display
+    server.
+    """
+
+    global _desktop_session_cache
+    if sys.platform == "darwin" or IS_WINDOWS:
+        return {}
+    with _desktop_session_lock:
+        cached = _desktop_session_cache
+        if cached is None or time.monotonic() >= cached[0]:
+            lines = _user_manager_environment()
+            values = _desktop_session_from(lines) if lines is not None else {}
+            cached = (time.monotonic() + _DESKTOP_SESSION_TTL_SECS, values)
+            _desktop_session_cache = cached
+    return _live_desktop_session(cached[1])
+
+
+def _user_manager_environment() -> list[str] | None:
+    """The lines of ``systemctl --user show-environment``, or ``None``.
+
+    ``None`` covers every way the answer is missing: no ``systemctl`` in the
+    trusted directories, no user manager to reach, a non-zero exit, or no answer
+    within :data:`_DESKTOP_SESSION_TIMEOUT_SECS` (the child is killed then). The
+    argv is fixed, the binary is resolved off ``PATH`` by
+    :func:`trusted_system_bin_quiet`, and no shell is involved. The child gets the
+    environment every ``systemctl --user`` spawn resolves,
+    :func:`kiro_crew.service.common.systemctl_user_env`, which fills in the
+    session-bus pointers a system unit can lack, with the pinned ``PATH`` the
+    launchers get on top.
+    """
+
+    # Imported here because ``service.common`` imports ``config.loader``, which
+    # imports this module.
+    from kiro_crew.service.common import systemctl_user_env
+
+    systemctl = trusted_system_bin_quiet("systemctl")
+    if systemctl is None:
+        return None
+    env = systemctl_user_env()
+    pinned = trusted_system_path()
+    if pinned is not None:
+        env["PATH"] = pinned
+    try:
+        result = subprocess.run(
+            [systemctl, "--user", "show-environment"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=_DESKTOP_SESSION_TIMEOUT_SECS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.splitlines()
+
+
+def _desktop_session_from(lines: list[str]) -> dict[str, str]:
+    """The well-formed desktop-session variables in a ``KEY=value`` environment dump.
+
+    Only :data:`_DESKTOP_SESSION_CHECKS` keys are read, and a value that fails its
+    key's check is dropped (``systemctl`` quotes a value with special characters as
+    ``$'...'``, which passes none). Whether a display named here is live is
+    :func:`_live_desktop_session`'s question.
+    """
+
+    found: dict[str, str] = {}
+    for line in lines:
+        key, sep, value = line.partition("=")
+        check = _DESKTOP_SESSION_CHECKS.get(key)
+        if sep and check is not None and key not in found and check(value):
+            found[key] = value
+    return found
+
+
+def _live_desktop_session(values: dict[str, str]) -> dict[str, str]:
+    """*values* without the displays whose server is gone, or ``{}`` when none is left.
+
+    A display server counts only while its socket exists, so a manager still
+    holding the display of a login that has ended names no session. The other
+    variables come along only with a live display.
+    """
+
+    session = dict(values)
+    number = _x11_display_number(session.get("DISPLAY", ""))
+    if number is None or not _x11_display_is_live(number):
+        session.pop("DISPLAY", None)
+    wayland = session.get("WAYLAND_DISPLAY")
+    if wayland is not None and not _wayland_display_is_live(wayland):
+        del session["WAYLAND_DISPLAY"]
+    if "DISPLAY" not in session and "WAYLAND_DISPLAY" not in session:
+        return {}
+    return session
+
+
+def _x11_display_is_live(number: int) -> bool:
+    """Whether an X server listens for display ``:number`` on this machine."""
+
+    return os.path.exists(os.path.join(_X11_SOCKET_DIR, f"X{number}"))
+
+
+def _wayland_display_is_live(name: str) -> bool:
+    """Whether a Wayland compositor's socket *name* exists in the session runtime directory.
+
+    The directory is :func:`kiro_crew.service.common.session_runtime_dir`, the one
+    ``systemctl --user`` resolves against: ``XDG_RUNTIME_DIR``, else
+    ``/run/user/<uid>`` for a unit that sets none.
+    """
+
+    from kiro_crew.service.common import session_runtime_dir
+
+    runtime_dir = session_runtime_dir()
+    if not os.path.isabs(runtime_dir):
         return False
-    return os.path.isfile("/usr/bin/xdg-open")
+    return os.path.exists(os.path.join(runtime_dir, name))
 
 
 def reveal_in_file_manager(target: str) -> bool:
@@ -877,9 +1191,9 @@ def reveal_in_file_manager(target: str) -> bool:
     decide whether to offer the action at all.
     """
 
-    env = _reveal_env()
     if not desktop_launcher_available():
         return False
+    env = _reveal_env()
     try:
         if sys.platform == "darwin":
             subprocess.Popen(["/usr/bin/open", "-R", target], env=env)
@@ -927,11 +1241,11 @@ def open_with_default_app(target: str, *, wait_for_exit: float | None = None) ->
 
     if IS_WINDOWS:
         return False
-    env = _reveal_env()
     # Off Windows the default-application launcher IS the file manager's (`open`
     # on macOS, `xdg-open` elsewhere), and it needs the same desktop session.
     if not desktop_launcher_available():
         return False
+    env = _reveal_env()
     try:
         if sys.platform == "darwin":
             proc = subprocess.Popen(["/usr/bin/open", target], env=env)
@@ -958,9 +1272,27 @@ def _reveal_env() -> dict[str, str]:
     ``gvfs-open``, ``exo-open``, ``kde-open``. Only ``PATH`` is replaced, because
     the rest of the environment is what lets a launcher reach the running desktop
     session (``DISPLAY``, ``DBUS_SESSION_BUS_ADDRESS``, ``XDG_*``).
+
+    When the gateway's own environment names no display server, the desktop
+    session the user's systemd manager names (:func:`_user_manager_desktop_session`)
+    fills in the variables this environment lacks or leaves empty. Those are
+    checked values for its five keys only (:data:`_DESKTOP_SESSION_CHECKS`), passed
+    as environment entries and never through a shell. They go on top of
+    :func:`kiro_crew.service.common.systemctl_user_env`, the environment the lookup
+    itself ran with, so the launcher also gets the session bus and the runtime
+    directory a Wayland display name resolves under.
     """
 
     env = dict(os.environ)
+    if not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
+        session = _user_manager_desktop_session()
+        if session:
+            from kiro_crew.service.common import systemctl_user_env
+
+            env = systemctl_user_env()
+            for key, value in session.items():
+                if not env.get(key):
+                    env[key] = value
     pinned = trusted_system_path()
     if pinned is not None:
         env["PATH"] = pinned

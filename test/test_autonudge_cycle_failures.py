@@ -285,11 +285,8 @@ async def test_a_matching_generation_charges_the_streak(svc, _nosleep):
 async def test_a_stale_generation_does_not_charge_the_revised_loop(svc, _nosleep):
     """A fault from a now-superseded generation must not stand the loop down.
 
-    If the loop was revised (A->B->A) between a cycle firing and dying, the fault
-    describes the OLD instruction. Charging it would let a stale completion spend
-    the revised loop's stand-down budget -- the exact scope the fired generation
-    is passed to prevent. The hook is scoped to ``(id, generation)`` just as the
-    structural-terminal verdict is, so a stale generation is ignored.
+    A revise (A->B->A) between fire and failure means the fault describes the OLD
+    instruction, so the hook is scoped to ``(id, generation)``.
     """
     loop = await _armed(svc)
     stale_gen = svc._loops[loop.id].config_generation
@@ -306,14 +303,10 @@ async def test_a_stale_generation_does_not_charge_the_revised_loop(svc, _nosleep
 
 @pytest.mark.asyncio
 async def test_a_charge_for_a_different_loop_id_does_not_touch_the_live_loop(svc, _nosleep):
-    """F1: the charge is scoped by loop id, not slot+generation alone.
+    """The charge is scoped by loop id, not slot+generation alone.
 
-    A completion carrying a loop id other than the one live on the slot is a
-    stale fault of a predecessor that occupied this slot (same slot, and both
-    start at generation 0, so a generation-only match would charge the current
-    loop). Requiring the id to match too drops it: the live loop's streak stays
-    clean, so a replaced-on-the-same-slot loop never inherits its predecessor's
-    failure.
+    A predecessor on the same slot also starts at generation 0, so only the id tells
+    its stale fault apart from the live loop's.
     """
     loop = await _armed(svc)
     live_gen = svc._loops[loop.id].config_generation
@@ -375,7 +368,7 @@ async def test_a_malformed_persisted_streak_is_normalised_at_load(svc, store_dir
         await _stop_and_drain(reloaded)
 
 
-# --- The chat_runner-side GATE -----------------------------------------------
+# The chat_runner-side GATE
 # The tests above pin the SERVICE (the streak, the stand-down, the clearing).
 # These pin the GATE in chat_runner that decides WHICH terminal turns reach the
 # service at all -- the part with the regression risk, called from both terminal
@@ -648,13 +641,9 @@ async def test_a_failed_durable_write_rolls_the_increment_back(svc, _nosleep):
 async def test_a_cancel_during_the_committed_write_keeps_the_increment(svc, _nosleep):
     """A cancellation whose write already landed must NOT erase the charge.
 
-    ``_write_monitor_snapshot_locked`` shields its executor write and re-raises
-    ``CancelledError`` only AFTER the future has settled, so a ``CancelledError``
-    reaching the hook means the durable write DID complete. Rolling the increment
-    back there would erase a failure the store already accepted and leave the
-    live count one short of the durable one -- so the committed increment must
-    stand even as the cancellation propagates. (Contrast the real-write-error
-    path, which rolls back because nothing landed.)
+    ``_write_monitor_snapshot_locked`` re-raises ``CancelledError`` only after its
+    write settled, so the increment is durable and must stand. A real write error
+    rolls back because nothing landed.
     """
     loop = await _armed(svc)
     await _fail(svc, loop)

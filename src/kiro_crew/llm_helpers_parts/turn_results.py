@@ -129,7 +129,13 @@ def _parse_llm(text: str, expected_type: type) -> dict | list | None:
         # embedded in prose (scans successive delimiters, validates via stdlib).
         result = _extract_json_of_type(text, expected_type)
         if result is None:
-            logger.debug("Failed to parse LLM JSON: %.200s", text)
+            # The reply can quote the user's chat or a secret from it, so the
+            # line names its size and the type wanted, never its text.
+            logger.debug(
+                "Failed to parse LLM JSON: %d chars, expected %s",
+                len(text),
+                expected_type.__name__,
+            )
         return result
 
 

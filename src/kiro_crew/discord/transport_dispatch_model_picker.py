@@ -157,18 +157,11 @@ async def _apply_model(
 ) -> str:
     """Record *model_id* for this conversation and push it to the live session.
 
-    *model_id* comes verbatim from the session's advertised list, so it is
-    already the id this backend accepts — no canonical translation, which
-    would differ per backend and could mangle an id that was correct.
-
-    The preference is stored unconditionally so it reaches the NEXT session
-    even when there is nothing live to switch (the common case right after
-    ``!new``). When a session does exist the switch is attempted in place —
-    ``session/set_model`` carries the conversation across — and the semaphore
-    is taken atomically so the switch cannot interleave JSON-RPC with a turn
-    on the same stdio channel.
-
-    Returns the user-facing outcome line.
+    *model_id* comes verbatim from the backend's advertised list, so it is not
+    translated (a canonical mapping could mangle a correct id). The preference is
+    always stored so it reaches the NEXT session; a live session is switched in
+    place via ``session/set_model`` under its semaphore, so the switch cannot
+    interleave JSON-RPC with a turn. Returns the user-facing outcome line.
     """
     label = model_id or "Auto"
     self._model_pref[scope_id] = model_id

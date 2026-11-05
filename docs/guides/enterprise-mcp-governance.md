@@ -81,6 +81,15 @@ distinguishes a governed account from an ungoverned one. Leave the setting
 `false` on a personal account — there the filter inverts and the marked entries
 are the ones dropped.
 
+`kirocrew-core` and `kirocrew-cron` are the one exception. When no API key is
+set (in the environment or in the data home's `.env`, where the Docker image
+keeps it) and both the local store and `kiro-cli whoami` say the sign-in is
+Builder ID or social, so no admin
+registry can apply, Kiro Crew writes these two without the marker even with the
+declaration on, and they keep loading. If any check is unsure, they keep the
+marker. After you switch this machine to an Identity Center or API-key sign-in,
+run `kirocrew restart` so the spec is written again with the marker.
+
 Verify with `kirocrew doctor`, which grows an `MCP Governance (enterprise)`
 section when the local identity is one an administrator's registry can govern
 (an IAM Identity Center or API-key sign-in), when `agent.mcp_registry_mode` is
@@ -94,18 +103,37 @@ personal account.
 
 ### 2. Have the administrator allow-list the servers
 
-Kiro Crew needs three servers, and they must appear in the registry file under
+Kiro Crew ships eleven servers (`_MANAGED_MCP_SERVERS` in `src/kiro_crew/agent.py`
+is the authoritative map), and the registry filter applies to every one of them.
+Five are emitted on every install; the other six are assignable sets an agent
+carries only when granted them — but any agent that IS granted one loses it the
+same way if the registry omits it. They must appear in the registry file under
 **exactly** these names:
+
+Always emitted, on every install:
 
 | Server | What is lost without it |
 |---|---|
 | `kirocrew-core` | `spawn_run`, `learn_add`, artifacts, knowledge, monitoring — the bulk of the product |
 | `kirocrew-cron` | every scheduled job (`cron_add` and the whole cron surface) |
 | `kirocrew-computer` | desktop automation on supported macOS and Windows hosts (inert unless separately enabled, but still filtered) |
+| `kirocrew-guide` | the platform guide set: where-is answers (`find_ui`), the packaged docs (`search_docs`), dashboard guides and change cards |
+| `kirocrew-mate` | a Bot's tools over its own record (name, description, face; goal and tools asked through a change card) |
+
+Assignable — emitted only for agents granted the set, and filtered the same way:
+
+| Server | What is lost without it |
+|---|---|
+| `kirocrew-work` | the work ledger every conductor records its dispatches to — without it a conductor still runs, but the Dashboard's Workstreams board has nothing to show for its fleet |
+| `kirocrew-dashboard` | the dashboard control surface mounted on every conductor |
+| `kirocrew-panel` | the member panel tools of member-scoped agents |
+| `kirocrew-crew-log` | the crew log set of agents granted it |
+| `kirocrew-debug` | the debug views (the wide ones answer only on the owner's own dashboard tab) |
+| `kirocrew-secrets` | mediated secret requests (`call_api_with_secret`): API writes that use a Custom secret the agent never sees |
 
 The registry file format is a subset of the MCP registry standard's server
 schema. Each entry needs a `packages` entry describing how to launch the server,
-and — because all three Kiro Crew servers live behind one package — a
+and — because every Kiro Crew server lives behind one package — a
 `packageArguments` entry naming the subcommand. For a `pypi` package the client
 derives `uvx <identifier> <packageArguments>`, so an entry without the argument
 launches `uvx kirocrew` with no subcommand, which prints CLI help instead of
@@ -155,6 +183,110 @@ that `uvx` uses:
           "transport": { "type": "stdio" }
         }
       ]
+    },
+    {
+      "name": "kirocrew-work",
+      "description": "Kiro Crew work ledger (conductor agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-work" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-dashboard",
+      "description": "Kiro Crew dashboard control surface (conductor agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-dashboard" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-panel",
+      "description": "Kiro Crew member panel (member-scoped agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-panel" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-guide",
+      "description": "Kiro Crew platform guide: find_ui, search_docs, guides, change cards",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-guide" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-mate",
+      "description": "Kiro Crew crewmate self-record tools",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-mate" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-crew-log",
+      "description": "Kiro Crew crew log (assignable)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-crew-log" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-debug",
+      "description": "Kiro Crew debug views (assignable, owner-tab only)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-debug" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-secrets",
+      "description": "Kiro Crew mediated secret requests (assignable)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-secrets" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
     }
   ]
 }
@@ -195,6 +327,15 @@ What you see is a session that starts and chats normally with no MCP tools at
 all: no `spawn_run`, no `cron_add`, no `learn_add`, no artifacts, knowledge or
 monitoring, and no error from the host explaining it. Declaring registry mode
 does not fix it there, because the marker it writes cannot reach the filter.
+
+The limitation is tracked upstream as
+[kirodotdev/Kiro#12231](https://github.com/kirodotdev/Kiro/issues/12231).
+
+When the host names the servers it filtered (KAS lists them in its MCP status as
+`accessModeFilteredServers`), Kiro Crew acts on that at once instead of waiting
+out the session-start budget. With `agent.mcp_registry_mode` on, the session
+starts without those servers. With it off, the session start fails straight
+away with an error that names each filtered server and the setting to declare.
 
 Kiro Crew makes the failure visible rather than silent. Projecting an agent onto
 that backend under registry mode logs a warning naming exactly this, and the
@@ -353,7 +494,8 @@ Kiro Crew runs as — the file *and* every directory above it**: a source that a
 write, and the refresher would install that ceiling without a restart. A `0444` file in a
 writable directory does not count: it can be replaced by unlink-and-recreate. Use a
 root-owned path or a read-only mount; if what you want is a local, editable policy file, that is
-`KIROCREW_SECURITY_POLICY`, not this channel. The validator is a content digest,
+`KIROCREW_SECURITY_POLICY`, not this channel. On Windows `file://` sources are
+refused until Kiro Crew can read the file's ACL. Use `https`. The validator is a content digest,
 so a host on a shared mount re-reads only when the bytes actually change — including the
 case where you replace the file with a same-size version and preserve its timestamp.
 Plain

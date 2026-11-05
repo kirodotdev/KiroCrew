@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { join } from 'node:path'
 import { readSource } from './readSource'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { store } from '../store'
@@ -519,7 +519,7 @@ describe('FileHeaderBreadcrumb accessibility (#7900)', () => {
     // In the tab order, so a keyboard user can move focus onto it.
     expect(group).toHaveAttribute('tabindex', '0')
     // The path is genuinely reachable by focus, not merely present in the DOM.
-    ;(group as HTMLElement).focus()
+    act(() => { (group as HTMLElement).focus() })
     expect(group).toHaveFocus()
     // The accessible name a screen reader would read equals the full path.
     expect(screen.getByRole('group', { name: path })).toBe(group)

@@ -26,9 +26,10 @@ from collections.abc import Collection
 from typing import Any, Mapping
 
 from kiro_crew.acp.session_mcp import session_mcp_projection
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
 from kiro_crew.providers.mirrors.base import (
     RESOURCES_NO_READER,
+    TOOLS_SETTINGS_GATE_CHANNEL,
     AgentConfigMirror,
     Concern,
     Disposition,
@@ -128,13 +129,30 @@ class ClaudeCodeMirror(AgentConfigMirror):
             ),
             Concern.HOOKS: Ruling(
                 _D.NO_CHANNEL,
-                "the spec's `hooks` block is executed by the harness, and Claude "
-                "Code runs hooks natively — but nothing writes them today, so a "
-                "user's per-agent hooks reach kiro-cli and no other backend. Crew's "
-                "OWN hooks (hooks.py, fired on ACP tool events) are unaffected and "
-                "work on every backend; this gap is only the spec block",
+                "the harness is handed no spec, so Crew's turn loop fires the "
+                "spec's postToolUse, userPromptSubmit, agentSpawn and stop hooks "
+                "(agent_sdk/spec_hooks.py, ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS); "
+                "a Bash call is named execute_bash for their matchers. preToolUse is "
+                "the gap: Claude Code approves some calls without a permission "
+                "request, so a Crew-fired gating hook would be skipped on those, and "
+                "a new session whose spec has one gets a notice. Crew's OWN hooks "
+                "(hooks.py, fired on ACP tool events) are unaffected",
                 channel="settings.local.json `hooks`, the file Crew already creates "
                 "for this backend under create-or-decline",
+            ),
+            Concern.TOOLS_SETTINGS: Ruling(
+                _D.NO_CHANNEL,
+                "kiro-cli's per-tool settings have no field on claude-agent-acp's session/new. "
+                "Two are applied on this channel anyway: the shell denyByDefault and write "
+                "fallbackAction deny allowlists are stamped on this session's own permission "
+                "requests (acp/spec_tools_allowlists.py), with permissions.ask rules so those "
+                "calls reach the gate. The rest (deniedPaths, web_fetch.blocked and the other "
+                "entries) is applied nowhere. Its subagent.availableAgents is also applied: "
+                "Crew's spawn gate reads it from the parent's spec on every backend "
+                "(subagent_parts/agent_policy.py). A new chat session whose spec sets anything "
+                "else gets one notice naming what of it goes unapplied "
+                "(dashboard/chat_turn/turn_spec_hooks.py)",
+                channel=TOOLS_SETTINGS_GATE_CHANNEL,
             ),
         }
 
@@ -249,8 +267,12 @@ class ClaudeCodeMirror(AgentConfigMirror):
             agent,
             stub_server_names=stub_server_names,
             work_dir=work_dir,  # type: ignore[arg-type]
-            # A crewmate's worker reads its own spec by its session's record.
+            # A crewmate's worker reads its own spec by its session's record, and its
+            # MCP tool limits ride the seed's deny rules
+            # (``session_mcp_crewmate.crewmate_worker_deny_rules``).
             session_key=str(kwargs.get("session_key") or ""),
+            worker_mcp_tool_limits_honoured=self.backend
+            in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
         )
         if not permission_surface_owned:
             logger.warning(

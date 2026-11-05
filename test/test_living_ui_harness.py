@@ -445,6 +445,65 @@ def test_reads_the_body_out_of_one_mcwidget_tag(harness: Any) -> None:
     assert "data.line - offset + CONFIG.above" in harness.page(tag)
 
 
+_BOM = b"\xef\xbb\xbf"
+
+
+def test_a_leading_byte_order_mark_previews_like_its_plain_copy(
+    harness: Any,
+    tmp_path: Path,
+) -> None:
+    """A widget file saved with a leading BOM frames the same body as its plain copy.
+
+    Stock Windows PowerShell UTF-8 writers prepend U+FEFF. Reading past it means a
+    tag file unwraps to the same body and line offset, and a body-only file keeps no
+    U+FEFF, so the preview matches the chat either way.
+    """
+    tag = '<mcwidget title="t">\n<p>x</p>\n</mcwidget>\n'
+    plain, bom = tmp_path / "plain.html", tmp_path / "bom.html"
+    plain.write_bytes(tag.encode())
+    bom.write_bytes(_BOM + tag.encode())
+    assert harness.main([str(plain), "-o", str(tmp_path / "plain.out.html")]) == 0
+    assert harness.main([str(bom), "-o", str(tmp_path / "bom.out.html")]) == 0
+    plain_cfg = _config((tmp_path / "plain.out.html").read_text(encoding="utf-8"))
+    bom_cfg = _config((tmp_path / "bom.out.html").read_text(encoding="utf-8"))
+    assert bom_cfg["body"] == plain_cfg["body"]
+    assert bom_cfg["above"] == plain_cfg["above"]
+    assert "\ufeff" not in bom_cfg["body"]
+    assert "<mcwidget" not in bom_cfg["body"]
+
+    body_only = tmp_path / "body.html"
+    body_only.write_bytes(_BOM + b"<p>x</p>")
+    assert harness.main([str(body_only), "-o", str(tmp_path / "body.out.html")]) == 0
+    body_cfg = _config((tmp_path / "body.out.html").read_text(encoding="utf-8"))
+    assert body_cfg["body"] == "<p>x</p>"
+
+
+def test_a_leading_byte_order_mark_leaves_a_plain_file_unchanged(
+    harness: Any,
+    tmp_path: Path,
+) -> None:
+    """A file with no BOM frames byte-identically, so reading past a BOM is free."""
+    tag = '<mcwidget title="t">\n<p>x</p>\n</mcwidget>\n'
+    plain = tmp_path / "plain.html"
+    plain.write_bytes(tag.encode())
+    assert harness.main([str(plain), "-o", str(tmp_path / "out.html")]) == 0
+    first = (tmp_path / "out.html").read_bytes()
+    (tmp_path / "out.html").unlink()
+    assert harness.main([str(plain), "-o", str(tmp_path / "out.html")]) == 0
+    assert (tmp_path / "out.html").read_bytes() == first
+
+
+def test_read_fields_accepts_a_leading_byte_order_mark(
+    harness: Any,
+    tmp_path: Path,
+) -> None:
+    """A fields file saved with a leading BOM loads the same object as its plain copy."""
+    plain, bom = tmp_path / "plain.json", tmp_path / "bom.json"
+    plain.write_bytes(b'{"n": 1}')
+    bom.write_bytes(_BOM + b'{"n": 1}')
+    assert harness.read_fields(bom) == harness.read_fields(plain) == {"n": 1}
+
+
 def test_imports_nothing_that_could_open_a_socket() -> None:
     """The page is a file and nothing serves it, so a new import is a choice made here.
 

@@ -243,6 +243,7 @@ export function AboutPanelGatewayUpdates({
   gwManagedByCommand,
   gwStatusLatest,
   gwStatusLatestDisplay,
+  runningVersion,
   gwDiverged,
   gwDivergedText,
   lastCheckedAt,
@@ -261,6 +262,8 @@ export function AboutPanelGatewayUpdates({
   gwManagedByCommand: boolean
   gwStatusLatest: string
   gwStatusLatestDisplay: string
+  /** The running build's raw version, to tell a behind-only checkout's target apart. */
+  runningVersion: string
   gwDiverged: boolean
   gwDivergedText: string
   lastCheckedAt: number | null
@@ -273,13 +276,16 @@ export function AboutPanelGatewayUpdates({
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, setShowConfirm, applyError,
     setApplyError, restarting, setRestarting, gwCheck, gwRestart,
   } = gwUpdate
+  // A git checkout that is only behind its upstream reports the version it
+  // already runs as the target, so the text names no version then.
+  const namedTarget = gwTarget && gwTarget !== runningVersion ? gwTarget : ''
   return (
     <div className="flex flex-col gap-2.5">
       {(showUpdate || channelMovePending) ? (
         <>
           {showUpdate && (
             <p className="text-sm text-muted flex items-center gap-1.5">
-              <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{(gwTargetDisplay || gwTarget) ? ` (v${gwTargetDisplay || gwTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
+              <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{namedTarget ? ` (v${gwTargetDisplay || namedTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
             </p>
           )}
           {showManualUpdate ? (
@@ -370,8 +376,8 @@ export function AboutPanelGatewayUpdates({
               <Btn primary onClick={() => { if (!gwChanges) gwCheck.mutate(); setApplyError(''); setRestarting(false); setShowConfirm(true) }}>
                 {/* Whole-sentence keys, not "Update" + " to vX": the version
                     does not follow the verb in every language. */}
-                <ArrowUp size={13} className="lucide-inline" /> {gwTarget
-                  ? i18nT('pages.settings.aboutPanel.update_to_version', { version: gwTarget })
+                <ArrowUp size={13} className="lucide-inline" /> {namedTarget
+                  ? i18nT('pages.settings.aboutPanel.update_to_version', { version: namedTarget })
                   : i18nT('pages.settings.aboutPanel.update_now')}
               </Btn>
             </div>
@@ -491,10 +497,13 @@ export function AboutPanelUpdateConfirm({
   gwUpdate,
   gwDiverged,
   gwDivergedText,
+  runningVersion,
 }: {
   gwUpdate: AboutPanelGatewayUpdateState
   gwDiverged: boolean
   gwDivergedText: string
+  /** The running build's raw version: a target equal to it is not named. */
+  runningVersion: string
 }) {
   const {
     gwChanges, gwTarget, setShowConfirm, applyError, applyDirty, restarting, gwCheck, gwApply,
@@ -504,7 +513,7 @@ export function AboutPanelUpdateConfirm({
   useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click-to-dismiss is a supplementary mouse affordance; the keyboard path is the document-level Escape listener in AboutPanel.tsx plus the Close button, and making the dialog surface itself a tab stop would put a stop in front of its own content
-    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
+    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe"
          role="dialog" aria-modal="true" aria-label={i18nT('pages.settings.aboutPanel.update')}
          onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}>
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- the only handler is a propagation guard keeping a click inside the panel from reaching the backdrop's dismiss; it performs no action, so there is no keyboard equivalent to provide */}
@@ -513,7 +522,7 @@ export function AboutPanelUpdateConfirm({
           {/* Whole-sentence key, not "Update" + " to vX": the version does
               not follow the verb in every language. Diverged drops the
               version — there is nothing to update to. */}
-          <div className="text-sm font-bold text-text-strong flex items-center gap-1.5"><Package size={15} className="lucide-inline" /> {gwTarget && !gwDiverged
+          <div className="text-sm font-bold text-text-strong flex items-center gap-1.5"><Package size={15} className="lucide-inline" /> {gwTarget && gwTarget !== runningVersion && !gwDiverged
             ? i18nT('pages.settings.aboutPanel.update_to_version', { version: gwTarget })
             : i18nT('pages.settings.aboutPanel.update')}</div>
           {/* aria-disabled, not disabled: while the update runs every other

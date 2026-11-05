@@ -1,12 +1,8 @@
 """MCP discovery: probing a remote (HTTP) server.
 
-``_probe_remote`` reports a handshake, an HTTP error or a needs-auth challenge with the
-OAuth evidence it learned; ``_read_jsonrpc_response`` takes the reply from a JSON body, or
-from the last ``data:`` line of an SSE stream that carries an id; an ordinary header
-reference (``${VAR}``, ``${env:VAR}``) resolves before the probe sends it, a
-credential-filtered or unset one stays literal, and a resolved secret is scrubbed from
-what the probe reports; the protocol version steps down once when a server refuses the
-newest; and the remote timeout comes from ``_get_probe_timeout``.
+Covers ``_probe_remote`` results and OAuth evidence, ``_read_jsonrpc_response`` for JSON
+and SSE bodies, header ``${VAR}`` expansion and secret scrubbing, the one-step protocol
+version fallback, and ``_get_probe_timeout``.
 """
 
 from __future__ import annotations
@@ -464,16 +460,10 @@ class TestProbeRemote:
 
     @pytest.mark.asyncio
     async def test_a_rejected_static_credential_still_records_the_oauth_challenge(self) -> None:
-        """The error branch keeps the challenge — and looks up no grant.
+        """The error branch keeps the challenge, and looks up no grant.
 
-        A pasted token against an OAuth-only server is a real error — but the
-        useful thing to say is that the server wants a sign-in, not that it
-        answered 401.
-
-        The GRANT is the half that stops here. Its only reader gates on
-        ``needs_auth``, so a lookup on this branch would run a stat, and let
-        ``grant_observed`` write a critical SEL event, for an observation nothing
-        renders.
+        The grant's only reader gates on ``needs_auth``, so a lookup here would write a
+        critical SEL event via ``grant_observed`` for nothing.
         """
         server = McpServerInfo(
             name="remote",
@@ -568,13 +558,10 @@ class TestProbeRemote:
 
     @pytest.mark.asyncio
     async def test_the_probe_asks_for_the_absent_grant_to_be_audited(self) -> None:
-        """The probe acts on absence, so it must not inherit the mint's poll default.
+        """The probe acts on absence, so it opts in to ``audit_absence``.
 
-        ``grant_observed`` records only the positive unless a caller opts in,
-        because the mint polls and would otherwise write a critical SEL event per
-        iteration. The probe is the opposite shape: one read, and the NEGATIVE is
-        what turns a row into "Sign-in required". Without the opt-in that acted-on
-        access leaves no trail at all.
+        ``grant_observed`` records only positives by default (the mint polls); the probe's
+        one negative read drives "Sign-in required" and must leave a trail.
         """
         from kiro_crew.mcp_discovery import _runtime_grant_present
 
@@ -585,17 +572,10 @@ class TestProbeRemote:
         lookup.assert_awaited_once_with("https://example.com/mcp", audit_absence=True)
 
     def test_importing_this_module_does_not_pull_in_the_mint_engine(self) -> None:
-        """The grant helpers are shared through a leaf module, not through the mint.
+        """The grant helpers are shared through ``mcp_grant``, not through the mint.
 
-        This module is reachable from the handlers package the gateway imports at
-        boot, and ``connections.mint`` reaches the agent and ACP layers -- which
-        ``test_the_handlers_package_does_not_import_the_mint_engine`` refuses to
-        have loaded at boot. Sharing via ``mcp_grant`` is what lets the grant
-        lookup be an ordinary module-scope import instead of a runtime one, so
-        that separation is the thing worth pinning.
-
-        Run in a subprocess: this test module already imports the mint, so an
-        in-process ``sys.modules`` check would always find it.
+        This module loads at gateway boot, and ``connections.mint`` pulls in the agent and
+        ACP layers. Run in a subprocess: this test module already imports the mint.
         """
         probe = (
             "import sys; import kiro_crew.mcp_discovery;"
@@ -611,11 +591,8 @@ class TestProbeRemote:
     async def test_a_re_probe_does_not_inherit_the_previous_endpoints_challenge(self) -> None:
         """Authorization evidence is per-probe, never carried forward.
 
-        The probe cache is keyed by NAME and ``list_servers`` rehydrates these
-        fields onto the row before a re-probe, so a server whose url was edited
-        arrives carrying the OLD endpoint's verdict. A probe that only ever SETS
-        the flags would keep reporting "Sign-in required" for an endpoint that
-        never asked for one.
+        The cache is keyed by NAME, so a server with an edited url arrives with the old
+        endpoint's flags; the probe must clear them, not only set them.
         """
         server = McpServerInfo(
             name="remote",
@@ -711,15 +688,10 @@ class TestProbeRemote:
 
     @pytest.mark.asyncio
     async def test_directory_qualified_command_reports_no_search_path(self) -> None:
-        """A directory-qualified command is looked up directly, not PATH-searched.
+        """A directory-qualified command reports a bare ``command not found: <cmd>``.
 
-        ``shutil.which`` returns before it reads ``path=`` when the command
-        carries a directory component, so it checks exactly the one location
-        named. Reporting a declared search path for it would tell the reader it
-        "searched N directories" that were never consulted -- the exact
-        not-installed vs installed-elsewhere confusion this avoids, stated
-        backwards. The error for such a command must be the bare
-        ``command not found: <cmd>`` with no directory list.
+        ``shutil.which`` ignores ``path=`` for such a command, so listing search
+        directories would name places that were never checked.
         """
         abs_missing = os.path.join(os.sep, "opt", "vendor", "bin", "ghost-mcp")
         server = McpServerInfo(name="dirq", command=abs_missing)
@@ -773,13 +745,9 @@ class TestProbeRemoteTimeout:
 class TestProbeHeaderReferenceExpansion:
     """The remote probe resolves ``${VAR}``/``${env:VAR}`` header references.
 
-    A static header whose value carries a runtime reference is a documented
-    form (docs/reference/kiro-cli/mcp/configuration.md) that kiro-cli expands
-    at session runtime. If the probe sent the reference as literal text, a
-    working configuration would render as Error / HTTP 401 with advice to
-    delete the header. The probe resolves references through
-    the gateway rewriter's declared-env expander — same regex, same
-    credential-filtered source view, same "unresolved stays literal" rule.
+    kiro-cli expands them at runtime (docs/reference/kiro-cli/mcp/configuration.md), so a
+    literal send would show a working config as HTTP 401. The probe uses the gateway
+    rewriter's declared-env expander and its credential-filtered source view.
     """
 
     def setup_method(self) -> None:
@@ -1130,17 +1098,10 @@ def _ok_session() -> MagicMock:
 class TestProbeRemoteRejectsNonPublicUrls:
     """The remote probe SSRF-vets its url before it POSTs.
 
-    ``server.url`` is attacker-reachable -- a sandboxed process can append an
-    entry to ``~/.kiro/crew/mcp.json`` -- so a url naming the cloud metadata
-    endpoint, or anything else link-local, must be refused and never contacted.
-    Otherwise the gateway POSTs the handshake there and reflects the reply onto
-    the dashboard row. Every other target must still probe: a public server on
-    any port, and a loopback or private one (an app backend on ``127.0.0.1``, a
-    LAN dev server), which kiro-cli itself connects to.
-
-    The autouse ``_stub_remote_probe_ssrf_vet`` fixture in ``mcp_discovery_helpers``
-    answers the vet's DNS seam from one public address, so a NAME is approved
-    without a real lookup while an IP LITERAL still runs the real address checks.
+    A sandboxed process can write ``~/.kiro/crew/mcp.json``, so a link-local url (cloud
+    metadata) is refused and never contacted; public, loopback and private targets probe.
+    The autouse ``_stub_remote_probe_ssrf_vet`` fixture approves a NAME without DNS, while
+    an IP LITERAL still runs the real address checks.
     """
 
     def setup_method(self) -> None:

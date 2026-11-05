@@ -57,8 +57,7 @@ class TestTaskRunGitFields:
 @requires_git
 class TestGitCoord:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- class-scoped autouse fixture moved verbatim; no test in its class calls monkeypatch.undo()
-    def _passthrough_sandbox(self, monkeypatch):
+    def _passthrough_sandbox(self, _floor_monkeypatch):
         """TestGitCoord spawns REAL git via ``git_coord._git`` →
         ``sandboxed_spawn_argv`` → ``wrap_argv``, which raises when no OS-level
         sandbox backend is available. These tests exercise git coordination, not
@@ -67,7 +66,7 @@ class TestGitCoord:
 
         from kiro_crew import git_coord
 
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             git_coord,
             "sandboxed_spawn_argv",
             lambda argv, *a, **k: (list(argv), dict(_os.environ), None),
@@ -1109,7 +1108,6 @@ class TestGitCoord:
         assert sha != ""
         assert len(run.commit_hashes) == 1
 
-        # Revert
         await git_coord.revert_step(run)
         assert len(run.commit_hashes) == 0
         assert not (Path(run.work_dir) / "new.py").exists()

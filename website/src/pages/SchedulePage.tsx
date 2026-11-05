@@ -58,9 +58,9 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuidePredicate, useGuideSelection } from '../guide/guidePredicates'
 import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
-import { compareText, fmtDateTimeNumeric, fmtTime } from '../i18n/format'
+import { compareText, fmtDateTimeNumeric, fmtRelative, fmtTime } from '../i18n/format'
 import { formatCadence } from '../utils/scheduleCadence'
-import { browserTimeZone, isValidTimeZone } from '../utils/tz'
+import { browserTimeZone, isValidTimeZone, jobZoneCaption } from '../utils/tz'
 import { guideConfirm, guidePick, guidePickControl } from '../uiLocations/targetRegistry'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 
@@ -173,17 +173,10 @@ const fmtAgo = (ts?: number) => {
 
 const fmtIn = (ts?: number | null) => {
   if (ts == null) return '—'
-  const s = Math.floor(ts - Date.now() / 1000)
-  if (s <= 0) return i18nT('pages.schedulePage.now')
-  // `in <1m` deliberately stays English for now: as a NEW catalog value it is
-  // rejected by check-source-strings' `leading-connector` rule, which cannot
-  // separate a lowercase standalone label from a real sentence fragment (its
-  // own comment names `in progress` as the same known limit). The `${}` branches
-  // below need a key plus `{{vars}}`, which is Phase 6.
-  if (s < 60) return 'in <1m'
-  if (s < 3600) return `in ${Math.floor(s / 60)}m`
-  if (s < 86400) { const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return `in ${h}h ${m}m` }
-  const d = Math.floor(s / 86400); const h = Math.floor((s % 86400) / 3600); return `in ${d}d ${h}h`
+  if (ts - Date.now() / 1000 <= 0) return i18nT('pages.schedulePage.now')
+  // The locale words the future offset (`in 5m`, `in 5 m`, `5分钟后`) in the
+  // largest unit that fits.
+  return fmtRelative(ts * 1000, { numeric: 'always' })
 }
 
 /**
@@ -277,7 +270,13 @@ export function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder:
           <Btn danger onClick={() => { setConfirming(false); onDelete() }}>
             {i18nT('pages.schedulePage.cronFolders.delete_folder_named', { name: folder.name })}
           </Btn>
-          <Btn onClick={() => setConfirming(false)}>
+          {/* Cancel unmounts the row and itself with it, which would drop
+              focus to the page: hand it back to the trigger, as the rename
+              editor does, a frame later so the row has gone. */}
+          <Btn onClick={() => {
+            setConfirming(false)
+            requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }))
+          }}>
             {i18nT('pages.schedulePage.cancel')}
           </Btn>
         </div>
@@ -1156,7 +1155,7 @@ export default function SchedulePage() {
                     the page -- it was spending the column's pixels to fit fewer
                     characters. `fmtCron`'s raw-expression fallback stays legible
                     without it. */}
-                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</TableCell>
+                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{jobZoneCaption(j)}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
                 <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${j.last_error || ''}`}>{i18nT('pages.schedulePage.partial')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
                 <TableCell className="text-muted">
@@ -1844,7 +1843,10 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             {job && !job.last_error && job.last_result && (
               <div className="flex flex-col gap-1.5">
                 <div className="text-[12px] text-muted font-medium">{i18nT('pages.schedulePage.last_output')}</div>
-                <pre className="text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 max-h-[200px] overflow-y-auto bg-bg-elevated border-border text-text">{job.last_result}</pre>
+                {/* Same viewport-relative cap as the Last Error notice above
+                    (#21061): a fixed 200px left most of a long output behind
+                    the inner scrollbar. */}
+                <pre data-testid="schedule-job-last-output" className="text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 shrink-0 max-h-[min(45vh,420px)] overflow-y-auto bg-bg-elevated border-border text-text">{job.last_result}</pre>
               </div>
             )}
             {job?.last_run_ts && (

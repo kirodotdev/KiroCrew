@@ -89,13 +89,12 @@ def test_a_legitimate_persona_outside_the_agents_dir_still_works(tmp_path):
 
 
 def test_a_symlink_into_a_pseudo_filesystem_is_refused(tmp_path):
-    """The hole a reviewer found in the FIRST version of this fix.
+    """The pseudo-filesystem fence must test the resolved target, not the path as written.
 
-    That version resolved the target for the two credential fences but left the
-    pseudo-filesystem loop testing the path as written, so this symlink passed all
-    three checks: the link is not under /proc, and /proc is not a credential
-    location. The read then followed it and inlined the deploy process's own
-    environment into the shipped prompt, where scan_text catches only
+    A fence that resolves the target only for the two credential checks lets this
+    symlink pass all three: the link is not under /proc, and /proc is not a
+    credential location. The read then follows it and inlines the deploy process's
+    own environment into the shipped prompt, where scan_text catches only
     credential-SHAPED text -- a secret in any other format survives.
     """
     mod = load_build()

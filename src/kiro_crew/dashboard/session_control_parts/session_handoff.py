@@ -211,7 +211,7 @@ async def handoff_target(
                     f"{receiver.key!r} already holds the per-caller slot cap "
                     f"({MAX_SLOTS_PER_CREATOR})",
                     code="creator_slot_cap_reached",
-                    status=429,
+                    status=409,
                 )
             tab = str(getattr(slot, "_tab_id", "") or "")
             # ``authorize_target`` found the receiver open, and nothing suspends between

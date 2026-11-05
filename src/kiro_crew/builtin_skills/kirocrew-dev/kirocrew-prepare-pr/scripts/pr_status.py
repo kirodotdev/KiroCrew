@@ -224,6 +224,7 @@ def writer_disposition_records(repo, comments):
 
 
 disposition_violations = _review_contract.disposition_violations
+disposition_reviewer_names = _review_contract.disposition_reviewer_names
 superseded_verdicts = _review_contract.superseded_verdicts
 
 
@@ -1443,7 +1444,7 @@ def main(argv):
                 r["target"]
                 for r in disposition_records
                 if not r["malformed"]
-                and r["target"] not in {n.lower() for n in marker_bindings.values()}
+                and not disposition_reviewer_names(r["target"], marker_bindings)
             }
         )
         if unknown_targets:

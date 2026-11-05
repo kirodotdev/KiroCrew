@@ -1,12 +1,9 @@
 """AWS Control storage engine — the security-sensitive S3 layer.
 
-This file pins the BEHAVIOUR CONTRACTS the docstring in ``storage.py`` calls
-load-bearing: bucket creation and hardening ORDER, key-validation rejections,
-presign expiry clamping, section prefixing, and every branch that REFUSES.
-It intentionally leans on the same conventions as ``test_aws_control_app.py``:
-patch ``storage._checked`` / ``storage.engine.run_aws``, assert on the argv
-handed to the AWS CLI, and build tag-discovery JSON payloads by hand. Comments
-explain WHY a case matters, not what the code does.
+Pins the contracts ``storage.py`` calls load-bearing: bucket hardening ORDER, key
+validation, presign expiry clamping, section prefixing, and every branch that
+REFUSES. Tests patch ``storage._checked`` / ``storage.engine.run_aws`` and assert on
+the AWS CLI argv.
 """
 
 from __future__ import annotations
@@ -31,13 +28,9 @@ from kiro_crew.deploy.engine import AWSError
 def _crew_home_pinned_to(parent_dir: Path):
     """Build the sandbox mask universe from *parent_dir*, not the real home.
 
-    Every preview test points the staging seam at a temp directory, and this
-    suite's temp root can itself sit INSIDE the real crew home (conftest puts
-    it under KIROCREW_SCRATCH). A masked crew leaf is then a genuine foreign
-    ancestor of that fake staging root, so the site's shadow guard refuses a
-    transfer for a layout production never has. Pinning the home the mask
-    universe is built from to the temp tree makes the verdict independent of
-    TMPDIR, and leaves the guard itself running for real in every test.
+    The temp root can sit INSIDE the real crew home (under KIROCREW_SCRATCH), where
+    the shadow guard would refuse a layout production never has. The guard itself
+    still runs for real.
     """
     with (
         mock.patch.object(sandbox.Path, "home", staticmethod(lambda: parent_dir)),
@@ -46,11 +39,9 @@ def _crew_home_pinned_to(parent_dir: Path):
         yield
 
 
-# ---------------------------------------------------------------------------
 # Section prefixing — a raw prefix must never cross the HTTP boundary, so the
 # section->prefix mapping is the only place a caller-supplied section becomes a
 # key prefix. section_key() is what every object-I/O path funnels through.
-# ---------------------------------------------------------------------------
 
 
 class TestSectionKey:
@@ -76,10 +67,8 @@ class TestNewBucketName:
         assert storage._BUCKET_NAME_RE.fullmatch(name), name
 
 
-# ---------------------------------------------------------------------------
 # Discovery — the trust decision. These pin the branches find_drive() takes
 # on empty results, malformed JSON, and a single clean hit.
-# ---------------------------------------------------------------------------
 
 
 class TestFindDrive:
@@ -186,11 +175,9 @@ class TestFindDrive:
         assert f"Key={engine.TAG_MANAGED},Values=true" in joined
 
 
-# ---------------------------------------------------------------------------
 # Creation — the hardening ORDER is the whole point. A discovered drive
 # promises versioning + BPA + SSE, and the discovery TAGS are what make it
 # discoverable, so everything must hold BEFORE the tags land.
-# ---------------------------------------------------------------------------
 
 
 class TestCreateDrive:
@@ -421,12 +408,10 @@ class TestEnsureTlsOnlyPolicy:
             self._run((255, "", "AccessDenied"))
 
 
-# ---------------------------------------------------------------------------
 # Listing — one delimited page. The load-bearing behaviour is (a) the section
 # prefix is STRIPPED off returned keys, (b) the folder placeholder is dropped,
 # and (c) every name is run through the credential/exfiltration redactors
 # because keys can be authored outside this app.
-# ---------------------------------------------------------------------------
 
 
 class TestListSection:
@@ -515,10 +500,8 @@ class TestListSection:
         assert result == {"files": [], "folders": [], "nextToken": ""}
 
 
-# ---------------------------------------------------------------------------
 # Object I/O — thin wrappers over the CLI. The contract worth pinning is the
 # exact argv: the S3 URI is built from section_key(), and timeouts propagate.
-# ---------------------------------------------------------------------------
 
 
 class TestListLibraryFolders:
@@ -767,12 +750,10 @@ class TestCopyObject:
         assert argv[argv.index("--copy-source") + 1] == "b/drive/my%20file.txt"
 
 
-# ---------------------------------------------------------------------------
 # Folder create — a folder exists ONLY as a zero-byte, '/'-terminated
 # placeholder, and its key must be exactly the shape list_section() filters out
 # of `files` (obj["Key"] == prefix). If the two drift, a created folder shows up
 # as a phantom file.
-# ---------------------------------------------------------------------------
 
 
 class TestFolderPlaceholderKey:
@@ -814,13 +795,11 @@ class TestCreateFolder:
         assert checked.call_args.kwargs["action"] == "s3:PutObject"
 
 
-# ---------------------------------------------------------------------------
 # Folder delete (delete_prefix) — the blast-radius surface. The contract:
 # (a) anchor on section/path/ WITH the trailing slash so a name-prefixed sibling
 # is not swept; (b) page the batch API, honouring the 1000-key cap rather than
 # assuming one call clears the folder; (c) every call owner-pinned; (d) return
 # the true count removed.
-# ---------------------------------------------------------------------------
 
 
 class TestDeletePrefix:
@@ -975,17 +954,9 @@ class TestDeletePrefix:
         # A folder larger than one batch must still be fully deleted, and the walk
         # deliberately does NOT resume with --starting-token.
         #
-        # `--max-items` is CLIENT-side pagination: when the CLI truncates inside a
-        # server page it emits a COMPOSITE token carrying an intra-page offset
-        # (boto_truncate_amount). S3 is free to return a short page, so the CLI
-        # can fetch another to reach the requested count and truncate mid-page.
-        # Resuming with that token re-lists and skips N items - but those N were
-        # just DELETED, so the skip lands on surviving keys, which are then never
-        # removed while the call reports completion.
-        #
-        # Re-listing from the prefix each round has no such offset to get wrong:
-        # what was deleted is simply gone, so the next listing begins at the next
-        # survivor. It is also memory-bounded, unlike collecting every key first.
+        # `--max-items` truncates client-side with a token carrying an intra-page
+        # offset (boto_truncate_amount). After a delete that offset skips surviving
+        # keys, so the walk re-lists from the prefix each round instead.
         removed, calls = self._run(
             [
                 {"Contents": [{"Key": "drive/photos/a"}], "NextToken": "T1"},
@@ -1111,10 +1082,8 @@ class TestObjectExists:
             assert storage.head_object_meta("p", "r", "b", "drive", "a", account="1") == {}
 
 
-# ---------------------------------------------------------------------------
 # Presign — a bearer URL. Clamp both ends of the expiry, and REFUSE any output
 # that is not an https URL rather than handing back a broken share.
-# ---------------------------------------------------------------------------
 
 
 class TestPresign:
@@ -1169,11 +1138,9 @@ class TestPresign:
             self._presign(3600, out="")
 
 
-# ---------------------------------------------------------------------------
 # Usage — objects + bytes per section, folded from a full-bucket listing. The
 # contract: attribute each key to exactly ONE section by prefix, tolerate
 # malformed rows, and sum honestly.
-# ---------------------------------------------------------------------------
 
 
 class TestUsage:
@@ -1227,11 +1194,9 @@ class TestUsage:
         assert result["sections"]["drive"] == {"objects": 1, "bytes": 0}
 
 
-# ---------------------------------------------------------------------------
 # Upload Content-Type — inline preview rendering depends on the stored header,
 # so the guess must land on the argv when the extension is known and must NOT
 # override S3's default when it is not.
-# ---------------------------------------------------------------------------
 
 
 class TestPutFileContentType:
@@ -1277,11 +1242,9 @@ class TestPutFileContentType:
         assert "--content-type" not in argv
 
 
-# ---------------------------------------------------------------------------
 # Preview head bytes — the gateway-proxied read behind /drive/{account}/preview.
 # The range bound, the owner pin, the full-size answer, and the temp-file
 # cleanup are each load-bearing.
-# ---------------------------------------------------------------------------
 
 
 class TestGetObjectHeadBytes:
@@ -1537,10 +1500,8 @@ class TestGetObjectHeadBytes:
                 )
 
 
-# ---------------------------------------------------------------------------
 # Filename search — bounded pagination is the contract: a broad query on a
 # large drive must stop at the cap instead of listing the world.
-# ---------------------------------------------------------------------------
 
 
 def _search_page(keys: list[str], next_token: str = "") -> str:
@@ -1622,11 +1583,9 @@ class TestSearchKeys:
         assert second_argv[second_argv.index("--starting-token") + 1] == "t2"
 
 
-# ---------------------------------------------------------------------------
 # Version-pinned reads — a version id is the first value in this module that
 # becomes a BARE ARGV ELEMENT rather than a field inside a JSON document, so it
 # is the first one the AWS CLI's own option grammar can misread.
-# ---------------------------------------------------------------------------
 
 
 class TestValidateVersionId:

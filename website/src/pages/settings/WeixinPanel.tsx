@@ -406,7 +406,7 @@ export function WeixinPanel() {
       <div className="border-t border-border mt-4 pt-4" data-testid="weixin-session-folder">
         <SettingsToggle
           label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-          description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+          hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
           checked={folderOn}
           disabled={readOnly}
           onChange={toggleFolder}
@@ -415,7 +415,7 @@ export function WeixinPanel() {
           <div className="mt-4">
             <SettingsInput
               label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
-              description={i18nT('pages.settings.weixinPanel.created_for_you_when_you_turn_this_on_if_it_does')}
+              hint={i18nT('pages.settings.weixinPanel.created_for_you_when_you_turn_this_on_if_it_does')}
               value={folderName}
               disabled={readOnly}
               placeholder={CHANNEL_NAME}

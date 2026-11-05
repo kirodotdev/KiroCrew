@@ -134,8 +134,8 @@ ARTIFACT_SUFFIX = re.compile(
 
 # The channel-qualified product name, which is a **space**-separated OS
 # identifier: ``PRODUCT_NAMES`` in ``cli_desktop.py`` spells the macOS log
-# directory ``~/Library/Logs/KiroCrew Nightly`` and the Windows config directory
-# the same way, and electron's ``instance-guard.js`` keeps ``appName`` distinct
+# directory ``~/Library/Logs/KiroCrew Nightly``, and electron's
+# ``instance-guard.js`` keeps ``appName`` distinct
 # from its ``displayName`` for exactly this reason. Prose and identifier are the
 # same characters here, so no rule can separate them — the identifier wins,
 # because renaming it would move a user's logs and config out from under them.

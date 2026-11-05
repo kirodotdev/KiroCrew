@@ -1,13 +1,7 @@
 """The host-data gate over the ACP frame corpus.
 
-The gate itself is a script so CI can run it without pytest, and these tests hold it
-to the two properties that make it a ratchet rather than a linter: the baseline is
-per FILE and per MARKER CLASS, and it cannot go stale silently.
-
-A gate whose baseline is a pattern-wide opt-out is worse than no gate, because it
-reads as protection. So each test below plants a marker rather than asserting on the
-current corpus: a corpus that happens to be clean would make an assertion about it
-pass whether the gate works or not.
+The baseline is per file and per marker class, and cannot go stale silently. Each test
+plants a marker, since a clean corpus would pass whether the gate works or not.
 """
 
 from __future__ import annotations
@@ -105,11 +99,8 @@ def test_the_baseline_is_exactly_the_debts_it_carries_today(gate) -> None:
 def test_a_new_marker_fails_even_in_a_baselined_file(gate, tmp_path, monkeypatch) -> None:
     """The baseline is per MARKER CLASS, so a second class in the same file still fails.
 
-    The planted file is entered into the baseline under the key the gate itself derives
-    for it, which is what makes this a test of the per-REASON rule. Copying a real
-    baselined fixture into a temp directory does not: the copy matches no baseline key at
-    all, so the gate treats every class as unbaselined and the assertion passes while
-    proving only that an unbaselined file fails.
+    The planted file is baselined under the gate's own derived key. A copied fixture
+    matches no key, so it would only prove an unbaselined file fails.
     """
     first = gate.PATTERNS[0][1]
     pattern_second, second = gate.PATTERNS[1][0], gate.PATTERNS[1][1]
@@ -171,11 +162,8 @@ def test_every_baseline_reason_is_a_pattern_this_gate_has(gate) -> None:
 def test_a_path_on_another_drive_does_not_crash_the_sweep(gate, tmp_path, monkeypatch) -> None:
     """``os.path.relpath`` RAISES across drives, and a hosted runner hits exactly that.
 
-    A temp directory lands on a different drive from the checkout on Windows CI, so a
-    sweep over a planted file raised ``ValueError: path is on mount 'C:', start on mount
-    'D:'`` and took the whole test down. The behaviour cannot be reproduced on a POSIX
-    host, so the raise is injected rather than waited for -- otherwise this only ever
-    fails on the platform least likely to be run locally.
+    On Windows CI the temp dir is on another drive. The ``ValueError`` is injected so
+    POSIX hosts check it too.
     """
     planted = tmp_path / "planted.jsonl"
     planted.write_text("{}\n", encoding="utf-8")

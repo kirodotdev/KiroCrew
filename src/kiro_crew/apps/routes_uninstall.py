@@ -43,7 +43,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _unregister_notification_channels,
 )
 from kiro_crew.apps.routes_proxy import invalidate_app_secret_cache
-from kiro_crew.apps.teardown import forget_app_hooks
+from kiro_crew.apps.teardown import forget_app_hooks, stop_app_hooks_for_uninstall
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
@@ -533,6 +533,16 @@ async def _run_uninstall(
         # strand a half-removed app that no retry can finish cleanly, and an app
         # that cannot be uninstalled is a worse outcome than one whose port is
         # named as still in use. What must not happen is claiming a clean stop.
+        #
+        # The in-process half comes first, in the order disable uses: route
+        # deregistration, `on_shutdown`, job runs and the SDK entry. Without it an
+        # uninstalled app's `backend.hooks` routes keep answering until the hook
+        # reconciler's next tick. Reported, never an abort, for the same reason as
+        # the port below.
+        in_process = await stop_app_hooks_for_uninstall(name)
+        for note in (*in_process.warnings, *in_process.failures):
+            backend_warnings.append(note)
+            uninstall_log.append(note)
         live_port, had_port_evidence = await _stop_backend_and_observe(name)
         if live_port is not None:
             logger.warning(

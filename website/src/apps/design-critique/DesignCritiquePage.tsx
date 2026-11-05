@@ -4,8 +4,9 @@ import {
   Check, ChevronRight, Maximize2, Sparkle,
 } from 'lucide-react'
 
-import { sevOf, KIND_LABEL, HARD_CAP_MS, MAX_SCREENS, BLOCKED, SAMPLE_REPORT, SAMPLE_SCREENS } from './constants'
+import { sevOf, HARD_CAP_MS, MAX_SCREENS, BLOCKED, SAMPLE_REPORT, SAMPLE_SCREENS } from './constants'
 import Clickable from '../../components/Clickable'
+import { useMenuKeyboard } from '../../hooks/useMenuKeyboard'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Spinner } from './Motion'
 import { S } from './styles'
@@ -41,9 +42,21 @@ import type {
 } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 // Errors flagged with why the poll loop gave up — distinguishes navigate-away and
 // timeout (both resumable) from a real failure.
 type Flagged = Error & { cancelled?: boolean; timeout?: boolean }
+/** The rail's "rendering it" line for a pasted link, one whole-sentence key per kind. */
+function railPendingLabel(kind: string): string {
+  switch (kind) {
+    case 'figma': return i18nT('apps.designCritique.designCritiquePage.rail_pending_figma')
+    case 'repo': return i18nT('apps.designCritique.designCritiquePage.rail_pending_repo')
+    case 'local': return i18nT('apps.designCritique.designCritiquePage.rail_pending_local')
+    case 'url': return i18nT('apps.designCritique.designCritiquePage.rail_pending_url')
+    default: return i18nT('apps.designCritique.designCritiquePage.rail_pending_design')
+  }
+}
+
 const CANCELLED = (): Flagged => Object.assign(new Error('cancelled'), { cancelled: true })
 const TIMEOUT = (): Flagged => Object.assign(new Error('still running'), { timeout: true })
 
@@ -102,10 +115,12 @@ export default function DesignCritiquePage() {
   const [pendingKind, setPendingKind] = useState<string | null>(null)
 
   const reduceMotion = useReduceMotion()
-  const { toasts, notify } = useToasts()
+  const { toasts } = useToasts()
 
   const inputRef = useRef<HTMLInputElement>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const historyBtnRef = useRef<HTMLButtonElement | null>(null)
+  const historyMenuRef = useRef<HTMLDivElement | null>(null)
   const rowRefs = useRef<Record<number, HTMLDivElement | null>>({})
   const startedAtRef = useRef(0)
   const aliveRef = useRef(true)
@@ -174,6 +189,38 @@ export default function DesignCritiquePage() {
     window.addEventListener('keydown', k)
     return () => window.removeEventListener('keydown', k)
   }, [zoom])
+
+  // The History menu runs on the shared menu contract (focus enters on open,
+  // arrows/Home/End move, Tab stays inside). Dismissal is this host's: Escape
+  // closes and returns focus to the button; a pointer-down outside closes and
+  // leaves focus where the click put it (the SlotPopover/MenuBtn posture).
+  useMenuKeyboard({ enabled: menuOpen, containerRef: historyMenuRef })
+  useEffect(() => {
+    if (!menuOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setMenuOpen(false)
+      historyBtnRef.current?.focus()
+    }
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node
+      if (historyMenuRef.current?.contains(t) || historyBtnRef.current?.contains(t)) return
+      setMenuOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    document.addEventListener('pointerdown', onDown)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.removeEventListener('pointerdown', onDown)
+    }
+  }, [menuOpen])
+
+  // Picking a critique closes the menu under the focused item, so focus goes
+  // back to the button instead of falling to <body>.
+  const pickFromHistory = (e: HistoryEntry) => {
+    selectCritique(e)
+    historyBtnRef.current?.focus()
+  }
 
   // ── poll loops ──────────────────────────────────────────────────────────
   // Ends on EVIDENCE, not a clock; the runaway backstop is measured against
@@ -329,7 +376,7 @@ export default function DesignCritiquePage() {
     // the user is no longer watching announces itself with the ready chip instead.
     const waiting = isWatching(slotKey)
     if (waiting) showReport(rep, screens, next.find(e => e.slotKey === slotKey) || next[0])
-    else setJustFinished({ slotKey, read: rep.overallRead || 'Critique ready', screens, report: rep })
+    else setJustFinished({ slotKey, read: rep.overallRead || i18nT('apps.designCritique.designCritiquePage.critique_ready_fallback'), screens, report: rep })
   }
 
   const failWith = (e: unknown, slotKey: string) => {
@@ -347,10 +394,8 @@ export default function DesignCritiquePage() {
     setCritiques(dropPendingCritique(slotKey))
     const message = e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.something_went_wrong')
     if (watching) { setErr(message); setPhase('error') }
-    // The toast is transient feedback; the failed state itself is rendered
-    // in-page (the rail notice) so it is not lost when the toast fades.
+    // A background failure is rendered in-page (the rail notice) through ErrorNotice.
     else setBackgroundFailures(prev => [...prev.filter(f => f.slotKey !== slotKey), { slotKey, message }])
-    notify('Critique failed: ' + (e instanceof Error ? e.message : String(e)), { type: 'error' })
   }
 
   const ask = async (prompt: string, uploaded: Screen[], foreground = true) => {
@@ -796,8 +841,8 @@ export default function DesignCritiquePage() {
     } catch (e) {
       const flag = e as Flagged
       if (flag && flag.cancelled) return
-      const msg = flag && flag.timeout ? 'That took too long — ask again.'
-        : (e instanceof Error) ? e.message : 'Something went wrong.'
+      const msg = flag && flag.timeout ? i18nT('apps.designCritique.designCritiquePage.ask_too_long')
+        : (e instanceof Error) ? e.message : i18nT('apps.designCritique.designCritiquePage.ask_went_wrong')
       setAsks(prev => prev.map(a => a.id === askId
         ? { ...a, turns: a.turns.map(t => (t.t === stamp ? { ...t, a: msg, pending: false, failed: true } : t)) }
         : a))
@@ -966,7 +1011,8 @@ export default function DesignCritiquePage() {
     // on a string and take the whole report down. Trust the shape only when it
     // really is an array.
     const st = Array.isArray(f.steps) ? f.steps.slice().sort((a, b) => a - b) : []
-    if (!st.length) return 'flow'
+    // No steps: FindingRow shows its own translated flow badge and no range line.
+    if (!st.length) return ''
     if (st.length === 1) return String(st[0])
     if (st.length === 2 && st[1] === st[0] + 1) return st[0] + '→' + st[1]
     return st[0] + '–' + st[st.length - 1]
@@ -1017,7 +1063,9 @@ export default function DesignCritiquePage() {
 
   const entryMeta = (e: HistoryEntry) => {
     const n = (e.screens && e.screens.length) || (e.thumbUrl ? 1 : 0)
-    return (n > 1 ? n + ' screens · ' : n === 1 ? '1 screen · ' : '') + relTime(e.ts)
+    return n > 0
+      ? i18nT('apps.designCritique.designCritiquePage.entry_meta_screens', { count: n, n: fmtNumber(n), when: relTime(e.ts) })
+      : relTime(e.ts)
   }
 
   const railHead = (
@@ -1029,19 +1077,31 @@ export default function DesignCritiquePage() {
         {(!busy && justFinished) ? <button style={{ ...S.runChip, ...S.readyChip }} onClick={() => { const h = loadHistory(); const mine = h.find(e => e.slotKey === justFinished.slotKey); if (mine) showReport(justFinished.report, justFinished.screens, mine); setJustFinished(null) }} title={justFinished.read}><Check size={12} />{i18nT('apps.designCritique.designCritiquePage.critique_ready')}</button> : null}
         {(phase !== 'new' && critiques.length) ? (
           <div style={{ position: 'relative' }}>
-            <button style={S.railBtn} onClick={() => setMenuOpen(o => !o)} title={i18nT('apps.designCritique.designCritiquePage.switch_critique')}>{'History (' + critiques.length + ')'}<ChevronDown size={12} /></button>
+            <button
+              ref={historyBtnRef} style={S.railBtn} onClick={() => setMenuOpen(o => !o)} title={i18nT('apps.designCritique.designCritiquePage.switch_critique')}
+              aria-expanded={menuOpen} aria-haspopup="menu" aria-controls="dc-history-menu"
+            >{i18nT('apps.designCritique.designCritiquePage.history_count', { n: fmtNumber(critiques.length) })}<ChevronDown size={12} /></button>
             {menuOpen ? (
-              <div style={S.menu}>
+              <div
+                style={S.menu} id="dc-history-menu" role="menu" ref={historyMenuRef} tabIndex={-1}
+                aria-label={i18nT('apps.designCritique.designCritiquePage.switch_critique')}
+              >
                 {critiques.map(e => (
-                  <Clickable key={e.id} style={S.menuItem} onClick={() => selectCritique(e)}
-                    title={e.pending ? i18nT('apps.designCritique.designCritiquePage.a_critique_is_still_running_click_to_watch_it') : undefined} aria-busy={e.pending || undefined}>
+                  <div
+                    // Tab-reachable: `useMenuKeyboard` wraps only at the boundary items, so
+                    // native Tab must be able to step between the entries inside.
+                    key={e.id} role="menuitem" tabIndex={0} style={S.menuItem}
+                    onClick={() => pickFromHistory(e)}
+                    onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pickFromHistory(e) } }}
+                    title={e.pending ? i18nT('apps.designCritique.designCritiquePage.a_critique_is_still_running_click_to_watch_it') : undefined} aria-busy={e.pending || undefined}
+                  >
                     {e.thumbUrl ? <img src={e.thumbUrl} style={S.menuThumb} alt="" /> : null}
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ ...S.menuRead, ...(e.pending ? S.pendingRead : {}) }}>{e.pending ? i18nT('apps.designCritique.designCritiquePage.running') : (e.read || 'Critique')}</div>
+                      <div style={{ ...S.menuRead, ...(e.pending ? S.pendingRead : {}) }}>{e.pending ? i18nT('apps.designCritique.designCritiquePage.running') : (e.read || i18nT('apps.designCritique.designCritiquePage.critique_untitled'))}</div>
                       <div style={S.menuTime}>{entryMeta(e)}</div>
                     </div>
                     {e.pending ? <Spinner size={12} reduceMotion={reduceMotion} /> : null}
-                  </Clickable>
+                  </div>
                 ))}
               </div>
             ) : null}
@@ -1123,11 +1183,11 @@ export default function DesignCritiquePage() {
             return (
               <div key={'st' + sc.step}>
                 <Clickable style={S.stepH} onClick={() => setScreenIdx(screens.indexOf(sc))} title={i18nT('apps.designCritique.designCritiquePage.show_this_screen')}>
-                  <span>{'Step ' + sc.step + ' · '}</span>
+                  <span>{i18nT('apps.designCritique.designCritiquePage.step_n', { n: fmtNumber(sc.step) }) + ' · '}</span>
                   <span style={S.stepName} title={sc.label}>{shortLabel(sc.label)}</span>
                   {onScreen
                     ? <span style={{ ...S.stepCount, color: 'var(--accent)' }}>{i18nT('apps.designCritique.designCritiquePage.on_screen')}</span>
-                    : <span style={{ ...S.stepCount, color: 'var(--muted)' }}>{mine.length ? mine.length + (mine.length === 1 ? ' finding' : ' findings') : 'nothing flagged'}</span>}
+                    : <span style={{ ...S.stepCount, color: 'var(--muted)' }}>{mine.length ? i18nT('apps.designCritique.designCritiquePage.findings_count', { count: mine.length, n: fmtNumber(mine.length) }) : i18nT('apps.designCritique.designCritiquePage.nothing_flagged')}</span>}
                 </Clickable>
                 {mine.map(renderRow)}
               </div>
@@ -1138,8 +1198,8 @@ export default function DesignCritiquePage() {
 
     railBody = (
       <>
-        <p key="read" style={S.readLine}>{withMarks(report.overallRead || 'Design critique')}</p>
-        {(report.health || isFlow) ? <div key="hh" style={S.health}>{[report.health, isFlow ? ' · ' + screens.length + ' screens' : ''].filter(Boolean).join('')}</div> : null}
+        <p key="read" style={S.readLine}>{withMarks(report.overallRead || i18nT('apps.designCritique.designCritiquePage.design_critique_fallback'))}</p>
+        {(report.health || isFlow) ? <div key="hh" style={S.health}>{[report.health, isFlow ? ' · ' + i18nT('apps.designCritique.designCritiquePage.flow_screens_count', { count: screens.length, n: fmtNumber(screens.length) }) : ''].filter(Boolean).join('')}</div> : null}
         <div key="chips" style={S.chips}>{chips}</div>
         {(Array.isArray(report.keep) && report.keep.length) ? (
           <div key="keep">
@@ -1163,26 +1223,26 @@ export default function DesignCritiquePage() {
   } else if (busy) {
     railBody = (
       <>
-        <p key="w" style={S.readLine}>{phase === 'uploading' ? 'Uploading…' : 'Reading your design…'}</p>
+        <p key="w" style={S.readLine}>{phase === 'uploading' ? i18nT('apps.designCritique.designCritiquePage.rail_uploading') : i18nT('apps.designCritique.designCritiquePage.rail_reading')}</p>
         <div key="sub" style={S.health}>{screens.length > 1
-          ? 'A flow of ' + screens.length + ' screens — I’ll also check the jumps between them.'
-          : screens.length ? 'One screen.'
-          : pendingKind ? 'A ' + (KIND_LABEL[pendingKind] || 'design') + ' — rendering it before judging it.'
-          : 'Getting the screens ready.'}</div>
+          ? i18nT('apps.designCritique.designCritiquePage.rail_flow', { count: screens.length, n: fmtNumber(screens.length) })
+          : screens.length ? i18nT('apps.designCritique.designCritiquePage.rail_one_screen')
+          : pendingKind ? railPendingLabel(pendingKind)
+          : i18nT('apps.designCritique.designCritiquePage.rail_getting_ready')}</div>
         {screens.length ? (
           <div key="l">
-            <div style={S.sectionH}>{screens.length > 1 ? 'Screens in order' : 'Screen'}</div>
+            <div style={S.sectionH}>{screens.length > 1 ? i18nT('apps.designCritique.designCritiquePage.screens_in_order') : i18nT('apps.designCritique.designCritiquePage.screen_heading')}</div>
             {screens.map((sc, i) => (
               <div key={i} style={{ ...S.seeItem, display: 'flex', gap: '8px' }}>
                 <span style={{ color: 'var(--muted)', fontVariantNumeric: 'tabular-nums' }}>{(i + 1) + '.'}</span>
-                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sc.label || 'Screen ' + (i + 1)}</span>
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sc.label || i18nT('apps.designCritique.designCritiquePage.screen_n', { n: fmtNumber(i + 1) })}</span>
               </div>
             ))}
           </div>
         ) : null}
         <div key="nx">
           <div style={S.sectionH}>{i18nT('apps.designCritique.designCritiquePage.what_you_ll_get')}</div>
-          {['An overall read of how it’s doing', 'What’s working, so it survives the next pass', 'The top things to tighten, with pins on the screen']
+          {[i18nT('apps.designCritique.designCritiquePage.get_overall_read'), i18nT('apps.designCritique.designCritiquePage.get_whats_working'), i18nT('apps.designCritique.designCritiquePage.get_top_things')]
             .map((tx, i) => <div key={i} style={S.seeItem}>{'· ' + tx}</div>)}
         </div>
       </>
@@ -1199,7 +1259,7 @@ export default function DesignCritiquePage() {
                 title={e.pending ? i18nT('apps.designCritique.designCritiquePage.a_critique_is_still_running_click_to_watch_it') : undefined} aria-busy={e.pending || undefined}>
                 {e.thumbUrl ? <img src={e.thumbUrl} style={S.listThumb} alt="" /> : null}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ ...S.listRead, ...(e.pending ? S.pendingRead : {}) }}>{e.pending ? i18nT('apps.designCritique.designCritiquePage.running') : (e.read || 'Critique')}</div>
+                  <div style={{ ...S.listRead, ...(e.pending ? S.pendingRead : {}) }}>{e.pending ? i18nT('apps.designCritique.designCritiquePage.running') : (e.read || i18nT('apps.designCritique.designCritiquePage.critique_untitled'))}</div>
                   <div style={S.listTime}>{entryMeta(e)}</div>
                 </div>
                 {e.pending
@@ -1207,7 +1267,7 @@ export default function DesignCritiquePage() {
                   : <ChevronRight size={15} style={{ color: 'var(--muted)', flexShrink: 0 }} />}
               </Clickable>
             ))}</div>
-          : <div key="empty" style={S.emptyList}>{'No critiques yet.' + (narrow ? ' Drop a screenshot below.' : ' Drop a screenshot in the panel →')}</div>}
+          : <div key="empty" style={S.emptyList}>{narrow ? i18nT('apps.designCritique.designCritiquePage.no_critiques_narrow') : i18nT('apps.designCritique.designCritiquePage.no_critiques_wide')}</div>}
       </>
     )
   }
@@ -1264,7 +1324,7 @@ export default function DesignCritiquePage() {
           const worst = mine.slice().sort(bySev)[0]
           const on = i === screenIdx
           return (
-            <button key={'th' + i} style={S.thumb} onClick={() => { setScreenIdx(i); setActive(null) }} title={'Step ' + sc.step + ' · ' + sc.label} aria-current={on ? 'true' : 'false'}>
+            <button key={'th' + i} style={S.thumb} onClick={() => { setScreenIdx(i); setActive(null) }} title={i18nT('apps.designCritique.designCritiquePage.step_n', { n: fmtNumber(sc.step) }) + ' · ' + sc.label} aria-current={on ? 'true' : 'false'}>
               <div style={{ ...S.thumbBox, ...(on ? S.thumbBoxOn : {}) }}>
                 <img src={sc.url} style={S.thumbImg} alt="" />
                 {worst
@@ -1282,12 +1342,16 @@ export default function DesignCritiquePage() {
         {filmstrip}
         <div style={S.previewWrap}>
           <Clickable style={S.preview} onClick={() => setZoom(true)} title={i18nT('apps.designCritique.designCritiquePage.enlarge')}>
-            <img src={thumbUrl} style={S.previewImg} alt={shown ? shown.label : 'the design'} />
+            <img src={thumbUrl} style={S.previewImg} alt={shown ? shown.label : i18nT('apps.designCritique.designCritiquePage.the_design_alt')} />
             {markers}
           </Clickable>
           <div style={S.pvbar}>
             <Maximize2 size={12} />
-            {'Click to enlarge' + (markers.length ? ' · numbered pins mark issues on this screen' : '') + (isFlow ? ' · pick a step above' : '')}
+            {[
+              i18nT('apps.designCritique.designCritiquePage.click_to_enlarge'),
+              markers.length ? i18nT('apps.designCritique.designCritiquePage.numbered_pins_mark_issues_on_this_screen') : '',
+              isFlow ? i18nT('apps.designCritique.designCritiquePage.pick_a_step_above') : '',
+            ].filter(Boolean).join(' · ')}
           </div>
         </div>
       </>

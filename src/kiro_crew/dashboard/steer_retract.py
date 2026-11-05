@@ -47,10 +47,12 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard import responsive_chat
 from kiro_crew.dashboard.chat_delivery import (
+    CHAT_BANNER_META_KEY,
     STEER_RETRACTABLE_META,
     STEER_STATE_RETRACTED,
     STEER_STATE_WRITTEN,
     attachment_meta,
+    banner_meta,
     find_written_steer_row,
     queue_for_next_turn,
     quote_meta,
@@ -400,6 +402,7 @@ def take_back(state: "DashboardState", slot: "_ChatSlot", record: SteerRetract) 
             directive_owner_origin=owner_origin,
             attachments=attachment_meta(held),
             quote=quote_meta(held).get("quote"),
+            banner=banner_meta(held).get(CHAT_BANNER_META_KEY, ""),
             admission=record.admission,
         )
         crew_steer_requeued(

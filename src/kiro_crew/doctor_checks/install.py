@@ -2,13 +2,15 @@
 
 The project directory, the data home and a leftover legacy home, deployed cron
 scripts and installed skills against their sources, the ``kirocrew`` launcher on
-``PATH``, an editable install's source checkout, the Python import path, and the
-timezone data the runtime resolves zones from.
+``PATH``, the program the installed service starts, an editable install's source
+checkout, the Python import path, and the timezone data the runtime resolves zones
+from.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import sys
 import zoneinfo
@@ -48,18 +50,7 @@ def _doctor_data_home() -> None:
     # launcher row prints: one install reached through a ``current`` symlink and
     # through its versioned directory must not read as two installs.
     print(f"  location:    ✅ {os.path.realpath(home)}")
-    from kiro_crew.browser_cli.install import agent_writable_root_over_data_home
-
-    if (overlap := agent_writable_root_over_data_home(Path(home))) is not None:
-        print(
-            f"  workspace:   ⚠️  {render._safe_display(str(overlap))} contains the data home, "
-            "so it is agent-writable and the managed browser launcher cannot run"
-        )
-        print(
-            "               Point the workspace root (KIROCREW_WORKSPACE or "
-            "<data-home>/workspace_dir) and any KIROCREW_PROJECT_DIR outside the "
-            "data home, then restart the gateway."
-        )
+    _doctor_browser_leftover(Path(home))
 
     legacy = Path.home() / cli_doctor.LEGACY_CONFIG_DIR_NAME
     if not legacy.is_dir():
@@ -102,9 +93,9 @@ def _doctor_cron_script_sources(issues: list[str]) -> None:
     """Report deployed cron scripts that disagree with their skill-asset source.
 
     The packaged-to-installed hop is content-verified, ``scripts/`` included. The
-    installed-to-``crons/`` hop is a hand-run ``cp`` documented in the owning
-    skill, and nothing compares its two sides -- so a deploy can run superseded
-    code indefinitely while looking healthy.
+    installed-to-``crons/`` hop is a copy made by hand -- no built-in skill
+    documents one -- and nothing else compares its two sides, so a deploy can run
+    superseded code indefinitely while looking healthy.
 
     Divergence is reported WITHOUT a direction. A cron script body is
     LLM-writeable by design, so the two sides disagreeing can mean a stale deploy
@@ -146,7 +137,8 @@ def _doctor_cron_script_sources(issues: list[str]) -> None:
     if any(state.state == CRON_SOURCE_DIVERGED for state in states):
         issues.append("deployed cron script diverged from its skill source")
         print(
-            "               Reconcile using the owning skill's own copy recipe. "
+            "               Reconcile by hand: the path after DIVERGED is the "
+            "installed skill's copy, the crons/ file is what the cron runs. "
             "A diverged copy may be a stale deploy OR an intentional local edit "
             "-- doctor cannot tell which, so it does not overwrite either one."
         )
@@ -367,57 +359,151 @@ def _doctor_path_launcher() -> None:
     )
 
 
-def _doctor_browser_bootstrap() -> None:
-    """Report the npm and Node the browser install would pick from THIS shell's PATH.
+#: The prefix an earlier version's browser CLI installer wrote under the data
+#: home. Nothing reads it any more; doctor names it and leaves it alone.
+_LEFTOVER_BROWSER_CLI_LEAF = "playwright-cli"
 
-    The in-product browser install resolves both through ``env.find_node_tool``
-    -- version-manager directories first, then ``PATH`` -- and that is the one
-    step of browser support that still reads the environment. Doctor repeats
-    the lookup in its own process, so where no version manager supplies the
-    tool and the gateway was started with a different ``PATH`` (a service
-    manager), the gateway can resolve another binary; the install logs the
-    paths it actually ran, which is the authoritative record. Writability comes
-    from the same predicate the CLI resolver refuses on. Nothing is refused here.
 
-    A toolchain only this account can replace -- nvm, fnm, volta and mise under
-    ``$HOME``, Homebrew's user-owned prefix -- is the NORMAL case and reads as
-    information. A warning is earned only when another account could replace
-    it (a group- or world-writable component) or when the writable component is
-    not this account's own, and even that is not recorded as a doctor issue.
+def _doctor_service_launch() -> None:
+    """Report which install the installed service starts, and warn on a source checkout.
+
+    The service definition persists the path of the ``kirocrew`` it launches. When
+    that path is, or leads through, the shared ``~/.local/bin/kirocrew`` launcher,
+    a source clone's ``install.sh`` or ``kirocrew setup`` can repoint it, and the
+    service runs the clone from its next restart on. On a host that also has the
+    managed wheel install, updates then run inside that checkout and anything done
+    in it reaches the running service, with nothing else saying so. This follows
+    the definition's own program (the systemd unit's ``ExecStart``, or the launcher
+    the launchd plist runs) to the file it finally executes.
+
+    Dev Fleet's "Make live" pointer is a deliberate checkout, so a service that
+    runs one while the pointer is set is reported, not warned on. A host with no
+    managed wheel install is a development host and runs its checkout on purpose.
+
+    Read-only and advisory: it reads the definition and never rewrites it.
     """
-    from kiro_crew.browser_cli.install import bootstrap_tool_provenance
-    from kiro_crew.env import find_node_tool
+    from kiro_crew.service import controller, live_target
 
-    for name in ("npm", "node"):
-        label = f"  browser {name}:"
-        path = find_node_tool(name)
-        if path is None:
-            print(f"{label} ⏹ not found (the browser install needs Node.js with npm)")
-            continue
-        info = bootstrap_tool_provenance(path)
-        if info["writable_at"] is None:
-            print(f"{label} ✅ {path} (writability not checked on this platform)")
-        elif not info["writable_at"]:
-            print(f"{label} ✅ {path}")
-        elif info["own_toolchain"]:
-            print(f"{label} ℹ️  {path} (your own toolchain, e.g. a version manager or Homebrew)")
-        elif info["shared_write"]:
-            print(f"{label} ⚠️  {path} can be replaced by other accounts")
-            render._print_wrapped(
-                f"{info['writable_at']} is group- or world-writable, so another account "
-                "could swap the binary before the browser install runs it. Remove "
-                "that write bit, or install Node from a version manager or Homebrew."
-            )
-        else:
-            print(f"{label} ⚠️  {path} sits in a directory this account does not own")
-            render._print_wrapped(
-                f"{info['writable_at']} is writable by this account but owned by "
-                "another, so its owner could also swap the binary. Install Node "
-                "from a version manager or Homebrew."
-            )
+    unit = controller.installed_unit_path()
+    if unit is None:
+        return
+    program = _service_program(unit)
+    if program is None:
+        print(f"  service runs: ⚠️  could not read the program the service starts ({unit})")
+        return
+    real = os.path.realpath(program)
+    checkout = _kirocrew_checkout_of(Path(real))
+    # A link target is whatever its writer chose, so a path that carries a
+    # control character is shown escaped; an ordinary one stays copyable.
+    shown = real if real.isprintable() else render._safe_display(real)
+    if checkout is None:
+        print(f"  service runs: ✅ {shown}")
+        return
+    if live_target.read_target() is not None:
+        print(f"  service runs: ℹ️  {shown} (source checkout, Dev Fleet live target is set)")
+        return
+    wheel = _managed_wheel_launcher()
+    if wheel is None:
+        print(f"  service runs: ✅ {shown} (source checkout)")
+        return
+    print("  ⚠️  The installed service runs a source checkout, not the wheel install.")
+    print(f"{render._INDENT}service runs:  {shown}")
+    print(f"{render._INDENT}wheel install: {wheel}")
     render._print_wrapped(
-        "These rows resolve from this shell's PATH; the gateway logs the npm and "
-        "Node it actually ran at install time."
+        "Updates run inside that checkout, and anything done in it reaches the "
+        "running service. To run the wheel install again, run `service install` "
+        "with the wheel install's kirocrew shown above, then restart the service. "
+        "To run a checkout on purpose, use Dev Fleet's Make live instead."
+    )
+
+
+def _service_program(unit: Path) -> str | None:
+    """The program an installed service definition finally executes, or ``None``.
+
+    A systemd unit names it as the first word of its last ``ExecStart=``; only the
+    unit file is read, not a drop-in an operator added beside it. The launchd
+    plist runs a generated launcher whose ``exec`` line names it.
+    """
+    if unit.suffix == ".plist":
+        from kiro_crew.gateway_restart import _Inconclusive, _launcher_target
+        from kiro_crew.service import macos
+
+        payload = macos._plist_payload(unit)
+        argv = payload.get("ProgramArguments") if payload else None
+        if not isinstance(argv, list) or not argv or not isinstance(argv[0], str):
+            return None
+        if argv[0] != str(macos.LIVE_PROGRAM):
+            return argv[0]
+        try:
+            return _launcher_target(Path(argv[0]))
+        except (_Inconclusive, OSError, ValueError):
+            # ValueError: an ``exec`` line shlex cannot split (an unterminated quote).
+            return None
+    try:
+        text = unit.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    program = None
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if not sep or key.strip() != "ExecStart":
+            continue
+        try:
+            words = shlex.split(value)
+        except ValueError:
+            words = []
+        # An empty ``ExecStart=`` resets the list; a leading ``-@:+!`` is a
+        # systemd prefix, not part of the path.
+        program = words[0].lstrip("-@:+!").replace("%%", "%") if words else None
+    return program or None
+
+
+def _kirocrew_checkout_of(path: Path) -> Path | None:
+    """The Kiro Crew source checkout *path* lies in, or ``None``.
+
+    A checkout is a directory holding both a ``.git`` entry (a directory, or the
+    file a linked worktree has) and the ``src/kiro_crew`` package.
+    """
+    for parent in path.parents:
+        try:
+            if (parent / ".git").exists() and (parent / "src" / "kiro_crew").is_dir():
+                return parent
+        except OSError:
+            return None
+    return None
+
+
+def _managed_wheel_launcher() -> Path | None:
+    """The managed wheel install's ``kirocrew``, when this host has one."""
+    from kiro_crew.platform.wheel_engine_layout import managed_venv_layout
+
+    layout = managed_venv_layout()
+    for tree in (layout.stable_link, layout.legacy):
+        launcher = tree / "bin" / "kirocrew"
+        try:
+            if launcher.is_file():
+                return launcher
+        except OSError:
+            continue
+    return None
+
+
+def _doctor_browser_leftover(home: Path) -> None:
+    """Report a leftover browser CLI prefix from an earlier version, if any.
+
+    Informational only: the directory is never deleted or modified here, and
+    nothing is appended to the issues list. Silent when it is absent.
+    """
+    leftover = home / _LEFTOVER_BROWSER_CLI_LEAF
+    try:
+        present = leftover.is_dir()
+    except OSError:
+        return
+    if not present:
+        return
+    print(
+        f"  browser:     ℹ  {render._safe_display(str(leftover))} is left over from an "
+        "earlier version and is no longer used; it can be deleted"
     )
 
 

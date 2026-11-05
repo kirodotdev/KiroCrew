@@ -35,6 +35,11 @@ Episode model (the dedupe/hysteresis core, kept pure for testability):
 * Hysteresis falls out of the model: critical↔tight oscillation re-alerts
   nothing because an episode only ends at ample.
 
+A note names the memory its figure measured. When the agent slice's ceiling is
+the tighter reading (``ResourceStatus.agent_ceiling``), the note says "Agent
+memory" and adds the host's own figure, which is what the dashboard's memory
+gauge shows; otherwise it says "Host memory", as it always did.
+
 Thresholds are the existing ``agent.resource_pressure_gb`` /
 ``agent.resource_critical_gb`` config keys (read by ``resource_status.probe``
 on every sample — config is fingerprint-cached, so this is cheap and live).
@@ -58,7 +63,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Callable
 
-from kiro_crew.notifications.bus import NotificationPayload
+from kiro_crew.notifications.bus import _MAX_BODY_LEN, NotificationPayload
 from kiro_crew.resource_status import (
     POSTURE_AMPLE,
     POSTURE_CRITICAL,
@@ -66,6 +71,7 @@ from kiro_crew.resource_status import (
     ResourceStatus,
     probe,
 )
+from kiro_crew.resource_status_agent_ceiling import gb_text
 from kiro_crew.sandbox import check_agents_slice_pressure, reclaim_agents_slice_page_cache
 
 if TYPE_CHECKING:
@@ -96,11 +102,33 @@ CRITICAL_REALERT_SECS = 1800.0
 # this is already pathological and forfeits its sample.
 PROBE_TIMEOUT_SECS = 2.0
 
+# The most slice OOM reports held for the loop. Older ones are counted, not
+# kept, so probes that keep finishing late cannot grow the stash without end.
+MAX_PENDING_OOM_REPORTS = 50
+
 
 def _fmt_load(status: ResourceStatus) -> str:
     if status.load_per_cpu is None:
         return ""
     return f", load {status.load_per_cpu}/core"
+
+
+def _agent_ceiling_context(status: ResourceStatus) -> str:
+    """What a slice-bound note adds after its figure: the host's own figure, and why.
+
+    Empty for a host-bound reading. The host figure is what the dashboard's
+    memory gauge shows, so without it a note reading "0.0 GB" beside a gauge at
+    57% looks like a false alarm when it is the agent ceiling that is full.
+    """
+    ceiling = status.agent_ceiling
+    if ceiling is None:
+        return ""
+    shmem = ceiling.shmem_sentence()
+    return (
+        f" The host itself still has {gb_text(ceiling.host_available_gb)} GB available: this "
+        "ceiling is what agent processes may use together, and at it the kernel slows "
+        "every one of them." + (f" {shmem}" if shmem else "")
+    )
 
 
 class ResourcePressureNotifier:
@@ -130,9 +158,16 @@ class ResourcePressureNotifier:
         self._critical_alerted = False
         self._tight_alerted = False
         self._last_critical_push = 0.0
-        # Slice OOM report captured by the worker thread, consumed (and
+        # Whether the episode's latest alert measured the agent ceiling, so its
+        # recovery note names the same memory the alert did. The recovery
+        # reading itself is ample and carries no attribution.
+        self._alerted_agent_ceiling = False
+        # Slice OOM reports captured by the worker thread, consumed (and
         # cleared) on the loop side so the bus is only touched from the loop.
-        self._slice_oom_msg: str | None = None
+        # The loop takes them only after a probe returned in time, when no
+        # worker is running, so the two sides never touch the list at once.
+        self._slice_oom_reports: list[str] = []
+        self._slice_oom_dropped = 0
 
     async def maybe_sample(self) -> None:
         """Probe (off-loop, bounded) and evaluate if the interval elapsed.
@@ -166,9 +201,8 @@ class ResourcePressureNotifier:
             except (asyncio.TimeoutError, TimeoutError):
                 logger.debug("resource-pressure probe timed out; sample skipped")
                 return
-            oom_msg, self._slice_oom_msg = self._slice_oom_msg, None
-            if oom_msg:
-                self._push_slice_oom(oom_msg)
+            if self._slice_oom_reports or self._slice_oom_dropped:
+                self._deliver_slice_oom()
             self.observe(status, now)
         except Exception:
             logger.debug("resource-pressure sample failed", exc_info=True)
@@ -183,11 +217,22 @@ class ResourcePressureNotifier:
             # the bus — "a random subagent died" must be diagnosable from the
             # dashboard, not just the log file. Never raises; reads a handful
             # of cgroup files.
+            #
+            # A report is only ever added to, never replaced: the check
+            # reports each kill once, and a probe that timed out leaves its
+            # report here unread, so the next tick's (usually empty) result
+            # must not overwrite it before the loop pushes it.
             try:
-                self._slice_oom_msg = check_agents_slice_pressure()
+                msg = check_agents_slice_pressure()
             except Exception:
-                self._slice_oom_msg = None
+                msg = None
                 logger.debug("agents-slice OOM check failed", exc_info=True)
+            if msg:
+                self._slice_oom_reports.append(msg)
+                excess = len(self._slice_oom_reports) - MAX_PENDING_OOM_REPORTS
+                if excess > 0:
+                    del self._slice_oom_reports[:excess]
+                    self._slice_oom_dropped += excess
             # Same tick: drop clean page cache on the agents slice before it
             # holds the slice at memory.high. The decision is a few file
             # reads; the writes run in their own thread, so this returns at
@@ -232,15 +277,53 @@ class ResourcePressureNotifier:
         elif posture == POSTURE_AMPLE:
             if self._episode_since is not None:
                 alerted = self._critical_alerted or self._tight_alerted
+                agent_ceiling = self._alerted_agent_ceiling
                 self._episode_since = None
                 self._critical_alerted = False
                 self._tight_alerted = False
+                self._alerted_agent_ceiling = False
                 if alerted:
-                    self._push_recovery(status)
+                    self._push_recovery(status, agent_ceiling=agent_ceiling)
         # unknown: non-signal — keep the episode state untouched (see module
         # docstring).
 
     # ── note builders ────────────────────────────────────────────────────
+
+    def _deliver_slice_oom(self) -> None:
+        """Push the waiting OOM reports as notes that each fit the body limit.
+
+        A report leaves the stash only once the note carrying it was pushed:
+        a push that fails leaves it and every later one for the next tick.
+        """
+        reports, self._slice_oom_reports = self._slice_oom_reports, []
+        dropped, self._slice_oom_dropped = self._slice_oom_dropped, 0
+        lines = [r[:_MAX_BODY_LEN] for r in reports]
+        if dropped:
+            lines.insert(0, f"{dropped} earlier OOM report(s) were not kept.")
+        batches: list[list[str]] = []
+        for line in lines:
+            if batches and len("\n".join([*batches[-1], line])) <= _MAX_BODY_LEN:
+                batches[-1].append(line)
+            else:
+                batches.append([line])
+        sent = 0
+        try:
+            for batch in batches:
+                self._push_slice_oom("\n".join(batch))
+                sent += len(batch)
+        except Exception:
+            # The dropped-count line is first in the first batch, so it is
+            # either sent or put back with the rest.
+            unsent = lines[sent:]
+            if dropped and sent == 0:
+                unsent = unsent[1:]
+                self._slice_oom_dropped += dropped
+            self._slice_oom_reports[:0] = unsent
+            excess = len(self._slice_oom_reports) - MAX_PENDING_OOM_REPORTS
+            if excess > 0:
+                del self._slice_oom_reports[:excess]
+                self._slice_oom_dropped += excess
+            raise
 
     def _push_slice_oom(self, message: str) -> None:
         """One note per detected OOM batch inside the agents slice.
@@ -262,10 +345,23 @@ class ResourcePressureNotifier:
         )
 
     def _push_critical(self, status: ResourceStatus, *, realert: bool = False) -> None:
-        title = (
-            "Host memory still critically low"
-            if realert
-            else "Host memory critically low"
+        subject = status.memory_subject
+        title = f"{subject} still critically low" if realert else f"{subject} critically low"
+        ceiling = status.agent_ceiling
+        self._alerted_agent_ceiling = ceiling is not None
+        if ceiling is None:
+            figure = f"Available memory is down to {status.available_gb:.1f} GB"
+        else:
+            figure = (
+                f"Agent processes have {status.available_gb:.1f} GB left under their "
+                f"{gb_text(ceiling.ceiling_gb)} GB memory ceiling"
+            )
+        # The ceiling keeps the host responsive, so only a host-bound reading
+        # warns that the host itself may stop answering.
+        risk = (
+            "Agent processes may be killed and the host can become unresponsive"
+            if ceiling is None
+            else "Agent processes may be killed if their memory keeps growing"
         )
         self._bus.push(
             NotificationPayload(
@@ -274,12 +370,10 @@ class ResourcePressureNotifier:
                 priority="critical",
                 title=title,
                 body=(
-                    f"Available memory is down to {status.available_gb:.1f} GB "
-                    f"(critical threshold {status.critical_gb:g} GB"
-                    f"{_fmt_load(status)}). Agent processes may be killed and "
-                    "the host can become unresponsive — stop or defer heavy "
-                    "work (builds, full test suites, sub-agent waves) or free "
-                    "memory now."
+                    f"{figure} (critical threshold {status.critical_gb:g} GB"
+                    f"{_fmt_load(status)}).{_agent_ceiling_context(status)} {risk} — "
+                    "stop or defer heavy work (builds, full test suites, sub-agent "
+                    "waves) or free memory now."
                 ),
                 group_key="resource-pressure",
                 meta={"posture": status.posture, "available_gb": status.available_gb},
@@ -288,29 +382,40 @@ class ResourcePressureNotifier:
 
     def _push_tight(self, status: ResourceStatus, sustained_secs: float) -> None:
         minutes = int(sustained_secs // 60)
+        ceiling = status.agent_ceiling
+        self._alerted_agent_ceiling = ceiling is not None
+        if ceiling is None:
+            figure = (
+                f"Available memory has stayed at or below {status.pressure_gb:g} GB "
+                f"for ~{minutes} minutes (currently {status.available_gb:.1f} GB free"
+            )
+        else:
+            figure = (
+                f"Agent processes have had at most {status.pressure_gb:g} GB left under "
+                f"their {gb_text(ceiling.ceiling_gb)} GB memory ceiling for ~{minutes} minutes "
+                f"(currently {status.available_gb:.1f} GB"
+            )
         self._bus.push(
             NotificationPayload(
                 source="system",
                 channel=CHANNEL,
-                title=f"Host memory tight for {minutes} minutes",
+                title=f"{status.memory_subject} tight for {minutes} minutes",
                 body=(
-                    f"Available memory has stayed at or below "
-                    f"{status.pressure_gb:g} GB for ~{minutes} minutes "
-                    f"(currently {status.available_gb:.1f} GB free"
-                    f"{_fmt_load(status)}). Consider deferring heavy work "
-                    "until memory frees."
+                    f"{figure}{_fmt_load(status)}).{_agent_ceiling_context(status)} "
+                    "Consider deferring heavy work until memory frees."
                 ),
                 group_key="resource-pressure",
                 meta={"posture": status.posture, "available_gb": status.available_gb},
             )
         )
 
-    def _push_recovery(self, status: ResourceStatus) -> None:
+    def _push_recovery(self, status: ResourceStatus, *, agent_ceiling: bool = False) -> None:
+        subject = "Agent memory" if agent_ceiling else "Host memory"
         self._bus.push(
             NotificationPayload(
                 source="system",
                 channel=CHANNEL,
-                title="Host memory pressure resolved",
+                title=f"{subject} pressure resolved",
                 body=(
                     f"Available memory recovered to {status.available_gb:.1f} GB "
                     f"free{_fmt_load(status)}."

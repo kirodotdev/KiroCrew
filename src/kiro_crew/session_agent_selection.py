@@ -298,10 +298,13 @@ def record_agent_selection(
         # record's own ``member_id`` a few lines above, so a config re-read agrees
         # with a forged record by construction instead of checking it.
         #
-        # A restart therefore drops the own-store admission until the owner
-        # re-selects the agent, which binds afresh through the durable path. That is
-        # the fail-closed direction, and a regression test pins the refusal so it is
-        # a stated property rather than something rediscovered later.
+        # A restart therefore drops the own-store admission until a gate-verified
+        # admission re-vouches it, or the owner starts a new chat with the agent.
+        # Picking the agent again does not: it ends here, or on the `replace` path
+        # below, which publishes with this call's `vouch` (False from the owner's
+        # switch). That is the fail-closed direction, and a regression test pins
+        # the refusal so it is a stated property rather than something
+        # rediscovered later.
         return None
     execution = dataclass_replace(execution, selection_revision=uuid.uuid4().hex)
     # With no execution record, the line's own store and mode are the binding the
@@ -318,8 +321,8 @@ def record_agent_selection(
 def restore_agent_selection(session_key: str, change: SelectionChange | None) -> None:
     if change is None:
         return
-    from kiro_crew.atomic_write import atomic_write
     from kiro_crew.history import ConversationLog
+    from kiro_crew.history_rewrite import rewrite_transcript
 
     prior, published, legacy = change
     from kiro_crew.execution_context import restore_live_session_execution
@@ -332,7 +335,8 @@ def restore_agent_selection(session_key: str, change: SelectionChange | None) ->
         if not readable or metadata.get("execution_context") != published:
             return
         if prior is not None:
-            log._update_metadata_locked(
+            # Synced: the rollback restores the session's memory contract.
+            log._metadata_projection._update_metadata_locked(
                 session_key,
                 {
                     "execution_context": prior,
@@ -343,6 +347,7 @@ def restore_agent_selection(session_key: str, change: SelectionChange | None) ->
                     ),
                     "memory_mode": prior["memory_mode"],
                 },
+                durable=True,
             )
             return
         path = log._path(session_key)
@@ -356,4 +361,5 @@ def restore_agent_selection(session_key: str, change: SelectionChange | None) ->
             else:
                 metadata.pop(field, None)
         rows[0] = json.dumps(metadata, ensure_ascii=False) + "\n"
-        atomic_write(path, "".join(rows))
+        # Synced: the replacement carries every row of the conversation.
+        rewrite_transcript(path, "".join(rows))

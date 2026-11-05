@@ -788,7 +788,7 @@ def _serve_exported_instance(agent: Agent, session_id: object, overrides: dict[s
     reads, or a refusal.
 
     A plain ``agent = Agent(...)`` has no factory, so nothing can rebuild it with a
-    launch model: a model Kiro Crew was asked to launch is refused rather than
+    launch model or effort: one Kiro Crew was asked to launch is refused rather than
     silently ignored. Without a session manager the CLI's worker saves nothing, so a
     later ``session/load`` would answer success on an empty agent. The instance gets
     the same ``SnapshotSessionManager`` the harness's own factory builds, under the
@@ -801,6 +801,15 @@ def _serve_exported_instance(agent: Agent, session_id: object, overrides: dict[s
             "agent.strands_project exports an Agent instance with no create_agent(**overrides), "
             "so it cannot run another model. Clear the chat model and agent.strands_model, or "
             "give the project a create_agent(**overrides) factory."
+        )
+    if overrides.get("effort") not in (None, "auto"):
+        # Same reason: the instance keeps the effort its own code set, so a launch
+        # level would be reported as applied while the agent ignores it.
+        raise ValueError(
+            "agent.strands_project exports an Agent instance with no create_agent(**overrides), "
+            "so it cannot run another reasoning effort. Set the chat's effort to auto and unset "
+            "agent.reasoning_effort and any crew or role effort it inherits, or give the "
+            "project a create_agent(**overrides) factory."
         )
     _drop_interrupted_import_turn(agent)
     if getattr(agent, "_session_manager", None) is None:

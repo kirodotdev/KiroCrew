@@ -1,21 +1,9 @@
 """The kiro-cli terminal conversation export in ``run_sessions_backup``.
 
-``data.sqlite3`` is BOTH the terminal's conversation store and its identity auth
-store, so the sessions archive carries a TABLE-SCOPED export of it -- a fresh
-database holding only the conversation allowlist -- never the file itself. These
-tests pin the two acceptance properties that decide whether the fix is shippable:
-
-* No byte of the auth half reaches the archive -- pinned by a fixture whose
-  source DB carries a token-bearing table and a token column, asserting neither
-  name nor value appears anywhere in the exported member.
-* The archived conversation count matches the source row count -- pinned so a
-  silently-empty or partial export fails loudly instead of shipping.
-
-Both are mutation-verified in each test's docstring: break the guard, confirm the
-named test reddens; the permissive path still passes.
-
-Every fixture stays inside ``tmp_path``; the source DB is synthetic, so no real
-kiro-cli store is touched and no ``data_home`` / network path is reached.
+``data.sqlite3`` is both the conversation store and the identity auth store, so the
+archive carries a table-scoped export of it, never the file. These tests pin that no
+byte of the auth half reaches the archive and that the archived row count matches
+the source. The source DB is synthetic and stays inside ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -44,11 +32,8 @@ _TOKEN_VALUE = "SECRET-BEARER-TOKEN-must-not-leak-abc123"
 def _build_source_db(path: Path, *, conversation_rows: int) -> None:
     """Write a synthetic kiro-cli store: a conversation table AND an auth table.
 
-    Shapes ``conversations_v2`` the way the export reads it (an id + a JSON blob),
-    and plants a separate token-bearing table plus a token-named column so the
-    leak test has something concrete to look for. Left in WAL mode and
-    checkpointed so the export's own checkpoint has nothing to fold, matching a
-    quiescent store.
+    The token-bearing table and token-named column give the leak test something to
+    look for. Left in WAL mode and checkpointed, matching a quiescent store.
     """
     conn = sqlite3.connect(str(path))
     try:
@@ -94,12 +79,8 @@ def _export_to_tar(tmp_path: Path) -> tuple[list[str], bytes | None, dict | None
 class TestTheScratchExportIsPinned:
     """The scratch export is read through a descriptor, not re-derived from its name.
 
-    The earlier code read it by path and justified that with "it is under our own
-    private ``TemporaryDirectory``". That is wrong about the attacker that matters:
-    ``mkdtemp`` gives mode 0700, which excludes other USERS and not the same-UID agent
-    this product assumes, and `sandbox.py` describes exactly that agent planting links
-    in the world-writable root. So `stat` then `open` on a name left a swap window whose
-    payout is a host file uploaded off-host, unrecallable.
+    ``mkdtemp``'s mode 0700 keeps out other users, not the same-UID agent, so `stat`
+    then `open` on a name leaves a swap window that uploads a host file off-host.
     """
 
     @pytest.fixture(autouse=True)
@@ -187,25 +168,18 @@ class TestConversationExport:
     def _needs_pinning(self):
         """The export requires descriptor-pinned open, so it reports rather than degrade.
 
-        Not a convenience skip. `run_sessions_backup` refuses the whole sessions kind
-        without `_CAN_PIN_TRAVERSAL` (`kind_unavailable_reason`), so on such a host this
-        export is unreachable in production and every assertion below is about behaviour
-        that platform never performs. The alternative -- inventing a weaker read so these
-        tests pass on Windows -- would ship exactly the unpinned path the refusal exists
-        to prevent, and `st_nlink` from `fstat` is not a dependable link count there.
+        `run_sessions_backup` refuses the whole sessions kind without
+        `_CAN_PIN_TRAVERSAL`, so on such a host this export never runs. A weaker read
+        to pass on Windows would ship the unpinned path the refusal prevents.
         """
         if not backup._CAN_PIN_TRAVERSAL:
             pytest.skip("sessions export needs descriptor-pinned open; kind is unavailable here")
 
     def test_the_scratch_export_is_cut_under_the_agent_masked_root(self, tmp_path, monkeypatch):
-        """Not the system temp directory. This removes the attack instead of detecting it.
+        """The scratch export is cut under the agent-masked root, not the system temp dir.
 
-        Descriptor pinning alone cannot cover a shared temp root: a same-UID agent that
-        replaces the temp DIRECTORY before this process opens it hands over a directory of
-        its own, and every pinned check then passes on a file the attacker chose. The
-        masked root closes that, because the agent cannot reach it at all.
-
-        MUTATION: drop `dir=` from the `TemporaryDirectory` call and this reddens.
+        Pinning cannot cover a shared temp root: a same-UID agent that swaps the temp
+        directory first makes every pinned check pass on its own file.
         """
         seen: list[str] = []
         real = backup.tempfile.TemporaryDirectory
@@ -228,14 +202,8 @@ class TestConversationExport:
     def test_a_link_planted_at_the_scratch_root_is_refused(self, tmp_path, monkeypatch):
         """A link AT the root would put every scratch file outside the fence at once.
 
-        No per-file check can see that, which is why the root itself is guarded.
-
-        MUTATION: remove BOTH the `is_link_or_junction` guard and the post-`mkdir` resolve
-        re-check and this reddens. Measured: either one ALONE still catches a link planted
-        at the leaf, so neither is individually pinned by this test. Both are kept anyway,
-        because they do not cover the same inputs -- the resolve also catches a component
-        swapped higher up, which a link test on the leaf cannot see, and the link guard
-        fires before `mkdir` is asked to accept a pre-existing link.
+        Either the `is_link_or_junction` guard or the post-`mkdir` resolve re-check alone
+        catches this leaf link, so this test pins only that one of them is present.
         """
         elsewhere = tmp_path / "attacker"
         elsewhere.mkdir()
@@ -282,13 +250,8 @@ class TestConversationExport:
     ):
         """A key a model was shown does not leave the host in the archive.
 
-        The allowlist bounds which TABLES ride; it says nothing about what a
-        conversation's own text holds. An operator pasting a key into a terminal
-        session puts it in `value`, and this archive goes off-host unrecallably, so the
+        The allowlist bounds tables, not text: a pasted key lands in `value`, so the
         text is scrubbed on the way into the export.
-
-        MUTATION: insert the raw rows and this reddens -- the key appears in the DB
-        bytes.
         """
         db = tmp_path / "data.sqlite3"
         _build_source_db(db, conversation_rows=0)
@@ -312,15 +275,9 @@ class TestConversationExport:
     def test_the_redaction_is_byte_stable_across_exports(self, tmp_path, monkeypatch):
         """Two exports of one unchanged store produce identical rows.
 
-        The exported database is an archive member, so its bytes feed
-        `_tree_fingerprint` and therefore the unchanged-run skip. A redactor using a
-        per-run placeholder -- a random token, a counter, a timestamp -- would change
-        the bytes every night, so the skip would never fire again on any Layer B host
-        and each run would re-upload the whole terminal history. Measured here rather
-        than assumed, because `security.redaction` does hold a per-process random key
-        for a different function.
-
-        MUTATION: make the redaction depend on anything per-run and this reddens.
+        The bytes feed `_tree_fingerprint`, so a per-run placeholder would defeat the
+        unchanged-run skip. Measured because `security.redaction` holds a per-process
+        random key for another function.
         """
         db = tmp_path / "data.sqlite3"
         _build_source_db(db, conversation_rows=0)
@@ -352,14 +309,8 @@ class TestConversationExport:
     def test_a_redactor_failure_ships_nothing_and_says_why(self, tmp_path, monkeypatch):
         """Unable to scrub means do not ship, not drop the row and not ship it raw.
 
-        Dropping would produce an archive a restore reads as complete while a
-        conversation is missing; shipping raw would send the credential the pass exists
-        to remove. So the export carries nothing and reports a reason, which also
-        suppresses the retention sweep -- an earlier archive may hold what this run
-        could not carry.
-
-        MUTATION: let the exception escape, or fall back to the raw value, and this
-        reddens.
+        The reason also suppresses the retention sweep: an earlier archive may hold
+        what this run could not carry.
         """
         db = tmp_path / "data.sqlite3"
         _build_source_db(db, conversation_rows=3)
@@ -381,15 +332,8 @@ class TestConversationExport:
     def test_a_value_wider_than_the_ceiling_ships_nothing_and_says_why(self, tmp_path, monkeypatch):
         """A single oversized field is refused, and the refusal precedes any fetch.
 
-        The row count alone bounds nothing, because one field can be arbitrarily wide:
-        a batch of rows holding megabyte values exhausts memory, and the allocation
-        failure would otherwise escape this function's guards and lose the whole
-        sessions backup over a sub-member. So the width is measured in SQL before the
-        first ``fetchmany`` and the export carries nothing, with a reason that
-        suppresses the retention sweep.
-
-        MUTATION: drop the :func:`backup._refuse_an_oversized_cell` call from the copy
-        and this reddens -- the wide row is copied and the export reports success.
+        One field can be arbitrarily wide and exhaust memory, so the width is measured
+        in SQL before the first ``fetchmany``. The reason suppresses the retention sweep.
         """
         monkeypatch.setattr(backup, "_CONVERSATION_MAX_CELL_BYTES", 64)
         db = tmp_path / "data.sqlite3"
@@ -413,13 +357,8 @@ class TestConversationExport:
     def test_a_value_exactly_at_the_ceiling_is_carried(self, tmp_path, monkeypatch):
         """The ceiling is a maximum, not a threshold the widest allowed value trips.
 
-        Pinned as its own test because the comparison direction decides whether an
-        ordinary host is refused: the widest value measured on a live store is 2.5 MiB
-        against a 16 MiB ceiling, so an off-by-one here is invisible in production and
-        fires only on the host that happens to sit on the boundary.
-
-        MUTATION: compare with ``>=`` instead of ``>`` and this reddens while the
-        oversized test stays green.
+        An off-by-one (``>=`` for ``>``) fires only on a host sitting on the boundary,
+        so the oversized test alone cannot catch it.
         """
         monkeypatch.setattr(backup, "_CONVERSATION_MAX_CELL_BYTES", 64)
         db = tmp_path / "data.sqlite3"
@@ -444,13 +383,8 @@ class TestConversationExport:
     ):
         """A ``MemoryError`` in the copy is reported, never propagated.
 
-        The ceiling above is meant to make this unreachable, and it is caught anyway
-        because the alternative is losing a correct transcript archive over this
-        sub-member -- which is what the guards around every other exit of this function
-        exist to prevent.
-
-        MUTATION: remove the ``except MemoryError`` clause and this reddens with the
-        error escaping instead of a reason coming back.
+        The ceiling should make this unreachable; it is caught anyway so this
+        sub-member cannot lose the whole transcript archive.
         """
         db = tmp_path / "data.sqlite3"
         _build_source_db(db, conversation_rows=2)
@@ -553,19 +487,10 @@ class TestConversationExport:
         assert db_bytes is None and manifest is None
 
     def test_committed_rows_in_a_live_wal_are_exported(self, tmp_path, monkeypatch):
-        """A live store with a non-empty, non-checkpointed WAL still exports every
-        committed row.
+        """A live store with a non-checkpointed WAL still exports every committed row.
 
-        The store is opened READ-ONLY, so a checkpoint (a write) is impossible;
-        the read must instead see committed WAL frames through the read-only
-        snapshot. A non-empty WAL is the NORMAL steady state of a live kiro-cli
-        terminal, so an export that returned 0 here would silently omit
-        conversations on the common path.
-
-        MUTATION: reintroduce a ``wal_checkpoint(TRUNCATE)`` on the read-only
-        connection (or a refuse-on-surviving-WAL branch) -> the checkpoint raises
-        on mode=ro and the export returns 0, so this test reddens (`assert 5 ==
-        0`).
+        The store is opened read-only, so a checkpoint would raise; a non-empty WAL is
+        the normal state of a live terminal.
         """
         db = tmp_path / "data.sqlite3"
         # Build a store and leave a WRITER connection open with committed but
@@ -599,13 +524,9 @@ class TestConversationExport:
             writer.close()
 
     def test_a_failed_credential_audit_drops_the_export(self, tmp_path, monkeypatch):
-        """If the sanctioned credential-read audit cannot be recorded, the export
-        is dropped rather than shipped unaudited (fail-closed).
+        """An export whose credential-read audit cannot be recorded is dropped.
 
-        The store holds live bearer tokens, so opening it owes an SEL trail; a
-        success whose audit fails must not ship. MUTATION: drop the
-        `if not hooks.emit_internal_read_audit(... "success"): return 0` guard ->
-        the member ships despite the failed audit and this reddens.
+        The store holds live bearer tokens, so opening it owes an SEL trail.
         """
         db = tmp_path / "data.sqlite3"
         _build_source_db(db, conversation_rows=7)
@@ -651,22 +572,9 @@ class TestConversationExport:
     def test_an_env_relocated_store_is_not_consulted(self, tmp_path, monkeypatch):
         """``XDG_DATA_HOME`` / ``LOCALAPPDATA`` are deliberately IGNORED.
 
-        The fence that makes this store unreadable and unwritable by agent file
-        tools is home-anchored (``security.paths`` splices
-        ``identity_stores.fenced_home_dirs``), so a root redirected by one of those
-        variables sits OUTSIDE it, where an agent can author rows. This function
-        feeds an archive uploaded off-host unattended, so honouring the variable
-        would let an agent plant rows in a ``conversations_v2`` table at a writable
-        location and have a scheduled backup ship them; an uploaded object cannot be
-        un-sent. ``kiro_prerequisite`` records the same decision for the same two
-        variables.
-
-        The cost is real and is the direction chosen: a relocated-store install
-        backs up no terminal conversations, visible as an absent ``conversations/``
-        root.
-
-        MUTATION: pass ``os.environ`` instead of ``{}`` and this reddens -- the
-        relocated store is found and returned.
+        The agent fence is home-anchored, so a redirected root sits outside it where an
+        agent could plant rows for an unattended upload. The cost: a relocated-store
+        install backs up no terminal conversations.
         """
         if sys.platform not in ("linux", "linux2"):
             pytest.skip("XDG_DATA_HOME relocation is the POSIX layout")
@@ -684,20 +592,11 @@ class TestConversationExport:
     def test_a_linked_ancestor_is_refused_before_the_store_is_stat_ed(self, tmp_path, monkeypatch):
         """An ancestor redirection is refused, and no stat runs on that candidate.
 
-        On Windows an ancestor junction whose target is ``\\\\host\\share`` turns the
-        first ``is_file()`` on a local-looking path into an outbound SMB handshake
-        that authenticates as this process -- inside the stat, before any check can
-        reject anything. So the ancestor walk has to run BEFORE the stat, and a
-        leaf-only check cannot see an ancestor at all. A POSIX directory symlink
-        stands in for the junction here; the predicate treats both as redirections.
+        On Windows a junction to ``\\\\host\\share`` makes the stat itself an outbound
+        SMB handshake. A POSIX symlink stands in for the junction.
 
-        ``is_file`` is replaced with a raiser for paths under the linked ancestor,
-        so REACHING the stat fails the test. That is what pins the ORDER rather than
-        merely the refusal: a leaf-first implementation still returns ``None`` for
-        this layout, and would pass an outcome-only assertion.
-
-        MUTATION: restore ``if db.is_file() and not is_link_or_junction(db)`` and
-        this reddens with the sentinel, not with an assertion on the return value.
+        ``is_file`` raises under the linked ancestor, which pins the order: a leaf-first
+        check also returns ``None`` here.
         """
         if sys.platform not in ("linux", "linux2"):
             pytest.skip("a POSIX directory symlink stands in for the Windows junction")
@@ -742,15 +641,8 @@ class TestConversationExport:
     def test_a_host_with_no_store_reports_absence(self, tmp_path, monkeypatch):
         """An absent store is reported, because an EARLIER archive may hold rows.
 
-        The tempting exemption is that a host with no store has no conversations for an
-        older archive to hold. That reasons about the store's state NOW, and the
-        retention question is about backup history: a store wiped to clear corruption,
-        removed by a reinstall, or on an unmounted volume was present when last week's
-        archive was written, so that archive holds rows this run cannot carry. Nothing
-        pins a store's presence across runs, so the reason must be set and the sweep
-        suppressed.
-
-        MUTATION: return a bare `declined` from the no-candidate path and this reddens.
+        A store wiped, reinstalled or on an unmounted volume was present for last week's
+        archive, so the reason must be set and the sweep suppressed.
         """
         home = tmp_path / "empty_home"
         home.mkdir()
@@ -763,29 +655,12 @@ class TestConversationExport:
     def test_appdata_is_not_a_relocation_signal(self, tmp_path, monkeypatch):
         """`APPDATA` names a root kiro-cli does not write, so a mismatch proves nothing.
 
-        `state_db_candidates` anchors the Windows Roaming candidate to `home` and does
-        not follow `APPDATA`, because "the current generation writes the `LOCALAPPDATA`
-        location, and the roaming default is retained only as a legacy fallback". A
-        store the CLI does not write to cannot be relocated away from this export, so
-        comparing that variable against home reports a relocation on any host with a
-        redirected Roaming folder -- an ordinary enterprise configuration -- and that
-        false positive suppresses retention forever while a readable Local store sits
-        beside it inside the fence.
+        A redirected Roaming folder is an ordinary enterprise setup; reporting it as a
+        relocation would suppress retention forever. A legacy store there is reported
+        as `store_absent`, which the last case pins.
 
-        Nothing is given up. The variables that really do re-root a candidate still
-        report, and a legacy install that keeps its store at a redirected Roaming root
-        has no store at either fixed candidate, which the lookup reports as
-        `store_absent`; the last case here pins that, and
-        `test_an_absent_store_also_stops_retention` in test_aws_control_backup_layer_b.py pins
-        that the reason suppresses the sweep.
-
-        Paths come from `tmp_path`, never written as literals. `pathlib` takes its
-        flavour from the REAL operating system rather than from `sys.platform`, and no
-        literal is absolute under both: a POSIX-looking one has no drive, and a
-        drive-lettered one is not absolute to POSIX.
-
-        MUTATION: restore the direct home comparison over `IDENTITY_STORE_ROOTS` and the
-        first assertion reddens.
+        Paths come from `tmp_path`: `pathlib` follows the real OS, not `sys.platform`,
+        and no literal is absolute under both.
         """
         home = tmp_path / "home"
         home.mkdir()
@@ -824,19 +699,8 @@ class TestConversationExport:
     def test_a_stale_leftover_does_not_mask_the_live_store(self, tmp_path, monkeypatch):
         """With both Windows stores present the most recently written one is exported.
 
-        The candidate table lists Local (the current layout) before Roaming (legacy), so
-        taking the first cleared candidate would export a leftover in the abandoned root
-        and report success -- the archive would hold an old account's conversations and
-        nothing would say so. `identity_stores.selected_store` arbitrates this same state
-        by write time, and this walk reuses its reading.
-
-        The WAL case is the one a plain `st_mtime` gets wrong: the store runs in WAL
-        mode, so a commit lands in the `-wal` sidecar and the main file's mtime does not
-        advance until a checkpoint. A live store being written therefore looks OLDER by
-        its main file alone, which is exactly backwards.
-
-        MUTATION: return the first cleared candidate instead of the newest, and the
-        first assertion reddens. Drop the `-wal` read and the third reddens.
+        Same arbitration as `identity_stores.selected_store`. In WAL mode a commit lands
+        in the `-wal` sidecar, so the main file's mtime alone makes a live store look older.
         """
         home = tmp_path / "home"
         local = home / "AppData" / "Local" / "kiro-cli" / "data.sqlite3"
@@ -895,11 +759,9 @@ class TestConversationExport:
 def _build_store_with_tables(path: Path, *, v1_rows: int | None, v2_rows: int | None) -> None:
     """Write a synthetic kiro-cli store naming which chat tables exist.
 
-    ``None`` means the table is absent from the schema; an int creates it with that
-    many rows. The un-migrated table is shaped the way a real store declares it (a
-    key and a JSON blob, no id or timestamps), so a copy that assumed the migrated
-    column set would not pass here. The auth table is always planted, so every test
-    in this class also checks the allowlist still holds the auth half back.
+    ``None`` leaves the table out; an int creates it with that many rows. The
+    un-migrated table has the real shape (key and JSON blob). The auth table is always
+    planted, so every test also checks the auth half is held back.
     """
     conn = sqlite3.connect(str(path))
     try:
@@ -932,29 +794,17 @@ def _build_store_with_tables(path: Path, *, v1_rows: int | None, v2_rows: int | 
 class TestBothChatTablesAreInTheAllowlist:
     """The allowlist names the terminal's un-migrated AND migrated chat tables.
 
-    A store holds whichever shape its install has reached. Carrying only the migrated
-    one exports nothing from a store that never migrated, and -- because the reason
-    string is chosen by whether any ALLOWLISTED table was found -- the run then records
-    ``no_conversation_table``, which claims the terminal holds no conversations while it
-    holds all of them. That is a coverage loss wearing a legitimate absence's reason, so
-    these tests pin the export and the reason together rather than separately.
+    With only the migrated one, an un-migrated store would export nothing and report
+    ``no_conversation_table``, so these tests pin the export and the reason together.
     """
 
     @pytest.fixture
     def needs_pinning(self):
         """Requested only by the cases that let the export reach its tar write.
 
-        Deliberately NOT autouse. Two cases in this class assert reasons the export
-        returns BEFORE its descriptor-pinning gate -- the no-table reason, and the
-        allowlist constant, which runs no export at all -- so they are meaningful on a
-        host without pinning and an autouse skip would silently drop exactly the two
-        that pin the reason-string boundary.
-
-        For the cases below, a host without ``_CAN_PIN_TRAVERSAL`` never performs this
-        export: ``run_sessions_backup`` refuses the whole sessions kind there, so the
-        rows these assertions are about are unreachable on that platform. Inventing a
-        weaker path-based read so they pass instead would ship the unpinned open the
-        refusal exists to prevent.
+        Not autouse: the no-table and allowlist cases run before the pinning gate and
+        must still run on a host without pinning. Without ``_CAN_PIN_TRAVERSAL``,
+        ``run_sessions_backup`` refuses the sessions kind, so the other cases never run.
         """
         if not backup._CAN_PIN_TRAVERSAL:
             pytest.skip("sessions export needs descriptor-pinned open; kind is unavailable here")
@@ -1009,12 +859,8 @@ class TestBothChatTablesAreInTheAllowlist:
     ):
         """Both tables ride, and the manifest counts them separately.
 
-        The migrated store keeps the older table present and empty, so this is the
-        common shape: the manifest must show the empty one too, because that is what
-        lets a restore tell an empty table from a table the export omitted.
-
-        MUTATION: drop ``"conversations"`` from ``backup._CONVERSATION_TABLES`` and this
-        reddens -- the manifest loses its key.
+        A migrated store keeps the older table empty; the manifest shows it so a restore
+        can tell an empty table from an omitted one.
         """
         db = tmp_path / "data.sqlite3"
         _build_store_with_tables(db, v1_rows=0, v2_rows=4)
@@ -1061,14 +907,7 @@ class TestBothChatTablesAreInTheAllowlist:
         assert manifest["total_rows"] == 9
 
     def test_no_chat_table_at_all_still_reports_no_conversation_table(self, tmp_path, monkeypatch):
-        """The reason survives, and now means what it says.
-
-        With both chat shapes allowlisted, this reason is reachable only when the store
-        really holds neither, so it reports a genuine absence rather than an allowlist
-        gap. Pinned so widening the allowlist did not quietly delete the outcome.
-
-        MUTATION: return an empty ``skipped`` on the no-table exit and this reddens.
-        """
+        """A store holding neither chat table reports ``no_conversation_table``."""
         db = tmp_path / "data.sqlite3"
         _build_store_with_tables(db, v1_rows=None, v2_rows=None)
         monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: (db, ""))

@@ -48,7 +48,10 @@ from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
     register_app,
     register_app_crons_with_service,
+    snapshot_app_agent_configs,
 )
+from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
+from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.dependencies import clean_dependencies
 from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
@@ -122,6 +125,7 @@ from kiro_crew.apps.registry import (
     _git_target_is_unsupported,
     _git_url_host,
     _loggable_git_transport_output,
+    _manifest_shell_platform_refusal,
     _owner_designated_repo_target,
     _pinned_registries,
     _registry_identity_key,
@@ -331,12 +335,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.routes_lifecycle import (  # noqa: F401
         _app_may_run_after_install,
+        _backend_platform_refusal,
         _check_min_version,
         _deregister_app_off_loop,
         _redact_warning,
         _refuse_while_startup_hook_runs,
         _register_app_off_loop,
         _restore_app_after_failed_update,
+        _snapshot_agent_configs_off_loop,
         _start_backend_after_install,
         _stop_backend_and_observe,
         _suspend_app_for_session_approval_reconsent,
@@ -370,10 +376,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_static import (  # noqa: F401
         _ALLOWED_EXTENSIONS,
         _CONTENT_TYPES,
+        _GZIP_EXTENSIONS,
+        _GZIP_LEVEL,
+        _GZIP_MIN_BYTES,
         _UI_MAX_BYTES,
         _UI_STREAM_CHUNK,
         _UI_STREAM_SEMAPHORE,
         _UI_STREAM_TIMEOUT_DEFAULT,
+        _accepts_gzip,
         _open_ui_file,
         _ui_stream_timeout_secs,
     )
@@ -382,4 +392,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CRON_CLEANUP_BACKOFF_SECS,
         _deregister_crons_with_retry,
         _run_uninstall,
+    )
+    from kiro_crew.apps.teardown import (  # noqa: F401
+        stop_app_hooks_for_uninstall,
     )

@@ -10,79 +10,17 @@ it from this module, mirroring ``wecom.commands``).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
+from kiro_crew.messaging.command_table import (
+    CommandSpec,
+    build_help_text,
+    match_command,
+)
 from kiro_crew.messaging.conversation import ConversationState  # noqa: F401
 
 #: Weixin's command vocabulary. No `/link` row: iLink is DM-only and the channel
 #: has no dashboard-mirror command, so listing one would advertise a capability
-#: that does not exist here.
-# ── Command grammar ───────────────────────────────────────────────────────────
-# Kept LOCAL rather than shared. WeCom has its own ``build_help_text``, so Weixin
-# is the only caller these three would have, and a shared module with one
-# consumer is a guess about the second. The day a second channel wants this table
-# shape, this is the block to move -- with two callers to shape it, instead of one.
-
-
-@dataclass(frozen=True)
-class CommandSpec:
-    """One command: its canonical name, what it does, and how it is spelled.
-
-    ``name`` is the value a dispatcher switches on; the displayed form adds the
-    ``/``. ``aliases`` are EXTRA spellings beyond ``f"/{name}"``, which is always
-    accepted: native-language words (`新对话`), and short forms (`cancel` for
-    `stop`).
-    """
-
-    name: str
-    help_text: str
-    aliases: tuple[str, ...] = field(default=())
-
-
-def match_command(text: str, specs: tuple[CommandSpec, ...]) -> str | None:
-    """Return the ``name`` of the command *text* invokes, else ``None``.
-
-    Matching is EXACT against the whole stripped message, so a message that
-    merely begins with a command word stays ordinary prose the model answers.
-    ``f"/{name}"`` is matched case-insensitively (a phone keyboard capitalises),
-    while a non-ASCII alias is compared as written because casing is meaningless
-    for it and ``str.lower()`` on some scripts is not a no-op.
-
-    The ``/`` is hardcoded because both adopters use it. Discord prefixes with
-    ``!`` (its client swallows a bare ``/``) but does not consume this module; the
-    day it migrates is the day a prefix parameter earns its place.
-    """
-    stripped = (text or "").strip()
-    if not stripped:
-        return None
-    lowered = stripped.lower()
-    for spec in specs:
-        if lowered == f"/{spec.name}":
-            return spec.name
-        for alias in spec.aliases:
-            if stripped == alias or lowered == alias.lower():
-                return spec.name
-    return None
-
-
-def build_help_text(header: str, specs: tuple[CommandSpec, ...], footer: str = "") -> str:
-    """Render a help card from *specs*.
-
-    Aliases are shown beside their command, because a user who was taught `新对话`
-    needs to see it is the same thing as `/new` rather than discovering two
-    commands. The caller puts anything else it needs to explain into *footer*.
-    """
-    lines = [header, ""]
-    for spec in specs:
-        spelled = f"/{spec.name}"
-        if spec.aliases:
-            spelled += " (" + " / ".join(spec.aliases) + ")"
-        lines.append(f"{spelled} — {spec.help_text}")
-    if footer:
-        lines += ["", footer]
-    return "\n".join(lines)
-
-
+#: that does not exist here. The table shape is shared with Feishu through
+#: ``messaging.command_table``; the rows and the help wording are Weixin's own.
 # Named ``COMMANDS`` (not ``COMMAND_SPEC``) because the shared cancel-drift
 # tripwire in ``test/test_messaging_dispatch.py`` discovers a channel's table by
 # EXPORT NAME: ``COMMAND_SPEC`` is its ``(canonical, aliases, description)``

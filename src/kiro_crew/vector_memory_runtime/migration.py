@@ -64,7 +64,9 @@ def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None]
                 continue
             applies = authored_lesson_applies(data.get("applies"))
             category = data.get("category", "knowledge")
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, RecursionError):
+            # RecursionError: a line nested past the interpreter's limit does not
+            # decode either, and would otherwise abort the whole migration.
             yield SKIP
             continue
         yield rule, category, negative, raw_scope, applies

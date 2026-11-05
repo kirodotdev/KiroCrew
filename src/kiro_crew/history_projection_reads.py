@@ -203,7 +203,15 @@ class TranscriptReadProjection:
         return self._log._read_messages(key)
 
     def read_file_change_messages(self, key: str) -> list[dict]:
-        """Return lightweight rows carrying only ``meta.file_changes``."""
+        """Return lightweight rows carrying only ``ts`` and the changed paths.
+
+        Each row is ``{"ts", "role", "meta": {"file_changes": [{"path": str}, ...]}}``,
+        plus ``meta.file_changes_omitted_files`` when the row records files its
+        turn's budget left out;
+        change entries without a string ``path`` and rows left with none are
+        dropped, and every other field of a change (``before``/``after``) is
+        not kept.
+        """
         path = self._log._path(key)
         generation = self._log._cache_gen(key)
         try:
@@ -237,12 +245,34 @@ class TranscriptReadProjection:
                 file_changes = meta.get("file_changes")
                 if not isinstance(file_changes, list):
                     continue
-                messages.append(
-                    {
-                        "ts": data.get("ts"),
-                        "meta": {"file_changes": file_changes},
-                    }
-                )
+                # Keep only the string ``path`` of each change: the one reader
+                # (the Artifacts session-docs scan) uses nothing else, and the
+                # ``before``/``after`` bodies made the cache ~112 MB on a real
+                # store. Entries without a string path were skipped by that
+                # reader anyway, so dropping them here changes no output.
+                # ``omitted_reason`` is kept too, a short marker: the Files tab
+                # skips a write whose outcome was never proven.
+                paths = [
+                    {"path": fc["path"]}
+                    | (
+                        {"omitted_reason": fc["omitted_reason"]}
+                        if isinstance(fc.get("omitted_reason"), str)
+                        else {}
+                    )
+                    for fc in file_changes
+                    if isinstance(fc, dict) and isinstance(fc.get("path"), str)
+                ]
+                # How many changed files the turn's budget left out of
+                # ``file_changes``: a reader listing them must know the row is short.
+                omitted = meta.get("file_changes_omitted_files")
+                if not (isinstance(omitted, int) and not isinstance(omitted, bool) and omitted > 0):
+                    omitted = 0
+                if not paths and not omitted:
+                    continue
+                kept_meta: dict = {"file_changes": paths}
+                if omitted:
+                    kept_meta["file_changes_omitted_files"] = omitted
+                messages.append({"ts": data.get("ts"), "role": data.get("role"), "meta": kept_meta})
 
         try:
             after = path.stat()
@@ -401,7 +431,7 @@ class TranscriptReadProjection:
         for p in segs:
             try:
                 lines = p.read_text(encoding="utf-8").splitlines()
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 _HISTORY_LOGGER.warning("rotated segment unreadable: %s", p.name, exc_info=True)
                 complete = False
                 continue
@@ -1179,11 +1209,18 @@ class TranscriptReadProjection:
         recent = self._log._recent_cache.get(recent_key)
         if recent is not None and recent[0] == identity and recent[1] == self._log._cache_gen(key):
             return [dict(message) for message in recent[2]]
-        tail = self._log._read_tail_messages(path, max_messages, roles)
+        # Brief rows are dropped before the window is cut, as on the full-read
+        # path, so each one in the tail asks the reader for one more row.
+        wanted = max_messages
+        while True:
+            tail = self._log._read_tail_messages(path, wanted, roles)
+            kept = [message for message in tail if not is_warm_task_brief_message(message)]
+            if len(kept) >= max_messages or len(tail) < wanted:
+                break
+            wanted += max_messages - len(kept)
         formatted = [
             {"role": message["role"], "content": message["content"]}
-            for message in tail
-            if not is_warm_task_brief_message(message)
+            for message in kept[-max_messages:]
         ]
         self._log._publish_if_current(
             self._log._recent_cache,

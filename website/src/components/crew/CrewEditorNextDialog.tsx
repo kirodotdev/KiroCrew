@@ -194,7 +194,7 @@ function CapabilityBand({
 }: {
   testId: string
   heading: string
-  note: string
+  note?: string
   rows: CapabilityRow[]
   onRemove?: (row: CapabilityRow) => void
   removeBusy?: string | null
@@ -213,7 +213,7 @@ function CapabilityBand({
     <section className="flex flex-col gap-2 rounded-md border border-border bg-bg-elevated p-3" data-testid={`next-band-${testId}`}>
       <div className="flex items-baseline gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-strong">{heading}</span>
-        <span className="text-[11px] text-muted">{note}</span>
+        {note && <span className="text-[11px] text-muted">{note}</span>}
       </div>
       {kinds.length === 0 ? (
         <span className="text-[12px] text-muted" data-testid={`next-band-${testId}-empty`}>{emptyText ?? i18nT('crewEditorNext.band_none')}</span>
@@ -391,6 +391,28 @@ export default function CrewEditorNextDialog({
     confirmDelete, setConfirmDelete, deleteCrew, confirmRef,
     discardAsk, setDiscardAsk, discardTakesSheet, askSchedOnly, schedSaving, discardForce, confirmDiscard,
   } = ctl
+
+  // Which single line the model readout shows. A scoped pin the harness serves
+  // under no id stays unsent; a foreign pin can instead resolve to a lower
+  // tier, which the readout must name along with why; only a model chosen
+  // here AND in use is already shown by the picker, so only it gets no line.
+  // A chosen model the harness cannot claim, with nothing below it, says the
+  // pick is not offered and that a model is picked automatically, so the line
+  // never reads as if the choice under it were honoured. Otherwise the line
+  // names the model in use without claiming where it came from (the template
+  // the mate runs as can pin one as well as the global default), or says it
+  // is picked automatically when no tier names one.
+  const modelLine: 'unserved' | 'instead' | 'auto_instead' | 'uses' | null = !resolved
+    ? null
+    : editModel === editingAgent?.model && resolved.pin_served_as === '' && (!resolved.model || resolved.model === editModel)
+      ? 'unserved'
+      : resolved.pinned && !!resolved.model && resolved.model !== editingAgent?.model
+        ? 'instead'
+        : resolved.pinned && !!resolved.model && resolved.model === editingAgent?.model
+          ? null
+          : resolved.pinned && !resolved.model && !!editingAgent?.model
+            ? 'auto_instead'
+            : 'uses'
 
   // A nested child panel (approvals, a memory doc, the memory records editor)
   // owns its OWN unsaved text; the host cannot discard it on the child's
@@ -678,25 +700,32 @@ export default function CrewEditorNextDialog({
                       askAgent={false}
                       testId="next-model-resolved-error"
                     />
-                    {resolved && (
+                    {resolved && (modelLine !== null || effortCapable || !editEffort) && (
                       <div className="flex flex-col gap-1 rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
-                        {/* A scoped pin the harness serves under no id stays unsent. A foreign
-                            pin can instead resolve to a lower tier, which the readout must name. */}
-                        {editModel === editingAgent?.model && resolved.pin_served_as === '' && (!resolved.model || resolved.model === editModel) ? (
+                        {modelLine === 'unserved' && (
                           <div className="text-text" data-testid="next-model-pin-unserved">
                             {i18nT('pages.kiroCrewAgentsPage.pin_unserved_resolves_to', { model: editModel, harness: pinHarness })}
                           </div>
-                        ) : (
-                          <div>
-                            <span className="text-text">
-                              {i18nT('pages.kiroCrewAgentsPage.resolves_to', { model: resolved.model || i18nT('pages.kiroCrewAgentsPage.inherited') })}
-                            </span>
-                            {' — '}
-                            {resolved.pinned && resolved.model === editingAgent?.model
-                              ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
-                              : resolved.model
-                                ? i18nT('pages.kiroCrewAgentsPage.inherited_from_the_agent_template')
-                                : i18nT('pages.kiroCrewAgentsPage.no_pin_anywhere_the_backend_chooses')}
+                        )}
+                        {modelLine === 'instead' && (
+                          <div className="text-text" data-testid="next-model-runs-instead">
+                            {i18nT('pages.kiroCrewAgentsPage.model_runs_instead', {
+                              harness: pinHarness, picked: editingAgent?.model, model: resolved.model,
+                            })}
+                          </div>
+                        )}
+                        {modelLine === 'auto_instead' && (
+                          <div className="text-text" data-testid="next-model-auto-instead">
+                            {i18nT('pages.kiroCrewAgentsPage.model_picked_automatically_instead', {
+                              harness: pinHarness, picked: editingAgent?.model,
+                            })}
+                          </div>
+                        )}
+                        {modelLine === 'uses' && (
+                          <div className="text-text" data-testid="next-model-uses-line">
+                            {resolved.model
+                              ? i18nT('pages.kiroCrewAgentsPage.model_uses', { model: resolved.model })
+                              : i18nT('pages.kiroCrewAgentsPage.model_picked_automatically')}
                           </div>
                         )}
                         {(effortCapable || !editEffort) && (
@@ -775,11 +804,22 @@ export default function CrewEditorNextDialog({
                         <CapabilityBand
                           testId="added"
                           heading={i18nT('crewEditorNext.band_added', { name: displayName.trim() || editing })}
-                          note={i18nT('crewEditorNext.band_added_note')}
+                          // Only a mate that owns its file gets Add abilities (below);
+                          // any other binding's abilities are fixed here, so the band
+                          // must not point at a button that is not shown.
+                          note={ownsFile ? i18nT('crewEditorNext.band_added_note') : undefined}
                           rows={builtFromRows.filter(r => r.present && r.state === 'local')}
                           onRemove={ownsFile ? removeCapability : undefined}
                           removeBusy={removeBusy}
-                          emptyText={i18nT('crewEditorNext.band_added_empty')}
+                          emptyText={
+                            ownsFile
+                              ? i18nT('crewEditorNext.band_added_empty')
+                              // "built-in" only for a direct binding to a built-in template;
+                              // a forked copy (inherited / legacy_snapshot) gets the neutral line.
+                              : caps.mode === 'shared' && caps.template.source === 'builtin'
+                                ? i18nT('crewEditorNext.band_added_empty_builtin', { name: displayName.trim() || editing })
+                                : i18nT('crewEditorNext.band_added_empty_fixed', { name: displayName.trim() || editing })
+                          }
                         />
 
                         {/* No hand-off on the two notices below: the editor modal

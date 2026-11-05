@@ -2,7 +2,7 @@
  * Files and projects on the gateway host: worktree creation, recent
  * projects, directory, drive and file browsing, project git status/log/tree,
  * named workspaces, reveal/open, the file picker, diff, fuzzy search, path
- * completion, composer uploads and screenshots.
+ * completion, composer and Files-panel uploads and screenshots.
  */
 
 import { COMPOSER_UPLOAD_PATH, uploadComposerFiles } from '../../utils/composerUpload'
@@ -24,6 +24,64 @@ export interface ProjectAwsProfile {
   boundDir: string | null
   profiles: string[]
   status?: 'ok' | 'expired' | 'unavailable' | null
+}
+
+/** localStorage key of the Files panel's "Show hidden files" toggle (`usePersistedBool`, off by default). */
+export const SHOW_HIDDEN_FILES_KEY = 'mc-files-show-hidden'
+
+/** Whether that toggle is on, read when a listing is requested. The listings' query keys stay as
+ *  they are, so every reader of one key keeps sharing one request; the toggle refetches both
+ *  listings when it flips (`FileBrowserRail`). On, `browseFiles` also lists dot-files and
+ *  `projectTree` also lists the dot-files `.gitignore` names, both still behind the server's
+ *  sensitive-path checks. */
+function showHiddenFiles(): boolean {
+  try {
+    return localStorage.getItem(SHOW_HIDDEN_FILES_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/** GET /api/project/tree: one folder level of a project directory. */
+export interface ProjectTreePayload {
+  root: string
+  dir?: string
+  paths: string[]
+  directories?: string[]
+  repo: boolean
+  truncated?: boolean
+  truncatedDirectories?: string[]
+  hiddenOnlyDirectories?: string[]
+  unreadableDirectories?: string[]
+  linkedDirectories?: string[]
+  nestedRepoDirectories?: string[]
+}
+
+/** One file a chat session edited: absolute path, latest change time (ISO),
+ *  and whether it is still on disk. */
+export interface SessionFile {
+  path: string
+  ts: string
+  exists: boolean
+}
+
+/** GET /api/project/session-files. `truncated`: more files than the list
+ *  holds, the oldest left out. `withheld`: edits it cannot name here (a
+ *  sensitive or unresolvable path, files a turn's own record left out). */
+export interface SessionFilesPayload {
+  files: SessionFile[]
+  truncated: boolean
+  withheld?: boolean
+}
+
+/** GET /api/project/session-file-diff: the texts of the newest change this chat
+ *  recorded to one file. `available` false: no whole pair is recorded, so the
+ *  caller shows the working-tree diff instead. */
+export interface SessionFileDiffPayload {
+  path: string
+  available: boolean
+  before: string
+  after: string
 }
 
 /** Deadline for the whole-tree walks, `api.fileSearch` and `api.projectTree`. Its own literal,
@@ -118,7 +176,8 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     browseDirs: (path?: string) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
     /** Windows only: the mounted drive roots, as the virtual level above every `X:\`. `path` is `""`: this listing is not a directory. */
     browseDrives: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs?drives=1', { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
-    browseFiles: (path?: string, signal?: AbortSignal) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, signal, '/api/browse-files', s => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
+    browseFiles: (path?: string, signal?: AbortSignal) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, signal, '/api/browse-files', s =>
+      fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) + (showHiddenFiles() ? '&hidden=1' : '') : (showHiddenFiles() ? '?hidden=1' : '')), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
     projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; isRepoRoot?: boolean; branch?: string; detached?: boolean; head?: string }>,
     projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
     projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
@@ -130,8 +189,24 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     projectGitRepos: (slot: string) => fetch('/api/project/git/repos?slot=' + encodeURIComponent(slot)).then(j) as Promise<{ repos: { path: string; source: 'project' | 'agent' }[]; omitted: number; listed: number; incomplete: boolean }>,
     /** `dir` lists one project-relative folder (one the whole listing named in
      *  `truncatedDirectories`) instead of the whole tree; its paths stay project-relative. */
+    // One level per request (`shallow=1`): the folders inside come back in
+    // `lazyDirectories`, unread. They are folded into `nestedRepoDirectories`,
+    // the set the tree already lists on open with no state row, so opening a
+    // folder fetches just that folder and a large workspace never walks whole.
     projectTree: (path: string, dir?: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
-      fetch('/api/project/tree?path=' + encodeURIComponent(path) + (dir ? '&dir=' + encodeURIComponent(dir) : ''), { signal: s }).then(j)) as Promise<{ root: string; dir?: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[]; nestedRepoDirectories?: string[] }>,
+      fetch('/api/project/tree?shallow=1&path=' + encodeURIComponent(path) + (dir ? '&dir=' + encodeURIComponent(dir) : '') + (showHiddenFiles() ? '&hidden=1' : ''), { signal: s })
+        .then(j)
+        .then((body: ProjectTreePayload & { lazyDirectories?: string[] }) => {
+          const lazy = body?.lazyDirectories
+          if (!Array.isArray(lazy) || lazy.length === 0) return body
+          return { ...body, nestedRepoDirectories: [...new Set([...(body.nestedRepoDirectories ?? []), ...lazy])].sort() }
+        })) as Promise<ProjectTreePayload>,
+    /** The files this chat session edited, newest first (`GET /api/project/session-files`). */
+    sessionFiles: (slot: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/session-files', s =>
+      fetch('/api/project/session-files?slot=' + encodeURIComponent(slot), { signal: s }).then(j)) as Promise<SessionFilesPayload>,
+    /** The texts of this chat's newest recorded change to one file (`GET /api/project/session-file-diff`). */
+    sessionFileDiff: (slot: string, path: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/session-file-diff', s =>
+      fetch('/api/project/session-file-diff?slot=' + encodeURIComponent(slot) + '&path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<SessionFileDiffPayload>,
     workspaces: () => fetch('/api/workspaces').then(j),
     createWorkspace: (body: object) => post('/api/workspaces', body).then(j),
     updateWorkspace: (name: string, body: object) =>
@@ -195,6 +270,35 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
         checkSessionExpired(res)
         return res
       }, signal),
+    /**
+     * Upload one OS file into an existing workspace directory (Files panel
+     * drag-and-drop / "Upload files…" row menu).
+     *
+     * Sibling of `uploadFiles` above: that one always lands in the fixed
+     * chat-attachment scratch directory; this one targets whatever directory
+     * the caller resolved (a drop target row, or the tree root). One request
+     * per file — the caller loops for multiple files — so a name collision is
+     * reported per file rather than for a whole batch at once. Returns a
+     * discriminated result rather than throwing, so a `name_collision` (409)
+     * reads as data the caller can report instead of an exception to catch.
+     */
+    uploadToDirectory: async (
+      dir: string, file: File,
+    ): Promise<
+      { ok: true; path: string; name: string } | { ok: false; status: number; code?: string; error: string }
+    > => {
+      const fd = new FormData()
+      fd.append('file', file)
+      const q = new URLSearchParams({ dir })
+      const res = await fetch(`/api/directory-upload?${q}`, { method: 'POST', body: fd })
+      checkSessionExpired(res)
+      let body: { path?: string; name?: string; error?: string; code?: string }
+      try { body = await res.json() } catch { body = {} }
+      if (!res.ok) {
+        return { ok: false, status: res.status, code: body.code, error: body.error || res.statusText }
+      }
+      return { ok: true, path: body.path ?? '', name: body.name ?? file.name }
+    },
     screenshot: () => post('/api/screenshot').then(j) as Promise<{ path: string }>,
   }
 

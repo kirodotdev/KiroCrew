@@ -169,9 +169,17 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
     job that way (no replace-in-place), so a run in flight only removes a dead
     one.
     """
-    from kiro_crew.cron_service.schedule import get_local_tz
+    from kiro_crew.cron_service.schedule import LOCAL_TIMEZONE, default_timezone_name
 
-    tz = schedules.get("timezone") or get_local_tz()[0]
+    # Every cadence takes the zone the record names, else the default zone's NAME
+    # ("local" unless one is configured), so it keeps following the computer when
+    # it travels. One exception: while that default is "local", an untouched
+    # cadence saved before "local" became the default (on UTC, or with no zone)
+    # keeps that zone, id and run history. A cadence explicitly set to UTC and
+    # then cleared looks the same, so it stays on UTC until its time changes.
+    named_tz = schedules.get("timezone") or ""
+    tz = named_tz or default_timezone_name()
+    keeps_legacy_zone = not named_tz and tz == LOCAL_TIMEZONE
     for cadence in member_goals.CADENCES:
         jobs = await reminder_jobs(crons, slug, cadence)
         wanted = bool(schedules.get(cadence))
@@ -183,7 +191,10 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
             and jobs[0].enabled
             and jobs[0].schedule.kind == "cron"
             and jobs[0].schedule.cron_expr == expr
-            and jobs[0].timezone == tz
+            and (
+                jobs[0].timezone == tz
+                or (keeps_legacy_zone and (jobs[0].timezone or "") in ("UTC", ""))
+            )
             and jobs[0].name == name
         ):
             continue
@@ -194,7 +205,7 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
         await crons.add_managed_job_async(
             managed_key(slug, cadence),
             name=name,
-            message=f"{_NAMES[cadence]} for {label}. It runs in the mate's own chat.",
+            message=f"{_NAMES[cadence]} for {label}. It runs in the Bot's own chat.",
             cron_expr=cron_expr_for(cadence, schedules),
             timezone=tz,
             silent=True,
@@ -645,14 +656,14 @@ def _idle_thread(state: Any, slot_key: str, member: str) -> tuple[Any, str]:
         or getattr(slot, "agent", "") != member
         or getattr(slot, "executor", "") == "remote"
     ):
-        return None, "skipped: the mate's thread is not open"
+        return None, "skipped: the Bot's thread is not open"
     if slot.running or getattr(slot, "_queue", None):
-        return None, "skipped: the mate is busy"
+        return None, "skipped: the Bot is busy"
     return slot, ""
 
 
 #: The run-log line of a check-in whose thread is not open and cannot be built.
-UNLOADABLE_SKIP = "skipped: the mate's thread could not be loaded"
+UNLOADABLE_SKIP = "skipped: the Bot's thread could not be loaded"
 
 
 async def _load_thread(state: Any, slot_key: str) -> str:
@@ -718,12 +729,12 @@ async def fire(state: Any, job: Any) -> str:
         members_mod.validate_slug(slug)
         binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
     except (members_mod.MemberSlugError, OSError):
-        return "skipped: no mate thread"
+        return "skipped: no Bot thread"
     if not binding:
-        return "skipped: no mate thread"
+        return "skipped: no Bot thread"
     member = binding.get("member")
     if not isinstance(member, str) or not member:
-        return "skipped: no mate thread"
+        return "skipped: no Bot thread"
     try:
         rec = await asyncio.to_thread(member_goals.read_goals, slug, member)
     except member_goals.GoalsUnreadable:
@@ -753,7 +764,7 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the crewmate's thread is not open"
+            return "skipped: the Bot's thread is not open"
     if cadence in member_goals.REPORT_KINDS:
         finished = await asyncio.to_thread(finished_tasks, slot_key, cadence)
         # A turn (a cron notification, a user message) can start while the
@@ -762,7 +773,7 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the mate's thread is not open"
+            return "skipped: the Bot's thread is not open"
     if cadence == member_goals.CADENCE_HEARTBEAT:
         has_tools = await asyncio.to_thread(member_has_session_tools, member)
         waiting = await milestones_card_waiting(state, slot_key)
@@ -774,7 +785,7 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the mate's thread is not open"
+            return "skipped: the Bot's thread is not open"
         if _monitor_loop_drives(slot_key):
             return LOOP_SKIP
         prompt = heartbeat_prompt(rec, has_session_tools=has_tools, milestones_waiting=waiting)
@@ -791,7 +802,7 @@ async def fire(state: Any, job: Any) -> str:
     if skip:
         return skip
     if again is not slot:
-        return "skipped: the mate's thread is not open"
+        return "skipped: the Bot's thread is not open"
     dispatch_hidden_turn(
         state, slot, with_language(prompt, language, in_thread=True), human_seen=False
     )

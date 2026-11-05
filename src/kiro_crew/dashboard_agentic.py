@@ -153,11 +153,11 @@ PACKAGE_REFUSALS: Final[dict[str, str]] = {
 #: create one, tell a human, stop reaching for it.
 _PACKAGE_REMEDIES: Final[dict[str, str]] = {
     "empty": (
-        "this crewmate has no dashboard package yet, so it has no field to write: "
+        "this Bot has no dashboard package yet, so it has no field to write: "
         "create one with a Model that declares this field, then write it"
     ),
     "error": (
-        "this crewmate's dashboard package has a Model that does not load, so there is "
+        "this Bot's dashboard package has a Model that does not load, so there is "
         "nothing to check a write against -- ask the human to repair or replace the "
         "package"
     ),
@@ -199,7 +199,7 @@ def type_holds(declared: str, value: Any) -> bool:
     THE SAME RULE as ``projection._dashboard_type_holds``, deliberately duplicated:
     the fold cannot import this module and this module cannot live in
     ``projection`` (the manifest imports the fold names, so the cycle closes the
-    other way). ``test_dashboard_agentic`` pins the two against one table of cases.
+    other way). ``test_dynamic_dashboard`` pins the two against one table of cases.
 
     A bool is NOT a number. Python says ``isinstance(True, int)``, so without the
     exclusion a crewmate writing ``true`` into a ``number`` field would pass and the
@@ -413,7 +413,7 @@ def check_write(
         raise WriteRefused(
             "no_instance",
             field,
-            "this crewmate has no dashboard yet, so it has no field to write: adopt a "
+            "this Bot has no dashboard yet, so it has no field to write: adopt a "
             "template first, then write its agentic fields",
         )
     writable = agentic_fields(instance.manifest)

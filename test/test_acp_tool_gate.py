@@ -1,19 +1,8 @@
 """The tool gate reports routing honestly and refuses what it enforces.
 
-Two axes that must not be conflated, and each test names which one it is on:
-
-* **Truth** -- what :func:`routing_verdict` SAYS about a harness. Every harness
-  gets an honest verdict, including the ones this core does not enforce.
-* **Enforcement** -- whether a non-ROUTED verdict REFUSES. Scoped to the
-  mechanisms this core implements end to end: ``SESSION_CONFIG``, which checks the
-  advertised option, and ``VERIFIED_SEEDED_SETTINGS``, which reads back the setting
-  it wrote.
-
-Collapsing them is the failure this file exists to prevent: upgrading an
-unenforced harness to ``ROUTED`` so it stops refusing would make the picker and
-the doctor row assert a guarantee nothing performs.
-
-Every test is revert-verified: with the corresponding guard removed they fail.
+Truth (what :func:`routing_verdict` says) and enforcement (whether a non-ROUTED
+verdict refuses) are kept apart: marking an unenforced harness ``ROUTED`` to stop
+the refusal would make the picker and doctor row claim a guarantee nothing performs.
 """
 
 from __future__ import annotations
@@ -105,13 +94,9 @@ def test_unknown_backend_fails_closed() -> None:
 def test_only_implemented_mechanisms_are_enforced() -> None:
     """The enforced set is a mechanism list, not a harness allowlist.
 
-    Scoping by mechanism is what makes widening it require IMPLEMENTING one; an
-    id-based allowlist could be widened by editing a literal. Every member carries an
-    observation: SESSION_CONFIG checks the advertised option before the first
-    prompt, VERIFIED_SEEDED_SETTINGS reads back the setting it wrote, and
-    VERIFIED_GATE_EXTENSION reads the harness's own command registry back for the
-    gate it loaded. Plain SEEDED_SETTINGS is absent for exactly that reason -- it
-    writes without reading.
+    Widening it then means implementing a mechanism, not editing a literal. Every
+    member reads something back; plain SEEDED_SETTINGS writes without reading, so it
+    is absent.
     """
     assert gate.ENFORCED_ROUTINGS == frozenset(
         {
@@ -175,11 +160,8 @@ def test_enforced_harness_always_refuses() -> None:
 def test_no_local_opt_out_exists() -> None:
     """A security control with a local off-switch is not a control.
 
-    An earlier revision carried ``agent.acp_backend_allow_ungated_tools``: a local
-    config bool that started the session with the compensating control off. That is
-    the shape the central governance ceiling exists to forbid, since a managed
-    fleet could allow the harness while a user's own config disabled the gate.
-    Pinned as an ABSENCE so it cannot be reintroduced as a convenience.
+    Pins the absence of ``agent.acp_backend_allow_ungated_tools``: a user's own
+    config could turn the gate off on a managed fleet that allows the harness.
     """
     import inspect
 
@@ -329,11 +311,8 @@ def test_deepseek_marker_accepts_only_the_stock_acp_bridge() -> None:
 def test_mask_covers_the_whole_read_gate_floor() -> None:
     """The compensation must cover what the control it compensates for covers.
 
-    Codex's passive reads never reach ``HookManager.on_tool_call``, so the floor
-    cannot see them and this mask is the only thing standing in. An enumerated
-    subset left ``.claude/.credentials.json``, ``.netrc``, ``.git-credentials``,
-    ``.pypirc`` and ``.npmrc`` readable by the child while the floor called them
-    never-readable. Derived, so the two cannot drift.
+    Codex's passive reads never reach ``HookManager.on_tool_call``, so this mask is
+    the only guard. It is derived from the floor so the two cannot drift.
     """
     masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX))
     home = os.path.expanduser("~")
@@ -378,13 +357,9 @@ def test_named_credential_leaves_are_masked(leaf) -> None:
 def test_aws_stays_masked_with_only_config_reexposed() -> None:
     """The cc tier's Bedrock posture, on every platform.
 
-    A codex configured for Bedrock resolves its credentials through
-    ``~/.aws/config`` (``credential_process``). Masking the directory made every
-    session fail at start with ``failed to load AWS credentials``, surfaced as
-    ``Authentication required``. The fix re-exposes exactly that file, the way
-    ``_CC_EXPOSE_FILES`` does for Claude Code, and keeps ``~/.aws/credentials``
-    and ``~/.aws/sso/cache`` hidden. Revert-verified: dropping the expose leaf
-    fails the second assertion; excluding ``.aws`` from the mask fails the first.
+    Codex on Bedrock needs ``~/.aws/config`` (``credential_process``) to start, so
+    only that file is re-exposed (like ``_CC_EXPOSE_FILES``); ``~/.aws/credentials``
+    and ``~/.aws/sso/cache`` stay hidden.
     """
     masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX))
     home = os.path.expanduser("~")
@@ -519,18 +494,10 @@ def test_every_session_config_harness_names_its_option() -> None:
 def test_every_enforced_harness_declares_its_own_credential() -> None:
     """An enforced harness must name a readable token store OR be fed from the vault.
 
-    ``adapter_hidden_credential_dirs`` denies the whole floor minus the harness's
-    own leaf, so a harness that authenticates from a FILE and is absent from that
-    table gets its token masked and cannot authenticate. Fails here rather than as
-    an opaque auth error on first use.
-
-    The other way to satisfy it is ``ENTITLEMENT_HOST_VAULT``: Crew hands such a
-    harness its key as an environment variable at spawn, so it needs no readable
-    file and names no leaf. The rule is therefore a disjunction, and the INVERSE
-    half matters just as much -- a host-vault harness that ALSO carved a leaf out
-    would re-open for its whole process tree (its own shell tool included) exactly
-    the file the vault route exists to keep masked, while looking like it had
-    tightened something.
+    ``adapter_hidden_credential_dirs`` masks everything but the harness's own leaf,
+    so a file-auth harness missing from that table cannot authenticate. A
+    ``ENTITLEMENT_HOST_VAULT`` harness gets its key by env var and must name no leaf,
+    or its whole process tree could read the file the vault route keeps masked.
     """
     from kiro_crew.acp_backends import ACP_BACKEND_ROUTING
     from kiro_crew.agent_sdk import host_auth
@@ -558,18 +525,9 @@ def test_every_enforced_harness_declares_its_own_credential() -> None:
 def test_every_enforced_harness_reaches_the_spawn_preflight(tmp_path: pathlib.Path) -> None:
     """An enforced harness whose spawn path skips the preflight starts unmasked.
 
-    The preflight (refuse-then-mask) is invoked from inside each adapter's OWN spawn
-    path rather than from a gate on a shared one, so the kiro construction path
-    gains no conditional and no awaited step in service of an adapter
-    (harness-parity H13). The cost of that placement is that a new enforced harness
-    needs its own call: forgetting one would spawn it with no mask and no refusal.
-
-    An enforced harness reaches its spawn through ONE of two drivers -- a harness on
-    the shared runtime, or a per-session host's adapter on ``AcpClient`` -- so each
-    is launched through the driver that serves it, with the preflight recorded and
-    the sandbox wrap the driver hands its child to observed. Exactly one preflight
-    per spawn is the contract (zero spawns with no mask and no refusal, two enforces
-    twice), and the mask it resolved must be the one the session's wrap applies.
+    The preflight runs inside each adapter's own spawn path (harness-parity H13), so
+    each harness is launched through its driver (shared runtime or ``AcpClient``).
+    Exactly one preflight per spawn, and its mask must be the one the wrap applies.
     """
     from unittest.mock import patch
 
@@ -636,11 +594,9 @@ def test_mask_reanchors_a_relocated_credential(
 ) -> None:
     """A credential moved by an env override is still denied to the child.
 
-    Regression: the mask projected every leaf under ``Path.home()``, so an operator
-    who relocated a store with ``CLAUDE_CONFIG_DIR`` (or ``KIROCREW_HOME``) kept the
-    LIVE secret readable while the sandbox was handed a home-rooted path that denied
-    nothing. The mask now shares the read gate's anchor rules. With the delegation
-    reverted to a home-only projection this fails.
+    The mask shares the read gate's anchor rules, so a store moved with
+    ``CLAUDE_CONFIG_DIR`` (or ``KIROCREW_HOME``) is masked at its real path, not
+    under ``Path.home()``.
     """
     # tmp_path, not a hardcoded POSIX path: the assertion is about the OVERRIDE
     # being honoured, and "/tmp/..." is not a path Windows resolves to itself.
@@ -686,10 +642,7 @@ def test_sandbox_off_refuses_an_enforced_adapter(monkeypatch: pytest.MonkeyPatch
     """With the sandbox off the mask is never applied, so the session must refuse.
 
     ``wrap_argv`` returns from its ``mode == "off"`` branch before it applies
-    ``extra_hidden_dirs``. Because ACP v1 cannot force a prompt for a passive read,
-    an enforced adapter started that way has NO compensating control and is strictly
-    weaker than the gate-routed harnesses beside it. Revert-verified: without the
-    guard this raises nothing.
+    ``extra_hidden_dirs``, and ACP v1 cannot prompt for a passive read.
     """
     from kiro_crew import sandbox
 
@@ -722,15 +675,9 @@ def test_governed_floor_keeps_an_enforced_adapter_startable(
 ) -> None:
     """A ceiling that raises ``off`` must not trigger the refusal.
 
-    The guard is keyed on the EFFECTIVE tier, so a governed host whose
-    ``sandbox.min_level`` floor overrides the config value still gets the mask and
-    must start. Keying it on the raw config value instead fails this.
-
-    ``detect_backend`` is pinned to a PRESENT backend deliberately. A governed host
-    that can actually satisfy its own floor has one, and without the pin this test
-    silently depended on the CI host having none -- which made it read as "a
-    no-backend host must stay startable", a claim it never meant and which
-    ``test_no_backend_refuses_under_a_governance_floor_too`` now contradicts.
+    The guard reads the effective tier, so a ``sandbox.min_level`` floor above the
+    config value still starts. ``detect_backend`` is pinned to a present backend:
+    with none, ``test_no_backend_refuses_under_a_governance_floor_too`` applies.
     """
     from kiro_crew import sandbox
 
@@ -747,16 +694,8 @@ def test_no_backend_refuses_under_a_governance_floor_too(
 ) -> None:
     """No backend refuses even when a governance floor forbids unsandboxed execution.
 
-    An earlier revision answered from the floor here, reasoning that a floor
-    mandating isolation makes ``wrap_argv``'s unwrapped return unreachable, so
-    nothing could start unmasked. That held only for as long as the floor did: a
-    ceiling LOOSENED between this preflight and the spawn drops the very refusal
-    that made the answer safe, and the floor is mutable config read here just like
-    the opt-in was. With no backend nothing can carry the mask at all, so the
-    verdict must not be derived from policy in either direction.
-
-    Revert-verified: returning ``_floor_mandates_sandbox(floor)`` passes this
-    through.
+    The floor is mutable config and can loosen between preflight and spawn, and with
+    no backend nothing can carry the mask, so the verdict must not come from policy.
     """
     from kiro_crew import sandbox
 
@@ -773,11 +712,8 @@ def test_env_root_override_is_read_verbatim(
 ) -> None:
     """A trailing space is a legal path character and must not be stripped.
 
-    ``_valid_override_home`` takes ``KIROCREW_HOME`` raw and ``config_dir`` mkdirs
-    whatever it names, so stripping here anchored the sensitive-target set on
-    ``<root>`` while the process actually ran out of ``"<root> "`` -- leaving the real
-    ``.env``, signing keys and governance files outside the floor. Revert-verified:
-    restoring ``.strip()`` fails this.
+    ``config_dir`` mkdirs ``KIROCREW_HOME`` raw, so a stripped anchor would point at
+    ``<root>`` while the real ``.env`` and keys live under ``"<root> "``.
     """
     from kiro_crew import security
 
@@ -800,9 +736,7 @@ def test_no_backend_with_opt_in_refuses_an_enforced_adapter(
 
     On a host with no sandbox backend (Docker/CI where ``unshare(CLONE_NEWUSER)`` is
     blocked) and ``sandbox_allow_unsandboxed_exec`` opted in, ``wrap_argv`` returns the
-    argv unwrapped, so ``extra_hidden_dirs`` never lands. The guard must refuse that
-    too. Revert-verified: keying it on ``effective_sandbox_mode(mode) != "off"``
-    passes this configuration straight through.
+    argv unwrapped, so ``extra_hidden_dirs`` never lands and the guard must refuse.
     """
     from kiro_crew import sandbox
 
@@ -818,15 +752,8 @@ def test_no_backend_refuses_even_without_the_opt_in(
 ) -> None:
     """No sandbox backend refuses whether or not unsandboxed exec is opted in.
 
-    An earlier revision answered "the mask applies" here, on the grounds that
-    ``wrap_argv`` would raise ``SandboxUnavailableError`` anyway with better
-    host-specific remedy text, so guarding twice only blurred the diagnostic. That
-    made the verdict depend on ``_allow_unsandboxed_exec()`` -- MUTABLE config, read
-    at preflight and acted on at the spawn. Flipping it on in that window left a
-    session that had already passed the guard taking wrap_argv's unwrapped path with
-    the credential paths readable, so the verdict must not consult it at all.
-
-    Revert-verified: restoring the opt-in read makes this pass through instead.
+    ``_allow_unsandboxed_exec()`` is mutable config read at preflight and acted on at
+    spawn; flipping it between the two would start a passed session unmasked.
     """
     from kiro_crew import sandbox
 
@@ -871,11 +798,8 @@ def test_nested_sandbox_passthrough_refuses_an_enforced_adapter(
 
     A nested re-wrap is impossible by design (Linux seccomp denies the unshare, macOS
     Seatbelt refuses sandbox_apply), so wrap_argv passes the argv through and
-    ``extra_hidden_dirs`` never lands. The outer sandbox is not a substitute: the
-    standard tier deliberately leaves ``~/.aws`` / ``~/.ssh`` / ``~/.kube`` readable
-    for kiro-cli's sake, which is exactly what this mask exists to close for an
-    enforced adapter. Revert-verified: without the nested branch the backend probe
-    returns a real backend and the guard passes this configuration through.
+    ``extra_hidden_dirs`` never lands. The outer standard tier leaves ``~/.aws`` /
+    ``~/.ssh`` / ``~/.kube`` readable for kiro-cli, so it is no substitute.
     """
     from kiro_crew import sandbox
 
@@ -1023,27 +947,17 @@ def test_sandbox_preflight_retains_the_windows_remedy(
 
 # ── Ratchet: the mask must not hide what the child has to reach ───────────────
 #
-# The class this pins was found on pi and is not pi's: the mask projects the whole
-# READ-GATE floor, and the floor covers a Crew runtime artifact to keep the AGENT'S
-# FILE TOOLS out of it, not to keep the CHILD out. Handed to a sandbox as a deny
-# list, the same entry hid the directory the pi child had to exec its gate launcher
-# out of -- the child saw an empty dir and every pi session was refused with exit
-# 126. The audit that followed found the same collision on every ENFORCED harness,
-# over every further leaf ``sandbox`` itself declares the child must reach. No count is
-# written down here: the set is derived, a literal would be one more thing to drift,
-# and ``test_the_declared_child_reachable_set_is_not_empty`` is what keeps it honest.
-#
-# So this is a per-BACKEND sweep over the whole roster, not a pi regression test: a
-# new harness inherits the mask by declaring an enforced routing, and inherits the
-# collision with it unless something fails here first.
+# The mask projects the whole read-gate floor, which guards Crew runtime artifacts from
+# the agent's file tools, not from the child. As a deny list it can hide a leaf the
+# child must reach (pi's gate launcher: exit 126). Swept per enforced backend; the set
+# is derived, and ``test_the_declared_child_reachable_set_is_not_empty`` keeps it honest.
 
 
 def _host_runtime_leaves() -> tuple[str, ...]:
     """Crew-home-relative leaves, each spelled with every data-home prefix.
 
-    The projection ``adapter_hidden_credential_dirs`` performs, repeated here from
-    the same two sources rather than from its output: reading the answer off the
-    thing under test would pass on any answer at all.
+    Rebuilt from the same sources as ``adapter_hidden_credential_dirs``, not from its
+    output, which would pass on any answer.
     """
     return tuple(
         f"{prefix}/{leaf}" for prefix in crew_home_prefixes() for leaf in crew_host_runtime_leaves()
@@ -1053,12 +967,8 @@ def _host_runtime_leaves() -> tuple[str, ...]:
 def _host_runtime_targets() -> tuple[str, ...]:
     """Every ANCHOR the mask projects a crew leaf under, not just ``expanduser("~")``.
 
-    ``sandbox_credential_targets`` emits the logical home AND the resolved one,
-    because a host whose home is a symlink (``/home/u`` -> ``/local/home/u``) reaches
-    the same file by two spellings and a deny list denies only what it is handed. A
-    sweep that checked one spelling would report a leaf excluded while the other
-    spelling stayed masked -- and on a developer host the two differ, so the weaker
-    sweep passes exactly where the bug would live.
+    ``sandbox_credential_targets`` emits the logical and the resolved home, since a
+    symlinked home (``/home/u`` -> ``/local/home/u``) reaches one file two ways.
     """
     logical = os.path.expanduser("~")
     anchors = {logical, os.path.realpath(logical)}
@@ -1103,21 +1013,19 @@ def test_the_declared_child_reachable_set_is_not_empty() -> None:
 @pytest.mark.parametrize(
     "leaf",
     (
-        # The browser launcher an agent browser command must exec. The governance,
+        # The KAS engine bundle a sandboxed KAS process must exec. The governance,
         # policy and consent documents are NOT here: each is an input to an
         # authorization decision, so they are withheld and the withheld-leaf test
-        # pins them instead.
-        "playwright-cli",
+        # pins them instead. (The browser engine is not here either: the gateway
+        # runs it, no sandboxed child does.)
+        "engines",
     ),
 )
 def test_named_child_reachable_leaves_stay_out_of_every_enforced_mask(backend, leaf) -> None:
     """The leaves with a named in-sandbox reader, pinned one by one.
 
-    Named as well as derived for the reason the credential leaves above are: the
-    derivation would keep passing if a leaf were dropped from
-    ``crew_host_runtime_leaves()`` as well, and these are the ones whose loss has a
-    concrete consequence a reader can check -- a 403 on every internal call, an
-    unresolvable session identity, a composition abort, an unexecutable launcher.
+    Named, not only derived: the derivation still passes if a leaf is also dropped
+    from ``crew_host_runtime_leaves()``.
     """
     masked = set(gate.adapter_hidden_credential_dirs(backend))
     home = os.path.expanduser("~")
@@ -1163,15 +1071,8 @@ def test_the_child_reachable_set_survives_a_relocated_data_home(
 ) -> None:
     """``KIROCREW_HOME`` moves the artifacts, and the exclusion has to move with them.
 
-    The mask re-anchors every crew leaf under the override (that is what makes it
-    deny a relocated secret at all), so an exclusion that only spelled the two
-    default prefixes would hide the launcher and the gateway credential again on
-    exactly the managed hosts that set the override -- the failure back in a
-    configuration nobody runs locally.
-
-    Asserted in both directions on the same mask: the runtime artifacts are absent
-    under the relocated root, and a crew SECRET is still present under it. One
-    without the other passes if the whole re-anchor stopped happening.
+    Both directions on one mask: runtime artifacts absent under the relocated root
+    and a crew secret still present, so a re-anchor that stops entirely fails too.
     """
     relocated = tmp_path / "relocated-crew"
     monkeypatch.setenv("KIROCREW_HOME", str(relocated))
@@ -1197,35 +1098,17 @@ def test_the_child_reachable_set_survives_a_relocated_data_home(
 
 # ── The other half of the ruling: the leaves the child is DENIED ─────────────
 #
-# The audit that produced the sweep above also found that the pre-fix mask hid two
-# DIFFERENT kinds of thing, and only one of them should come back. A ceiling or a
-# consent record holds no secret and its in-sandbox reader needs it. A live
-# credential is exactly what this mask exists to keep from a harness that
-# self-approves its own passive reads, and the fact that the first-class path is
-# looser (``AGENTS.md`` carries ``sel_hmac.key`` as a VISIBLE residual with no OS
-# fence) is not a licence to widen that residual to every enforced harness.
-#
-# So these five stay masked, and the features whose in-sandbox readers need them stay
-# broken under an enforced harness until those readers move behind the gateway. They
-# are broken TODAY, so withholding them is not a regression -- excluding them would
-# have been a new exposure.
+# A live credential stays masked from a harness that self-approves passive reads, even
+# though the first-class path leaves ``sel_hmac.key`` visible (``AGENTS.md``). Features
+# whose in-sandbox readers need these leaves stay broken until they move behind the
+# gateway.
 
 
 def _granted_per_backend(leaf: str, backend: str) -> bool:
     """Whether a WITHHELD leaf is handed to *backend* alone by a narrower grant.
 
-    Read off the production rule rather than restated: ``adapter_hidden_credential_dirs``
-    excludes the gate-artifact leaf only for a harness whose child loads Crew's own gate
-    out of it, which is exactly the ``VERIFIED_GATE_EXTENSION`` routing. Keying on the
-    routing rather than on one id is what keeps the test and the mask from drifting into
-    agreeing about different things -- a harness that reaches that routing later is
-    granted by the rule and by this helper in the same commit, and one that does not is
-    still denied by both.
-
-    The grant stays narrow where it matters: the other enforced routings --
-    ``SESSION_CONFIG`` and ``VERIFIED_SEEDED_SETTINGS`` -- have no gate artifacts to
-    read, so every one of their children must still find this leaf masked, and the
-    assertion below pins that.
+    Keyed on the ``VERIFIED_GATE_EXTENSION`` routing, as the production rule is, not
+    on one id, so the test and the mask cannot drift apart.
     """
     return leaf == PI_GATE_ARTIFACT_LEAF and routing_for(backend) is Routing.VERIFIED_GATE_EXTENSION
 
@@ -1246,10 +1129,8 @@ def test_a_withheld_leaf_leaves_the_mask_only_by_a_narrower_grant(backend, leaf)
     * ``crons.json`` carries the session key a job runs under;
     * ``member-memory-bindings`` stores raw session keys rather than digests.
 
-    The gate-artifact leaf is the exception, and asserted in BOTH directions here
-    rather than skipped: the one harness whose child execs the launcher must reach it,
-    and every OTHER enforced harness must not. A skip would leave the second half
-    unpinned, which is the half that keeps the narrower grant narrow.
+    The gate-artifact leaf is checked both ways, not skipped: the harness that execs
+    the launcher reaches it, every other enforced harness does not.
     """
     masked = set(gate.adapter_hidden_credential_dirs(backend))
     readable = set(crew_host_runtime_leaves())

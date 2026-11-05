@@ -250,7 +250,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 " delivered and processed."
                 " A shared-session spawn costs about 200ms and little memory; a per-spawn"
                 " model or reasoning_effort runs each subagent in its own process"
-                " (~3-5s, ~400MB), so check resource_status before a wide wave."
+                " (~3-5s, ~0.55 GB), so check resource_status before a wide wave."
                 " A memory-pressure refusal means take a lighter path; an unknown agent"
                 " name means pick from the returned roster. awaiting_approval means the"
                 " run launched and waits on the parent's approval surface, not that it"
@@ -301,7 +301,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     "crew": {
                         "type": "string",
                         "description": (
-                            "Crew Member name from select_crew or route_crew. "
+                            "Bot name from select_crew or route_crew. "
                             "Selects that member's memory and provider template; agent "
                             "alone selects a template. Naming a member is enough; its "
                             "Triggers only steer automatic selection. Omit to inherit the "
@@ -311,7 +311,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     "target_member": {
                         "type": "string",
                         "description": (
-                            "Explicit target Crew Member. Uses its existing memory without "
+                            "Explicit target Bot. Uses its existing memory without "
                             "copying the parent's learning. Omit to inherit the current member."
                         ),
                     },
@@ -352,7 +352,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "`kiro-cli chat --list-models --format json`; another backend "
                             "(e.g. codex) accepts only ids from its own model list and "
                             "refuses ids from kiro's catalog. Setting it forces the "
-                            "dedicated-process path (~3-5s start, ~400MB per subagent)."
+                            "dedicated-process path (~3-5s start, ~0.55 GB per subagent)."
                         ),
                     },
                     "backend": {
@@ -378,7 +378,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "= unset). Batch-wide — applies to every task in this "
                             "call and wins over the configured subagent role pin. "
                             "Setting it forces the dedicated-process path: each "
-                            "subagent runs its own process (~3-5s start, ~400MB) "
+                            "subagent runs its own process (~3-5s start, ~0.55 GB) "
                             "instead of session sharing (~200ms, near-zero memory), "
                             "so weigh it on a wide fan-out. Models that do not "
                             "support effort ignore the level, but the process cost "

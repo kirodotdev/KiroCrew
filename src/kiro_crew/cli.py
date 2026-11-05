@@ -50,9 +50,14 @@ from kiro_crew import _facade_mirror, cli_help, platform_compat, sandbox_launch_
 from kiro_crew.apps import builtins as _builtins_pkg
 from kiro_crew.apps.builtins import BUILTIN_NAMES as _BUILTIN_NAMES
 from kiro_crew.cli_log_files import (  # noqa: F401 -- re-exported for existing callers
+    BOOT_LOG_GENERATIONS,
+    BOOT_LOG_GENERATIONS_MAX_BYTES,
     _AppendOnlyLogFileHandler,
     _open_owner_only,
     _OwnerOnlyRotatingFileHandler,
+    boot_log_dir,
+    boot_log_dir_is_linked,
+    older_boot_logs,
 )
 from kiro_crew.config import KiroCrewConfig, config_dir, ensure_data_home
 from kiro_crew.config.loader import (  # noqa: F401
@@ -83,6 +88,7 @@ from kiro_crew.platform import (  # noqa: F401
     boot_platform,
     current_context,
 )
+from kiro_crew.platform_compat_offloop_spawn import gateway_loop_factory
 from kiro_crew.preflight import run_preflight_checks
 from kiro_crew.project_dir import PROJECT_MARKERS, detect_project_dir
 from kiro_crew.seed import seed_cmd
@@ -170,6 +176,7 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
         print(f"👻 {lock_err}", file=sys.stderr)
         sys.exit(LIVE_HOLDER_EXIT_CODE if lock_err.live_holder else 1)
     try:
+        _start_gateway_log_after_lock()
         signin.sign_in_then_exit(
             exc, port=port, owner_id=owner_id, no_open=no_open, start_args=_restart_args(args)
         )
@@ -799,7 +806,14 @@ def main() -> None:
                 )
                 _platform_boot_error = exc
             else:
-                raise
+                # Still fail-closed: the command never runs. The error already
+                # names what failed and how (e.g. "unknown governed key
+                # 'sandbox.enabeld' (fail-closed)"), so print it on one line
+                # and exit 1 instead of a traceback; doctor shows the detail.
+                logging.getLogger("kiro_crew").debug("platform composition failed", exc_info=True)
+                print(f"❌ {exc}", file=sys.stderr)
+                print("   Run `kirocrew doctor` for details.", file=sys.stderr)
+                raise SystemExit(1) from None
         else:
             # Standalone boot never raises; only genuinely-unexpected errors
             # reach here, and the standalone edition must not break on a corrupt
@@ -914,7 +928,11 @@ def main() -> None:
             # attempt may find cleared, so it keeps the restartable exit 1.
             sys.exit(LIVE_HOLDER_EXIT_CODE if exc.live_holder else 1)
         try:
-            asyncio.run(_gateway(**gw_kwargs))
+            # Only now, holding the lock, move the previous run's log aside: a
+            # start refused above must never rotate a running gateway's log.
+            _start_gateway_log_after_lock()
+            # Windows: every spawn on this loop builds its child off-loop.
+            asyncio.run(_gateway(**gw_kwargs), loop_factory=gateway_loop_factory())
         finally:
             _gw_lock.release()
     elif args.command == "setup":
@@ -1023,8 +1041,17 @@ def main() -> None:
         # the `kirocrew app mcp <name>` manifest path uses (clean stderr line +
         # exit 1 on ImportError or a missing run_mcp_server entrypoint), so an
         # unresolvable module cannot reach a raw traceback here.
+        from kiro_crew.apps.builtin_adoption import builtin_package_released
         from kiro_crew.cli_commands import _run_app_mcp_server
 
+        if builtin_package_released(args.command[4:]):
+            # The app now runs from its own repository; the wheel copy's server
+            # must not answer for it.
+            print(
+                "This app is installed from its repository; use `kirocrew app mcp <name>`.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         _run_app_mcp_server(args.command[4:])
     elif args.command == "computer":
         # Deferred import: ``computer_use.cli`` reaches the driver seam, and the
@@ -1055,7 +1082,7 @@ def main() -> None:
 
         _policy(args)
     elif args.command == "knowledge":
-        _knowledge(args)
+        sys.exit(_knowledge(args))
     elif args.command == "secrets":
         # Dispatch through the module-level `importlib` rather than a
         # function-local `from kiro_crew.cli_commands import …`: the latter trips
@@ -1082,9 +1109,17 @@ def main() -> None:
 
         _stop(args.port, expect_pid=args.expect_pid)
     elif args.command == "restart":
-        from kiro_crew.cli_server import _restart
+        if args.max_wait is not None and not args.when_idle:
+            print("❌ --max-wait applies only with --when-idle.", file=sys.stderr)
+            sys.exit(2)
+        if args.when_idle:
+            from kiro_crew.cli_restart_idle import _restart_when_idle
 
-        _restart(args.port)
+            _restart_when_idle(args.port, max_wait_secs=args.max_wait)
+        else:
+            from kiro_crew.cli_server import _restart
+
+            _restart(args.port)
     elif args.command == "gateway-pid":
         from kiro_crew.cli_server import _gateway_pid
 
@@ -1195,7 +1230,7 @@ from kiro_crew.cli_gateway_boot import (  # noqa: E402
 )
 from kiro_crew.cli_jail import _JAILED_COMMANDS, _jail_reexec_gate  # noqa: E402
 from kiro_crew.cli_knowledge import _consolidate_cmd, _knowledge  # noqa: E402
-from kiro_crew.cli_logging import _setup_cli_logging  # noqa: E402
+from kiro_crew.cli_logging import _setup_cli_logging, _start_gateway_log_after_lock  # noqa: E402
 from kiro_crew.cli_perf import perf_cmd, register_perf_parser  # noqa: E402
 from kiro_crew.cli_setup import (  # noqa: E402, F401
     _fix_shell_profiles,
@@ -1238,6 +1273,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.cli_knowledge import _knowledge_stats  # noqa: F401
     from kiro_crew.cli_logging import (  # noqa: F401
+        _GATEWAY_LOG_DETACHED,
+        _GATEWAY_LOG_HANDLER,
+        _GATEWAY_LOG_MAX_BYTES,
         _LOG_ERROR_STREAK_LIMIT,
         _LOG_FATAL_ERRNOS,
         _LOG_QUEUE_LISTENER,
@@ -1246,7 +1284,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _fd_is_regular_file,
         _fd_targets_file,
         _FdTrackingRotatingFileHandler,
+        _prune_older_boot_logs,
         _redirect_fds_to,
+        _rotate_boot_logs,
         _stop_log_queue_listener,
         drain_log_queue_before_hard_exit,
     )
+    from kiro_crew.messaging.tables import display_width  # noqa: F401

@@ -27,6 +27,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "last_consolidated",
         "closed",
         "closed_at",
+        "closed_id",
         "memory_mode",
         "title",
         "agent",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -185,16 +186,48 @@ class TestEvent:
         assert st["skipped"] == ["mate"]
         assert "widgets" in st["starter_clicked"]
 
+    @pytest.mark.asyncio
+    async def test_arrival_after_a_click_completes_the_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(m, "local_today", lambda: date(2026, 11, 2))
+        arrived = {"id": "slack", "action": "starter_arrived", "surface": "panel"}
+        resp = await api.api_milestones_event(_request(arrived))
+        assert resp.status == 200
+        assert "slack" not in m.load()["reached"]
+        await api.api_milestones_event(
+            _request({"id": "slack", "action": "starter_clicked", "surface": "panel"})
+        )
+        await api.api_milestones_event(_request(arrived))
+        st = m.load()
+        assert st["reached"]["slack"]["source"] == "arrived"
+        assert st["streak"]["last_day"] == "2026-11-02"
+
+    @pytest.mark.asyncio
+    async def test_arrival_for_a_usage_row_is_refused(self) -> None:
+        resp = await api.api_milestones_event(
+            _request({"id": "chats-opened", "action": "starter_arrived"})
+        )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_arrival_in_a_restricted_session_writes_nothing(self, _home: Path) -> None:
+        resp = await api.api_milestones_event(
+            _request({"id": "slack", "action": "starter_arrived"}, restricted=True)
+        )
+        assert resp.status == 200
+        assert not (_home / "milestones.json").exists()
+
 
 # ── Hook sites ──
 
 
 class TestArtifactHook:
     def test_counts_after_a_successful_create_only(self, tmp_path: Path) -> None:
-        from kiro_crew.artifacts import ArtifactStore
+        from kiro_crew.artifacts import ArtifactStore, ArtifactValidationError
 
         store = ArtifactStore(root=tmp_path / "artifacts")
-        with pytest.raises(Exception):
+        with pytest.raises(ArtifactValidationError):
             store.create(name="bad", content="x", kind="not-a-kind")
         assert "widgets" not in m.load()["counters"]
         art = store.create(name="Calendar", content="<div>hi</div>", kind="widget")
@@ -208,7 +241,7 @@ class TestCronHook:
         from kiro_crew.cron import CronService
 
         svc = CronService(base_dir=tmp_path / "cron")
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             svc.add_job(name="bad", message="m", every_secs=300, timezone="Not/AZone")
         assert "scheduled-task" not in m.load()["counters"]
         job = svc.add_job(name="daily", message="m", cron_expr="0 9 * * *")

@@ -151,8 +151,9 @@ class TestSetupTimezone:
         data = json.loads(cfg_file.read_text(encoding="utf-8"))
         assert not data.get("timezone")
 
-    def test_auto_detect_from_symlink(self, tmp_path, monkeypatch):
-        """When /etc/localtime is a symlink, timezone is auto-detected."""
+    def test_a_detected_zone_is_shown_and_local_is_the_default(self, tmp_path, monkeypatch, capsys):
+        """The detected zone is shown, but pressing Enter saves "local", which keeps
+        following the computer after it travels; a fixed name would not."""
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text("{}")
         monkeypatch.setattr("kiro_crew.cli_setup.config_path", lambda: cfg_file)
@@ -166,10 +167,41 @@ class TestSetupTimezone:
             ):
                 _setup_timezone()
 
-        prompt = mock_input.call_args[0][0]
-        assert "America/Los_Angeles" in prompt
+        assert "[local]" in mock_input.call_args[0][0]
+        assert "Detected: America/Los_Angeles" in capsys.readouterr().out
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
+        assert data["timezone"] == "local"
+
+    def test_a_detected_zone_typed_in_is_saved_as_typed(self, tmp_path, monkeypatch):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text("{}")
+        monkeypatch.setattr("kiro_crew.cli_setup.config_path", lambda: cfg_file)
+
+        from kiro_crew.cli_setup import _setup_timezone
+
+        with patch("builtins.input", return_value="America/Los_Angeles"):
+            with patch(
+                "kiro_crew.cli_setup._detect_system_timezone",
+                return_value="America/Los_Angeles",
+            ):
+                _setup_timezone()
+
         data = json.loads(cfg_file.read_text(encoding="utf-8"))
         assert data["timezone"] == "America/Los_Angeles"
+
+    def test_local_in_any_case_is_saved_as_local(self, tmp_path, monkeypatch):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text("{}")
+        monkeypatch.setattr("kiro_crew.cli_setup.config_path", lambda: cfg_file)
+
+        from kiro_crew.cli_setup import _setup_timezone
+
+        with patch("builtins.input", return_value="Local"):
+            with patch("kiro_crew.cli_setup._detect_system_timezone", return_value=""):
+                _setup_timezone()
+
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
+        assert data["timezone"] == "local"
 
     def test_manual_entry(self, tmp_path, monkeypatch):
         """When no auto-detect, user types timezone manually."""
@@ -186,8 +218,8 @@ class TestSetupTimezone:
         data = json.loads(cfg_file.read_text(encoding="utf-8"))
         assert data["timezone"] == "America/New_York"
 
-    def test_skip_on_empty_input(self, tmp_path, monkeypatch):
-        """Empty input skips timezone setup."""
+    def test_skip_on_empty_input(self, tmp_path, monkeypatch, capsys):
+        """Empty input skips timezone setup, and says the undetected zone means UTC."""
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text("{}")
         monkeypatch.setattr("kiro_crew.cli_setup.config_path", lambda: cfg_file)
@@ -200,6 +232,10 @@ class TestSetupTimezone:
 
         data = json.loads(cfg_file.read_text(encoding="utf-8"))
         assert "timezone" not in data
+        # The runtime cannot detect the zone either, so these jobs run in UTC.
+        output = capsys.readouterr().out
+        assert "run in UTC until this computer's time zone can be detected" in output
+        assert "follow this computer's time zone" not in output
 
     def test_invalid_timezone_rejected(self, tmp_path, monkeypatch, capsys):
         """Invalid timezone is rejected, not saved."""

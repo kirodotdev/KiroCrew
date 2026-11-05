@@ -186,6 +186,16 @@ async function mounted() {
   await waitFor(() => expect(sigmaInstances.length).toBeGreaterThan(0))
 }
 
+/** Step the fake clock inside act: the settle's timers and react-query's notifications set state. */
+const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+
+/** On the fake clock the queries' results reach the component on react-query's zero-delay timer,
+ *  and vi.waitFor would fire that timer outside act. Fire it inside act, then check the toolbar drew. */
+async function queriesDelivered() {
+  await advance(0)
+  expect(screen.getByRole('button', { name: 'Physics' })).toBeInTheDocument()
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   recordedNodes = []
@@ -477,7 +487,7 @@ describe('KnowledgeGraph — interaction', () => {
     sigma.handlers['downNode']?.({ node: 'n1' })
     expect(fa2Instances[0].stopped).toBe(true)
     // releasing resumes the settle.
-    sigma.mouseHandlers['mouseup']?.({})
+    act(() => { sigma.mouseHandlers['mouseup']?.({}) })
     expect(fa2Instances[0].started).toBe(true)
   })
 })
@@ -540,11 +550,12 @@ describe('KnowledgeGraph — physics toggle', () => {
     vi.useFakeTimers()
     try {
       renderGraph()
+      await queriesDelivered()
       await vi.waitFor(() => expect(sigmaInstances.length).toBeGreaterThan(0))
       await vi.waitFor(() => expect(fa2Instances.length).toBeGreaterThan(0))
       fireEvent.click(screen.getByRole('button', { name: 'Physics' }))
       expect(fa2Instances[0].started).toBe(true)
-      await vi.advanceTimersByTimeAsync(4000)
+      await advance(4000)
       expect(fa2Instances[0].stopped).toBe(true)
     } finally {
       vi.useRealTimers()
@@ -559,11 +570,12 @@ describe('KnowledgeGraph — physics toggle', () => {
     vi.useFakeTimers()
     try {
       renderGraph()
+      await queriesDelivered()
       await vi.waitFor(() => expect(sigmaInstances.length).toBeGreaterThan(0))
       await vi.waitFor(() => expect(fa2Instances.length).toBeGreaterThan(0))
       fireEvent.click(screen.getByRole('button', { name: 'Physics' }))
       expect(fa2Instances[0].started).toBe(true)
-      await vi.advanceTimersByTimeAsync(1200) // < 8000ms cap
+      await advance(1200) // < 8000ms cap
       expect(fa2Instances[0].stopped).toBe(true)
     } finally {
       vi.useRealTimers()

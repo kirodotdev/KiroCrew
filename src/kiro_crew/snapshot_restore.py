@@ -28,6 +28,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, cast
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.member_memory_backup import StoresInUse
 from kiro_crew.memory_stores import (
     MEMBER_BACKUPS_DIR_NAME,
@@ -85,7 +86,7 @@ def _save_locked_document_to(backup: Path, rel: str) -> Callable[[Path], None]:
                 str(partial),
                 on_skip=pinned_fs.fatal_skip_reporter(f"backup of {rel!r}"),
             )
-            os.replace(partial, final)
+            replace_with_retry(partial, final)
         finally:
             try:
                 partial.unlink()
@@ -931,6 +932,27 @@ def _allocate_rollback_dir(mc: Path) -> Path:
     )
 
 
+def _discard_partial_rollback(*dirs: Path | None) -> None:
+    """Remove rollback directories a refused phase one only partly filled.
+
+    Only ever called before any live mutation, so the directories hold copies and
+    nothing else. One that cannot be removed is named, so it is not left unexplained.
+    """
+    for d in dirs:
+        if d is None:
+            continue
+        try:
+            shutil.rmtree(str(d))
+            print(f"  Removed partial rollback copy: {d}/ (nothing was changed)")
+        except FileNotFoundError:
+            pass
+        except OSError:
+            print(
+                f"  ⚠️  Partial rollback copy left at: {d}/ (nothing was changed; "
+                "it is safe to delete)"
+            )
+
+
 def _do_replace(
     snap: Path, mc: Path, components: list[str] | None, *, allow_unpinned: bool = False
 ) -> None:
@@ -1029,6 +1051,7 @@ def _do_replace(
             raise NamedStoresInUse(exc.names) from exc
         raise
     store_backup: Path | None = None
+    phase_one_done = False
     try:
         # ── Phase one: the rollback set. No live state is mutated in this block. ──
         #
@@ -1089,6 +1112,7 @@ def _do_replace(
                 # deleting an artifact the dashboard wrote while it ran.
                 if d.is_dir() and (snap / dirname).is_dir():
                     _backup_tree_or_refuse(d, backup / dirname, allow_unpinned=allow_unpinned)
+        phase_one_done = True
 
         # Every relative path phase two can write. Recovery needs it because a target that did
         # not exist before the restore has nothing saved for it, so putting saved entries back
@@ -1143,6 +1167,13 @@ def _do_replace(
                 # of the previous state now exists only in the rollback directory.
                 raise RollbackIncomplete(e, failed, backup, store_backup=store_backup) from e
             raise
+    except BaseException:
+        # A refusal in phase one leaves live state untouched, so the half-written
+        # rollback copies hold nothing the operator needs. Remove them rather than
+        # leave one `pre-restore-<ts>/` per refused attempt in the data home.
+        if not phase_one_done:
+            _discard_partial_rollback(backup, store_backup)
+        raise
     finally:
         barrier.close()
 

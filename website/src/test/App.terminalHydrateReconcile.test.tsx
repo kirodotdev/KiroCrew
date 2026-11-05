@@ -15,7 +15,7 @@
  * them, so App and its providers share one context module instance.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { waitFor } from '@testing-library/react'
+import { waitFor, act } from '@testing-library/react'
 import { http, HttpResponse, delay } from 'msw'
 import { server } from '../../integration/mocks/server'
 // Warm-up only: transforming App's import graph is the slow part, and paying
@@ -97,13 +97,19 @@ async function bootApp() {
   const { default: App } = await import('../App')
   expect(store.isTerminalHydratePending()).toBe(true)
   registry.setTerminalEnabledFlag(true)
-  renderWithProviders(<App />, { route: '/chat' })
+  // The boot effects (status fetch into redux, the topbar measure) update App in
+  // microtasks after the commit. Async act keeps the scope open until they land,
+  // for every case that boots through here.
+  await act(async () => { renderWithProviders(<App />, { route: '/chat' }) })
   return store
 }
 
 afterEach(() => {
-  store?.__resetBottomTerminal()
-  registry?.setTerminalEnabledFlag(false)
+  // The dock panel is still mounted here, so the reset's emit re-renders it.
+  act(() => {
+    store?.__resetBottomTerminal()
+    registry?.setTerminalEnabledFlag(false)
+  })
   store = null
   registry = null
   localStorage.clear()

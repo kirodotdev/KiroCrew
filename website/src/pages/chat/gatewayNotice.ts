@@ -63,6 +63,7 @@ const NOTICE_FAMILIES = {
   model_access_fallback: { role: 'notice', card: 'notice', tone: 'warn' },
   model_unavailable: { role: 'notice', card: 'notice', tone: 'info' },
   model_throttled_fallback: { role: 'notice', card: 'notice', tone: 'warn' },
+  refusal_fallback_same_model: { role: 'notice', card: 'notice', tone: 'info' },
   session_reconnecting: { role: 'error', card: 'error' },
   session_reconnect_give_up: { role: 'error', card: 'error' },
   credentials_reloading: { role: 'error', card: 'error' },
@@ -99,7 +100,10 @@ const NOTICE_FAMILIES = {
   memory_preparing: { role: 'notice', card: 'notice', tone: 'info' },
   agent_switch_blocked_pinned: { role: 'notice', card: 'notice', tone: 'info' },
   agent_switch_blocked_crew_mode: { role: 'notice', card: 'notice', tone: 'info' },
+  agent_switch_blocked_channel: { role: 'notice', card: 'notice', tone: 'info' },
+  channel_message_not_run: { role: 'notice', card: 'notice', tone: 'info' },
   crew_name_undispatchable: { role: 'error', card: 'error' },
+  code_channel_worktree_not_ready: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
 } as const satisfies Record<string, Family>
@@ -130,6 +134,7 @@ const COPY_KEY = {
   model_access_fallback: 'pages.chat.gatewayNotice.model_access_fallback',
   model_unavailable: 'pages.chat.gatewayNotice.model_unavailable',
   model_throttled_fallback: 'pages.chat.gatewayNotice.model_throttled_fallback',
+  refusal_fallback_same_model: 'pages.chat.gatewayNotice.refusal_fallback_same_model',
   session_reconnecting: 'pages.chat.gatewayNotice.session_reconnecting',
   session_reconnect_give_up: 'pages.chat.gatewayNotice.session_reconnect_give_up',
   credentials_reloading: 'pages.chat.gatewayNotice.credentials_reloading',
@@ -166,7 +171,10 @@ const COPY_KEY = {
   memory_preparing: 'pages.chat.gatewayNotice.memory_preparing',
   agent_switch_blocked_pinned: 'pages.chat.gatewayNotice.agent_switch_blocked_pinned',
   agent_switch_blocked_crew_mode: 'pages.chat.gatewayNotice.agent_switch_blocked_crew_mode',
+  agent_switch_blocked_channel: 'pages.chat.gatewayNotice.agent_switch_blocked_channel',
+  channel_message_not_run: 'pages.chat.gatewayNotice.channel_message_not_run',
   crew_name_undispatchable: 'pages.chat.gatewayNotice.crew_name_undispatchable',
+  code_channel_worktree_not_ready: 'pages.chat.gatewayNotice.code_channel_worktree_not_ready',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
 } as const satisfies Record<GatewayNoticeToken, string>
@@ -360,10 +368,24 @@ const LEGACY: readonly Legacy[] = [
     token: 'agent_switch_blocked_pinned',
   },
   {
-    re: /^📌 Agent switch to (?<agent>.+?) was blocked — this chat is in Crew Mode, which stays on its conductor\. The next turn restarts on the conductor\.$/u,
+    // The first wording is what older transcripts stored; keep matching it.
+    re: /^📌 Agent switch to (?<agent>.+?) was blocked — this chat is in (?:Crew Mode, which stays on its conductor\. The next turn restarts on the conductor|Ultra Mode, which stays on its own agent\. The next turn restarts on that agent)\.$/u,
     token: 'agent_switch_blocked_crew_mode',
   },
+  {
+    re: /^📌 Agent switch to (?<agent>.+?) was blocked — this chat is linked to a Slack channel served by (?<channel_agent>.+?)\. The next turn restarts on that agent\.$/u,
+    token: 'agent_switch_blocked_channel',
+  },
+  {
+    re: /^⚠ A message from a Slack channel was not run: this session's agent is not the agent that channel uses\.$/u,
+    token: 'channel_message_not_run',
+  },
   { re: /^This thread's crew name cannot be dispatched\. Rename or recreate the Crew Member\.$/u, token: 'crew_name_undispatchable' },
+  { re: /^This thread's crew name cannot be dispatched\. Rename or recreate the Bot\.$/u, token: 'crew_name_undispatchable' },
+  {
+    re: /^This code channel's worktree is not ready, so the message was not run\. Send it again in a moment\.$/u,
+    token: 'code_channel_worktree_not_ready',
+  },
   {
     re: /^This chat ran on a remote crew and is read-only now\. Open the crew's own session to keep going\.$/u,
     token: 'remote_crew_read_only',
@@ -371,6 +393,10 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^⚠\uFE0F? Archiving this tab failed after its running turn was cancelled\. The tab was kept, but that turn did not finish -- re-send to continue\.$/u,
     token: 'archive_failed_turn_cancelled',
+  },
+  {
+    re: /^ℹ\uFE0F? Automatic retry was skipped because the fallback model \(`agent\.refusal_fallback_model`\) is the same as your current model — retrying the same model hits the same filter\. Pick a different model for the fallback to retry automatically\.$/u,
+    token: 'refusal_fallback_same_model',
   },
 ]
 

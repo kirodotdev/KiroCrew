@@ -267,6 +267,7 @@ export default function AppIcon({
     )
   }
 
-  const Icon = icon && ICON_MAP[icon] ? ICON_MAP[icon] : Package
+  // Own keys only: a name such as `constructor` is on every object's prototype.
+  const Icon = icon && Object.hasOwn(ICON_MAP, icon) ? ICON_MAP[icon] : Package
   return <Icon size={size} />
 }

@@ -15,6 +15,7 @@ from kiro_crew.dashboard.state import row_mid
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.llm_helpers import (
     _NO_PRIOR_STATS,
+    engine_attributed_model,
     provider_active_model,
     record_interaction_event,
     usage_has_billing,
@@ -27,6 +28,7 @@ from kiro_crew.monitoring.completion import (
     disposition_for_stop_reason,
     is_monitor_completion_evidence,
 )
+from kiro_crew.parent_turns import note_turn_landed
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -293,6 +295,21 @@ def _turn_clock(
     clock = _FirstVisibleClock(t0)
     slot._carried_ttft_clock = clock
     return clock
+
+
+def _session_selected_auto(slot: Any) -> str:
+    """``"auto"`` when this slot's live session was allocated with Auto selected.
+
+    The footer's fallback for a turn whose provider chain reported no model.
+    ``slot._session_requested_model`` is the allocation's own selection (its
+    stamp, else the turn's request), so an exact ``auto`` there means Auto was
+    chosen for the session that served the turn. A harness that keeps neither a
+    request nor a resolved id on its handle (KAS) otherwise leaves an Auto turn
+    blank. A blank or concrete selection says nothing about Auto and stays
+    ``""``: only the chain names a concrete id.
+    """
+    selected = getattr(slot, "_session_requested_model", None)
+    return "auto" if isinstance(selected, str) and selected.strip().lower() == "auto" else ""
 
 
 def _turn_outcome(stop_reason: str | None, *, exhausted: bool = False) -> str:
@@ -645,7 +662,7 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # two are different facts and a blank footer conflates them
     # with a missing measurement. Still never guesses: an
     # unattributable turn stays "" and the footer omits the field.
-    _turn_model = read_turn_model(client)
+    _turn_model = read_turn_model(client) or _session_selected_auto(slot)
     turn._turn_model = _turn_model
     _turn_stats_captured = True
     turn._turn_stats_captured = _turn_stats_captured
@@ -735,7 +752,6 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # the `model_source` walk — no worse than the blank it would
     # write anyway.
     _provider_name = capabilities_of(client).provider_seam
-    _record_model = slot.model
     # A model pick can land on the slot mid-turn: api_chat_slot_model's
     # deferred branch writes slot.model and marks _deferred_model_switch_key
     # for the turn boundary to apply. The live session is NOT switched then, so
@@ -745,8 +761,18 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # slot.model — which would overwrite the pending pick, replacing an Auto
     # pick's "" with the served id and silently undoing it.
     _deferred_model_pick = bool(slot._deferred_model_switch_key)
-    if _deferred_model_pick:
-        _record_model = _turn_model or provider_active_model(client)
+    # The model Crew put this turn on: the pin, the served id under a deferred
+    # pick, or while either fallback mechanism is active, the provider's, never
+    # written into slot.model. A move the engine made inside the prompt then
+    # wins over all three (`engine_attributed_model`, the cron, heartbeat and
+    # sub-agent rows' rule): the engine's target is what answered.
+    if slot._active_fallback_model or slot._refusal_fallback_primary:
+        _crew_model = provider_active_model(client)
+    elif _deferred_model_pick:
+        _crew_model = _turn_model or provider_active_model(client)
+    else:
+        _crew_model = slot.model
+    _record_model = engine_attributed_model(_crew_model, client)
     # Occupancy is read ABOVE the billing gate, beside the other locals
     # the turn closer needs. Two reasons, and either alone decides it:
     # the closer runs for EVERY completed turn, so a name bound only
@@ -758,11 +784,6 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # elsewhere. `read_context_tokens` never raises and answers (0, 0)
     # for a provider without the accessors.
     _ctx_used, _ctx_window = read_context_tokens(client)
-    if slot._active_fallback_model or slot._refusal_fallback_primary:
-        # Either fallback mechanism active ⇒ the model that SERVED
-        # this turn is the provider's, not the pin; attribute usage
-        # to it without ever writing it into slot.model.
-        _record_model = provider_active_model(client)
     # One shared predicate across every persist gate: a
     # claude-seam turn ending via a synthetic EVENT_COMPLETE
     # (timeout, tool-stall, cancel-unacked) can carry cost or cache
@@ -1046,6 +1067,14 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
         # must NOT restore the one-shot flag.
         _turn_landed = True
         turn._turn_landed = _turn_landed
+        if _stop_reason == STOP_REASON_END_TURN:
+            # Only a turn that ran to its end, as every engine notes it: this
+            # attempt's release then confirms the inline results the turn
+            # received (``kiro_crew.parent_turns``), so a child it read back
+            # plays no second turn on a cron or channel tab. Any other end
+            # revokes them and the completion is delivered. A recovery this
+            # turn re-queues is its own claim, so it never confirms these.
+            note_turn_landed(state.sessions, session_key)
         # Per-interaction telemetry (PlatformContext seam) — shared helper so
         # the payload shape and model reflection cannot drift across surfaces.
         record_interaction_event(client, session_key, "dashboard")

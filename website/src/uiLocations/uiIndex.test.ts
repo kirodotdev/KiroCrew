@@ -295,6 +295,10 @@ const FORWARDING_PROVEN = [
   // two-press clear forwards its ref to its <button>, and both clear-all
   // call sites register their location.
   'NotificationClearButton',
+  // Proven in src/pages/ChatPage.views.test.tsx: the chat header's
+  // TipClickable forwards its ref to the Clickable it renders, so the
+  // side-panel toggle is the one element registered as chat.side-panel-open.
+  'TipClickable',
 ]
 
 describe('a marker must register the element it sits on', () => {
@@ -576,6 +580,18 @@ describe('index assembly', () => {
     expect(byId['settings.tab.chat'].placements[0].requires).toEqual(want)
     expect(byId['settings.sub.chat.sub'].placements[0].requires).toEqual(want)
     expect(byId['setting:chat.a-setting'].placements[0].requires).toEqual(want)
+  })
+
+  it('gives one setting its own preview requirement on an ungated tab', () => {
+    const { index, errors } = build({
+      settingPreview: { 'chat.a-setting': 'mc-preview-x' },
+      previewEnablers: { 'mc-preview-x': 'chat.a-setting' },
+    })
+    expect(errors).toEqual([])
+    const byId = Object.fromEntries(index.locations.map(l => [l.id, l]))
+    expect(byId['settings.tab.chat'].placements[0].requires).toEqual([])
+    expect(byId['setting:chat.a-setting'].placements[0].requires)
+      .toEqual([{ kind: 'preview_flag', flag: 'mc-preview-x', location: 'setting:chat.a-setting' }])
   })
 
   it('derives a chain through a registered parent', () => {
@@ -1424,6 +1440,12 @@ describe('the committed index', () => {
     for (const loc of onTab) expect(loc.placements[0].requires).toEqual(want)
     // The switch that shows the tab is not itself behind it.
     expect(byId.get('setting:developer.session-environments')!.placements[0].requires).toEqual([])
+  })
+
+  it('keeps Display > Explore behind the Explore preview, and not its own switch', () => {
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-explore', location: 'setting:developer.explore' }]
+    expect(byId.get('setting:display.explore')!.placements[0].requires).toEqual(want)
+    expect(byId.get('setting:developer.explore')!.placements[0].requires).toEqual([])
   })
 
   it('shows Mates with no prerequisite', () => {

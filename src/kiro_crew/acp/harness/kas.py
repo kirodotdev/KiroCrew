@@ -1,10 +1,11 @@
 """The KAS engine: through kiro-cli's own ACP relay, or from Crew's own bundle.
 
-Two spawn routes, one harness. By default KAS shares kiro-cli's binary (the
-relay, :mod:`kiro_crew.acp.kas_transport`). With ``agent.kas_bundle`` on, the
-harness spawns the engine ``kirocrew kas install`` laid down under the data
-home (:mod:`kiro_crew.acp.kas_bundle`) with its own Node runtime, and no
-kiro-cli is involved. Every seam after the spawn is identical: the wire is the
+Two spawn routes, one harness. Where kiro-cli can run a session, KAS shares
+kiro-cli's binary (the relay, :mod:`kiro_crew.acp.kas_transport`). With
+``agent.kas_bundle`` on, or where the relay cannot run (:mod:`kiro_crew.acp.kas_route`),
+the harness spawns the engine laid down under the data home
+(:mod:`kiro_crew.acp.kas_bundle`, installed by the gateway when missing) with its
+own Node runtime, and no kiro-cli is involved. Every seam after the spawn is identical: the wire is the
 engine's either way. KAS reports MCP readiness through session-scoped
 ``_kiro/mcp/status`` and ``_kiro/tools/didChange`` snapshots.
 
@@ -24,6 +25,7 @@ import os
 import sys
 from collections.abc import Mapping
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -35,11 +37,14 @@ from typing import Any
 from kiro_crew import agent as agent_mod
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew.acp import kas_agents as kas_agents_mod
+from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
+from kiro_crew.acp.default_crew_servers import with_default_crew_servers
 from kiro_crew.acp.harness._common import (
     KIRO_FAMILY_ALIASES,
     MembershipHarness,
+    defer_mandatory_mcps_env,
     pin_mandatory_mcps_env,
 )
 from kiro_crew.acp.harness.base import (
@@ -50,12 +55,14 @@ from kiro_crew.acp.harness.base import (
     TeardownPolicy,
 )
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
+from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
     build_kas_argv,
     build_kas_bundle_argv,
 )
+from kiro_crew.acp.kas_withheld_notice import withheld_credentials_notice
 from kiro_crew.acp.session_mcp import project_agent_spec
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -158,15 +165,34 @@ def _bundle_route_selected() -> bool:
     return bool(KiroCrewConfig.load().agent.kas_bundle)
 
 
+def _runs_crew_engine_bundle(spawned_binary: str | None) -> bool:
+    """Is *spawned_binary* inside one of Crew's own engine roots (the bundle's Node)?
+
+    The roots are the two :func:`kiro_crew.acp.kas_bundle.installed_bundle` reads:
+    the data home's ``engines/kas`` and the desktop app's staged copy. Positive
+    identity only: a missing path, a kiro-cli relay or any failure is False.
+    Blocking (resolves paths); call off the loop.
+    """
+    if not spawned_binary:
+        return False
+    from kiro_crew.acp import kas_bundle as kas_bundle_mod
+
+    roots = [kas_bundle_mod.kas_engines_root(), kas_bundle_mod.bundled_kas_root()]
+    try:
+        binary = Path(spawned_binary).resolve()
+        return any(binary.is_relative_to(root.resolve()) for root in roots if root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
     """Is *binary* the operator's own ``KIROCREW_KIRO_BIN`` choice?
 
-    Compared as absolute paths, the way the resolver hands the override
-    through (``snapshot_trusted_acp_executable`` returns ``abspath`` of the
-    candidate). No ``realpath``: the operator named THIS path.
+    The rule lives in :func:`kiro_crew.acp.kas_route.is_operator_override`, which
+    the route decision reads too, so the two cannot disagree about one binary.
+    Blocking on Windows.
     """
-    override = (environ.get("KIROCREW_KIRO_BIN") or "").strip()
-    return bool(override) and os.path.abspath(binary) == os.path.abspath(override)
+    return kas_route_mod.is_operator_override(binary, environ)
 
 
 #: The keys a checkout's own agent spec decides for a KAS session. An allow list:
@@ -228,7 +254,9 @@ def resolve_projected_spec(
         from kiro_crew.template_mcp_additions import merge_at_spawn
 
         spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
-        return spec, agents_dir
+        # A user-level custom agent gets Crew's default servers, through the helper
+        # the kiro-cli skill view applies too, so the two paths cannot drift.
+        return with_default_crew_servers(agent, spec), agents_dir
     # Crewmate scope. A name the user level does NOT declare may be a crewmate's
     # own config in ``~/.kiro/mates/agents/`` (``rfc-mate-owned-agent-config``
     # §5.3): resolution reads this folder, the session agent picker does not, so
@@ -257,10 +285,8 @@ def resolve_projected_spec(
 
     if not declared:
         try:
-            return (
-                merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent)),
-                agents_dir,
-            )
+            spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
+            return with_default_crew_servers(agent, spec), agents_dir
         except KasAgentTranslationError as exc:
             # Asked again after the read failed, so a spec that appeared meanwhile
             # and cannot be read keeps its own reason.
@@ -369,6 +395,29 @@ def mate_worker_projection(
     return worker_session_spec(literal, session_key)
 
 
+def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> frozenset[str]:
+    """The names in *stub_names* whose server *spec* does not mount unmuted.
+
+    *spec* is the governed worker spec the KAS payload is built from. A stub
+    whose server it drops, mutes (``mcp_cleanup.mcp_entry_is_muted``) or marks
+    registry-governed (``mcp_cleanup.mcp_entry_is_registry_governed``) is
+    withdrawn, so a mute or a ``type: registry`` saved after the stubs were
+    selected still takes effect.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
+
+    servers = spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return frozenset(stub_names)
+    return frozenset(
+        name
+        for name in stub_names
+        if not isinstance(servers.get(name), dict)
+        or mcp_entry_is_muted(servers[name])
+        or mcp_entry_is_registry_governed(servers[name])
+    )
+
+
 def _missing_agent_reason(agent: str, session_key: str) -> str:
     """The reason a session cannot start on *agent*, which has no spec, for the user.
 
@@ -430,61 +479,80 @@ class KasHarness(MembershipHarness):
     # ── Seam 1: spawn ──
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """The engine's argv, on whichever route ``agent.kas_bundle`` selects.
+        """The engine's argv, on the route :mod:`kiro_crew.acp.kas_route` picks.
 
         No ``--agent`` and no ``--model`` on either route: KAS takes custom agents
         over the wire in ``session/new``, not from a flag.
 
-        **Bundle** (``agent.kas_bundle`` true): Crew's own installed engine and
-        Node runtime, spawned directly. Crew is the auth owner unconditionally --
-        there is no kiro-cli whose store could answer instead -- so the plan
-        carries ``host_auth=True`` whatever the vault holds; an empty vault is the
-        engine's own sign-in failure at prompt time, which the runtime already
-        maps to a sign-in prompt. Nothing installed is a refusal that names the
-        install command, not a fallback to the relay: the operator chose the
-        route, and silently running a different one would make a kiro-cli
-        problem look like a bundle problem (or the reverse).
+        Choosing KAS means Crew's own engine and Crew's own sign-in. The relay is
+        kept where it can run; where it cannot (no kiro-cli, or a kiro-cli with no
+        sign-in that Crew's sign-in cannot stand in for) the spawn takes the bundle
+        route. The switch is logged (``kas_route.note_spawn_route``) and shown by
+        the dashboard and ``kirocrew doctor``, so it is never silent.
 
-        **Relay** (default): ``kiro-cli`` in relay mode. Crew owns the credential
-        when its own vault holds a signed-in identity, and kiro-cli owns it
-        otherwise. Deciding that per spawn is what makes a dashboard sign-in or
-        sign-out take effect on the next process, and the answer rides on the plan
-        so the reader loop answers the engine's callback only on a process that
-        was started expecting it to.
+        **Bundle** (``agent.kas_bundle`` true, or the relay cannot run): Crew's
+        own installed engine and Node runtime, spawned directly. Crew is the auth
+        owner unconditionally -- there is no kiro-cli whose store could answer
+        instead -- so the plan carries ``host_auth=True`` whatever the vault
+        holds; an empty vault is the engine's own sign-in failure at prompt time,
+        which the runtime maps to the Kiro sign-in prompt. A missing engine is
+        installed here, in the gateway, one install at a time
+        (:mod:`kiro_crew.acp.kas_engine_install`); a failed install is a refusal
+        naming the cause and the retry command.
+
+        **Relay**: ``kiro-cli`` in relay mode. Crew owns the credential when its
+        own vault holds a signed-in identity, and kiro-cli owns it otherwise.
+        Deciding that per spawn is what makes a dashboard sign-in or sign-out take
+        effect on the next process, and the answer rides on the plan so the
+        reader loop answers the engine's callback only on a process that was
+        started expecting it to.
         """
         from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn, kiro_cli_not_found_message
         from kiro_crew.acp.kiro_cli_missing import AcpKiroCliMissing
         from kiro_crew.acp.session_handle import AcpRuntimeError
 
         if await asyncio.to_thread(_bundle_route_selected):
-            # Imported here, not at module top: the installer module is the
-            # bundle route's alone, and this harness is imported on every KAS
-            # gateway whether or not that route is on.
-            from kiro_crew.acp import kas_bundle as kas_bundle_mod
-
-            bundle = await asyncio.to_thread(kas_bundle_mod.installed_bundle)
-            if bundle is None:
-                raise AcpRuntimeError(
-                    "agent.kas_bundle is on but no KAS engine bundle is installed under "
-                    f"{kas_bundle_mod.kas_engines_root()}. Run `kirocrew kas install`, or "
-                    "set agent.kas_bundle to false to use kiro-cli's relay."
-                )
-            logger.info(
-                "KAS auth owner=crew — spawning Crew's own engine bundle %s (node %s, agent=%s)",
-                bundle.version,
-                bundle.node_version or "?",
-                ctx.agent or "<none>",
-            )
-            # Crew's own engine: kiro-cli's release says nothing about it.
-            self.agent_prompt_notice = ""
-            return SpawnPlan(
-                argv=build_kas_bundle_argv(str(bundle.node_bin), str(bundle.acp_server)),
-                spawn_label=KAS_BUNDLE_SPAWN_LABEL,
-                stderr_label=KAS_BUNDLE_SPAWN_LABEL,
-                host_auth=True,
+            return await self._bundle_spawn_plan(
+                ctx, kas_route_mod.KasRoute(bundle=True, reason=kas_route_mod.REASON_CONFIGURED)
             )
 
         kas_bin = await _resolve_kiro_bin_for_spawn(environ=dict(ctx.environ), home=ctx.home)
+        # Read only when the route is still open: a stored Kiro CLI pick never
+        # leaves kiro-cli (``kas_route`` rule 2).
+        host_auth: bool | None = None
+        switch_allowed = await asyncio.to_thread(kas_route_mod.automatic_switch_allowed)
+        # Off the loop: on Windows the comparison resolves the override's real path.
+        operator_override = False
+        if kas_bin:
+            operator_override = await asyncio.to_thread(
+                kas_route_mod.is_operator_override, kas_bin, ctx.environ
+            )
+        if switch_allowed and operator_override:
+            # The operator's binary is never second-guessed (``kas_route`` rule 4).
+            switch_allowed = False
+        if switch_allowed:
+            skips_launcher = False
+            if kas_bin:
+                # Reads the vault off the loop and never raises.
+                host_auth = await vault_holds_identity_off_loop()
+                skips_launcher = await asyncio.to_thread(
+                    kas_route_mod.crew_entry_skips_launcher, kas_bin, ctx.environ
+                )
+            reason = await asyncio.to_thread(
+                partial(
+                    kas_route_mod.relay_unusable_reason,
+                    kiro_bin=kas_bin,
+                    environ=ctx.environ,
+                    home=ctx.home,
+                    vault_identity=bool(host_auth),
+                    crew_entry_skips_launcher=skips_launcher,
+                )
+            )
+            if reason:
+                return await self._bundle_spawn_plan(
+                    ctx, kas_route_mod.KasRoute(bundle=True, reason=reason)
+                )
+
         if not kas_bin:
             raise AcpKiroCliMissing(
                 await asyncio.to_thread(
@@ -499,8 +567,22 @@ class KasHarness(MembershipHarness):
         warn_kas_vocabulary_drift(kiro_cli_version)
         self.agent_prompt_notice = kas_agent_prompt_issue(kiro_cli_version)
 
-        # Reads the vault off the loop and never raises.
-        host_auth = await vault_holds_identity_off_loop()
+        if host_auth is None:
+            # Reads the vault off the loop and never raises.
+            host_auth = await vault_holds_identity_off_loop()
+        relay = kas_route_mod.RELAY
+        if not switch_allowed and not await asyncio.to_thread(
+            kas_route_mod.crew_entry_skips_launcher, kas_bin, ctx.environ
+        ):
+            # Pinned to kiro-cli and entered through its launcher: only kiro-cli's
+            # own sign-in starts it, so the sign-in messages name ``kiro-cli login``
+            # (and the Kiro sign-in as well when the vault answers the callback).
+            relay = kas_route_mod.KasRoute(
+                bundle=False,
+                reason=kas_route_mod.REASON_KIRO_CLI_LAUNCHER,
+                crew_auth=bool(host_auth),
+            )
+        kas_route_mod.note_spawn_route(relay)
         if host_auth:
             # Enter through the chat binary, not the launcher. The `kiro-cli`
             # launcher checks its OWN sign-in before it execs `kiro-cli-chat`
@@ -514,7 +596,7 @@ class KasHarness(MembershipHarness):
             # An operator's KIROCREW_KIRO_BIN is exactly what they asked for --
             # a wrapper of theirs named `kiro-cli` is never swapped out from
             # under them.
-            if not _is_operator_override(kas_bin, ctx.environ):
+            if not operator_override:
                 chat_bin = await asyncio.to_thread(chat_sibling, kas_bin)
                 if chat_bin:
                     kas_bin = chat_bin
@@ -545,6 +627,43 @@ class KasHarness(MembershipHarness):
             kiro_cli_internal_sandbox=kiro_cli_sandbox,
         )
 
+    async def _bundle_spawn_plan(
+        self, ctx: SpawnContext, route: kas_route_mod.KasRoute
+    ) -> SpawnPlan:
+        """The bundle route's plan, installing the pinned engine first when it is missing."""
+        # Imported here, not at module top: the installer modules are the bundle
+        # route's alone, and this harness is imported on every KAS gateway
+        # whether or not that route is used.
+        from kiro_crew.acp import kas_bundle as kas_bundle_mod
+        from kiro_crew.acp import kas_engine_install
+        from kiro_crew.acp.session_handle import AcpRuntimeError
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        kas_route_mod.note_spawn_route(route)
+        bundle = await asyncio.to_thread(kas_bundle_mod.installed_bundle)
+        if bundle is None:
+            base_url = await asyncio.to_thread(lambda: KiroCrewConfig.load().agent.kas_bundle_url)
+            try:
+                bundle = await asyncio.to_thread(
+                    partial(kas_engine_install.install_pinned_engine, base_url, caller="spawn")
+                )
+            except kas_bundle_mod.KasBundleError as exc:
+                raise AcpRuntimeError(f"{route.describe()}. {exc}") from exc
+        logger.info(
+            "KAS auth owner=crew — spawning Crew's own engine bundle %s (node %s, agent=%s)",
+            bundle.version,
+            bundle.node_version or "?",
+            ctx.agent or "<none>",
+        )
+        # Crew's own engine: kiro-cli's release says nothing about it.
+        self.agent_prompt_notice = ""
+        return SpawnPlan(
+            argv=build_kas_bundle_argv(str(bundle.node_bin), str(bundle.acp_server)),
+            spawn_label=KAS_BUNDLE_SPAWN_LABEL,
+            stderr_label=KAS_BUNDLE_SPAWN_LABEL,
+            host_auth=True,
+        )
+
     def apply_spawn_env(
         self,
         env: dict[str, str],
@@ -567,8 +686,12 @@ class KasHarness(MembershipHarness):
         ``api_key`` token type. So the key is handed over exactly as the kiro
         harness hands it: inherited, or re-read from the data home's ``.env``.
 
-        The relay is kiro-cli, so it reads the same Tool Search never-defer list;
-        :func:`pin_mandatory_mcps_env` pins it by operator override or engine version.
+        The KAS engine reads the same Tool Search never-defer variable on either
+        route. On Crew's own engine bundle, :func:`defer_mandatory_mcps_env`
+        passes only the operator's value: that engine keeps its ``tools`` array
+        fixed when a deferred tool loads (measured on the pinned build). The relay
+        runs whatever KAS a kiro-cli carries, so it keeps
+        :func:`pin_mandatory_mcps_env`'s engine-version gate.
 
         ``agent.child_env_defaults`` applies here too, for the same reason: the
         relay is a kiro-cli process with the same core-count-sized pools.
@@ -579,7 +702,10 @@ class KasHarness(MembershipHarness):
             inject_kiro_cli_api_key(env)
         else:
             strip_kiro_cli_api_key(env)
-        pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
+        if _runs_crew_engine_bundle(spawned_binary):
+            defer_mandatory_mcps_env(env)
+        else:
+            pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
         apply_child_env_defaults(env)
 
     @property
@@ -648,6 +774,7 @@ class KasHarness(MembershipHarness):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        worker_stub_names: frozenset[str] | None = None,
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -673,7 +800,14 @@ class KasHarness(MembershipHarness):
         if not agent:
             return SessionExtras(vault_identity=vault_identity)
 
-        def _build() -> tuple[list[dict[str, Any]], Any, dict[str, Any]]:
+        def _build() -> tuple[
+            list[dict[str, Any]],
+            Any,
+            dict[str, Any],
+            dict[str, dict[str, Any]],
+            frozenset[str],
+            str,
+        ]:
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -765,6 +899,18 @@ class KasHarness(MembershipHarness):
                     exc_info=True,
                 )
                 stubbed = frozenset()
+            withdrawn: frozenset[str] = frozenset()
+            if worker_stub_names is not None and agent == MATE_WORKER_AGENT:
+                # A crewmate's worker: the names of the stubs its session/new
+                # carries, from the caller's one overlay lookup
+                # (``runtime_session_setup._kas_worker_stub_names``). Asking the
+                # overlay again, by name or by session, could answer differently
+                # and leave a server on neither side.
+                stubbed = worker_stub_names
+                # The worker spec above was read AFTER those stubs were picked,
+                # so a server muted or removed in between is withdrawn from the
+                # session-level array too: this payload is the later reading.
+                withdrawn = withdrawn_worker_stubs(spec, worker_stub_names)
             if member_dispatch:
                 # The member's dashboard server arrives as a session-level entry
                 # too, so it joins the subtraction set for the same reason: an
@@ -783,6 +929,7 @@ class KasHarness(MembershipHarness):
             # registered and reads nothing -- so the check that proves the consumed spec
             # did not change has to compare against this snapshot rather than against a
             # fresh read of the file.
+            withheld: kas_agents_mod.WithheldOut = {}
             custom_agents = kas_agents_mod.build_kas_custom_agents(
                 prompt_dir,
                 agent,
@@ -792,20 +939,35 @@ class KasHarness(MembershipHarness):
                 crew_panel=crew_panel,
                 session_key=session_key,
                 skill_scope_rules=_skill_scope_rules(agent, spec, prompt_dir, work_dir),
+                withheld_out=withheld,
             )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.
             managed = kas_agents_mod.resolve_managed_entries(custom_agents, agent)
-            return custom_agents, snapshot, managed
+            apps = resolve_app_identity_launches(
+                custom_agents, agent, work_dir, kas_agents_mod.MANAGED_MCP_SERVER_NAMES
+            )
+            notice = withheld_credentials_notice(withheld)
+            return custom_agents, snapshot, managed, apps, withdrawn, notice
 
         try:
-            built, built_from, managed_entries = await asyncio.to_thread(_build)
+            (
+                built,
+                built_from,
+                managed_entries,
+                app_launches,
+                withdrawn_stubs,
+                withheld_notice,
+            ) = await asyncio.to_thread(_build)
             return SessionExtras(
                 custom_agents=built,
                 derived_spec_snapshot=built_from,
                 vault_identity=vault_identity,
                 managed_entries=managed_entries,
+                app_launches=app_launches,
+                withdrawn_stub_names=withdrawn_stubs,
+                withheld_credentials_notice=withheld_notice,
             )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
@@ -855,9 +1017,9 @@ class KasHarness(MembershipHarness):
             origin,
         )
         return (
-            f"Rename this mate's template: “{agent}” is reserved for a built-in "
-            "agent, so the mate's own prompt and tools would not run under it. "
-            "Both fixes are on the mate's Agent Template tab: for the mate's own "
+            f"Rename this Bot's template: “{agent}” is reserved for a built-in "
+            "agent, so the Bot's own prompt and tools would not run under it. "
+            "Both fixes are on the Bot's Agent Template tab: for the Bot's own "
             "copy, 'Save as new template…' under another name (it keeps its "
             "customizations) or 'Reset my changes'; for a shared template, the template "
             "picker at the top of the tab."

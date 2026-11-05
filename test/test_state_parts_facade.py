@@ -215,10 +215,15 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, prompt: 'str', run_chat_coro: 'Callable[[DashboardState, "
         "_ChatSlot, str], Coroutine[Any, Any, None]]', state: "
-        "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None) "
-        "-> 'bool'",
+        "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None, "
+        "relay_meta: 'dict[str, Any] | None' = None) -> 'bool'",
     ),
-    "flush_deferred_notes": ("function", False, False, "(self) -> 'int'"),
+    "flush_deferred_notes": (
+        "function",
+        False,
+        False,
+        "(self, *, broadcast: 'bool' = True, retain: 'bool | None' = None) -> 'int'",
+    ),
     "forget_session_model_state": ("function", False, False, "(self) -> 'None'"),
     "has_pending_context_seat": ("function", False, False, "(self) -> 'bool'"),
     "invalidate_source_links": ("function", False, False, "(self) -> 'None'"),
@@ -504,6 +509,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_lock": ("type", "asyncio.locks.Lock"),
     "_mcp_report": ("value", "None"),
     "_mcp_report_session_id": ("value", "''"),
+    "_mcp_banner_shown": ("value", "{}"),
     "_member_approval_seeded": ("value", "False"),
     "_memory_assignment_from_history": ("value", "False"),
     "_messages": ("value", "[]"),
@@ -632,6 +638,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_trust_scope": ("value", "''"),
     "_trusted_pattern_deadlines": ("value", "{}"),
     "_trusted_patterns": ("value", "set()"),
+    "_deny_waivers": ("value", "set()"),
     "_turn_admission_reserved": ("value", "False"),
     "_turn_channel_narrowed": ("value", "False"),
     "_turn_channel_origin": ("value", "False"),
@@ -639,6 +646,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_in_flight_generation": ("value", "0"),
     "_turn_in_flight_prompt": ("value", "None"),
     "_turn_owner_sent": ("value", "False"),
+    "_turn_agent_started": ("value", "False"),
     "_turn_reply_mids": ("value", "[]"),
     "_turn_retries": ("value", "{}"),
     "_turn_timeout_hydrated": ("value", "True"),

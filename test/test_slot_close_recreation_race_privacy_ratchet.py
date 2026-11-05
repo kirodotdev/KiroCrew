@@ -48,6 +48,7 @@ from kiro_crew.dashboard import chat_runner, chat_summary
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.testing.wait import finished
 
 
 def _summary_cfg():
@@ -150,8 +151,7 @@ async def test_delete_handover_of_a_restricted_tail_tightens_a_persistent_line(
         _summary_cfg(), replacement, 4, force=True
     ), "the persistent replacement was not summarizable before the drain"
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the close finishing once the test released the cancelled turn")
 
     assert resp.status == 200, "the restricted tail was refused instead of landing"
     assert state._slots.get(NAME) is replacement
@@ -337,8 +337,7 @@ async def test_delete_handover_of_a_restricted_tail_lands_under_the_ratcheted_li
     await _publish_metadata(state, replacement, title="REPLACEMENT TITLE", folder="f-r")
     assert state.conversation_log.get_metadata(HKEY).get("memory_mode") == mode
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the close finishing once the test released the cancelled turn")
 
     assert resp.status == 200
     meta = state.conversation_log.get_metadata(HKEY)
@@ -678,8 +677,9 @@ async def test_delete_handover_saves_tail_after_second_carrier_cas_failure(
     monkeypatch.setattr(chat_utils_mod, "tighten_live_session_execution", _always_fail)
     try:
         release.set()
-        # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-        resp = await close
+        resp = await finished(
+            close, "the close finishing once the test released the cancelled turn"
+        )
 
         assert resp.status == 200
         assert json.loads(resp.body) == {"ok": True}
@@ -1164,8 +1164,7 @@ async def test_delete_handover_of_a_persistent_tail_keeps_a_restricted_line(tmp_
     await _publish_metadata(state, replacement, title="REPLACEMENT TITLE", folder="f-r")
     assert state.conversation_log.get_metadata(HKEY).get("memory_mode") == "incognito"
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the close finishing once the test released the cancelled turn")
 
     assert resp.status == 200
     meta = state.conversation_log.get_metadata(HKEY)

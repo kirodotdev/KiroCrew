@@ -23,6 +23,8 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
     _TestChatPermissionRequestHarness,
 )
 
+from kiro_crew.testing.wait import async_wait_until, default_timeout
+
 
 class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
     """`kirocrew chat` must ANSWER a permission request, and answering one is an
@@ -373,17 +375,21 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
         import kiro_crew.cli_chat as cli_chat
 
         entered = threading.Event()
+        # What the two stubs below park on. The test's cleanup sets both, so the
+        # reader thread cannot return "a" while the teardown is still being judged,
+        # and a reject that was wrongly awaited does not outlive the test.
+        read_released = threading.Event()
+        reject_released = asyncio.Event()
 
         class _HungReject(self._GatedProvider):
             async def reject_tool(self, request_id):
                 self.trace.append(("reject", request_id, False))
-                # flake-ok: pre-existing never-set event in the hung-reject stub, moved verbatim; teardown never calls it and the wait_for on the cancelled task bounds a regression
-                await asyncio.Event().wait()  # never returns
+                # A transport that never answers: only the cleanup below ends this wait.
+                await reject_released.wait()
 
         def blocking_read(prompt=""):
             entered.set()
-            # flake-ok: pre-existing bounded park of the prompt thread, moved verbatim; the test cancels the turn while it is parked
-            threading.Event().wait(timeout=self._TIMEOUT)
+            read_released.wait(timeout=default_timeout())
             return "a"
 
         trace: list = []
@@ -393,15 +399,21 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
         task = asyncio.create_task(
             cli_chat._send_and_print(provider, "run it", interactive=True, gate=self._gate())
         )
-        # flake-ok: pre-existing 5 s bounded wait for the prompt thread to start, moved verbatim
-        await asyncio.get_running_loop().run_in_executor(None, entered.wait, 5.0)
+        try:
+            await async_wait_until(
+                entered.is_set,
+                describe=lambda: f"the prompt thread never entered the read; turn: {task!r}",
+            )
 
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=self._TIMEOUT)
-        assert cli_chat._stdin_poisoned is True
-        assert provider.calls == []  # nothing was awaited on the way out
-        assert [s[1]["error"] for s in trace if s[0] == "sel"] == ["session_aborted"]
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=self._TIMEOUT)
+            assert cli_chat._stdin_poisoned is True
+            assert provider.calls == []  # nothing was awaited on the way out
+            assert [s[1]["error"] for s in trace if s[0] == "sel"] == ["session_aborted"]
+        finally:
+            read_released.set()
+            reject_released.set()
 
     @pytest.mark.asyncio
     async def test_the_teardown_audit_also_runs_off_the_event_loop(self, monkeypatch):
@@ -418,13 +430,15 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
         import kiro_crew.cli_chat as cli_chat
 
         entered = threading.Event()
+        # The reader thread parks on this until the test's cleanup sets it, so it
+        # cannot return "a" while the teardown is still being judged.
+        read_released = threading.Event()
         threads: list = []
         trace: list = []
 
         def blocking_read(prompt=""):
             entered.set()
-            # flake-ok: pre-existing bounded park of the prompt thread, moved verbatim; the test cancels the turn while it is parked
-            threading.Event().wait(timeout=self._TIMEOUT)
+            read_released.wait(timeout=default_timeout())
             return "a"
 
         monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
@@ -443,18 +457,23 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
         task = asyncio.create_task(
             cli_chat._send_and_print(provider, "run it", interactive=True, gate=self._gate())
         )
-        # flake-ok: pre-existing 5 s bounded wait for the prompt thread to start, moved verbatim
-        await asyncio.get_running_loop().run_in_executor(None, entered.wait, 5.0)
+        try:
+            await async_wait_until(
+                entered.is_set,
+                describe=lambda: f"the prompt thread never entered the read; turn: {task!r}",
+            )
 
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=self._TIMEOUT)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=self._TIMEOUT)
 
-        assert [s[1]["error"] for s in trace if s[0] == "sel"] == ["session_aborted"]
-        assert threads[0] is not threading.main_thread(), (
-            "the teardown SEL write ran on the event loop thread; a slow audit "
-            "store would stall ACP draining while the turn is being torn down"
-        )
+            assert [s[1]["error"] for s in trace if s[0] == "sel"] == ["session_aborted"]
+            assert threads[0] is not threading.main_thread(), (
+                "the teardown SEL write ran on the event loop thread; a slow audit "
+                "store would stall ACP draining while the turn is being torn down"
+            )
+        finally:
+            read_released.set()
 
     @pytest.mark.asyncio
     async def test_an_approval_that_cannot_be_audited_is_refused(self, monkeypatch):
@@ -767,7 +786,6 @@ print("survived")
         out_path = tmp_path / "child.out"
         err_path = tmp_path / "child.err"
         with open(out_path, "wb") as out, open(err_path, "wb") as err:
-            # flake-ok: pre-existing real child interpreter run without a timeout, moved verbatim; tracked for a de-flake pass
             rc = subprocess.call(
                 [sys.executable, "-c", self._CHILD % {"title": self._TITLE}],
                 stdout=out,
@@ -778,6 +796,9 @@ print("survived")
                 # artifact it or a library writes then lands in the test's own tree
                 # instead of surviving in the repo.
                 cwd=tmp_path,
+                # A lost-run bound, half the test's timeout: a child that hangs is
+                # killed and fails this test as TimeoutExpired, not the worker.
+                timeout=default_timeout(),
             )
         stdout = out_path.read_text(encoding="utf-8", errors="replace")
 

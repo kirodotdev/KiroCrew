@@ -175,6 +175,7 @@ from kiro_crew.snapshot_merge_driver import (  # noqa: F401 - facade re-exports
     _copy_notifications,
     _do_merge,
 )
+from kiro_crew.snapshot_order import newest_first
 from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _OWNER_ONLY_SETTINGS_FILES,
     NamedStoresInUse,
@@ -186,6 +187,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _clear_store_directories,
     _component_payload_absent,
     _components_absent_from_bundle,
+    _discard_partial_rollback,
     _do_replace,
     _do_replace_mutations,
     _drop_derived_indexes_absent_from_bundle,
@@ -658,9 +660,7 @@ def snapshot_main(
         if not out.is_dir():
             print(f"No snapshots found in {out}")
             return 0
-        snaps = sorted(
-            out.glob("kirocrew-snapshot-*.tar.gz"), key=lambda x: x.stat().st_mtime, reverse=True
-        )
+        snaps = newest_first(list(out.glob("kirocrew-snapshot-*.tar.gz")))
         for s in snaps:
             print(s)
         if not snaps:
@@ -864,12 +864,15 @@ def snapshot_main(
     # successful bundle unless the omission guard below holds it: a daily backup must
     # not turn into an unbounded pile of bundles -- the disk fills, and then the
     # snapshot that would have worked cannot be written either.
-    snaps = sorted(
-        out.glob("kirocrew-snapshot-*.tar.gz"), key=lambda x: x.stat().st_mtime, reverse=True
-    )
+    # Newest by the stamp in the name, not the mtime: a bundle copied back in
+    # from off-host storage is not newer than the one this run just wrote. That
+    # bundle holds the first slot whatever the others say, so a clock set back
+    # after a future-stamped run cannot prune it either.
+    others = [p for p in out.glob("kirocrew-snapshot-*.tar.gz") if p.name != outfile.name]
+    snaps = [outfile, *newest_first(others)]
     # A run that could not READ something it was asked to carry does not prune.
     #
-    # Retention decides what to delete by mtime alone, so a bundle missing a file it was
+    # Retention decides what to delete by age alone, so a bundle missing a file it was
     # asked for counts as the newest backup exactly like a whole one: with `--keep 1`
     # today's incomplete bundle deletes yesterday's complete one, reports success, and
     # the operator's last restorable copy is gone. Nothing downstream can recover it.

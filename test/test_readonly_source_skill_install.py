@@ -381,7 +381,7 @@ class TestDeployLinkMigrationIsJunctionAware:
         (target / "SKILL.md").write_text("theirs", encoding="utf-8")
         # Carry the marker too: the old code's ``exists()`` branch then chose
         # rmtree_force THROUGH the link, which is the destructive shape.
-        (target / deploy_pkg._MANAGED_MARKER).write_text("")
+        (target / deploy_pkg._MANAGED_MARKER).write_text("", encoding="utf-8")
         platform_compat.symlink_or_junction(str(target), str(link))
         assert platform_compat.is_link_or_junction(link)
 

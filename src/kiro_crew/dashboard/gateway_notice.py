@@ -55,6 +55,11 @@ GATEWAY_NOTICE_COMPACTION_CONTINUING = "compaction_continuing"
 GATEWAY_NOTICE_MODEL_ACCESS_FALLBACK = "model_access_fallback"
 GATEWAY_NOTICE_MODEL_UNAVAILABLE = "model_unavailable"
 GATEWAY_NOTICE_MODEL_THROTTLED_FALLBACK = "model_throttled_fallback"
+# Refusal-fallback (`agent.refusal_fallback_model`) ``notice`` row: the
+# configured fallback equals the model that just refused, so the one retry is
+# skipped (`_refusal_fallback_is_same_model`). A separate row from the terminal
+# refusal card, so this sentence localizes without tokenizing the whole card.
+GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL = "refusal_fallback_same_model"
 
 # Session-reconnect, credential-reload and model-session rebuild ``error`` rows.
 # Each keeps today's red card; only its copy is localized.
@@ -101,7 +106,10 @@ GATEWAY_NOTICE_DEFERRED_FOLLOWUP = "deferred_followup"
 GATEWAY_NOTICE_MEMORY_PREPARING = "memory_preparing"
 GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_PINNED = "agent_switch_blocked_pinned"
 GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_CREW_MODE = "agent_switch_blocked_crew_mode"
+GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_CHANNEL = "agent_switch_blocked_channel"
+GATEWAY_NOTICE_CHANNEL_MESSAGE_NOT_RUN = "channel_message_not_run"
 GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE = "crew_name_undispatchable"
+GATEWAY_NOTICE_CODE_CHANNEL_WORKTREE_NOT_READY = "code_channel_worktree_not_ready"
 GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY = "remote_crew_read_only"
 GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED = "archive_failed_turn_cancelled"
 

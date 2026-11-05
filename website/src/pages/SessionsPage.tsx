@@ -16,6 +16,7 @@ import { PageHeader, Btn, SearchInput, Badge, EmptyState, FilteredEmpty } from '
 import ErrorNotice from '../components/ErrorNotice'
 import type { ChatSlot, ChatTag } from '../types'
 import { i18nT } from '../i18n/t'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 
 /** Recency bucket a session row sorts into, by LOCAL calendar day. */
 export type RecencyGroup = 'today' | 'yesterday' | 'earlier'
@@ -196,13 +197,14 @@ export default function SessionsPage() {
           className="flex-1 max-w-[420px]"
         />
       </div>
-      <div className="flex items-center gap-2 flex-wrap px-4 md:px-6 pb-3">
-        <button className={chipCls(chip === 'all')} aria-pressed={chip === 'all'} onClick={() => setChip('all')}>
+      <RadioChipGroup className="flex items-center gap-2 flex-wrap px-4 md:px-6 pb-3" ariaLabel={i18nT('pages.sessionsPage.filter_label')}>
+        <button type="button" className={chipCls(chip === 'all')} {...radioChip(chip === 'all')} onClick={() => setChip('all')}>
           {i18nT('pages.sessionsPage.filter_all')}
         </button>
         <button
+          type="button"
           className={chipCls(chip === 'unread')}
-          aria-pressed={chip === 'unread'}
+          {...radioChip(chip === 'unread')}
           onClick={() => setChip(chip === 'unread' ? 'all' : 'unread')}
           data-testid="sessions-chip-unread"
         >
@@ -212,15 +214,16 @@ export default function SessionsPage() {
         {statusChips.map(t => (
           <button
             key={t.id}
+            type="button"
             className={chipCls(chip === `tag:${t.id}`)}
-            aria-pressed={chip === `tag:${t.id}`}
+            {...radioChip(chip === `tag:${t.id}`)}
             onClick={() => setChip(chip === `tag:${t.id}` ? 'all' : `tag:${t.id}`)}
             data-testid={`sessions-chip-tag-${t.id}`}
           >
             {t.name}
           </button>
         ))}
-      </div>
+      </RadioChipGroup>
 
       <div className="flex-1 min-h-0 overflow-y-auto pb-8 md:px-6">
         {!slotsLoaded && visible.length === 0 ? (

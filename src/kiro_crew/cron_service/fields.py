@@ -29,14 +29,83 @@ from kiro_crew.cron_service.model import (
     validate_auto_pause_after_failures,
 )
 from kiro_crew.cron_service.schedule import (
+    LOCAL_TIMEZONE,
+    is_local_timezone,
     is_valid_skip_date,
     is_valid_timezone,
     validate_cron_expr,
 )
 from kiro_crew.cron_service.store import _is_representable_number
+from kiro_crew.cron_service.zone_default_migration import release_legacy_zone
 from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
 _MIN_INTERVAL_SECS = 60
+
+_PROJECT_PATH_AGENT_ONLY = (
+    "project_path applies only to agent (message) jobs: a --script or "
+    "--command job runs no agent session, so it has no project rules to load."
+)
+
+
+def resolve_project_path(raw: str) -> str:
+    """Validate a job's ``project_path`` and return its resolved form.
+
+    ``""`` stays ``""`` (no project directory: today's cwd). Anything else goes
+    through the chat folder's own project-directory validator
+    (``_validate_project_dir``: absolute or ``~``, ``realpath``, no
+    ``canonical_path_refusal``, an existing directory), so the two fences cannot
+    drift. A UNC-shaped path, raw or resolved, is refused before and after it,
+    so a share is never probed. Raises ``ValueError`` naming the rule. Called on
+    every write AND at every fire, so a directory that was removed, or that a
+    symlink now points somewhere sensitive, fails the run loudly instead of
+    running it with no project rules.
+    """
+    from kiro_crew.dashboard.chat_folders_paths import _validate_project_dir
+    from kiro_crew.hooks import is_unc_shape
+
+    if not raw:
+        return ""
+    if not isinstance(raw, str):
+        raise ValueError("project_path must be a string")
+    if is_unc_shape(raw):
+        raise ValueError("project_path must be a local directory, not a network share")
+    resolved, err = _validate_project_dir(raw)
+    if err:
+        raise ValueError(f"project_path: {err}")
+    if is_unc_shape(resolved):
+        raise ValueError("project_path must be a local directory, not a network share")
+    return resolved
+
+
+def cron_session_cwd(job: CronJob, resolved_cwd: str | None) -> str | None:
+    """The cwd a fire of *job* runs its agent session in.
+
+    A job with no ``project_path`` keeps *resolved_cwd* (the bound agent's
+    workspace, or ``None`` for the per-session scratch directory), so every
+    job written before the field existed fires exactly as it did. A job with
+    one runs there: the project directory outranks the agent's workspace,
+    because it is the more specific, per-job choice. The path is re-checked
+    here; a directory that cannot be used raises ``RuntimeError`` so
+    the run fails visibly rather than running without the project's rules.
+    Blocking (``realpath``/``isdir``): call it off the event loop.
+    """
+    # The store coerces a non-string to "" on load (``_guard_str``); the same
+    # reading here keeps a job object from any other source on today's cwd.
+    project_path = getattr(job, "project_path", "")
+    if not isinstance(project_path, str) or not project_path:
+        return resolved_cwd
+    try:
+        return resolve_project_path(project_path)
+    except ValueError as exc:
+        refusal = RuntimeError(
+            f"Cron '{job.name}': project_path {job.project_path!r} can no longer be "
+            f"used ({exc}), so the run did not start. Fix the directory, or clear it "
+            f"with `kirocrew cron update {job.id} --project-path ''`."
+        )
+        # Not weather: the transient-retry ladder must count it a failure.
+        refusal.transient = False  # type: ignore[attr-defined]
+        raise refusal from exc
+
 
 # Shown verbatim under the Schedule form's Save button, so it names the rule
 # and the next step rather than only the refusal.
@@ -62,6 +131,8 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("source_template_prompt", MAX_CRON_MESSAGE),
     ("folder_id", MAX_SHORT_STRING),
     ("chat_folder_id", MAX_SHORT_STRING),
+    # CLI-only today (no CRON_ADD_SCHEMA entry), so the general ID cap applies.
+    ("project_path", MAX_SHORT_STRING),
     ("session_key", MAX_SHORT_STRING),
     ("model", MAX_SHORT_STRING),
     ("command", 5000),
@@ -137,6 +208,19 @@ def _check_timeout_range(timeout: int) -> None:
         raise ValueError(f"timeout must be within 0..86400, got {timeout}")
 
 
+def whole_seconds(field_name: str, value: Any) -> int:
+    """``int(value)``, or ``ValueError`` naming *field_name* when it cannot be read.
+
+    OverflowError too: ``int(float("inf"))`` raises it, and it is not a
+    ``ValueError``, so an infinite timeout would otherwise escape the documented
+    refusal as a different exception type.
+    """
+    try:
+        return int(value)
+    except (ValueError, TypeError, OverflowError) as e:
+        raise ValueError(f"Invalid {field_name}: {value!r}") from e
+
+
 def validate_create_timeouts(
     timeout: int, timeout_secs: int, *, command: str = "", script: str = ""
 ) -> None:
@@ -152,9 +236,9 @@ def validate_create_timeouts(
     Raises ``ValueError``.
     """
     if timeout:
-        _check_timeout_range(int(timeout))
+        _check_timeout_range(whole_seconds("timeout", timeout))
     if timeout_secs:
-        _check_timeout_secs_range(int(timeout_secs))
+        _check_timeout_secs_range(whole_seconds("timeout_secs", timeout_secs))
     if timeout_secs and (command or script):
         if timeout:
             _eff_sub = int(timeout)
@@ -171,6 +255,11 @@ def validate_create_timeouts(
                 "the subprocess keeps running while the next wake launches "
                 "a duplicate."
             )
+
+
+def _stored_timezone(timezone: str) -> str:
+    """The spelling a validated *timezone* is stored in: ``local`` in one case, else as given."""
+    return LOCAL_TIMEZONE if timezone and is_local_timezone(timezone) else timezone
 
 
 def build_job(
@@ -195,6 +284,7 @@ def build_job(
     hide_in_chat: bool = False,
     folder_id: str = "",
     chat_folder_id: str = "",
+    project_path: str = "",
     command: str = "",
     script: str = "",
     agent_sequence: list[str] | None = None,
@@ -225,12 +315,9 @@ def build_job(
     failed runs it takes before the failure message is delivered; ``None`` means
     the ``_ALERT_AFTER_DEFAULT`` of 1.
 
-    The optional presentation/routing fields (``agent_id``, ``model``,
-    ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
-    here so the job is persisted **fully-formed** in the single locked
-    transaction. This closes a create-then-mutate-then-unlocked-``_save``
-    window (two concurrent creates could otherwise interleave at the
-    ``await`` and the unlocked save could clobber the other request's job).
+    Every optional field is set here so the job is persisted fully-formed
+    in one locked transaction; a later unlocked ``_save`` could clobber a
+    concurrent create's job.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
@@ -264,6 +351,7 @@ def build_job(
             "created_by": created_by,
             "folder_id": folder_id,
             "chat_folder_id": chat_folder_id,
+            "project_path": project_path,
             "session_key": session_key,
             "model": model,
             "command": command,
@@ -275,6 +363,9 @@ def build_job(
     )
     if chat_folder_id and not persistent_session:
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+    if project_path and (command or script):
+        raise ValueError(_PROJECT_PATH_AGENT_ONLY)
+    project_path = resolve_project_path(project_path)
     validate_create_timeouts(timeout, timeout_secs, command=command, script=script)
     _auto_pause = (
         _AUTO_PAUSE_THRESHOLD
@@ -288,6 +379,7 @@ def build_job(
     )
     if timezone and not is_valid_timezone(timezone):
         raise ValueError(f"Invalid timezone: {timezone!r}")
+    timezone = _stored_timezone(timezone)
     skip_dates = skip_dates or []
     for _d in skip_dates:
         if not is_valid_skip_date(_d):
@@ -326,6 +418,7 @@ def build_job(
         hide_in_chat=hide_in_chat,
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,
+        project_path=project_path,
         command=command,
         script=script,
         agent_sequence=list(agent_sequence) if agent_sequence else [],
@@ -422,10 +515,7 @@ def apply_job_update(
     # save to persist. Assignments happen below with the rest.
     _tsecs: int | None = None
     if "timeout_secs" in kwargs and kwargs["timeout_secs"] is not None:
-        try:
-            _tsecs = int(kwargs["timeout_secs"])
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid timeout_secs: {kwargs['timeout_secs']!r}") from e
+        _tsecs = whole_seconds("timeout_secs", kwargs["timeout_secs"])
         _check_timeout_secs_range(_tsecs)
     _auto_pause: int | None = None
     if "auto_pause_after_failures" in kwargs and kwargs["auto_pause_after_failures"] is not None:
@@ -438,10 +528,7 @@ def apply_job_update(
     # update is accepted and silently dropped.
     _tsub: int | None = None
     if "timeout" in kwargs and kwargs["timeout"] is not None:
-        try:
-            _tsub = int(kwargs["timeout"])
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid timeout: {kwargs['timeout']!r}") from e
+        _tsub = whole_seconds("timeout", kwargs["timeout"])
         _check_timeout_range(_tsub)
     # Vault secret grant: validated with the other pre-mutation
     # checks so a rejected grant cannot strand earlier field
@@ -510,6 +597,13 @@ def apply_job_update(
                 f"need >= {_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, "
                 f"got {_eff_secs}"
             )
+    # Resolved before the first assignment so a refused directory leaves the
+    # job untouched. ``""`` clears it (back to today's cwd).
+    _project_path: str | None = None
+    if "project_path" in kwargs:
+        _project_path = resolve_project_path(kwargs["project_path"] or "")
+        if _project_path and (job.command or job.script):
+            raise ValueError(_PROJECT_PATH_AGENT_ONLY)
     # Resolved here, before the first assignment, because a member schedule
     # re-resolves its member's template and that can refuse: the job must be
     # left untouched when it does.
@@ -529,18 +623,11 @@ def apply_job_update(
     if "channel" in kwargs:
         job.channel = kwargs["channel"] or None
     if "thread_ts" in kwargs:
-        # Paired with ``channel``: together they decide WHERE a run's
-        # output lands, and ``add_job`` has always accepted both. With
-        # no branch here the field was validated (see the caps table)
-        # and then dropped, so the caller was told "Updated" while the
-        # cron kept replying in the old thread. Falsy clears, mirroring
-        # ``channel`` and how mcp_cron normalizes blank to None.
-        #
-        # A granted script job re-threaded this way fails its NEXT run
-        # closed: thread_ts is bound into the grant's delivery
-        # fingerprint (cron_script.delivery_fingerprint), so the pin
-        # stops verifying until the operator re-approves. That is the
-        # intended fail-closed path, not a regression.
+        # With ``channel``, decides where a run's output lands. Falsy clears,
+        # as for ``channel`` and mcp_cron's blank-to-None. A granted script
+        # job re-threaded here fails its next run closed on purpose:
+        # thread_ts is in the grant's delivery fingerprint
+        # (cron_script.delivery_fingerprint) until the operator re-approves.
         job.thread_ts = kwargs["thread_ts"] or None
     if "approval_mode" in kwargs:
         job.approval_mode = kwargs["approval_mode"] or ""
@@ -549,7 +636,9 @@ def apply_job_update(
     if "skip_dates" in kwargs:
         job.skip_dates = kwargs["skip_dates"] or []
     if "timezone" in kwargs:
-        job.timezone = kwargs["timezone"] or ""
+        job.timezone = _stored_timezone(kwargs["timezone"] or "")
+        # Chosen with today's meaning of an empty zone, so no upgrade holds it on UTC.
+        release_legacy_zone(job)
     if "strict_schedule" in kwargs:
         job.strict_schedule = bool(kwargs["strict_schedule"])
     if "persistent_session" in kwargs:
@@ -582,6 +671,8 @@ def apply_job_update(
         job.chat_folder_id = ""
     if "model" in kwargs:
         job.model = str(kwargs["model"] or "").strip()
+    if _project_path is not None:
+        job.project_path = _project_path
     if "app_manifest_digest" in kwargs:
         # The app bridge's own record of the manifest entry it applied. No
         # operator surface (dashboard, MCP, CLI) forwards this key, so the

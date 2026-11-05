@@ -65,9 +65,10 @@ def _can_fire(command: str) -> bool:
 
 
 def _names_rm_word(command: str) -> bool:
-    """``rm`` as its own word in *command*, or once ``${X:-…}`` defaults are resolved."""
+    """``rm`` as its own word in *command*, once ``${X:-…}`` defaults are resolved, or
+    once unquoted parameters are dropped (an unset ``$1`` glued to ``rm`` runs ``rm``)."""
     resolved = _shell._resolve_param_defaults(command)
-    return bool(_RM_WORD_RE.search(command) or _RM_WORD_RE.search(resolved))
+    return any(_RM_WORD_RE.search(text) for text in (command, resolved, _PARAM_RE.sub("", command)))
 
 
 def _target_kind(word: str) -> "str | None":

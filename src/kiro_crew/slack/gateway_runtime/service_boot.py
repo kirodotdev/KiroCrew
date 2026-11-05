@@ -69,6 +69,7 @@ if TYPE_CHECKING:
         hooks_config_from_config_dict,
         is_local_only,
         kiro_agents_dir,
+        ledger_of,
         live,
         log_probe_failure,
         logger,
@@ -195,6 +196,7 @@ async def _init_services(self: GatewayOrchestrator) -> None:
             log_message="agent_runtime.run_first_run_setup failed",
         )
     except Exception:
+        # A rebuild PlatformCompositionError lands here too: platform boot enforces composition.
         # Boot deliberately continues: a gateway with no agent spec still
         # serves the dashboard, and one command repairs it. But this is NOT a
         # warning-level event — without a spec on disk kiro-cli answers every
@@ -368,6 +370,11 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     self.sessions.set_injection_probe(
         lambda key: self._cron_injecting.get(key, 0) > 0,
     )
+    # A turn's release settles the inline marks it received: confirmed if it
+    # landed, revoked otherwise, and the completions parked on it with them.
+    _ledger = ledger_of(self.sessions)
+    if _ledger is not None:
+        _ledger.on_released = self._settle_inline
 
     # Channel history buffer. data_home(), not config_dir(): this method is
     # async and config_dir() re-runs start-of-process maintenance (mkdir,
@@ -674,6 +681,8 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         self.dashboard_state.slack_client = self.slack
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # dashboard mode
+        # ``kirocrew restart --when-idle`` asks this before it restarts.
+        self.dashboard_state._restart_idle_gate = self._restart_gate_when_idle
     if self.dashboard_state and not self._test_mode:
         # Told once, after the KAS floor answers: a Kiro CLI pick now runs on KAS.
         from kiro_crew import kiro_on_kas_notice
@@ -886,6 +895,18 @@ async def run(self: GatewayOrchestrator) -> None:
     from kiro_crew.enterprise_boot import require_kiro_login
 
     self._boot_kiro_service = await require_kiro_login(assume_ready=self._test_mode)
+
+    # Enterprise build only (RFC D6): KAS is the harness, and a KAS that cannot start
+    # refuses the start instead of falling back to the Kiro CLI harness. Before any
+    # service starts, like the sign-in check above. Only the gateway records the
+    # verdict that refuses later KAS sessions; another process that spawns KAS gets
+    # that spawn's own error. An oss build skips this block entirely.
+    from kiro_crew import edition
+
+    if edition.is_enterprise():
+        from kiro_crew.enterprise_boot import require_kas_harness
+
+        await asyncio.to_thread(require_kas_harness, self._cfg, test_mode=self._test_mode)
 
     # ── Initialise all services ──
     from kiro_crew.slack.events import SeenCache, init_socket_mode

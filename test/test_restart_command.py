@@ -7,6 +7,8 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import drain, open_feed, real_dashboard_state
 
 from kiro_crew.config.loader import ACTIVATION_ALWAYS, ChannelConfig, KiroCrewConfig
 from kiro_crew.sel import SecurityEventLog
@@ -33,7 +35,11 @@ def restart_audit(tmp_path, monkeypatch):
     def _rows() -> list[tuple[str, str]]:
         if not path.exists():
             return []
-        events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        events = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
         return [
             (e["outcome"], e["resources"])
             for e in events
@@ -166,7 +172,7 @@ class TestRestartSlashCommand:
         mock_flush_sel.assert_awaited_once_with()
 
     @pytest.mark.asyncio
-    async def test_dashboard_state_saved_before_restart(self, _mock_sel):
+    async def test_dashboard_state_saved_before_restart(self, _mock_sel, tmp_path):
         """The pre-restart slot save (the critical data-preservation step) must
         run when a dashboard_state is present — exercise the save_all_slots_to_history
         path that the None-dashboard_state tests above skip."""
@@ -176,7 +182,8 @@ class TestRestartSlashCommand:
         orch = MagicMock()
         orch.sessions = MagicMock()
         orch.sessions.close_all = AsyncMock()
-        orch.dashboard_state = MagicMock()  # truthy + has push_update_progress
+        orch.dashboard_state = real_dashboard_state(tmp_path)
+        feed = open_feed(orch.dashboard_state)
         respond = AsyncMock()
         with (
             patch.dict("os.environ", {"INVOCATION_ID": "abc"}),
@@ -185,7 +192,9 @@ class TestRestartSlashCommand:
         ):
             await _handle_restart(orch, "U_OWNER", "", respond)
         mock_save.assert_called_once_with(orch.dashboard_state)
-        orch.dashboard_state.push_update_progress.assert_called_once()
+        restarting = {"step": "restarting", "detail": "Restarting server…"}
+        assert orch.dashboard_state._update_progress == restarting
+        assert {"_type": "update_progress", **restarting} in drain(feed)
         mock_exit.assert_called_once_with(1)
 
     @pytest.mark.asyncio

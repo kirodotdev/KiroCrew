@@ -16,7 +16,8 @@ binds it by name, so it reads and writes the map's own state on the instance, an
 the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_batch_depth``, ``_batch_dirty``, ``_data``, ``_dirty``,
-``_flush_task``, ``_snapshot_seq``, ``_thread_to_session``, ``_written_seq``.
+``_flush_task``, ``_load_failed``, ``_set_aside_owed``, ``_snapshot_seq``,
+``_thread_to_session``, ``_written_seq``.
 
 Instance fields read: ``_io_lock``, ``_path``.
 """
@@ -26,31 +27,32 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import logging
 import os
+import pathlib
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.messaging.link import ChannelLink, canonical_key
+from kiro_crew.user_json import loads_user_json
 
 if TYPE_CHECKING:
     from kiro_crew.session_map import SessionMap
 
+#: The map's own logger: this code logs under ``kiro_crew.session_map``.
+logger = logging.getLogger("kiro_crew.session_map")
 
-# Serializes every structural access to the map. MODULE-level, not per-instance,
-# because the instances are not the unit of exclusion: the read-only call sites
-# build their own throwaway ``SessionMap()`` (``handlers/session_storage.py``,
-# ``slack/handler.py``) while ``SessionManager`` holds the long-lived one, and
-# all of them resolve the same file. A per-instance lock would leave a throwaway
-# reader iterating its map while the live writer rewrites the file — the exact
-# pair this exists to order.
-#
-# REENTRANT because the public surface composes: ``set_mirror_link`` reaches
-# ``clear_mirror_link`` -> ``clear_slack_link`` -> ``_save`` -> ``_write``, and
-# ``batched_save`` blocks nest. A plain Lock would deadlock the first such call.
+# Serializes every structural access to the map. MODULE-level: throwaway readers
+# (``handlers/session_storage.py``, ``slack/handler.py``) and ``SessionManager``'s
+# long-lived map all resolve the same file, so a per-instance lock would not order
+# them. REENTRANT because calls compose (``set_mirror_link`` ->
+# ``clear_mirror_link`` -> ``clear_slack_link`` -> ``_save`` -> ``_write``) and
+# ``batched_save`` blocks nest.
 _MAP_LOCK = threading.RLock()
 
 _P = ParamSpec("_P")
@@ -79,23 +81,14 @@ def _guarded(fn: Callable[_P, _R]) -> Callable[_P, _R]:
 def batched_save(self: SessionMap) -> Iterator[None]:
     """One critical section and one write for every mutation in this block.
 
-    A mutation rewrites the WHOLE map, so a caller making several related
-    mutations pays that cost once per operation rather than once per
-    sequence — and on the event loop each write is a stall every task
-    shares. Nesting is counted, and the write happens on the way out even if
-    the block raises, so a partial sequence is never left only in memory.
+    Each mutation rewrites the WHOLE map (a loop stall), so a batch writes once.
+    Nesting is counted, and the write runs on exit even if the block raises.
+    :data:`_MAP_LOCK` is held throughout so the sequence is ATOMIC: another
+    thread's write cannot land between mutations and be dropped by the rewrite.
 
-    The block also holds :data:`_MAP_LOCK` throughout, which is what makes
-    the sequence ATOMIC and not merely coalesced: without it another
-    thread's write could land between two of these mutations and then be
-    dropped by this batch's whole-map rewrite.
-
-    MUST NOT be held across an ``await``. The lock is reentrant per THREAD,
-    so it does not exclude a second coroutine on the same loop — an await
-    inside the block lets one interleave exactly as it would have without
-    any lock, and meanwhile a worker thread blocked on the lock waits for
-    the await to finish. ``test_session_map_locking.py`` ratchets this
-    against the whole tree, so the rule is checked rather than trusted.
+    MUST NOT be held across an ``await``: the lock is reentrant per THREAD, so a
+    second coroutine can interleave while worker threads wait on the await.
+    ``test_session_map_locking.py`` enforces this across the tree.
     """
     with _MAP_LOCK:
         self._batch_depth += 1
@@ -130,11 +123,40 @@ def _load(self: SessionMap) -> None:
     self._thread_to_session = {}
     if self._path.exists():
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
+            raw = loads_user_json(self._path.read_text(encoding="utf-8"))
+        except (ValueError, RecursionError):
+            # Not usable JSON, so ``_data`` starts empty; the first write moves
+            # the file aside before it lands (``_write_payload``), so a hand
+            # edit gone wrong keeps its bindings in a ``.corrupt-`` copy.
+            logger.warning(
+                "Could not parse %s; starting empty and keeping it aside on the first write",
+                self._path,
+                exc_info=True,
+            )
+            self._set_aside_owed = True
+            self._data = {}
+            return
+        except OSError:
+            # The file is there but unread, so ``_data`` is NOT the map on disk,
+            # and every mutation rewrites the whole file from ``_data``.
+            # ``_write_payload`` raises while this is set, so a failed read
+            # cannot erase every binding and no durability point reports a
+            # write that did not happen; the next start that reads it recovers.
+            logger.exception(
+                "Could not read %s; session-map writes will fail until a restart reads it",
+                self._path,
+            )
+            self._load_failed = True
             self._data = {}
             return
         if not isinstance(raw, dict):
+            logger.warning(
+                "%s holds a JSON %s, not an object; "
+                "starting empty and keeping it aside on the first write",
+                self._path,
+                type(raw).__name__,
+            )
+            self._set_aside_owed = True
             self._data = {}
             return
         migrated = False
@@ -214,19 +236,11 @@ def _load(self: SessionMap) -> None:
 def _save(self: SessionMap) -> None:
     """Record that the file is owed a write, and arrange for one.
 
-    Three contexts, three behaviours:
-
-    - inside a :meth:`batched_save` block: mark the batch dirty; the block
-      exit writes once for the whole sequence (unchanged).
-    - on a thread running an event loop: mark dirty and schedule ONE
-      debounced flush task. The task serializes under the lock and does the
-      disk write in a worker thread, so the loop never pays the write
-      inline. A mutation landing while a flush is in flight
-      re-marks dirty, and the task loops until it observes a clean map, so
-      a trailing mutation is never dropped.
-    - no running loop (CLI, tests, worker threads): write inline on the
-      caller's thread. Worker threads may block on disk; the loop is the
-      only caller that must not.
+    - inside :meth:`batched_save`: mark the batch dirty; the block exit writes.
+    - on an event-loop thread: mark dirty and schedule ONE debounced flush task
+      that writes in a worker thread and loops until the map is clean, so a
+      trailing mutation is never dropped.
+    - no running loop (CLI, tests, worker threads): write inline.
     """
     if self._batch_depth:
         self._batch_dirty = True
@@ -401,22 +415,24 @@ def _write(self: SessionMap) -> None:
 def _write_payload(self: SessionMap, payload: str, seq: int) -> None:
     """Land one serialized snapshot atomically; refuse to regress.
 
-    Runs on whatever thread the caller chose — the loop-side inline path
-    under ``_MAP_LOCK``, or a worker thread WITHOUT it (holding the map
-    lock across disk I/O in a thread would make a loop-side mutation wait
-    on the disk, the very stall the deferral removes). ``_io_lock`` orders
-    concurrent writers, and the ticket check drops a payload older than one
-    already on disk, so a slow in-flight flush cannot overwrite a newer
-    forced write. Both are PER-INSTANCE: they order this instance's own
-    writers against each other, not two instances sharing the file — that
-    remains covered by the class contract's rule 3 (a throwaway
-    ``SessionMap()`` is read-only, only the live map writes). tmp+rename
-    keeps a crash from ever leaving a truncated file: the worst case is a
-    well-formed OLDER map.
+    Runs under ``_MAP_LOCK`` on the loop-side inline path, or on a worker thread
+    WITHOUT it (holding it across disk I/O would stall loop-side mutations).
+    The per-instance ``_io_lock`` and seq ticket stop a slow flush overwriting a
+    newer write; instances sharing the file rely on the class contract's rule 3
+    (only the live map writes). tmp+rename means a crash leaves at worst an OLDER
+    well-formed map. After a failed :meth:`_load` it raises ``OSError`` without
+    touching the file, so ``flush``/``aflush`` re-owe the state instead of
+    reporting a save. After an unparsable load, the first write moves the file to
+    ``<name>.corrupt-<utc>`` (:func:`_move_unparsed_aside`).
     """
+    if self._load_failed:
+        raise OSError(f"{self._path} was not readable at load; refusing to replace it")
     with self._io_lock:
         if seq <= self._written_seq:
             return
+        if self._set_aside_owed:
+            _move_unparsed_aside(self._path)
+            self._set_aside_owed = False
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
         try:
@@ -430,3 +446,27 @@ def _write_payload(self: SessionMap, payload: str, seq: int) -> None:
                 pass
             raise
         self._written_seq = seq
+
+
+def _move_unparsed_aside(path: pathlib.Path) -> None:
+    """Rename the map file to ``<name>.corrupt-<UTC stamp>`` so the write after it keeps its bytes.
+
+    Called under ``_io_lock`` by the first write after a load that could not parse
+    the file. A rename that fails raises ``OSError`` and nothing is written, so the
+    durability points re-owe the state and the file stays as it is.
+    """
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    suffix = 1
+    while os.path.lexists(target):
+        target = path.with_name(f"{path.name}.corrupt-{stamp}-{suffix}")
+        suffix += 1
+    try:
+        replace_with_retry(path, target)
+    except FileNotFoundError:
+        return  # Gone since the load: there is nothing left to keep.
+    logger.warning(
+        "%s could not be parsed at load; kept its contents at %s and wrote the map in its place",
+        path,
+        target.name,
+    )

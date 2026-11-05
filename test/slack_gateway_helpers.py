@@ -81,14 +81,10 @@ async def _within_lost_run(awaitable, what: str, *, timeout: float = _LOST_RUN_S
 class _ImportlibWithoutReload:
     """``importlib`` as the gateway sees it, except that ``reload`` returns its argument.
 
-    A completed update re-imports ``kiro_crew`` to log the rebuilt version. In a
-    test that re-runs ``kiro_crew/__init__.py`` inside the worker's one package
-    and leaves a NEW ``kiro_crew.shutdown_event`` there, while every module that
-    imported the name keeps the old object. A later test on the same worker that
-    sets ``kiro_crew.shutdown_event`` then never wakes ``gateway.run()``:
-    ``TestRunMethod::test_run_raises_on_shutdown`` hung to ``--timeout`` behind
-    any update test that completes an update (15 tests in the venv and reset
-    classes). Only the gateway's binding is replaced.
+    A completed update re-imports ``kiro_crew``, which leaves a NEW
+    ``kiro_crew.shutdown_event`` while importers keep the old one, so a later test
+    on the worker that sets it never wakes ``gateway.run()`` and hangs to
+    ``--timeout``. Only the gateway's binding is replaced.
     """
 
     def reload(self, module):
@@ -102,11 +98,8 @@ class _ImportlibWithoutReload:
 def _restore_update_check_cache():
     """Hand the next test the update-check cache this one inherited.
 
-    ``dashboard.handlers.updates._update_info`` is one process-wide dict, and the
-    gateway imported it by identity, so it is restored in place, never rebound. Tests
-    here clear it and seed their own verdicts, and the provider path writes
-    ``managed_by="command"`` into it; left behind, that key makes a later legacy check
-    on the same worker read "a policy update command owns this install" and only
+    ``dashboard.handlers.updates._update_info`` is imported by identity, so it is
+    restored in place. A leftover ``managed_by="command"`` makes a later check only
     notify, so an apply the test expects never runs.
     """
     inherited = dict(dashboard_updates._update_info)
@@ -242,21 +235,13 @@ def _git_exec_fake(
 ):
     """A `create_subprocess_exec` fake that dispatches on the GIT SUBCOMMAND.
 
-    Deliberately NOT a call counter. `_auto_apply_update` has gained git calls
-    three times, and each time every counter-keyed fake silently re-mapped its
-    own cases -- the stub written for `fetch` started answering the `diff`, and
-    the tests failed for a reason that had nothing to do with what they assert.
-    Dispatching on argv keeps each stub bound to the command it describes, so
-    inserting a call is not a test edit.
+    Not a call counter: when `_auto_apply_update` gains a git call, a counter-keyed
+    fake silently answers the wrong command. Dispatching on argv keeps each stub bound.
 
-    Defaults describe the interesting path: a branch is detected, the fetch
-    succeeds, the diff reports changes (rc=1), the tree is clean, the target adds
-    no colliding paths, the reset succeeds, and non-git spawns succeed.
-    `other_rc` fails the latter while leaving every git step green.
-
-    Note that `git diff` is now TWO distinct calls with opposite rc conventions,
-    so this dispatches on their flags. Subcommand alone is not always enough --
-    when a new call reuses a subcommand, the discriminator has to get narrower.
+    Defaults: a branch is detected, fetch succeeds, the diff reports changes (rc=1),
+    the tree is clean, no colliding paths, the reset and non-git spawns succeed;
+    `other_rc` fails only non-git spawns. The two `git diff` calls have opposite rc
+    conventions, so they dispatch on their flags.
     """
 
     async def _fake(*args, **kwargs):

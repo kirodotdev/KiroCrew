@@ -485,9 +485,11 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
     running process, then the old session's teardown, which removes that one
     session's backend record (KAS ``_kiro/session/delete``; kiro-cli terminate
     plus the guarded unlink of ``sessions/cli/<sid>.json(+.jsonl)``). If the
-    provider has none or it raises, ``reset`` replaces the process, and the key's
-    stateless classification means the next turn starts with no history. The
-    same two steps ``WorkerPool.reset`` uses for a reused pool worker.
+    provider has none or it raises (a backend on its own ``AcpClient``, claude
+    among them, raises ``NotImplementedError``), ``reset`` replaces the process,
+    and the key's stateless classification means the next turn starts with no
+    history. The same two steps ``WorkerPool.reset`` uses for a reused pool
+    worker.
 
     Logs at INFO which path ran, once per call. Never raises ``Exception``.
     """

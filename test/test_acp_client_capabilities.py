@@ -20,17 +20,9 @@ from kiro_crew.acp.types import (
 def test_elicitation_is_advertised_only_with_a_handler_on_both_drivers() -> None:
     """`elicitation` is declared, and every driver classifies the method it invites.
 
-    The declaration is not a free forward-bet. The ACP schema gates
-    `elicitation/create` on it, so a standard harness that sees it forwards an MCP
-    server's elicitation to us (codex-acp: `shouldUseAcpElicitation` reads
-    `clientCapabilities.elicitation.form` / `.url` for a form with fields and a URL
-    ask; a tool approval is a message-only form and stays on
-    `session/request_permission`); if the method then reached
-    `_reject_unknown_server_request`, the `-32601` would cancel the tool call the
-    server was asking about. So the two halves are pinned together: the
-    capability names both modes, and BOTH classifiers (the shared runtime's and
-    the single-session client's) route the standard method and KAS's spelling to
-    the `elicitation` action rather than to `server_request_unknown`.
+    The capability makes harnesses forward `elicitation/create`; a `-32601` from
+    `_reject_unknown_server_request` would cancel the tool call. So both classifiers must
+    route it to `elicitation`.
     """
     assert ACP_CLIENT_CAPABILITIES["elicitation"] == {"form": {}, "url": {}}
     for method in (METHOD_ELICITATION_CREATE, METHOD_KAS_MCP_ELICITATION):
@@ -67,13 +59,8 @@ def test_fs_and_terminal_stay_false() -> None:
 def test_both_acp_transports_send_capabilities() -> None:
     """Both transports must advertise, not just one.
 
-    The two build their `initialize` params independently, so a capability added
-    to one silently stays dark on the other. Asserted on source because neither
-    params dict is reachable without spawning a real agent subprocess.
-
-    The shared-process transport reads the set from its host's harness, so that
-    is where its half of the proof lives; every harness that serves a kiro-family
-    host must name the constant itself.
+    Each builds `initialize` params on its own; asserted on source because neither is
+    reachable without a real subprocess. The runtime's half lives in each kiro harness.
     """
     for rel in (
         "src/kiro_crew/acp/client.py",
@@ -118,12 +105,8 @@ def test_the_shared_process_transport_reads_capabilities_from_its_host() -> None
 def test_both_acp_transports_send_client_info_name() -> None:
     """Both transports must declare the client name under `clientInfo.name`.
 
-    kiro-cli reads the driving ACP client name from the initialize request's
-    `clientInfo.name` (agent/acp/acp_agent.rs: `if let Some(info) =
-    request.client_info`). A flat top-level `clientName` key is ignored, which
-    leaves the session unnamed in telemetry (bucketed as "(none)" instead of
-    "kirocrew"). AcpRuntime sends the nested form on BOTH transports. Asserted on source because neither params
-    dict is reachable without spawning a real agent subprocess.
+    kiro-cli ignores a flat `clientName` (agent/acp/acp_agent.rs), leaving telemetry at
+    "(none)". Asserted on source because neither params dict is reachable without a spawn.
     """
     for rel in ("src/kiro_crew/acp/client.py", "src/kiro_crew/acp/runtime.py"):
         src = Path(__file__).resolve().parents[1] / rel
@@ -140,16 +123,8 @@ def test_both_acp_transports_send_client_info_name() -> None:
 def test_client_version_is_the_package_version() -> None:
     """The version in `clientInfo` must be the package's, not a literal of its own.
 
-    A hand-maintained literal here is a second version number with no bumper.
-    It had one: `CLIENT_VERSION` sat at `"0.1.2"` from the commit that introduced
-    it while the product shipped 0.2.0 through 0.8.0, so every Crew-driven
-    session of every release reported the same version to the agent host and its
-    `acp_client_version` telemetry could not split Crew traffic by release at all.
-
-    Binding it to `__version__` is also what makes it track the two places the
-    version really moves: a release lane rewriting the literal in
-    `kiro_crew/__init__.py`, and a repackager's `BUILD_VERSION` stamp, which that
-    module resolves at import before any reader copies the attribute.
+    A literal has no bumper, so `acp_client_version` telemetry could not split releases.
+    `__version__` tracks both the release lane and a repackager's `BUILD_VERSION` stamp.
     """
     import kiro_crew
     from kiro_crew.acp import client
@@ -160,14 +135,8 @@ def test_client_version_is_the_package_version() -> None:
 def test_client_identity_is_declared_once_for_both_transports() -> None:
     """`runtime` must re-export the identity pair, never re-declare it.
 
-    Both transports send ONE `clientInfo` object built from these two names, so a
-    second pair of literals in `runtime.py` is free to report a different client
-    to the same host. That is not hypothetical: the flat-`clientName` regression
-    survived precisely because the two transports each owned a copy of the
-    handshake, so one was correct while the other was silently unnamed.
-
-    Checked on source as well as by identity because an equal-but-separate
-    literal passes the value check on the day it is written and drifts later.
+    A second pair of literals in `runtime.py` could report a different client. Checked on
+    source too: an equal but separate literal passes today and drifts later.
     """
     from kiro_crew.acp import client, runtime
 

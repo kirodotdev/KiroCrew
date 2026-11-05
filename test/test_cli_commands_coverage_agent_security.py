@@ -199,6 +199,35 @@ class TestAgentCli:
         assert exc.value.code == 1
         assert "not found" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("workspace", [None, "", "  "])
+    def test_update_with_nothing_to_change_warns_and_writes_nothing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], workspace: str | None
+    ) -> None:
+        cfg = _cfg_with(agents={"a": KiroCrewAgentConfig(kiro_agent="k", workspace="ws0")})
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        before = cfg_path.read_bytes()
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch.object(cc, "persist_member_config") as persist,
+        ):
+            cc._handle_agent(
+                _ns(
+                    agent_action="update",
+                    name="a",
+                    kiro_agent=None,
+                    workspace=workspace,
+                    memory_store=None,
+                    model=None,
+                    display_name=None,
+                )
+            )
+        out = capsys.readouterr()
+        assert "nothing to update" in out.err
+        assert "Updated agent" not in out.out
+        assert cfg_path.read_bytes() == before
+        persist.assert_not_called()
+
     def test_delete_removes_non_default(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -338,16 +367,32 @@ class TestAgentCli:
         ):
             cc._handle_agent(_ns(agent_action="delete", name="ghost"))
 
-    def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with patch.object(KiroCrewConfig, "load", return_value=_cfg_with()):
+    def test_unknown_action_prints_usage_and_exits_two(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A missing or unknown sub-action is a usage error: usage to stderr,
+        # exit 2 (argparse convention), not a 0 on stdout.
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=_cfg_with()),
+            pytest.raises(SystemExit) as exited,
+        ):
             cc._handle_agent(_ns(agent_action=None))
-        assert "Usage: kirocrew agent" in capsys.readouterr().out
+        assert exited.value.code == 2
+        assert "Usage: kirocrew agent" in capsys.readouterr().err
 
 
 # ── workspace create --copy-from ──
 
 
 class TestWorkspaceCopyFrom:
+    @pytest.fixture(autouse=True)
+    def _placement_home(self, tmp_path: Path) -> Any:
+        """The copy source comes from ``workspace_dir_from_entry``, which reads its
+        own ``config_dir`` binding; point it at the data home each test patches.
+        """
+        with patch("kiro_crew.config.loader.config_dir", return_value=tmp_path):
+            yield
+
     def _base(self) -> KiroCrewConfig:
         return _cfg_with(
             workspaces={
@@ -388,6 +433,152 @@ class TestWorkspaceCopyFrom:
         assert (tmp_path / "workspace-copy1" / "memory" / "notes.md").read_text() == "hi"
         assert _read_doc(cfg_path)["workspaces"]["copy1"]["dir"] == "workspace-copy1"
         assert "Created workspace: copy1" in capsys.readouterr().out
+
+    def test_copy_from_a_source_with_no_folder_warns_and_still_creates(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = self._base()
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        assert not (tmp_path / "workspace-src").exists()
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy2", dir=None, copy_from="src")
+            )
+        out = capsys.readouterr()
+        assert "Created workspace: copy2" in out.out
+        assert "has no folder at 'workspace-src'" in out.err
+        assert "nothing was copied" in out.err
+        assert (tmp_path / "workspace-copy2").is_dir()
+        assert _read_doc(cfg_path)["workspaces"]["copy2"]["dir"] == "workspace-copy2"
+
+    def test_copy_from_an_unknown_tilde_user_source_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="~nosuchuser12345/ws"),
+            }
+        )
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy4", dir=None, copy_from="src")
+            )
+        assert exc.value.code == 1
+        assert "invalid source directory path" in capsys.readouterr().err
+        assert "copy4" not in _read_doc(cfg_path)["workspaces"]
+
+    def test_a_source_that_cannot_be_copied_warns_and_still_creates(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "workspace-src").mkdir()
+        cfg = self._base()
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            patch("shutil.copytree", side_effect=PermissionError(13, "denied")),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy6", dir=None, copy_from="src")
+            )
+        out = capsys.readouterr()
+        assert "Created workspace: copy6" in out.out
+        assert "could not copy source workspace 'src'" in out.err
+        assert (tmp_path / "workspace-copy6").is_dir()
+        assert not list(tmp_path.glob(".workspace-copy6.staging-*"))
+        assert _read_doc(cfg_path)["workspaces"]["copy6"]["dir"] == "workspace-copy6"
+
+    def test_copy_from_a_tilde_source_outside_the_home_is_refused_like_an_absolute_one(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        user = tmp_path / "user"
+        home.mkdir()
+        (user / "ws-src").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(user))
+        monkeypatch.setenv("USERPROFILE", str(user))
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="~/ws-src"),
+            }
+        )
+        cfg_path = _seed_doc_file(home, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            patch("kiro_crew.config.loader.config_dir", return_value=home),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy5", dir=None, copy_from="src")
+            )
+        assert exc.value.code == 1
+        assert "invalid source directory path" in capsys.readouterr().err
+        assert "copy5" not in _read_doc(cfg_path)["workspaces"]
+
+    def test_copy_from_a_tilde_stored_source_copies_it_without_a_warning(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        (tmp_path / "ws-src").mkdir()
+        (tmp_path / "ws-src" / "notes.md").write_text("hi", encoding="utf-8")
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="~/ws-src"),
+            }
+        )
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy3", dir=None, copy_from="src")
+            )
+        out = capsys.readouterr()
+        assert "nothing was copied" not in out.err
+        assert (tmp_path / "workspace-copy3" / "notes.md").read_text(encoding="utf-8") == "hi"
+
+    def test_update_without_dir_warns_and_logs_no_success(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = self._base()
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        before = cfg_path.read_bytes()
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel") as sel,
+        ):
+            cc._handle_workspace(_ns(workspace_action="update", name="src", dir=None))
+        out = capsys.readouterr()
+        assert "nothing to update" in out.err
+        assert "Updated workspace" not in out.out
+        assert cfg_path.read_bytes() == before
+        sel.return_value.log_api_access.assert_not_called()
 
     def test_copy_from_skips_sensitive_entries(self, tmp_path: Path) -> None:
         src = tmp_path / "workspace-src"
@@ -488,6 +679,8 @@ class TestWorkspaceDirInUseResolved:
     def _run(self, home: Path, cfg: KiroCrewConfig, cfg_path: Path, **ns: Any) -> None:
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            # The copy source is placed by ``workspace_dir_from_entry``.
+            patch("kiro_crew.config.loader.config_dir", return_value=home),
             patch.object(KiroCrewConfig, "load", return_value=cfg),
             patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             patch("kiro_crew.cli_commands.sel"),
@@ -1420,6 +1613,41 @@ class TestPolicyCli:
             cc._policy(_ns(policy_action="source"))
         captured = capsys.readouterr()
         assert "not configured" in captured.out and captured.err == ""
+
+    @pytest.mark.parametrize(
+        ("is_posix", "expected"),
+        [(True, "file, "), (False, "file (not on Windows), ")],
+    )
+    def test_source_not_configured_marks_file_off_posix(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        is_posix: bool,
+        expected: str,
+    ) -> None:
+        """file:// is refused on Windows, so it is not listed as plainly available."""
+        from kiro_crew import platform_compat
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", is_posix)
+        with (
+            patch(
+                "kiro_crew.platform.context.current_context",
+                return_value=SimpleNamespace(governance=None),
+            ),
+            patch(
+                "kiro_crew.platform.policy_distribution.distribution_posture",
+                return_value={"configured": False},
+            ),
+            patch(
+                "kiro_crew.platform.policy_distribution.registered_policy_schemes",
+                return_value=("file", "http", "https"),
+            ),
+        ):
+            cc._policy(_ns(policy_action="source"))
+        line = next(
+            ln for ln in capsys.readouterr().out.splitlines() if "Transports available" in ln
+        )
+        assert line.endswith(expected + "http, https")
 
     def test_profile_prints_bind_and_scopes(self, capsys: pytest.CaptureFixture[str]) -> None:
         prof = SimpleNamespace(

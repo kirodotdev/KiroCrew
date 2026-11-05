@@ -13,7 +13,8 @@ Registered for :data:`~kiro_crew.platform.policy_distribution_source.ENTERPRISE_
 
 **Who is asking.** The one enterprise sign-in (:func:`kiro_crew.enterprise_sign_in.resolve`,
 RFC D4): Crew's own vault (``kirocrew kas login``), refreshed through
-:class:`~kiro_crew.auth.provider.KasAuthProvider` with the ``KIRO_API_KEY`` bypass off.
+:class:`~kiro_crew.auth.provider.KasAuthProvider` with the ``KIRO_API_KEY`` bypass off,
+or, when the vault holds no entry, kiro-cli's own stored token (never renewed by Crew).
 An API
 key carries no profile, and the environment never stands in for the signed-in identity.
 The same resolver answers the start check and the account lock below, so the three

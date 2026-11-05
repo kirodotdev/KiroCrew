@@ -11,16 +11,21 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_persistence import (
         _DEFER_MEMBER_RESTORE,
+        _FLOCK_ACQUIRE_TIMEOUT_S,
         _SKIP_MEMBER_RESTORE,
         ConversationLog,
         DashboardState,
+        HistoryLockTimeout,
         KiroCrewConfig,
+        SlotRegistry,
+        TakeoverNote,
         _attach_variants,
         _build_kiro_model_map,
         _ChatSlot,
@@ -35,6 +40,7 @@ if TYPE_CHECKING:
         _recent_session_slot_name,
         _reconcile_mcp_app_claims,
         _restored_agent_name,
+        _takeover_ordering,
         carry_provenance,
         durable_row_count,
         effective_session_key,
@@ -318,38 +324,18 @@ def _load_rehydrated_window(
         role = m.get("role", "assistant")
         cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
         content = m.get("content", "")
-        # Neither content nor meta is redacted here. Redaction happens where the
-        # data is EMITTED (chat_utils._prepare_messages for the slot detail
-        # endpoint, _ChatSlot.to_dict for the sidebar payload,
-        # _build_history_prefix for the ACP prompt) — every path a client or model
-        # can observe.
+        # ``meta`` is redacted where it is EMITTED (chat_utils._prepare_messages,
+        # _ChatSlot.to_dict, _build_history_prefix): it holds ~79% of the load
+        # cost (``meta.tool_input``) and its few other readers read only control
+        # fields (``done``, ``tool_call_id``).
         #
-        # CONTENT, however, is redacted right here, on load. That split is
-        # deliberate and measured, and it is the crux of this change:
-        #
-        #   field    | read sites | share of the ~7s load cost
-        #   ---------|------------|---------------------------
-        #   content  |    ~204    | ~0.4s  (6%)
-        #   meta     |     31     | ~5.5s  (79%)
-        #
-        # `meta.tool_input` carries the large tool payloads, so meta is where the
-        # boot cost actually lives — and its 31 readers are tractable: outside the
-        # emit sites (which redact and are covered by
-        # test_display_time_redaction.py) every one reads only CONTROL fields
-        # (`done`, `tool_call_id`), never payload text. Deferring meta to display
-        # time is therefore both where the win is and safely enumerable.
-        #
-        # `content` is the opposite on both axes: it is cheap (0.4s) and it has
-        # ~204 readers across the dashboard, so "every reader must remember to
-        # redact" is not an invariant anyone can hold. Three separate egress paths
-        # (the side-chat prompt, the orchestrator stage-result file, and the
-        # title-model prompt) can each leak restored content if a reader forgets.
-        # Paying 0.4s here restores the single chokepoint — any present or FUTURE
-        # reader of `m["content"]` gets clean bytes — instead of relying on an
-        # enumeration of every reader.
-        # `role != "user"`, never `not in ("user", "system")`: user-authored text
-        # stays raw because its author is its only reader, but `system` MUST be
-        # redacted — the write path excludes it, so system bytes reach disk raw.
+        # ``content`` is redacted right here, on load: it is cheap and has ~200
+        # readers, three of them egress paths (side-chat prompt, orchestrator
+        # stage-result file, title-model prompt), so one chokepoint is the only
+        # invariant that holds for future readers too.
+        # ``role != "user"``, never ``not in ("user", "system")``: user text stays
+        # raw for its only reader, but ``system`` reaches disk raw and MUST be
+        # redacted.
         if role != "user":
             content = redact_display_content(content)
         slot.append(
@@ -536,33 +522,16 @@ def _rehydrate_slot_from_history(
         else:
             messages = state.conversation_log.read_messages_chained(history_key)
         if applied.minted_tab_id is not None:
-            # Persist the freshly-minted tab_id AFTER reading the transcript above,
-            # never before. update_metadata_off_loop dispatches an os.replace() of
-            # THIS session file to a worker thread; scheduling it before the read
-            # let that replace race the loop-thread transcript read of the very
-            # same file. On Windows a concurrent replace makes the reader's open()
-            # fail with a sharing violation (PermissionError, an OSError subclass),
-            # and the on-loop read retry cannot pause (a loop sleep would starve the
-            # LoopStallWatchdog heartbeat), so the immediate retries expire while the
-            # replace is still in flight, _read_messages re-raises, and the
-            # except-BaseException arm below rolls the whole tab back — the
-            # intermittent `restored == N-1` open-tabs drop on restart
-            # (test_restore_open_slots_async_yields_between_tabs, Windows shard).
-            # Reading first removes the self-inflicted race: the file is quiescent
-            # for the read, and the backfill lands once nothing is reading it. The
-            # id is freshly minted with no on-disk siblings, so read_messages_chained
-            # returns the identical window whether it is written before or after.
-            # Kept off the loop because update_metadata enters _locked (flock +
-            # os.close), a blocking-on-loop-prohibited op.
+            # Persist the freshly-minted tab_id AFTER the transcript read, never
+            # before: on Windows the backfill's os.replace makes a concurrent open()
+            # of the same file fail (PermissionError), the on-loop read cannot wait
+            # it out, and the tab is rolled back. The new id has no on-disk
+            # siblings, so the read returns the same window either way. Off the
+            # loop because update_metadata takes a flock.
             #
-            # Reading first makes THIS slot's own read quiescent, but firing the
-            # backfill off the loop here still leaves its os.replace in flight
-            # when the restore driver returns. A caller that reads this transcript
-            # on the loop right after restore (a sidebar read, a resume) can then
-            # land inside the replace window — the same Windows sharing violation.
-            # When the driver supplies a drain list we hand the backfill to it so
-            # the replace is committed before the driver returns; otherwise it
-            # fires off the loop. Mirrors _apply_recent_session's pending_backfills.
+            # With a driver drain list the backfill is committed before the driver
+            # returns, so a caller's read right after restore cannot hit the
+            # replace window; otherwise it fires off the loop.
             if pending_backfills is not None:
                 pending_backfills.append((history_key, {"tab_id": applied.minted_tab_id}))
             else:
@@ -588,18 +557,10 @@ def _rehydrate_slot_from_history(
         logger.info("Rehydrated session %s (%s) from history", slot_name, slot.title)
         return slot
     except BaseException:
-        # Undo what THIS call added.
-        #
-        # Owned here rather than in each caller: get_or_create_slot runs before
-        # the fallible work (the transcript read, redaction, slot.append), so a
-        # failure leaves an empty slot registered in state._slots. A caller that
-        # forgets to compensate leaves restore_recent_sessions to hit its
-        # `if slot_name in state._slots: continue` dedup guard and skip the
-        # proper restore -- the user then sees a tab with the right title and
-        # agent but empty or wrong history.
-        #
-        # Unconditional pop: the function returns early when the slot already
-        # exists, so reaching here means this call created it.
+        # Undo what THIS call added: get_or_create_slot ran before the fallible
+        # work, and an empty slot left in state._slots would make
+        # restore_recent_sessions' dedup guard skip the real restore. The pop is
+        # unconditional because an existing slot returns early above.
         state._slots.pop(slot_name, None)
         if not preexisting_restricted:
             # Otherwise a later get_or_create_slot (default memory_mode
@@ -615,6 +576,82 @@ async def rehydrate_slot_from_history_async(
     *,
     kiro_model_map: dict[str, str] | None = None,
     adopt_closed: bool = False,
+) -> _ChatSlot | None:
+    """:func:`_rehydrate_slot_from_history_noted`, retracting its note when it publishes nothing.
+
+    The body notes its takeover before its own refusal checks (a deletion
+    landing during the read, the ``messages is None`` read), so a rehydrate
+    refused after noting has moved the key's teardown watch and stands behind
+    nothing. Retracting here on every exit that published no slot is what lets
+    a teardown holding a basis on the key restore its original instead of
+    yielding the key to a taker that gave up. Same contract and return
+    values as the body, with one more ``None``: the settlement below awaits
+    worker-thread writes after the body returned, and a permanent deletion
+    landing in that window retires the slot the body published. Returning
+    it would hand the caller a slot without a key -- an append to it reaches
+    no flush and is lost -- so the wrapper re-reads the key after its own exit
+    work and answers ``None`` when a slot that WAS under the key as the body
+    returned is not there afterwards. The evidence is that first reading: a
+    body double that builds a slot without registering it (the slot was never
+    under the key) is handed back as built. Nothing is retracted for the
+    retired case: the publication did happen and settled what the key owed;
+    the deletion that followed is the user's.
+    """
+    slot_name = _normalize_slot_key(slot_name)
+    noted: dict[str, TakeoverNote | None] = {"note": None}
+
+    def _noted(note: TakeoverNote) -> None:
+        noted["note"] = note
+
+    published = None
+    registered = False
+    try:
+        published = await _rehydrate_slot_from_history_noted(
+            state,
+            slot_name,
+            kiro_model_map=kiro_model_map,
+            adopt_closed=adopt_closed,
+            on_noted=_noted,
+        )
+        # Read before the exit work's first await: whether the body's slot
+        # holds the key right now is the evidence the recheck below needs.
+        registered = published is not None and state._slots.get(slot_name) is published
+    finally:
+        if noted["note"] is not None and published is not None:
+            # The publication is final here, after the last refusal point: a
+            # dismissal the key's close left owed is settled by it.
+            SlotRegistry.settle_dismissal_on_publish(state, slot_name)
+        if noted["note"] is not None and published is None:
+            owed = SlotRegistry.retract_same_key_takeover(state, slot_name, noted["note"])
+            if owed is None:
+                # An earlier taker's write may have failed and left the
+                # dismissal owed; this exit retries it when nobody stands.
+                owed = SlotRegistry.owed_dismissal(state, slot_name)
+            if owed is not None:
+                # This was the last taker standing on a key a close handed
+                # over with its marker unwritten; record the dismissal it owes.
+                await asyncio.shield(
+                    asyncio.to_thread(_takeover_ordering.record_deferred_dismissal, state, owed)
+                )
+        # A stamp an earlier publication won against and could not clear yet
+        # is retried by every exit on the key.
+        await asyncio.shield(
+            asyncio.to_thread(_takeover_ordering.retry_owed_unstamp, state, slot_name)
+        )
+    # Synchronous, after the last await: a slot that held the key as the body
+    # returned and does not hold it now was retired meanwhile.
+    if registered and state._slots.get(slot_name) is not published:
+        return None
+    return published
+
+
+async def _rehydrate_slot_from_history_noted(
+    state: DashboardState,
+    slot_name: str,
+    *,
+    kiro_model_map: dict[str, str] | None = None,
+    adopt_closed: bool = False,
+    on_noted: Callable[[TakeoverNote], None] | None = None,
 ) -> _ChatSlot | None:
     """:func:`_rehydrate_slot_from_history` with the disk reads off the loop.
 
@@ -656,7 +693,65 @@ async def rehydrate_slot_from_history_async(
     history_key = slot_transcript_key(slot_name)
     conv_log = state.conversation_log
 
+    # Same-key takeover note, BEFORE the read is dispatched. A truncating save
+    # for this key can be mid-flight on a worker thread, and the prefetch below
+    # serializes behind the per-session lock it holds — so an unannounced
+    # resume would block through the save's file replace and then adopt the
+    # truncated window as its live transcript. Marking the claim first makes
+    # the save's commit gate refuse instead, and the read (however the lock is
+    # granted) finds the transcript the truncation never changed. A claim that
+    # already committed stays committed: this resume then knowingly reads the
+    # post-rewrite transcript, the sequential "rewrite, then reopen" order.
+    # Fire-and-forget — no branch on the outcome, the ordering does the work.
+    # The transcript this resume is about to hydrate rides along: a teardown
+    # whose own write routes to a LINKED transcript cannot see this resume in
+    # the map while the read below is pending, and the declared target is what
+    # lets it keep its ordering claim exactly when this resume reads its file.
+    # The instant this rehydrate begins, read BEFORE the note and the wait:
+    # the tombstone check further down compares against it, and so does the
+    # note gate here. Taken after the wait it would postdate a close that
+    # landed its tombstone inside the wait, and the tab the user dismissed
+    # would be rebuilt as if it had still been open.
     started = time.time()
+    # A rehydrate that begins AFTER the user closed this tab is reopening a
+    # closed tab, not taking it over: the close's own tombstone already stands
+    # (``note_slot_closed`` records it at the pop, before any of the close's
+    # awaits), so the close must commit its archive and this read must find the
+    # closed transcript -- the sequential history "close, then reopen". Marking
+    # the close's claim here would make its archive lose to a reopen the user
+    # issued after closing, and the close would then yield the key to a
+    # rehydrate that the tombstone is about to refuse, or report a success it
+    # never committed. So the note is skipped; the ORDERING WAIT below is not:
+    # the read must still land after the close's write.
+    # The tombstone gate and the takeover note, as one sync rule: a rehydrate
+    # that began after the user's close is a reopen and notes nothing; one that
+    # began before it records its takeover (and is refused at admission when the
+    # key's watch cannot retain its declared target).
+    note = _takeover_ordering.admit_rehydrate_takeover_note(
+        state, slot_name, history_key, started=started, adopt_closed=adopt_closed
+    )
+    if note is not None and on_noted is not None:
+        on_noted(note)
+    # The note decides the ordering; this wait makes the read HONOR it. A save
+    # the note just overtook still holds the per-session lock, and its refusal
+    # lands the popped slot's unsaved rows append-safely under that lock before
+    # releasing (the commit gate's fallback) — rows this resume's window must
+    # carry, or the replacement publishes without them and its own later
+    # truncating rewrite drops them from the transcript for good. The lock
+    # cannot order the read by itself (the projection serves cached and
+    # best-effort-locked reads), so the read waits for the claim table instead:
+    # an overtaken claim retires only after its save exits the lock, appends
+    # included. Off the loop, bounded — and fail-CLOSED on expiry: reading
+    # anyway would hydrate exactly the unsettled window the wait exists to
+    # prevent, so an expired wait raises the retryable lock-contention error
+    # the read layer already speaks rather than serving that window.
+    if SlotRegistry.takeover_ordering_pending(state, slot_name):
+        if not await _await_takeover_ordering_settled(state, slot_name):
+            raise HistoryLockTimeout(
+                f"resume of {slot_name!r} would hydrate an unsettled transcript: "
+                "a takeover-losing save is still in flight for its key"
+            )
+
     _meta, _readable, messages, model_map, _member_id, agent, effort_marker = (
         await asyncio.to_thread(
             _prefetch_rehydrate_inputs,
@@ -671,36 +766,22 @@ async def rehydrate_slot_from_history_async(
     if messages is None:
         return None
     meta = _meta
-    # Read the spool HERE, in the awaiting phase, not after the build. The two
-    # race re-checks below are placed synchronously and immediately before the
-    # build precisely so no await can reopen the windows they close, and an await
-    # AFTER the build reopens the deletion one a step later: the slot is published
-    # by then, so a deletion landing during that await leaves the caller holding a
-    # slot for a session that has been deleted, and the delete-won save discards
-    # what it accepts. The remedy is the split this module uses everywhere else --
-    # filesystem work in the prefetch phase, the apply synchronous.
+    # Read the spool HERE, before the build: an await after it would let a
+    # deletion land while the published slot is held. Filesystem work stays in
+    # the prefetch phase, the apply stays synchronous.
     #
-    # The key has to be derived rather than asked of a slot, because there is no
-    # slot yet: ``session_key_for`` is the same rule ``effective_session_key``
-    # applies, and the builder below sets ``linked_session_key`` from this very
-    # metadata field, so the two answer alike. ``history_key`` is NOT the fallback
-    # -- it resolves the transcript FILE and its own docstring says the session key
-    # cannot be recovered that way, so a channel-born slot would be addressed as a
+    # The key is derived with ``session_key_for`` (no slot exists yet), the rule
+    # ``effective_session_key`` applies. Not ``history_key``: that names the
+    # transcript FILE, and a channel-born slot would be addressed as a
     # ``dashboard:`` session that does not exist.
     _claims = await asyncio.to_thread(
         _read_mcp_app_claims,
         session_key_for(slot_name, str(meta.get("linked_session_key") or "")),
     )
-    # Tab-close race. The user can click ✕ while the read above is in flight.
-    # The close pops the slot and records a tombstone synchronously on the loop,
-    # but persists the ``closed`` flag only after its own awaits — so the
-    # metadata just read still says open, and rebuilding from it would re-create
-    # a tab the user dismissed and then fire a nudge turn into it. The tombstone
-    # is the authoritative signal in that window; the surface reconciler
-    # consults it after its own awaits for the same reason.
-    # Skipped for ``adopt_closed`` callers: those are app-owned worker slots
-    # whose lifecycle belongs to the app rather than the user, and they have
-    # already opted into restoring a session carrying the closed flag.
+    # Tab-close race: the close records its tombstone at once but persists
+    # ``closed`` after its own awaits, so this metadata may still say open and a
+    # rebuild would resurrect the tab and nudge into it. ``adopt_closed`` callers
+    # (app-owned worker slots) opted into restoring a closed session.
     if not adopt_closed and slot_closed_since(state, slot_name, started):
         logger.info(
             "Rehydration abandoned: session %s was closed while its transcript loaded",
@@ -760,6 +841,51 @@ async def rehydrate_slot_from_history_async(
         # cache hit would pay a spool scan per lookup.
         _reconcile_mcp_app_claims(_restored, _claims)
     return _restored
+
+
+async def _await_takeover_ordering_settled(state: DashboardState, slot_name: str) -> bool:
+    """Wait, on the event loop, for a takeover-losing save on *slot_name* to settle.
+
+    The read half of the takeover-ordering contract. A claim the takeover note
+    marked overtaken belongs to a save the commit gate refuses — and, for a
+    hand-over write (``_pending_rewrite``, no snapshot), one that lands the
+    popped slot's unsaved rows append-safely under its per-session lock before
+    releasing. The claim is retired only after that lock exits, so its absence
+    is one half of the signal that the rows a takeover's read must observe are
+    on disk. The other half is the key's takeover WATCH: a truncating save
+    still in dispatch has no claim to wait on, but the takeover note that
+    preceded this wait bumped the open watch, so that save's claim is born
+    overtaken at registration and the same refused-save append follows —
+    waiting through the watch's truncating holders covers the dispatch gap a
+    claims-only wait leaves open (a resume could otherwise outrun the save it
+    overtook and hydrate a window the fallback appends behind). The lock
+    itself cannot give this ordering: the transcript projection serves
+    mtime-cached reads and takes its fill lock best-effort, so a read can
+    return pre-append bytes while the refused save is still inside its region.
+
+    Waits ON THE LOOP (:meth:`SlotRegistry.await_takeover_ordering_settled`):
+    the saves it waits for run on the default executor, and a waiter parked
+    there would hold the very thread one of them needs, so a burst of resumes
+    could starve the saves into this wait's own timeout. Bounded by the same
+    deadline the save's own cross-process acquire polls to (an overtaken save
+    can sit queued behind another writer for that long before it appends),
+    plus write headroom. Returns ``True`` once settled and ``False`` on expiry
+    — and expiry must fail CLOSED at the caller: a resume that reads anyway
+    hydrates a window whose missing tail a later truncating rewrite by the
+    hydrated replacement silently deletes, so the callers refuse with a
+    retryable error instead of serving unsettled history.
+    """
+    budget = _FLOCK_ACQUIRE_TIMEOUT_S + 2.0
+    if await SlotRegistry.await_takeover_ordering_settled(state, slot_name, budget):
+        return True
+    logger.warning(
+        "Resume of %s refused: a takeover-losing save is still in flight "
+        "after %.1fs, and reading now would hydrate a window the refused "
+        "save appends behind",
+        slot_name,
+        budget,
+    )
+    return False
 
 
 def _prefetch_recent_session(

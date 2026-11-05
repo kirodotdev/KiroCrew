@@ -24,7 +24,6 @@ from aiohttp import web
 from kiro_crew import platform_compat, port_resolution, shutdown_event  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.apps.backend import (  # noqa: F401
-    start_deferred_app_backends,
     start_enabled_app_backends,
 )
 from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler  # noqa: F401
@@ -37,12 +36,6 @@ from kiro_crew.apps.hooks_integration import (  # noqa: F401
 from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_apps
 from kiro_crew.autonudge import get_instance as _autonudge_get  # noqa: F401
 from kiro_crew.autonudge_authz import authorize_and_add_nudge  # noqa: F401
-from kiro_crew.browser_cli import launch as browser_cli_launch
-from kiro_crew.browser_cli import launcher as browser_cli_launcher  # noqa: F401
-from kiro_crew.browser_cli import managed_launcher as browser_cli_managed_launcher  # noqa: F401
-from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
-from kiro_crew.browser_cli import token as browser_cli_token
-from kiro_crew.browser_cli import view as browser_cli_view  # noqa: F401
 from kiro_crew.channel_transcript_migration import migrate_channel_transcripts  # noqa: F401
 from kiro_crew.config import data_home
 from kiro_crew.config.loader import (  # noqa: F401
@@ -171,12 +164,14 @@ from kiro_crew.dashboard.origin import (  # noqa: F401
     should_canonicalize_host,
 )
 from kiro_crew.dashboard.port_reclaim import (  # noqa: F401
+    BOOTING_PEER,
     FOREIGN_HOLDER,
     HEALTHY_PEER,
     NO_HOLDER,
     RECLAIMED,
     reclaim_stale_gateway_port,
 )
+from kiro_crew.dashboard.refresh_tokens import bears_session_cookie_for_host  # noqa: F401
 from kiro_crew.dashboard.relay_headers import relay_header_strip_middleware  # noqa: F401
 from kiro_crew.dashboard.routes import register_all
 from kiro_crew.dashboard.server_internal_paths import (  # noqa: F401
@@ -229,17 +224,16 @@ from kiro_crew.dashboard.server_runtime.api_entrypoint import (  # noqa: F401
     start_api_server,
 )
 from kiro_crew.dashboard.server_runtime.app_platform import (  # noqa: F401
+    _apply_builtin_adoptions,
+    _kick_builtin_adoption_staging,
     _kick_default_app_installs,
     _reconcile_app_resources,
     _start_app_backends,
-    _start_bound_port_app_backends,
     _warm_builtin_app_names,
     _warm_materialized_agents,
 )
 from kiro_crew.dashboard.server_runtime.browser_lifecycle import (  # noqa: F401
-    _prune_browser_snapshots_loop,
-    _register_browser_install_cleanup,
-    _register_browser_view_cleanup,
+    _register_browser_harness_lifecycle,
 )
 from kiro_crew.dashboard.server_runtime.config_watch import (  # noqa: F401
     _kick_config_watch,
@@ -379,6 +373,8 @@ from kiro_crew.dashboard.server_runtime.security_middleware import (  # noqa: F4
 )
 from kiro_crew.dashboard.server_runtime.service_hooks import (  # noqa: F401
     _register_kiro_service_shutdown,
+    _start_remote_puller,
+    _stop_remote_puller,
     _wire_status_delta_sink,
 )
 from kiro_crew.dashboard.server_runtime.session_restore import (  # noqa: F401
@@ -598,7 +594,10 @@ _BASE_CSP = (
     # (isolatePreviewHost) so host-scoped dashboard cookies are never sent to
     # the framed server. The *.localhost tunnel wildcard stays instances-gated.
     "frame-src 'self' blob: https://*.cloudfront.net{frame_src_extra}; "
-    "object-src 'none'; base-uri 'self'; frame-ancestors {frame_ancestors}"
+    # form-action does not fall back to default-src, so without it an injected
+    # <form> could post to any host. Every dashboard form posts to its own origin.
+    "object-src 'none'; base-uri 'self'; form-action 'self'; "
+    "frame-ancestors {frame_ancestors}"
 )
 
 # Loopback preview origins — always framable AND connectable (see the
@@ -901,6 +900,11 @@ async def start_dashboard(
 
     _precompute_telemetry(state)
 
+    # Former built-in adoption, BEFORE any route is registered: a released wheel
+    # copy must not mount its routes beside the adopted one (app-kit-platform.md
+    # § Former built-in adoption).
+    await _apply_builtin_adoptions(app)
+
     # MCP tool routes (shared with start_api_server)
     _register_mcp_routes(app)
 
@@ -1196,10 +1200,12 @@ async def start_dashboard(
         # Register the opt-in instances startup/cleanup hooks HERE, before
         # ``runner.setup()`` freezes the app's signal lists. See
         # ``_register_instances_hooks`` for why ordering matters.
+        # Remote dispatch (preview): stop the hub's background report puller on
+        # cleanup, before the instance tunnels and the crew-log drain it uses.
+        # Imports nothing here; the puller is started after bind, below.
+        app.on_cleanup.append(_stop_remote_puller)
         _register_instances_hooks(app, state, port)
-        # Install cleanup stays first, before browser relay/session shutdown.
-        _register_browser_install_cleanup(app, state)
-        _register_browser_view_cleanup(app, state)
+        _register_browser_harness_lifecycle(app, state)
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)
         _register_crewmate_prune_gate(app, state)
@@ -1263,20 +1269,21 @@ async def start_dashboard(
     # exported this same socket's name before the spawn pass — the one
     # authoritative write on this path. The headless entrypoint, which binds
     # via _start_site with no reservation step, still exports post-listen.)
-    await _start_bound_port_app_backends()
     _kick_default_app_installs(state)
+    _kick_builtin_adoption_staging(state)
+    # Resolved ONCE, and used for the unix socket's name, the second bind and the
+    # publication below. Under `--port auto` the requested port is 0 and stays 0:
+    # a socket named for it is one no client dials (they name the real port), and
+    # binding the second family on it lands on an unrelated ephemeral port while
+    # the sidecar is filed under the real one -- which would publish coverage for
+    # an address nothing listens on and leave the real one free for anyone to take.
+    _bound_port = _resolved_bound_port(runner, port)
     # Additional kernel-verifiable transport for the internal API (POSIX only;
     # degrades to TCP-only on any failure — see _start_unix_site).
-    _unix_socket_holder["path"] = await _start_unix_site(runner, port)
+    _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)
     # Hold the OTHER loopback family too, so a client dialling a NAME cannot be
     # answered by anyone else -- see _start_secondary_loopback_site. None when
     # there is no second listener, and the client then signs in explicitly.
-    # Resolved ONCE, and used for both the second bind and the publication below.
-    # Under `--port auto` the requested port is 0 and stays 0, so binding the
-    # second family on it lands on an unrelated ephemeral port while the sidecar
-    # is filed under the real one -- which would publish coverage for an address
-    # nothing listens on and leave the real one free for anyone to take.
-    _bound_port = _resolved_bound_port(runner, port)
     _second_loopback = await _start_secondary_loopback_site(runner, _bound_port, _bind_ip)
     # The direct tailnet sites, on the same port; nothing when the gate is off.
     if _direct is not None:
@@ -1380,8 +1387,9 @@ async def start_dashboard(
     # Keep the host awake while a turn is in flight (opt-in via
     # dashboard.prevent_sleep), or while the dashboard is published on the
     # tailnet (opt-out via dashboard.tailscale.keep_awake). Shared with the
-    # headless --slack-only entrypoint.
-    _arm_prevent_sleep_poll(state, port)
+    # headless --slack-only entrypoint. The bound port: the poll asks whether
+    # `tailscale serve` fronts THIS listener, which `--port auto`'s 0 never names.
+    _arm_prevent_sleep_poll(state, _bound_port)
 
     # Arm the stall watchdog only when faulthandler is enabled — i.e. under the
     # real gateway entrypoint (see cli `gateway` dispatch). Tests that spin up
@@ -1444,38 +1452,16 @@ async def start_dashboard(
     state._background_tasks.add(_stamp_task)
     _stamp_task.add_done_callback(state._background_tasks.discard)
 
+    # Remote dispatch (preview): the hub's background report puller. Post-bind and
+    # fire-and-forget; with work_ledger.remote_dispatch off it starts nothing.
+    _puller_task = asyncio.create_task(_start_remote_puller(state))
+    state._background_tasks.add(_puller_task)
+    _puller_task.add_done_callback(state._background_tasks.discard)
+
     # Start terminal orphan reaper (kills PTYs with no WS past the reaper window)
     _reaper = asyncio.create_task(handlers.reap_orphaned_terminals(app))
     _reaper.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
     state._terminal_reaper = _reaper  # prevent GC
-
-    # Point every `playwright-cli` invocation at the service-owned snapshot
-    # directory, and keep that directory bounded.
-    #
-    # The variable goes on the GATEWAY's own environment because the agent runs the
-    # CLI as a shell command in a descendant process: an env var is the only channel
-    # that reaches an invocation the gateway never constructs. An invocation that
-    # misses it writes into whatever directory the agent happened to be in, where
-    # the pruner does not look and files accumulate without bound. The CLI accepts
-    # this only as an env var, since `--config` is rejected on the follow-up
-    # commands that make up most of a session.
-    os.environ.update(browser_cli_snapshots.cli_env_overrides())
-    # The optional attach token rides the same channel for the same reason: the
-    # agent runs the CLI as a shell command, so only an inherited environment
-    # reaches it. Absent by default, in which case this adds nothing.
-    os.environ.update(browser_cli_token.cli_env_overrides())
-    # Name the engine Kiro Crew actually installs. The CLI's own default is the
-    # branded Chrome channel at an OS path the product never provisions, so
-    # without this the first browse fails on a host where every readiness signal
-    # is honestly green. Same channel and same reason as the two above; defers to
-    # an operator who set the variable themselves.
-    #
-    # Off the event loop: computing the override writes the config file, and this
-    # runs on the gateway's startup path.
-    os.environ.update(await asyncio.to_thread(browser_cli_launch.cli_env_overrides))
-    _snap_pruner = asyncio.create_task(_prune_browser_snapshots_loop())
-    _snap_pruner.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
-    state._browser_snapshot_pruner = _snap_pruner  # prevent GC
 
     # Start terminal title poller (pushes live foreground-command / cwd titles)
     _title_poller = asyncio.create_task(handlers.poll_terminal_titles(app))
@@ -1538,7 +1524,7 @@ async def start_dashboard(
     try:
         await asyncio.to_thread(migrate_existing_crewmates, cfg)
     except Exception:
-        logger.warning("mate-owned-config migration failed", exc_info=True)
+        logger.warning("bot-owned-config migration failed", exc_info=True)
 
     await _restore_dashboard_sessions(state, cfg)
 

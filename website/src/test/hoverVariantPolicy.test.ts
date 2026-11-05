@@ -129,6 +129,7 @@ const DECORATIVE: Array<[file: string, snippet: string, why: string]> = [
   ['components/CopyBranchButton.tsx', 'group-hover/branch:opacity-70', 'copy glyph inside the always-visible branch button'],
   ['components/FileChangeChips.tsx', 'group-hover/tip:opacity-100', 'hover tooltip on a clickable chip; tapping opens the diff view, which names the file'],
   ['components/crew/CrewAvatarButton.tsx', 'group-hover/avatar:opacity-100', 'hover overlay, explicitly hidden under (hover: none)'],
+  ['pages/chat/BrowserLiveCardViews.tsx', 'pointer-events-none absolute inset-0 grid place-items-center bg-bg/40 opacity-0', '"Click to take over" hint over the frame; the header\'s Take over button is the control and a tap on the frame claims too'],
   ['pages/ArtifactDetailPageHeader.tsx', '<Pencil size={14}', 'edit glyph inside the always-visible rename button'],
   ['pages/chat/SessionTitleControl.tsx', '<Pen size=', 'edit glyph beside the always-visible title'],
   ['pages/settings/SecurityPanelPosture.tsx', '<ExternalLink size={11}', 'external-link glyph on an always-visible row'],
@@ -220,8 +221,6 @@ describe('hidden-until-hover controls stay reachable on touch', () => {
     // The daily-usage tooltip is the only place a day's figures appear and the bar has no click to lose,
     // so it keeps an ungated :hover that a tap still triggers.
     ['pages/overview/TokenDailyChart.tsx', 'hidden [.group:hover_&]:block'],
-    // An always-visible overlay control keeps the room its hover state reserved, so it covers no content on touch.
-    ['apps/code-review-sage/components/RunCard.tsx', "(onDelete ? ' [@media(hover:none)]:pb-7' : '')"],
     // Every notification dismiss rests at the same weight on touch.
     ['components/notifications/NotificationFeed.tsx', 'group-hover:opacity-40 [@media(hover:none)]:opacity-60'],
     ['pages/chat-sidebar/HistoryPane.tsx', "${remoteInstanceId ? '' : '[@media(hover:none)]:pr-10 '}"],

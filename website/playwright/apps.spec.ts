@@ -32,10 +32,9 @@ function browseCards(page: Page) {
  * An installed app in the Library launchpad grid. Each app renders as a
  * LaunchpadTile whose root carries `data-testid="launchpad-tile-<name>"`
  * (the app NAME, e.g. "projects" -- not the display name). Anchoring on the
- * testid also keeps the lookup unambiguous: the tile's pin badge and
- * overflow trigger are buttons whose accessible names CONTAIN the display
- * name ("Pin Task Runner to the sidebar", "More actions for Task Runner"),
- * and an installed builtin also appears in the nav rail.
+ * testid also keeps the lookup unambiguous: the tile's overflow trigger is a
+ * button whose accessible name CONTAINS the display name ("More actions for
+ * Task Runner"), and an installed builtin also appears in the nav rail.
  */
 function launchpadTile(page: Page, appName: string) {
   return page.getByTestId(`launchpad-tile-${appName}`)

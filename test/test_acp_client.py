@@ -186,11 +186,8 @@ class TestWaitForResponseDeferral:
     def test_session_timeout_progress_ignores_prior_attempt_frames(self, tmp_path):
         """A timed-out ``session/load``'s frames are not this attempt's progress.
 
-        ``_drain_notifications`` clears the buffer only at the end of
-        ``_initialize_session``, so the load -> ``session/new`` fallback still
-        holds the previous attempt's ``server_initialized`` frames. The progress
-        summary must honour the per-attempt floor ``_begin_session_report`` sets,
-        or it asserts the stall is not in those servers on stale evidence.
+        The buffer is cleared only at the end of ``_initialize_session``, so the fallback
+        still holds old frames; the summary must honour ``_begin_session_report``'s floor.
         """
         from kiro_crew.acp.types import JsonRpcMessage
 
@@ -371,12 +368,8 @@ class TestProcessMessageUnknownServerRequest:
 class TestFormatAcpError:
     """Tests for _format_acp_error — Bedrock-aware error rewriting.
 
-    Covers the bug filed at task 86089e43: ACP backend errors used
-    to be surfaced as the raw JSON-RPC dict (`Prompt error: {'code': -32603,
-    ...}`), which dead-ends users when the picker can't expose a valid
-    alternative. The helper rewrites known Bedrock failures into actionable
-    text while preserving the request_id for support correlation, and scrubs
-    embedded credentials / exfiltration URLs as defense-in-depth.
+    Known Bedrock failures become actionable text instead of the raw JSON-RPC dict,
+    keeping the request_id and scrubbing credentials and exfiltration URLs.
     """
 
     def test_non_dict_falls_back(self):
@@ -414,7 +407,7 @@ class TestFormatAcpError:
         assert "unavailable on the backend" in out
         assert "'opus'" in out
         assert "model picker" in out
-        # Must NOT point at ~/.claude/settings.json — KiroCrew never reads it;
+        # Must NOT point at ~/.claude/settings.json — Kiro Crew never reads it;
         # the model lives in config.json / the agent spec.
         assert "settings.json" not in out
         assert "config.json" in out
@@ -545,11 +538,8 @@ class TestFormatAcpError:
     def test_credentials_in_data_are_redacted(self):
         """AWS access keys embedded in upstream errors must not leak to the UI.
 
-        Recognized error patterns (auth/throttle/model-unavailable) already drop
-        the `data` field when constructing the rewritten message, so the secret
-        is gone simply by virtue of the rewrite. The redaction layer is the
-        defense-in-depth fallback for the unknown-shape path; this test pins
-        the absence guarantee on the recognized-pattern path.
+        Recognized patterns drop `data` in the rewrite; this pins that path. Redaction
+        covers the unknown-shape path.
         """
         err = {
             "code": -32603,
@@ -671,13 +661,15 @@ class TestFormatAcpError:
         assert absent not in out
 
     @pytest.mark.parametrize(
-        ("message", "data", "request_id"),
+        ("message", "data", "request_id", "card"),
         [
-            # DispatchFailure / connection-reset shapes are transient too.
+            # DispatchFailure / connection-reset shapes are transient too, and
+            # take the connection card: the request never got a provider answer.
             pytest.param(
                 "x",
                 "DispatchFailure: ConnectionReset (request_id: bbbb2222-cccc-3333-dddd-444455556666)",
                 "bbbb2222-cccc-3333-dddd-444455556666",
+                "could not reach the model backend",
                 id="dispatch_failure_rewrite",
             ),
             # An HTTP/status-anchored 50x token IS a genuine transient signal.
@@ -685,14 +677,15 @@ class TestFormatAcpError:
                 "Internal error",
                 "upstream returned HTTP 503 (request_id: aaaa1111-bbbb-2222-cccc-333344445555)",
                 "aaaa1111-bbbb-2222-cccc-333344445555",
+                "transient error",
                 id="http_500_status_context_still_classifies_transient",
             ),
         ],
     )
-    def test_transient_rewrite_keeps_the_request_id(self, message, data, request_id):
+    def test_transient_rewrite_keeps_the_request_id(self, message, data, request_id, card):
         err = {"code": -32603, "message": message, "data": data}
         out = _format_acp_error(err)
-        assert "transient error" in out.lower()
+        assert card in out.lower()
         assert request_id in out
 
     def test_transient_branch_does_not_leak_credentials(self):
@@ -841,10 +834,8 @@ class TestFormatAcpError:
         """An expired session gets actionable sign-in guidance rather than the
         misleading transient-5xx retry advice.
 
-        The sign-in half is the failing harness's own declared remedy, so this
-        asserts it is rendered verbatim rather than pinning the wording here: a
-        second copy of that wording is what let the message name `kiro-cli login`
-        to an operator on a harness that signs in some other way.
+        The sign-in half is the harness's own declared remedy, rendered verbatim; a copy
+        of the wording here could name `kiro-cli login` on another harness.
         """
         err = {
             "code": -32603,
@@ -866,16 +857,8 @@ class TestFormatAcpError:
     def test_session_expired_names_the_failing_harness(self):
         """A harness that signs in elsewhere gets ITS message, not kiro-cli's.
 
-        The regression this guards: the arm hardcoded `kiro-cli login`, so an
-        expiry on a harness with its own credential file told the operator to run
-        a command that could not fix it. The retry verdict is this arm's own
-        finding about the error, so it must survive on every backend.
-
-        Reads ``signed_out_message`` and not ``sign_in_remedy``, and the
-        difference is the point: this arm HAS evidence -- a 401, or prose saying
-        the session expired -- so it may assert the state. The remedy is the
-        register for the places that render a standing line having measured
-        nothing, and using it here would drop the diagnosis.
+        The retry verdict must survive on every backend. It reads ``signed_out_message``,
+        not ``sign_in_remedy``: this arm has evidence (a 401), so it may state the state.
         """
         err = {"code": -32603, "message": "Internal error", "data": "HTTP 401"}
         for backend in ("claude", "codex"):

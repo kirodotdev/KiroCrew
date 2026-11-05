@@ -254,7 +254,7 @@ _NULLABLE: Final[dict[str, dict[str, Any]]] = {
 #: refusing those would refuse a working dashboard, and accepting them silently would
 #: let a typo through. Saying which it is leaves the choice with the validator.
 #:
-#: ``test_every_opaque_node_is_a_real_object`` pins each path, and
+#: ``test_every_opaque_declaration_is_a_real_path`` pins each path, and
 #: ``test_no_empty_properties_passes_as_a_known_shape`` fails on an object the probe
 #: rendered empty that is declared neither here nor in :data:`_NULLABLE`, so a map added
 #: to a fold cannot land as "has no keys".
@@ -345,7 +345,7 @@ def _row_keys() -> dict[str, dict[str, Any]]:
         "goal.milestones": {
             "row_keys": list(_MILESTONE_TEXT_KEYS),
             "names_the_row": "text",
-            "row_note": "target/current are text; current is the crewmate's own latest reading; latest snapshot, not history",
+            "row_note": "target/current are text; current is the Bot's own latest reading; latest snapshot, not history",
         },
         "waiting.items": {
             "row_keys": [*_WAITING_TEXT_KEYS, "options", "options_omitted"],

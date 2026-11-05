@@ -33,7 +33,7 @@ from kiro_crew.perf_sampler import gate_refusal_message, profiling_enabled
 # recording perfectly well, so the two names must move together.
 ARTIFACT_NAME = "desktop-metrics.json"
 
-# Electron productName values, which determine app.getPath("logs"). Kept in sync
+# Electron productName values, probed under ~/Library/Logs on macOS. Kept in sync
 # with website/electron/package.json (the release default) and
 # packaging/build-desktop.sh, which overrides it with
 # `-c.productName=KiroCrew Nightly` for nightly stamps. Nightly is not a cosmetic
@@ -41,6 +41,12 @@ ARTIFACT_NAME = "desktop-metrics.json"
 # are the ones most likely to be profiling, so omitting it made the command report
 # "not found" against an app that was recording correctly.
 PRODUCT_NAMES = ("KiroCrew", "KiroCrew Nightly")
+
+# npm package names, which name the Windows and Linux app.getPath("logs"): there it
+# is <userData>/logs, and Electron derives userData from the package `name`, not the
+# productName. Kept in sync with the `name` in website/electron/package.json and the
+# nightly `-c.extraMetadata.name=` override in packaging/build-desktop.sh.
+PACKAGE_NAMES = ("kirocrew-desktop", "kirocrew-desktop-nightly")
 
 SUPPORTED_VERSION = 1
 
@@ -58,11 +64,11 @@ def _home_dir() -> Path:
 def desktop_log_dirs(env: dict[str, str] | None = None) -> tuple[Path, ...]:
     """Candidate directories for Electron's ``app.getPath("logs")``.
 
-    Mirrors Electron's own per-platform resolution, for **every** product name:
+    Mirrors Electron's own per-platform resolution, for release and nightly:
 
     * macOS   ``~/Library/Logs/<productName>``
-    * Windows ``%APPDATA%/<productName>/logs``
-    * Linux   ``$XDG_CONFIG_HOME/<productName>/logs`` (``~/.config`` default)
+    * Windows ``%APPDATA%/<package name>/logs``
+    * Linux   ``$XDG_CONFIG_HOME/<package name>/logs`` (``~/.config`` default)
 
     Both release and nightly are probed, because they install side by side with
     separate log directories. Returns an empty tuple when the home directory
@@ -81,10 +87,10 @@ def desktop_log_dirs(env: dict[str, str] | None = None) -> tuple[Path, ...]:
     if platform_compat.IS_WINDOWS:
         appdata = environ.get("APPDATA")
         base = Path(appdata) if appdata else home / "AppData" / "Roaming"
-        return tuple(base / name / "logs" for name in PRODUCT_NAMES)
+        return tuple(base / name / "logs" for name in PACKAGE_NAMES)
     xdg = environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else home / ".config"
-    return tuple(base / name / "logs" for name in PRODUCT_NAMES)
+    return tuple(base / name / "logs" for name in PACKAGE_NAMES)
 
 
 def find_metrics_artifact(

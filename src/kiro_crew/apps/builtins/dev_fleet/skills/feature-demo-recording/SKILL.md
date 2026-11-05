@@ -326,6 +326,7 @@ which is the level at which everyone shares it.
 ## Files
 
 - `references/_pathcheck.py` -- the shared path-safety gate every script reads and writes through (centralized sensitive-path check, fail-closed)
+- `references/_toolpath.py` -- the one tool lookup (PATH, then `~/.local/bin`) the doctor and the pipeline share
 - `references/deps.py` -- detect + user-level install + honest failure
 - `references/narrate.py` -- STEP 1: TTS, measure, emit the timeline (`--silent` supported)
 - `references/compose.py` -- STEP 4: narr.json + events.json -> `index.html`

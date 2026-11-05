@@ -27,26 +27,23 @@ _REFUSES = (SPEC_PERMISSIONS_MIN_VERSION[0], SPEC_PERMISSIONS_MIN_VERSION[1] - 1
 def _pin_spec_permissions_cli(monkeypatch, which):
     """Pin what the shared writer gate believes the installed kiro-cli is.
 
-    Same helper the five generated writers' suites use: the gate reads
-    ``installed_kiro_cli_version`` function-locally from ``kiro_crew.kiro_cli``,
-    so the patch lands there. ``which`` is ``"accepts"``, ``"refuses"`` or
-    ``"unknown"``. A developer box below the floor -- or with no resolvable
-    binary at all -- would otherwise decide these assertions.
+    The gate reads ``installed_kiro_cli_version`` function-locally from
+    ``kiro_crew.kiro_cli``, so the patch lands there; otherwise the developer's own
+    kiro-cli decides. ``which`` is ``"accepts"``, ``"refuses"`` or ``"unknown"``.
     """
     version = {"accepts": _ACCEPTS, "refuses": _REFUSES, "unknown": None}[which]
     monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_agent_capabilities*.py modules calls monkeypatch.undo()
-def _accepting_kiro_cli(monkeypatch):
+def _accepting_kiro_cli(_floor_monkeypatch):
     """Every other test in the ``test_agent_capabilities*.py`` modules predates the gate
     and assumes it passes.
 
     The two tests that exercise the gate itself re-pin a refusing and an unknown
     release over this default.
     """
-    _pin_spec_permissions_cli(monkeypatch, "accepts")
+    _pin_spec_permissions_cli(_floor_monkeypatch, "accepts")
 
 
 @pytest.fixture(name="editor")

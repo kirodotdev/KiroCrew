@@ -34,7 +34,7 @@ function drag(overlay: HTMLElement, from: number, to: number, y = 400) {
 
 describe('Lightbox horizontal swipe paging', () => {
   it('pages forward on a leftward drag past the threshold', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(4))
     expect(shown(container)).toBe('p0.png')
     drag(surfaces(container).overlay, 200, 80)
@@ -42,14 +42,14 @@ describe('Lightbox horizontal swipe paging', () => {
   })
 
   it('pages back on a rightward drag past the threshold', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(4, 2))
     drag(surfaces(container).overlay, 200, 320)
     expect(shown(container)).toBe('p1.png')
   })
 
   it('tracks the finger while the drag is live', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(4))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(200)) })
@@ -63,7 +63,7 @@ describe('Lightbox horizontal swipe paging', () => {
   })
 
   it('springs back without paging when released short of the threshold', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(4))
     const { overlay, inner } = surfaces(container)
     drag(overlay, 200, 160)
@@ -75,7 +75,7 @@ describe('Lightbox horizontal swipe paging', () => {
   })
 
   it('rubber-bands at the first image rather than going dead', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(4, 0))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(200)) })
@@ -89,7 +89,7 @@ describe('Lightbox horizontal swipe paging', () => {
   })
 
   it('rubber-bands at the last image and never pages past the end', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(3, 2))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(200)) })
@@ -100,7 +100,7 @@ describe('Lightbox horizontal swipe paging', () => {
   })
 
   it('drops a horizontal drag when the set has only one image', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(1))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(200)) })
@@ -112,18 +112,18 @@ describe('Lightbox horizontal swipe paging', () => {
   })
 
   it('leaves a vertical drag to the dismiss gesture', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(4))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(200, 100)) })
     act(() => { fireEvent.pointerMove(overlay, touch(200, 260)) })
     expect(inner.getAttribute('style')).toContain('translateY(160.0px)')
     act(() => { fireEvent.pointerUp(overlay, touch(200, 260)) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('yields to pan once the image is zoomed past fit', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(4))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.keyDown(window, { key: '+' }) })
@@ -133,7 +133,7 @@ describe('Lightbox horizontal swipe paging', () => {
   })
 
   it('ignores a mouse drag so desktop click-to-close is unchanged', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(4))
     const { overlay } = surfaces(container)
     const mouse = (x: number) => ({ pointerType: 'mouse', pointerId: 1, clientX: x, clientY: 400 })
@@ -143,11 +143,11 @@ describe('Lightbox horizontal swipe paging', () => {
     expect(shown(container)).toBe('p0.png')
     // No suppression was armed, so the click still closes.
     act(() => { fireEvent.click(overlay) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('does not page from a toolbar control', () => {
-    const { container, getByLabelText } = render(<Lightbox />)
+    const { getByLabelText } = render(<Lightbox />); const container = document.body
     act(() => open(4))
     const zoomIn = getByLabelText('Zoom in (+)')
     act(() => { fireEvent.pointerDown(zoomIn, touch(200)) })
@@ -157,7 +157,7 @@ describe('Lightbox horizontal swipe paging', () => {
   })
 
   it('abandons paging when a second finger lands, so a pinch cannot page', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(4))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(200)) })
@@ -171,7 +171,7 @@ describe('Lightbox horizontal swipe paging', () => {
   })
 
   it('restores the image when a paging touch is cancelled', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(4))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(200)) })
@@ -184,7 +184,7 @@ describe('Lightbox horizontal swipe paging', () => {
   })
 
   it('keeps the keyboard path working alongside the gesture', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(3))
     act(() => { fireEvent.keyDown(window, { key: 'ArrowRight' }) })
     expect(shown(container)).toBe('p1.png')
@@ -195,7 +195,7 @@ describe('Lightbox horizontal swipe paging', () => {
   // ── discoverability: a gesture nothing hints at is a gesture nobody finds ──
 
   it('announces the position in the set, politely', () => {
-    const { container, getByText } = render(<Lightbox />)
+    const { getByText } = render(<Lightbox />); const container = document.body
     act(() => open(4, 1))
     const counter = getByText('2 of 4')
     expect(counter.getAttribute('aria-live')).toBe('polite')

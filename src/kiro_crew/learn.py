@@ -778,7 +778,9 @@ class LessonStore:
                         written_by=_written_by_of(data.get("written_by")),
                     )
                 )
-            except (json.JSONDecodeError, KeyError):
+            except (json.JSONDecodeError, KeyError, RecursionError):
+                # RecursionError: a line nested past the interpreter's limit is
+                # not a JSONDecodeError, and would otherwise fail the whole read.
                 unreadable.append((lineno, line))
                 continue
         if unreadable:

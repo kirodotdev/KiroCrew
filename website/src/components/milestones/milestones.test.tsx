@@ -11,7 +11,7 @@ import { render, screen, fireEvent, act, waitFor, cleanup, within } from '@testi
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { MilestoneFeatureItem, Milestones } from '../../api/client/featureDiscovery'
 
 vi.mock('../../store/chatSlice', async (importOriginal) => {
@@ -60,7 +60,7 @@ import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { store } from '../../store'
 import { setActiveSlot, setPendingInput } from '../../store/chatSlice'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW_MODE, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 import enManual from '../../i18n/locales/en.manual.json'
 import WelcomeView from '../WelcomeView'
 import { NavigationLeaveGuardProvider, usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../NavigationLeaveGuard'
@@ -68,8 +68,9 @@ import MilestonesIndicator, { MilestonesPill } from './MilestonesIndicator'
 import MilestonesMenuItem from './MilestonesMenuItem'
 import MilestonesSheet from './MilestonesSheet'
 import MilestoneNoticeToast, { __resetMilestoneNotices } from './MilestoneNoticeToast'
-import { __resetMilestonesRouteMissing, closeMilestonesPanel, earnedBadges, gettingStarted, openMilestonesPanel, tryToday } from './useMilestones'
-import { INTRO_VIDEO_ID, INTRO_VIDEO_POSTER, INTRO_VIDEO_SRC } from './ExploreIntroVideo'
+import { __resetMilestonesRouteMissing, __resetPendingArrival, ARRIVAL_WAIT_MS, closeMilestonesPanel, earnedBadges, gettingStarted, openMilestonesPanel, tryToday, useExplorePreviewSwitch } from './useMilestones'
+import { __resetExploreVideoPick, pickExploreVideo } from './ExploreIntroVideo'
+import type { FeatureVideo } from '../../api/client/featureDiscovery'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 
@@ -147,15 +148,35 @@ const prefillNow = () => JSON.parse(sessionStorage.getItem('kirocrew_prefill') ?
 /** The Feature Videos verdicts the mocked server holds, keyed by video id. */
 let videoVerdicts: Record<string, { status: 'seen' | 'dismissed'; ts: number }> = {}
 
+/** A clip as the server lists it: on disk, under the release folder. */
+function clip(id: string, title = `Clip ${id}`): FeatureVideo {
+  return {
+    id, feature: id, title, description: 'd', duration_s: 15, doc: 'dashboard.md',
+    src: `/feature-videos/1.0.0/${id}.mp4`, poster: `/feature-videos/1.0.0/${id}.jpg`,
+  }
+}
+
+/** The clips the mocked server's manifest carries. */
+let videoPool: FeatureVideo[] = []
+
 beforeEach(() => {
+  // The surfaces under test here are the ones the Explore preview turns on.
+  setPreviewFlag(PREVIEW_EXPLORE, true)
   sessionStorage.removeItem('kirocrew_prefill')
   store.dispatch(setPendingInput(null))
   store.dispatch(setActiveSlot(null))
   __resetMilestoneNotices()
   __resetMilestonesRouteMissing()
+  __resetPendingArrival()
   vi.spyOn(api, 'milestoneEvent').mockResolvedValue({})
   vi.spyOn(api, 'milestoneMarkDone').mockResolvedValue({})
   videoVerdicts = {}
+  videoPool = [clip('kiro-crew-intro', 'Kiro Crew in 15 seconds')]
+  __resetExploreVideoPick()
+  // Like the server: only the clips with no verdict are listed.
+  vi.spyOn(api, 'featureVideoLibrary').mockImplementation(async () => ({
+    enabled: true, videos: videoPool.filter(v => !videoVerdicts[v.id]),
+  }))
   vi.spyOn(api, 'featureVideoStatus').mockImplementation(async () => ({
     enabled: true, cached: 0, total: 0, downloading: null, release: '', state: { ...videoVerdicts },
   }))
@@ -166,6 +187,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   setPreviewFlag(PREVIEW_CREW_MODE, false)
+  setPreviewFlag(PREVIEW_EXPLORE, false)
   act(() => closeMilestonesPanel())
   cleanup()
   vi.restoreAllMocks()
@@ -340,13 +362,60 @@ describe('new-chat page', () => {
   })
 })
 
-describe('"Kiro Crew in 15 seconds" card', () => {
+describe('Explore preview', () => {
+  it('off: the new-chat page keeps all six suggestions and reads no milestones', async () => {
+    setPreviewFlag(PREVIEW_EXPLORE, false)
+    suggestions()
+    const read = vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<WelcomeView setInput={vi.fn()} />)
+    await screen.findByText('six')
+    await act(async () => {})
+    expect(screen.queryByTestId('try-today-entry')).toBeNull()
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('on: the same page gives its last card to Try today', async () => {
+    suggestions()
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<WelcomeView setInput={vi.fn()} />)
+    expect(await screen.findByTestId('try-today-entry')).toBeTruthy()
+  })
+})
+
+describe('pickExploreVideo', () => {
+  it('draws only from the clips it is given, at random', () => {
+    const videos = [clip('a'), clip('b'), clip('c')]
+    __resetExploreVideoPick()
+    expect(pickExploreVideo(videos, () => 0)?.id).toBe('a')
+    __resetExploreVideoPick()
+    expect(pickExploreVideo(videos, () => 0.5)?.id).toBe('b')
+    __resetExploreVideoPick()
+    expect(pickExploreVideo(videos, () => 0.999)?.id).toBe('c')
+  })
+
+  it('keeps its pick for the page session instead of drawing again', () => {
+    const videos = [clip('a'), clip('b'), clip('c')]
+    __resetExploreVideoPick()
+    expect(pickExploreVideo(videos, () => 0.5)?.id).toBe('b')
+    expect(pickExploreVideo(videos, () => 0)?.id).toBe('b')
+    expect(pickExploreVideo([...videos].reverse(), () => 0.999)?.id).toBe('b')
+  })
+
+  it('draws again once its clip is finished, and gives nothing when all are', () => {
+    __resetExploreVideoPick()
+    expect(pickExploreVideo([clip('a'), clip('b')], () => 0)?.id).toBe('a')
+    expect(pickExploreVideo([clip('b'), clip('c')], () => 0.999)?.id).toBe('c')
+    expect(pickExploreVideo([])).toBeNull()
+  })
+})
+
+describe('Explore video card', () => {
   const openPanel = async () => {
     act(() => openMilestonesPanel())
     return screen.findByTestId('milestones-try-today')
   }
 
-  it('sits at the top of Explore with the bundled clip, and never on the new-chat page', async () => {
+  it('sits at the top of Explore with a listed clip, and never on the new-chat page', async () => {
     suggestions()
     vi.spyOn(api, 'milestones').mockResolvedValue(payload())
     renderWith(<><WelcomeView setInput={vi.fn()} /><MilestonesSheet /></>)
@@ -358,14 +427,79 @@ describe('"Kiro Crew in 15 seconds" card', () => {
     expect(card.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     fireEvent.click(screen.getByTestId('explore-intro-video-watch'))
     const player = screen.getByTestId('explore-intro-video-player')
-    expect(player.getAttribute('src')).toBe('/app-assets/feature-videos/kiro-crew-intro.mp4')
-    expect(player.getAttribute('poster')).toBe('/app-assets/feature-videos/kiro-crew-intro.jpg')
+    // Played verbatim from where the server landed it, never a bundled path.
+    expect(player.getAttribute('src')).toBe('/feature-videos/1.0.0/kiro-crew-intro.mp4')
+    expect(player.getAttribute('poster')).toBe('/feature-videos/1.0.0/kiro-crew-intro.jpg')
   })
 
-  it('ships the clip and poster it points at', () => {
-    const pub = path.resolve(__dirname, '../../../public')
-    expect(existsSync(path.join(pub, INTRO_VIDEO_SRC))).toBe(true)
-    expect(existsSync(path.join(pub, INTRO_VIDEO_POSTER))).toBe(true)
+  it('shows only a clip that is not finished, picked at random', async () => {
+    videoPool = [clip('done-1'), clip('open-1'), clip('done-2'), clip('open-2')]
+    videoVerdicts = { 'done-1': { status: 'seen', ts: 1 }, 'done-2': { status: 'dismissed', ts: 1 } }
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.999)
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesSheet />)
+    await openPanel()
+    const card = await screen.findByTestId('explore-intro-video')
+    expect(card.textContent).toContain('Clip open-2')
+    expect(random).toHaveBeenCalled()
+  })
+
+  it('keeps the same clip when Explore is closed and opened again', async () => {
+    videoPool = [clip('a'), clip('b'), clip('c')]
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    const { unmount } = renderWith(<MilestonesSheet />)
+    await openPanel()
+    expect((await screen.findByTestId('explore-intro-video')).textContent).toContain('Clip b')
+    unmount()
+    act(() => closeMilestonesPanel())
+    random.mockReturnValue(0)
+    renderWith(<MilestonesSheet />)
+    await openPanel()
+    expect((await screen.findByTestId('explore-intro-video')).textContent).toContain('Clip b')
+  })
+
+  it('is hidden when every clip is finished', async () => {
+    videoPool = [clip('a'), clip('b')]
+    videoVerdicts = { a: { status: 'seen', ts: 1 }, b: { status: 'dismissed', ts: 1 } }
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesSheet />)
+    await openPanel()
+    await waitFor(() => expect(api.featureVideoLibrary).toHaveBeenCalled())
+    await act(async () => {})
+    expect(screen.queryByTestId('explore-intro-video')).toBeNull()
+  })
+
+  it('shows a clip that landed after Explore was first opened', async () => {
+    videoPool = []
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    // One client for both opens, cached forever, as in the app (queryClient.ts).
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    const mount = () => render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={['/chat']}><MilestonesSheet /></MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    const { unmount } = mount()
+    await openPanel()
+    await waitFor(() => expect(api.featureVideoLibrary).toHaveBeenCalledTimes(1))
+    await act(async () => {})
+    expect(screen.queryByTestId('explore-intro-video')).toBeNull()
+    unmount()
+    act(() => closeMilestonesPanel())
+    // The background download lands a clip; reopening Explore reads the list again.
+    videoPool = [clip('kiro-crew-intro', 'Kiro Crew in 15 seconds')]
+    mount()
+    await openPanel()
+    expect((await screen.findByTestId('explore-intro-video')).textContent).toContain('Kiro Crew in 15 seconds')
+  })
+
+  it('ships no bundled intro clip or poster', () => {
+    const pub = path.resolve(__dirname, '../../../public/app-assets/feature-videos')
+    expect(existsSync(path.join(pub, 'kiro-crew-intro.mp4'))).toBe(false)
+    expect(existsSync(path.join(pub, 'kiro-crew-intro.jpg'))).toBe(false)
   })
 
   it('is gone for good once closed', async () => {
@@ -375,12 +509,13 @@ describe('"Kiro Crew in 15 seconds" card', () => {
     fireEvent.click(await screen.findByTestId('explore-intro-video-close'))
     await waitFor(() => expect(screen.queryByTestId('explore-intro-video')).toBeNull())
     // Recorded in the Feature Videos state, not in this browser's storage.
-    await waitFor(() => expect(api.featureVideoFeedback).toHaveBeenCalledWith(INTRO_VIDEO_ID, 'dismissed', undefined))
+    await waitFor(() => expect(api.featureVideoFeedback).toHaveBeenCalledWith('kiro-crew-intro', 'dismissed', undefined))
     expect(Object.keys(localStorage).filter(k => k.includes('intro'))).toEqual([])
     unmount()
     act(() => closeMilestonesPanel())
     renderWith(<MilestonesSheet />)
     await openPanel()
+    await act(async () => {})
     expect(screen.queryByTestId('explore-intro-video')).toBeNull()
   })
 
@@ -390,34 +525,29 @@ describe('"Kiro Crew in 15 seconds" card', () => {
     await openPanel()
     fireEvent.click(await screen.findByTestId('explore-intro-video-watch'))
     fireEvent.ended(screen.getByTestId('explore-intro-video-player'))
-    await waitFor(() => expect(api.featureVideoFeedback).toHaveBeenCalledWith(INTRO_VIDEO_ID, 'seen', undefined))
-    // The player stays up for the rest of this view, even after the record refreshes.
+    await waitFor(() => expect(api.featureVideoFeedback).toHaveBeenCalledWith('kiro-crew-intro', 'seen', undefined))
+    // The player stays up for the rest of this view, even after the list refreshes.
     await act(async () => {})
     expect(screen.getByTestId('explore-intro-video-player')).toBeTruthy()
     unmount()
     act(() => closeMilestonesPanel())
     renderWith(<MilestonesSheet />)
     await openPanel()
-    expect(screen.queryByTestId('explore-intro-video')).toBeNull()
-  })
-
-  it('stays away when this machine already has a verdict for the clip', async () => {
-    videoVerdicts[INTRO_VIDEO_ID] = { status: 'dismissed', ts: 1 }
-    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
-    renderWith(<MilestonesSheet />)
-    await openPanel()
     await act(async () => {})
     expect(screen.queryByTestId('explore-intro-video')).toBeNull()
   })
 
-  it('shows the card with an error when the saved verdicts cannot be read', async () => {
-    vi.mocked(api.featureVideoStatus).mockRejectedValue(new Error('offline'))
+  it('shows the card with an error when the clip list cannot be read', async () => {
+    vi.mocked(api.featureVideoLibrary).mockRejectedValue(new Error('offline'))
     vi.spyOn(api, 'milestones').mockResolvedValue(payload())
     renderWith(<MilestonesSheet />)
     await openPanel()
     const notice = await screen.findByTestId('explore-intro-video-status-error')
-    expect(notice.textContent).toContain(enManual.components.startupVideoModal.media_failed)
-    expect(screen.getByTestId('explore-intro-video')).toBeTruthy()
+    expect(notice.textContent).toContain(enManual.milestones.video_failed)
+    // Close only hides it: there is no clip to record a verdict for.
+    fireEvent.click(screen.getByTestId('explore-intro-video-close'))
+    await waitFor(() => expect(screen.queryByTestId('explore-intro-video')).toBeNull())
+    expect(api.featureVideoFeedback).not.toHaveBeenCalled()
   })
 
   it('keeps the card up with an error when closing cannot be saved, and Close tries again', async () => {
@@ -432,7 +562,7 @@ describe('"Kiro Crew in 15 seconds" card', () => {
     fireEvent.click(screen.getByTestId('explore-intro-video-close'))
     await waitFor(() => expect(screen.queryByTestId('explore-intro-video')).toBeNull())
     expect(vi.mocked(api.featureVideoFeedback).mock.calls.map(c => c[1])).toEqual(['dismissed', 'dismissed'])
-    expect(videoVerdicts[INTRO_VIDEO_ID]?.status).toBe('dismissed')
+    expect(videoVerdicts['kiro-crew-intro']?.status).toBe('dismissed')
   })
 
   it('shows a failed "watched" save once, without retrying on every frame, and Close saves it', async () => {
@@ -458,12 +588,46 @@ describe('"Kiro Crew in 15 seconds" card', () => {
     fireEvent.click(await screen.findByTestId('explore-intro-video-watch'))
     fireEvent.error(screen.getByTestId('explore-intro-video-player'))
     // Through the shared ErrorNotice, not a bare status line.
-    expect(screen.getByTestId('explore-intro-video-error').textContent).toContain(enManual.components.startupVideoModal.media_failed)
+    expect(screen.getByTestId('explore-intro-video-error').textContent).toContain(enManual.milestones.video_failed)
+  })
+
+  it('says so when a refresh fails while a cached clip is still shown', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    const mount = () => render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={['/chat']}><MilestonesSheet /></MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    const { unmount } = mount()
+    await openPanel()
+    await screen.findByTestId('explore-intro-video')
+    unmount()
+    act(() => closeMilestonesPanel())
+    vi.mocked(api.featureVideoLibrary).mockRejectedValue(new Error('offline'))
+    mount()
+    await openPanel()
+    const notice = await screen.findByTestId('explore-intro-video-status-error')
+    expect(notice.textContent).toContain(enManual.milestones.video_failed)
+    expect(screen.getByTestId('explore-intro-video').textContent).toContain('Kiro Crew in 15 seconds')
+  })
+
+  it('closes a clip that failed to play without retiring it', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesSheet />)
+    await openPanel()
+    fireEvent.click(await screen.findByTestId('explore-intro-video-watch'))
+    fireEvent.error(screen.getByTestId('explore-intro-video-player'))
+    fireEvent.click(screen.getByTestId('explore-intro-video-close'))
+    await waitFor(() => expect(screen.queryByTestId('explore-intro-video')).toBeNull())
+    expect(api.featureVideoFeedback).not.toHaveBeenCalled()
   })
 })
 
 describe('Explore panel', () => {
-  it('lists Try today rows with Try it and Mark as done, and Your progress below', async () => {
+  it('lists Try today rows with Try it only, and Your progress below', async () => {
     vi.spyOn(api, 'milestones').mockResolvedValue(payload())
     renderWith(<MilestonesSheet />)
     const row = await openRow('parallel-chats')
@@ -472,12 +636,17 @@ describe('Explore panel', () => {
     expect(row.textContent).toContain('Run two chats at once')
     expect(row.textContent).not.toContain('First parallel chats')
     expect(row.textContent).toContain('Try it')
-    expect(row.textContent).toContain('Mark as done')
+    // Getting there completes a Try today row, so it has no "Mark as done",
+    // and the section says so.
+    expect(row.textContent).not.toContain('Mark as done')
+    expect(screen.getByTestId('milestones-try-today-hint').textContent).toBe(enManual.milestones.try_today_hint)
     // Skipped and done rows are not in Try today.
     expect(screen.queryByTestId('milestone-row-mate')).toBeNull()
     expect(screen.queryByTestId('milestone-row-pr-watch')).toBeNull()
-    fireEvent.click(within(row).getByText('Mark as done'))
-    expect(api.milestoneMarkDone).toHaveBeenCalledWith('parallel-chats', undefined)
+    // A Getting started row keeps its real counter, and with it "Mark as done".
+    const started = within(screen.getByTestId('milestones-getting-started')).getByTestId('milestone-row-widgets')
+    fireEvent.click(within(started).getByText('Mark as done'))
+    expect(api.milestoneMarkDone).toHaveBeenCalledWith('widgets', undefined)
     expect(screen.getByTestId('milestones-streak-line').textContent).toBe('4 days · best 9')
     // A bar per achievement, toward its next tier.
     expect(screen.getByTestId('milestone-next-chats-opened').textContent).toBe('37 / 100')
@@ -545,6 +714,24 @@ describe('Explore panel', () => {
     expect(screen.getByTestId('milestone-next-chats-opened').textContent).toBe('1,200 / 1,000')
   })
 
+  it('heads the panel with the same tried count the top-bar ring shows, and keeps its close there', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesSheet />)
+    act(() => openMilestonesPanel())
+    const header = await screen.findByTestId('milestones-header')
+    expect(within(header).getByTestId('milestones-header-progress').textContent).toBe('1 of 7 features tried')
+    expect(within(header).getByTestId('milestones-ring').getAttribute('data-ratio')).toBe((1 / 7).toFixed(3))
+    expect(within(header).getByRole('button', { name: 'Close Explore' })).toBeTruthy()
+  })
+
+  it('strikes through a finished Getting started row', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, [feature('widgets', 'done', 'send'), feature('scheduled-task', 'open')]))
+    renderWith(<MilestonesSheet />)
+    act(() => openMilestonesPanel())
+    const row = await screen.findByTestId('milestone-row-widgets')
+    expect(within(row).getByTestId('milestone-row-text').firstElementChild?.className).toContain('line-through')
+  })
+
   it('has no badge wall before the first tier', async () => {
     vi.spyOn(api, 'milestones').mockResolvedValue(payload({
       groups: [{ id: 'features', items: [feature('slack', 'open')] }, { id: 'sessions', items: [{ id: 'chats-opened', value: 2, tiers: [10, 100, 1000], tiers_reached_at: {} }] }],
@@ -608,7 +795,7 @@ describe('Explore panel', () => {
 })
 
 describe('starter tasks (Try it)', () => {
-  const tryIt = (row: HTMLElement) => fireEvent.click(row.querySelector('button:last-of-type') as HTMLElement)
+  const tryIt = (row: HTMLElement) => fireEvent.click(within(row).getByText('Try it'))
 
   it('sends directly for widgets', async () => {
     vi.spyOn(api, 'milestones').mockResolvedValue(payload())
@@ -688,6 +875,121 @@ describe('starter tasks (Try it)', () => {
     expect(prefillNow()).toMatchObject({ prompt: 'Every morning, give me a brief' })
     expect(asked).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('where').textContent).toBe('/chat')
+  })
+})
+
+describe('Try it in Try today completes on arrival', () => {
+  const tryIt = (row: HTMLElement) => fireEvent.click(within(row).getByText('Try it'))
+  const actions = () => vi.mocked(api.milestoneEvent).mock.calls.map(c => [c[0], c[1]])
+  const arrivals = () => vi.mocked(api.milestoneEvent).mock.calls.filter(c => c[1] === 'starter_arrived')
+
+  it('completes a route row once its page shows, after the click is recorded', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    const row = await openRow('mate')
+    expect(screen.getByTestId('milestones-try-today').contains(row)).toBe(true)
+    tryIt(row)
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/members?member=mate'))
+    await waitFor(() => expect(arrivals()).toEqual([['mate', 'starter_arrived', undefined, 'panel']]))
+    // The server counts an arrival only after the click it recorded.
+    expect(actions().filter(([id]) => id === 'mate')).toEqual([['mate', 'starter_clicked'], ['mate', 'starter_arrived']])
+  })
+
+  it('completes a prompt row once its new chat shows', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    tryIt(await openRow('slack'))
+    await waitFor(() => expect(arrivals()).toEqual([['slack', 'starter_arrived', 'dashboard:new-slot', 'panel']]))
+    expect(screen.getByTestId('where').textContent).toBe('/chat')
+    expect(store.getState().chat.activeSlot).toBe('new-slot')
+  })
+
+  it('sends nothing when a click never arrives: the page keeps its draft', async () => {
+    function KeepsDraft() { useRegisterNavigationLeaveGuard(() => false); usePublishNavigationStake(true); return null }
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<NavigationLeaveGuardProvider><KeepsDraft /><MilestonesSheet /></NavigationLeaveGuardProvider>)
+    tryIt(await openRow('mate'))
+    await act(async () => {})
+    expect(screen.getByTestId('where').textContent).toBe('/chat')
+    expect(arrivals()).toHaveLength(0)
+  })
+
+  it('sends nothing when the user picked another chat while the new one was being created', async () => {
+    const chat = await import('../../store/chatSlice')
+    vi.mocked(chat.createSlot).mockImplementationOnce((() => (dispatch: (a: unknown) => void) => {
+      dispatch(chat.setActiveSlot('picked-meanwhile'))
+      return { unwrap: () => Promise.resolve({ key: 'new-slot' }) }
+    }) as never)
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    tryIt(await openRow('slack'))
+    await waitFor(() => expect(chat.createSlot).toHaveBeenCalled())
+    await act(async () => {})
+    act(() => { store.dispatch(setActiveSlot('new-slot')) })
+    await act(async () => {})
+    expect(arrivals()).toHaveLength(0)
+  })
+
+  it('posts one arrival per Try it, however often the page shows again', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    tryIt(await openRow('mate'))
+    await waitFor(() => expect(arrivals()).toHaveLength(1))
+    act(() => { store.dispatch(setActiveSlot('other')) })
+    act(() => { store.dispatch(setActiveSlot(null)) })
+    await act(async () => {})
+    expect(arrivals()).toHaveLength(1)
+  })
+
+  it('forgets an arrival whose page shows only after the wait', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    const row = await openRow('mate')
+    const now = 1_793_170_000_000
+    // Armed at `now`; every later reading is past the wait.
+    const spy = vi.spyOn(Date, 'now').mockReturnValueOnce(now).mockReturnValue(now + ARRIVAL_WAIT_MS + 1)
+    tryIt(row)
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/members?member=mate'))
+    await act(async () => {})
+    spy.mockRestore()
+    act(() => { store.dispatch(setActiveSlot('other')) })
+    await act(async () => {})
+    expect(arrivals()).toHaveLength(0)
+  })
+
+  it('says so when an arrival is not saved, and saves it on retry without a second chat', async () => {
+    const chat = await import('../../store/chatSlice')
+    vi.mocked(chat.createSlot).mockClear()
+    vi.mocked(api.milestoneEvent).mockImplementation(async (_id, action) => {
+      if (action === 'starter_arrived') throw new Error('could not save milestones')
+      return {}
+    })
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    tryIt(await openRow('slack'))
+    await waitFor(() => expect(arrivals()).toHaveLength(1))
+    act(() => openMilestonesPanel())
+    const retry = await screen.findByTestId('milestones-arrival-retry')
+    expect(screen.getByText(enManual.milestones.arrival_failed)).toBeTruthy()
+    vi.mocked(api.milestoneEvent).mockResolvedValue({})
+    fireEvent.click(retry)
+    await waitFor(() => expect(arrivals()).toHaveLength(2))
+    expect(arrivals()[1]).toEqual(['slack', 'starter_arrived', 'dashboard:new-slot', 'panel'])
+    await waitFor(() => expect(screen.queryByTestId('milestones-arrival-retry')).toBeNull())
+    expect(chat.createSlot).toHaveBeenCalledTimes(1)
+  })
+
+  it('never completes a Getting started row on arrival', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesSheet />)
+    await openRow('scheduled-task')
+    const started = within(screen.getByTestId('milestones-getting-started')).getByTestId('milestone-row-scheduled-task')
+    tryIt(started)
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/chat'))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('new-slot'))
+    await act(async () => {})
+    expect(actions()).toContainEqual(['scheduled-task', 'starter_clicked'])
+    expect(arrivals()).toHaveLength(0)
   })
 })
 
@@ -775,6 +1077,39 @@ describe('Crew Mode preview', () => {
     renderWith(<MilestonesIndicator />)
     await screen.findByTestId('milestones-indicator')
     expect(screen.getByTestId('milestones-ring').getAttribute('data-ratio')).toBe((1 / 6).toFixed(3))
+  })
+})
+
+describe('Explore preview switch', () => {
+  function Shell() {
+    const [explore, setExplore] = useState(true)
+    useExplorePreviewSwitch(explore)
+    return (
+      <>
+        <button type="button" onClick={() => setExplore(v => !v)}>flip</button>
+        {explore && <MilestonesPill />}
+        {explore && <MilestonesSheet />}
+      </>
+    )
+  }
+
+  it('reads milestones again when the preview turns back on, and closes the sheet when it turns off', async () => {
+    const read = vi.spyOn(api, 'milestones').mockResolvedValue(payload({ features: { done: 0, total: 7 } }, ALL_OPEN()))
+    renderWith(<Shell />)
+    await screen.findByTestId('milestones-indicator')
+    expect(read).toHaveBeenCalledTimes(1)
+    act(() => { openMilestonesPanel() })
+    fireEvent.click(screen.getByText('flip'))
+    expect(screen.queryByTestId('milestones-indicator')).toBeNull()
+    // Opening the sheet read again; settle that before counting.
+    await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(1))
+    const before = read.mock.calls.length
+    fireEvent.click(screen.getByText('flip'))
+    await screen.findByTestId('milestones-indicator')
+    // The cached answer is fresh and the read does not re-fetch on mount, so
+    // only the switch can bring in what changed while Explore was hidden.
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(before + 1))
+    expect(screen.queryByTestId('milestones-sheet')).toBeNull()
   })
 })
 

@@ -10,8 +10,8 @@ module never imports that facade.
 
 from __future__ import annotations
 
+from kiro_crew.apps import builtin_agent_tools as _builtin_agent_tools
 from kiro_crew.validation_parts.app_schemas import (
-    DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
     ISSUE_RADAR_CREW_READ_SCHEMA,
     ISSUE_RADAR_CREW_RECORD_SCHEMA,
     ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
@@ -43,7 +43,6 @@ from kiro_crew.validation_parts.artifact_schemas import (
     ARTIFACT_VERSIONS_SCHEMA,
     CHAT_FOLDER_CREATE_SCHEMA,
     CHAT_FOLDER_DELETE_SCHEMA,
-    CHAT_FOLDER_FILE_SELF_SCHEMA,
     CHAT_FOLDER_MOVE_SCHEMA,
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     CHAT_FOLDER_TREE_SCHEMA,
@@ -219,7 +218,6 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
     "issue_radar_record_investigation": ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
     "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
-    "design_tweak_update_thread": DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
     "pod_up": POD_UP_SCHEMA,
     "pod_restart": POD_RESTART_SCHEMA,
     "pod_down": POD_DOWN_SCHEMA,
@@ -231,6 +229,8 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     # crash that takes the whole kirocrew-core server down for the session.
     "issue_radar_crew_read": ISSUE_RADAR_CREW_READ_SCHEMA,
     "issue_radar_crew_record": ISSUE_RADAR_CREW_RECORD_SCHEMA,
+    # The tools a built-in app declares as data, each checked by its declared fields.
+    **_builtin_agent_tools.tool_schemas(),
 }
 
 
@@ -272,7 +272,6 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_folder_update": CHAT_FOLDER_UPDATE_SCHEMA,
     "chat_folder_move_session": CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     "chat_folder_delete": CHAT_FOLDER_DELETE_SCHEMA,
-    "chat_folder_file_self": CHAT_FOLDER_FILE_SELF_SCHEMA,
     "chat_session_pin_move": CHAT_SESSION_PIN_MOVE_SCHEMA,
     "chat_tag_list": CHAT_TAG_LIST_SCHEMA,
     "chat_tag_create": CHAT_TAG_CREATE_SCHEMA,

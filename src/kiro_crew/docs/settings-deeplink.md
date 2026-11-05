@@ -98,8 +98,9 @@ second form meeting a translated dashboard, not a stale registry.
   They are skipped by generation, so a control missing from the file is not
   necessarily missing from the UI.
 - Everything outside Settings — Customize and the App Store each have their
-  own routes and are not enumerated here. The developer views (logs, system,
-  MCP Management and the rest) are pages of Settings → Developer
+  own routes and are not enumerated here (MCP Management is one of them: it
+  sits under Customize → Connections → MCP Servers). The developer views (logs,
+  system and the rest) are pages of Settings → Developer
   (`/settings/developer/<page>`), but only their controls that the generator
   indexes appear in the registry.
 - Config keys with no control at all. Those are set in `config.json` or with

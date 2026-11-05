@@ -58,7 +58,9 @@ if TYPE_CHECKING:
         is_read_only_bash,
         is_sensitive_bash_command,
         is_unverifiable_path_refusal,
+        logger,
         mcp_identity_ref,
+        mcp_title_to_ref,
         policy_alias_split,
         policy_aliases,
         security,
@@ -101,6 +103,7 @@ class GateFacts:
         app: str,
         classifier_only: bool,
         trust_reads: bool = False,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> None:
         self.manager = manager
         self.call = call
@@ -108,10 +111,19 @@ class GateFacts:
         self.agent = agent
         self.app = app
         self.classifier_only = classifier_only
+        #: Refusal keys a person overrode on the dashboard approval card, for this
+        #: call or this session. Read by the deny-rules tier alone
+        #: (:func:`_tier_deny_rules`), which drops any key a governance policy
+        #: pins before it reaches ``is_denied``; no other tier consults it.
+        self.deny_waivers = deny_waivers
         #: The surface's Reads approval mode is on for this call. Read by the
         #: read-only tier alone (``_tier_read_only``), for the first-party MCP
         #: proof; no deny tier, governance or grant tier consults it.
         self.trust_reads = trust_reads
+        #: Why this call will ask when no row decides it, for the person who
+        #: answers the prompt. Set only by :func:`grant_spec_builtin`; the gate's
+        #: fall-through ``allow`` carries it as its reason. Never read to decide.
+        self.ask_note = ""
         self._memo: dict[str, Any] = {}
 
     def _once(self, key: str, compute: Callable[[], Any]) -> Any:
@@ -183,9 +195,9 @@ class GateFacts:
         ``is_shell``/``command``, so this can refuse a call but never grant one. A
         call that names its MCP server is left out: its ``command``-named arguments
         are not shell text, and it is governed by ``@server/tool`` rules. A harness
-        that names no server for its MCP calls (claude-agent-acp, opencode, dsh, pi)
-        cannot be told apart here, so such a call's ``command`` argument is checked
-        too.
+        that names no server for its MCP calls (opencode, dsh, pi, and claude-agent-acp
+        for a server Crew did not place) cannot be told apart here, so such a call's
+        ``command`` argument is checked too.
         """
 
         def compute() -> list[str]:
@@ -733,16 +745,47 @@ def _tier_deny_rules(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     the trusted identities. It reuses the ONE snapshot taken by the targets tier --
     a second read here would let a ceiling refresh split this call's verdict across
     two policy states.
+
+    A person's in-session overrides (:attr:`GateFacts.deny_waivers`) reach
+    ``is_denied`` only after every key a governance policy pins is dropped: the
+    active ceiling's pins and every loaded profile's
+    (``security.pinned_builtin_command_ids_for_snapshot``), so a pin that lands
+    mid-session, in the ceiling or in the bound profile, takes effect on the next
+    call even over a waiver granted before it. The union over-locks a profile
+    the session is not bound to, which only ever keeps a refusal. Every pattern
+    the companion ``SecurityOverlay`` adds (``authority.effective_patterns``) is
+    dropped the same way, and ``PolicyAuthority`` drops them once more itself.
     """
     authority = facts.authority
     denied_regexes = facts.denied_regexes
     denied_notes = facts.denied_notes
+    waived: frozenset[str] = frozenset()
+    if facts.deny_waivers:
+        from kiro_crew.security.deny_waiver import waivable_keys
+
+        try:
+            waived = waivable_keys(
+                facts.deny_waivers,
+                security.pinned_builtin_command_ids_for_snapshot(),
+                # The companion overlay's patterns are as hard as a pin.
+                authority.effective_patterns(),
+            )
+        except Exception:
+            # Pins or an overlay that cannot be read waive nothing: the override
+            # is the one input here that only ever loosens, so it is what a
+            # failure drops.
+            logger.warning(
+                "governance pins or security overlay unreadable; deny overrides ignored",
+                exc_info=True,
+            )
+            waived = frozenset()
     for target in facts.deny_targets:
         reason = authority.is_denied(
             target,
             facts.config.auto_deny_tools,
             denied_regexes=denied_regexes,
             reason_notes=denied_notes,
+            waived=waived,
         )
         if reason:
             return ToolHookResult.deny(reason)
@@ -776,6 +819,7 @@ def _tier_deny_rules(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
                 extra_patterns=sent_title_globs,
                 reason_notes=denied_notes,
                 segments=True,
+                waived=waived,
             )
             if reason:
                 return ToolHookResult.deny(reason)
@@ -784,8 +828,7 @@ def _tier_deny_rules(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
 
 def _tier_mcp_auto_deny(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     """The operator's own ``auto_deny_tools`` GLOBS, and only those, against the
-    ``_meta.kiro`` server/tool identity (verified or not) in the ``@server/tool``
-    spelling the grant tier uses.
+    call's MCP identity in the ``@server/tool`` spelling the grant tier uses.
 
     Plus ``Running: @server/tool`` and the bare ``@server``, so a server-level rule
     binds to every tool. A user who writes both lists in one spelling --
@@ -796,13 +839,30 @@ def _tier_mcp_auto_deny(facts: GateFacts, tier: GateTier) -> ToolHookResult | No
     shell text, and running them over a synthesized reference is the accidental
     widening :attr:`GateFacts.governance_mcp_ref` forbids. Not gated on
     provenance: a deny can only ever deny.
+
+    The identity is the ``_meta.kiro`` server/tool pair when the call carries one
+    (verified or not). A call with no server whose title is ``mcp__<server>__<tool>``
+    -- the only place a harness that sends no ``_meta.kiro`` (claude) names its MCP
+    tool -- is read through ``mcp_title_to_ref``, the last-``__`` split the
+    governance ceilings use. That reading feeds this deny and nothing else: the
+    title is agent-influenced, so no grant tier ever sees it.
     """
     call = facts.call
-    if call.mcp_server and facts.config.auto_deny_tools:
+    if not facts.config.auto_deny_tools:
+        return None
+    if call.mcp_server:
         tool_ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
-        for ref in (tool_ref, f"Running: {tool_ref}", mcp_identity_ref(call.mcp_server, "")):
-            if ref and any(_tool_matches(pattern, ref) for pattern in facts.config.auto_deny_tools):
-                return ToolHookResult.deny(f"Blocked by security policy: {ref}")
+        server_ref = mcp_identity_ref(call.mcp_server, "")
+    elif facts.normalized.startswith("mcp__"):
+        tool_ref = mcp_title_to_ref(facts.normalized)
+        server_ref = tool_ref.partition("/")[0]
+        if server_ref == "@":
+            return None
+    else:
+        return None
+    for ref in (tool_ref, f"Running: {tool_ref}", server_ref):
+        if ref and any(_tool_matches(pattern, ref) for pattern in facts.config.auto_deny_tools):
+            return ToolHookResult.deny(f"Blocked by security policy: {ref}")
     return None
 
 
@@ -1164,10 +1224,10 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     """Whether a spec's ``toolsSettings.shell.allowedCommands`` grants this call.
 
     Only a shell call (kiro-cli's ``execute_bash`` among its names) with its
-    command recovered by the host, holding none of
-    :data:`kiro_crew.platform.allowed_commands.UNGRANTABLE_COMMAND_CHARS`, that one of ``spec_granted_commands``
+    command recovered by the host and plain
+    (:func:`kiro_crew.platform.allowed_commands.plain_command`), that one of ``spec_granted_commands``
     matches whole, as kiro-cli anchors each entry at both ends. Each entry is read
-    by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the subset
+    by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the syntax
     both engines read alike and matches it in linear time; any other grants nothing.
     """
     if not call.spec_granted_commands or "execute_bash" not in names or not call.is_shell:
@@ -1175,30 +1235,42 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     return _command_matches_any(call.command, call.spec_granted_commands)
 
 
+def _spec_command_composed(call: ToolCall, names: tuple[str, ...], patterns: Sequence[str]) -> bool:
+    """Whether a shell call is kept from *patterns* only by its shell composition
+    (:func:`kiro_crew.platform.allowed_commands.composition_blocks_match`). It only
+    explains a prompt or a refusal; it never grants."""
+    if not patterns or "execute_bash" not in names or not call.is_shell:
+        return False
+    from kiro_crew.platform import allowed_commands
+
+    return allowed_commands.composition_blocks_match(tuple(patterns), call.command)
+
+
 def _command_matches_any(command: str | None, patterns: Sequence[str]) -> bool:
-    """Whether *command* is plain (no character of
-    :data:`kiro_crew.platform.allowed_commands.UNGRANTABLE_COMMAND_CHARS`) and one
-    of *patterns*, each read by :mod:`kiro_crew.platform.allowed_commands`, matches
-    it whole. ``None`` (no recovered command) matches nothing."""
+    """Whether *command* is plain
+    (:func:`kiro_crew.platform.allowed_commands.plain_command`: no chaining, pipe,
+    redirect or substitution character anywhere, no ``( ) { }`` outside a quoted
+    argument) and one of *patterns*, each read by
+    :mod:`kiro_crew.platform.allowed_commands`, matches it whole. ``None`` (no
+    recovered command) matches nothing."""
     from kiro_crew.platform import allowed_commands
 
     if not isinstance(command, str) or not allowed_commands.plain_command(command):
         return False
-    for pattern in patterns:
-        segments = allowed_commands.parse(pattern)
-        if segments is not None and allowed_commands.matches(segments, command):
-            return True
-    return False
+    return allowed_commands.matches_any(tuple(patterns), command)
 
 
 def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
-    """A KAS spec's ``toolsSettings.shell.denyByDefault``: refuse an unlisted command.
+    """A spec's ``toolsSettings.shell.denyByDefault`` on a harness that does not
+    read it (KAS, claude): refuse an unlisted command.
 
     On kiro-cli such a spec refuses every shell command its ``allowedCommands``
-    do not match. KAS has no rule for it, so the session handle stamps the spec's
-    usable patterns on its own agent's permission requests
+    do not match. KAS and claude have no rule for it, so the KAS session handle and
+    the claude direct client stamp the spec's usable patterns on their own agent's
+    permission requests
     (``AcpEvent.spec_shell_allowlist``; ``None`` when the spec does not set it, a
-    sub-session's or native sub-agent's request carries ``None`` too), and this row
+    sub-session's or native KAS sub-agent's request carries ``None`` too, a native
+    claude sub-agent's the parent's), and this row
     refuses a shell call (kiro-cli's ``execute_bash`` among its names, no MCP
     server behind it) unless its recovered command passes the same match the
     ``spec-builtin-grant`` row grants by (:func:`_spec_command_granted`: plain,
@@ -1216,6 +1288,12 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
         return None
     if _command_matches_any(call.command, allowlist):
         return None
+    if _spec_command_composed(call, ("execute_bash",), allowlist):
+        return ToolHookResult.deny_policy(
+            "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
+            "and this command matches allowedCommands, but commands with |, >, <, &&, ;, $() "
+            "or backticks never match. Run the script alone, or move the pipeline into the script."
+        )
     return ToolHookResult.deny_policy(
         "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
         "and the command matches none of its allowedCommands"
@@ -1298,15 +1376,16 @@ def _write_target_uncovered(target: str, patterns: Sequence[str], cwd: str) -> s
 
 
 def _tier_spec_write_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
-    """A KAS spec's ``toolsSettings.fs_write.fallbackAction: "deny"``: refuse an
-    uncovered write, a relative target judged under ``spec_write_cwd``.
+    """A spec's ``toolsSettings.fs_write.fallbackAction: "deny"`` on a harness that
+    does not read it (KAS, claude): refuse an uncovered write, a relative target
+    judged under ``spec_write_cwd``.
 
     On kiro-cli such a spec refuses every file write its ``allowedPaths`` do not
-    cover, instead of asking. KAS has no rule for it, so the session handle stamps
-    the spec's usable entries, anchored at the session's directory, on its own
-    agent's permission requests (``AcpEvent.spec_write_allowlist``; ``None`` when
-    the spec does not set it, and on a sub-session's or native sub-agent's
-    request), and this row refuses a file write (:func:`_is_spec_write_call`, no
+    cover, instead of asking. KAS and claude have no rule for it, so the KAS session
+    handle and the claude direct client stamp the spec's usable entries, anchored
+    at the session's directory, on their own agent's permission requests (``AcpEvent.spec_write_allowlist``; ``None`` when
+    the spec does not set it, and on a sub-session's or native KAS sub-agent's
+    request; a native claude sub-agent's carries the parent's), and this row refuses a file write (:func:`_is_spec_write_call`, no
     MCP server behind it) unless every target it names is covered
     (:func:`_write_target_uncovered`, matched by
     :mod:`kiro_crew.platform.allowed_paths`). A write whose targets cannot all be
@@ -1396,6 +1475,10 @@ def grant_spec_builtin(
         return None
     names = _spec_builtin_names(call)
     if not any(name in granted for name in names) and not _spec_command_granted(call, names):
+        if _spec_command_composed(call, names, call.spec_granted_commands):
+            from kiro_crew.platform.allowed_commands import COMPOSITION_NOTICE
+
+            facts.ask_note = COMPOSITION_NOTICE
         return None
     from kiro_crew.platform.governance import may_grant_builtin_at_gate
 

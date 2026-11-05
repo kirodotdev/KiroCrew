@@ -314,12 +314,32 @@ transient. The retry budget bounds that misclassification — three retries, ~15
 — and the formatted message closes with the terminal "refresh your AWS
 credentials" guidance rather than asserting the propagation diagnosis as fact.
 
+The engine's **model-list refusal** is checked before the connection and 5xx
+families. KAS answers `session/prompt` with `-32000` "Kiro could not load the
+available models. Please try again." and `data.errorType`
+`ModelRegistryUnavailableError` when every fetch of the model list failed for a
+reason other than a rejected or denied credential. The frame keeps no HTTP status
+and none of the service's answer, and its cause may persist (a sign-in that sends
+no profile ARN got HTTP 400 `ValidationException` on every call, #26109), so it is
+never worded as an HTTP 5xx: `acp/model_registry_errors.py` matches the token in
+`data` and words it as a model list that could not load, with the sign-in as the
+fix when it repeats. Only the wording changes: the frame's "Please try again"
+still gives it the retryable verdict and the `http_5xx` classifier kind, which
+match the engine's own `SERVER_ERROR`, bounded by the ladder.
+
 Retry hints are the other wording-only signal, and they are **provider-scoped**:
 `_RE_5XX_HINT` carries one alternative per backend spelling ("please try again"
 for Kiro/Bedrock, "try your request again" for the claude-agent-acp seam's
 generic upstream 500, whose frame has no named exception and no HTTP status, so
 the hint is its only transient marker). Onboarding a backend means auditing that
-alternation. The kiro-cli mid-stream envelope ("Encountered an error in the
+alternation. The status and named-token patterns carry provider spellings too:
+`_RE_5XX_STATUS` reads a status after `HTTP`, `status` or the claude-agent-acp
+seam's `API Error:` prefix, so Anthropic's overload answer (`API Error: 529
+{...overloaded_error...}`) is a retryable `http_5xx`, and `_RE_5XX_NAMED`'s
+`overloaded error` token covers Claude Code's summary once its own retries are
+spent (`API Error: Repeated 529 Overloaded errors`). A bare `529` without a prefix
+stays prose, and the adapter's `API Error: NNN Input is too long` size verdict is
+checked ahead of the 5xx family, so it stays terminal. The kiro-cli mid-stream envelope ("Encountered an error in the
 response stream: …") is deliberately NOT a hint — matching it would make the
 branch a catch-all that discards the real cause.
 
@@ -339,8 +359,10 @@ verdict is transient and `classify_provider_error` names the frame
 `PROVIDER_ERROR_CONNECTION`: connection wording (`_RE_CONNECTION`) or a
 connector dispatch failure, with no throttle, usage limit, auth or
 session-expiry rejection, or model-availability answer outranking it. The
-formatter folds a dispatch failure into the generic 5xx prose, which is why the
-verdict travels as a tag instead of being read back from the message. On an
+formatter checks the same connector patterns before the 5xx family, so a
+dispatch failure shows the "Could not reach the model backend" card rather than
+the generic 5xx prose; the verdict still travels as a tag so the retry layer
+never reads it back from the message. On an
 interactive dashboard turn
 (`chat_runner`'s pre-stream transient branch) a connection failure keeps
 re-prompting the same live session past `TRANSIENT_RETRIES` until

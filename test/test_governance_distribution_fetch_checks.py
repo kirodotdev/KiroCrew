@@ -942,6 +942,33 @@ class TestABootOnlySourceIsNotRefetched:
             pd._fetch_file(pd.FetchRequest(url=doc.as_uri()))
         assert "writ" in str(excinfo.value).lower()
 
+    def test_the_off_posix_refusal_names_windows_and_https(self, monkeypatch, tmp_path):
+        """The off-POSIX refusal names the platform, not a writable file or a root-owned path."""
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        doc = tmp_path / "policy.json"
+        doc.write_text(json.dumps(_doc("central")))
+        os.chmod(doc, 0o444)
+
+        with pytest.raises(PlatformCompositionError) as excinfo:
+            pd._fetch_file(pd.FetchRequest(url=doc.as_uri()))
+        message = str(excinfo.value)
+        assert "refused on Windows" in message
+        assert "https" in message
+        assert "root-owned path" not in message
+        assert "is writable by" not in message
+
+    def test_the_windows_message_rides_the_write_check_not_a_separate_gate(
+        self, monkeypatch, tmp_path, readonly_chain
+    ):
+        """Off POSIX the refusal comes from the write predicates alone, so stubbing
+        them (as the size and digest tests do) still reaches the read."""
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        doc = tmp_path / "policy.json"
+        doc.write_text(json.dumps(_doc("central")))
+
+        fetched = pd._fetch_file(pd.FetchRequest(url=doc.as_uri()))
+        assert fetched.body == doc.read_bytes()
+
 
 class TestA304RevalidatesAgainstTheTrustRoot:
     def test_a_newly_mandated_signature_is_caught_without_a_new_document(

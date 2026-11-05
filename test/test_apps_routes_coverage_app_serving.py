@@ -38,6 +38,7 @@ from kiro_crew.apps.routes import (
     _resolve_app_backend_url,
     invalidate_app_secret_cache,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 # ---------------------------------------------------------------------------
 # POST /api/apps/{name}/open
@@ -104,6 +105,8 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        # The POSIX path on every host; the native-Windows refusal is tested apart.
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Linux")
         monkeypatch.delenv("DISPLAY", raising=False)
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
@@ -123,6 +126,7 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Darwin")
         wrapped: dict[str, Any] = {}
 
@@ -132,8 +136,7 @@ class TestOpenApp:
             return argv, None
 
         async def _spawn(*argv: str, **kwargs: Any) -> Any:
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing spawn stand-in moved verbatim; the open route only logs and returns this pid and nothing signals it
-            return SimpleNamespace(pid=4321)
+            return SimpleNamespace(pid=UNALLOCATABLE_PID)
 
         monkeypatch.setattr(routes_mod, "wrap_argv", _wrap)
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
@@ -142,7 +145,7 @@ class TestOpenApp:
             resp = await client.post(f"/api/apps/{APP}/open")
             assert resp.status == 200
             body = await resp.json()
-        assert body == {"ok": True, "name": APP, "pid": 4321}
+        assert body == {"ok": True, "name": APP, "pid": UNALLOCATABLE_PID}
         # The command is sandboxed and cgroup-capped, never bare.
         assert wrapped["argv"] == ["/bin/sh", "-c", "open-my-app"]
         assert wrapped["mode"] == "standard"
@@ -155,6 +158,7 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Darwin")
         monkeypatch.setattr(routes_mod, "wrap_argv", lambda argv, mode="standard": (argv, None))
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
@@ -187,6 +191,7 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Darwin")
         monkeypatch.setattr(routes_mod, "wrap_argv", lambda argv, mode="standard": (argv, None))
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
@@ -349,6 +354,20 @@ class TestAppConfig:
         cfg = home / "apps" / APP / "data" / "config.json"
         cfg.parent.mkdir(parents=True, exist_ok=True)
         cfg.write_text("{ not json", encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/apps/{APP}/config")
+            assert resp.status == 500
+            assert "failed to read config" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    async def test_get_config_that_is_not_utf8_is_the_same_500(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        cfg = home / "apps" / APP / "data" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_bytes(b'\xff\xfe{"a": 1}')
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/apps/{APP}/config")
             assert resp.status == 500

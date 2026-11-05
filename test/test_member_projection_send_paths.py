@@ -51,7 +51,7 @@ def _provider(calls: list[str], *, confirms: bool) -> AcpProvider:
     provider._client = client
     delivery = MagicMock()
 
-    async def deliver(message, sender, _incarnation):
+    async def deliver(message, sender, _incarnation, *, requests_model=True):
         async for event in sender(message):
             yield event
 

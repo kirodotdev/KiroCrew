@@ -531,6 +531,13 @@ class Channel:
     _save_fn: Any = None  # set by ChannelManager
     _max_agents: int = _MAX_AGENTS
     max_exchanges: int = _MAX_A2A_EXCHANGES
+    # Serializes an append against a clear-all: the clear awaits member teardown before
+    # wiping, and an append in that window is acknowledged then persisted away.
+    _log_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    #: Set by `ChannelManager.close`, whose only caller holds `_log_lock` across it. A post
+    #: parked on that lock reads this before appending, so the sender is told its message was
+    #: refused instead of accepted into a channel no member will ever read again.
+    _closed: bool = field(default=False, repr=False)
 
     def add_agent(
         self,
@@ -610,6 +617,28 @@ class Channel:
                 retained.reply_to = None
 
     async def post(
+        self,
+        from_id: str,
+        content: str,
+        from_role: str = "",
+        mention: str | list[str] | None = None,
+        msg_type: str = "progress",
+        thread_id: str | None = None,
+        meta: dict[str, str] | None = None,
+        notify_members: bool = True,
+    ) -> ChannelMessage | None:
+        # Resolution must share the append's lock: a clear-all wipes `_msg_index` at its
+        # own turn under that lock, so a parent read outside it can be gone by the append.
+        async with self._log_lock:
+            if self._closed:
+                # A close won this lock and stopped every member. An append now would be
+                # acknowledged to its sender and never read; `None` lets the caller say so.
+                return None
+            return await self._append(
+                from_id, content, from_role, mention, msg_type, thread_id, meta, notify_members
+            )
+
+    async def _append(
         self,
         from_id: str,
         content: str,
@@ -919,6 +948,11 @@ class ChannelManager:
         directory creation inside the ``try`` would newly swallow a "cannot
         create the channels directory" failure that callers see raised today.
         """
+        if self._channels.get(channel.id) is not channel:
+            # A detached channel's file is already unlinked, so persisting it here is what
+            # `_load_all` restores at boot. One check covers every `_save()` caller.
+            logger.debug("Skipping save for channel %s: no longer registered", channel.id)
+            return
         os.makedirs(self._CHANNELS_DIR, exist_ok=True)
         path = os.path.join(self._CHANNELS_DIR, f"{channel.id}.json")
         try:
@@ -978,6 +1012,7 @@ class ChannelManager:
         channel = self._channels.pop(channel_id, None)
         if not channel:
             return False
+        channel._closed = True
         for agent in channel.members.values():
             agent.state = "done"
             if agent._task and not agent._task.done():
@@ -1176,6 +1211,21 @@ async def run_channel_agent(
         )
         sessions.release(agent.session_key)
         logger.info("Channel agent %s (%s) finished: %s", agent.id, agent.role, agent.state)
+
+
+def has_queued_work(agent: ChannelAgent) -> bool:
+    """Whether *agent* holds an acknowledged message it has not begun yet.
+
+    A post is acknowledged to its sender and persisted once it reaches the inbox, but the
+    turn is only declared when the member dequeues it. Between the two the session reports
+    no active turn while work that WILL run is already owed, so a teardown that consults the
+    turn alone tears down a member that then answers into whatever replaced the log.
+
+    Determined positively: an inbox whose depth is unreadable states nothing, so it resolves
+    to no queued work and the turn remains the question, rather than refusing every clear.
+    """
+    depth = getattr(getattr(agent, "inbox", None), "qsize", lambda: None)()
+    return isinstance(depth, int) and depth > 0
 
 
 async def _reacquire_cleared_session(sessions: Any, agent: ChannelAgent) -> Any:

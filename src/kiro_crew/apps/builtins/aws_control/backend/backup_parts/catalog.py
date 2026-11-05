@@ -49,6 +49,10 @@ logger = logging.getLogger(_FACADE_MODULE)
 #: what the feature is for.
 MAX_OTHER_INSTALLS = 32
 
+#: Listing pages read per prefix for the stored-backups view (500 keys each).
+#: Keys sort oldest first, so stopping at the first page hid every newer archive.
+_MAX_LISTING_PAGES = 40
+
 
 def _install_folders(
     profile: str, region: str, bucket: str, kind: str, *, account: str
@@ -197,6 +201,38 @@ def _archive_sort_key(entry: dict[str, Any]) -> tuple[str, str]:
     return (modified if isinstance(modified, str) else "", _key_basename(str(entry.get("key", ""))))
 
 
+def _section_files(
+    profile: str, region: str, bucket: str, subpath: str, *, account: str
+) -> tuple[list[dict[str, Any]], bool]:
+    """Every file directly under ``backup/<subpath>/``, following ``nextToken``.
+
+    One ``list_section`` page holds 500 keys and archive names sort oldest first, so
+    a single page drops exactly the newest archives once a prefix holds more. The
+    walk stops after :data:`_MAX_LISTING_PAGES` pages, or when a token repeats.
+
+    Returns ``(files, truncated)``: *truncated* is True when the walk stopped at the
+    page cap with more keys left, which are the NEWEST ones, so the caller can say so.
+    """
+    files: list[dict[str, Any]] = []
+    token = ""
+    seen: set[str] = set()
+    truncated = False
+    for _ in range(_MAX_LISTING_PAGES):
+        extra = {"token": token} if token else {}
+        page = storage.list_section(
+            profile, region, bucket, "backup", subpath, account=account, **extra
+        )
+        files += page["files"]
+        token = str(page.get("nextToken") or "")
+        if not token or token in seen:
+            break
+        seen.add(token)
+    else:
+        truncated = True
+        logger.warning("backup listing for %s stopped after %d pages", subpath, _MAX_LISTING_PAGES)
+    return files, truncated
+
+
 def list_remote_backups(
     profile: str,
     region: str,
@@ -228,11 +264,13 @@ def list_remote_backups(
     mine_uploads = uploaded_keys(account)
     result: dict[str, Any] = {}
     other_ids: set[str] = set()
+    # Kinds whose listing hit the page cap with newer archives left unread.
+    archives_truncated: list[str] = []
 
     for kind, sub in KIND_SUBPATHS.items():
         # Call 1: folders name the installs, files are the legacy flat archives.
-        page = storage.list_section(profile, region, bucket, "backup", sub, account=account)
-        rows = [_archive_row(f, mine, mine_uploads) for f in page["files"]]
+        legacy, capped = _section_files(profile, region, bucket, sub, account=account)
+        rows = [_archive_row(f, mine, mine_uploads) for f in legacy]
         # The install ids come from `_install_folders`, not from this page's
         # `folders`. One implementation of "which install ids have prefixes here"
         # rather than two, and it is the COMPLETE, unredacted one: `list_section`
@@ -245,18 +283,21 @@ def list_remote_backups(
         if include_others:
             prefixes += sorted(other_ids)[:MAX_OTHER_INSTALLS]
         for install_id in prefixes:
-            owned = storage.list_section(
-                profile, region, bucket, "backup", f"{sub}/{install_id}", account=account
+            owned, owned_capped = _section_files(
+                profile, region, bucket, f"{sub}/{install_id}", account=account
             )
+            capped = capped or owned_capped
             rows += [
                 _archive_row(f, mine, mine_uploads)
-                for f in owned["files"]
+                for f in owned
                 # The label sidecar shares the prefix with the archives it labels.
                 # It is not an archive and must never be offered for restore.
                 if _key_basename(str(f.get("key", ""))) != LABEL_OBJECT_NAME
             ]
         rows.sort(key=_archive_sort_key, reverse=True)
         result[kind] = rows[:20]
+        if capped:
+            archives_truncated.append(kind)
 
     # Labels, for the installs whose rows are actually on screen. This install's
     # own comes from local state; a foreign one is fetched, once, and only when its
@@ -283,4 +324,7 @@ def list_remote_backups(
     # deriving the cap from its length is off by one on the very message that
     # exists to state the cap -- and it would be off silently.
     result["max"] = MAX_OTHER_INSTALLS
+    # Said out loud rather than only logged: past the page cap the unread keys are
+    # the newest archives, so a listing that looked complete would hide them.
+    result["archives_truncated"] = archives_truncated
     return result

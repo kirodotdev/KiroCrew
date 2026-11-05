@@ -10,6 +10,7 @@ import type {
   RemoteDirListing,
   RemoteEnvironmentHealth,
   RemoteFileContent,
+  RemoteGitResult,
   SessionEnvironmentsCheck,
   SessionEnvironmentWorkspace,
   SlotEnvironment,
@@ -87,7 +88,8 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** This slot's auto-compact threshold override (null = follows a default:
      *  `agent_pct` when the session's agent declares one, else `global_pct`).
      *  `harness_managed` names the backend when the session compacts on its
-     *  own (KAS), where this threshold does not apply. */
+     *  own (KAS); there the global threshold is left to the backend, and an
+     *  override or agent default compacts sooner. */
     chatSlotAutocompact: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; harness_managed?: string | null; min: number; max: number }>,
     /** Set (number) or clear (null) this slot's auto-compact threshold override. */
@@ -129,6 +131,10 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** State and machine metrics of a remote session's workspace (never starts it). */
     chatSlotEnvironmentHealth: (slot: string) =>
       get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/health').then(j) as Promise<RemoteEnvironmentHealth>,
+    /** Read-only git view of a remote session's workspace root. `from` is a
+     *  renamed file's old path, so its diff reads the HEAD side there. */
+    chatSlotEnvironmentGit: (slot: string, op: 'git_status' | 'git_log' | 'git_diff', path = '.', from?: string) =>
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=' + op + '&path=' + encodeURIComponent(path) + (from ? '&from=' + encodeURIComponent(from) : '')).then(j) as Promise<RemoteGitResult>,
     /** Read-only readiness check: Coder sign-in, each profile's template, git logins. */
     sessionEnvironmentsCheck: () =>
       post('/api/session-environments/check').then(j) as Promise<SessionEnvironmentsCheck>,

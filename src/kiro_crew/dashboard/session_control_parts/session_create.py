@@ -35,6 +35,7 @@ from kiro_crew.dashboard.chat_folders import (
     _folder_declared_project,
     _resolve_folder_project_dir,
     _unhide_folder,
+    _validate_project_dir,
 )
 from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
@@ -333,7 +334,7 @@ async def create_session(
             raise SessionControlError("folder cap reached", code="folder_cap_reached") from None
         except MateHomeLockedError:
             raise SessionControlError(
-                "this folder belongs to a mate", status=403, code="mate_home_locked"
+                "this folder belongs to a Bot", status=403, code="mate_home_locked"
             ) from None
     if folder_id:
         folder_snapshot = await state.read_folders(
@@ -387,8 +388,8 @@ async def create_session(
         # come from the record, so without one the child would be the worker on
         # the shared store with no crewmate, which no turn of it can run.
         raise SessionControlError(
-            "this chat has no memory record, so its crewmate's worker cannot be "
-            "opened from it; open a new chat with the crewmate",
+            "this chat has no memory record, so its Bot's worker cannot be "
+            "opened from it; open a new chat with the Bot",
             code="conductor_record_missing",
         )
     if own_worker:
@@ -439,7 +440,19 @@ async def create_session(
     # the sensitive-path list, so it is filesystem work the loop should not wait on.
     # The rule's own tiebreaker applies -- a leaked worker thread is survivable, a
     # frozen loop is not.
-    project_dir = folder_project or await asyncio.to_thread(default_project_dir, workspace)
+    #
+    # Without a folder project the child works where its caller works: a
+    # dispatcher passes no ``folder``, and its worker still belongs in the
+    # repository the dispatcher was opened in. The caller's stored project is
+    # re-validated (absolute, existing, not a sensitive path) before it is
+    # reused; the workspace default covers a caller with none or an invalid one.
+    # The caller project this read saw, re-checked at the late gate below the
+    # way a folder project is: a project switch inside one of the awaits would
+    # otherwise start the child in the caller's former project.
+    caller_project_raw = "" if folder_project else str(getattr(caller_slot, "project", "") or "")
+    project_dir = folder_project or await asyncio.to_thread(
+        _inherited_project_dir, caller_project_raw, workspace
+    )
 
     # ONE invariant covers every branch of agent resolution: the agent that will
     # actually ANSWER must be bound to the caller's workspace. Authorization reads
@@ -792,7 +805,7 @@ async def create_session(
             # a restart or a cap eviction produces -- the durable record survives
             # but this process holds no vouched word -- so re-establish that word
             # at THIS gate-verified admission rather than stranding own-store
-            # dispatch until the owner re-selects the agent. The trust source is
+            # dispatch on this chat for good. The trust source is
             # the VERIFIED session key: `revouch_at_verified_admission` re-vouches
             # a member DM key whose slug the durable record AGREES with, or any
             # other key whose disk vouch copy in `vouched-executions/` (written
@@ -1002,6 +1015,12 @@ async def create_session(
             "caller session changed workspace while the session was being created",
             code="caller_workspace_changed",
         )
+    if not folder_project and str(getattr(live_caller, "project", "") or "") != caller_project_raw:
+        raise SessionControlError(
+            "caller session changed project while the session was being created",
+            code="caller_project_changed",
+            status=409,
+        )
     _refuse_moved_caller_identity(state, caller_key, caller_slot, caller_memory_identity)
     _refuse_ineligible_creator(state, live_caller)
     # The child's origin tag, read off the caller that is live NOW -- see the
@@ -1054,11 +1073,11 @@ async def create_session(
         raise SessionControlError(
             f"slot cap reached ({MAX_LIVE_SLOTS})",
             code="slot_cap_reached",
-            status=429,
+            status=409,
         )
     # Then the per-creator sub-ceiling. The global cap above bounds the TOTAL but
     # not the distribution, so without this one caller can hold all 500 and the
-    # person's own next chat tab gets the 429 -- the resource is bounded, but not
+    # person's own next chat tab gets the 409 -- the resource is bounded, but not
     # from anyone else's point of view. This is the bound that makes the verb safe
     # to auto-approve: the worst case of an automated creator looping on it is its
     # own 50 slots, not everyone's 500.
@@ -1066,7 +1085,7 @@ async def create_session(
         raise SessionControlError(
             f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
             code="creator_slot_cap_reached",
-            status=429,
+            status=409,
         )
     # The dry run ends HERE, after the last refusal and before the first write.
     # Any new refusal gate belongs above this line, or the preview would pass a
@@ -1571,7 +1590,7 @@ def _inherited_pin_foreign_to_child(
     except CrewmateHarnessUnavailable:
         # The crewmate's own harness stopped being startable (a policy narrowed
         # it): the model it chose there is stale, dropped like any stale pin.
-        return "the crewmate's model pin was chosen for a harness this gateway cannot start"
+        return "the Bot's model pin was chosen for a harness this gateway cannot start"
     member_namespace = capabilities_for(own_backend).model_id_namespace
     if not validated_for_worker and child_namespace != member_namespace:
         pin = crewmate_pin_for(cfg, crew)
@@ -1579,11 +1598,11 @@ def _inherited_pin_foreign_to_child(
             pin.display_stored if pin is not None else (cfg.agent.member_acp_backend or "default")
         )
         return (
-            f"the crewmate's model pin was chosen for its own harness ({setting}), "
+            f"the Bot's model pin was chosen for its own harness ({setting}), "
             f"and the worker runs on {child_backend or 'the default backend'}"
         )
     if not model_scope.pin_applies(model_name, child_namespace):
-        return "the crewmate's model pin is not served by the harness the worker runs on"
+        return "the Bot's model pin is not served by the harness the worker runs on"
     return None
 
 
@@ -1631,6 +1650,21 @@ def _dispatching_crewmate(
         return record
     agent_name = getattr(caller_slot, "agent", "") or ""
     return cfg.agents.get(agent_name) if agent_name else None
+
+
+def _inherited_project_dir(raw: str, workspace: str) -> str:
+    """The project a child with no folder project starts in: the caller's own.
+
+    *raw* is the caller's stored project, read once by the caller of this helper so
+    the late gate compares against exactly the value validated here. Blocking
+    (realpath, stat, sensitive-path screen): run it off the loop. An empty or no
+    longer valid project gives the workspace default.
+    """
+    if raw:
+        resolved, error = _validate_project_dir(raw)
+        if resolved and error is None:
+            return resolved
+    return default_project_dir(workspace)
 
 
 def _conducts_for_a_worker(caller_slot: Any, caller_execution: ExecutionContext | None) -> bool:

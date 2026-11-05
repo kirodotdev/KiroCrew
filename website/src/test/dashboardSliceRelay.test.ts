@@ -8,15 +8,23 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import dashboardReducer, { markSlotUnread, markSlotRead } from '../store/dashboardSlice'
 
 const realParent = window.parent
+const HUB = 'http://127.0.0.1:8899'
+
+// jsdom has no referrer; the relay posts only to a hub origin it can name.
+const setReferrer = (value: string) => {
+  Object.defineProperty(document, 'referrer', { value, configurable: true })
+}
 
 afterEach(() => {
   Object.defineProperty(window, 'parent', { value: realParent, configurable: true })
+  setReferrer('')
   vi.restoreAllMocks()
 })
 
 describe('dashboardSlice unread relay', () => {
   it('posts the unread count to the parent when embedded', () => {
     const postMessage = vi.fn()
+    setReferrer(`${HUB}/chat`)
     // Simulate being inside an iframe: parent !== window.
     Object.defineProperty(window, 'parent', {
       value: { postMessage },
@@ -29,6 +37,7 @@ describe('dashboardSlice unread relay', () => {
     expect(postMessage).toHaveBeenCalled()
     const [payload] = postMessage.mock.calls[0]
     expect(payload).toMatchObject({ source: 'kirocrew', type: 'mc-unread-slots', count: 1 })
+    expect(postMessage.mock.calls[0][1]).toBe(HUB)
 
     // Reading clears it -> relays count 0.
     postMessage.mockClear()
@@ -42,6 +51,7 @@ describe('dashboardSlice unread relay', () => {
   // the chip to light.
   it('relays the count on every arrival, including on an already-unread slot', () => {
     const postMessage = vi.fn()
+    setReferrer(`${HUB}/`)
     Object.defineProperty(window, 'parent', { value: { postMessage }, configurable: true })
 
     let state = dashboardReducer(undefined, { type: '@@INIT' })
@@ -61,5 +71,30 @@ describe('dashboardSlice unread relay', () => {
     state = dashboardReducer(state, markSlotUnread('slot-1'))
     expect(postMessage).not.toHaveBeenCalled()
     expect(state.unreadSlots).toContain('slot-1')
+  })
+
+  it.each([
+    ['no referrer', ''],
+    ['a page that is not a hub', 'https://evil.example/frame'],
+    ['a public host on a loopback port', 'http://example.com:8899/'],
+    ['an opaque referrer', 'about:blank'],
+  ])('sends nothing when embedded under %s', (_label, referrer) => {
+    const postMessage = vi.fn()
+    setReferrer(referrer)
+    Object.defineProperty(window, 'parent', { value: { postMessage }, configurable: true })
+
+    let state = dashboardReducer(undefined, { type: '@@INIT' })
+    state = dashboardReducer(state, markSlotUnread('slot-1'))
+    expect(postMessage).not.toHaveBeenCalled()
+    expect(state.unreadSlots).toContain('slot-1')
+  })
+
+  it('never posts to the wildcard target', () => {
+    const postMessage = vi.fn()
+    setReferrer('http://localhost:5173/')
+    Object.defineProperty(window, 'parent', { value: { postMessage }, configurable: true })
+
+    dashboardReducer(dashboardReducer(undefined, { type: '@@INIT' }), markSlotUnread('slot-1'))
+    expect(postMessage.mock.calls.map(([, target]) => target)).toEqual(['http://localhost:5173'])
   })
 })

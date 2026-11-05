@@ -1,16 +1,11 @@
 """Edition-pinned app registries and the registry trust tier.
 
-Two seams, one purpose: let a deployment publish its app catalog from a repo it
-controls instead of shipping the catalog inside the client.
+``AppsLoader.default_registries()`` supplies registries the edition pins, merged into
+``config.registries`` at every consumption site. ``ExternalRegistryConfig.trust``
+decides whether a registry's apps clone with the machine's git credentials.
 
-``AppsLoader.default_registries()`` supplies registries the edition pins, merged
-into the operator's ``config.registries`` at every consumption site.
-``ExternalRegistryConfig.trust`` decides whether the apps such a registry lists
-clone with the machine's git credentials or credential-free.
-
-The trust tier retracts a real defense, so most of this file is about its
-boundary: it must never widen WHICH hosts can be cloned, must never be settable
-by the index itself, must fail closed on anything unrecognised, and must leave the
+The tier retracts a real defense, so it must never widen which hosts can be cloned,
+never be settable by the index, fail closed on anything unrecognised, and leave the
 public default byte-identical to reading ``config.registries`` alone.
 """
 
@@ -77,9 +72,7 @@ def _with_config(monkeypatch, registries):
     monkeypatch.setattr(loader_mod.KiroCrewConfig, "load", staticmethod(lambda: cfg))
 
 
-# ---------------------------------------------------------------------------
 # The public default changes nothing
-# ---------------------------------------------------------------------------
 
 
 class TestPublicDefaultUnchanged:
@@ -104,9 +97,7 @@ class TestPublicDefaultUnchanged:
         assert _is_owner_designated_repo(entry) is False
 
 
-# ---------------------------------------------------------------------------
 # Seam 1: edition-pinned registries
-# ---------------------------------------------------------------------------
 
 
 class TestPinnedRegistries:
@@ -337,9 +328,7 @@ class TestPinnedRegistries:
         assert [r.name for r in rows] == ["official"]
 
 
-# ---------------------------------------------------------------------------
 # Seam 2: the trust tier
-# ---------------------------------------------------------------------------
 
 
 class TestTrustTier:
@@ -372,13 +361,9 @@ class TestTrustTier:
     def test_an_operator_typed_tier_is_ignored(self, monkeypatch):
         """`config.json` is agent-writable, so a tier from it is not an assertion.
 
-        `security.py` states it directly, with the check inline:
-        `is_sensitive_bash_command("echo x > …/config.json")` is None. A
-        prompt-injected shell could therefore mint `owner` — and the same write
-        also adds its chosen host to the trusted set and lets it control the index
-        `_owner_tier_confirmed` re-fetches, so every layer downstream would
-        already be satisfied by that one write. Only a build-pinned row may carry
-        the tier.
+        `is_sensitive_bash_command("echo x > …/config.json")` is None, and the same write could
+        add a trusted host and control the index `_owner_tier_confirmed` re-fetches. Only a
+        build-pinned row may carry the tier.
         """
         _with_config(
             monkeypatch,
@@ -883,15 +868,9 @@ class TestReviewTierAndLabel:
     def test_an_unknown_review_tier_degrades_rather_than_dropping(self, monkeypatch, bad, caplog):
         """DEGRADES to no claim, and the row survives.
 
-        Dropping the row would let a typo in a DISPLAY field take a whole registry
-        offline: this list feeds index fetch, the trusted-host allowlist and
-        install, so its apps would vanish from the store, its installs would fail,
-        and its host would leave the clone-trust set.
-
-        Degrading is not the falsely-reassuring outcome it first looks like: ``""``
-        is what a build that never set the field renders, so a mistyped
-        ``community`` shows an UNBADGED row rather than a trusted-looking one. A
-        non-string (including ``None``) is the same case as an absent key.
+        This list feeds index fetch, the trusted-host allowlist and install, so dropping the
+        row over a DISPLAY-field typo takes a registry offline. ``""`` renders UNBADGED, not
+        trusted-looking; a non-string (``None`` too) counts as an absent key.
         """
         _with_config(monkeypatch, [])
         _with_loader(monkeypatch, [{"name": "bad", "repo": FORGE, "review": bad}])

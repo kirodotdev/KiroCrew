@@ -351,7 +351,7 @@ def _run_chat_session_pin(args: dict[str, Any], ctx: ToolContext) -> str:
     # can be stale, so the route decides under its lock, after the
     # generation and ownership re-checks, and reports ``changed``.
     # ``expected_created`` pins the write to the slot generation resolved
-    # above, the same token chat_folder_file_self sends; the endpoint
+    # above, the same token the drop below sends; the endpoint
     # checks it under its lock, so a slot key recreated for a different
     # conversation in between is refused instead of pinned.
     pin_body: dict[str, Any] = {"pinned": want}
@@ -554,7 +554,7 @@ def _run_chat_tag_column_create(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         if refused.code == "app_forbidden":
             return (
-                "Error: an app agent or crew member cannot add a board column — the "
+                "Error: an app agent or Bot cannot add a board column — the "
                 "board is the person's own layout. Read it with chat_tag_column_list."
             )
         return redact(f"Error: {refused.error}")
@@ -624,7 +624,7 @@ def _run_chat_tag_column_move(args: dict[str, Any], ctx: ToolContext) -> str:
             )
         if refused.code == "app_forbidden":
             return (
-                "Error: an app agent or crew member cannot reorder the board — it "
+                "Error: an app agent or Bot cannot reorder the board — it "
                 "is the person's own layout."
             )
         return redact(f"Error: {refused.error}")

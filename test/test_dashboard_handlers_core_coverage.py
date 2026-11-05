@@ -8,12 +8,8 @@ security read endpoints, the loopback-gated local endpoints, the app-secret exch
 and ``..._agent_settings.py`` (the agent-settings PUT and PATCH validators, the session
 sub-agent routes). Shared stubs live in ``dashboard_handlers_core_coverage_helpers.py``.
 
-Style follows ``test_api_health.py`` (direct handler calls against a
-``MagicMock(spec=web.Request)``) and ``test_config_patch.py`` (real aiohttp
-``TestClient`` when the handler needs a genuine request body or streaming
-response). Every write lands under the autouse-isolated ``KIROCREW_HOME``
-from ``conftest.py``; nothing here touches the network, downloads a model, or
-spawns a process.
+Every write lands under the autouse-isolated ``KIROCREW_HOME``; nothing here touches the
+network, downloads a model, or spawns a process.
 """
 
 from __future__ import annotations
@@ -33,6 +29,7 @@ from dashboard_handlers_core_coverage_helpers import seeded_config_fixture  # no
 from dashboard_handlers_core_coverage_helpers import _json_req, _req, _seed_stt
 
 from kiro_crew import extras
+from kiro_crew.dashboard.dist_file_response import DistFileResponse
 from kiro_crew.dashboard.handlers import core as core_mod
 from kiro_crew.stt import models as stt_models
 from kiro_crew.stt.limits import MAX_THREADS, MIN_PARTIAL_INTERVAL_MS, MIN_SILENCE_MS
@@ -102,7 +99,7 @@ class TestPageAndAssets:
             "kiro_crew.hooks.validate_file_path", lambda p: str(avatar) if p else None
         )
         resp = await core_mod.logo(_req())
-        assert isinstance(resp, web.FileResponse)
+        assert isinstance(resp, DistFileResponse)
 
     @pytest.mark.asyncio
     async def test_logo_prefers_nightly_variant_on_nightly_build(
@@ -121,7 +118,7 @@ class TestPageAndAssets:
         monkeypatch.setattr("kiro_crew.dashboard.handlers._STATIC_DIR", tmp_path)
         monkeypatch.setattr("kiro_crew.__version__", "9.9.9-nightly.20260812")
         resp = await core_mod.logo(_req())
-        assert isinstance(resp, web.FileResponse)
+        assert isinstance(resp, DistFileResponse)
         assert os.path.realpath(resp._path) == os.path.realpath(nightly)
 
     @pytest.mark.asyncio
@@ -158,7 +155,7 @@ class TestPageAndAssets:
         (dist / "manifest.webmanifest").write_text("{}", encoding="utf-8", newline="\n")
         monkeypatch.setattr(core_mod, "_DIST_DIR", dist)
         resp = await core_mod.pwa_file(_req(match_info={"name": "manifest.webmanifest"}))
-        assert isinstance(resp, web.FileResponse)
+        assert isinstance(resp, DistFileResponse)
 
     @pytest.mark.asyncio
     async def test_pwa_file_404_for_missing_name(self, monkeypatch, tmp_path) -> None:
@@ -284,16 +281,10 @@ class TestFfmpegInstallCommands:
 class TestSttPrereqCommands:
     """What the user still has to run themselves, per provider.
 
-    There is no install button behind this list any more: the only thing a
-    provider can need beyond an installed Kiro Crew is the optional ``voice``
-    extra in this interpreter, which includes the decoder. An empty list is the
-    steady state.
-
-    The pip command's shell quoting is `_shared.pip_extra_install_command`'s, not
-    this module's; these assertions cover the prereq LIST's contract end to end,
-    which is what a Settings reader actually receives. `sys` is patched directly
-    rather than through `core_mod` because the command is built where that helper
-    lives, and both modules share the one `sys` object anyway.
+    The only thing a provider can need is the optional ``voice`` extra in this
+    interpreter, so an empty list is the steady state. Quoting belongs to
+    `_shared.pip_extra_install_command`; `sys` is patched directly because the
+    command is built there.
     """
 
     @pytest.fixture(autouse=True)
@@ -375,14 +366,10 @@ class TestSttPrereqCommands:
         assert core_mod.shlex.quote(sys.executable) in cmds[0]
 
     def test_transcribe_prereq_windows_is_powershell_literal_quoted(self, monkeypatch) -> None:
-        """The user's shell is unknowable on Windows (the command may be pasted
-        into PowerShell OR cmd), so the emitted form must be free of SILENT
-        corruption in both. PowerShell is the harder shell: a double-quoted
-        string AND a bare unquoted token both expand ``$names`` and honour
-        backtick escapes — legal path characters — silently rewriting the
-        interpreter path. Single quotes are PowerShell's literal form (spaces
-        included, so the all-users ``C:\\Program Files`` layout works), and cmd
-        rejects the leading ``&`` loudly rather than corrupting anything."""
+        """The command may be pasted into PowerShell OR cmd, so it must not be
+        silently corrupted in either. PowerShell expands ``$names`` and backticks
+        in double-quoted and bare tokens, so the path is single-quoted; cmd
+        rejects the leading ``&`` loudly."""
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
         monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: False)
         monkeypatch.setattr(core_mod.os, "name", "nt")
@@ -393,12 +380,9 @@ class TestSttPrereqCommands:
         # not treat `'` as a quote and would redirect on a pin's `<`.
         specs = " ".join(extras.quote_spec(r) for r in extras.requirements_for_extra("voice-aws"))
         assert cmds == [f"& 'C:\\Program Files\\Python312\\python.exe' -m pip install {specs}"]
-        # Named properties the exact match locks in. The double-quote check is
-        # scoped to the INTERPRETER segment: a PS double-quoted path would
-        # expand `$name` and honour backticks, silently rewriting it. The
-        # SPECIFIER after `-m pip install` is deliberately double-quoted (the
-        # one form cmd and PowerShell both strip) and holds no `$` or backtick
-        # to expand -- test_extras.py pins that precondition.
+        # The double-quote check covers only the INTERPRETER segment; the specifier
+        # is deliberately double-quoted and holds no `$` or backtick
+        # (test_extras.py pins that).
         interpreter = cmds[0].split(" -m pip install ", 1)[0]
         assert '"' not in interpreter
         assert "`" not in cmds[0]  # never emit a PS escape character
@@ -588,10 +572,8 @@ class TestSttConfigEndpoint:
     async def test_put_persists_recognised_fields_only(self, seeded_config) -> None:
         """The allowlist is the contract, and the retired keys are part of it.
 
-        ``whisper_path``, ``mlx_model``, ``parakeet_model`` and ``device`` belonged
-        to the out-of-band runtimes that are gone. Persisting one would leave a key
-        in ``config.json`` that nothing reads, which reads to the next person as a
-        setting that stopped working rather than one that was withdrawn.
+        ``whisper_path``, ``mlx_model``, ``parakeet_model`` and ``device`` are read by
+        nothing, so persisting one would look like a broken setting.
         """
         async with TestClient(TestServer(_stt_app())) as client:
             resp = await client.put(
@@ -647,9 +629,8 @@ class TestSttConfigEndpoint:
         `local` with a warning on every load, so the picker would show a selection
         that is silently not the one in force.
 
-        The starting value is a DIFFERENT selectable provider on purpose: had the
-        endpoint accepted `mlx`, the loader would degrade it to `local`, which is
-        indistinguishable from a refusal if the test starts from the default.
+        It starts from `transcribe`, not the default: an accepted `mlx` degrades to
+        `local`, which would look like a refusal from the default.
         """
         async with TestClient(TestServer(_stt_app())) as client:
             seeded = await client.put("/api/config/stt", json={"provider": "transcribe"})
@@ -669,15 +650,12 @@ class TestSttConfigEndpoint:
         assert "turbo" not in core_mod._STT_MODEL_SIZES
         async with TestClient(TestServer(_stt_app())) as client:
             assert (await client.put("/api/config/stt", json={"model": "small"})).status == 200
-            # An ALIAS is accepted and canonicalised. It has to be: a catalog cull
-            # turns a retired name into an alias, and refusing those meant someone
-            # whose stored model was retired could not save this panel at all --
-            # a field they never edited was rejected on every write.
+            # An ALIAS is accepted and canonicalised: a retired catalog name becomes an
+            # alias, and refusing it would block every save of this panel.
             aliased = await client.put("/api/config/stt", json={"model": "turbo"})
             assert (await aliased.json())["model"] == "large-v3-turbo"
-            # A name that resolves to NOTHING leaves the stored value alone. The
-            # distinction matters: answering the default here would let one junk
-            # request replace a model the user deliberately chose.
+            # A name that resolves to NOTHING leaves the stored value alone, so one
+            # junk request cannot replace the user's chosen model.
             refused = await client.put("/api/config/stt", json={"model": "no-such-model"})
             assert refused.status == 200
             assert (await refused.json())["model"] == "large-v3-turbo"
@@ -688,15 +666,11 @@ class TestSttConfigEndpoint:
 
     @pytest.mark.asyncio
     async def test_put_round_trips_the_cleanup_consent(self, seeded_config) -> None:
-        """The whole feature hangs off this round trip, and it was broken.
+        """`polish` round-trips through PUT, GET and the file on disk.
 
-        `polish` sends the finished transcript to a model, so it is the one CONSENT
-        setting on this surface. The PUT branch never read it and the GET response
-        never returned it, so the toggle wrote nothing and a reload read the default
-        back -- and because `api_stt_polish` refuses while the flag is False, the
-        endpoint, the hook and the panel were each correct while the feature was
-        dead. Nothing in the UI said so, which is why this asserts the value on
-        DISK rather than only the response.
+        It sends the transcript to a model, so it is the one CONSENT setting here, and
+        `api_stt_polish` refuses while it is False. Asserted on DISK, since a
+        dropped write would leave every other piece correct and the feature dead.
         """
         async with TestClient(TestServer(_stt_app())) as client:
             assert (await (await client.get("/api/config/stt")).json())["polish"] is False
@@ -780,10 +754,8 @@ class TestSttConfigEndpoint:
         """``bool`` subclasses ``int`` in Python, so a checkbox value sent to one of
         these fields would otherwise persist as ``1``.
 
-        Asserted on ``idle_evict_secs`` because that is where it is observable: its
-        floor is zero, so ``True`` passes the range check on its own and only the
-        explicit type guard stands between a JSON ``true`` and a one-second idle
-        window. On ``silence_ms`` the 200 ms floor would hide the bug.
+        Asserted on ``idle_evict_secs`` because its floor is zero, so only the type guard
+        stops ``True``; ``silence_ms``'s 200 ms floor would hide the bug.
         """
         async with TestClient(TestServer(_stt_app())) as client:
             assert (await client.put("/api/config/stt", json={"idle_evict_secs": 30})).status == 200
@@ -966,22 +938,15 @@ class TestSttConfigEndpoint:
     def test_threads_env_does_not_import_the_engine(self, monkeypatch) -> None:
         """The override count resolves without pulling in ``stt.engine``.
 
-        ``_stt_threads_env`` runs synchronously while the GET ``/api/config/stt``
-        response dict is built, so an import on its path would land on the event
-        loop. ``stt.engine`` imports numpy at module scope and costs a cold
-        multi-hundred-millisecond import the first time. Resolving through the
-        leaf ``stt.limits`` and ``cpu_affinity`` modules instead keeps the engine
-        off that path entirely: with the module evicted, calling the function must
-        not load it back.
+        ``_stt_threads_env`` runs on the event loop during the GET, and ``stt.engine``
+        imports numpy at module scope (a cold import of hundreds of milliseconds).
         """
         monkeypatch.setattr(core_mod, "affinity_cpu_count", lambda: 20)
         monkeypatch.setenv(STT_THREADS_ENV, "64")
         import kiro_crew.stt as stt_pkg
 
-        # Evict the module AND the package attribute bound to it. A regression
-        # that re-imports the engine then binds a fresh module to both, and
-        # teardown restores both, so later tests patch the same engine object the
-        # code under test reads.
+        # Evict the module AND the package attribute; teardown restores both, so
+        # later tests patch the same engine object the code reads.
         monkeypatch.delattr(stt_pkg, "engine", raising=False)
         for name in list(sys.modules):
             if name == "kiro_crew.stt.engine" or name.startswith("kiro_crew.stt.engine."):
@@ -993,23 +958,12 @@ class TestSttConfigEndpoint:
 class TestSttConfigCustomModelBoundary:
     """``PUT /api/config/stt``: only the OWNER may configure a custom model.
 
-    ``stt.status`` / ``stt.prepare`` / ``stt.prewarm`` are denied to an app token
-    outright because they fetch weights and load them into the gateway. The
-    custom-model pair arrives at the same outcome by a longer road: it names a file
-    the gateway will verify against a digest THE SAME CALLER supplied, and load —
-    and the transcription surfaces that trigger the load are deliberately
-    app-reachable. So a caller able to write these three fields chooses the
-    weights every later utterance runs through.
+    The pair names a file the gateway verifies against a digest THE SAME CALLER
+    supplied, then loads for every later utterance. "Not an app token" is the wrong
+    bar: a ``!dashboard`` messaging user also has app claim ``""``. The gate is
+    ``is_owner_dashboard_request``.
 
-    "Not an app token" is the wrong bar, and pinning that is the point of the
-    non-owner cases below: an allow-listed messaging user who runs ``!dashboard``
-    is minted a dashboard session whose app claim is ``""`` exactly like the
-    operator's. The gate is ``is_owner_dashboard_request``.
-
-    The refusal is per-FIELD, not the whole endpoint: any caller may legitimately
-    hold ``config.stt`` for the language and the toggles. Both halves of that are
-    pinned here, because a gate that also blocked the ordinary fields would
-    silently break shipped apps and a second dashboard session alike.
+    The refusal is per-FIELD: any caller may still write the language and toggles.
     """
 
     _PATH = "ggml-my-model.bin"
@@ -1172,11 +1126,9 @@ class TestSttConfigCustomModelBoundary:
     ) -> None:
         """Refused on PRESENCE, not on whether it changes anything.
 
-        An earlier version allowed this as a harmless no-op. It is not one: the
-        handler reads its config BEFORE taking the write lock, so "custom is
-        already active" can be stale by the time the write lands — the owner
-        switches to a catalog model in between and the app's write puts custom
-        back. Refusing every `model: custom` from a non-owner closes that race.
+        The handler reads config BEFORE the write lock, so "custom is already active"
+        can be stale: the owner may switch models in between, and the app's write
+        would put custom back.
         """
         _seed_stt(
             seeded_config,
@@ -1207,11 +1159,8 @@ class TestSttConfigCustomModelBoundary:
     ) -> None:
         """400, not 500, on every JSON body that is not an object.
 
-        The array is the one that bites: it satisfies every `"field" in body`
-        membership test and then raises TypeError on the subscript, so the
-        endpoint answered a malformed request with a 500 — from inside the
-        security gate that runs first. The scalars reach the same subscript by a
-        shorter road. Refused once, before any field is read.
+        An array passes every `"field" in body` test and then raises TypeError on the
+        subscript inside the security gate.
         """
         resp = await core_mod.api_stt_config(self._put(body))
 
@@ -1270,11 +1219,8 @@ class TestSttConfigCustomModelBoundary:
     ) -> None:
         """A served pair and a withheld one both leave a SEL row.
 
-        The write path audited only its refusal, so the READ half of the same
-        authorization decision was invisible: whether the pair was ever served, and to
-        whom, could not be reconstructed from the log. Both outcomes are recorded
-        because the useful question is the negative one -- "nobody but the owner was
-        served this" is only answerable if the allowed branch logs too.
+        "Nobody but the owner was served this" is only answerable if the allowed
+        branch logs too.
         """
         _seed_stt(
             seeded_config,
@@ -1315,14 +1261,8 @@ class TestSttConfigCustomModelBoundary:
     ) -> None:
         """An ADMITTED custom-model write leaves a SEL row of its own.
 
-        The gate logged only its refusals, so the log answered "who was turned away"
-        and never "who chose the weights" -- and only the second names the file and
-        digest the gateway then verifies and loads. A denial-only record also
-        cannot tell an endpoint nobody exercised from one exercised successfully.
-
-        Same operation as the refusal, so both outcomes of one authorization decision
-        read as one operation: an ordinary write that names no custom field stays
-        silent, which the third assertion pins.
+        The log must answer "who chose the weights", not only who was turned away. It
+        uses the refusal's operation; a write naming no custom field stays silent.
         """
         resp = await core_mod.api_stt_config(
             self._put(

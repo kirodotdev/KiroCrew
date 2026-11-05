@@ -27,13 +27,14 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
-from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
+from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, _sync_dashboard_slots
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
     is_relay_archive,
 )
+from kiro_crew.dashboard.slot_buffers import flush_restored_hold
 from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key, load_window_off_loop
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
@@ -635,7 +636,38 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
+        if getattr(slot, "_slack_linked", False) and getattr(slot, "_slack_channel", ""):
+            from kiro_crew.slack.handler import channel_agent_mismatch
+
+            if (
+                channel_agent_mismatch(
+                    slot._slack_channel, str(agent), str(getattr(slot, "agent_kind", "") or "")
+                )
+                is not None
+            ):
+                sel().log_api_access(
+                    caller=request.remote or "",
+                    operation="openai_compat.chat",
+                    outcome="denied",
+                    source="channel_agent_pinned",
+                    resources=f"slot={slot.key}",
+                    error="slot is linked to a Slack channel served by another agent",
+                )
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": "this session is linked to a Slack channel served by"
+                            " another agent",
+                            "type": "invalid_request_error",
+                            "code": "channel_agent_pinned",
+                        },
+                        "code": "channel_agent_pinned",
+                    },
+                    status=409,
+                )
         slot.agent = agent
+    # A hold a restart restored into this idle slot is owed to this turn.
+    flush_restored_hold(slot, logger=logger)
     slot.append("user", prompt, "msg msg-u")
 
     # SEL audit for tool invocation visibility
@@ -866,6 +898,8 @@ async def _stream_response(
     finally:
         if ephemeral:
             state._slots.pop(slot.key, None)
+            # Publishes the smaller set, so tabs re-read Older Sessions for the transcript.
+            _sync_dashboard_slots(state)
             if slot.task and not slot.task.done():
                 slot.task.cancel()
     return resp
@@ -956,5 +990,7 @@ async def _blocking_response(
     finally:
         if ephemeral:
             state._slots.pop(slot.key, None)
+            # Publishes the smaller set, so tabs re-read Older Sessions for the transcript.
+            _sync_dashboard_slots(state)
             if slot.task and not slot.task.done():
                 slot.task.cancel()

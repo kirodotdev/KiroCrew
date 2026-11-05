@@ -34,6 +34,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from kiro_crew.agent_sdk.drivers.acp_vocab import classify_stop_reason
+from kiro_crew.parent_turns import note_turn_landed
 
 logger = logging.getLogger(__name__)
 
@@ -108,25 +109,17 @@ def rearm_reinjection(
     Either reason is enough:
 
     * this turn consumed the flag but never landed. The flag is cleared BEFORE
-      ``build_message``, so a turn that then dies -- a provider error, a driver
-      fault, a cancel -- has discarded the prompt that carried the re-injected
-      context, and without this the session runs without its skills index (and
-      a member DM without its rules) until the next compaction. This is the
-      contract the dashboard runner already keeps in its own ``finally``
-      (``chat_runner``: re-arm when consumed and not landed); the channel loops
-      share it so the two paths cannot disagree.
-    * ``compacted``: the backend reported a ``completed`` compaction during this
-      turn. A backend that compacts its own window (kiro-cli's automatic
-      compaction, the claude/codex twins) drops the session-start context just
-      as ``session_compaction`` does, landed or not, so the next turn must send
-      it again. The dashboard runner arms the flag the moment that status
-      arrives; the other turn loops pass what their stream reported here.
+      ``build_message``, so a turn that dies discarded the re-injected context, and
+      the session would run without its skills index (a member DM without its
+      rules) until the next compaction. Same contract as ``chat_runner``'s
+      ``finally``.
+    * ``compacted``: the backend reported a ``completed`` compaction this turn. A
+      backend compacting its own window drops the session-start context, landed or
+      not, so the next turn must send it again.
 
-    ``landed`` means the turn was recorded a success. A cancelled turn is NOT
-    landed: the backend drops a cancelled turn from its own transcript, so the
-    context it carried is gone with it. Call from the turn's ``finally`` so every
-    exit path is covered. Never raises: a failure to re-arm is logged and the
-    turn's own outcome stands.
+    ``landed`` means the turn was recorded a success; a cancelled turn is NOT
+    landed, since the backend drops it from its transcript. Call from the turn's
+    ``finally``. Never raises.
     """
     if not compacted and (not consumed or landed):
         return
@@ -146,24 +139,16 @@ def rearm_reinjection(
 def rollback_skill_bodies(ctx_builder: Any, session_key: str, *, landed: bool) -> None:
     """Settle this turn's build-time skill-body dedup writes at the turn seam.
 
-    Companion to :func:`rearm_reinjection` at the same turn ``finally`` seam.
-    ``build_message`` records injected skill bodies at build time so the dedup
-    holds at every caller and stashes an undo entry for the current build. This
-    settles that entry exactly once per turn:
+    ``build_message`` records injected skill bodies at build time and stashes an
+    undo entry. This settles it once per turn:
 
-    * ``landed`` — the prompt reached the provider window, so commit: drop the
-      undo entry (the bodies are in the window and must not be rolled back
-      later). Leaving it armed would let a later non-landing turn roll back this
-      LANDED build, re-injecting bodies the window already holds.
-    * not ``landed`` — a provider error, cancel or driver fault discarded the
-      prompt, so roll back: restore the pre-build state so the next turn
-      re-injects the bodies as full bodies rather than demoting to pointers.
+    * ``landed``: commit (drop the undo entry), or a later failed turn would roll
+      back bodies the window already holds.
+    * not ``landed``: roll back, so the next turn re-injects full bodies instead of
+      pointers.
 
-    A turn that built no context finds no armed undo entry (a landed build
-    cleared its own, and turns on one session key are serialized) so both calls
-    are no-ops. Never raises: a failed settle is logged and the record's own
-    fail-safe (a pointer next turn, not silence) still holds. Defensive on the
-    accessors so a builder stand-in that predates the methods is a safe no-op.
+    With no armed entry both are no-ops. Never raises; a builder without the
+    methods is a no-op.
     """
     method = "commit_skill_bodies" if landed else "rollback_skill_bodies"
     settle = getattr(ctx_builder, method, None)
@@ -193,10 +178,9 @@ class TurnBracket:
       for "no completion observed") through :func:`stop_reason_landed`, or a
       finished ``TurnDriver`` through :func:`driver_turn_landed`. Not called
       means not landed, which is the fail-safe reading for an exit by exception.
-    * :meth:`compacted` -- record whether the backend compacted the session
-      during the turn, from the ``TurnDriver`` that ran the latest attempt,
-      whose ``compaction_completed`` it reads. The driver keeps that field
-      current as the status arrives, so reading it in the engine's ``finally``
+      A landed verdict is also noted on the session (:func:`note_turn_landed`).
+    * :meth:`compacted` -- record the latest attempt's ``TurnDriver``
+      ``compaction_completed``; it is kept current, so reading it in ``finally``
       covers an exit by exception. Not called means no compaction.
     * :meth:`settle` -- re-arm the flag when it was taken and the turn did not
       land, or when the backend compacted the session, THEN commit or roll back
@@ -223,6 +207,8 @@ class TurnBracket:
             self._landed = stop_reason_landed(evidence)
         else:
             self._landed = driver_turn_landed(evidence)
+        if self._landed:
+            note_turn_landed(self._sessions, self._session_key)
         return self._landed
 
     def compacted(self, evidence: Any) -> bool:

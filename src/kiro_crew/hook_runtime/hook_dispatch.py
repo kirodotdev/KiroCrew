@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         ScriptHookStore,
         _global_script_hook_store,
         logger,
+        read_bytes_with_retry,
         webhooks,
     )
 
@@ -50,6 +51,16 @@ def persisted_hook_store() -> ScriptHookStore:
     that one snapshot is both validated and loaded, so an edit landing mid-read
     cannot pair one version's shape check with another version's hooks. Blocking
     I/O: an event-loop caller runs it in a worker thread.
+
+    The read goes through :func:`kiro_crew.atomic_write.read_bytes_with_retry`,
+    the helper the other saved-state readers use: on Windows a momentary
+    share-deny hold on ``hooks.json`` (a foreign editor save, an AV or indexer
+    scan) raises ``PermissionError``, and the retry rides out that window. The
+    helper retries only ``PermissionError`` and only on Windows, so POSIX, a
+    missing file and a parse failure raise straight through, and a hold that
+    outlasts its budget raises so the gate fails closed. Both callers reach here
+    off the event loop (via ``asyncio.to_thread``), so the retry runs in a worker
+    thread and never sleeps the gateway loop.
     """
     store = get_global_hook_store()
     if store is not None:
@@ -57,8 +68,10 @@ def persisted_hook_store() -> ScriptHookStore:
     store = ScriptHookStore(load=False)
     if not store._path.exists():
         return store
+    from kiro_crew.user_json import loads_user_json
+
     with webhooks.locked(store._path):
-        data = json.loads(store._path.read_text(encoding="utf-8"))
+        data = loads_user_json(read_bytes_with_retry(store._path).decode("utf-8"))
     hooks_data = data.get("hooks", []) if isinstance(data, dict) else None
     if not isinstance(hooks_data, list):
         raise ValueError(f"{store._path} does not hold a hooks list")
@@ -130,11 +143,18 @@ def pre_tool_match_names(
     ``@server/tool`` and ``mcp__server__tool`` forms built from the trusted
     *mcp_server*, and the names the harness's own *harness_tool_id* stands for
     (:func:`kiro_crew.agent_sdk.spec_hooks.spec_hook_tool_names`). *spec* is the
-    same without the title, for a spec hook, whose matcher names tools; ``None``
-    when the harness stated no id, so a spec hook keeps matching the title.
+    same without the title, for a spec hook, whose matcher names tools, plus the
+    names kiro-cli's other matcher kinds meet (``@builtin``, ``@builtin/<name>``,
+    ``@server``, ``@mcp`` and the tool tags,
+    :func:`kiro_crew.agent_sdk.spec_hooks.spec_hook_kind_names`); ``None`` when the
+    harness stated no id, so a spec hook keeps matching the title.
     """
     # circular import: spec_hooks imports kiro_crew.hooks at load time.
-    from kiro_crew.agent_sdk.spec_hooks import envelope_named_tool_id, spec_hook_tool_names
+    from kiro_crew.agent_sdk.spec_hooks import (
+        envelope_named_tool_id,
+        spec_hook_kind_names,
+        spec_hook_tool_names,
+    )
 
     harness_names = spec_hook_tool_names(harness_tool_id) or ()
     trusted = [*harness_names, tool_identity]
@@ -147,7 +167,13 @@ def pre_tool_match_names(
     if mcp_server and tool_identity:
         trusted += [f"@{mcp_server}/{tool_identity}", f"mcp__{mcp_server}__{tool_identity}"]
     every = tuple(dict.fromkeys(n for n in [title, *trusted] if n))
-    spec = tuple(dict.fromkeys(n for n in trusted if n)) if harness_names else None
+    spec: tuple[str, ...] | None = None
+    if harness_names:
+        named = [n for n in trusted if n]
+        # kiro-cli's other matcher kinds (``@builtin``, ``@server``, the tags) go
+        # last: the first name is the one a spec hook's stdin reports.
+        named += spec_hook_kind_names(named, mcp_server=mcp_server)
+        spec = tuple(dict.fromkeys(named))
     return every, spec
 
 
@@ -167,15 +193,15 @@ async def permission_pre_tool_block(
 ) -> str | None:
     """Run the PreToolUse hooks on a subagent or task-runner permission request.
 
-    For a turn whose backend never receives the agent spec's ``hooks`` (see
-    :func:`kiro_crew.agent_sdk.spec_hooks.turn_spec_hooks`): on that backend the
-    projection turns every call a PreToolUse hook covers into a permission
-    request, so this is where the hooks gate. The Hooks page's hooks and the
-    spec's run together, as on the chat turn loop. Such a turn skips the
-    informational tool-call fire: KAS sends a call's tool-call frame BEFORE its
-    permission request, and every call a PreToolUse hook covers reaches this gate,
-    so firing there too would run each hook twice. Returns why the call is
-    blocked, or ``None``.
+    The Hooks page's hooks run on every backend, as on the chat turn loop.
+    *spec_hooks* are the agent spec's own, for a turn whose backend never receives
+    them (see :func:`kiro_crew.agent_sdk.spec_hooks.turn_spec_hooks`), and empty
+    where the harness runs them itself. On a backend that never receives them the
+    projection turns every call a PreToolUse hook covers into a permission request,
+    so the turn skips the informational tool-call fire: KAS sends a call's tool-call
+    frame BEFORE its permission request, and every call a PreToolUse hook covers
+    reaches this gate, so firing there too would run each hook twice. Returns why
+    the call is blocked, or ``None``.
 
     A hook matcher is compared with every name the call is known by: its title
     (what the chat turn loop matches), its canonical *tool_identity*
@@ -191,7 +217,8 @@ async def permission_pre_tool_block(
     Blocks by the same rule the chat turn loop applies
     (:attr:`ScriptHookResult.pre_tool_blocks`): for a Hooks-page hook exit 2 is a
     delivered deny and any other nonzero exit is a gate with no verdict, which
-    blocks; a spec hook blocks only on a delivered exit 2, as on kiro-cli. A fire
+    blocks; a spec hook blocks on exit 2, as on kiro-cli, and when a policy refused
+    to run it, with the refusal as the reason. A fire
     that raises blocks. With no store registered in this process the saved
     Hooks-page hooks are read from disk (:func:`persisted_hook_store`), and saved
     hooks that cannot be read block.
@@ -239,7 +266,7 @@ async def permission_pre_tool_block(
         if r.exit_code == 0:
             continue
         if not r.pre_tool_blocks:
-            # A spec hook that was refused or failed: kiro-cli warns and runs the tool.
+            # A spec hook that crashed or timed out: kiro-cli warns and runs the tool.
             logger.warning(
                 "Spec hook %s did not run cleanly (%s); tool allowed",
                 r.hook_name,

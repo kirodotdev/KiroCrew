@@ -288,16 +288,27 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                 sys.exit(1)
 
             ws_dir = args.dir if args.dir is not None else f"workspace-{args.name}"
-            src_path = config_dir() / cfg.workspaces[copy_from].dir
+            # Read here, not at module level: the facade's import inventory is frozen.
+            from kiro_crew.config.loader import workspace_dir_from_entry
+
+            # The one placement rule every reader of a workspace dir uses. An
+            # unknown ``~user`` places nowhere (POSIX raises; Windows guesses a
+            # profile outside the data home), so it is refused below on every
+            # platform, like any source outside the data home.
+            src_path: Path | None
+            try:
+                src_path = workspace_dir_from_entry(cfg.workspaces[copy_from])
+            except RuntimeError:
+                src_path = None
             # Validated and composed in one step (refuses and exits on a dir
             # outside the data home): the install and the fallback mkdir below
             # both land on this path, the one the containment check judged.
             dst_path = _cli_validated_workspace_dst(
                 ws_dir, operation="workspace.create", name=args.name
             )
-            if not platform_compat.strip_extended_length_prefix(src_path.resolve()).is_relative_to(
-                platform_compat.strip_extended_length_prefix(config_dir().resolve())
-            ):
+            if src_path is None or not platform_compat.strip_extended_length_prefix(
+                src_path.resolve()
+            ).is_relative_to(platform_compat.strip_extended_length_prefix(config_dir().resolve())):
                 sel().log_api_access(
                     caller="cli",
                     operation="workspace.create",
@@ -327,6 +338,17 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
+            if not src_path.is_dir():
+                # Read here, not at module level: the facade's import inventory is frozen.
+                from kiro_crew.terminal_safe import safe_terminal_line
+
+                # Created as before, but empty: say so, since the caller asked for a copy.
+                print(
+                    f"Warning: source workspace '{copy_from}' has no folder at "
+                    f"'{safe_terminal_line(str(cfg.workspaces[copy_from].dir))}'; "
+                    "nothing was copied",
+                    file=sys.stderr,
+                )
             if src_path.is_dir():
 
                 def _ignore_sensitive(directory: str, entries: list[str]) -> set[str]:
@@ -350,10 +372,23 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                         symlinks=True,
                         ignore=_ignore_sensitive,
                     )
+                except OSError as exc:
+                    # A source that cannot be read (a folder that denies
+                    # listing, a file copytree cannot open) copies nothing;
+                    # the create goes on empty and says so.
+                    shutil.rmtree(staging, ignore_errors=True)
+                    from kiro_crew.terminal_safe import safe_terminal_line
+
+                    print(
+                        f"Warning: could not copy source workspace '{copy_from}' "
+                        f"({safe_terminal_line(type(exc).__name__)}); nothing was copied",
+                        file=sys.stderr,
+                    )
                 except BaseException:
                     shutil.rmtree(staging, ignore_errors=True)
                     raise
-                staged_path = staging
+                else:
+                    staged_path = staging
         else:
             ws_dir = args.dir if args.dir is not None else f"workspace-{args.name}"
 
@@ -450,6 +485,15 @@ def _handle_workspace(args: argparse.Namespace) -> None:
         if args.name not in cfg.workspaces:
             print(f"Error: workspace '{args.name}' not found", file=sys.stderr)
             sys.exit(1)
+        if args.dir is None:
+            # --dir is the one field an update writes; without it, saying
+            # "Updated" would report a change that never happened. Exit 0
+            # stays, so a script calling it keeps working.
+            print(
+                f"Warning: nothing to update for workspace '{args.name}'; pass --dir",
+                file=sys.stderr,
+            )
+            return
         if args.dir is not None:
             # Validated and composed in one step (refuses and exits on a dir
             # outside the data home); the locked mutate below checks this same
@@ -577,4 +621,11 @@ def _handle_workspace(args: argparse.Namespace) -> None:
         print(f"Deleted workspace: {args.name}")
 
     else:
-        print("Usage: kirocrew workspace {list|create|update|delete}")
+        # No sub-action or an unknown one: a usage error. Print to stderr and
+        # exit 2, the argparse convention, so a script does not read 0 after a
+        # typo.
+        print(
+            "Usage: kirocrew workspace {list|create|update|delete}",
+            file=sys.stderr,
+        )
+        sys.exit(2)

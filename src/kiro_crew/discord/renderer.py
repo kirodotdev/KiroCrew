@@ -1488,11 +1488,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.discord.renderer_components import (  # noqa: F401
         _BUTTON_LABEL_CHARS,
         _BUTTONS_PER_ROW,
+        _FULL_CHOICE_MAX_CHARS,
+        _FULL_CHOICES,
+        _FULL_CHOICES_LOCK,
+        _FULL_CHOICES_MAX,
         _MAX_ACTION_ROWS,
         _MAX_BUTTONS,
         _STYLE_PRIMARY,
         _STYLE_SECONDARY,
+        _choice_ref,
+        _remember_full_choice,
         build_model_components,
+        full_choice_text,
     )
     from kiro_crew.discord.renderer_status import (  # noqa: F401
         _TYPING_REFRESH_S,

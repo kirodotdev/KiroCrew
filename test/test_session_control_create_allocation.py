@@ -1,15 +1,7 @@
 """Session creation: binding resolution, allocation re-checks, caps and lineage.
 
-Covers ``create_session`` resolving the agent binding off the event loop with the
-child's project directory before any slot exists, refusing an unresolved agent
-name, and re-reading the caller, its workspace, its mirror link and the slot cap
-after the await, so a change inside that window refuses. Source checks pin the
-offloaded config load and no await from the caller gate to a configured slot.
-
-Also pins ``_created_by`` attribution and ``MAX_SLOTS_PER_CREATOR``, the creator
-session id frozen at mint and dropped past ``MAX_ACP_SESSION_ID_LEN``, the
-``_crew_log_lineage`` and ``_crew_log_class`` seams, persist-failure retraction
-that spares a started turn, and a ``MAX_LIVE_SLOTS`` shared with fork and import.
+``create_session`` re-reads the caller, its workspace, its mirror link and the slot
+cap after its await, so a change inside that window refuses.
 """
 
 from __future__ import annotations
@@ -37,14 +29,8 @@ from kiro_crew.dashboard import session_control as sc
 def test_an_agent_name_that_does_not_resolve_is_refused(tmp_path, monkeypatch):
     """A session must not advertise an agent that is not the one answering.
 
-    An unknown name falls back to the default agent's bindings, which pass the
-    workspace check because they ARE the caller's default -- so no memory boundary
-    is crossed, but `slot.agent` would store a name that nothing dispatches.
-    `ResolvedBindings.requested_resolved` states exactly that contract for callers
-    which store the requested name.
-
-    Mutation guard: without the check the session is created and reports the
-    unresolved name as its agent.
+    An unknown name falls back to the default agent's bindings, so `slot.agent` would
+    store a name that nothing dispatches.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -70,11 +56,8 @@ def test_an_agent_name_that_does_not_resolve_is_refused(tmp_path, monkeypatch):
 def test_the_binding_is_resolved_with_the_childs_project_dir(tmp_path, monkeypatch):
     """A materialized kiro agent is declared per project directory, not in config.
 
-    Resolving without the project directory reports an app's own agent as
-    unresolvable, so the refusal above would reject a name that does resolve for
-    the session being created.
-
-    Mutation guard: dropping the argument passes None and the assertion fails.
+    Without the project directory an app's own agent reads as unresolvable, and the
+    refusal above would reject a name that does resolve.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -90,10 +73,7 @@ def test_the_binding_is_resolved_with_the_childs_project_dir(tmp_path, monkeypat
 
     asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
 
-    # Asserted as identity-against-None plus equality rather than truthiness: a
-    # workspace with no configured project directory resolves to "", which is a
-    # correct value to pass on. Dropping the argument yields None, which fails both
-    # halves in every environment.
+    # Not a truthiness check: a workspace with no project directory correctly passes "".
     assert seen["project_dir"] is not None, "the project dir must be passed, not omitted"
     assert seen["project_dir"] == loader.default_project_dir(caller.workspace)
 
@@ -146,13 +126,8 @@ async def test_agent_binding_resolution_is_off_loop_and_precedes_allocation(
 def test_a_caller_that_closes_during_the_await_cannot_still_create(tmp_path, monkeypatch):
     """A removed slot stays usable as an object, so presence must be re-read.
 
-    Closing the caller's tab removes its slot from the table, but the reference
-    resolved before the await keeps working -- every attribute still answers. Gating
-    on that object would authorize against a caller whose authority already ended
-    and publish a persistent session behind it.
-
-    Mutation guard: gating the stale object instead of re-resolving publishes the
-    session.
+    Closing the tab removes the slot from the table, but the reference resolved
+    before the await still answers, so gating on it would authorize a closed caller.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -173,11 +148,7 @@ def test_a_caller_that_closes_during_the_await_cannot_still_create(tmp_path, mon
 
 
 def test_a_caller_that_moves_workspace_during_the_await_is_refused(tmp_path, monkeypatch):
-    """The workspace fed the agent-binding decision, so a move invalidates it.
-
-    Mutation guard: carrying the pre-await workspace forward puts the child on a
-    boundary its creator does not sit behind.
-    """
+    """The workspace fed the agent-binding decision, so a move invalidates it."""
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
 
@@ -196,23 +167,15 @@ def test_a_caller_that_moves_workspace_during_the_await_is_refused(tmp_path, mon
 def test_a_mirror_link_landing_during_the_await_still_refuses(tmp_path, monkeypatch):
     """Eligibility decided before a suspension point says nothing at allocation time.
 
-    The project directory is resolved in a worker thread, so the coroutine suspends
-    between the caller gate and the allocation. The caller gate reads the live
-    session store, and a dashboard-born session can be given an outbound mirror link
-    at any moment -- so a link registered inside that window would otherwise let a
-    now-channel-backed caller publish a persistent session outside its containment.
-
-    Mutation guard: without the re-assert next to the allocation, the slot is
-    created and the refusal never fires.
+    The coroutine suspends between the caller gate and the allocation, and a mirror
+    link can land in that window, turning the caller channel-backed.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     before = set(state._slots)
 
     def _resolve_then_mirror(_workspace):
-        # Stand in for the interleaving: the mirror link lands while the project
-        # directory is still being resolved off-loop -- in the store the gate's
-        # re-assert reads, so it is the row that read sees.
+        # The link lands mid-await, in the store the gate's re-assert reads.
         state.sessions.set_mirror_link(_key(caller), "C0FFEE", "1758.0003")
         return str(tmp_path)
 
@@ -228,14 +191,8 @@ def test_a_mirror_link_landing_during_the_await_still_refuses(tmp_path, monkeypa
 def test_the_slot_cap_is_re_checked_after_the_await(tmp_path, monkeypatch):
     """The ceiling is read from live state, so it can fill inside the window too.
 
-    The ceiling is lowered for this test because what is under test is WHEN it is
-    read, not what it is: minting the production 500 slots is superlinear and cost
-    ~17s of pure setup for no extra property. The caller's own slot stays under the
-    lowered cap -- asserted below -- so the refusal can only come from the fill that
-    lands inside the await.
-
-    Mutation guard: checking the cap only before the await lets two concurrent
-    creations land over the ceiling.
+    The cap is lowered because the test pins WHEN it is read; minting 500 slots
+    cost ~17s of setup.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -257,11 +214,7 @@ def test_the_slot_cap_is_re_checked_after_the_await(tmp_path, monkeypatch):
 
 
 def test_a_created_slot_records_the_caller_that_asked_for_it(tmp_path, monkeypatch):
-    """Attribution is what makes the per-creator ceiling countable at all.
-
-    Mutation guard: drop the ``_created_by`` write and every caller's count stays
-    0, so ``MAX_SLOTS_PER_CREATOR`` can never be reached and the cap is decorative.
-    """
+    """Attribution is what makes ``MAX_SLOTS_PER_CREATOR`` countable at all."""
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     caller.agent = "researcher"
@@ -271,9 +224,8 @@ def test_a_created_slot_records_the_caller_that_asked_for_it(tmp_path, monkeypat
 
     child = state.get_slot(created["target"])
     assert child is not None
-    # The resolved slot key, which is the identity `create_session` also audits --
-    # not the history key the caller presents. Write and count must agree, or the
-    # ceiling silently never binds.
+    # The resolved slot key, not the history key the caller presents: write and
+    # count must agree, or the ceiling never binds.
     assert getattr(child, "_created_by", "") == caller.key
     assert state.creator_slot_count(caller.key) == 1
 
@@ -281,15 +233,8 @@ def test_a_created_slot_records_the_caller_that_asked_for_it(tmp_path, monkeypat
 def test_the_creator_session_id_is_frozen_at_mint_not_read_live(tmp_path, monkeypatch):
     """The child's parent lineage must cite the creator that was live AT MINT.
 
-    The creator SID is stamped on the child at ``session_create`` time, from the
-    live caller handle. If instead it were read live at the child's first turn,
-    a creator slot closed and replaced in between (a distinct handle with its own
-    session id) would make the child cite the REPLACEMENT's crew log -- and that id
-    lands in the append-only, immutable ``session/opened`` entry with no recovery.
-
-    Mutation guard: re-read the creator SID live at emit (from the current slot
-    handle) and this test reddens, because the replacement below carries a
-    different session id than the one frozen at mint.
+    Read live at the first turn, a creator replaced in between would make the child
+    cite the replacement's crew log in the append-only ``session/opened`` entry.
     """
     from unittest.mock import MagicMock
 
@@ -309,16 +254,13 @@ def test_the_creator_session_id_is_frozen_at_mint_not_read_live(tmp_path, monkey
     assert getattr(child, "_created_by_sid", "") == "acp-sess-creator-at-mint"
     assert getattr(child, "_lineage_minted", False) is True
 
-    # The sid is NOT written into the birth metadata: the transcript is a file an
-    # agent's file tools can edit, so nothing read back from it may become the
-    # gateway-authored crew-log lineage. Only the attribution rides the metadata,
-    # for the ownership boundary.
+    # The sid stays out of the birth metadata: agents can edit the transcript, so
+    # nothing read back from it may become crew-log lineage.
     written = state.conversation_log.get_metadata(sc.slot_history_key(child))
     assert written.get("created_by") == caller.key
     assert "created_by_sid" not in written
 
-    # Now the creator's handle is replaced with a distinct session id -- the exact
-    # window the finding names. The frozen value on the child must NOT follow it.
+    # The creator's handle is replaced; the frozen value must not follow it.
     replacement = MagicMock()
     replacement.session_id = "acp-sess-replacement"
     caller._acp_client = replacement
@@ -326,13 +268,10 @@ def test_the_creator_session_id_is_frozen_at_mint_not_read_live(tmp_path, monkey
 
 
 def test_a_slot_nobody_minted_in_this_process_carries_no_lineage_witness(tmp_path):
-    """A slot that was not created through ``session_create`` in THIS process --
-    a person's own tab, a fork, a restore -- has no lineage witness, whatever its
-    ``_created_by`` says. The crew-log ``session/opened.parent`` write is gated on
-    the witness, so restored or hand-edited attribution never becomes lineage.
+    """A slot not created by ``session_create`` in this process has no lineage witness.
 
-    Mutation guard: default the flag to True, or set it on the plain
-    ``get_or_create_slot`` path, and this test reddens.
+    The ``session/opened.parent`` write is gated on the witness, so restored or
+    hand-edited ``_created_by`` never becomes lineage.
     """
     state = _make_state(tmp_path)
     plain = _slot(state, "chat-9")
@@ -342,14 +281,10 @@ def test_a_slot_nobody_minted_in_this_process_carries_no_lineage_witness(tmp_pat
 
 
 def test_the_opened_entry_cites_lineage_only_from_a_witnessed_mint():
-    """``_crew_log_lineage`` is the one seam between the slot and the crew-log
-    ``session/opened.parent`` write. It yields the creator only when this process
-    minted the slot; attribution that arrived any other way -- restored from a
-    transcript an agent's file tools can edit, or set by hand -- yields nothing,
-    so the emitter writes no ``parent`` and no metadata edit can forge lineage.
+    """``_crew_log_lineage`` yields the creator only when this process minted the slot.
 
-    Mutation guard: drop the witness check and the second case reddens; read the
-    sid live instead of the frozen field and the first case reddens.
+    Attribution restored from an editable transcript yields nothing, so no metadata
+    edit can forge ``session/opened.parent``.
     """
     from types import SimpleNamespace
 
@@ -378,15 +313,8 @@ def test_the_opened_entry_cites_lineage_only_from_a_witnessed_mint():
 def test_the_opened_entry_records_the_session_class_from_the_live_slot(monkeypatch):
     """``_crew_log_class`` is the seam between the slot and the ``class`` write.
 
-    The facts a reader needs to decide whether one session may read this one's crew
-    log, taken at the moment the log is opened because the reader that asks is
-    usually asking about a session that has since closed. A cron tab's link is not a
-    channel: it names the job's own run and republishes to nobody, which is the
-    exemption ``CRON_LINK_PREFIX`` carries wherever that boundary is enforced.
-
-    Mutation guard: drop the cron exemption and the third case reddens; drop the
-    mirror probe and the fourth reddens; let the probe's exception escape and the
-    fifth reddens instead of recording a channel.
+    Taken when the log opens, since readers usually ask about a closed session. A
+    cron tab's link (``CRON_LINK_PREFIX``) republishes to nobody, so it is no channel.
     """
     from types import SimpleNamespace
 
@@ -421,9 +349,8 @@ def test_the_opened_entry_records_the_session_class_from_the_live_slot(monkeypat
     mirrored["value"] = True
     assert _crew_log_class(state, plain) == ("persistent", "", True)
 
-    # A probe that cannot answer at all records a channel rather than recording
-    # "unpublished": opening a log must not raise, and the safe direction costs a
-    # dispatcher one refusal it can ask about.
+    # A probe that raises records a channel: opening a log must not raise, and the
+    # safe direction costs one refusal.
     def _raises(state, slot):
         raise RuntimeError("no store")
 
@@ -434,12 +361,8 @@ def test_the_opened_entry_records_the_session_class_from_the_live_slot(monkeypat
 def test_an_oversize_creator_session_id_is_dropped_at_mint_not_retained(tmp_path, monkeypatch):
     """The creator sid is backend-authored, so it is bounded where it is RETAINED.
 
-    An id past ``MAX_ACP_SESSION_ID_LEN`` is not stored on the child -- dropped,
-    never truncated, so it cannot push the child's ``session/opened`` entry over
-    the crew log's size cap and lose the whole entry. The sid is optional: absent
-    is a legal record, a clipped id would be a wrong one. (The sid never reaches
-    the birth metadata in any case; the bound is about the in-memory slot and the
-    entry it feeds.)
+    An id past ``MAX_ACP_SESSION_ID_LEN`` is dropped, never truncated, so it cannot
+    push ``session/opened`` over the size cap. Absent is legal; clipped would be wrong.
     """
     from unittest.mock import MagicMock
 
@@ -468,14 +391,8 @@ def test_an_oversize_creator_session_id_is_dropped_at_mint_not_retained(tmp_path
 def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
     """The per-creator ceiling bounds the DISTRIBUTION, not just the total.
 
-    The global cap alone leaves an automated creator on a nudge loop able to hold
-    all ``MAX_LIVE_SLOTS`` itself, after which every later create -- the person
-    opening a new chat tab included -- gets the 429. A resource one caller can
-    exhaust is not bounded from anybody else's point of view, so this is the half
-    of the bound that keeps the verb safe to auto-approve.
-
-    Mutation guard: test the caller's count against ``MAX_LIVE_SLOTS`` instead of
-    ``MAX_SLOTS_PER_CREATOR`` and the first assertion stops refusing.
+    With only the global cap, a looping creator could hold all ``MAX_LIVE_SLOTS`` and
+    every later create, a person's new tab included, would get the 409.
     """
     state = _make_state(tmp_path)
     hog = _slot(state, "chat-hog")
@@ -491,7 +408,7 @@ def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
     with pytest.raises(sc.SessionControlError) as err:
         asyncio.run(sc.create_session(state, caller_session_key=_key(hog)))
     assert err.value.code == "creator_slot_cap_reached"
-    assert err.value.status == 429, "a cap breach is a 429, not a 500"
+    assert err.value.status == 409, "a cap breach is a 409: waiting does not clear it"
 
     # The global ceiling is nowhere near full, which is the point: the refusal came
     # from this caller's own share, and everyone else still has room.
@@ -503,10 +420,8 @@ def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
 def test_slots_nobody_asked_for_are_charged_to_nobody(tmp_path):
     """A person's own tab and a fork reach ``get_or_create_slot`` unattributed.
 
-    Two failure modes this pins at once: charging those to a caller would let
-    ordinary human use burn an automated caller's budget, and counting an empty
-    creator key would make every unattributed slot match at once -- so the first
-    ``create_session`` call would refuse on a tree the conductor never touched.
+    An empty creator key must match nothing, or every unattributed slot would count
+    against the first caller.
     """
     state = _make_state(tmp_path)
     person = _slot(state, "chat-person")
@@ -518,15 +433,8 @@ def test_slots_nobody_asked_for_are_charged_to_nobody(tmp_path):
 def test_creation_never_loads_the_config_on_the_event_loop():
     """A cache miss reads and validates the config file, stalling every task.
 
-    `KiroCrewConfig.load()` is synchronous filesystem work. Called directly from a
-    coroutine it blocks the whole gateway, not just this request -- the loop cannot
-    run anything else while it reads. Offloading it is also what the repository's
-    no-blocking-call-on-event-loop rule requires.
-
-    Comments are stripped before the check, so the prose explaining WHY the call is
-    offloaded cannot satisfy or break the assertion about the call itself.
-
-    Mutation guard: calling it directly fails the first assertion.
+    Comments are stripped first, so prose about the call cannot satisfy or break the
+    assertion.
     """
     import inspect
 
@@ -541,23 +449,17 @@ def test_creation_never_loads_the_config_on_the_event_loop():
 def test_nothing_suspends_while_the_created_slot_is_half_configured():
     """`get_or_create_slot` publishes, so the agent must not be set after an await.
 
-    The slot is in the table the moment it is constructed. `await` is a suspension
-    point, so a slot published with no agent can be addressed in that window, and
-    `/api/chat` would resolve bindings from a blank agent -- running the turn
-    against the DEFAULT workspace's memory store instead of this one. The agent
-    therefore rides in the constructor, and the project directory is resolved
-    BEFORE the slot exists.
-
-    Asserted on ORDER rather than on the finished slot: every field is correct by
-    the time `create_session` returns either way, so a state assertion passes under
-    the very interleaving this pins.
+    A slot published with no agent would make `/api/chat` run against the default
+    workspace's memory store. Asserted on source order, since the finished slot is
+    correct either way.
     """
     import inspect
 
     src = inspect.getsource(sc.create_session)
     publish = src.index("get_or_create_slot(")
-    assert "await asyncio.to_thread(default_project_dir" in src
-    resolve = src.index("await asyncio.to_thread(default_project_dir")
+    # Off the loop: the caller's project, else the workspace default.
+    assert "await asyncio.to_thread(\n        _inherited_project_dir," in src
+    resolve = src.index("await asyncio.to_thread(\n        _inherited_project_dir,")
     assert resolve < publish, "the project directory must be resolved before the slot is published"
     # The agent is a constructor argument, not a later assignment.
     assert "agent=agent_name" in src, "the agent must be set at construction"
@@ -587,46 +489,35 @@ def test_nothing_suspends_while_the_created_slot_is_half_configured():
     assert (
         "_refuse_ineligible_creator(state, live_caller)" in src
     ), "the gate must run on the re-resolved slot, not the pre-await object"
-    # Nothing may suspend from the re-resolve onward: this span re-reads every input
-    # the allocation rests on, so an await inside it puts the decisions back out of
-    # date. Asserted from the re-resolve rather than the gate because more than one
-    # await precedes it, and the property is about the LAST one.
+    # Nothing may suspend from the re-resolve onward, since this span re-reads every
+    # input the allocation rests on.
     assert "await" not in src[reresolve:publish], (
         "an await between re-resolving the caller and allocating the slot makes "
         "every re-read decision stale again"
     )
-    # The folder confirmation is a suspension (it takes the folder-store lock),
-    # so it must sit BEFORE the re-resolve: after it, nothing suspends until the
-    # slot is configured, which is what makes "confirmed under the lock" still
-    # true at the assignment (folder mutations run on this loop).
+    # The folder confirmation suspends (folder-store lock), so it must precede the
+    # re-resolve.
     exists_check = src.index("await state.read_folders(")
     assert exists_check < reresolve, (
         "the folder existence check suspends, so it must precede the caller "
         "re-resolve -- after the re-gate nothing may suspend"
     )
-    # And the filing itself happens inside the synchronous configuration window,
-    # so no caller ever observes the published slot unfiled -- the atomicity
-    # this test requires.
+    # Filing happens in the synchronous window, so no caller sees the slot unfiled.
     filed = src.index("slot.folder_id = folder_id")
     assert publish < filed < configured, (
         "the folder must be assigned between publishing the slot and the end of "
         "its synchronous configuration, or a caller can observe it unfiled"
     )
-    # The Model-B un-hide is a DURABLE folder-store mutation, so it may run only
-    # after the filing actually landed: before the persist, any of the re-gate's
-    # refusals (or the write itself failing) would leave a folder the user hid
-    # permanently visible for a call that failed.
+    # The un-hide is a durable folder-store write, so it runs only after the persist:
+    # a refused create must not leave a hidden folder visible.
     unhide = src.index("await _unhide_folder(")
     persist = src.index("log.update_metadata")
     assert persist < unhide, (
         "un-hiding must follow the persist -- a refused create must leave no "
         "durable folder-tree mutation behind"
     )
-    # The allocation-to-persist span is broadcast-atomic: `get_or_create_slot`
-    # broadcasts on a leading edge, so without the suspend an idle gateway sends
-    # the new slot to every client BEFORE folder_id is assigned -- the session
-    # renders at the top level for a frame, the observable unfiled state this
-    # feature removes. Same pattern the move path pins for its own filing.
+    # `get_or_create_slot` broadcasts on a leading edge, so without the suspend the
+    # slot reaches clients before folder_id is set.
     suspend = src.index("with state.suspend_slots_push():")
     assert gate < suspend < publish, (
         "the slot allocation must sit inside suspend_slots_push, so the slot's "
@@ -637,11 +528,7 @@ def test_nothing_suspends_while_the_created_slot_is_half_configured():
 def test_create_refuses_at_the_same_slot_cap_as_fork_and_import(tmp_path, monkeypatch):
     """A third creation path must not make the shared ceiling advisory.
 
-    `chat_fork` and `session_transfer` both refuse at 500 live slots. Nothing else
-    bounds how many sessions one caller may open, so a creator that skipped the cap
-    would let a looping agent exhaust slots and transcript files.
-
-    Mutation guard: dropping the check lets this create succeed.
+    `chat_fork` and `session_transfer` both refuse at 500 live slots.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -651,17 +538,13 @@ def test_create_refuses_at_the_same_slot_cap_as_fork_and_import(tmp_path, monkey
         asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
 
     assert exc.value.code == "slot_cap_reached"
-    assert exc.value.status == 429
+    assert exc.value.status == 409
 
 
 def test_a_failed_persist_retracts_the_slot(tmp_path, monkeypatch):
     """A session whose ownership did not reach disk must not be left behind.
 
-    Reporting the failure while leaving the slot in the table is the worst outcome:
-    the caller sees an error and the session exists anyway -- usable in memory,
-    addressable by its creator, and gone on the next restart.
-
-    Mutation guard: without the retraction the slot survives the raise.
+    Otherwise the caller sees an error while the session exists until the next restart.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -681,22 +564,15 @@ def test_a_failed_persist_retracts_the_slot(tmp_path, monkeypatch):
 def test_retraction_spares_a_slot_a_turn_already_started_on(tmp_path, monkeypatch):
     """Retraction must not detach work that began inside the persist window.
 
-    `get_or_create_slot` publishes, and the birth write is awaited, so a turn can
-    start on the slot while that write is in a worker thread. Popping the slot then
-    leaves the turn running with nothing pointing at it -- unreachable by the read
-    verb and unstoppable by the stop verb, because both resolve through the slot
-    table. A phantom session that vanishes on the next restart is the lesser harm.
-
-    Mutation guard: an unconditional pop removes the slot and loses the turn.
+    A turn can start while the birth write is awaited. Popping the slot would leave
+    that turn unreachable and unstoppable; a phantom session is the lesser harm.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     before = set(state._slots)
 
     def _boom(*_a, **_kw):
-        # Stand in for the interleaving: the turn lands on the freshly published
-        # slot while the birth write is still in flight, and only then does the
-        # write fail.
+        # A turn lands while the birth write is in flight, then the write fails.
         born = [k for k in state._slots if k not in before]
         assert born, "the slot is published before the birth write, so it exists here"
         state._slots[born[0]].append("user", "work that must not be orphaned", "msg msg-u")
@@ -715,12 +591,8 @@ def test_retraction_spares_a_slot_a_turn_already_started_on(tmp_path, monkeypatc
 def test_slot_cap_has_one_owning_constant() -> None:
     """Every slot-creating path reads the SAME owning ceiling constant.
 
-    The live-slot ceiling has one home -- ``state.MAX_LIVE_SLOTS`` in the module
-    that owns ``live_slot_count()`` -- and each slot-creating door (session
-    create, chat fork, session import) imports that one name, so the effective
-    limit cannot diverge by which door the caller came through. This
-    pins that no door has re-introduced its own literal: all three modules must
-    expose the identical owning object.
+    Session create, chat fork and session import all import ``state.MAX_LIVE_SLOTS``,
+    so the limit cannot differ by which path the caller came through.
     """
     from kiro_crew.dashboard import chat_fork
     from kiro_crew.dashboard import session_control as sc_mod
@@ -728,8 +600,7 @@ def test_slot_cap_has_one_owning_constant() -> None:
     from kiro_crew.dashboard import state as state_mod
 
     owning = state_mod.MAX_LIVE_SLOTS
-    # Each door imported the owning constant into its own namespace; assert they
-    # are the very same object, so a re-introduced per-door literal is caught.
+    # The same object, so a per-path literal is caught.
     assert sc_mod.MAX_LIVE_SLOTS is owning
     assert chat_fork.MAX_LIVE_SLOTS is owning
     assert session_transfer.MAX_LIVE_SLOTS is owning

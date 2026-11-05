@@ -12,7 +12,8 @@ Instance fields written: ``_load_replay_frames``, ``_session_cwds``, ``_session_
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_refuse_over_ceiling_start``,
-``_remote_session_servers``, ``_remote_workspace_agents``, ``_wire_mode_id``, ``_work_dir``,
+``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
+``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
 """
 
@@ -34,6 +35,8 @@ from kiro_crew.acp.mcp_session_report import (
 )
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
+    _drop_withdrawn_stubs,
+    _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
 )
 from kiro_crew.acp.session_handle import (
@@ -43,10 +46,7 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     _load_watchdog_settings,
 )
-from kiro_crew.acp.session_mcp import (
-    session_mcp_server_is_disabled,
-    settings_server_names,
-)
+from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled, settings_server_names
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -149,6 +149,8 @@ async def load_session(
     # step, nothing to unwind, no shared coroutine that could grow a failure mode
     # later. A membership read is the sanctioned form of that comparison.
     mirrored = None
+    # The KAS crewmate worker's stub names, set beside its one overlay lookup.
+    worker_stubs: frozenset[str] | None = None
     if has_mirror(self.acp_backend):
         mirrored = await self._mirrored_session_mcp(
             active_agent,
@@ -172,9 +174,17 @@ async def load_session(
             self.acp_backend,
             session_work_dir,
             launch_spec,
+            session_key or "",
         )
         mcp_servers = await self._unpooled_control_planes(pooled, active_agent, session_work_dir)
+        worker_stubs = _kas_worker_stub_names(
+            self.acp_backend, pool_agent, session_key or "", pooled
+        )
         mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+        # After the token stamp, so a label element never carries the token.
+        mcp_servers = await self._session_label_elements(
+            mcp_servers, active_agent, session_work_dir, session_key
+        )
     member_withheld = False
     # Whether the member session-control entry is IN the array, the one fact
     # the context builder needs to teach the session_* tools truthfully.
@@ -287,6 +297,7 @@ async def load_session(
             member_dispatch=bool(member_session_key) and not member_withheld,
             crew_panel=panel_mounted,
             session_key=session_key,
+            **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
         )
         kas_agents = kas_extras.custom_agents
         payload_snapshot = kas_extras.derived_spec_snapshot
@@ -316,6 +327,8 @@ async def load_session(
         # Read BEFORE the hoist: it moves launcher entries out of the batch, and
         # the recorded batch then lacks the snapshots this projection wrote.
         launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
+        # Same as create_session: a worker stub the payload's spec read muted.
+        mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
         kas_agents, mcp_servers = hoist_servers_for_session(
             kas_agents,
             active_agent,
@@ -324,6 +337,7 @@ async def load_session(
             include_user_servers=True,
             reserved_names=reserved,
             managed_entries=kas_extras.managed_entries,
+            app_launches=kas_extras.app_launches,
         )
         # REBIND, not just re-assign the param: the hoist changes the array, and
         # wire_servers is what the stall diagnostic and the session report read.
@@ -337,6 +351,14 @@ async def load_session(
         load_params["mcpServers"] = wire_servers
         kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
         attach_kas_custom_agents(load_params, kas_agents)
+        # The same last word session/new gets, asked inside this branch so the
+        # kiro resume path still stops at the comparison above.
+        load_params, agent = self._harness.session_request(
+            METHOD_SESSION_LOAD,
+            load_params,
+            agent,
+            agent_capabilities=self._agent_capabilities,
+        )
     budget = await self._session_start_budget()
     self._session_inits_in_flight += 1
     loaded_session_id = ""

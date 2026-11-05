@@ -169,7 +169,21 @@ async def _polling_loop(self: TelegramClient) -> None:
             self._notify_status(True, "")
             attempt = 0  # reset on success
             for update in updates:
-                self._dispatch(update)
+                # Guard EACH update on its own. A malformed envelope that makes
+                # ``_dispatch`` raise (``_build_inbound`` reads ``message.from``
+                # / ``message.chat`` as dicts, and a null or odd-typed field
+                # raises) would otherwise abort this ``for`` under the loop's
+                # own ``except Exception`` -- so every LATER update in the same
+                # getUpdates batch goes undispatched, and because ``_offset``
+                # already advanced on observation in ``_get_updates`` Telegram
+                # never redelivers them. One bad update must cost only itself.
+                try:
+                    self._dispatch(update)
+                except Exception:
+                    logger.exception(
+                        "Telegram: dropping one malformed update (update_id=%s)",
+                        update.get("update_id") if isinstance(update, dict) else "?",
+                    )
             # AFTER the whole batch is dispatched, so every update that became
             # a live handler is already registered in flight and the low-water
             # mark holds behind the oldest of them. An empty batch, or one whose
@@ -250,33 +264,15 @@ def _resolve_updates(self: TelegramClient, update_ids: "Iterable[int]") -> None:
 def _persistable_offset(self: TelegramClient) -> int:
     """The cursor it is SAFE to resume from: the oldest unresolved update.
 
-    WHAT THIS DOES NOT DO, stated first because the name invites the wrong
-    reading: it is **not** a delivery guarantee across a crash. ``getUpdates``
-    is Telegram's own acknowledgement — calling it with ``offset=N`` confirms
-    everything below N SERVER-SIDE, and there is no API call to un-confirm. So
-    once the loop polls again, an in-flight update is gone from Telegram
-    whatever this file says, and a crash mid-turn loses that message. Closing
-    that would mean either serializing inbound behind turn completion (a long
-    turn would then block ``/stop``) or durably storing the update PAYLOAD
-    before confirming it, which is a different feature: a persistent inbound
-    queue. This cursor bounds DUPLICATE REPLAY, not loss.
+    It bounds DUPLICATE REPLAY, not loss: ``getUpdates(offset=N)`` confirms
+    everything below N server-side with no way to un-confirm, so a crash mid-turn
+    still loses that message (closing that needs a persistent inbound queue).
 
-    Within that scope, two failure modes have to be avoided at once:
-
-    * Persisting what was OBSERVED replays nothing but re-answers nothing
-      either: on restart the process resumes past updates it never handled, so
-      any that Telegram had NOT yet confirmed are skipped too.
-    * Persisting only what COMPLETED replays forever. An update the gateway
-      deliberately never turns into a turn (a sticker, an unauthorized sender)
-      has no completion to wait for, so a strict high-water mark on success
-      would redeliver it on every restart for the life of the install.
-
-    A low-water mark resolves both, because "resolved" covers refusal as well as
-    delivery: advance to the observed cursor when nothing is in flight, and hold
-    at the oldest in-flight id otherwise. The replay window is then exactly the
-    set of turns that were still running — the smallest honest answer, and a
-    strict improvement on tracking nothing, which is what this channel did
-    before.
+    Persisting the OBSERVED cursor would skip unconfirmed updates on restart;
+    persisting only COMPLETED ones would replay forever an update that never
+    becomes a turn (a sticker, an unauthorized sender). A low-water mark over
+    "resolved" (refusal counts) avoids both: the replay window is exactly the
+    turns still running.
     """
     if not self._in_flight:
         return self._offset

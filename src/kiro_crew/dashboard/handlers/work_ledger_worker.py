@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from aiohttp import web
@@ -464,6 +465,8 @@ STEER_ITEM_CLOSED = "item_closed"
 #: No such item on that ledger, or the item is one the record cannot hold whole.
 STEER_NO_ITEM = "no_item"
 STEER_ITEM_TOO_LARGE = "work_item_too_large"
+#: The caller's ``only_while`` test answered False under the board lock.
+STEER_NOT_WAITING = "not_waiting"
 
 
 def _steer_unit(state: Any, keys: tuple[str, ...], board_key: str) -> str:
@@ -498,8 +501,15 @@ async def record_person_steer_result(
     text: str,
     *,
     unit_keys: tuple[str, ...] = (),
+    only_while: Callable[[work_ledger.WorkItem, list[dict[str, Any]]], bool] | None = None,
+    id_salt: str = "",
 ) -> tuple[str, str]:
     """One ``steer`` event on *item_id* of *board_key*'s ledger, as the person wrote it.
+
+    *only_while*, when given, is asked under the board lock with the item and its
+    event tail as they stand then; ``False`` writes nothing (``STEER_NOT_WAITING``).
+    *id_salt* goes into the event's id, so two steers with the same text in the
+    same second stay two events.
 
     The one person-steer transaction: the Crew Mode worker steer route and the
     worker's own composer (``POST /api/chat`` on a worker) both call it, through
@@ -534,6 +544,12 @@ async def record_person_steer_result(
         if probe_item is None:
             _audit(board_key, "crew_mode.steer", "denied", resources=item_id, error=STEER_NO_ITEM)
             return "", STEER_NO_ITEM
+        if only_while is not None:
+            # Judged under the board lock a worker's report also takes, so a report
+            # filed after the caller looked cannot be answered by this event.
+            events = await asyncio.to_thread(work_ledger.read_events, board_key, item_id)
+            if not only_while(probe_item, [e.to_dict() for e in events]):
+                return "", STEER_NOT_WAITING
         probe, invalid = _entry_probe_with_baseline(
             board_key,
             probe_item,
@@ -562,7 +578,9 @@ async def record_person_steer_result(
         )
         try:
             result = await asyncio.to_thread(
-                work_ledger.apply_person_steer, board_key, item_id, text
+                functools.partial(
+                    work_ledger.apply_person_steer, board_key, item_id, text, id_salt=id_salt
+                )
             )
         except WorkLedgerError:
             _audit(board_key, "crew_mode.steer", "denied", resources=item_id, error=STEER_NO_ITEM)
@@ -598,3 +616,121 @@ async def record_person_steer_result(
         await asyncio.to_thread(_mark_recorded, board_key, item.item_id)
         _audit(board_key, "crew_mode.steer", "ok", resources=item.item_id)
     return item.item_id, ""
+
+
+# ── the person's answer to a worker's approval ask ───────────────────────
+
+
+#: The ``steer`` text written when a person answers a tool approval in the chat of a
+#: worker whose last report waits on an approval. Fixed words, never the tool's title
+#: or command, so nothing from the tool call reaches the ledger.
+APPROVAL_ANSWERED_TEXT = "The person answered a tool approval in this crew member's chat."
+
+
+def _last_report_id(events: list[dict[str, Any]]) -> str:
+    """The id of the newest ``report`` event on *events*, or ``""``."""
+    for event in reversed(events):
+        if event.get("kind") == "report":
+            return str(event.get("id") or "")
+    return ""
+
+
+def _waits_on_approval(
+    worker_key: str, report_id: str | None = None
+) -> Callable[[work_ledger.WorkItem, list[dict[str, Any]]], bool]:
+    """Whether an item, as it stands, still waits on the person for *worker_key*'s approval.
+
+    Open, still bound to *worker_key*, last report with reason ``approval``, and not
+    answered since (``work_ledger_board.awaits_person``). With *report_id*, that last
+    report must also be the one the answer was matched to: asked again under the
+    board lock, so a newer report filed in between (an approval ask too) is never
+    answered by it.
+    """
+    from kiro_crew.dashboard.handlers.work_ledger_board import awaits_person
+
+    def waits(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
+        return (
+            not item.is_terminal
+            and item.worker_session_key == worker_key
+            and item.reason == "approval"
+            and (report_id is None or (bool(report_id) and _last_report_id(events) == report_id))
+            and awaits_person(item, events)
+        )
+
+    return waits
+
+
+def _approval_ask_of(slot_key: str) -> tuple[str, str, str, str]:
+    """``(board, item id, worker key, report id)`` *slot_key*'s approval answer meets.
+
+    Blanks when there is none. BLOCKING (file reads). The worker's own binding names
+    the item, the way ``work_report`` resolves it, and the item counts only while
+    :func:`_waits_on_approval` holds; the report id is the one it answers. Anything
+    unreadable answers no item, so a failure writes nothing.
+    """
+    from kiro_crew import session_ledger
+
+    try:
+        for candidate in dict.fromkeys((slot_key, session_ledger.ledger_key(slot_key))):
+            binding = work_ledger.read_binding(candidate)
+            if binding is None:
+                continue
+            board, item_id = binding
+            item = work_ledger.read_work_item(board, item_id)
+            if item is None:
+                return "", "", "", ""
+            events = [e.to_dict() for e in work_ledger.read_events(board, item_id)]
+            report_id = _last_report_id(events)
+            if report_id and _waits_on_approval(candidate)(item, events):
+                return board, item_id, candidate, report_id
+            return "", "", "", ""
+    except Exception:  # noqa: BLE001 - an unreadable binding records nothing
+        logger.debug("approval answer: binding read failed for %s", slot_key, exc_info=True)
+    return "", "", "", ""
+
+
+async def record_approval_answered(state: Any, slot_key: str) -> str:
+    """Record that a person answered a tool approval in worker *slot_key*'s chat.
+
+    The approval a worker's ``blocked``/``question`` report with reason ``approval``
+    asked for is answered in the worker's own chat, and that answer reaches no
+    ledger by itself: the item kept reading "needs you" on every surface until the
+    worker happened to report again. One ``steer`` event (the person's own act on
+    the crew member, :func:`record_person_steer_result`) makes
+    ``work_ledger_board.answered_since_report`` see it, so the Board, the sidebar
+    count and goal-board clear together. It goes into the BOARD's crew-log unit (no
+    ``unit_keys``): the ``work`` fold behind the sidebar and goal-board reads the
+    board's own units only. Written only while the item still waits on that
+    approval, judged again under the board lock, so one event per ask and never an
+    answer to a newer report. Returns the item id, or ``""``. Never raises.
+    """
+    try:
+        board, item_id, worker_key, report_id = await asyncio.to_thread(_approval_ask_of, slot_key)
+        if not item_id:
+            return ""
+        landed, _why = await record_person_steer_result(
+            state,
+            board,
+            item_id,
+            APPROVAL_ANSWERED_TEXT,
+            only_while=_waits_on_approval(worker_key, report_id),
+            # The fixed text and a seconds-precision stamp would give two answers in
+            # one second one id; the report each one answers keeps them apart.
+            id_salt=report_id,
+        )
+        return landed
+    except Exception:  # noqa: BLE001 - an approval answer must not fail on the ledger
+        logger.warning("approval answer: the ledger event was not written", exc_info=True)
+        return ""
+
+
+def note_approval_answered(state: Any, slot_key: str) -> None:
+    """Schedule :func:`record_approval_answered` off the turn's path. Never raises."""
+    try:
+        task = asyncio.get_running_loop().create_task(record_approval_answered(state, slot_key))
+        tasks = getattr(state, "_background_tasks", None)
+        if isinstance(tasks, set):
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+    except Exception:  # noqa: BLE001 - no loop, or a stub state: record nothing
+        logger.debug("approval answer: could not schedule the ledger write", exc_info=True)

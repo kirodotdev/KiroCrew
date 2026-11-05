@@ -59,6 +59,7 @@ try:
         STOP_REASON_TOOL_STALL,
     )
     from kiro_crew.acp_backends import (
+        ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
         ACP_BACKENDS_ACP_RUNTIME,
         ACP_BACKENDS_EFFORT_OVERLAY,
@@ -77,6 +78,7 @@ except ImportError:  # pragma: no cover - standalone / test fallback
         agent: str = "",
         app: str = "",
         security_only: bool = True,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> str | None:
         return "Blocked: the tool security gate could not be consulted"
 
@@ -156,6 +158,67 @@ logger = logging.getLogger(__name__)
 _WARNED_FALLBACK_BACKENDS: set[str] = set()
 
 
+class ReviewHarnessDenied(RuntimeError):
+    """An enterprise review would fall back to the Kiro CLI harness, or run a KAS
+    that boot proved cannot start.
+
+    Enterprise only (RFC D6): KAS is the floor and the Kiro CLI harness is being
+    retired, so an enterprise build never falls back to it. Kiro CLI runs a review
+    only when it is picked (``agent.acp_backend`` ``"kiro"``) and the remote
+    ``agent_backend`` policy allows it; that pick never reaches the fallback.
+    """
+
+    code = "review_harness_unavailable"
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(
+            f"{self.code}: the review cannot run here ({reason}). Kiro Crew does not "
+            "fall back to the Kiro CLI harness in an enterprise build. Run "
+            "`kiro-cli update` to get a kiro-cli that supports `--agent-engine v3`, "
+            "then start Kiro Crew again. Nothing runs on another harness in its place."
+        )
+
+
+def _enterprise() -> bool:
+    """Whether this build is the enterprise edition (``False`` when unknown)."""
+    try:
+        from kiro_crew import edition
+
+        return edition.is_enterprise()
+    except Exception:  # pragma: no cover - standalone / test fallback
+        return False
+
+
+def _kiro_fallback(reason: str) -> str:
+    """``ACP_BACKEND_KIRO`` as the review runtime's FALLBACK harness: ``oss`` only.
+
+    In an enterprise build it always raises :class:`ReviewHarnessDenied`: there is no
+    automatic fallback to Kiro CLI there (RFC D6). An explicit Kiro CLI pick the policy
+    allows is served directly by the runtime and never reaches this function.
+    """
+    if _enterprise():
+        raise ReviewHarnessDenied(reason)
+    return ACP_BACKEND_KIRO
+
+
+def _refuse_unstartable_kas(backend: str) -> str:
+    """*backend*, unless it is KAS and the enterprise boot proved KAS cannot start.
+
+    Uses the gateway's own record (``enterprise_boot.kas_refusal``); nothing is
+    recorded in an ``oss`` build or outside the gateway, so this then returns as is.
+    """
+    if not (backend == ACP_BACKEND_KAS and _enterprise()):
+        return backend
+    try:
+        from kiro_crew.enterprise_boot import kas_refusal
+    except Exception:  # pragma: no cover - standalone / test fallback
+        return backend
+    refusal = kas_refusal()
+    if refusal is not None:
+        raise ReviewHarnessDenied(refusal[0])
+    return backend
+
+
 def review_backend() -> str:
     """The ACP backend the shared review runtime spawns under.
 
@@ -173,10 +236,17 @@ def review_backend() -> str:
     stored = _stored_agent_value("acp_backend") if _stored_agent_value is not None else None
     selection = backend_from_stored(None if stored is _ABSENT_AGENT_KEY else stored)
     if selection is None:
+        if _enterprise():
+            # The enterprise default is the governed default (KAS, RFC D6), which
+            # this runtime serves; Kiro CLI is not its default there.
+            default = resolve_selected_backend(None)
+            if default in ACP_BACKENDS_ACP_RUNTIME:
+                return _refuse_unstartable_kas(default)
+            return _kiro_fallback("no backend is configured")
         return ACP_BACKEND_KIRO
     resolved = resolve_selected_backend(selection)
     if resolved in ACP_BACKENDS_ACP_RUNTIME:
-        return resolved
+        return _refuse_unstartable_kas(resolved)
     key = resolved if isinstance(resolved, str) else repr(resolved)
     if key not in _WARNED_FALLBACK_BACKENDS:
         _WARNED_FALLBACK_BACKENDS.add(key)
@@ -185,7 +255,7 @@ def review_backend() -> str:
             "review runtime; reviews run on kiro-cli instead",
             resolved,
         )
-    return ACP_BACKEND_KIRO
+    return _kiro_fallback(f"{resolved!r} is not served by the shared review runtime")
 
 
 def runtime_preflight() -> str:
@@ -212,7 +282,11 @@ def runtime_preflight() -> str:
                 "(kiro_crew.acp.runtime) is not importable in this install")
     # Only a kiro-cli runtime looks for kiro-cli; a kas or codex runtime
     # resolves its own executable at spawn and reports a miss there.
-    if (resolve_kiro_cli is not None and review_backend() == ACP_BACKEND_KIRO
+    try:
+        backend = review_backend()
+    except ReviewHarnessDenied as exc:
+        return str(exc)
+    if (resolve_kiro_cli is not None and backend == ACP_BACKEND_KIRO
             and resolve_kiro_cli() is None):
         return ("the reviewer cannot run: no kiro-cli executable was found on "
                 "this host (the reviewer session is driven by kiro-cli — "
@@ -566,7 +640,8 @@ class _BatchRuntimeHolder:
         # work_dir + sandbox_mode="auto" mirror the old AcpClient worker: the
         # OS sandbox scrubs credential paths/env for this LLM-directed subprocess
         # (GitHub fetch/post run via the `gh` CLI's own auth; the worker only
-        # writes data/results and runs `python3 sage_lib/pipeline.py`).
+        # writes data/results and runs `<python_command()> sage_lib/pipeline.py`,
+        # where python_command() is the gateway's own sys.executable).
         rt = AcpRuntime(agent=self._agent, work_dir=self._work_dir, sandbox_mode="auto",
                         acp_backend=backend)
         try:

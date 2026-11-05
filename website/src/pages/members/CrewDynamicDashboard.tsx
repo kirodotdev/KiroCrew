@@ -16,6 +16,8 @@ import { useLanguage } from '../../i18n/LanguageProvider'
 import { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, subscribeDashboardFields } from '../../hooks/useWebSocket'
 import CrewDashboardEmpty from './CrewDashboardEmpty'
 import CrewDashboardBehindBand from './CrewDashboardBehindBand'
+import CrewDashboardDownload from './CrewDashboardDownload'
+import { applyPushedRead, withIslandRead, type DashboardRead } from './dashboardDownloadFile'
 import { CREW_DASHBOARD_SANDBOX } from '../../lib/crewDashboardSandbox'
 
 // The grant set lives in lib/crewDashboardSandbox.ts so the artifact viewer can
@@ -45,6 +47,24 @@ export const CREW_DASHBOARD_SANDBOX_STATIC = ''
 /** The grant set this page gets: the server decides, not the page. */
 export function crewDashboardSandbox(scripts: boolean): string {
   return scripts ? CREW_DASHBOARD_SANDBOX : CREW_DASHBOARD_SANDBOX_STATIC
+}
+
+/** Download only a loaded, visible document minted from the current input.
+ *  A retained URL is not proof that its replacement minted or loaded. */
+export function isCurrentDashboardDocument({ srcdoc, mint, url, stageUrl, source, drawn }: {
+  srcdoc: string | null
+  mint: { url: string | null; pending: boolean; failed: boolean; stalled: boolean }
+  url: string | null
+  stageUrl: string | null
+  source: { url: string | null; srcdoc: string | null }
+  drawn: { url: string | null; loaded: boolean }
+}): boolean {
+  return Boolean(
+    srcdoc && url && mint.url === url && stageUrl === null
+    && !mint.pending && !mint.failed && !mint.stalled
+    && source.url === url && source.srcdoc === srcdoc
+    && drawn.url === url && drawn.loaded,
+  )
 }
 
 /** The gateway's refill message type. Mirrors `dashboard_frame.DATA_MESSAGE_TYPE`. */
@@ -381,6 +401,11 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           // controller -- so the wildcard reaches exactly one window.
           // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
           current.postMessage({ type: DATA_MESSAGE_TYPE, read }, '*')
+          const page = shownRef.current
+          if (page) {
+            const held = pushedRef.current?.page === page ? pushedRef.current.read : islandRead(page.html)
+            if (held) pushedRef.current = { page, read: applyPushedRead(held, read) }
+          }
           // AFTER the values are in the page, never before. Clearing it at click time
           // states the numbers are current again while the read that would make that
           // true is still in flight -- and if it fails, nothing on screen ever says so.
@@ -432,6 +457,12 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   //
   // Only a member target has a crewmate slug the push bus is keyed by; a root
   // session's page is not pushed and the subscription is not armed for it.
+  //
+  // What a push gave the page is kept here too, keyed by the page it was pushed onto,
+  // because the push never reaches `shown.html`: the Download button saves from it,
+  // and without this the file would carry the values from before the pushes. A new
+  // page (any new `shown`) starts again from its own island.
+  const pushedRef = useRef<{ page: Loaded; read: DashboardRead } | null>(null)
   useEffect(() => {
     if (!memberSlug) return
     return subscribeDashboardFields(memberSlug, (read, fromPackage) => {
@@ -456,8 +487,14 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // Same reason as the refetch answer above: an opaque origin cannot be named,
       // and the post reaches this one frame's contentWindow with model-declared,
       // already-redacted fields.
+      const win = frameRef.current?.contentWindow
+      if (!win) return
       // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-      frameRef.current?.contentWindow?.postMessage({ type: DATA_MESSAGE_TYPE, read }, '*')
+      win.postMessage({ type: DATA_MESSAGE_TYPE, read }, '*')
+      const page = shownRef.current
+      if (!page) return
+      const held = pushedRef.current?.page === page ? pushedRef.current.read : islandRead(page.html)
+      if (held) pushedRef.current = { page, read: applyPushedRead(held, read) }
     })
   }, [memberSlug])
   // Only a SETTLED answer says the page is gone. A frame remounted on a newer
@@ -470,7 +507,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // Only the live member read: a staged preview is a page the crewmate offered, and
   // a session's page has no crewmate to ask.
   const liveMember = target.kind === 'member' && !staged
-  const suggestions = liveMember && !isError && data?.suggestions === true
+  // Not gated on `isError`: a failed re-read keeps the last answer, and must not
+  // flip an unadopted crewmate's tab onto the default page that answer carries.
+  const suggestions = liveMember && data?.suggestions === true
   useEffect(() => { onPreviewGone?.(previewGone) }, [onPreviewGone, previewGone])
 
   // The person's layout lock, read off the same body the page comes from. This tab
@@ -684,7 +723,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const shownKey = shown ? pageKey(shown) : null
   const srcdoc = useMemo(
     () =>
-      shown && !isError
+      // NOT gated on `isError`: a failed background re-read keeps the page on
+      // screen under the behind band. Dropping the srcdoc here unmounted the frame,
+      // and the next good read built a new one -- a true reload.
+      shown
         // `linkBridge`: the sandbox withholds `allow-popups` and top navigation, so
         // a `_blank` or `_top` link would be a dead click. The shim hands it to
         // `useFrameLinkBridge` above, which checks the frame, URL and gesture.
@@ -709,7 +751,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           })
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the page, see above
-    [shownKey, docRev, isError, themeVars, theme, relayWheel],
+    [shownKey, docRev, themeVars, theme, relayWheel],
   )
   const mint = useSandboxDoc(srcdoc)
   const { pending, retry } = mint
@@ -877,6 +919,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     return () => window.removeEventListener('message', onMessage)
   }, [staged])
   const isDrawn = drawn.url === url && drawn.loaded && (drawn.ready || !runsScript)
+  // Refills and pushes keep the mounted document; only a replacement must mint
+  // and load before exporting. Do not require the preview-only ready beacon.
+  const visibleIsCurrent = isCurrentDashboardDocument({ srcdoc, mint, url, stageUrl, source: urlSource, drawn })
   const mountedStagedMs = staged && shown && url && !pending && !failed && isDrawn
     && urlSource.url === url && urlSource.srcdoc === srcdoc
     ? shown.stagedMs
@@ -1080,7 +1125,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     </div>
   ) : null
 
-  if (isLoading || awaitingFirstPage) {
+  // `!shown`: a new query key (a language switch) loads with nothing cached, and
+  // a page already on screen stays mounted through it. Unmounting it here meant a
+  // failed read for that key remounted the frame on its spent document url.
+  if ((isLoading && !shown) || awaitingFirstPage) {
     return (
       <div className="p-4 space-y-1.5" data-testid="crew-dashboard-loading" aria-hidden>
         <div className="h-3 rounded bg-bg-hover animate-pulse" />
@@ -1115,7 +1163,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     )
   }
 
-  if (isError) {
+  // Only when no page is on screen. A page already shown stays, under the behind
+  // band below, until the next good read clears it.
+  if (isError && !shown) {
     return (
       <div className="p-4 space-y-1.5">
         {/* No agent hand-off: this frame is the Members page's Dashboard tab, and
@@ -1211,8 +1261,30 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   }
 
   return (
-    <div className="relative h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame" data-preview={preview ? 'true' : undefined}>
+    <div className="group relative h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame" data-preview={preview ? 'true' : undefined}>
       {lockBadge}
+      {target.kind === 'member' && !preview && (
+        // The bot's live page only: a staged preview is not the page anyone keeps,
+        // and a session's page is not a bot's Dashboard. Floated over the page's
+        // top-right corner and shown on hover, so it takes no row of its own; a
+        // device with no hover and a keyboard focus both keep it visible.
+        <div className="absolute right-2 top-2 z-10 flex max-w-[80%] items-start justify-end gap-2" style={lockBadge ? { top: '2.25rem' } : undefined}>
+          <CrewDashboardDownload
+            name={displayName}
+            ready={visibleIsCurrent}
+            input={() => {
+              // The confirm may outlive a mint, theme change or staged replacement.
+              if (!visibleIsCurrent) return null
+              // A page shown without script never ran the bootstrap that applies a
+              // push, so what it shows is `shown.html` as composed.
+              const pushed = pushedRef.current
+              const html = runsScript && pushed?.page === shown ? withIslandRead(shown.html, pushed.read) : shown.html
+              return { html, themeVars, mode: theme, pageScripts: runsScript }
+            }}
+            className="border border-border bg-bg-elevated shadow-sm opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+          />
+        </div>
+      )}
       {broken && (
         // The page on screen is the last one that parsed. Banded, never replaced: the
         // alternative is blanking a working page because a NEWER copy is broken.
@@ -1287,7 +1359,28 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           refetch band below says the same thing more precisely, with a Retry; when it
           is up this one stands down rather than say it twice, but stays mounted so a
           drop seen meanwhile is not forgotten. */}
-      <CrewDashboardBehindBand readAt={dataUpdatedAt} staleAfterMs={DASHBOARD_BEHIND_AFTER_MS} hidden={Boolean(refetchError)} />
+      <CrewDashboardBehindBand readAt={dataUpdatedAt} staleAfterMs={DASHBOARD_BEHIND_AFTER_MS} hidden={Boolean(refetchError) || isError} />
+      {isError && !refetchError && (
+        // THE LATEST RE-READ FAILED, and the page from the last good one stays on
+        // screen. Removing it here was a true reload: the next good read built a
+        // brand-new frame. Cleared by the next good read.
+        <div
+          className="shrink-0 border-b border-border p-2 flex items-start gap-2"
+          data-testid="crew-dashboard-read-error-band"
+        >
+          {/* No hand-off: the Members page's unsaved Profile and crew-editor
+              drafts, as at the isError branch above. */}
+          <ErrorNotice
+            message={i18nT('pages.membersPage.dashboard_values_stale')}
+            className="flex-1 min-w-0"
+            testId="crew-dashboard-read-error"
+          />
+          <Btn disabled={isFetching} onClick={() => void refetch()} className="shrink-0" data-testid="crew-dashboard-read-error-retry">
+            <RotateCw className="lucide-inline" aria-hidden />
+            {i18nT('pages.membersPage.webview_retry')}
+          </Btn>
+        </div>
+      )}
       {refetchError && (
         <div
           className="shrink-0 border-b border-border p-2 flex items-start gap-2"

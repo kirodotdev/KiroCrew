@@ -40,6 +40,10 @@ const DEFAULT_SIZE = { width: 360, height: 200 }
 const MIN_SIZE = { width: 40, height: 24 }
 const MAX_SIZE = { width: 720, height: 800 }
 
+/** Why a frame failed: no `ready` in time, the app said `failed`, or no frame
+ *  could be minted for it (disabled, not approved, gone). */
+export type FailureCause = 'timeout' | 'app' | 'unavailable'
+
 export interface PreviewFrame {
   key: string
   appName: string
@@ -71,8 +75,9 @@ export interface FrameHostOptions {
    *  with `frameId`, a renewal for that frame. */
   mint(appName: string, frameId?: string, providerId?: string): Promise<Minted>
   theme(): 'dark' | 'light'
-  /** The frame could not load or activate the module. */
-  onFailed(frame: PreviewFrame, why: string): void
+  /** The frame could not load or activate the module. `why` is for the log;
+   *  `cause` is what the user is told. */
+  onFailed(frame: PreviewFrame, why: string, cause: FailureCause): void
   onTextPatternsOff(appName: string, ids: string[]): void
   /** Escape pressed inside a card. */
   onEscape(): void
@@ -88,6 +93,11 @@ export function mintFrame(appName: string, frameId?: string, providerId = ''): P
 const providerIdOf = (frame: { key: string; appName: string }): string => frame.key.slice(frame.appName.length + 1)
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(n, Math.max(lo, hi)))
+/** A card `h` tall goes below its anchor when it fits, otherwise above it. */
+const topBeside = (a: AnchorRect, h: number, vh: number) => {
+  const below = a.top + a.height + GAP
+  return below + h <= vh - MARGIN ? below : a.top - GAP - h
+}
 
 export class FrameHost {
   private readonly opts: FrameHostOptions
@@ -128,6 +138,24 @@ export class FrameHost {
     this.hover.set(key, frame)
     this.changed()
     return frame
+  }
+
+  /** Retry: a hover frame for the provider that is not working is disposed, and a
+   *  fresh one starts loading. A ready frame and pinned cards are left alone. */
+  retryFrame(key: string, appName: string): PreviewFrame {
+    const have = this.hover.get(key)
+    if (have && have.state !== 'ready') this.destroy(have)
+    return this.hoverFrame(key, appName)
+  }
+
+  /** Where a card of the default size would sit next to `anchor`: the same rule
+   *  `place` uses, so a host-drawn card lands where the app's card would. */
+  static cardSpot(anchor: AnchorRect, height: number): { left: number; top: number; width: number } {
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const w = clamp(DEFAULT_SIZE.width, MIN_SIZE.width, Math.min(MAX_SIZE.width, vw - 2 * MARGIN))
+    const top = topBeside(anchor, height, vh)
+    return { left: clamp(anchor.left, MARGIN, vw - w - MARGIN), top: clamp(top, MARGIN, vh - height - MARGIN), width: w }
   }
 
   /** Show `link` in the provider's hover frame, next to `anchor`. */
@@ -188,6 +216,12 @@ export class FrameHost {
     }
   }
 
+  /** A once-pinned card the app unpinned is still on screen: it belongs to an
+   *  earlier hover, not the latest one. */
+  hasUnpinnedDetached(): boolean {
+    return this.detached.some((f) => !f.pinned)
+  }
+
   /** The app is gone (disabled, uninstalled): every frame of its provider goes. */
   disposeKey(key: string): void {
     for (const frame of this.frames()) if (frame.key === key) this.destroy(frame, 'disabled')
@@ -237,14 +271,14 @@ export class FrameHost {
       left: 0, top: 0, width: DEFAULT_SIZE.width, height: DEFAULT_SIZE.height, anchor: null,
       overlay: false, regions: [], invocation: 0, rate: freshRate(),
     }
-    const fail = (why: string) => {
+    const fail = (why: string, cause: FailureCause) => {
       if (frame.state !== 'loading') return
       frame.state = 'failed'
       settle(false)
-      this.opts.onFailed(frame, why)
+      this.opts.onFailed(frame, why, cause)
       this.destroy(frame)
     }
-    const timer = window.setTimeout(() => fail('timeout'), READY_TIMEOUT_MS)
+    const timer = window.setTimeout(() => fail('timeout', 'timeout'), READY_TIMEOUT_MS)
     this.settlers.set(frame, {
       ready: () => {
         window.clearTimeout(timer)
@@ -254,7 +288,7 @@ export class FrameHost {
       },
       fail: (why) => {
         window.clearTimeout(timer)
-        fail(why)
+        fail(why, 'app')
       },
       cancel: () => window.clearTimeout(timer),
     })
@@ -275,7 +309,7 @@ export class FrameHost {
       },
       () => {
         window.clearTimeout(timer)
-        fail('mint')
+        fail('mint', 'unavailable')
       },
     )
     return frame
@@ -333,8 +367,7 @@ export class FrameHost {
     } else if (!frame.moved && frame.anchor) {
       const a = frame.anchor
       frame.left = a.left
-      const below = a.top + a.height + GAP
-      frame.top = below + h <= vh - MARGIN ? below : a.top - GAP - h
+      frame.top = topBeside(a, h, vh)
     }
     frame.left = clamp(frame.left, MARGIN, vw - w - MARGIN)
     frame.top = clamp(frame.top, MARGIN, vh - h - MARGIN)

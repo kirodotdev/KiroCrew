@@ -206,9 +206,10 @@ owns the real private-workflow MCP test and does not serialize the browser job.
 The CI-only helper overlaps the unchanged `python setup.py test_e2e` command and
 the dedicated Memory UI pytest command. Both outcomes are awaited; no failure
 cancels or hides the other lane. Both helper outcomes remain mandatory, with the
-same 25-minute browser-job ceiling. The private namespace coverage is a separate
-mandatory CI job instead of a serial prerequisite, so it does not consume the
-browser lane's critical path.
+same browser-job ceiling (25 minutes on the CodeBuild fleet, 40 off it; see
+"The browser install is budgeted" below). The private namespace coverage is a
+separate mandatory CI job instead of a serial prerequisite, so it does not
+consume the browser lane's critical path.
 
 The head+base i18n render gate is its own `i18n-render` job rather than a third
 lane here, for the same reason: it needs no gateway, and on the hosted 4-vCPU
@@ -253,9 +254,12 @@ failure propagation and cancellation cleanup, not private-MCP or browser proof.
 
 ### The browser install is budgeted, and installs no apt packages
 
-The job's ceiling is `timeout-minutes: 25`, and the browser install is the step
-that historically consumed it. It carries three constraints, all in service of
-leaving the specs enough of that budget to actually run:
+The job's ceiling is route-aware, like `backend-test`'s: 25 minutes when the run
+is admitted to the CodeBuild fleet, 40 when it is not and the job falls back to
+`kirocrew-linux-4-core`, where the slowest observed fork run took 23.9 of the
+old 25. The browser install is the step that historically consumed that budget.
+It carries three constraints, all in service of leaving the specs enough of it
+to actually run:
 
 - **`${RUNNER_TEMP}/ms-playwright` is cached**, keyed on the exact `@playwright/test`
   version read out of `website/package-lock.json`. `PLAYWRIGHT_BROWSERS_PATH`
@@ -330,10 +334,10 @@ supplies these recordings; source authoring alone is not rendered evidence.
 Its retention is seven days, and it does not fail when setup produced no images.
 
 `website/playwright/dashboard-preview-link.spec.ts` opens the link
-`dashboard_preview` hands a mate and asserts that it resolves: the Members page
+`dashboard_preview` hands a Bot and asserts that it resolves: the Members page
 draws the staged page under its **Preview, not applied** label, and the dashboard read accepts the
-mate the link names. Before the browser starts, the harness
-(`test_playwright_e2e._stage_dashboard_preview`) seeds one mate in the disposable
+Bot the link names. Before the browser starts, the harness
+(`test_playwright_e2e._stage_dashboard_preview`) seeds one Bot in the disposable
 config, stages the `standup` template for it with the production store, and passes
 the link that store's `wire()` returns in `KIROCREW_E2E_DASHBOARD_PREVIEW`. The spec
 never builds the link itself. `standup` is not the default page, so a tab still
@@ -435,6 +439,11 @@ app store answers from the bundled seed, so `GET /api/apps/registry` never pays
 the live catalog's uncached HTTPS round trip (bounded by `FETCH_TIMEOUT`, the
 same 10 s the Discover specs wait for their ready signal) or a per-row manifest
 clone. `kiro_crew.apps.official_catalog.SKIP_FETCH_ENV` owns the name.
+It pins `KIROCREW_HARNESS_ADOPTION_PINS` too, to a path under the home that nothing
+writes: the former built-in adoption pin table is read from there instead of the
+wheel, so a harness boot never fetches a shipped app from GitHub, and a test that
+drives adoption writes a fixture pin there (app-kit-platform.md § Former built-in
+adoption). `kiro_crew.apps.builtin_adoption_pins.HARNESS_PINS_ENV` owns the name.
 The supervisor restart test also verifies that only the download switch changes:
 all other environment values retain the initial launch snapshot. The failed
 mirror port stays bound without listening until teardown, and loopback hosts

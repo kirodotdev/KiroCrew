@@ -124,6 +124,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CODE_CONTENT_SHA256_REQUIRED,
         _CODE_LIVE_SKILL_EXISTS,
         _CODE_PENDING_APPROVAL_REFUSED,
+        _CODE_PENDING_DISMISS_REFUSED,
         _CODE_PENDING_SKILL_CHANGED,
         _CODE_PENDING_SKILL_NOT_FOUND,
         _CODE_PENDING_SKILL_UNREADABLE,
@@ -146,6 +147,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.handlers._shared import _read_session_key  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _resolve_skill_root  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import active_project_dir  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import active_project_state  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import collect_skills_blocking  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import list_skill_tree  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import read_bounded_json  # noqa: F401
@@ -177,9 +179,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.skill_trust import grant_project_trust  # noqa: F401
     from kiro_crew.skill_trust import is_key_trusted  # noqa: F401
     from kiro_crew.skill_trust import list_trusted_projects  # noqa: F401
+    from kiro_crew.skill_trust import project_skill_traversal_supported  # noqa: F401
+    from kiro_crew.skill_trust import project_skills_enabled  # noqa: F401
     from kiro_crew.skill_trust import revoke_project_trust  # noqa: F401
     from kiro_crew.skills import PROJECT_SKILL_BODY_CAP  # noqa: F401
     from kiro_crew.skills import SKILL_READ_CAPACITY  # noqa: F401
     from kiro_crew.skills import PendingApprovalRefused  # noqa: F401
+    from kiro_crew.skills import PendingDismissRefused  # noqa: F401
     from kiro_crew.skills import SkillReadRefusal  # noqa: F401
     from kiro_crew.validation import MAX_SKILL_KEY_CHARS  # noqa: F401

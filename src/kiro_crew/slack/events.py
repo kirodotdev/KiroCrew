@@ -77,6 +77,7 @@ from kiro_crew.messaging.queue_drain import (
     register_drain,
     tag_entry,
 )
+from kiro_crew.messaging.split import close_open_fence
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
@@ -108,6 +109,13 @@ from kiro_crew.slack.blocks import (
     voice_config_modal,
 )
 from kiro_crew.slack.channel_policy import SlackChannelRefused
+from kiro_crew.slack.code_channels import install as install_code_channels
+from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
+from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
+from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
+from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_gate
+from kiro_crew.slack.code_channels.routing import is_bound_code_channel
+from kiro_crew.slack.code_channels.store import store as code_channel_store
 from kiro_crew.slack.enterprise import trusted_bot_admission, validated_self_user_id
 from kiro_crew.slack.files import (
     VOICE_MEMO_DURATION_UNVERIFIED,
@@ -190,7 +198,19 @@ def _wire_slack_code_capability_probe(
     async def _on_message(_client: Any, message: dict, _raw: Any = None) -> None:
         if not isinstance(message, dict) or message.get("type") != "hello":
             return
-        task = asyncio.create_task(scope_probe.refresh_capabilities(web_client))
+
+        async def _probe() -> None:
+            # Live config, read off the loop: the toggles hot-apply, so the
+            # workspace-feature probe (and any notification it raises) runs only
+            # while Code channels is on.
+            try:
+                cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                wanted = features.code_channels_toggle(cfg)
+            except Exception:
+                wanted = False
+            await scope_probe.refresh_capabilities(web_client, probe_code_channels=wanted)
+
+        task = asyncio.create_task(_probe())
         tasks.add(task)
         task.add_done_callback(tasks.discard)
 
@@ -221,6 +241,8 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
 
     if not orch._owner_id:
         logger.error("KIROCREW_OWNER_ID is not set — Slack disabled for security")
+        # The status surfaces show this reason instead of a bare "Not connected".
+        orch._slack_connect_error = "KIROCREW_OWNER_ID is not set"
         orch._slack_enabled = False
         orch.slack = None
         return
@@ -239,6 +261,18 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     set_orch_cfg(orch._cfg)
     if orch.dashboard_state:
         set_dashboard_state(orch.dashboard_state)
+    # Slack Code channels: registers the channel-status turn hooks and loads the
+    # code-channel store off the loop. Inert while slack.code_channels is off
+    # (the hooks fire only for a bound code channel).
+    install_code_channels(lambda: orch.slack)
+    await asyncio.to_thread(code_channel_store().load)
+    if orch.dashboard_state:
+        # A slot list serialized before this load marked bound rows pending;
+        # re-push it now the store is read so those rows get their badge.
+        try:
+            orch.dashboard_state.push_slots_update()
+        except Exception:
+            logger.warning("slot list re-push after code-channel load failed", exc_info=True)
 
     # ── Enterprise Grid workspace validation ──
     # Blocks data exfiltration via personal/external Slack workspaces.
@@ -250,6 +284,7 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     _validate = current_context().slack_gate.validate_enterprise
     if not await asyncio.to_thread(_validate, orch._bot_token, extra_ids=extra_ids):
         logger.error("Slack workspace failed enterprise validation — Slack disabled")
+        orch._slack_connect_error = "workspace failed enterprise validation"
         orch._slack_enabled = False
         orch.slack = None
         return
@@ -335,6 +370,11 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
             dispatch_agent_session_event(orch, req.payload or {}, event)
             return
 
+        # ── Code channels: archive, unarchive, rename ──
+        if event_type in code_channel_lifecycle.LIFECYCLE_EVENTS:
+            code_channel_lifecycle.dispatch(req.payload or {}, event)
+            return
+
         # ── Messages and mentions ──
         if event_type not in ("message", "app_mention"):
             return
@@ -386,6 +426,9 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         # event["team"] may be the *sender's* workspace in shared channels.
         # Always prefer envelope to prevent cross-workspace bypass.
         outer_team = (req.payload or {}).get("team_id", "")
+        # The install's Enterprise Grid org ("" outside one), from the same
+        # envelope: a code channel's user rows name it with the sender.
+        event["enterprise"] = str((req.payload or {}).get("enterprise_id") or "")
         if outer_team:
             event["team"] = outer_team
         elif not event.get("team"):
@@ -428,6 +471,19 @@ async def _post_stop_notice(orch: Any, channel: str, text: str, ts: str | None) 
         return ""
 
 
+def _without_leading_mention(text: str, is_mention: bool) -> str:
+    """*text* past its leading bot ``<@BOTID>`` mention, or *text* itself.
+
+    An app_mention event always starts with ``<@BOTID> ...``, so this slices past
+    the first ``>`` and the whitespace after it.
+    """
+    if is_mention and text.startswith("<@"):
+        end = text.find(">")
+        if end != -1:
+            return text[end + 1 :].lstrip()
+    return text
+
+
 async def _route_message(
     orch: GatewayOrchestrator,
     event: dict,
@@ -454,9 +510,15 @@ async def _route_message(
     # message opens with: the owner's note when there is one, else the first
     # forwarded body, never the fence framing.
     address_text = text
+    # The sender's own words (a forward's note, never what it forwards): what a
+    # code channel reads to decide whether the message is addressed to us. It
+    # differs from address_text on purpose: in a code channel a forward with no
+    # note is a hand-over to the channel's session, whoever the body mentions.
+    own_text: str | None = None
     is_forward = _has_share_attachments(event)
     if is_forward:
         note = "" if text in _SLACK_BLOCK_FALLBACKS else text
+        own_text = note
         forwards = _forwarded_messages(event, has_note=bool(note))
         # Event-level blocks are the note's own: its tables stay with it,
         # outside the fence, as first-party text.
@@ -586,6 +648,71 @@ async def _route_message(
             error=_deny_error,
         )
 
+    # ── Channel activation mode (checked BEFORE interceptor, ephemeral & dedup) ──
+    # When activation=mention, Slack sends both a `message` and an
+    # `app_mention` event for the same msg_ts.  We must skip the plain
+    # `message` event *without* marking it as seen so the subsequent
+    # `app_mention` event is still processed.
+    #
+    # The two drops below (activation=off, and an unmentioned message that
+    # thread-follow does not admit in mention/review mode) run BEFORE the
+    # interceptor: the bot ignores these messages with nothing recorded, so
+    # there is nothing to gate, and an edition's interceptor must not answer a
+    # message the bot was never going to read (a challenge on every unaddressed
+    # owner message in a shared channel). They leave no trace besides their SEL
+    # denial row: no history push, no download, no Slack write. Everything that
+    # passes them still meets the interceptor before any content is recorded,
+    # observe mode included (its history push stays after the interceptor).
+    ch_cfg = slack_cfg(orch).channel_config(channel)
+    activation = ch_cfg.activation
+
+    if activation == ACTIVATION_OFF:
+        # Allow !channel commands through so the owner can re-enable the channel.
+        # Text may start with "<@BOTID> " when @mentioned, so strip that first.
+        _stripped = text.lstrip()
+        if _stripped.startswith("<@"):
+            end = _stripped.find(">")
+            if end != -1:
+                _stripped = _stripped[end + 1 :].lstrip()
+        if not _stripped.startswith("!channel"):
+            logger.debug("Channel %s activation=off — ignoring message", channel)
+            sel().log_api_access(
+                caller=sender_id,
+                operation="slack.message",
+                outcome="denied",
+                source="slack",
+                resources=channel,
+                error="activation=off",
+            )
+            return
+
+    # A bound code channel answers without a mention: the code-channel gate
+    # below decides it, and the mention drop is applied after the gate only
+    # when the gate leaves the message to the normal path.
+    _defer_mention_drop = is_bound_code_channel(orch, channel)
+
+    if (
+        activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW)
+        and not is_mention
+        and not _defer_mention_drop
+    ):
+        # In mention/review mode: ignore messages without @mention UNLESS the
+        # message is a reply in a thread where the bot already has an active
+        # session (i.e., the bot was already @mentioned in that thread) and is
+        # not addressed to someone else. When thread_follow=false, always require
+        # @mention even in active threads. _thread_follow_admits only reads
+        # session/log state and writes the SEL denial row when it refuses.
+        if not _thread_follow_admits(
+            orch,
+            thread_follow=ch_cfg.thread_follow,
+            activation=activation,
+            thread_ts=thread_ts,
+            text=address_text,
+            sender_id=sender_id,
+            channel=channel,
+        ):
+            return
+
     # ── Message-interceptor seam (Default: PROCESS = inline, OSS-identical) ──
     # An edition may intercept the message here and turn it into an out-of-band
     # challenge-redirect (e.g. a presigned dashboard-session link) instead of
@@ -600,8 +727,8 @@ async def _route_message(
     # NOT be persisted to channel history before the gate decides: otherwise a
     # later VERIFIED turn in the same channel could pull that stored content into
     # agent context, bypassing the very challenge gate the edition relies on. So
-    # the interceptor is the first thing after the user-allowlist check, before
-    # the message leaves a trace. It keys on (sender_id, channel) identity, so it
+    # the interceptor follows only the user-allowlist check and the activation
+    # drops above (which record nothing), before the message leaves a trace. It keys on (sender_id, channel) identity, so it
     # does not need the post-transcription/mention-stripped text; it gets the raw
     # text for challenge context/logging only.
     #
@@ -619,11 +746,7 @@ async def _route_message(
     # closes. Skipping the interceptor for unauthorized senders also preserves
     # their existing ephemeral-rejection UX unchanged.
     if _user_authorized:
-        _intercept_clean = text
-        if is_mention and text.startswith("<@"):
-            _end = text.find(">")
-            if _end != -1:
-                _intercept_clean = text[_end + 1 :].lstrip()
+        _intercept_clean = _without_leading_mention(text, is_mention)
         # Interceptor-specific dedup: Slack re-delivers the same event on ack
         # timeout, and this seam runs BEFORE the main _route_message dedup (which
         # must stay after the activation check). Without a guard here a redirecting
@@ -671,34 +794,6 @@ async def _route_message(
                 sender_id,
                 channel,
                 getattr(_decision, "value", _decision),
-            )
-            return
-
-    # ── Channel activation mode (checked BEFORE ephemeral & dedup) ──
-    # When activation=mention, Slack sends both a `message` and an
-    # `app_mention` event for the same msg_ts.  We must skip the plain
-    # `message` event *without* marking it as seen so the subsequent
-    # `app_mention` event is still processed.
-    ch_cfg = slack_cfg(orch).channel_config(channel)
-    activation = ch_cfg.activation
-
-    if activation == ACTIVATION_OFF:
-        # Allow !channel commands through so the owner can re-enable the channel.
-        # Text may start with "<@BOTID> " when @mentioned, so strip that first.
-        _stripped = text.lstrip()
-        if _stripped.startswith("<@"):
-            end = _stripped.find(">")
-            if end != -1:
-                _stripped = _stripped[end + 1 :].lstrip()
-        if not _stripped.startswith("!channel"):
-            logger.debug("Channel %s activation=off — ignoring message", channel)
-            sel().log_api_access(
-                caller=sender_id,
-                operation="slack.message",
-                outcome="denied",
-                source="slack",
-                resources=channel,
-                error="activation=off",
             )
             return
 
@@ -765,6 +860,42 @@ async def _route_message(
             )
             return
 
+    # ── Slack Code channels (a pass-through unless slack.code_channels is on) ──
+    # In one of OUR code channels the channel itself is the conversation: a
+    # message is answered without a mention, Slack's copy of the origin message
+    # and a message addressed only to other people are dropped, and the sender
+    # is authorized against the channel's ORIGIN conversation (the gate audits
+    # every decision). Everywhere else this is PASS and nothing below changes.
+    _code_channel = await code_channel_gate(
+        orch,
+        event,
+        text=text,
+        address_text=address_text if own_text is None else own_text,
+        sender_id=sender_id,
+        authorized=_user_authorized,
+        from_trusted_bot=from_trusted_bot,
+    )
+    if _code_channel.gate is CodeChannelGate.DROP:
+        return
+    _was_mention = is_mention
+    if _code_channel.gate is CodeChannelGate.DIRECTED:
+        is_mention = True
+    elif (
+        _defer_mention_drop
+        and activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW)
+        and not is_mention
+        and not _thread_follow_admits(
+            orch,
+            thread_follow=ch_cfg.thread_follow,
+            activation=activation,
+            thread_ts=thread_ts,
+            text=address_text,
+            sender_id=sender_id,
+            channel=channel,
+        )
+    ):
+        return
+
     # Resolve sender's Slack display name so the LLM uses the actual
     # profile name instead of guessing from memory. Cached on channel
     # history (for history context) and passed to handle_message.
@@ -797,23 +928,6 @@ async def _route_message(
             assert orch.channel_history is not None  # narrowed by helper
             orch.channel_history.push(channel, sender_id, text, thread_ts=thread_ts, msg_ts=msg_ts)
         if not is_mention and not _thread_follow_admits(
-            orch,
-            thread_follow=ch_cfg.thread_follow,
-            activation=activation,
-            thread_ts=thread_ts,
-            text=address_text,
-            sender_id=sender_id,
-            channel=channel,
-        ):
-            return
-
-    if activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW) and not is_mention:
-        # In mention/review mode: ignore messages without @mention UNLESS the
-        # message is a reply in a thread where the bot already has an active
-        # session (i.e., the bot was already @mentioned in that thread) and is
-        # not addressed to someone else. When thread_follow=false, always require
-        # @mention even in active threads.
-        if not _thread_follow_admits(
             orch,
             thread_follow=ch_cfg.thread_follow,
             activation=activation,
@@ -896,7 +1010,13 @@ async def _route_message(
         # Image paths are inlined by ACP; opaque paths remain available to agent tools.
         if attachment_paths:
             paths_text = "\n".join(attachment_paths)
-            text = f"{text}\n{paths_text}" if text else paths_text
+            # Same layout as append_attachment_context: a fence the user left
+            # open ends before the paths, so they stay references. The fence is
+            # judged on the text after the leading bot mention, which is what
+            # the agent receives once the mention is stripped below.
+            body = _without_leading_mention(text, is_mention)
+            closed = text[: len(text) - len(body)] + close_open_fence(body)
+            text = f"{closed}\n{paths_text}" if text else paths_text
 
         # Inject text file contents
         if text_blocks:
@@ -928,12 +1048,7 @@ async def _route_message(
             orch.channel_history.push(channel, sender_id, text, thread_ts=thread_ts, msg_ts=msg_ts)
 
     # Strip the leading bot @mention so the LLM sees clean text.
-    # app_mention events always start with "<@BOTID> ..." — just slice past the first ">".
-    clean_text = text
-    if is_mention and text.startswith("<@"):
-        end = text.find(">")
-        if end != -1:
-            clean_text = text[end + 1 :].lstrip()
+    clean_text = _without_leading_mention(text, is_mention)
     if not clean_text:
         _cleanup_attachment_temps()
         return
@@ -1041,7 +1156,9 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             return
-        note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
+        note_user_stop(
+            orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key
+        )
         has_session = orch.sessions.has_session(session_key)
         # READ, not popped: the task is removed only once the cancel is known
         # to have gone through, below.
@@ -1233,6 +1350,7 @@ async def _route_message(
     #    (_handle_restart) which owns owner-check + supervisor guard, keeping
     #    a single source of truth for the restart logic. ──
     if clean_text.strip().lower() == "!restart":
+
         async def _restart_respond(text: str, **_kw: Any) -> None:
             if orch.slack:
                 await orch.slack.post_message(channel, text, thread_ts or msg_ts)
@@ -1265,6 +1383,21 @@ async def _route_message(
         activation,
         _safe_log(text[:80]),
     )
+
+    # ── Slack Code channels: start the turn in the channel's bound session, or
+    #    open a code channel for a mention, or a reply in a thread the bot
+    #    already answers, that asks for multi-step work. False (always, with
+    #    slack.code_channels off) continues the normal path. ──
+    if await code_channel_dispatch(
+        orch,
+        _code_channel,
+        event=event,
+        clean_text=clean_text,
+        sender_id=sender_id,
+        was_mention=_was_mention,
+        attachment_paths=_attachment_temp_paths,
+    ):
+        return
 
     # ── Queue check: if session is busy, enqueue instead of blocking ──
     # Keyed on the SAME session the turn will run under. A single-session DM keys
@@ -1531,6 +1664,7 @@ async def _route_message(
     orch._handler_tasks.add(t)
     t.add_done_callback(_on_done)
 
+
 # The Socket Mode wiring (``init_socket_mode``) and the message router
 # (``_route_message``) stay here; the rest lives in the ``events_*`` owner modules beside
 # this one, lowest layer first. A read of ``kiro_crew.slack.events.<name>`` is served by
@@ -1634,4 +1768,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.format import ForwardedMessage  # noqa: F401
     from kiro_crew.slack.format import count_forwarded_files  # noqa: F401
     from kiro_crew.slack.format import forwarded_files_from_slack  # noqa: F401
+    from kiro_crew.cron import job_zone_name  # noqa: F401
 # isort: on

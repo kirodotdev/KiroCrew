@@ -203,9 +203,15 @@ const DropdownSubPhoneContext = React.createContext<SubPhoneContextValue | null>
 
 const DropdownMenuSub = React.forwardRef<
   HTMLDivElement,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Sub>
->(function DropdownMenuSub({ children, open, defaultOpen, onOpenChange, ...rest }, ref) {
-  const isPhone = useIsTouchDevice()
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Sub> & {
+    /** Render inline beneath the trigger, as on a touch device, even with a
+     *  fine pointer: for a caller whose flyout cannot fit beside the menu in
+     *  a narrow window. Off by default; a touch device is always inline. */
+    inline?: boolean
+  }
+>(function DropdownMenuSub({ children, open, defaultOpen, onOpenChange, inline, ...rest }, ref) {
+  const isTouch = useIsTouchDevice()
+  const isPhone = isTouch || inline === true
   const { expanded, toggle } = usePhoneSubState(open, defaultOpen, onOpenChange)
   if (isPhone) {
     return (

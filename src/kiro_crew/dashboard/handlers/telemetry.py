@@ -727,11 +727,27 @@ def _iter_export_cycles(
                 for line in bounded_records(fh, p, label="telemetry"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
+                        continue
+                    if not isinstance(obj, dict):
+                        # ``NaN``, ``[1, 2]`` or a bare number parses but is no
+                        # export cycle: skipped like an unparseable line.
                         continue
                     yield obj, shard_day, shard_pid
         except (OSError, UnicodeDecodeError):
             continue
+
+
+def _dict_items(value: Any) -> list[dict[str, Any]]:
+    """The dict members of *value* when it is a list, else ``[]``.
+
+    Each level of an export cycle is read through this, so a list member or a
+    whole list that is not the exporter's shape is skipped instead of raising
+    and failing the panel.
+    """
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _bound_ns(seconds: float) -> int:
@@ -808,7 +824,7 @@ def _iter_metric_points(
         return untimed_ok[shard_day]
 
     for obj, shard_day, shard_pid in _iter_export_cycles(shard_paths):
-        for rm in obj.get("resource_metrics", []) or []:
+        for rm in _dict_items(obj.get("resource_metrics")):
             resource = rm.get("resource")
             res_attrs = resource.get("attributes") if isinstance(resource, dict) else None
             identity = ""
@@ -816,13 +832,15 @@ def _iter_metric_points(
                 raw = res_attrs.get(RESOURCE_ATTR_PROCESS_START_TIME)
                 if isinstance(raw, str):
                     identity = raw
-            for sm in rm.get("scope_metrics", []) or []:
-                for metric in sm.get("metrics", []) or []:
-                    name = metric.get("name") or ""
-                    if not name.startswith("kirocrew."):
+            for sm in _dict_items(rm.get("scope_metrics")):
+                for metric in _dict_items(sm.get("metrics")):
+                    name = metric.get("name")
+                    if not isinstance(name, str) or not name.startswith("kirocrew."):
                         continue
-                    data = metric.get("data") or {}
-                    for dp in data.get("data_points", []) or []:
+                    data = metric.get("data")
+                    if not isinstance(data, dict):
+                        continue
+                    for dp in _dict_items(data.get("data_points")):
                         if span_ns is not None:
                             ns = _finite_int(dp.get("time_unix_nano"))
                             if ns is not None and ns > 0:

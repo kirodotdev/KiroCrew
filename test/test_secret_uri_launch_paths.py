@@ -119,6 +119,73 @@ def test_the_shared_ref_sync_keeps_a_withheld_server_muted() -> None:
     assert "@atlassian" not in config["allowedTools"]
 
 
+def test_a_mount_only_server_is_mounted_without_a_grant() -> None:
+    """The default agent's mid-chat addition: the ref mounts the server and the
+    rebuild's own whole-server grant is withheld, even one written earlier, so a
+    later rebuild cannot silently turn the mount into an approval. A per-tool
+    grant the user wrote is theirs: the card lists it as still applying."""
+    scope = {"command": "/opt/bin/atlassian-mcp", "env": {"API_TOKEN": REF}}
+    config = {
+        "mcpServers": {"atlassian": dict(scope)},
+        "tools": [],
+        "allowedTools": ["@atlassian", "@atlassian/search"],
+    }
+    sources = mcp_sources.McpSources(
+        kirocrew={"atlassian": scope}, kiro_global={}, provider_global={}, managed_names=set()
+    )
+    mcp_sources.sync_shared_server_refs(
+        config, sources, {"atlassian": "atlassian"}, mount_only=frozenset({"atlassian"})
+    )
+    assert config["tools"] == ["@atlassian"]
+    assert config["allowedTools"] == ["@atlassian/search"]
+
+
+def test_a_mount_only_record_leaves_a_suffixed_sibling_s_grant_alone() -> None:
+    """``time-2`` is a separately installed server, not the recorded ``time``:
+    its page approval is kept."""
+    scope = {"command": "/opt/bin/time-mcp"}
+    config = {
+        "mcpServers": {"time": dict(scope), "time-2": dict(scope)},
+        "tools": [],
+        "allowedTools": [],
+    }
+    sources = mcp_sources.McpSources(
+        kirocrew={"time": scope, "time-2": scope},
+        kiro_global={},
+        provider_global={},
+        managed_names=set(),
+    )
+    mcp_sources.sync_shared_server_refs(
+        config, sources, {"time": "time", "time-2": "time-2"}, mount_only=frozenset({"time"})
+    )
+    assert "@time" in config["tools"] and "@time-2" in config["tools"]
+    assert config["allowedTools"] == ["@time-2"]
+
+
+def test_a_mount_only_server_under_the_ceiling_takes_the_ceilings_stricter_arm(
+    monkeypatch,
+) -> None:
+    """When the governance ceiling has an opinion about the server, mount-only
+    does not soften it: the ceiling strips per-tool grants too."""
+    from kiro_crew.agent_materialization import auto_approve
+
+    monkeypatch.setattr(auto_approve, "_may_auto_approve", lambda ref: False)
+    scope = {"command": "/opt/bin/atlassian-mcp"}
+    config = {
+        "mcpServers": {"atlassian": dict(scope)},
+        "tools": [],
+        "allowedTools": ["@atlassian", "@atlassian/search"],
+    }
+    sources = mcp_sources.McpSources(
+        kirocrew={"atlassian": scope}, kiro_global={}, provider_global={}, managed_names=set()
+    )
+    mcp_sources.sync_shared_server_refs(
+        config, sources, {"atlassian": "atlassian"}, mount_only=frozenset({"atlassian"})
+    )
+    assert config["tools"] == ["@atlassian"]
+    assert config["allowedTools"] == []
+
+
 def test_a_withheld_mute_keeps_the_users_per_tool_grants() -> None:
     """The withheld mute is temporary, and a hand-written ``@srv/tool`` grant
     cannot be re-derived once stripped; only the bare refs go."""

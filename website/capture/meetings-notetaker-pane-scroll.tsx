@@ -5,7 +5,7 @@
  * is declared after `@tailwind utilities`, so it beats an `overflow-y-auto`
  * utility on the same element. happy-dom computes no layout, so only a real
  * browser can prove the pane actually scrolls (the unit test in
- * src/test/MeetingsAgentPanel.test.tsx pins the class shape; this harness pins
+ * src/apps/meetings/MeetingsAgentPanel.test.tsx pins the class shape; this harness pins
  * the rendered behaviour).
  *
  * WHAT IS FAITHFUL: the REAL AgentPanel with a markdown note-taker agent and a

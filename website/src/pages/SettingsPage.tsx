@@ -5,7 +5,6 @@ import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
-import { BrowserPanel } from './settings/BrowserPanel'
 import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
 import { PeoplePanel } from './settings/PeoplePanel'
 import { useSharedCrewCapabilities } from '../hooks/sharedCrew/useSharedCrew'
@@ -45,7 +44,17 @@ const AgentBackendTab = lazy(() =>
 const AgentRunSettings = lazy(() =>
   import('./overview/KiroCrewCfgTab').then(m => ({ default: m.AgentRunSettings })),
 )
-import { SessionEnvironmentsCard } from './settings/SessionEnvironmentsCard'
+/** Lazy: the Browser tab's status card and live-view settings are only needed when that tab opens. */
+const BrowserPanel = lazy(() =>
+  import('./settings/BrowserPanel').then(m => ({ default: m.BrowserPanel })),
+)
+/**
+ * Lazy: the Session Environments card (Coder, Sprites, boxd and Kiro Cloud editors)
+ * mounts only behind its feature preview, so most Settings visits never need it.
+ */
+const SessionEnvironmentsCard = lazy(() =>
+  import('./settings/SessionEnvironmentsCard').then(m => ({ default: m.SessionEnvironmentsCard })),
+)
 import { SettingsCard } from '../components/settings'
 
 import { i18nT } from '../i18n/t'
@@ -300,7 +309,11 @@ export default function SettingsPage() {
         {tab === 'shortcuts' && <ShortcutsPanel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'channels' && <ChannelsPanel basePath={SETTINGS_BASE_PATH} />}
-        {tab === 'browser' && <BrowserPanel />}
+        {tab === 'browser' && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <BrowserPanel />
+          </Suspense>
+        )}
         {tab === 'computer-use' && <GuideTrustRootRegion><ComputerUsePanel /></GuideTrustRootRegion>}
         {tab === 'webhooks' && <WebhooksPanel />}
         {tab === 'instances' && <RemoteCrewPanel />}
@@ -310,7 +323,11 @@ export default function SettingsPage() {
         {tab === 'connections' && <ConnectionsPanel />}
         {tab === 'secrets' && <GuideTrustRootRegion><SecretsPanel /></GuideTrustRootRegion>}
         {tab === 'session-environments' && sessionEnvironmentsPreview && (
-          <SettingsCard><SessionEnvironmentsCard /></SettingsCard>
+          <SettingsCard>
+            <Suspense fallback={<ContentSkeleton rows={6} />}>
+              <SessionEnvironmentsCard />
+            </Suspense>
+          </SettingsCard>
         )}
         {tab === 'developer' && <DeveloperPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'releases' && <ReleasesPanel />}

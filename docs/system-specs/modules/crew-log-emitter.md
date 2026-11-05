@@ -284,7 +284,7 @@ default, while the pin is deliberately KEPT -- the composer chip still shows it,
 clearing it would delete an explicit user setting on the evidence of one session's
 advertised list. An unpinned slot is the mirror case: it names no model of its own,
 and the model it runs on is known only after the handle exists (when only its
-mate pins a model, its pin is backfilled from the provider then).
+Bot pins a model, its pin is backfilled from the provider then).
 
 So `session/opened` and `request/configured` read `served_model`, the session fact,
 through one helper. It is empty when the backend serves its own default, and the entry
@@ -705,6 +705,13 @@ it. A log whose seq disagrees with causality is worse than a short one, because 
 cannot detect it: a short tail is visible, a reordered one reads as fact. A synchronous
 caller therefore waits a bounded time for the batch to finish and then hands its job to
 the writer rather than racing it.
+
+The same rule binds the other way: while the shutdown thread drains inline, it holds the
+claim a pass would. It takes it in the lock hold that found no batch claimed and releases
+it in the hold that takes its last look at the buffers. A producer arriving meanwhile
+queues behind the drain instead of starting a pass that would take the session's newer
+entries and write them ahead of the batch the shutdown thread is still writing; one
+arriving after that last look starts a pass of its own.
 
 **The residual:** a batch a wedged writer still holds cannot be finished from the
 shutdown thread, and the entries buffered behind it are left alone rather than written

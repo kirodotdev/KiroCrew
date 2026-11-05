@@ -268,3 +268,6 @@ class TestRedactionNotice:
         r = _renderer(c)
         await r.on_text_chunk(f"Run: psql {CREDENTIAL_REDACTION_TAGS[0]}")
         await r.on_done()  # a False verdict on the notice is logged, not raised
+        answer, notice = (text for _, text in c.replies)
+        assert answer.startswith("Run: psql ")
+        assert "Security notice" in notice

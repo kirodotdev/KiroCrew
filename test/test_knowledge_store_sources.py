@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -20,7 +19,11 @@ from knowledge_helpers import store_fixture  # noqa: F401
 
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.knowledge.sync import SyncScheduler
-from kiro_crew.testing.wait import await_until, finished
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
+
+# The stamp written into the test's own rows. A fixed naive value, so the rows do not
+# depend on the host's clock or its time zone.
+_ROW_STAMP = "2026-10-01T12:00:00"
 
 # ---------------------------------------------------------------------------
 # 7. KnowledgeStore -- additional coverage
@@ -162,9 +165,7 @@ class TestKnowledgeStoreExtended:
         agree = str(uuid4())
         listprops = str(uuid4())
         forged = str(uuid4())
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        now = datetime.now().isoformat()
+        now = _ROW_STAMP
         for sid, column, props_json, uri in (
             (divergent, "pending", json.dumps({"sync_status": "pending_confirmation"}), "/tmp/div"),
             (live, "paused", json.dumps({"sync_status": "active"}), "/tmp/live"),
@@ -215,9 +216,7 @@ class TestKnowledgeStoreExtended:
 
         db_path = str(tmp_path / "test.db")
         sid = str(uuid4())
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        now = datetime.now().isoformat()
+        now = _ROW_STAMP
         store.db.execute(
             "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
             "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -302,9 +301,7 @@ class TestKnowledgeStoreExtended:
         healthy = str(uuid4())
         recovered = str(uuid4())
         listprops = str(uuid4())
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        now = datetime.now().isoformat()
+        now = _ROW_STAMP
         for sid, column, props_json, uri in (
             (
                 divergent,
@@ -371,9 +368,7 @@ class TestKnowledgeStoreExtended:
         """
         before = str(uuid4())
         after = str(uuid4())
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        now = datetime.now().isoformat()
+        now = _ROW_STAMP
         for sid, column, uri in (
             (before, "synced", "/tmp/before"),
             (after, "pending", "/tmp/after"),
@@ -764,7 +759,7 @@ class TestRetireAutoRegisteredFolders:
         """
         folder = tmp_path / "legacy"
         folder.mkdir()
-        (folder / "note.md").write_text("# legacy\n\nbody\n" * 40)
+        (folder / "note.md").write_text("# legacy\n\nbody\n" * 40, encoding="utf-8")
         sid = self._add(store, {"auto_added": True}, uri=str(folder))
         fw = self._watcher(store)._folder_watcher
         fw._do_scan = AsyncMock()  # type: ignore[method-assign]
@@ -1154,8 +1149,12 @@ class TestWatcherRunLoop:
         w = self._watcher(store, interval=3600)
         w._scan = AsyncMock()  # type: ignore[method-assign]
         task = asyncio.create_task(w.start())
-        # flake-ok: pre-existing one-tick yield before the stop, which the bounded wait below covers; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)  # let the first sweep run and enter the wait
+        # The first sweep has run once the scan has been awaited; the stop then
+        # lands on the loop whether it is parked in the interval wait or not yet there.
+        await async_wait_until(
+            lambda: w._scan.await_count >= 1,
+            describe=lambda: "the first sweep to run",
+        )
         await w.stop()
         await await_until(task, what="the stopped watcher loop returning")
         assert task.result() is None
@@ -1336,9 +1335,7 @@ class TestSyncAllSkipsErroredSources:
         """
         err_id = str(uuid4())
         ok_id = str(uuid4())
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        now = datetime.now().isoformat()
+        now = _ROW_STAMP
         for sid, uri, props_json in (
             (
                 err_id,

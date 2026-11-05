@@ -16,6 +16,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import drain, note_rows, notes, open_feed, real_dashboard_state
 from slack_gateway_coverage_helpers import _awaited, _make_orchestrator, _mock_dashboard_state
 
 from kiro_crew import subagent as _sa
@@ -198,14 +200,17 @@ class TestTaskNotify:
         ds.push_refresh.assert_called_once_with("taskrunner")
 
     @pytest.mark.asyncio
-    async def test_no_meta_without_task_id(self):
+    async def test_no_meta_without_task_id(self, tmp_path):
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         orch.dashboard_state = ds
         notify = self._capture(orch)
 
         await notify("Step 2 complete", "all good")
-        assert ds.notify.call_args.kwargs["meta"] is None
+        assert notes(ds) == [("taskrunner", "Step 2 complete", "all good")]
+        assert [row.get("task_id") for row in note_rows(ds)] == [None]
+        assert {"_type": "refresh", "kinds": "taskrunner"} in drain(feed)
 
     @pytest.mark.asyncio
     async def test_approval_title_also_dms_the_owner(self):

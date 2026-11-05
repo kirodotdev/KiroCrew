@@ -210,7 +210,11 @@ const RAIL_SPLIT_MIN_W = 620
  *  panel uses internally (Escape / close button), so an external "back"/close
  *  control can't bypass the "Discard unsaved changes?" confirmation. */
 export interface MarkdownPanelHandle {
-  requestClose: () => void
+  /** `beforePrompt` runs just before the guard shows a confirmation, and not at
+   *  all when the close needs none: a host closing a tab the user is not looking
+   *  at (the tab strip's ×) uses it to bring that tab forward only when there is
+   *  something to ask about it. */
+  requestClose: (opts?: { beforePrompt?: () => void }) => void
   /** Run `nav` with a predicate that says whether this buffer may be replaced
    *  in place. For an external control that REPLACES this panel's file (the
    *  browser rail's tree click re-targets the tab in place), which destroys the
@@ -416,6 +420,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     setEditing(false)
   }, [showBinaryCard, isMarkdown, isRichType, readOnly])
   const find = useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fullscreen, content, previewRef, fullscreenPreviewRef })
+  const { findOpen, closeFind } = find
 
   const findBar = find.findOpen ? <MarkdownPanelFindBar find={find} ime={ime} /> : null
 
@@ -1062,7 +1067,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     return () => ro.disconnect()
   }, [])
 
-  const guardedClose = useCallback(async () => {
+  const guardedClose = useCallback(async (beforePrompt?: () => void) => {
     // A buffer whose file is gone from disk is the only copy there is, edited
     // or not, so the file being gone decides the prompt: "Discard unsaved
     // changes?" would imply a saved version survives the close, and none does.
@@ -1097,6 +1102,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       unverified = verdict === 'failed' && bufferIsLastCopy()
       gone = verdict === 'missing' && bufferIsLastCopy()
     }
+    const ask: typeof confirm = (opts) => { beforePrompt?.(); return confirm(opts) }
     const dirtyNow = dirtyRef.current
     const partialNow = partialCopyRef.current
     const name = downloadFileName(filePath)
@@ -1112,13 +1118,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       const body = partialNow
         ? (dirtyNow ? 'components.markdownPanel.close_partial_copy_dirty_body' : 'components.markdownPanel.close_partial_copy_body')
         : (dirtyNow ? 'components.markdownPanel.close_last_copy_dirty_body' : 'components.markdownPanel.close_last_copy_body')
-      if (!(await confirm({
+      if (!(await ask({
         title: i18nT('components.markdownPanel.close_last_copy'),
         body: rescue(i18nT(body, { name })),
         confirmLabel: i18nT('components.markdownPanel.close_last_copy_button'),
       }))) return
     } else if (unverified) {
-      if (!(await confirm({
+      if (!(await ask({
         title: i18nT('components.markdownPanel.close_unverified'),
         body: rescue(i18nT(dirtyNow ? 'components.markdownPanel.close_unverified_dirty_body' : 'components.markdownPanel.close_unverified_body', { name })),
         confirmLabel: i18nT('components.markdownPanel.close_unverified_button'),
@@ -1126,12 +1132,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     } else if (dirtyNow) {
       // An open comment draft is unsaved work too: closing discards it. The
       // prompt names what is at risk — file edits take precedence when both are.
-      if (!(await confirm({
+      if (!(await ask({
         title: i18nT('components.markdownPanel.discard_unsaved_changes'),
         confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
       }))) return
     } else if (hasCommentDraft()) {
-      if (!(await confirm({
+      if (!(await ask({
         title: i18nT('components.markdownPanel.discard_unsaved_comment'),
         confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
         // A host close can land while the panel is full screen.
@@ -1186,7 +1192,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // received the promise could `act()` on it un-awaited and wedge React's act
   // scope in tests — the close outcome is observable via onClose only. The
   // same for `requestNavigate`: its outcome is the `nav` call.
-  useImperativeHandle(ref, () => ({ requestClose: () => { void guardedClose() }, requestNavigate: (nav) => { void guardedNavigate(nav) } }), [guardedClose, guardedNavigate])
+  useImperativeHandle(ref, () => ({ requestClose: (opts) => { void guardedClose(opts?.beforePrompt) }, requestNavigate: (nav) => { void guardedNavigate(nav) } }), [guardedClose, guardedNavigate])
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -1207,7 +1213,19 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       // Leaving full screen goes through the same draft guard as its exit
       // button: a typed image box comment whose box lost focus would otherwise
       // go inert with its text out of reach.
-      if (e.key === 'Escape') { if (composerOpenRef.current) return; if (fullscreen) void guardDraft(() => setFullscreen(false)); else guardedClose() }
+      // An open find bar owns Escape the same way, wherever the focus sits: its
+      // input answers the key itself and stops it, but after a click on a match
+      // arrow or back in the document the key starts outside it, and closing
+      // the document there would throw the reader's place away (#28747). The
+      // next Escape, with the bar gone, closes the document as before. A held
+      // key's auto-repeats are not a next press: they would close the document
+      // right behind the find bar, so only the first keydown of a press acts.
+      if (e.key === 'Escape') {
+        if (e.repeat) return
+        if (composerOpenRef.current) return
+        if (findOpen) { closeFind(); return }
+        if (fullscreen) void guardDraft(() => setFullscreen(false)); else void guardedClose()
+      }
       // Own the save chord whenever the editor is active, not only when dirty:
       // the editor-local capture handler in PierreEditorImpl exists only after
       // its lazy chunk resolves and only sees keydowns targeting its own
@@ -1225,7 +1243,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [active, guardedClose, guardDraft, editing, dirty, fullscreen, confirmOpen, crewHidden])
+  }, [active, guardedClose, guardDraft, editing, dirty, fullscreen, confirmOpen, crewHidden, findOpen, closeFind])
 
   // The first edit of a clean buffer fences the disk. A read still in flight
   // describes a buffer the user has now typed into: if the user saves before it
@@ -1315,7 +1333,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       // stopping the running turn (#22315).
       escapeOwner={!!embedded && active && !crewHidden && !confirmOpen && !fullscreen}
       title={fileName}
-      onClose={guardedClose}
+      onClose={() => { void guardedClose() }}
       initialWidth={480}
       minWidth={420}
       reserveWidth={reserveWidth}
@@ -1494,7 +1512,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {richDiffChip}
           </div>
           <div className="flex items-center gap-1.5">
-            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file')} aria-label={i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
+            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : refreshing ? i18nT('components.markdownPanel.refreshing_file') : i18nT('components.markdownPanel.refresh_file')} aria-label={refreshing ? i18nT('components.markdownPanel.refreshing_file') : i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
             {!showBinaryCard && <FileArtifactActionButton state={artifactState} />}
             {(() => {
               const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()

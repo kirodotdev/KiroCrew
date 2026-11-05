@@ -16,7 +16,7 @@ Instance fields written: ``_acp_config_options``, ``_activated_model``,
 ``model_pin_partial``, ``model_pin_refused``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``,
-``_derived_spec_snapshot``, ``_extra_env``, ``_mcp_gateway_overlay``,
+``_derived_spec_snapshot``, ``_engine_fallback``, ``_extra_env``, ``_mcp_gateway_overlay``,
 ``_mcp_gateway_socket``, ``_permission_mode``, ``_sandbox_mode``, ``_session_id``,
 ``_session_key``, ``_work_dir``, ``last_prompt_stats``.
 """
@@ -29,7 +29,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, model_scope
-from kiro_crew.acp import runtime_models
+from kiro_crew.acp import launch_tuning, runtime_models
 from kiro_crew.acp._dispatch import build_session_new_params, parse_session_modes
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL, model_is_unusable, pick_served_default
@@ -188,15 +188,9 @@ async def set_model(self: AcpClient, model_id: str) -> None:
         raise AcpError("Cannot set model before session is initialized")
     if self.backend in ACP_BACKENDS_MODEL_AT_LAUNCH:
         # The harness took its model when it started and has no wire channel to
-        # move it; an unchanged pin is already in force.
-        if model_id == self._model:
-            return
-        raise AcpError(
-            f"{self.backend} takes its model when it starts, so a running session "
-            "cannot switch to another one. Start a new chat on that model.",
-            transient=False,
-            user_worded=True,
-        )
+        # move it: the switch relaunches the process and reloads this session.
+        await launch_tuning.switch_launch_model(self, model_id)
+        return
     # This path deliberately does not scope: an explicit pick must reach the
     # adapter because its advertised list can omit an entitlement the adapter
     # accepts, and inherited pins are already scoped by their callers.
@@ -237,6 +231,9 @@ async def set_model(self: AcpClient, model_id: str) -> None:
     self._model = model_id
     self.model_pin_refused = ""
     self._resolved_model_id = self._last_substitution_model or model_id
+    # The switch is what the session runs next, so the next prompt must not
+    # restore the model the last turn's engine hop moved off.
+    self._engine_fallback.note_model_set()
     if self._seeds_local_settings:
         # Re-seed the per-session settings file: a pooled runtime seeded it at
         # spawn with the POOL DEFAULT model + its allowlist, and the spawn-only
@@ -810,7 +807,7 @@ async def _reassert_adapter_resolved_model(self: AcpClient) -> None:
 async def _apply_startup_model(self: AcpClient) -> None:
     """Apply the configured model to a freshly initialized session.
 
-    Split out of ``_init_session`` step 5 so the withhold decision is
+    Split out of ``_initialize_session`` step 5 so the withhold decision is
     reachable without standing up a whole session.
 
     The model here was NOT chosen for this turn: it arrives from the agent

@@ -1,23 +1,8 @@
 """The dashboard route table's ordering contract.
 
-The 447 registrations moved out of ``start_dashboard`` into ``dashboard/routes/``.
-Splitting them made one implicit property easy to break silently:
-**aiohttp resolves a request against its routes in REGISTRATION order.** Several
-routes in this table rely on it -- a literal path is registered before a pattern
-that would otherwise swallow it, and the original inline table said so in
-comments (``/api/steering/search`` before ``/api/steering/{key}``,
-``/api/chat/slots/cleanup`` before ``/api/chat/slots/{slot}``, the skills browser
-``/-/`` paths before ``/api/skills/{name:.+}``).
-
-Nothing in aiohttp complains when that order is wrong. The shadowed route simply
-stops being reachable: the pattern matches first and its handler answers a path
-it was never meant to serve, so the failure surfaces as a wrong response body or
-a 404 for a path that is still in the table.
-
-The generic guard below is the point of this file: rather than pinning the pairs
-the comments happen to mention, it derives every literal/pattern pair from the
-live router and asserts the literal wins. That covers pairs nobody wrote a
-comment about, and it keeps covering them as routes are added.
+aiohttp matches routes in registration order and never warns when a pattern shadows a
+literal (``/api/steering/search`` before ``/api/steering/{key}``). The guard derives
+every literal/pattern pair from the live router, so new routes are covered too.
 """
 
 from __future__ import annotations
@@ -34,11 +19,8 @@ from kiro_crew.dashboard import routes as routes_pkg
 def test_registrar_tuple_is_explicit_and_not_alphabetical() -> None:
     """The tuple's order IS the table's order, so it must not be sorted.
 
-    This pins the DECLARED order only. On its own it is weak -- it cannot see a
-    change to how ``register_all`` iterates -- so
-    ``test_effective_registration_order_matches_the_declared_order`` below pins
-    what the router actually ends up with. Both are needed: this one localizes a
-    reordering to the tuple, that one catches every other way the order can move.
+    This pins the declared order only; the live-router test below catches a change in
+    how ``register_all`` iterates.
     """
     assert routes_pkg.REGISTRAR_NAMES == (
         "realtime",
@@ -53,6 +35,7 @@ def test_registrar_tuple_is_explicit_and_not_alphabetical() -> None:
         "taskrunner",
         "connections",
         "system",
+        "browser_live",
         "shared_crew",
     )
     assert list(routes_pkg.REGISTRAR_NAMES) != sorted(
@@ -86,11 +69,8 @@ def _slice_routes(slice_name: str) -> list[tuple[str, str]]:
 def _anchor_index(slice_name: str, ordered: list[tuple[str, str]]) -> int:
     """Earliest router position of a route registered ONLY by this slice.
 
-    A slice's first route is not a usable anchor on its own: some paths are also
-    registered earlier by ``_register_mcp_routes`` (``/api/notifications`` among
-    them), so a naive ``index()`` finds the other registration and reports the
-    slice as running far earlier than it does. Anchoring on a pair that occurs
-    exactly once removes that ambiguity.
+    ``_register_mcp_routes`` registers some paths earlier (``/api/notifications``), so a
+    plain ``index()`` would find that registration instead.
     """
     counts: dict[tuple[str, str], int] = {}
     for pair in ordered:
@@ -104,37 +84,13 @@ def _anchor_index(slice_name: str, ordered: list[tuple[str, str]]) -> int:
 async def test_route_table_ordering_invariants(tmp_path: Path, monkeypatch: Any) -> None:
     """The three ordering properties, checked against ONE live router.
 
-    Deliberately one test rather than three. Each property needs the real app and
-    ``_dashboard`` runs a full startup and teardown per use, so three of them cost
-    three startups to assert three things about a single router that is identical
-    in all three cases. Sharing one build is the cheaper shape, and each assertion
-    still names the property it broke.
+    One test because ``_dashboard`` runs a full startup per use. It checks: effective
+    order matches the declared order; no literal is shadowed by an earlier pattern; no
+    pattern is shadowed by an earlier pattern with a different handler.
 
-    The properties:
-
-    1. **Effective order matches the declared order.** The complement to the
-       tuple pin above -- reversing or shuffling how ``register_all`` iterates
-       leaves the tuple untouched, so only a check against the live router catches
-       it. Because ordering is what stops a pattern swallowing a literal, "the
-       tuple is right" is not the property that matters.
-    2. **No literal is shadowed by an earlier pattern.** Derived from the router
-       rather than a hand-written pair list, so it guards pairs nobody commented
-       and new ones as they appear.
-    3. **No pattern is shadowed by a DIFFERENT earlier pattern.** Property 2
-       cannot see this, and it is the likelier future mistake: a new
-       ``/api/chat/slots/{x}/...`` variant added to the wrong slice would take its
-       sibling's traffic. Only flagged when the two resolve to different handlers,
-       since the table legitimately points several methods of one pattern at one
-       handler.
-
-    Scope for 2 and 3 is paths the table registers. Builtin apps register their
-    own routes afterwards through a separate mechanism, and that surface has a
-    pre-existing literal-after-pattern overlap -- ``/api/apps/{name}/config``
-    precedes the literal ``/config`` routes of the apps whose own API base is two
-    segments deep, so the generic handler answers instead of theirs and skips
-    their enabled-gating. This PR neither introduced nor worsened it (the
-    before/after route order is byte-identical) and fixing it belongs with
-    ``apps/routes.py``.
+    Only paths the table registers are checked. Builtin apps register theirs later, and
+    there ``/api/apps/{name}/config`` shadows some apps' literal ``/config`` routes; that
+    fix belongs with ``apps/routes.py``.
     """
     from test_dashboard_server_startup_coverage import _dashboard
 
@@ -264,11 +220,8 @@ def test_slice_files_and_registrars_agree() -> None:
 def _resource_pattern(resource: Any) -> re.Pattern[str] | None:
     """The resource's own compiled pattern, or None for a plain literal path.
 
-    Read from ``get_info()`` rather than rebuilt from ``canonical``: canonical
-    DROPS a pattern's inner regex, rendering
-    ``/{name:manifest\\.json|sw\\.js|icon-\\d+\\.png|pcm-worklet\\.js}`` as bare
-    ``/{name}``. Reconstructing from that turns a four-file allowlist into a
-    catch-all and reports shadowing that cannot happen.
+    Read from ``get_info()``: ``canonical`` drops the inner regex, turning a four-file
+    allowlist like ``/{name:manifest\\.json|sw\\.js}`` into a catch-all ``/{name}``.
     """
     info = resource.get_info()
     pattern = info.get("pattern")
@@ -278,11 +231,8 @@ def _resource_pattern(resource: Any) -> re.Pattern[str] | None:
 def _table_owned_paths() -> set[tuple[str, str]]:
     """The (method, path) pairs the route table itself registers.
 
-    Ownership is defined by "a slice module registers this path", not by the
-    handler's ``__module__``. That distinction matters: the table registers
-    ``/api/suggestions`` and ``/api/tips/*``, whose handlers live in
-    ``kiro_crew.suggestions`` and ``kiro_crew.tips``, so filtering on the handler
-    module would silently drop exactly the routes a shadowing check is for.
+    Owned means a slice module registers it, not the handler's ``__module__``: the
+    handlers for ``/api/suggestions`` and ``/api/tips/*`` live outside the table.
     """
     owned: set[tuple[str, str]] = set()
     for name in routes_pkg.REGISTRAR_NAMES:

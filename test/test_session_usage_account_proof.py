@@ -494,8 +494,74 @@ class TestCredentialSelectionIsAnchored:
 
     @pytest.mark.asyncio
     async def test_a_builder_id_pair_that_agrees_on_its_email_alone_publishes(self):
-        # Builder ID reports neither an ARN nor a start_url: the email is the
-        # whole evidence, and an unchanged one is agreement, not a refusal.
+        # Builder ID reports no ARN: the ARN match cannot name it. The email
+        # names it instead, but only when it is proven to belong to the billed
+        # credential -- the e-mail GetUsageLimits returned for the token it read
+        # (want_email). Here the API's billed e-mail EQUALS the signed-in
+        # whoami's, so the numbers AND the email publish together.
+        with (
+            patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
+            patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)),
+            patch.object(
+                sessions_mod,
+                "_fetch_whoami",
+                AsyncMock(return_value={"email": "solo@b.com", "account_type": "BuilderId"}),
+            ),
+            patch.object(
+                sessions_mod.kiro_usage_api,
+                "fetch_usage_limits",
+                # The billed e-mail (want_email) matches the whoami e-mail.
+                return_value=_api_result(
+                    {"credits_used": 3.0, "credits_plan": 50.0, "email": "solo@b.com"}
+                ),
+            ),
+        ):
+            await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache["credits_plan"] == 50.0
+        # The billed e-mail proves the name, so the panel can label the account.
+        assert sessions_mod._usage_cache["email"] == "solo@b.com"
+        assert sessions_mod._usage_cache["account_type"] == "BuilderId"
+        # The private coupling key never rides along, and no start_url leaks.
+        assert "_profile_arn" not in sessions_mod._usage_cache
+        assert "start_url" not in sessions_mod._usage_cache
+
+    @pytest.mark.asyncio
+    async def test_a_builder_id_whose_billed_email_differs_attaches_nothing(self):
+        # The exact misattribution the billed-e-mail tie exists to stop: whoami
+        # is steady on account B across the bracket, but the credential that
+        # actually answered GetUsageLimits was account A's (a still-valid token
+        # from a second trusted kiro-cli store), so the API's billed e-mail is
+        # A's. B's whoami e-mail must NOT sit over A's numbers. The reading's
+        # own e-mail is never published on its own either.
+        with (
+            patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
+            patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)),
+            patch.object(
+                sessions_mod,
+                "_fetch_whoami",
+                AsyncMock(return_value={"email": "accountB@b.com", "account_type": "BuilderId"}),
+            ),
+            patch.object(
+                sessions_mod.kiro_usage_api,
+                "fetch_usage_limits",
+                # The numbers were billed to account A (its token answered).
+                return_value=_api_result(
+                    {"credits_used": 999.0, "credits_plan": 50.0, "email": "accountA@a.com"}
+                ),
+            ),
+            patch("asyncio.create_subprocess_exec", AsyncMock()),
+        ):
+            await sessions_mod._fetch_usage_bg()
+        # The numbers publish, but NOTHING names them: no email, no account type.
+        assert sessions_mod._usage_cache["credits_plan"] == 50.0
+        assert "email" not in sessions_mod._usage_cache
+        assert "account_type" not in sessions_mod._usage_cache
+
+    @pytest.mark.asyncio
+    async def test_a_builder_id_with_no_billed_email_attaches_nothing(self):
+        # The service refused want_email (or the reading simply carries none):
+        # with no billed e-mail to match against, the whoami e-mail is not
+        # attached -- the numbers publish alone, the pre-change behaviour.
         with (
             patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
             patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)),
@@ -509,11 +575,72 @@ class TestCredentialSelectionIsAnchored:
                 "fetch_usage_limits",
                 return_value=_api_result({"credits_used": 3.0, "credits_plan": 50.0}),
             ),
+            patch("asyncio.create_subprocess_exec", AsyncMock()),
         ):
             await sessions_mod._fetch_usage_bg()
         assert sessions_mod._usage_cache["credits_plan"] == 50.0
-        # No ARN on either side: the numbers publish, the identity is not coupled.
         assert "email" not in sessions_mod._usage_cache
+
+    @pytest.mark.asyncio
+    async def test_a_builder_id_whose_email_switched_attaches_nothing(self):
+        # Same ARN-less shape, but the email flips between the before and after
+        # whoami -- a profile switch across the credential read. _whoami_agreement
+        # returns DIFFERENT, so the reading is discarded entirely and no email is
+        # ever attached: the email proof must not fire on a switch.
+        with (
+            patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
+            patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)),
+            patch.object(
+                sessions_mod,
+                "_fetch_whoami",
+                AsyncMock(
+                    side_effect=[
+                        {"email": "first@b.com", "account_type": "BuilderId"},
+                        {"email": "second@b.com", "account_type": "BuilderId"},
+                    ]
+                ),
+            ),
+            patch.object(
+                sessions_mod.kiro_usage_api,
+                "fetch_usage_limits",
+                return_value=_api_result({"credits_used": 3.0, "credits_plan": 50.0}),
+            ),
+            patch("asyncio.create_subprocess_exec", AsyncMock()) as spawn,
+        ):
+            await sessions_mod._fetch_usage_bg()
+        # A switch across the read: nothing published, no email attached.
+        assert sessions_mod._usage_cache == {"available": False}
+        assert spawn.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_the_arn_match_path_is_unchanged_by_the_email_proof(self):
+        # Regression guard: an ARN-bearing account still couples ONLY on a
+        # matching ARN. Here the API's ARN and the adjacent whoami's ARN differ
+        # (a switch between two profiled accounts), so even though an email is
+        # present on both sides the ARN path refuses it and the email proof --
+        # scoped to api_arn is None -- does not fire. Nothing is published.
+        arn_b = "arn:aws:codewhisperer:us-east-1:2:profile/B"
+        snapshots = [
+            {**_IDENTITY_A, "_profile_arn": self.ARN},
+            {**_IDENTITY_A, "_profile_arn": arn_b},
+        ]
+        with (
+            patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
+            patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)),
+            patch.object(sessions_mod, "_fetch_whoami", AsyncMock(side_effect=snapshots)),
+            patch.object(
+                sessions_mod.kiro_usage_api,
+                "fetch_usage_limits",
+                return_value=_api_result(
+                    {"credits_used": 1.0, "credits_plan": 10.0, "_profile_arn": self.ARN}
+                ),
+            ),
+            patch("asyncio.create_subprocess_exec", AsyncMock()) as spawn,
+        ):
+            await sessions_mod._fetch_usage_bg()
+        # ARN flip is a switch: discard, publish nothing, attach no email.
+        assert sessions_mod._usage_cache == {"available": False}
+        assert spawn.await_count == 0
 
     @pytest.mark.asyncio
     async def test_the_same_email_in_a_different_org_is_a_switch(self):

@@ -1038,10 +1038,15 @@ def _write_structured_memory(
     # pass and either can arm the latch for the other.
     budget = _EmbedBudget(_EMBED_BUDGET_SECS_PER_PASS, self._logger)
 
-    from kiro_crew.memory_kind_routing import record_kind_routing, route_consolidation_by_kind
+    from kiro_crew.memory_kind_routing import (
+        capture_prior,
+        record_kind_routing,
+        route_consolidation_by_kind,
+    )
 
     result, withheld = _withhold_unseen_deletes(result, visible_keys, self._logger)
-    routing = route_consolidation_by_kind(result, self._logger)
+    # What the store held before this pass writes, read for the log only.
+    routing = capture_prior(vector_store, route_consolidation_by_kind(result, self._logger))
     result = routing.result
     # The consolidation size bound, on the answer routing returned, so routing reads and
     # logs every item as it would without the bound (_refuse_oversized_semantic).

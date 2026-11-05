@@ -2,15 +2,23 @@
 
 ``_review_contract.py`` loads this module and re-exports every name here, and
 callers import them from there. ``same_head`` comes from ``_review_rounds.py``.
+
+This is the one definition of a blocked push. ``pr_findings.py --rounds`` and
+``sweep_check.py`` call ``blocked_push_count`` in process, and the GPT lane's
+push-budget section in ``codex-review.yml`` runs this file as a script from the
+base commit (``main``), so all three report the same number for the same PR.
 """
 
 from __future__ import annotations
 
+import argparse
 import importlib.machinery
 import importlib.util
 import json
 import os
 import re
+import subprocess
+import sys
 
 
 class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
@@ -52,10 +60,13 @@ same_head = _rounds.same_head
 BLOCKED_PUSH_REPEAT = 3
 BLOCKED_PUSH_LIMIT = 5
 LANE_CHECK_RE = re.compile(
-    r"^(?:(?:Opus|GPT) [0-9][0-9.]* Review|Design Review|UX Review|First Principles Review)$"
+    r"^(?:(?:Opus|GPT) [0-9][0-9.]* Review|Design Review|UX Review|First Principles Review"
+    r"|Security Scope Review)$"
 )
 _MAX_TIMELINE_PAGES = 50
 _MAX_CHECK_PAGES = 10
+_GH_TIMEOUT_S = 60
+_REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 
 def _api_json(run_command, url):
@@ -196,3 +207,55 @@ def blocked_push_count(repo, number, run, since="", stop_at=None):
         if stop_at and count >= stop_at:
             break
     return count
+
+
+def _gh(args):
+    """(rc, stdout, stderr) of one command; a hung or missing ``gh`` is a failed read."""
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_GH_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, "", str(exc)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def main(argv=None, run=_gh):
+    """Print the PR's blocked-push count; exit 1 when GitHub cannot be read.
+
+    The GPT lane runs this as ``python3 _review_pushes.py --repo O/R --pr N``. An
+    unreadable count prints nothing to stdout, so the caller can never mistake a
+    failed read for zero.
+
+    ``REVIEW_PUSHES_STOP_AT`` (a positive integer) passes ``stop_at``, so a
+    threshold test skips the check-run reads past it (a full count on a long PR
+    is dozens of calls on the shared REST quota). It is an environment variable,
+    not a flag, because the GPT lane stages this file from the PR's base commit:
+    an older base ignores it, where an unknown flag would fail the count. Unset,
+    empty or not a positive integer: the full count.
+    """
+    parser = argparse.ArgumentParser(description="Count a PR's pushes past a blocked head.")
+    parser.add_argument("--repo", required=True, help="owner/name")
+    parser.add_argument("--pr", required=True, type=int, help="pull request number")
+    args = parser.parse_args(argv)
+    if not _REPO_RE.fullmatch(args.repo) or args.pr <= 0:
+        print("--repo must be owner/name and --pr a positive number", file=sys.stderr)
+        return 2
+    raw_stop = os.environ.get("REVIEW_PUSHES_STOP_AT", "").strip()
+    stop_at = int(raw_stop) if raw_stop.isdigit() and int(raw_stop) > 0 else None
+    count = blocked_push_count(args.repo, args.pr, run, stop_at=stop_at)
+    if count is None:
+        print("could not read the PR timeline or a head's check runs", file=sys.stderr)
+        return 1
+    print(count)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

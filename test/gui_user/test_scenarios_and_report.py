@@ -184,7 +184,7 @@ class TestShippedScenarios:
         checked = 0
         for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
             sc = scenarios.load_scenario(path)
-            if not sc.members or not any("Open the Mates page" in step for step in sc.steps):
+            if not sc.members or not any("Open the Bots page" in step for step in sc.steps):
                 continue
             labels = list(sc.members) + [
                 " ".join(part.capitalize() for part in m.split("-")) for m in sc.members
@@ -195,7 +195,7 @@ class TestShippedScenarios:
                     for i, step in enumerate(sc.steps)
                     if any(label in step for label in labels)
                     and re.search(r"\b(click|find)\b", step, re.IGNORECASE)
-                    and "Search mates" not in step
+                    and "Search Bots" not in step
                 ),
                 None,
             )
@@ -203,7 +203,7 @@ class TestShippedScenarios:
                 continue
             checked += 1
             searched = any(
-                "Search mates" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
+                "Search Bots" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
                 for step in sc.steps[:click_at]
             )
             assert (
@@ -412,7 +412,16 @@ class TestShippedScenarios:
         assert (
             "Crew Members and Crew Mode" in preview_step
         )  # the older titles are still valid readings on older builds
-        assert any('"Mates" item is in the left rail' in s for s in sc.steps)
+        assert any('"Bots" item is in the left rail' in s for s in sc.steps)
+
+    def test_members_dm_scenario_says_where_the_list_is_before_the_search(self) -> None:
+        """The page reopens the last mate with the list in the switcher; the steps say so before the search."""
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "members-dm-hello.yaml")
+        search = next(i for i, s in enumerate(sc.steps) if "Search Bots" in s)
+        before = " ".join(sc.steps[:search])
+        assert "avatar switcher" in before
+        assert '"Show the full roster"' in before
+        assert "hover or focus" in before
 
     def test_members_scenarios_hedge_the_card_label(self) -> None:
         """A seeded member has no display name, so its card shows the id; every members scenario says so."""
@@ -446,7 +455,7 @@ class TestShippedScenarios:
             assert not any("item appears in the left rail" in s for s in sc.steps), path.name
             rail_steps = [s for s in sc.steps if "item is in the left rail" in s]
             for step in rail_steps:
-                assert '"Mates" item is in the left rail' in step, (path.name, step)
+                assert '"Bots" item is in the left rail' in step, (path.name, step)
         assert checked >= 5
 
     def test_created_crewmate_speaks_first_with_no_user_greeting_bubble(self) -> None:
@@ -465,6 +474,28 @@ class TestShippedScenarios:
 
         assert f'"{REPLY_TEXT}"' in expectations
         assert "no bubble from you" in expectations
+
+    def test_create_first_unfolds_advanced_settings_before_typing_the_goal(self) -> None:
+        """The Goal field lives inside the folded Advanced settings section.
+
+        The New mate dialog opens with Advanced settings folded, so a step
+        that asks for the Goal field must open that section first, and quote
+        both labels exactly as the en catalog ships them.
+        """
+        locales = Path(__file__).resolve().parents[2] / "website/src/i18n/locales"
+        members = json.loads((locales / "en.json").read_text(encoding="utf-8"))["pages"][
+            "membersPage"
+        ]
+        advanced = members["create_advanced_settings"]
+        goal = members["create_job"]
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "crewmate-create-first.yaml")
+        goal_steps = [s for s in sc.steps if f'"{goal}"' in s]
+        assert len(goal_steps) == 1, goal_steps
+        step = goal_steps[0]
+        assert f'click the "{advanced}" toggle' in step, step
+        assert step.index(f'"{advanced}"') < step.index(f'"{goal}"'), step
+        assert "Leave the Advanced section as it is" not in " ".join(sc.steps)
+        assert any(f'"{members["create_submit"]}"' in s for s in sc.steps)
 
     def test_customize_and_memory_scenarios_quote_the_shipped_labels(self) -> None:
         """Each label these scenarios tell the tester to find is a string the UI ships.

@@ -217,18 +217,27 @@ class TestCompactions:
         # reports as different outcomes. This case is the FAILED one, so the set is
         # empty -- present rather than absent, because the real ``CompactionState``
         # always has it and a double without it would pass by accident.
-        stub.state = SimpleNamespace(on_compacted=None, uncompactable_recycles=set())
+        # ``compaction_triggers`` likewise: empty means the threshold trigger.
+        stub.state = SimpleNamespace(
+            on_compacted=None, uncompactable_recycles=set(), compaction_triggers={}
+        )
         asyncio.run(
             CompactionCoordinator._fire_compact_callback(coordinator, "k", 0.9, success=success)
         )
 
     def test_a_compaction_verdict_is_counted(self, rec):
         self._fire(True)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": True}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": True,
+            "trigger": "threshold",
+        }
 
     def test_a_failed_compaction_is_still_an_attempt(self, rec):
         self._fire(False)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": False}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": False,
+            "trigger": "threshold",
+        }
 
     def test_a_failed_compact_that_recycles_is_not_counted_successful(self, rec):
         """The counter's success is not the callback's success.
@@ -243,7 +252,10 @@ class TestCompactions:
         this test is what notices.
         """
         self._fire(True, recycling=True)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": False}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": False,
+            "trigger": "threshold",
+        }
 
     def test_a_surface_with_no_callback_is_still_counted(self, rec):
         """The early return below the emit would otherwise drop those surfaces."""
@@ -507,27 +519,13 @@ class TestSubagentCompleted:
     def test_the_enum_covers_every_outcome_the_runtime_can_report(self):
         """``SubagentInfo.outcome`` is THE classifier, and this enum restates it
         because ``metrics`` sits below the sub-agent manager in the dependency
-        order. A fourth value appearing in that property without a row in the
-        metrics doc would silently land on ``unknown``, so harvest the property's
-        own return literals and fail here instead.
+        order. The property is the coarse fold of ``SubagentEnding``, so a fourth
+        value appearing in that fold without a row in the metrics doc would
+        silently land on ``unknown``; read the fold itself and fail here instead.
         """
-        from kiro_crew.subagent_parts import run_record
+        from kiro_crew.subagent_ending import SubagentEnding
 
-        tree = ast.parse(Path(run_record.__file__).read_text(encoding="utf-8"))
-        prop = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "outcome"
-            and any(isinstance(d, ast.Name) and d.id == "property" for d in node.decorator_list)
-        )
-        returned = {
-            node.value.value
-            for node in ast.walk(prop)
-            if isinstance(node, ast.Return)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        }
+        returned = {o.coarse for o in SubagentEnding}
         assert returned == {"completed", "failed", "stopped"}
         assert returned <= ev.SUBAGENT_OUTCOMES
         assert ev.SUBAGENT_OUTCOMES == returned | {ev.SUBAGENT_OUTCOME_UNKNOWN}
@@ -644,7 +642,7 @@ class TestSubagentCompleted:
         source = Path(run_turn.__file__).read_text(encoding="utf-8")
         flag = source.index("info.returned_reply = not _no_reply")
         assert source.index("_no_reply = not cleaned.strip()") < flag
-        assert flag < source.index("cleaned = annotate_model_fallback(cleaned, client)")
+        assert flag < source.index("cleaned = annotate_model_fallback(")
 
     def test_the_no_reply_placeholder_is_the_runners_own(self):
         """``empty`` is read from the placeholder the runner stores for a run with
@@ -683,7 +681,7 @@ class TestSubagentCompleted:
         assert emits == [], "the terminal counter must not sit behind the crew log flag"
         calls = [
             node
-            for node in ast.walk(bodies["_report_terminal_impl"])
+            for node in ast.walk(bodies["_finish"])
             if isinstance(node, ast.Call)
             and getattr(node.func, "attr", "") == "_record_terminal_metric"
         ]

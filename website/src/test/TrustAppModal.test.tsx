@@ -264,17 +264,7 @@ describe('isSessionApprovalConsentRequiredError', () => {
 
 describe('LibraryPage trust gate', () => {
   // The consent flow is reached by clicking Enable on a DISABLED third-party
-  // tile, which the Library's default "enabled only" view filters out. This
-  // block is about the trust gate, not the default view, so it opts into the
-  // show-all view (persisted `mc-apps-library-show-all` toggle, '1' = show all)
-  // to render the tile it acts on.
-  beforeEach(() => {
-    localStorage.setItem('mc-apps-library-show-all', '1')
-  })
-  afterEach(() => {
-    localStorage.removeItem('mc-apps-library-show-all')
-  })
-
+  // tile, which the Library lists in its Disabled section.
   it('routes consent-required enable to the detail disclosure', async () => {
     enableApp.mockRejectedValue(SESSION_APPROVAL_REQUIRED())
     renderPage()
@@ -1198,7 +1188,7 @@ describe('registry install trust gate', () => {
     // the same shape the permanent refusal uses) rather than running on inline
     // after "check the logs"; the agent hand-off still keeps it, looked up by the
     // raw string.
-    const refusal = 'Python apps that require a build step are not supported in the desktop app'
+    const refusal = 'Python apps that require a build step are not supported in Kiro Crew\'s desktop build'
     installFromRegistryStream
       .mockResolvedValueOnce(INSTALL_DENIED())
       .mockResolvedValue({ ok: false, name: THIRD_PARTY.name, error: refusal })
@@ -1273,8 +1263,8 @@ describe('retryFailureCode', () => {
 
 describe('registry install trust gate — permanent desktop refusal', () => {
   const REFUSAL =
-    'Python apps that require a build step are not supported in the desktop app: ' +
-    'its bundled interpreter is inside the signed application bundle and cannot install packages'
+    'Python apps that require a build step are not supported in Kiro Crew\'s desktop ' +
+    'build: its bundled interpreter is inside the signed application bundle and cannot install packages'
 
   beforeEach(() => {
     listRegistry.mockResolvedValue({

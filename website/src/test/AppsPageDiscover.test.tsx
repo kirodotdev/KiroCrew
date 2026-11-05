@@ -132,12 +132,12 @@ describe('AppsPage — hybrid Discover', () => {
   it('shows category rail with counts and sources with provenance', async () => {
     renderPage()
     await screen.findAllByText('FEATURED')
-    expect(screen.getByRole('button', { name: /All apps 3/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Developer Tools 1/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /On-call & Ops 1/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Productivity 1/ })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /All apps 3/ })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /Developer Tools 1/ })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /On-call & Ops 1/ })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /Productivity 1/ })).toBeInTheDocument()
     // Source attribution also appears on app cards; assert the rail row itself.
-    const source = screen.getByRole('button', { name: 'kirodotdev-labs 1 app' })
+    const source = screen.getByRole('radio', { name: 'kirodotdev-labs 1 app' })
     expect(within(source).getByText('kirodotdev-labs')).toBeInTheDocument()
     expect(within(source).getByText('1 app')).toBeInTheDocument()
   })
@@ -145,7 +145,7 @@ describe('AppsPage — hybrid Discover', () => {
   it('selecting a category filters the list but KEEPS the editorial layer', async () => {
     renderPage()
     const kickersBefore = (await screen.findAllByText('FEATURED')).length
-    fireEvent.click(screen.getByRole('button', { name: /On-call & Ops 1/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /On-call & Ops 1/ }))
     // Section heading switches to the category, list shows only the match…
     await screen.findByRole('heading', { name: 'On-call & Ops' })
     const listRows = screen.getAllByRole('button', { name: /View details for Oncall Radar/ })
@@ -174,33 +174,33 @@ describe('AppsPage — hybrid Discover', () => {
     await screen.findAllByText('FEATURED')
     const status = screen.getByRole('status')
     expect(status).toHaveTextContent('3 apps')
-    const installed = screen.getByRole('button', { name: 'Installed 1' })
-    expect(installed).toHaveAttribute('aria-pressed', 'false')
+    const installed = screen.getByRole('radio', { name: 'Installed 1' })
+    expect(installed).toHaveAttribute('aria-checked', 'false')
 
     fireEvent.click(installed)
-    expect(installed).toHaveAttribute('aria-pressed', 'true')
+    expect(installed).toHaveAttribute('aria-checked', 'true')
     expect(status).toHaveTextContent('1 app')
     // Only the installed app is a shelf row; the editorial layer is untouched.
     expect(screen.getAllByRole('button', { name: /View details for Secretary/ }).length).toBeGreaterThan(0)
     expect(screen.getAllByText('FEATURED').length).toBeGreaterThan(0)
 
     // Composes with a category: no installed app is in On-call & Ops.
-    fireEvent.click(screen.getByRole('button', { name: /On-call & Ops 1/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /On-call & Ops 1/ }))
     expect(status).toHaveTextContent('0 apps')
-    expect(screen.getByRole('button', { name: 'Installed 0' })).toHaveAttribute('aria-pressed', 'true')
-    fireEvent.click(screen.getByRole('button', { name: /All apps 3/ }))
+    expect(screen.getByRole('radio', { name: 'Installed 0' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('radio', { name: /All apps 3/ }))
     expect(status).toHaveTextContent('1 app')
 
     // Composes with a source: the installed app comes from kirodotdev-labs.
-    fireEvent.click(screen.getByRole('button', { name: 'kirodotdev-labs 1 app' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'kirodotdev-labs 1 app' }))
     expect(status).toHaveTextContent('1 app')
-    expect(screen.getByRole('button', { name: 'Installed 1' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Installed 1' })).toBeInTheDocument()
 
     // "All" clears only the install-state filter.
-    fireEvent.click(screen.getByRole('button', { name: 'All' }))
-    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('radio', { name: 'All' }))
+    expect(screen.getByRole('radio', { name: 'All' })).toHaveAttribute('aria-checked', 'true')
     expect(status).toHaveTextContent('1 app')
-    fireEvent.click(screen.getByRole('button', { name: 'All sources' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'All sources' }))
     expect(status).toHaveTextContent('3 apps')
   })
 

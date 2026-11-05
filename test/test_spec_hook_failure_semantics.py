@@ -101,14 +101,16 @@ def test_a_deny_listed_user_spec_hook_runs_and_the_tool_goes_ahead(tmp_path, age
 def test_a_governance_pinned_rule_still_refuses_a_user_spec_hook(tmp_path, agents_dir, monkeypatch):
     # The exemption covers the operator's own deny rules, not an administrator's
     # pin: a pinned rule refuses the user-level spec hook, so its command never
-    # runs. A refused spec hook warns, so the tool itself still goes ahead.
+    # runs. A refused spec hook blocks the tool, with the refusal as the reason
+    # (P0-12): the guard never gave a verdict.
     monkeypatch.setattr(
         "kiro_crew.security.pinned_builtin_command_ids",
         lambda: {"local-destructive-chmod-777"},
     )
     command, sentinel = _deny_listed(tmp_path, "pinned")
     _write_spec(agents_dir, command)
-    assert _gate(tmp_path, ScriptHookStore(config_dir=tmp_path)) is None
+    reason = _gate(tmp_path, ScriptHookStore(config_dir=tmp_path))
+    assert reason is not None and "security policy" in reason.lower()
     assert not sentinel.exists(), "a governance-pinned command must not run"
 
 

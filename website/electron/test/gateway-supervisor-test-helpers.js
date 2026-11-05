@@ -200,6 +200,7 @@ function harness(overrides = {}) {
     clearIntervalFn: overrides.timers ? overrides.timers.clearIntervalFn : undefined,
     processRef,
     dirname: "/virtual/electron",
+    capturePySpyDumpFn: overrides.capturePySpyDumpFn,
   });
 
   return { supervisor, store, logs, warnings, errors, spawnCalls, fsMod };

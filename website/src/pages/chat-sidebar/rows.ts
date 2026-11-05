@@ -29,6 +29,7 @@ import { isWithinRecentWindow } from '../recentWindow'
 import { splitStaleSlots, type StaleSplit } from '../staleCollapse'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import type { MemorySourceRow } from '../../lib/agentMemorySource'
+import { sameCrewView, type CodeChannelCrewView } from './codeChannelCrew'
 import type { AgentInfo, FilterDimension, RevealBlockingFilter, SessionFilterKey, SidebarSourceLink, Slot } from './types'
 
 /** What the chip prints. The serializer decides it; this only covers its absence,
@@ -78,8 +79,11 @@ export interface SidebarRowFilters {
    *  the chips whose eye button is on: their matches are dropped, paused or not. */
   status: { active: ReadonlySet<SessionFilterKey>; hidden: ReadonlySet<SessionFilterKey>; paused: boolean; recentWindowMs: number }
   /** The filter menu's folder hides. `active` is false while the search box holds
-   *  text, so a hidden folder never becomes a search dead end. */
-  folders: { hiddenSubtree: ReadonlySet<string>; active: boolean }
+   *  text, so a hidden folder never becomes a search dead end. `pinnedSubtree` is
+   *  the folders a folder pin covers (the pinned folders and everything under
+   *  them): a row filed there is exempt from the tag and status chips the way a
+   *  pinned session is, and `hiddenSubtree` never names one of them. */
+  folders: { hiddenSubtree: ReadonlySet<string>; pinnedSubtree: ReadonlySet<string>; active: boolean }
   /** The model filter. `passes` is the include-or-exclude predicate the model
    *  vocabulary owns (`useSidebarModels`), already answering true for every row
    *  while nothing is selected; `active` is whether a selection narrows. */
@@ -176,6 +180,9 @@ export interface RowPlacement {
    *  chevron and no collapsed aggregate to carry. All the row does with it is wear
    *  the tag that says WHY it is up there. */
   folderConductor?: boolean
+  /** A Slack code channel's conductor in the folder view, with its workers folded
+   *  under it (`codeChannelCrew.ts`). Absent on every other row. */
+  crew?: CodeChannelCrewView
 }
 
 /** The shell values every row shows the same way. The shell builds it once per change
@@ -270,6 +277,8 @@ export interface SessionRowView {
   conductor: ConductorRowView | null
   /** See `RowPlacement.folderConductor`. False in every lane but the folder tree. */
   folderConductor: boolean
+  /** See `RowPlacement.crew`. */
+  crew: CodeChannelCrewView | null
   isActive: boolean
   /** Whether this row's own slot IS the sidebar's active slot — the raw
    *  `key === activeSlot` test, independent of the crew-window logic `isActive`
@@ -593,7 +602,18 @@ function makeDimensions(
   // which means "hide all of this". Same predicate as the Pinned chip, so a peer row
   // (never pinned) is never exempt. `narrows` is untouched: the list IS narrowed; the
   // pinned rows are exempt from it.
-  const pinnedBypass = matches.pinned
+  //
+  // A folder pin extends the same exemption to every row filed in the pinned
+  // folder or under it: the folder pin is the person's standing answer to "do I
+  // want to see these", and a chip is the narrower, momentary one. The rows are
+  // not pinned themselves (no band, no row glyph), so the exemption is the only
+  // thing the two pins share. `folderOf` refuses a peer row, so a colliding peer
+  // key cannot ride a local folder's pin into the list.
+  const inPinnedFolder = (slot: Slot): boolean => {
+    const folderId = folderOf(slot)
+    return !!folderId && folderFilter.pinnedSubtree.has(folderId)
+  }
+  const pinnedBypass = (slot: Slot): boolean => matches.pinned(slot) || inPinnedFolder(slot)
   return [
     {
       // Tags. Unlike the folder filter this does NOT go inert while searching: it
@@ -855,7 +875,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const dimensions = reuse(prev?.dimensions, [
     status.active, status.paused, status.hidden, tags.resolved, tags.raw, filters.models.passes, filters.models.active,
     search.text, search.folderMatches, searchRanks,
-    statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, slotFolders,
+    statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, folderFilter.pinnedSubtree, slotFolders,
     clears.tags, clears.models, clears.search, clears.status, clears.folder, clears.hides,
   ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears))
 
@@ -951,6 +971,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     rowMotionHeld: placement.rowMotionHeld ?? false,
     conductor: placement.conductor ?? null,
     folderConductor: placement.folderConductor ?? false,
+    crew: placement.crew ?? null,
     isActive: isActiveIn(scene, slot),
     // Raw comparison, NOT isActiveIn: the self-reference refusal must hold even
     // when a crew window covers the pane (where isActiveIn is false but the
@@ -1001,7 +1022,7 @@ export function opensElsewhereOf(slot: Slot): string | null {
 const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
   holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
-  folderConductor: true,
+  folderConductor: true, crew: true,
   isActive: true, isSidebarActiveSlot: true, isCrewParent: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
@@ -1039,6 +1060,8 @@ export function sameRowView(a: SessionRowView, b: SessionRowView): boolean {
   for (const key of VIEW_KEYS) {
     if (key === 'conductor') {
       if (!sameConductor(a.conductor, b.conductor)) return false
+    } else if (key === 'crew') {
+      if (!sameCrewView(a.crew, b.crew)) return false
     } else if (!Object.is(a[key], b[key])) {
       return false
     }

@@ -126,6 +126,62 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   overloaded host is not evidence; measure under CI-equivalent load.
   [Proving a determinism fix](#proving-a-determinism-fix).
 
+### Production deadlines are not test boundaries
+
+A test passes no value that is not literal ``0``/``None`` or a ``kiro_crew.testing``
+import as a duration-named argument.
+
+- **``0`` for the timeout path.** Literal ``0`` (or ``None``) is the "no deadline /
+  already expired" value.
+- **A ``kiro_crew.testing`` name for a generous safety net.** Use
+  ``from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS`` (60 s) for the
+  happy-path pin. Any name imported from ``kiro_crew.testing.*`` is allowed.
+- **A fixture-pinned seam for a production constant.** ``_floor_monkeypatch.setattr``
+  in an autouse fixture keeps the constant out of every test body.
+- **An injected clock** for a module that owns a ``time`` import.
+
+**WRONG** (non-zero literal or local constant — K19 flags both):
+
+```python
+_floor_monkeypatch.setattr(gate, "_LOG_BUDGET_SECS", 20.0)
+subprocess.run(cmd, timeout=60)       # use FALLBACK_TIMEOUT_SECS
+_T = 30
+subprocess.run(cmd, timeout=_T)       # local constant counts
+```
+
+**RIGHT** (``kiro_crew.testing`` import; literal ``0`` for the expired path):
+
+```python
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+@pytest.fixture(autouse=True)
+def _raise_deadlines(_floor_monkeypatch):
+    _floor_monkeypatch.setattr(gate, "_LOG_BUDGET_SECS", FALLBACK_TIMEOUT_SECS)
+
+def test_timeout_path(_floor_monkeypatch):
+    _floor_monkeypatch.setattr(skills_select, "MAX_WAIT_SECS", 0)
+    assert run_something() is None
+```
+
+K19 has two arms. The **setattr arm** flags any non-zero non-``kiro_crew.testing`` value
+as the third argument of ``monkeypatch.setattr`` / ``_floor_monkeypatch.setattr`` on an
+attribute whose name ends in a time-unit suffix (``_s``, ``_secs``, ``_seconds``,
+``_ms``, etc.) or starts with ``timeout``. This catches the five motivating flakes
+(`_LOG_BUDGET_SECS`, `_PRUNE_MAX_SECONDS_PER_RUN`, etc.).
+
+The **keyword arm** flags the same value rule when the keyword argument name contains one
+of these *wait-bound words* as a whole ``_``-separated component:
+
+- ``timeout`` — e.g. ``timeout=``, ``read_timeout=``, ``timeout_ms=``
+- ``deadline`` — e.g. ``deadline=``, ``soft_deadline_secs=``
+- ``ttl`` — e.g. ``ttl=``, ``ttl_secs=``
+- ``grace`` — e.g. ``grace=``, ``grace_period_s=``
+- ``budget`` *only when followed by a time-unit suffix* — e.g. ``budget_secs=``,
+  ``log_budget_ms=`` (not ``token_budget=`` or ``budget_key=``)
+
+K9 callees (``wait_for``/``wait``/``result``/``join``) are excluded — those are
+bounded-wait primitives. Lambdas and module-level function names are also excluded.
+The ratchet is diff-scoped: the existing tree is not forced to burn down.
 A line that must keep one of these shapes on purpose carries `# flake-ok: <reason>`
 (`// flake-ok: <reason>` in TypeScript) with a concrete reason, or `# nosemgrep: <rule
 id>` with the reason where a `semgrep/test-determinism.yaml` rule refuses it. Review
@@ -138,7 +194,7 @@ module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
-ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), and five frontend shapes. In a file
+ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), and five frontend shapes. In a file
 the pinned semgrep reads no line of, it counts the `time` patches the semgrep rule would
 refuse as well: a file over 1,000,000 bytes, or one holding both a lambda with a bare `*`
 (`lambda a, *, b: ...`) and a parenthesized `with (a as b, ...):`, which semgrep 1.78
@@ -1366,8 +1422,8 @@ measures, never above.
   with an explicit directory.
 
 - **Production code that edits `os.environ` leaks through a test that exercises the real
-  path.** `dashboard/server.py` startup does `os.environ.update(cli_env_overrides())` on
-  purpose (descendant `playwright-cli` processes need it), and `load_credentials()`
+  path.** `dashboard/server.py` startup exports the bound-port evidence into
+  `os.environ` on purpose (descendant processes read it), and `load_credentials()`
   `setdefault`s every `.env` key. A test that drives that real startup — via a shared
   helper like `_start_dashboard` — inherits the mutation for every later test on the
   worker. The per-test probe in the 5x run caught `PLAYWRIGHT_MCP_OUTPUT_DIR`,
@@ -1616,7 +1672,7 @@ measures, never above.
   directory that also contains sibling tools.
 
 - **Bootstrap fixtures must match the child's libc target.** In
-  `playwright_cli_installer_helpers.py`, `_expected_node_base` uses native
+  the retired browser-CLI installer helpers, `_expected_node_base` used native
   `os.confstr("CS_GNU_LIBC_VERSION")` on Linux/x64 to select `glibc-217` below
   glibc 2.28. OS and architecture alone give the fake mirror the wrong archive,
   failing before checksum and cleanup assertions. Keep the real platform tool
@@ -2386,7 +2442,7 @@ the host; and `os.kill(pid, 0)` against pids the worker never spawned is
 `OpenProcess` on Windows.
 
 **One finding is left OPEN on purpose, and the reason generalises.**
-`test_playwright_cli_installer.py::test_an_interrupted_rebootstrap_restores_the_previous_node`
+the retired browser-CLI installer's `test_an_interrupted_rebootstrap_restores_the_previous_node`
 sleeps 2.5s over a 60 MB incompressible tarball hoping to catch `tar` mid-unpack, and it
 never enters that window — so it costs ~1.5s of CPU and ~300 MB of temp I/O a run while
 both its assertions are satisfied by a prefix nothing modified. It is a *vacuous* test,
@@ -3318,9 +3374,8 @@ went red, or the fix lands in the wrong file and the leak stays.
   `monkeypatch.chdir(tmp_path)` in the fixture closes the process-cwd hazard; adding
   `cwd=` to the product would turn git's rc=128 for a missing clone into a Python
   `FileNotFoundError` before git runs, which every caller reads off `returncode`, so that
-  descriptor is deliberately left. One production change: `browser_cli/install_launcher.py`'s
-  staged node launcher now runs from the managed leaf its docstring already promised, and
-  `test_browser_cli_install_gateway_command.py` pins the `cwd` it is handed.
+  descriptor is deliberately left. (The one production change this pass made, to the
+  since-deleted browser CLI installer's staged node launcher, went with that installer.)
 - **`fd_leak` at +3 per unclosed SQLite handle, and why refcounting never reclaims it.**
   On CPython 3.11+ every `sqlite3.Connection` is a self-cycle through its `lru_cache`
   statement cache, so an unreferenced connection holds `db` + `-wal` + `-shm` until the
@@ -5802,7 +5857,16 @@ using `scripts.ci_file_shards`. Ownership is SHA-256 of the root-relative POSIX
 path, not a duration or test-count balance. Other shards skip the file before
 import, while discovery patterns and platform ignores remain pytest's own.
 
-macOS assigns whole files like the other platforms, in six shards. The shard
+The Linux full-suite run adds `--file-shard-pins scripts/ci_file_shard_pins.txt`:
+the heaviest files (about 800) get a fixed shard, placed so the eight shards'
+summed test seconds come out even, and every other file keeps its hash owner. A
+pin only changes which shard owns a file, so a new or renamed file is still
+collected, on its hash shard. `scripts/ci_file_shard_pins.py` regenerates the pin
+file from the `linux-pytest-progress-<N>` artifacts of several green `main` runs;
+regenerate it when the Linux shards' `Run tests` times drift apart again. Windows,
+macOS, release and the reduced and leaf scopes keep pure hash ownership.
+
+macOS assigns whole files like the other platforms, in eight shards. The shard
 count is the knob to reach for there rather than the 40-minute cap, because that
 cap is a spend guard as much as a hang guard on a lane billed at ten times Linux:
 a higher cap bounds a runaway more loosely, while a higher count is what divides

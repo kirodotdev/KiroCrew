@@ -38,9 +38,13 @@ export interface CronJob {
    *  says why the next run moved. Compare against the clock: a past value means
    *  the backoff has elapsed. */
   failure_backoff_until?: number | null
-  /** IANA timezone the cron expression's hour/minute fields are stored in.
-   * Absent / null for legacy jobs created without an explicit TZ — treat as UTC. */
+  /** The zone the cron expression's hour/minute fields are read in: an IANA name,
+   * or 'local' (the zone of the computer Kiro Crew runs on, wherever it is). Absent
+   * / null when the job names none and takes the default zone. */
   timezone?: string | null
+  /** The IANA zone the job's wall clock is read in right now, with 'local' and the
+   * default resolved by the server. Read this, never `timezone`, to place a run. */
+  effective_tz?: string | null
   skip_dates?: string[] | null
   script?: string | null; command?: string | null; last_result?: string | null; last_error?: string | null
   is_running?: boolean; running_since?: number | null
@@ -152,4 +156,6 @@ export interface WorkflowRunSummary {
   phase?: string;
   /** Most recent narrator `log` message. */
   last_log?: string;
+  /** `ts` of the terminal event; null while the run is active. */
+  ended_at?: string | null;
 }

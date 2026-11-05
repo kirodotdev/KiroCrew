@@ -29,6 +29,7 @@ import '../utils/hljs'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
 import SegmentedControl from './SegmentedControl'
 import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
+import { isDesktopAppPane } from '../lib/hostRelay'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
@@ -75,6 +76,7 @@ import {
   MdSourceCtx,
   MdBlockStartCtx,
   ParagraphNoticeSlotCtx,
+  ChatProjectDirCtx,
   PathActionCtx,
   PathProbeCtx,
   ReadOnlyCodeCtx,
@@ -87,8 +89,9 @@ import {
 import { artifactSlugFromHref, classifySessionLink, soleLinkInParagraph, useSessionChip, useUnfurlHref } from './markdown/linkTargets'
 import { dashboardPreviewRef, dashboardPreviewTargetFromHref } from '../utils/dashboardPreview'
 import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
-import { activatePath, usePathResolution } from './markdown/pathReferences'
+import { activatePath, isFileLinkDest, isPathCandidate, splitLineRef, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
+import { MD_FLOW_ROOT_CLS, MD_PARAGRAPH_CLS } from './markdown/typography'
 import { InlineCode } from './markdown/InlineCode'
 import { MarkdownTable } from './markdown/MarkdownTable'
 import { ImgWithFallback } from './markdown/ImgWithFallback'
@@ -130,6 +133,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   const override = useContext(LinkOverrideCtx)
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
+  const chatProjectDir = useContext(ChatProjectDirCtx)
   // The override is resolved FIRST and wins outright — Issue Radar's in-app
   // issue/PR affordance must keep beating a link preview. Feeding `null` into
   // the unfurl gate for a claimed href also means a claimed link is never
@@ -167,6 +171,25 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
     try {
       const decodedHref = decodeURIComponent(href)
       if (!decodedHref.startsWith('//')) localHref = decodedHref
+    } catch { /* keep it a normal link */ }
+  } else if (href && !URL_SCHEME_RE.test(href) && !href.startsWith('#') && !href.startsWith('?')) {
+    // A scheme-less, unrooted destination shaped like a path (`src/a.ts`,
+    // `~/notes.md`) is the same file reference the inline chip resolves: the
+    // chip joins it to the chat's project and opens it, while as a link it
+    // used to open a new tab at a dashboard URL that names nothing. Only the
+    // probe's confirmation changes the click (see `onPathClick`), so a
+    // relative link to something that is not a file stays an ordinary link.
+    //
+    // A RELATIVE destination is taken only inside a chat transcript, the one
+    // host that says which folder it is relative to (`ChatProjectDirCtx`).
+    // A previewed document's `[x](./CHANGELOG.md)` is relative to that
+    // document, which nothing here joins to, so it keeps its plain link rather
+    // than opening a same-named file from the gateway's directory. `~/` names
+    // the gateway user's home on every host, so it needs no project.
+    try {
+      const decodedHref = decodeURIComponent(href)
+      const relativeOk = decodedHref.startsWith('~/') || chatProjectDir != null
+      if (relativeOk && isPathCandidate(splitLineRef(decodedHref).path)) localHref = decodedHref
     } catch { /* keep it a normal link */ }
   }
   // Where the link goes, for the code spans in its label (`InsideLinkCtx`): a
@@ -263,6 +286,15 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       && !artifactSlugFromHref(localHref)
       && !!(actions.onFileOpen || actions.onFolderOpen),
   )
+  // A path-shaped link to a FILE (not a route, see `isFileLinkDest`) whose probe
+  // says `missing` carries a local-path href, which the browser resolves against
+  // the dashboard origin into a new tab that names nothing. It drops its
+  // navigation and link dress to match the inline copy chip for the same path,
+  // while a rooted route-shaped link keeps working. The `candidate` and
+  // `missing` guards hold a confirmed file/dir and a route to their own paths.
+  const missingFileLink = pathResolution.candidate
+    && pathResolution.kind === 'missing'
+    && isFileLinkDest(pathResolution.splitPath)
   // askAgent on: a transcript link holds no draft (the host composer's draft is
   // persisted per slot), and a blocked or failed reveal is gateway-side.
   const reveal = useRevealFailure(localHref ?? undefined)
@@ -270,6 +302,14 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
     const plainPrimaryClick = e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey
     if (pathResolution.probePending && plainPrimaryClick) {
       e.preventDefault()
+      return
+    }
+    // A missing file link swallows the plain click rather than letting the
+    // browser follow its local-path href to a dead dashboard tab. A modified
+    // click (Cmd/Ctrl/middle) still reaches the browser, exactly as the muted
+    // not-open session link leaves it.
+    if (missingFileLink) {
+      if (plainPrimaryClick) e.preventDefault()
       return
     }
     if (!pathResolution.candidate
@@ -285,6 +325,14 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       pathResolution.line,
       pathResolution.endLine,
     )
+  }
+  // In a desktop-app pane, CSP `frame-src` refuses an in-place navigation to an
+  // editor scheme and blanks the frame, so ask the app to open it instead.
+  const onEditorLinkClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    const plainPrimaryClick = e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+    if (!plainPrimaryClick || !href || !isDesktopAppPane()) return
+    e.preventDefault()
+    window.open(href, '_blank', 'noopener,noreferrer')
   }
   // A destination `urlTransform` REJECTED arrives here as '' — react-markdown's
   // defaultUrlTransform sentinel for a scheme outside its allowlist (a custom
@@ -354,9 +402,15 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   }
   let ext = false
   try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch { /* not a URL */ }
+  const editorLink = ext && !sessionLink && !href?.startsWith('#')
   // A confirmed session link is in-app navigation, so it keeps in-place semantics.
   // So does a `#heading` link: the renderer scrolls to it (see handleClick).
   if (sessionLink || href?.startsWith('#')) ext = true
+  // A missing file link keeps no `target="_blank"`: the plain click is swallowed,
+  // and dropping the new-tab attribute keeps it from advertising a dead tab. It
+  // joins `ext` here (after `editorLink` is read, which a local-path href already
+  // excludes) so the anchor's target/rel branch stays untouched.
+  if (missingFileLink) ext = true
   return (
     <>
     <a
@@ -370,7 +424,9 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       // closed or unknown key, a short name no open session answers to, or the
       // active session's own key) is intercepted and declined rather than left to
       // navigate the browser to a dead `?sid=` view (#9914) or a duplicate tab.
-      onClick={sessionHrefNamesSession ? onSessionClick : (pathResolution.candidate ? onPathClick : undefined)}
+      onClick={sessionHrefNamesSession
+        ? onSessionClick
+        : (pathResolution.candidate ? onPathClick : (editorLink ? onEditorLinkClick : undefined))}
       title={sessionLink && !sessionLink.failure
         ? `${sessionLink.title}\n${i18nT('components.markdownRenderer.click_to_switch_to_this_session')}`
         : sessionHrefNotOpen
@@ -384,7 +440,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       // for every old transcript naming a session that has since closed. Muted and
       // unadorned is the same answer the backtick chip gives an unresolved key: no
       // affordance, and the href stays intact so a modified click still works.
-      className={sessionHrefNamesSession && !sessionLink && sessionRouting
+      className={missingFileLink || (sessionHrefNamesSession && !sessionLink && sessionRouting)
         ? 'text-muted'
         : 'text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent'}
     >
@@ -476,7 +532,7 @@ function MdParagraph({ node, children }: React.HTMLAttributes<HTMLParagraphEleme
   // whether the reference ends it or sits mid-sentence. Only such a paragraph
   // gets the slot, so every other paragraph keeps its exact DOM.
   if (holdsSessionRef(node)) return <ParagraphWithNoticeSlot node={node}>{children}</ParagraphWithNoticeSlot>
-  return <p {...sp(node)} className="my-1 leading-6">{children}</p>
+  return <p {...sp(node)} className={MD_PARAGRAPH_CLS}>{children}</p>
 }
 
 function ParagraphWithNoticeSlot({ node, children }: { node?: HastElement; children?: React.ReactNode }) {
@@ -485,7 +541,7 @@ function ParagraphWithNoticeSlot({ node, children }: { node?: HastElement; child
   const [slot, setSlot] = useState<HTMLElement | null>(null)
   return (
     <ParagraphNoticeSlotCtx.Provider value={slot}>
-      <p {...sp(node)} className="my-1 leading-6">{children}</p>
+      <p {...sp(node)} className={MD_PARAGRAPH_CLS}>{children}</p>
       {/* A `div` so the notices stack as blocks; empty, it takes no height. */}
       <div ref={setSlot} data-paragraph-notices="" />
     </ParagraphNoticeSlotCtx.Provider>
@@ -1133,7 +1189,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, textPreviews = false, textPreviewsPaused = false, collapseDiffs = false, mdCardToggle = false, runYourselfCards, readOnlyCode = false, blockedLinks, redactions, redactionCoach = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: wrap text an enabled app's `contributes.linkPreviews[].textPatterns` match in a hoverable span. */ textPreviews?: boolean; /** With `textPreviews`: keep the chat scope but scan nothing yet. A streaming reply passes it so each frame's growing tail is not queued as new text (the scan cache is bounded); the final text is scanned once. */ textPreviewsPaused?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean; /** Assistant chat turns only: draw a closed ```run-yourself fence as the run-it-yourself card (RunYourselfCard). Off everywhere else, so text from outside the agent (an issue, a PR, a skill description) cannot pass as the agent's own hand-over; there the fence is a plain code block. */ runYourselfCards?: boolean; /** Render fenced code with the plain CodeBlock (copy only) instead of EditableCodeBlock. For content the reader must not be able to alter in place -- an approval's command beside its Approve control. */ readOnlyCode?: boolean; /** Raw `meta.blocked_links` off the assistant message — the step-3 suspicious-URL records this message's redaction placeholders render from. Validated here; absent/malformed leaves every placeholder as plain text. */ blockedLinks?: unknown; /** Raw `meta.redactions` off the assistant message: one record per credential placeholder, validated here. */ redactions?: unknown; /** This reply is the session's first with removed values: show the one-time coach after its first such block. */ redactionCoach?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, textPreviews = false, textPreviewsPaused = false, collapseDiffs = false, mdCardToggle = false, runYourselfCards, readOnlyCode = false, blockedLinks, redactions, redactionCoach = false, redactionSlot }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: wrap text an enabled app's `contributes.linkPreviews[].textPatterns` match in a hoverable span. */ textPreviews?: boolean; /** With `textPreviews`: keep the chat scope but scan nothing yet. A streaming reply passes it so each frame's growing tail is not queued as new text (the scan cache is bounded); the final text is scanned once. */ textPreviewsPaused?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean; /** Assistant chat turns only: draw a closed ```run-yourself fence as the run-it-yourself card (RunYourselfCard). Off everywhere else, so text from outside the agent (an issue, a PR, a skill description) cannot pass as the agent's own hand-over; there the fence is a plain code block. */ runYourselfCards?: boolean; /** Render fenced code with the plain CodeBlock (copy only) instead of EditableCodeBlock. For content the reader must not be able to alter in place -- an approval's command beside its Approve control. */ readOnlyCode?: boolean; /** Raw `meta.blocked_links` off the assistant message — the step-3 suspicious-URL records this message's redaction placeholders render from. Validated here; absent/malformed leaves every placeholder as plain text. */ blockedLinks?: unknown; /** Raw `meta.redactions` off the assistant message: one record per credential placeholder, validated here. */ redactions?: unknown; /** This reply is the session's first with removed values: show the one-time coach after its first such block. */ redactionCoach?: boolean; /** The LOCAL slot the reply's removed credentials were kept for, so the lock-tag card can offer the owner's reveal; falls back to `slotKey`. A host drawing another gateway's rows (the crew window) passes neither. */ redactionSlot?: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // One message = one config-rule scan pool. The blocks below each mount their
   // OWN remark tree, so the rearm cannot live at the plugin's tree entry — a
@@ -1343,7 +1399,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   }, [content, smooth, revealIdle])
 
   if (rawMode) {
-    return <pre className="text-[13px] font-mono whitespace-pre-wrap break-words leading-relaxed text-muted">{content}</pre>
+    // The raw view is the message's content too: its source is what a message action reads.
+    return <pre data-message-body="" className="text-[13px] font-mono whitespace-pre-wrap break-words leading-relaxed text-muted">{content}</pre>
   }
 
   // Root class drives the per-char entrance keyframe (.ft-word descendants
@@ -1374,10 +1431,13 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
     <div
       ref={rootRef}
-      className={`group${animClass}${streamClass}`}
+      className={`group${animClass}${streamClass} ${MD_FLOW_ROOT_CLS}`}
       onClick={handleClick}
       data-image-scope=""
       data-tip-flow=""
+      // The message's own content: what an app's message action reads as plain
+      // text (messageActions/messageText.ts). Anything else in a bubble is not.
+      data-message-body=""
       // Chat messages only: the one place an app's link preview listens.
       data-link-preview-scope={textPreviews ? '' : undefined}
       // Authored content: nothing in it is a control a guide points at.
@@ -1406,7 +1466,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
           and which of their cards is open. A Provider renders no DOM node, so
           the scoping on the wrapper div above is unaffected. */}
       <TextPreviewsCtx.Provider value={scanText ? textPatternGen + 1 : 0}>
-      <RedactionProvider credentials={credentialRecords} blockedLinks={blockedRecords} slotKey={slotKey} replyKey={replyKey} messageTs={messageTs} coached={redactionCoach && credentialRecords.length > 0}>
+      <RedactionProvider credentials={credentialRecords} blockedLinks={blockedRecords} slotKey={redactionSlot ?? slotKey} replyKey={replyKey} messageTs={messageTs} coached={redactionCoach && credentialRecords.length > 0}>
         {blocks.map((block, i) => (
           // Key on startLine (stable across streaming) instead of block.type, so
           // a code -> diff reclassification mid-stream doesn't unmount the

@@ -706,6 +706,140 @@ class TestTranslation:
             t.ruleset(rules, "messaging_channel")
 
 
+_FLOOR = ["normal", "trust", "trust_reads"]
+
+
+def _translate(*rules: str) -> dict:
+    from kiro_crew.platform import enterprise_policy_translate as t
+
+    if not rules:
+        return t.translate("rules: []\n")
+    return t.translate("rules:\n" + "".join(f"  - {r}\n" for r in rules))
+
+
+class TestSwitchRows:
+    """The on/off policy capabilities ``messaging`` and ``cron`` land as ``{"enabled": bool}``."""
+
+    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+    def test_allow_turns_it_on(self, capability):
+        doc = _translate(f"{{capability: {capability}, effect: allow}}")
+        assert doc["capabilities"] == {capability: {"enabled": True}}
+
+    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+    def test_deny_all_turns_it_off(self, capability):
+        doc = _translate(
+            f"{{capability: {capability}, effect: allow}}",
+            f"{{capability: {capability}, effect: deny}}",
+        )
+        assert doc["capabilities"] == {capability: {"enabled": False}}
+
+    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+    def test_unnamed_keeps_the_baseline(self, capability):
+        assert "capabilities" not in _translate("{capability: shell, effect: allow}")
+
+    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+    def test_ask_reads_as_deny(self, capability):
+        doc = _translate(
+            f"{{capability: {capability}, effect: allow}}",
+            f"{{capability: {capability}, effect: ask}}",
+        )
+        assert doc["capabilities"] == {capability: {"enabled": False}}
+
+    @pytest.mark.parametrize("effect", ["allow", "deny"])
+    @pytest.mark.parametrize("extra", ["exclude: [x]", "match: [x]", "when: 'client == \"crew\"'"])
+    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+    def test_an_unknown_shape_turns_it_off(self, capability, extra, effect):
+        """The binary grant shape is unconfirmed: a shape not known here turns it off.
+
+        Unnamed would not be safe: ``cron`` is an open control (RFC D3), so an unnamed one keeps Crew's default and a restricting
+        policy would widen it.
+        """
+        doc = _translate(
+            f"{{capability: {capability}, effect: deny}}",
+            f"{{capability: {capability}, effect: {effect}, {extra}}}",
+        )
+        assert doc["capabilities"] == {capability: {"enabled": False}}
+
+    def test_an_unknown_cron_shape_denies_in_an_enterprise_build(self, enterprise):
+        """End to end: an unconditional cron deny beside a conditional allow stays a deny."""
+        doc = _translate(
+            "{capability: cron, effect: deny}",
+            "{capability: cron, effect: allow, when: 'client == \"crew\"'}",
+        )
+        ceiling = governance.parse_policy(doc)
+        assert not governance.resolve(ceiling, None, "capabilities.cron", "").permitted
+
+    def test_an_unknown_effect_is_refused(self):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        with pytest.raises(t.TranslationError):
+            _translate("{capability: cron, effect: maybe}")
+
+
+class TestPermissionModeRow:
+    """The policy capability ``permission_mode`` lands in ``approval_modes`` with its floor kept."""
+
+    def test_allow_turns_yolo_on(self):
+        doc = _translate(
+            "{capability: permission_mode, effect: allow, match: [yolo]}",
+            "{capability: permission_mode, effect: deny, exclude: [yolo]}",
+        )
+        assert doc["approval_modes"] == {"mode": "allow", "allow": _FLOOR + ["yolo"]}
+
+    def test_deny_all_keeps_only_the_floor(self):
+        doc = _translate("{capability: permission_mode, effect: deny}")
+        assert doc["approval_modes"] == {"mode": "allow", "allow": _FLOOR}
+
+    def test_unnamed_keeps_the_baseline(self):
+        assert "approval_modes" not in _translate("{capability: shell, effect: deny}")
+
+    def test_ask_reads_as_deny(self):
+        doc = _translate("{capability: permission_mode, effect: ask}")
+        assert doc["approval_modes"] == {"mode": "allow", "allow": _FLOOR}
+
+
+class TestTranslatedRowsResolve:
+    """The translated controls parse in an enterprise build and answer as intended."""
+
+    @pytest.mark.parametrize(
+        "rules, cron, messaging, yolo",
+        [
+            # ``capabilities.cron`` is an open control (RFC D3):
+            # unnamed, it keeps Crew's default; a policy deny below still closes it.
+            ([], True, False, False),
+            (
+                [
+                    "{capability: cron, effect: allow}",
+                    "{capability: messaging, effect: allow}",
+                    "{capability: permission_mode, effect: deny, exclude: [yolo]}",
+                ],
+                True,
+                True,
+                True,
+            ),
+            (
+                [
+                    "{capability: cron, effect: deny}",
+                    "{capability: messaging, effect: ask}",
+                    "{capability: permission_mode, effect: deny}",
+                ],
+                False,
+                False,
+                False,
+            ),
+        ],
+    )
+    def test_decisions(self, enterprise, rules, cron, messaging, yolo):
+        ceiling = governance.parse_policy(_translate(*rules))
+        assert governance.resolve(ceiling, None, "capabilities.cron", "").permitted is cron
+        assert (
+            governance.resolve(ceiling, None, "capabilities.messaging", "").permitted is messaging
+        )
+        assert governance.resolve(ceiling, None, "approval_modes", "yolo").permitted is yolo
+        for mode in _FLOOR:
+            assert governance.resolve(ceiling, None, "approval_modes", mode).permitted
+
+
 class TestSignInCommands:
     def _main(self, monkeypatch, tmp_path, argv):
         from kiro_crew import cli
@@ -753,10 +887,12 @@ class TestSignInCommands:
         assert exited.value.code == enterprise_boot.EXIT_CODE
         assert "no Kiro sign-in was found" in capsys.readouterr().err
 
-    def test_oss_does_not_exempt_the_sign_in_verbs(self, monkeypatch, tmp_path):
+    def test_oss_does_not_exempt_the_sign_in_verbs(self, monkeypatch, tmp_path, capsys):
         cli = self._main(monkeypatch, tmp_path, ["kas", "whoami"])
-        with pytest.raises(PlatformCompositionError):
+        with pytest.raises(SystemExit) as exited:
             cli.main()
+        assert exited.value.code == 1
+        assert "no Kiro sign-in was found" in capsys.readouterr().err
 
 
 class TestOss:
@@ -768,6 +904,18 @@ class TestOss:
 
     def test_oss_boot_is_unchanged(self, vault, cps):
         vault()
+        assert governance.load_security_policy() is None
+        assert cps.requests == []
+
+    def test_oss_ignores_a_policy_granting_the_new_rows(self, vault, cps):
+        """The new policy rows change nothing in an oss build: no fetch, no policy."""
+        vault()
+        cps.reply = _envelope(
+            "rules:\n"
+            "  - {capability: cron, effect: deny}\n"
+            "  - {capability: messaging, effect: deny}\n"
+            "  - {capability: permission_mode, effect: deny}\n"
+        )
         assert governance.load_security_policy() is None
         assert cps.requests == []
 
@@ -826,7 +974,9 @@ class TestBootWithoutCompanion:
         assert not governance.resolve(ceiling, None, "channels", "discord").permitted
         # Not named: the built-in baseline holds it at its minimal set.
         assert not governance.resolve(ceiling, None, "network.egress", "example.com").permitted
-        assert not governance.gate_decision(ceiling, None, "Running: ls").permitted
+        assert not governance.resolve(ceiling, None, "capabilities.browse", "").permitted
+        # Not named, but an open control (RFC D3): it keeps Crew's default.
+        assert governance.gate_decision(ceiling, None, "Running: ls").permitted
 
     def test_a_local_policy_only_narrows(self, enterprise, vault, cps, monkeypatch, tmp_path):
         local = tmp_path / "local-policy.json"

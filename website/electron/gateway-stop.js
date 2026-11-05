@@ -667,6 +667,47 @@ async function stopGatewayGracefully(
   }
 }
 
+// A check that throws cannot vouch for the port, so it counts as "not free".
+async function bindCheckPasses(port, confirmFree, log) {
+  try {
+    return (await confirmFree(port)) === true;
+  } catch (e) {
+    log(`force-stop: bind check failed on :${port} (${e && e.message})`);
+    return false;
+  }
+}
+
+// A refused bind with no listed owner is also what a socket closing on its own
+// looks like (on Windows a listener that served connections can refuse a new
+// bind for a while after it exits), so the check is repeated until it passes or
+// `waitMs` runs out. `onWait` runs once, when the first refusal starts the wait.
+// `isAborted` ends the wait early, with no further bind and no `onWait`, for a
+// caller that no longer owns the port; it reads as "not free".
+const CONFIRM_FREE_POLL_MS = 1000;
+
+async function confirmedFree(port, { confirmFree, waitMs, sleep, onWait, isAborted, log }) {
+  let waited = 0;
+  for (;;) {
+    if (isAborted && isAborted()) {
+      log(`force-stop: bind wait on :${port} abandoned after ${waited}ms`);
+      return false;
+    }
+    if (await bindCheckPasses(port, confirmFree, log)) {
+      if (waited) log(`force-stop: :${port} became bindable after ${waited}ms`);
+      return true;
+    }
+    if (waited >= waitMs) return false;
+    if (!waited) {
+      log(`force-stop: no LISTEN owner on :${port} and a bind is refused; waiting up to ${waitMs}ms for it to free`);
+      if (onWait) {
+        try { onWait(); } catch (e) { log(`force-stop: wait callback failed (${e && e.message})`); }
+      }
+    }
+    await sleep(CONFIRM_FREE_POLL_MS);
+    waited += CONFIRM_FREE_POLL_MS;
+  }
+}
+
 /**
  * Force-stop whatever KiroCrew process is LISTENing on `port`, then VERIFY the
  * port actually freed before reporting success.
@@ -688,6 +729,14 @@ async function stopGatewayGracefully(
  * With `failClosedOnProbeError`, an unavailable owner probe returns
  * `probeFailed:true, freed:false` instead of throwing or claiming the port is
  * free. Windows uses this because netstat failures must block a blind respawn.
+ * An empty owner list is not proof the port is free: netstat can omit or drop a
+ * held port's row. With `confirmFree`, every empty list that would end in
+ * `freed:true` (the first probe, or the re-probe after a kill) is checked with
+ * a real bind first. A refused (or failed) check is retried every second
+ * for up to `confirmFreeWaitMs`, calling `onConfirmFreeWait`
+ * once when the wait starts, and `isAborted()` can end it early; only a bind
+ * still refused at the end (or an aborted wait) returns
+ * `ownerUnknown:true, freed:false`.
  *
  * All side effects are injected so this is unit-testable without Electron or a
  * real OS process:
@@ -695,8 +744,9 @@ async function stopGatewayGracefully(
  *   - getCommand(pid)     -> Promise<string>     (ps -o command=)
  *   - kill(pid, signal)                          (process.kill; may throw)
  *   - sleep(ms)           -> Promise<void>
+ *   - confirmFree(port)   -> Promise<boolean>   (optional; true = a bind succeeds)
  *
- * @returns {Promise<{killed:number, freed:boolean, survivors:number[], foreignHolder:boolean, probeFailed?:boolean}>}
+ * @returns {Promise<{killed:number, freed:boolean, survivors:number[], foreignHolder:boolean, probeFailed?:boolean, ownerUnknown?:boolean}>}
  */
 async function forceStopPort(
   port,
@@ -710,9 +760,16 @@ async function forceStopPort(
     verifyTimeoutMs = 4000,
     pollIntervalMs = 250,
     failClosedOnProbeError = false,
+    confirmFree = null,
+    confirmFreeWaitMs = 0,
+    onConfirmFreeWait = null,
+    isAborted = null,
     log = () => {},
   }
 ) {
+  const bindWait = {
+    confirmFree, waitMs: confirmFreeWaitMs, sleep, onWait: onConfirmFreeWait, isAborted, log,
+  };
   let owners;
   try {
     owners = await getListenPids(port);
@@ -725,6 +782,13 @@ async function forceStopPort(
     };
   }
   if (!owners.length) {
+    if (confirmFree && !(await confirmedFree(port, bindWait))) {
+      log(`force-stop: no LISTEN owner found on :${port} but a bind is refused`);
+      return {
+        killed: 0, freed: false, survivors: [], foreignHolder: false,
+        serviceHolder: false, ownerUnknown: true,
+      };
+    }
     log(`force-stop: no LISTEN owner found on :${port}`);
     return { killed: 0, freed: true, survivors: [], foreignHolder: false, serviceHolder: false };
   }
@@ -795,6 +859,15 @@ async function forceStopPort(
         serviceHolder, probeFailed: true,
       };
     }
+  }
+
+  // An empty re-probe is the same unproven "no owner" as an empty first probe.
+  if (!remaining.size && confirmFree && !(await confirmedFree(port, bindWait))) {
+    log(`force-stop: no LISTEN owner found on :${port} but a bind is refused`);
+    return {
+      killed, freed: false, survivors: [], foreignHolder: false,
+      serviceHolder, ownerUnknown: true,
+    };
   }
 
   // `freed` means the port is genuinely free, NOT just "our targets died". A

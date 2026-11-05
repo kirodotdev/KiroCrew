@@ -42,7 +42,7 @@ export const SLOT_ENVIRONMENT_RETRY = {
   retryDelay: 250,
 } as const
 
-type RemoteEnvironment = { profile: string; name: string; workdir: string }
+type RemoteEnvironment = { profile: string; name: string; workdir: string; provider?: string }
 
 /** Only an explicit successful local placement (or the read's `owner_only`
  *  refusal: a caller that cannot bind chats) permits gateway file/shell access.
@@ -70,8 +70,8 @@ export function useSlotEnvironmentPlacement(slot: string | null | undefined) {
     if (!isSuccess) return undefined
     if (id === null) return null
     if (typeof id !== 'string' || !id) return undefined
-    return { profile: id, name: match?.name ?? id, workdir: match?.workdir ?? '' }
-  }, [slot, ownerOnly, isSuccess, id, match?.name, match?.workdir])
+    return { profile: id, name: match?.name ?? id, workdir: match?.workdir ?? '', provider: data?.provider ?? match?.provider }
+  }, [slot, ownerOnly, isSuccess, id, match?.name, match?.workdir, data?.provider, match?.provider])
   return { remote, error: ownerOnly ? null : error }
 }
 
@@ -85,6 +85,18 @@ export function useSlotRunsHere(slot: string | null | undefined): boolean | unde
   if (remote === null) return true
   if (remote) return false
   return undefined
+}
+
+/** The project folder relative paths in ``slot``'s transcript are joined to, or
+ *  null. Only for a chat confirmed to run on this machine: a remote chat's
+ *  project names a folder on another machine, and an unread placement is not
+ *  yet known to be local. Null keeps the backend's own resolution. */
+export function useChatProjectDir(
+  slot: { key: string; project?: string; executor?: string } | null | undefined,
+): string | null {
+  const local = !!slot && slot.executor !== 'remote'
+  const runsHere = useSlotRunsHere(local ? slot.key : null)
+  return local && runsHere === true && slot.project ? slot.project : null
 }
 
 /** Display-only remote label. Actions must use the placement hook to distinguish

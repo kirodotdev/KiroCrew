@@ -33,7 +33,7 @@ from kiro_crew.sandbox_leaves import (
 #:    * ``memory_stores`` — an empty root declares or provisions no store. The
 #:      gateway can later create named stores inside the directory bind; no
 #:      database, member configuration or Global V1 path is created here;
-#:    * ``playwright-cli`` — an empty dir means the launcher is absent,
+#:    * ``browser-harness`` — an empty dir means the engine is not installed,
 #:      exactly as a missing dir does; its directory bind shows a later gateway
 #:      install while withholding every agent-side write;
 #:    * ``computer_use.json`` — ``computer_use.enable_state.load_state`` reads ``{}``
@@ -42,6 +42,8 @@ from kiro_crew.sandbox_leaves import (
 #:      extends trust by nothing for ``{}``;
 #:    * ``aws_service_consent.json`` — ``aws_consent._read_all`` returns ``{}`` for
 #:      both absent and empty, so every service stays unconfirmed;
+#:    * ``denied_commands.json`` — ``hooks.load_denied_commands_state`` returns ``{}``
+#:      for both, so nothing is opted out (criterion 2 is argued at its entry);
 #:    * ``decisions_consent.json`` — ``decisions.consent.load_state`` reads ``{}``
 #:      as NOT CONSENTED, which is what an absent keystone means;
 #:    * ``shared_crew_preview.json`` — ``shared_crew.preview.read_stored`` reads
@@ -64,13 +66,8 @@ from kiro_crew.sandbox_leaves import (
 #:    or unlinked. The empty ``profiles`` dir is exempt from the concern entirely: a
 #:    directory bind shows live contents, so a profile added later is visible.
 #:
-#: DELIBERATELY EXCLUDED, and each for a different one of those two reasons:
+#: DELIBERATELY EXCLUDED:
 #:
-#:   * ``denied_commands.json`` — clears (1) but fails (2), which is the direction
-#:     that matters: in-sandbox ``mcp_cron`` reads it to decide whether a command is
-#:     denied, so a pinned ``{}`` would report "nothing is denied" for the rest of the
-#:     sandbox's life even after the operator denies a command. Sealing it would trade
-#:     an agent-authored deny list for a stale one, so it keeps the pre-existing gap;
 #:   * ``security_policy.json`` — fails (1). ``governance.load_security_policy`` reads
 #:     the file whenever it exists and fails CLOSED on a parse or version mismatch, so
 #:     a ``{}`` stub raises ``PlatformCompositionError`` out of a function that runs at
@@ -104,8 +101,13 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # read-only listing above exists to deny, so without this entry that listing
     # protects only hosts that happen to have the directory already.
     "panel-templates",
-    "playwright-cli",
-    # The KAS engine bundle root, for the ``playwright-cli`` reason: on an install
+    # The Browser Harness prefix: until the owner presses Install in Settings the
+    # directory is absent, the seal is skipped, and the name is one an agent could
+    # create and fill with an interpreter the gateway later executes. An empty
+    # directory reads as "not installed" to ``browser_harness.install.install_state``
+    # exactly as an absent one does.
+    "browser-harness",
+    # The KAS engine bundle root, for the ``browser-harness`` reason: on an install
     # that has never run ``kirocrew kas install`` the directory is absent, and an
     # absent target is a seal skipped and a name the agent may create.
     "engines",
@@ -126,6 +128,12 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # its first download, which is the window a sandboxed shell would use to swap
     # the bytes the loaders verify.
     "models",
+    # The own-``kirocrew`` link directory, on the same argument: an empty directory
+    # is a PATH entry with nothing in it, exactly as an absent one, and the bind is
+    # live, so the link the gateway writes at start is seen. Without this entry the
+    # seal skips the directory until that first write, and a sandboxed shell could
+    # create it and plant the ``kirocrew`` every later PATH lookup finds first.
+    "kirocrew-bin",
     # The redaction allow-list, on the same argument: no file means no host
     # allowed, which is what an empty directory means too, and the bind is live.
     "redaction-allow",
@@ -162,6 +170,13 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # Without this entry the seal skips the directory until the first seed, and the
     # name is one an agent could create to forge the record.
     "seed-provenance",
+    # The gateway's config publication record (``config.write_provenance``), on the
+    # ``profiles`` argument. (1) Its reader, the launcher's pin, reads a missing record
+    # as vouching for nothing, exactly as it reads an absent directory: the refusal the
+    # pin always made. (2) The bind is live, so every later config save's record is seen.
+    # Without this entry the name is one an agent could create to forge the record that
+    # lets a changed config.json pass the pin.
+    "config-provenance",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
@@ -171,12 +186,13 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
 #: half of a control, so none may be satisfied by a link the governed party planted.
 _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "app-agent-launch",
-    "playwright-cli",
+    "browser-harness",
     "engines",
     "subagents",
     "member-memory-bindings",
     "decisions",
     "models",
+    "kirocrew-bin",
     "redaction-allow",
     "pi-gate",
     "kas-mcp-launch",
@@ -185,6 +201,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "template-mcp-additions",
     "skill-projection",
     "seed-provenance",
+    "config-provenance",
 )
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 #: Read-only FILE leaves whose NAME must remain the sealed name, for the same reason
@@ -211,9 +228,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "the agent could choose the container image a Fargate launch runs, and the task's "
         "execution role delivers the model credential into it",
     ),
-    "playwright-cli": (
-        "sealed browser runtime",
-        "the agent could replace the browser executable the gateway runs",
+    "browser-harness": (
+        "sealed browser engine",
+        "the agent could replace the Browser Harness interpreter or the Chromium the "
+        "gateway runs against the user's own browser",
     ),
     "engines": (
         "sealed agent engine",
@@ -246,6 +264,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed model weights",
         "the agent could swap the weights a digest-pinned loader verifies before it "
         "reopens them by name",
+    ),
+    "kirocrew-bin": (
+        "sealed kirocrew link",
+        "the agent could choose the kirocrew every later PATH lookup runs",
     ),
     "redaction-allow": (
         "sealed redaction allow-list",
@@ -280,6 +302,11 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed settings-seed record",
         "the agent could forge the record that lets Kiro Crew overwrite and delete a "
         "settings.local.json the user wrote",
+    ),
+    "config-provenance": (
+        "sealed config publication record",
+        "the agent could forge the record that lets a substituted config.json pass the "
+        "launcher's identity check",
     ),
     "app-agent-launch": (
         "sealed app-agent launch directory",
@@ -316,6 +343,11 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # Absent until the operator first saves a deny setting, and while absent a sandbox
+    # could create it with ``disable_all`` set. Criterion 2 is moot here: the host saves
+    # by rename, which detaches this seal in a running sandbox (the ``config.json``
+    # residual below), so in-sandbox readers see the saved rules, never a pinned ``{}``.
+    "denied_commands.json",
     "decisions_consent.json",
     # The Shared Crew preview switch: ``preview.read_stored`` reads an absent,
     # empty and unreadable store alike as OFF, so a pre-created ``{}`` means
@@ -432,6 +464,14 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: any clone, so materialising it early changes nothing it relies on.
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
+    # Browser Harness's runtime directory and Kiro's Chromium profile. Both are
+    # created on the FIRST connect (``browser_harness.supervisor``), so a sandbox
+    # spawned before the owner's first browse finds them absent, the
+    # ``sensitive_dirs`` loop skips them, and the socket, the Windows IPC token and
+    # the profile's cookies then appear INSIDE that running sandbox. Materialised
+    # empty at 0700 so the bind has a target from the first spawn.
+    "browser-harness-ipc",
+    "browser-profile",
     "appearance-library",
     "quarantined-clones",
     # First created by the first member-born session's vouch, so a sandbox spawned
@@ -547,6 +587,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # list is either here or made at boot.
     "ledger",
     "work-ledger",
+    "browser-recordings",
     "cron-running",
     "workflow_library",
     "routing",

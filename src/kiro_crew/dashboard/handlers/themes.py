@@ -37,7 +37,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.dashboard.conditional_get import conditional_response, weak_content_etag
 from kiro_crew.dashboard.theme_validate import (
     _THEME_ASSET_CSP,
@@ -91,10 +91,30 @@ from kiro_crew.security import (
     redact_and_truncate,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
 _THEME_GIT_SANDBOX_UNAVAILABLE = "theme install sandbox is unavailable on this server"
+
+
+def _read_listed_theme(path: Path, slug: str) -> Any:
+    """Parse one theme file for the list, or ``None`` to skip it.
+
+    On Windows a read that lands while a save or reinstall replaces the file
+    fails with ``PermissionError`` (a sharing violation). That is a valid theme
+    mid-write, not a corrupt one, so the read retries through
+    :func:`read_bytes_with_retry` (the list already runs off-loop). A file still
+    locked after that budget is skipped with a WARNING naming the slug. A
+    missing, undecodable or unparseable file keeps the silent skip.
+    """
+    try:
+        return loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
+    except PermissionError:
+        logger.warning("theme %r left out of the list: %s could not be read", slug, path.name)
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return None
 
 
 def _list_themes_sync() -> list[dict[str, Any]]:
@@ -103,22 +123,19 @@ def _list_themes_sync() -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     if themes_path.is_dir():
         for f in themes_path.glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                # Valid JSON that is not an object (a list, a number) is skipped
-                # like a corrupt file, so one bad file never fails the whole list.
-                if not isinstance(data, dict):
-                    continue
-                result.append(
-                    {
-                        "slug": f.stem,
-                        "name": data.get("name", f.stem),
-                        "emoji": data.get("emoji", "🎨"),
-                        "created_at": data.get("created_at", ""),
-                    }
-                )
-            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            data = _read_listed_theme(f, f.stem)
+            # Valid JSON that is not an object (a list, a number) is skipped
+            # like a corrupt file, so one bad file never fails the whole list.
+            if not isinstance(data, dict):
                 continue
+            result.append(
+                {
+                    "slug": f.stem,
+                    "name": data.get("name", f.stem),
+                    "emoji": data.get("emoji", "🎨"),
+                    "created_at": data.get("created_at", ""),
+                }
+            )
         # Installed themes are directories (<slug>/) carrying a theme.json.
         # Dot-prefixed dirs are transient install staging/backup snapshots
         # (.install-staging-*, .<slug>.old-*) — never valid slugs, never listed.
@@ -130,10 +147,7 @@ def _list_themes_sync() -> list[dict[str, Any]]:
             mpath = d / "theme.json"
             if not mpath.is_file():
                 continue
-            try:
-                m = json.loads(mpath.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-                continue
+            m = _read_listed_theme(mpath, d.name)
             if not isinstance(m, dict):
                 continue
             result.append(
@@ -515,7 +529,7 @@ def _installed_theme_identity(slug: str) -> str | None:
     if raw is None:
         return None
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = loads_user_json(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -972,12 +986,26 @@ async def api_theme_detail(request: web.Request) -> web.Response:
             # Acquire the per-slug install lock (same key _do_install stages/swaps
             # under) so we never rmtree mid-reinstall and race its stage→rename;
             # re-check is_dir() under the lock in case a reinstall just replaced it.
-            def _locked_remove() -> None:
+            # ``rmtree_force`` answers whether the folder is gone: a file another
+            # process holds open (a Windows lock) can survive it, and a partly
+            # removed pack reports an error instead of a false success that
+            # later lists as an invalid installed theme.
+            def _locked_remove() -> bool:
                 with _theme_install_lock(safe_slug):
-                    if dir_target.is_dir():
-                        shutil.rmtree(dir_target, ignore_errors=True)
+                    if not dir_target.is_dir():
+                        return True
+                    return rmtree_force(dir_target)
 
-            await loop.run_in_executor(discovery_executor(), _locked_remove)
+            removed = await loop.run_in_executor(discovery_executor(), _locked_remove)
+            if not removed:
+                return web.json_response(
+                    {
+                        "error": "the theme folder could not be fully removed; "
+                        "close any program using its files and try again",
+                        "code": "theme_delete_incomplete",
+                    },
+                    status=500,
+                )
             return web.json_response({"ok": True})
         return web.json_response({"error": "not found"}, status=404)
 
@@ -1008,7 +1036,7 @@ async def api_theme_detail(request: web.Request) -> web.Response:
         def _update_locked() -> dict:
             with _theme_install_lock(safe_slug):
                 try:
-                    existing = json.loads(target.read_text("utf-8"))
+                    existing = loads_user_json(target.read_text("utf-8"))
                 except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                     existing = {}
                 if not isinstance(existing, dict):
@@ -1037,7 +1065,7 @@ async def api_theme_detail(request: web.Request) -> web.Response:
             raw = await loop.run_in_executor(
                 discovery_executor(), target.read_text, "utf-8"
             )
-            data = json.loads(raw)
+            data = loads_user_json(raw)
         except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             return web.json_response({"error": "failed to read theme"}, status=500)
         return web.json_response(data)

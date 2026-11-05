@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from 'react'
+import type { AriaAttributes, ComponentType, ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 import { AlertTriangle, Sparkles, X } from 'lucide-react'
 import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
@@ -9,9 +9,12 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { withOriginLink } from './withOriginLink'
 
 export type ErrorNoticeMenuItemComponent = ComponentType<{
+  offline?: boolean
   title?: string
   disabled?: boolean
   'aria-describedby'?: string
+  'aria-disabled'?: AriaAttributes['aria-disabled']
+  'aria-label'?: string
   onSelect?: (event: Event) => void
   children?: ReactNode
 }>
@@ -93,6 +96,7 @@ export type ErrorNoticeNoHandoff =
     askAgent?: never
     askAgentLabel?: never
     onHandoff?: never
+    onStage?: never
   }
 
 /**
@@ -131,11 +135,15 @@ export default function ErrorNotice({
   scrollMessage = false,
   footer,
   onHandoff,
+  onStage,
   className = '',
   messageClassName = '',
   messageTooltip,
+  messageRef,
   testId,
   showIcon = true,
+  handoffHint,
+  announce = true,
 }: {
   /** DOM id for controls, including menu hand-offs, that describe themselves with this alert. */
   id?: string
@@ -249,6 +257,14 @@ export default function ErrorNotice({
    * as a dead button. Ignored when `askAgent` is off.
    */
   onHandoff?: () => void
+  /**
+   * Stages the error's hand-off prompt in a composer the caller owns, in place
+   * of the fresh-chat hand-off: for a surface bound to THIS chat's remote
+   * workspace, which a fresh chat's agent could not reach. Nothing navigates.
+   * Unset (every other caller), the hand-off opens a fresh chat as before.
+   * Ignored when `askAgent` is off.
+   */
+  onStage?: (prompt: string) => void
   className?: string
   /**
    * Classes for the `message` span only — e.g. `font-mono` when the message is
@@ -268,6 +284,13 @@ export default function ErrorNotice({
    */
   messageTooltip?: string
   /**
+   * Ref to the `message` span, for a call site whose `messageClassName` bounds
+   * the message and lets it scroll: the host measures that span to paint its
+   * edge cue (`useScrollEdgesY`). Like `messageClassName`, it makes the block
+   * variant wrap the message in that span.
+   */
+  messageRef?: React.Ref<HTMLSpanElement>
+  /**
    * `data-testid` for the root element. Several notices can share one surface
    * (a page-level read failure above a row's own mutation failure), and a
    * shared `role="alert"` makes a lookup ambiguous — a call site that migrates
@@ -281,6 +304,24 @@ export default function ErrorNotice({
    * off changes nothing for assistive tech; `role="alert"` stays. On by default.
    */
   showIcon?: boolean
+  /**
+   * A short visible line saying what gets the hand-off back, shown in its place
+   * while `askAgent` is off -- for a notice whose hand-off is withheld only for
+   * now (a sibling list holds unapplied edits the navigation would drop). A
+   * withheld button with no word about it reads as a missing feature. Muted, not
+   * the alert's colour: it is a next step, not a second failure. Ignored while
+   * `askAgent` is on; unset, nothing renders.
+   */
+  handoffHint?: string
+  /**
+   * Off for a notice whose text a SHARED live region already announces — the
+   * floating agent-switch toast carries the same string, so a second assertive
+   * region reads the failure out twice. `showIcon` is the visual half of this
+   * and says `role="alert"` stays; this is the half that drops it. Only legal
+   * where the notice is never the sole surface: the in-place copy stays
+   * readable, it just no longer interrupts. On by default.
+   */
+  announce?: boolean
 } & ErrorNoticeNoHandoff) {
   // Subscribes to language switches: a parent compiled by the React Compiler
   // caches this element while its props are unchanged, so without its own
@@ -299,21 +340,25 @@ export default function ErrorNotice({
   if (variant === 'inline') {
     return (
       <span
-        role="alert"
+        role={announce ? 'alert' : undefined}
         className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${messageBelow ? 'flex-wrap' : ''} ${className}`}
         id={id}
         data-testid={testId}
       >
         {showIcon && <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />}
         {title && <strong className="font-semibold">{title}</strong>}
-        <span className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger-text' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
+        <span ref={messageRef} className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger-text' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
         {askAgent && (
           <AskAgentButton
             report={report}
             message={message}
             onHandoff={onHandoff}
+            onStage={onStage}
             label={askAgentLabel}
           />
+        )}
+        {!askAgent && handoffHint && (
+          <span className="min-w-0 text-[11px] font-normal text-muted" data-testid="error-notice-handoff-hint">{handoffHint}</span>
         )}
         {onDismiss && (
           <button
@@ -362,7 +407,7 @@ export default function ErrorNotice({
 
   return (
     <div
-      role="alert"
+      role={announce ? 'alert' : undefined}
       className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger-text ${className}`}
       id={id}
       data-testid={testId}
@@ -372,16 +417,20 @@ export default function ErrorNotice({
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
             existing consumer's tests read. */}
-        {scrollMessage || messageBelow || messageClassName || messageTooltip
-          ? <span className={`${messageBelow ? 'block text-[12px] font-normal text-danger-text' : ''} ${messageClassName}${scrollMessage ? ' min-h-0 overflow-y-auto' : ''}`} title={messageTooltip}>{withOriginLink(message)}</span>
+        {scrollMessage || messageBelow || messageClassName || messageTooltip || messageRef
+          ? <span ref={messageRef} className={`${messageBelow ? 'block text-[12px] font-normal text-danger-text' : ''} ${messageClassName}${scrollMessage ? ' min-h-0 overflow-y-auto' : ''}`} title={messageTooltip}>{withOriginLink(message)}</span>
           : withOriginLink(message)}
         {footer && <div className="mt-1 font-normal">{footer}</div>}
+        {!askAgent && handoffHint && (
+          <div className="mt-1 text-[12px] font-normal text-muted" data-testid="error-notice-handoff-hint">{handoffHint}</div>
+        )}
         {askAgent && actionPlacement === 'below' && (
           <div className={`mt-1.5${scrollMessage ? ' shrink-0' : ''}`}>
             <AskAgentButton
               report={report}
               message={message}
               onHandoff={onHandoff}
+              onStage={onStage}
               label={askAgentLabel}
             />
           </div>
@@ -392,6 +441,7 @@ export default function ErrorNotice({
           report={report}
           message={message}
           onHandoff={onHandoff}
+          onStage={onStage}
           label={askAgentLabel}
           className="mt-[1px]"
         />

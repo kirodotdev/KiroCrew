@@ -174,43 +174,6 @@ async def test_a_restored_queue_turn_hands_over_nothing(tmp_path, monkeypatch):
     assert asks == []
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("typed", "expected"), [(True, [TEXT]), (False, [])])
-async def test_the_spec_builder_dispatch_forwards_whether_its_text_was_typed(
-    tmp_path, monkeypatch, typed, expected
-):
-    from kiro_crew.apps.builtins.spec_builder.backend import runtime
-
-    state, provider = _turn_state(tmp_path, monkeypatch)
-    slot = state.get_or_create_slot(SLOT_NAME)
-    task = runtime._dispatch_turn(
-        state, slot, TEXT, directive_user_origin=True, message_is_typed=typed
-    )
-    assert task is not None
-    await finished(task, "the spec turn", timeout=30)
-    await finished(drain_background_tasks(state), "draining the background tasks", timeout=10)
-    assert [call.args[0] for call in provider.note_user_message.call_args_list] == expected
-
-
-def test_a_spec_decision_answer_is_dispatched_as_composed_text():
-    # The answer is built from the agent's own decision title and options; the
-    # person only picked one, so it must never start a sign-in.
-    import ast
-    import inspect
-
-    from kiro_crew.apps.builtins.spec_builder.backend.orchestration import decision_outbox
-
-    calls = [
-        node
-        for node in ast.walk(ast.parse(inspect.getsource(decision_outbox)))
-        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_dispatch_turn"
-    ]
-    assert calls
-    for call in calls:
-        typed = {kw.arg: kw.value for kw in call.keywords}.get("message_is_typed")
-        assert isinstance(typed, ast.Constant) and typed.value is False
-
-
 def test_every_regenerate_dispatch_replays_as_composed_text():
     # Regenerate re-sends a stored row, which may be an OpenAI-compatible
     # request's flattened prompt rather than anything the person typed.

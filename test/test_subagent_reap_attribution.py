@@ -1,19 +1,9 @@
 """A run that WE stop must report the stop, not the death the stop caused.
 
-``_force_reap`` tears a dedicated run's session down FIRST (``sessions.reset`` ->
-``provider.shutdown()`` -> ``runtime.kill(reason="provider shutdown")``) and only
-then cancels the run task. The run's in-flight ``client.stream`` sees the poisoned
-queue before that cancel lands and raises ``AcpProcessDied`` -- "Runtime process
-died during prompt -- killed (provider shutdown)". An ``except Exception`` arm that
-takes that echo at face value stores the death text as ``info.error``, writes a
-``cause="error"`` tombstone and logs ``Subagent X failed`` at ERROR with a full
-traceback -- for a run the user has just pressed Stop on, or that a parent end has
-deliberately cancelled -- and sends every reader of it to the provider, the OOM
-killer and the leak reaper in turn.
-
-These tests pin the attribution: a reap in flight (``_reap_started``) makes the
-death an ECHO. The record names WHO stopped the run, the tombstone carries the
-reap's own cause, a user/parent stop stays neutral (no ``error``), and nothing is
+``_force_reap`` resets the session before cancelling the task, so the run's stream raises
+``AcpProcessDied`` "killed (provider shutdown)" first. With a reap in flight
+(``_reap_started``) that death is an echo: the record names who stopped the run, the
+tombstone carries the reap's cause, a user/parent stop has no ``error``, and nothing is
 logged at ERROR.
 """
 
@@ -270,11 +260,8 @@ async def test_the_first_stopper_keeps_the_attribution():
 async def test_a_late_stop_does_not_turn_a_deadline_reap_neutral(agent_root, caplog):
     """The first stopper owns the outcome.
 
-    A deadline reap has begun tearing the run down when the user presses Stop.
-    ``cancel`` sets ``user_stopped`` on the same record; the run's stream then
-    dies. Reading ``user_stopped`` alone would report a neutral stop and hide the
-    deadline failure -- the record must stay the deadline's: failed, with its
-    error, tombstoned ``reaped``.
+    A Stop after a deadline reap began sets ``user_stopped``, but the record stays the
+    deadline's: failed, with its error, tombstoned ``reaped``.
     """
     manager = _manager()
     info, _died = _arm_run(manager, "stopecho5", "dashboard:p")

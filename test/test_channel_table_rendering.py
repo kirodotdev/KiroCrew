@@ -777,7 +777,12 @@ class TestDeliveryFraming:
         await renderer.on_done()
 
         assert len(client.sent) > 1
-        assert "".join(client.sent) == safe_raw
+        # The same contract as Teams above: the fence-safe splitter consumes the
+        # blank line it cut on, since each chunk is its own message, so what must
+        # hold is that no content is lost, every chunk fits the byte cap, and no
+        # fence marker leaked from the rejected conversion.
+        assert "\n".join(client.sent).split() == safe_raw.split()
+        assert all(len(chunk.encode("utf-8")) <= WEBEX_MAX_TEXT for chunk in client.sent)
         assert all("```" not in chunk for chunk in client.sent)
 
     @pytest.mark.asyncio

@@ -442,6 +442,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _release_fold_lock,
         _remember_slot_fold,
         _resume_from,
+        _resume_older_slot_fold,
         _resume_slot_fold,
         _slot_cell,
         _slot_checkpoint,
@@ -464,6 +465,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         fold_slot_warm,
         fold_slot_warm_revised,
         forget_slot_folds,
+        seal_slot_fold,
         slot_fold_over_ceiling,
     )
     from kiro_crew.crew_log.projection_subagents import (  # noqa: F401
@@ -842,4 +844,5 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         WorkBoardForgotten,
         WorkBoardItem,
         WorkBoardView,
+        coerce_retired_bindings,
     )

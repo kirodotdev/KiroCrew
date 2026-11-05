@@ -10,6 +10,7 @@ import { getThemeBranding } from '../themeBranding'
 import { api, type SuggestionItem, type SuggestionKind } from '../api/client'
 import { reportForError } from '../utils/errorReport'
 import { openMilestonesPanel, useTryTodayCount } from './milestones/useMilestones'
+import { useExplorePreview } from '../hooks/usePreviewFlag'
 
 import { i18nT } from '../i18n/t'
 interface WelcomeViewProps {
@@ -186,8 +187,9 @@ export default function WelcomeView({ setInput }: WelcomeViewProps) {
     : <KiroGhost size={48} className="drop-shadow-lg shrink-0 animate-float" />
 
   // Explore's "Try today" (RFC 4.5): while any feature is untried, the last
-  // suggestion card becomes one entry card that opens Explore.
-  const tryTodayCount = useTryTodayCount()
+  // suggestion card becomes one entry card that opens Explore. Only while the
+  // Explore preview is on.
+  const tryTodayCount = useTryTodayCount(useExplorePreview())
 
   // The memory chip sits above the composer (ComposerDockView renders it).
   return (

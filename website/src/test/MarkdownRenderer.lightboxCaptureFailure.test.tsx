@@ -48,7 +48,7 @@ describe('Lightbox pan capture-failure window fallback', () => {
   })
 
   it('drops the tracked contact on the window fallback so a later touch is not a ghost pinch', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
     sizeHost(img)
@@ -95,7 +95,7 @@ describe('Lightbox pan capture-failure window fallback', () => {
     // finger then lifts outside the overlay, its contact is never dropped and the
     // next single touch seats a ghost pinch. See the GPT review finding on this
     // PR (MarkdownRenderer.tsx onPinchStart disarms the sole live fallback).
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
     sizeHost(img)
@@ -150,7 +150,7 @@ describe('Lightbox pan capture-failure window fallback', () => {
     // SECOND press evict the FIRST pointer's listeners — then the first finger
     // lifting outside the overlay was never heard and its contact stranded. With
     // a per-pointer registry each fallback survives until its own up/cancel.
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
     sizeHost(img)

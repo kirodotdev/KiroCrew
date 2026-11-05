@@ -102,7 +102,7 @@ class ScriptHookResult:
     error: str = ""
     duration_ms: int = 0
     #: A policy (governance or the shell deny list) refused the hook, so it never
-    #: ran. ``exit_code`` stays 2 so a Hooks-page hook still blocks, fail-closed.
+    #: ran. ``exit_code`` stays 2 so the hook still blocks, fail-closed.
     refused: bool = False
     #: An agent spec's own hook, run by Crew in the harness's place. Taken from
     #: the hook's in-memory ``spec_origin``, never from its id, which a
@@ -123,14 +123,17 @@ class ScriptHookResult:
         """Whether this PreToolUse result blocks the tool call.
 
         A Hooks-page hook fails closed: anything but exit 0 blocks. A spec hook
-        follows kiro-cli, which runs it on the kiro-cli backend: only a delivered
-        exit 2 blocks. A spec hook that a policy refused, or that crashed, was
-        killed or timed out, is a warning and the tool goes ahead, so one broken
-        hook in an agent package cannot stop every tool call.
+        follows kiro-cli, which runs it on the kiro-cli backend: exit 2 blocks,
+        and a spec hook that crashed, was killed or timed out is a warning and the
+        tool goes ahead, so one broken hook in an agent package cannot stop every
+        tool call. A spec hook a policy refused to run (governance or the shell
+        deny list) blocks too: it carries exit 2, and the guard its author wrote
+        never gave a verdict, so letting the tool run would skip it unseen. The
+        refusal is the block's reason (:attr:`failure_detail`).
         """
         if not self.from_spec:
             return self.exit_code != 0
-        return self.exit_code == 2 and not self.refused
+        return self.exit_code == 2
 
     @property
     def failure_detail(self) -> str:
@@ -483,14 +486,19 @@ class ScriptHookStore:
         # snapshot taken BEFORE B's change and drops it. Re-entrant because the
         # persist path is called from inside the same held section.
         self._mutex = threading.RLock()
+        # ``load=False`` is a snapshot its caller reads in (``persisted_hook_store``):
+        # writing a fire's status back would put that snapshot over a newer save.
+        self._persists_fire_status = load
         if load:
             self._load()
 
     def _load(self) -> None:
         if not self._path.exists():
             return
+        from kiro_crew.user_json import loads_user_json
+
         try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
+            data = loads_user_json(self._path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Failed to load hooks: %s", exc)
             return
@@ -567,12 +575,14 @@ class ScriptHookStore:
         call that commits between this read and this write is erased by the
         stale snapshot.
         """
+        from kiro_crew.user_json import loads_user_json
+
         self._dir.mkdir(parents=True, exist_ok=True)
         with webhooks.locked(self._path):
             data: dict = {}
             if self._path.exists():
                 try:
-                    loaded = json.loads(self._path.read_text(encoding="utf-8"))
+                    loaded = loads_user_json(self._path.read_text(encoding="utf-8"))
                     if not isinstance(loaded, dict):
                         raise webhooks.WebhookStoreUnreadable(
                             f"{self._path.name} root is not an object; refusing to overwrite it"
@@ -817,8 +827,9 @@ class ScriptHookStore:
         a subagent to a hook keyed on the field's documented meaning.
 
         ``acp_session_id`` is the firing session's ACP session id. Only the
-        ``extra_hooks`` get it, as ``KIRO_SESSION_ID`` in their env and
-        ``acp_session_id`` on their stdin: they are the spec hooks kiro-cli would
+        ``extra_hooks`` get it, as ``KIRO_SESSION_ID`` in their env and both
+        ``session_id`` (kiro-cli's own key) and ``acp_session_id`` on their
+        stdin: they are the spec hooks kiro-cli would
         run with ``KIRO_SESSION_ID`` set. The stored hooks never had it on any
         backend, so they still do not.
 
@@ -876,6 +887,9 @@ class ScriptHookStore:
         if extra_hooks_cwd:
             extra_run["cwd"] = extra_hooks_cwd
         if acp_session_id:
+            # ``session_id`` is the key kiro-cli's own hook payload uses;
+            # ``acp_session_id`` stays for hooks that already read that key.
+            extra_event["session_id"] = acp_session_id
             extra_event["acp_session_id"] = acp_session_id
             extra_run["acp_session_id"] = acp_session_id
         # Only a hook that passes its matcher changes the status bookkeeping
@@ -991,7 +1005,7 @@ class ScriptHookStore:
         # Snapshot INSIDE the worker under the mutex, not here: capturing on the
         # loop and persisting later leaves the same interleaving window a
         # concurrent CRUD mutation could fall into.
-        if touched:
+        if touched and self._persists_fire_status:
             await asyncio.to_thread(self._persist_current)
         return results
 

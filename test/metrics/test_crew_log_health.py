@@ -453,22 +453,33 @@ class TestBusSubscriberError:
         bus.publish("some_future_kind", object())
         assert _named(rec, clh.COUNTER_BUS_SUBSCRIBER_ERROR)[-1]["attrs"]["kind"] == "other"
 
-    def test_the_publisher_still_learns_nothing_from_a_failure(self, rec):
+    def test_the_publisher_still_learns_nothing_from_a_failure(self, rec, caplog):
         """The counter must not turn a swallowed exception into a raise."""
 
         def boom(event):
             raise RuntimeError("swallowed")
 
         bus.subscribe(bus.FOLD_ADVANCED, boom)
-        bus.publish(bus.FOLD_ADVANCED, object())  # no raise
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.bus"):
+            bus.publish(bus.FOLD_ADVANCED, object())  # no raise
+        # The failure the publisher is not told about is still written down.
+        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.crew_log.bus"]
+        assert len(logged) == 1
+        assert logged[0].startswith("crew log bus subscriber for fold_advanced failed")
+        assert "RuntimeError: swallowed" in logged[0]
 
-    def test_telemetry_failing_never_reaches_the_bus(self):
+    def test_telemetry_failing_never_reaches_the_bus(self, caplog):
         def boom(event):
             raise RuntimeError("subscriber")
 
         bus.subscribe(bus.FOLD_ADVANCED, boom)
         with patch.object(clh, "bus_subscriber_error", side_effect=RuntimeError("telemetry")):
-            bus.publish(bus.FOLD_ADVANCED, object())  # still no raise
+            with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.bus"):
+                bus.publish(bus.FOLD_ADVANCED, object())  # still no raise
+        # Broken telemetry costs the point, not the log line for the subscriber.
+        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.crew_log.bus"]
+        assert len(logged) == 1
+        assert "RuntimeError: subscriber" in logged[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -614,7 +625,7 @@ class TestTheWritePathIsUntouched:
         half of the no-clock-read proof: it covers a branch the driven pass does
         not take, and it catches a DIRECT ``time.monotonic()`` that would bypass
         the writer's injected clock and so be invisible to
-        :meth:`test_the_batch_pass_reads_no_clock`.
+        :meth:`test_the_batch_pass_takes_no_clock_read_beyond_its_own`.
         """
         import ast
         from pathlib import Path

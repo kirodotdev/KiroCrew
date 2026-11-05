@@ -399,7 +399,7 @@ def test_off_a_skill_added_in_advanced_settings_reaches_a_fresh_worker(off, mate
     from kiro_crew import mate_capabilities as mc
 
     catalog = {"kiro-user/release": "skill://release/SKILL.md"}
-    revision = mc._revision(json.loads((mate_home / "pixel.json").read_text()))
+    revision = mc._revision(json.loads((mate_home / "pixel.json").read_text(encoding="utf-8")))
     op = {"section": "skills", "id": "kiro-user/release", "action": "set", "value": True}
     body = {
         "revision": revision,

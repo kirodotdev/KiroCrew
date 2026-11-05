@@ -90,6 +90,7 @@ from kiro_crew.config.sections import (
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.chat_utils import drained_to_thread, run_config_write
+from kiro_crew.dashboard.dist_file_response import DistFileResponse
 from kiro_crew.dashboard.handlers._shared import (
     _owner_denial_response,
     _pip_install_channel_available,
@@ -266,7 +267,7 @@ async def logo(request: web.Request) -> web.StreamResponse:
         # `and` in the left operand's type (str | None), which rejects is_file's bool.
         if validated:
             if await asyncio.to_thread(Path(validated).is_file):
-                return web.FileResponse(validated)
+                return DistFileResponse(Path(validated))
     # The DEFAULT logo is channel-aware: nightly builds serve the night-sky
     # variant so the whole in-app surface -- sidebar logo, browser favicon,
     # and native-notification avatar all resolve through /logo.png -- matches
@@ -281,13 +282,26 @@ async def logo(request: web.Request) -> web.StreamResponse:
     for name in names:
         path = _h._STATIC_DIR / name
         if await asyncio.to_thread(path.is_file):
-            return web.FileResponse(path)
+            return DistFileResponse(path)
     return web.Response(status=404)
 
 
 async def api_branding(request: web.Request) -> web.Response:
-    """GET /api/dashboard/branding — bot name and avatar config."""
-    cfg = KiroCrewConfig.load()
+    """GET /api/dashboard/branding — bot name and avatar config.
+
+    Reads the config the live watcher has already adopted. Every dashboard tab
+    asks for branding, and ``KiroCrewConfig.load()`` rebuilds every config
+    section on each call, so a load per request would hold the event loop. The
+    watcher reloads when either config file's fingerprint moves, and a
+    dashboard config write runs its cycle before answering, so a new bot name
+    reaches this route without a load of its own. Before the watcher is primed
+    (early boot, a CLI host, most tests) the load runs off the loop.
+    """
+    from kiro_crew.config import live
+
+    cfg = live.snapshot()
+    if cfg is None:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
     # `direct_local` is the canonical client-side origin signal: true only for a
     # direct-local (loopback, no proxy) caller. The dashboard reads it to gate
     # OS-desktop file actions (open/reveal); any future consumer of origin
@@ -624,7 +638,7 @@ async def pwa_file(request: web.Request) -> web.StreamResponse:
         and await asyncio.to_thread(_DIST_DIR.resolve)
         in (await asyncio.to_thread(path.resolve)).parents
     ):
-        return web.FileResponse(path)
+        return DistFileResponse(path)
     raise web.HTTPNotFound()
 
 
@@ -679,8 +693,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _beacon_governance_pinned_off,
         _check_default_profile_is_saved,
         _ConfigKeyAlreadySet,
+        _drop_dangling_default_profile,
         _keep_omitted_session_environment_keys,
-        _keep_vm_profiles,
+        _keep_saved_profiles,
         _profile_ids,
         _session_environment_key_validators,
         _tailnet_governance_pinned_off,

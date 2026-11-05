@@ -17,8 +17,8 @@ SCAFFOLD NOTES / TODO:
     BEFORE any download (``messaging/attachments.py`` classifies and refuses it
     ahead of the fetch), so it costs no CDN round trip; outbound media is still
     unimplemented (``getuploadurl`` + encrypted CDN PUT).
-  * Outbound chunking uses a naive splitter; swap for ``renderer`` once the
-    Markdown block splitter lands.
+  * Outbound chunking goes through ``renderer.render_chunks``, the Markdown-
+    and fence-aware splitter.
   * Group delivery is intentionally unsupported for now (iLink bot identities
     rarely receive group events); DM-only, matching Hermes' practical default.
 """
@@ -43,10 +43,13 @@ from kiro_crew.messaging.transport import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.weixin.client import (
+    BACKOFF_DELAY_SECONDS,
     INBOUND_MEDIA_ITEM_TYPES,
     ITEM_TEXT,
+    MAX_CONSECUTIVE_FAILURES,
     MESSAGE_DEDUP_TTL_SECONDS,
     RATE_LIMIT_ERRCODE,
+    RETRY_DELAY_SECONDS,
     SESSION_EXPIRED_ERRCODE,
     ContextTokenStore,
     WeixinClient,
@@ -221,7 +224,9 @@ class WeixinTransport(MessagingTransport):
     ) -> str:
         ctx_token = self._ctx.get(self._account_id, conversation_id)
         last = ""
-        for i, part in enumerate(_chunk(content, WEIXIN_CAPABILITIES.max_message_chars)):
+        # OFF the loop, like the renderer's own send: the split grades credential seams.
+        parts = await asyncio.to_thread(_chunk, content, WEIXIN_CAPABILITIES.max_message_chars)
+        for i, part in enumerate(parts):
             if i:
                 await asyncio.sleep(0.3)  # avoid iLink rate-limit drops
             client_id = uuid.uuid4().hex
@@ -401,7 +406,11 @@ class WeixinTransport(MessagingTransport):
                     # unrecognized code would spin instead of backing off the way
                     # the two known codes do.
                     failures += 1
-                    delay = 2 if failures < 3 else 30
+                    delay = (
+                        RETRY_DELAY_SECONDS
+                        if failures < MAX_CONSECUTIVE_FAILURES
+                        else BACKOFF_DELAY_SECONDS
+                    )
                     logger.warning(
                         "weixin: poll returned error code %r (%d) — retrying in %ds",
                         errcode,
@@ -417,6 +426,20 @@ class WeixinTransport(MessagingTransport):
                         self._client._handler_tasks.add(task)
                     try:
                         await self.receive(msg)
+                    except asyncio.CancelledError:
+                        # Shutdown: let it propagate so teardown is not mistaken
+                        # for loop death (see the outer handler).
+                        raise
+                    except Exception:
+                        # Guard EACH message on its own. ``_sync_buf`` already
+                        # advanced to this batch's cursor ABOVE, and the next
+                        # poll confirms it to the server -- so a raising
+                        # ``receive`` that escaped to the outer ``except`` would
+                        # drop every LATER message in this batch with no
+                        # redelivery. One bad message must cost only itself.
+                        logger.warning(
+                            "weixin: dropping one message that failed to process", exc_info=True
+                        )
                     finally:
                         if task is not None:
                             self._client._handler_tasks.discard(task)
@@ -428,7 +451,11 @@ class WeixinTransport(MessagingTransport):
                 raise
             except Exception as exc:
                 failures += 1
-                delay = 2 if failures < 3 else 30
+                delay = (
+                    RETRY_DELAY_SECONDS
+                    if failures < MAX_CONSECUTIVE_FAILURES
+                    else BACKOFF_DELAY_SECONDS
+                )
                 logger.warning(
                     "weixin: poll error (%d): %s — retrying in %ds", failures, exc, delay
                 )

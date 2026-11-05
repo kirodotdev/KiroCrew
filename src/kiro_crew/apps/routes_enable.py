@@ -41,8 +41,9 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
 from kiro_crew.apps.point_grants import point_grant_families
-from kiro_crew.apps.registry import minimal_env
+from kiro_crew.apps.registry import _manifest_shell_platform_refusal, minimal_env
 from kiro_crew.apps.routes_lifecycle import (
+    _backend_platform_refusal,
     _deregister_app_off_loop,
     _redact_warning,
     _refuse_while_startup_hook_runs,
@@ -378,6 +379,11 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             resp["registration"] = reg.to_dict()
             if backend:
                 resp["backend"] = backend.to_dict()
+            # A native-Windows exec backend is refused with the same None as "no
+            # backend"; name the refusal so the enable does not read as a clean start.
+            backend_refused = await _backend_platform_refusal(name, backend)
+            if backend_refused:
+                resp["backend_refused"] = backend_refused
 
         # Resolve declared dependencies (if any)
         deps_data = manifest.get("dependencies")
@@ -607,7 +613,13 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         # multi-word builtin, which is all of them but `meetings`, `mochi` and
         # `papyrus`.
         module_name = name.replace("-", "_")
-        if module_name in BUILTIN_NAMES:
+        from kiro_crew.apps.builtin_adoption import builtin_package_released
+
+        # An adopted app's hooks are its own; the wheel package's must not run. The
+        # check walks the shipped manifests, so it runs off the loop.
+        if module_name in BUILTIN_NAMES and not await asyncio.to_thread(
+            builtin_package_released, module_name
+        ):
             try:
                 mod = importlib.import_module(f"kiro_crew.apps.builtins.{module_name}")
                 if hasattr(mod, "on_disable"):
@@ -671,7 +683,8 @@ async def handle_open_app(request: web.Request) -> web.Response:
     launches the app.  This endpoint executes it in the background.
 
     On cloud/remote environments (no display), returns the command
-    for the user to run locally instead of executing it.
+    for the user to run locally instead of executing it. On native Windows,
+    which has no ``/bin/sh``, answers 409 ``app_open_unsupported_platform``.
     """
     # local import: avoids a circular import with dashboard.handlers
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -708,6 +721,23 @@ async def handle_open_app(request: web.Request) -> web.Response:
     )
     if denied:
         return web.json_response({"error": denied, "code": "app_execution_denied"}, status=403)
+
+    # Native Windows has no /bin/sh to launch the command through. Refuse here,
+    # before the display test below: a Windows desktop sets no DISPLAY, so it would
+    # read as a remote host and be handed a POSIX command to "run locally".
+    platform_refusal = _manifest_shell_platform_refusal()
+    if platform_refusal:
+        error = f"openCommand not run: {platform_refusal}"
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_open",
+            outcome="denied",
+            resources=name,
+            error=error,
+        )
+        return web.json_response(
+            {"error": error, "code": "app_open_unsupported_platform"}, status=409
+        )
 
     # Detect cloud/remote — no DISPLAY and not macOS desktop
     import platform

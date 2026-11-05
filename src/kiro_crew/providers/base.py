@@ -128,6 +128,14 @@ class LLMProvider(ABC):
     #: Read from the provider's TYPE, so a loose mock cannot opt in by accident.
     approval_withdrawable: bool = False
 
+    @property
+    def turn_survives_disconnect(self) -> bool:
+        """Only a remote agent may keep its turn when the gateway detaches."""
+        return False
+
+    startup_notice: tuple[str, str] | None = None
+    """One-shot (wire token, channel fallback text), surfaced at the next chat claim."""
+
     @cached_property
     def essential_delivery(self) -> EssentialDelivery:
         """Private prompt receipts belong to this provider, never the builder."""
@@ -257,6 +265,17 @@ class LLMProvider(ABC):
     def is_claude_backend(self) -> bool:
         """True when this provider drives claude-agent-acp."""
         return False
+
+    @property
+    def session_activity_at(self) -> float | None:
+        """Monotonic time the backend last sent anything for this session.
+
+        The session's own clock moves only when a turn is dispatched, but a
+        backend and the children it spawned keep working between turns. The
+        idle sweep reads the later of the two. None when the transport does
+        not observe frames between turns.
+        """
+        return None
 
     @property
     def child_fidelity_aware(self) -> bool:
@@ -437,6 +456,11 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def mate_worker_mcp_tool_limits_supported(self) -> bool:
+        """Whether the MCP half of a crewmate worker's single-tool limits is honoured here."""
+        return False
+
+    @property
     def loaded_capability_template(self) -> str:
         """Confirmed saved template; projection gaps are reported separately."""
         return ""
@@ -506,6 +530,17 @@ class LLMProvider(ABC):
         never as a wildcard.
         """
         return ""
+
+    @property
+    def prompts_written(self) -> int | None:
+        """Prompts this provider's turns have written to the backend, or ``None``.
+
+        A caller whose turn timed out compares it against a reading taken before
+        the turn to learn whether the prompt went out. Default ``None``: this
+        provider keeps no count, so the caller cannot tell and must assume the
+        prompt never left.
+        """
+        return None
 
     @property
     def model_pin_refused(self) -> str:
@@ -625,6 +660,16 @@ class LLMProvider(ABC):
     # AttributeError-ing. Concrete providers override; the caller-side
     # ``getattr``/``hasattr`` guards remain where they additionally defend
     # against test doubles (AsyncMock) that are not LLMProvider instances.
+
+    @property
+    def switches_by_relaunch(self) -> bool:
+        """Whether a model or effort change relaunches this session's process.
+
+        True only where a switch either lands on the same chat or raises with the
+        prior values back in force, so a caller answers the raise as a refusal
+        rather than resetting onto the refused value. Default: ``False``.
+        """
+        return False
 
     def has_active_turn(self) -> bool:
         """True if a prompt is in flight and not yet cancelled. Default False."""
@@ -835,6 +880,23 @@ class LLMProvider(ABC):
         ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` membership. Consumers must
         act only on a non-empty ``str`` value."""
         return None
+
+    @property
+    def harness_compact_verb_advertised(self) -> bool:
+        """Whether the engine advertised the compaction verb Crew sends for ``/compact``.
+
+        Answered only for a backend that compacts on its own (a member of
+        ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``, KAS): there the session
+        handle sends the engine's own compaction verb in place of the
+        ``/compact`` prompt, and an engine that did not list that verb at
+        ``initialize`` fails the turn at once. ``False`` everywhere else, and
+        the default, so a provider that has not answered is never handed an
+        explicit-threshold ``/compact`` it cannot serve. Declared here rather
+        than probed off the instance (harness-parity H14); the ACP
+        implementations answer from the KAS session handle's record of the
+        engine's ``initialize``. Consumers must act only on a literal ``True``,
+        so a mocked provider's attribute never reads as advertised."""
+        return False
 
     @property
     def compaction_unmanaged_backend(self) -> str | None:

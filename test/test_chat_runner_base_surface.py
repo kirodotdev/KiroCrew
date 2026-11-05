@@ -132,7 +132,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_emit_mcp_oauth_request",
             "function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", server_name: 'str', oauth_url: 'str', card_owned: 'bool' = False, minted_by: 'str' = '') -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", server_name: 'str', oauth_url: 'str', card_owned: 'bool' = False, minted_by: 'str' = '', session_id: 'str' = '') -> 'None'",
         ),
         (
             "_supersede_open_mcp_oauth_banners",
@@ -295,7 +295,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_drop_stale_admissions",
             "function",
-            "(state: 'DashboardState', slot: '_ChatSlot') -> 'None'",
+            "(state: 'DashboardState', slot: '_ChatSlot', *, selected_id: 'str | None' = None) -> 'None'",
         ),
         ("_has_user_queued_followup", "function", "(slot: \"'_ChatSlot'\") -> 'bool'"),
         (
@@ -787,8 +787,10 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "function",
             # judged_sri_values: defaulted, so every old caller keeps its shape.
             # _ordered_out: keyword-only and defaulted, likewise.
+            # _reveal_pending: keyword-only and defaulted, likewise.
             "(slot: '_ChatSlot', text: 'str', judged_sri_values: 'Collection[str]' = (),"
-            " *, _ordered_out: 'list[bool] | None' = None) -> 'tuple[str, list[dict], list[dict]]'",
+            " *, _ordered_out: 'list[bool] | None' = None,"
+            " _reveal_pending: 'dict[str, str] | None' = None) -> 'tuple[str, list[dict], list[dict]]'",
         ),
         ("_append_command_reply", "function", "(slot: '_ChatSlot', text: 'str') -> 'None'"),
         ("_TOOL_GROUP_ROLES", "value", "frozenset"),
@@ -815,7 +817,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_consume_pending_reset",
             "async function",
-            "(state: 'DashboardState', slot: '_ChatSlot', *, allow_discard: 'bool' = False) -> 'bool'",
+            "(state: 'DashboardState', slot: '_ChatSlot', *, allow_discard: 'bool' = False,"
+            " own_turn: 'bool' = False) -> 'bool'",
         ),
     ),
     "slash_commands": (
@@ -973,7 +976,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_turn_start_priority",
             "function",
-            "(*, user_origin: 'bool', crew_log_actor: 'str', provenance_restored: 'bool') -> 'StartPriority'",
+            "(*, user_origin: 'bool', crew_log_actor: 'str', provenance_restored: 'bool', start_background: 'bool' = False) -> 'StartPriority'",
         ),
     ),
     "turn_reply_seams": (

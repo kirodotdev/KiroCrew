@@ -99,10 +99,10 @@ describe('invalidateRefreshQueries', () => {
 describe('a turn-end history frame', () => {
   const CRON_IDS = ['cron-history-all', 'cron-jobs', 'crons/crew-wake/ada']
 
-  it('refetches everything but the cron caches at once', async () => {
+  it.each([['turn_end'], ['history']])('refetches everything but the cron caches at once for %s', async kind => {
     const fetches = await observeAll()
     const stale = vi.fn()
-    invalidateRefreshQueries(qc, ['history'], stale)
+    invalidateRefreshQueries(qc, [kind], stale)
     await settle()
     expect(refetched(fetches)).toEqual(KEYS.map(k => k.join('/')).filter(id => !CRON_IDS.includes(id)).sort())
     expect(stale).not.toHaveBeenCalled()

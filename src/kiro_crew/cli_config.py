@@ -16,17 +16,17 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
-    _subtract_overlay,
     config_local_path,
     config_path,
     read_config_text,
     update_config_locked,
     workspace_dir_from_entry,
 )
-from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE
+from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE, drop_extra_section_keys
 from kiro_crew.config.sections import _migrate_workspaces, _sanitize_bot_name
 from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import (
+    ack_explicit_write,
     acked_superseded,
     adopt_coerced_keys,
     adopted_superseded,
@@ -37,8 +37,11 @@ from kiro_crew.config.superseded_defaults import (
     drop_acks,
     drop_drifted_keys,
     record_acks,
+    record_adoptions,
+    stored_value_or_none,
     superseded_default_drift,
 )
+from kiro_crew.config.write_provenance import record_path
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.sel import sel
 
@@ -54,7 +57,7 @@ _SEALED_CONFIG_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS, errno
 
 
 def _names_sealed_config(exc: OSError) -> bool:
-    """Whether *exc* was raised against ``config.json`` or ``config.local.json``.
+    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or its record.
 
     The publishing ``os.replace(tmp, path)`` reports the temp as ``filename`` and the
     destination as ``filename2``; an in-place ``open(path, "w")`` reports only
@@ -62,7 +65,9 @@ def _names_sealed_config(exc: OSError) -> bool:
     neither -- ``config edit``'s ``execvp`` of an editor, a temp the data home itself
     refused -- is the caller's to report as what it is.
     """
-    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path())}
+    # The config writer records each save in the publication record first, and that
+    # record is sealed the same way, so a sandboxed save is refused there.
+    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path(), record_path())}
     for name in (exc.filename, exc.filename2):
         if isinstance(name, (str, bytes, os.PathLike)):
             if os.path.realpath(os.fsdecode(name)) in sealed:
@@ -119,6 +124,18 @@ def _refuse_missing_workspace_dirs(data: dict, current: dict) -> dict:
                 f"workspace {name!r}: dir {entry.dir!r} is not an existing directory"
             )
     return data
+
+
+def _ack_explicit_config_write(key: str, value: object) -> None:
+    """Ack only submitted keys, including children of a whole-section write.
+
+    Called under the destination config lock, before publication. Let an ack
+    refusal abort the write rather than save a choice the next load would adopt.
+    """
+    ack_explicit_write(key, value)
+    if isinstance(value, dict):
+        for child, child_value in value.items():
+            _ack_explicit_config_write(f"{key}.{child}", child_value)
 
 
 def _warn_if_bot_name_altered(key: str, parsed: object) -> None:
@@ -206,7 +223,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             except PermissionError as e:
                 print(f"❌ {e}", file=sys.stderr)
                 sys.exit(1)
-            except (json.JSONDecodeError, OSError) as e:
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
                 print(f"❌ Invalid JSON: {e}", file=sys.stderr)
                 sys.exit(1)
             if not isinstance(data, dict):
@@ -219,10 +236,17 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
+
+            def _mutate_from_file(cur: dict) -> dict:
+                _refuse_missing_workspace_dirs(data, cur)
+                for key, value in data.items():
+                    _ack_explicit_config_write(key, value)
+                return data
+
             try:
                 update_config_locked(
                     config_path(),
-                    mutate=lambda cur: _refuse_missing_workspace_dirs(data, cur),
+                    mutate=_mutate_from_file,
                     on_corrupt="reset",
                 )
             except ConfigWriteRefused as e:
@@ -300,6 +324,24 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     )
                     sys.exit(1)
                 parsed = threads
+            # The failover block is refused here rather than logged and read as
+            # off at load, for the same reason. Written whole, so its parts are
+            # always checked together.
+            if key.startswith("agent.acp_failover."):
+                print(
+                    "❌ agent.acp_failover is set as one object, e.g. "
+                    '\'{"enabled": true, "chain": ["codex", "claude"]}\'',
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if key == "agent.acp_failover":
+                from kiro_crew.config.sections_agent_fields import validate_acp_failover
+
+                try:
+                    parsed = validate_acp_failover(parsed)
+                except ValueError as failover_error:
+                    print(f"❌ {key}: {failover_error}", file=sys.stderr)
+                    sys.exit(1)
             # Fourth write path to telemetry.beacon_enabled, after the dashboard
             # PATCH and `telemetry enable`. Gated here too, and BEFORE the
             # local/base split so it covers both: `--local` writes the overlay,
@@ -366,6 +408,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # are the ones this write really removed.
                     dropped[:] = _overlay_keys_dropped(_dict_get(_existing, key), parsed, key)
                     _dict_set_create(_existing, key, parsed)
+                    _ack_explicit_config_write(key, parsed)
                     return _existing
 
                 try:
@@ -396,15 +439,10 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # Key was already validated above; use _dict_set_create so
                     # sections that were never written (still at defaults) get
                     # their intermediate keys created.
+                    # *existing* is config.json as stored, which holds no overlay
+                    # values to keep out, so every other key is left as it is.
                     _dict_set_create(existing, key, parsed)
-                    lp = config_local_path()
-                    if lp.is_file():
-                        try:
-                            raw_local = json.loads(read_config_text(lp))
-                            if isinstance(raw_local, dict):
-                                return _subtract_overlay(existing, raw_local)
-                        except (json.JSONDecodeError, OSError):
-                            pass
+                    _ack_explicit_config_write(key, parsed)
                     return existing
 
                 try:
@@ -566,11 +604,21 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         def _mutate(existing: dict) -> dict:
             # Re-detect inside the lock: the document read above is a snapshot, and
             # removing a key whose value changed since would discard a live choice.
-            fresh = [
-                e.dotted_key
-                for e in superseded_default_drift(existing, acked={})
-                if e.dotted_key in keys
+            fresh_entries = [
+                e for e in superseded_default_drift(existing, acked={}) if e.dotted_key in keys
             ]
+            fresh = [e.dotted_key for e in fresh_entries]
+            # An auto-adopt row is one-shot: record it as adopted BEFORE the removal,
+            # the same marker-first order the load path uses. Without the record, a
+            # value the operator writes back later would be auto-removed on the next
+            # load. A failed record raises and aborts this write.
+            auto = {
+                e.dotted_key: stored_value_or_none(existing, e.dotted_key)
+                for e in fresh_entries
+                if e.auto_adopt
+            }
+            if auto:
+                record_adoptions(auto)
             removed.extend(drop_drifted_keys(existing, fresh))
             # A coerced key is not dropped but REWRITTEN as what the loader resolves
             # it to (or dropped only when that is the default), so adopting never
@@ -772,13 +820,27 @@ def _refuse_unknown_key(key: str, parsed: object, *, overlay: bool = False) -> N
         ):
             _refuse_emitted_elsewhere_value(key, parts[0], parts[1], parsed)
             return
-    d = KiroCrewConfig.load().to_dict()
+    cfg = KiroCrewConfig.load()
+    d = cfg.to_dict()
+    # ``to_dict()`` re-emits keys a modelled section does not declare, so a
+    # save keeps them. They exist in the document but no code reads them, so
+    # existence is judged without them (the dashboard's config view does the
+    # same); ``preserved`` says the refusal is about such a key.
+    preserved = _dict_get(d, key) is not _MISSING
+    drop_extra_section_keys(d, getattr(cfg, "_extra_keys", {}))
+    preserved = preserved and _dict_get(d, key) is _MISSING
     stored = _dict_set(d, key, parsed)
     declared = _declared_entry(key)
     if declared is None:
         if stored:
             return
         print(f"❌ Unknown key: {key}", file=sys.stderr)
+        if preserved:
+            print(
+                "   It is in config.json, but this version does not read it, "
+                "so setting it changes nothing.",
+                file=sys.stderr,
+            )
         sys.exit(1)
     if stored and parsed is None:
         return

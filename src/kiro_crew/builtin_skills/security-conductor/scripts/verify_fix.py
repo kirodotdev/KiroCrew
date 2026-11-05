@@ -374,6 +374,10 @@ def load_corpus(ledger: Any, path: Path) -> tuple[list[dict[str, Any]], str | No
     """
     try:
         text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # A ``ValueError``, not an ``OSError``: a UTF-16 export is unreadable like
+        # the rest, the same rule ``check_fix_contract.load_contract`` applies.
+        return [], f"the committed corpus is not UTF-8: {path} ({exc.reason} at byte {exc.start})"
     except OSError as exc:
         reason = exc.strerror or exc.__class__.__name__
         return [], f"the committed corpus is not readable: {path} ({reason})"

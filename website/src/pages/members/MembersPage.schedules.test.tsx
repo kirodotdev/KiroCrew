@@ -320,7 +320,7 @@ describe('MembersPage Profile card Schedules tab', () => {
     vi.mocked(api.crons).mockResolvedValue({ jobs: [] } as never)
     await openCrewmate()
     const list = await openSchedulesTab()
-    expect(await within(list).findByTestId('crew-schedule-empty')).toHaveTextContent(/Nothing wakes this mate on its own yet/i)
+    expect(await within(list).findByTestId('crew-schedule-empty')).toHaveTextContent(/Nothing wakes this Bot on its own yet/i)
     // No `0` anywhere — not on the rail, not in the list.
     expect(screen.queryByTestId('member-schedules-count')).toBeNull()
     expect(within(screen.getByTestId('crew-profile-tabs')).queryByText('0')).toBeNull()
@@ -343,9 +343,10 @@ describe('MembersPage Profile card Schedules tab', () => {
     await openCrewmate()
     const list = await openSchedulesTab()
     await waitFor(() => expect(vi.mocked(api.crons)).toHaveBeenCalled())
-    await new Promise((r) => setTimeout(r, 50))
+    // The failed read is handled once the list draws its error line; the empty line is withheld with it.
+    await screen.findByTestId('crew-schedule-error')
     expect(within(list).queryByTestId('crew-schedule-empty')).toBeNull()
-    expect(list).not.toHaveTextContent(/Nothing wakes this mate/i)
+    expect(list).not.toHaveTextContent(/Nothing wakes this Bot/i)
   })
 
   it('a row opens that job on the Schedule page; the footer opens the page itself', async () => {
@@ -401,11 +402,11 @@ describe('MembersPage Profile card — New schedule', () => {
     // second "What wakes this crewmate" and no second close control under the bar.
     expect(section).toHaveAttribute('data-chromeless', 'true')
     expect(within(section).queryByTestId('crew-wake-add')).toBeNull()
-    expect(within(page).queryByText('What wakes this mate')).toBeNull()
+    expect(within(page).queryByText('What wakes this Bot')).toBeNull()
     expect(within(page).queryAllByRole('button', { name: /cancel new schedule/i })).toHaveLength(0)
     // The form's pinned-crew hint speaks this page's noun: the reader is on the
     // crewmate's Profile, not in the crew editor the editor's sentence names.
-    expect(within(section).getByText("Created from this mate's profile, so the job runs as this mate.")).toBeInTheDocument()
+    expect(within(section).getByText("Created from this Bot's profile, so the job runs as this Bot.")).toBeInTheDocument()
     expect(within(section).queryByText(/this crew's editor/)).toBeNull()
     // A clean form: back pops to the list with no question asked.
     fireEvent.click(screen.getByTestId('crew-profile-back'))
@@ -569,11 +570,19 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     const section = await openDraft()
     fireEvent.click(within(section).getByTestId('crew-wake-create-submit'))
     await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+    // "Nothing opens within 120 ms" runs on a fake clock installed once the render has settled. A real sleep let
+    // SidePanel (its 180 ms motion timer) and ThemeProvider update outside act() when the host was loaded.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
     fireEvent.click(screen.getByTestId('crew-profile-close'))
-    await new Promise((r) => setTimeout(r, 120))
+    await act(async () => { await vi.advanceTimersByTimeAsync(120) })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(screen.getByTestId('crew-profile-panel')).toBeInTheDocument()
-    act(() => { release({ ok: true, id: 'j-new' }) })
+    // Real timers again: the waits below poll on them.
+    vi.useRealTimers()
+    await act(async () => { release({ ok: true, id: 'j-new' }) })
+    // A saved schedule closes the form (CrewWakeSection onCreated): the completion has landed once it is gone.
+    await waitFor(() => expect(screen.queryByTestId('crew-wake-create-submit')).toBeNull())
   })
 
   it('asks before a mate switch from the switcher discards a draft, and remounts the card once it does', async () => {

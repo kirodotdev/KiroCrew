@@ -432,16 +432,34 @@ def test_posix_reading_does_not_take_a_drive_path_as_absolute() -> None:
 def test_anchoring_does_no_filesystem_work(monkeypatch) -> None:
     """It runs on the event loop at session start and on a mode switch."""
 
-    def _refuse(*_a: Any, **_k: Any) -> Any:
-        raise AssertionError("filesystem touched while anchoring")
-
     import inspect
 
     # The module never reaches the resolver, and nothing it calls touches the disk.
     assert "paths_resolver" not in inspect.getsource(kas_write_allowlist)
+
+    _real_realpath = os.path.realpath
+    _real_lstat = os.lstat
+
+    def _refuse_realpath(*_a: Any, **_k: Any) -> Any:
+        # Raise only when the immediate caller is inside kiro_crew, so that
+        # coverage.py's canonical_filename() -- which calls os.path.realpath
+        # the first time it traces a new source file in this xdist worker --
+        # does not trip the assertion.  The global patch keeps both
+        # kas_write_allowlist AND allowed_paths (posixpath is os.path on POSIX)
+        # covered; coverage frames are let through by delegating to the real
+        # function instead of returning None (which would hand coverage a bad path).
+        if sys._getframe(1).f_globals.get("__name__", "").startswith("kiro_crew"):
+            raise AssertionError("filesystem touched while anchoring")
+        return _real_realpath(*_a, **_k)
+
+    def _refuse_lstat(*_a: Any, **_k: Any) -> Any:
+        if sys._getframe(1).f_globals.get("__name__", "").startswith("kiro_crew"):
+            raise AssertionError("filesystem touched while anchoring")
+        return _real_lstat(*_a, **_k)
+
     with monkeypatch.context() as mp:
-        mp.setattr(os.path, "realpath", _refuse)
-        mp.setattr(os, "lstat", _refuse)
+        mp.setattr(os.path, "realpath", _refuse_realpath)
+        mp.setattr(os, "lstat", _refuse_lstat)
         anchored = kas_write_allowlist.anchor_write_allowlist(["out", "~/x", "/abs/*"], "/w")
     home = allowed_paths.to_glob_path(os.path.expanduser("~")).rstrip("/")
     assert anchored == ("/w/out", home + "/x", "/abs/*")

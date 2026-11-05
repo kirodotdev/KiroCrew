@@ -74,6 +74,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolve_one_shot_at,
         _schema_field,
         _unknown_chat_folder_response,
+        _with_schedule_warnings,
         api_cron_batch_delete,
         api_cron_delete,
         api_cron_enable,
@@ -105,6 +106,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.cron_runs import (  # noqa: F401
         _HISTORY_PAGE_MAX,
+        _ack_job,
         _history_page,
         api_cron_ack,
         api_cron_cancel,
@@ -158,6 +160,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         CronStoreBusy,
         CronStoreUnreadable,
         is_valid_timezone,
+        never_fires_warning,
         parse_time_string,
     )
     from kiro_crew.cron_script import (  # noqa: F401
@@ -187,6 +190,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         move_cron_job_tab,
         prefetch_cron_dismissed,
         restore_cron_turn_timeout,
+    )
+    from kiro_crew.dashboard.cron_note_ack import (  # noqa: F401
+        cron_item_already_recorded,
+        cron_note_transition,
+        mark_cron_item_recorded,
+        new_ack_id,
     )
     from kiro_crew.dashboard.cron_timeout_field import (  # noqa: F401
         timeout_secs_from_body,

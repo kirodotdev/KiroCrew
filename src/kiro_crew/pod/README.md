@@ -41,7 +41,7 @@ kirocrew pod prune [--older-than 3d] [--all] [--dry-run] [--json]  # bulk-reclai
 kirocrew pod status <wt> [--json] # up/down + health
 kirocrew pod token  <wt> [--ttl]  # (re)mint a dashboard token for a running pod
 kirocrew pod url    <wt>          # print its base_url
-kirocrew pod logs   <wt> [-n N]   # tail its journal
+kirocrew pod logs   <wt> [-n N]   # tail its log (the user journal on Linux, log files on macOS and Windows)
 kirocrew pod down   <wt>          # evict → delete its HOME, verified (zero residue)
 ```
 
@@ -363,8 +363,8 @@ worktree build, and pinning a colliding pod's own `PORT=` remains the manual way
 | `KIROCREW_POD_ROOT` | `~/.kirocrew-pods` | isolated pod HOMEs (reclaimed by `pod down`) |
 | `KIROCREW_POD_ENV_DIR` | `~/.kiro/crew/pods` | per-pod `CHECKOUT=`/`PORT=`/`SEED=` files |
 | `KIROCREW_POD_ARTIFACTS_DIR` | `<pod root>/.e2e-artifacts` | pod run logs and screenshots |
-| `KIROCREW_POD_BASE_PORT` | `7810` | port derivation base |
-| `KIROCREW_POD_LIVE_PORT` | `5476` | the port a pod must never bind |
+| `KIROCREW_POD_BASE_PORT` | `7810` | port derivation base; a value outside 1–65336 (so the band BASE+1..BASE+199 stays bindable) logs a warning and uses the default |
+| `KIROCREW_POD_LIVE_PORT` | `5476` | the port a pod must never bind; a value that is not a port in 1–65535 logs a warning and uses the default |
 | `KIROCREW_POD_UNIT_PREFIX` | `kirocrew-pod` | service-manager unit/task prefix |
 | `KIROCREW_POD_PATH` | `~/.local/bin`, the user tool-manager bins the host gateway also searches (`env._EXTRA_PATH_DIRS`: mise shims, `~/.volta/bin`, `/opt/homebrew/bin`, ...), then `/usr/local/bin:/usr/bin:/bin` | `PATH` handed to the booted gateway; pinned into the template at `pod install`, so re-run it after an upgrade to pick up a new default |
 | `KIROCREW_POD_HEALTH_SECS` | `90` | `pod up` readiness budget: the pod must be serving AND have published a fresh internal-API credential within it. A pod still serving with no credential when it runs out fails with the same advice to raise the budget as a slow boot. `--wait-secs` wins and the result is clamped to 5–3600 seconds |

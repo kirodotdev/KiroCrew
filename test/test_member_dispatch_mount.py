@@ -30,6 +30,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import member_mount_checks
 import pytest
 
 import kiro_crew.validation  # noqa: F401 - break the legacy import cycle first
@@ -405,7 +406,9 @@ def _base_servers() -> list[dict]:
     return [{"name": "kirocrew-core", "command": "x", "args": [], "env": [], "type": "stdio"}]
 
 
-class TestClaudeMemberAppend:
+class TestClaudeMemberAppend(
+    member_mount_checks.NonMemberSessionIsUntouched, member_mount_checks.KiroBackendIsUntouched
+):
     def _run(self, stub) -> list[dict]:
         return AcpClient._append_member_dispatch_server(stub, _base_servers())
 
@@ -450,11 +453,6 @@ class TestClaudeMemberAppend:
             -1
         ]["env"]
 
-    def test_non_member_session_is_untouched(self):
-        stub = _ClientStub()
-        stub._session_key = "dashboard_abc123"
-        assert self._run(stub) == _base_servers()
-
     def test_unowned_permission_surface_withholds(self):
         """Appending session control onto a permission surface Crew does not
         own would hand a pre-approvable file exactly the tools the mirror's
@@ -473,11 +471,6 @@ class TestClaudeMemberAppend:
         stub._permission_surface_share_validated = True
         out = self._run(stub)
         assert [e["name"] for e in out][-1] == MEMBER_DISPATCH_SERVER
-
-    def test_kiro_backend_is_untouched(self):
-        stub = _ClientStub()
-        stub.backend = ACP_BACKEND_KIRO
-        assert self._run(stub) == _base_servers()
 
     def test_same_named_entry_is_replaced_not_duplicated(self):
         stub = _ClientStub()
@@ -909,6 +902,7 @@ class TestRuntimeMemberThreading:
             crew_panel=False,
             session_key="",
             skill_scope_rules=(),
+            withheld_out=None,
         ):
             seen.append(member_dispatch)
             return [{"id": agent}]
@@ -987,6 +981,7 @@ class TestMemberServerJoinsSubtraction:
             crew_panel=False,
             session_key="",
             skill_scope_rules=(),
+            withheld_out=None,
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
@@ -1026,6 +1021,7 @@ class TestMemberServerJoinsSubtraction:
             crew_panel=False,
             session_key="",
             skill_scope_rules=(),
+            withheld_out=None,
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]

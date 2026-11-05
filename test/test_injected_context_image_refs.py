@@ -233,6 +233,41 @@ class TestTheUsersOwnPicture:
         assert str(old) in blocks[0]["text"]
 
 
+class TestASlackThreadRootLeftInsideAnOpenFence:
+    """The Slack transport path: ``handle_message_transport`` -> ``build_message``
+    (with ``thread_parent_text``) -> ``TurnDriver.run``.
+
+    The thread root is injected text. When it ends inside a fence it never
+    closes, the attached Markdown file's fence line must not pair with it and
+    turn the user's picture between them into code.
+    """
+
+    def test_the_users_picture_is_still_attached(self, tmp_path):
+        from kiro_crew.messaging.attachments import IngestResult, append_attachment_context
+
+        mine = _png(tmp_path, "shot.png")
+        root = "the failing snippet:\n```python\ndef f():"
+        attachments = IngestResult(
+            image_paths=[str(mine)],
+            text_blocks=["[File: notes.md]\n```\nx = 1\n```\n[End of file]"],
+        )
+        text = append_attachment_context("see this", attachments)
+        msg, _ = _builder(tmp_path).build_message(
+            text,
+            is_new_session=True,
+            session_key="slack:1700000000.000100",
+            channel_id="C1",
+            thread_ts="1700000000.000100",
+            thread_parent_text=root,
+        )
+        assert "def f():" in msg
+
+        blocks = build_prompt_blocks(msg)
+
+        assert len(_images(blocks)) == 1
+        assert "[image: shot.png]" in blocks[0]["text"]
+
+
 class TestRewritesKeepProvenance:
     def test_the_essential_envelope_dedup_keeps_the_segments(self, tmp_path):
         from kiro_crew.prompt_segments import (

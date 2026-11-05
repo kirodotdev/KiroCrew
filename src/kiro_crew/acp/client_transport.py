@@ -40,11 +40,13 @@ from kiro_crew.acp.client_timeouts import (
     _READ_TIMEOUT,
     _WAIT_RESPONSE_MAX_TIMEOUT,
 )
+from kiro_crew.acp.oauth_offline import with_google_offline_access
 from kiro_crew.acp.runtime_models import (
     _extract_advisory_detail,
     _is_model_substitution_advisory,
     _substitute_model_from_advisory,
 )
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.transport_framing import (
     RequestWriteResult,
@@ -425,7 +427,8 @@ async def _send_error(self: AcpClient, request_id: str | int, code: int, message
 def _install_idle_reader(self: AcpClient) -> None:
     """Bind the idle reader's steps over this client's own methods, once.
 
-    Each stdout reader claims stdout, a turn read under
+    Each stdout reader claims stdout, a reader other than a turn keeps a
+    pending agent-started turn's frames for it, a turn read under
     ``_AGENT_STARTED_REQUEST_ID`` ends on the frame that closes it, a prompt
     waits until no such turn reads, and the two paths that end the process drop
     the reader. The claude adapter calls this
@@ -437,11 +440,37 @@ def _install_idle_reader(self: AcpClient) -> None:
         return
     self._idle_reader_installed = True
     gate = self._agent_turn_gate = asyncio.Lock()
-    prompt_loop, kill_process, reset_state = (
+    read_message, prompt_loop, kill_process, reset_state = (
+        self._read_message,
         self._prompt_loop,
         self._kill_process,
         self._reset_state,
     )
+
+    # While a claimed reader holds a pending turn's frames (_claiming_stdout),
+    # a request from the agent is held with them, in the same list, so a
+    # permission request keeps its place among the turn's chunks, and so is the
+    # autonomous usage_update that closes the turn, so the turn still ends on
+    # it. A response is never held: it answers that reader. A held frame
+    # reads as nothing, so that reader still checks its own deadline. Past
+    # _buffer's room a frame is not held, so putting them back pushes none out.
+    async def read(
+        timeout: float = _READ_TIMEOUT, *, check_cancel: bool = True
+    ) -> JsonRpcMessage | None:
+        msg = await read_message(timeout, check_cancel=check_cancel)
+        held = self._agent_turn_held
+        if (
+            held is None
+            or msg is None
+            or not (
+                _starts_agent_turn(msg)
+                or (msg.method is not None and _ends_agent_started_turn(msg))
+            )
+            or len(held) + len(self._buffer) >= (self._buffer.maxlen or 0)
+        ):
+            return msg
+        held.append(msg)
+        return None
 
     def read_turn(req_id: int, timeout: float) -> AsyncGenerator[tuple[str, JsonRpcMessage], None]:
         return self._read_turn(prompt_loop, req_id, timeout)
@@ -499,7 +528,7 @@ def _install_idle_reader(self: AcpClient) -> None:
             "_read_steer_answers",
         )
     }
-    bound.update(_prompt_loop=read_turn, _kill_process=kill, _reset_state=reset)
+    bound.update(_read_message=read, _prompt_loop=read_turn, _kill_process=kill, _reset_state=reset)
     for name in ("send_message", "send_message_stream", "stream_events", "stream_command"):
         bound[name] = queued(getattr(self, name))
     for name, method in bound.items():
@@ -509,12 +538,27 @@ def _install_idle_reader(self: AcpClient) -> None:
 def _claiming_stdout(
     self: AcpClient, read: Callable[..., Awaitable[_R]]
 ) -> Callable[..., Awaitable[_R]]:
+    """*read* with stdout claimed.
+
+    On a pending hand-off the claim also keeps the turn's frames for it: what
+    *read* reads of them is held, and goes back to the front of ``_buffer`` in
+    arrival order when *read* returns, so the turn still starts on its first
+    frame and the hand-off stands.
+    """
+
     @functools.wraps(read)
     async def claimed(*args: Any, **kwargs: Any) -> _R:
         await self._claim_stdout()
+        held: list[JsonRpcMessage] | None = None
+        if self._agent_turn_held is None and self._agent_turn_pending():
+            held = self._agent_turn_held = []
         try:
             return await read(*args, **kwargs)
         finally:
+            # Not after _cancel_idle_reader dropped the hold with the process.
+            if held is not None and self._agent_turn_held is held:
+                self._agent_turn_held = None
+                self._buffer.extendleft(reversed(held))
             self._release_stdout()
 
     return claimed
@@ -605,13 +649,16 @@ def _cancel_idle_reader(self: AcpClient) -> None:
         task.cancel()
     self._idle_reader = None
     self._agent_turn_start = None
+    self._agent_turn_held = None
 
 
 def _agent_turn_pending(self: AcpClient) -> bool:
-    """True while the frame an agent-started turn began with is still unread.
+    """True while the frame an agent-started turn began with is still in _buffer.
 
-    Whichever reader takes it from _buffer ends the hand-off: a turn reads it
-    as its own, and a request wait files it the way it files any notification.
+    A turn that takes it ends the hand-off by reading it as its own. Any other
+    claimed reader holds it for the turn and puts it back when it returns
+    (``_claiming_stdout``); until then this is False, so ``stream_unsolicited``
+    does not read beside that reader.
     """
     start = self._agent_turn_start
     return start is not None and any(frame is start for frame in self._buffer)
@@ -963,7 +1010,9 @@ async def _drain_notifications(
             return
         params = msg.params if isinstance(msg.params, dict) else {}
         server_name = str(params.get("serverName") or params.get("name") or "")
-        oauth_url = str(params.get("oauthUrl") or params.get("url") or "")
+        oauth_url = with_google_offline_access(
+            str(params.get("oauthUrl") or params.get("url") or "")
+        )
         # Drop unsafe-scheme URLs *before* recording dedupe so a later safe
         # retry for the same server still gets through.
         if not _is_safe_oauth_url(oauth_url):
@@ -1011,6 +1060,8 @@ async def _drain_notifications(
     # Process notifications buffered during _wait_for_response
     for idx, msg in enumerate(self._mcp_notifications):
         drained += 1
+        if consume_stale_compaction_status(self, msg):
+            continue
         _capture_oauth(msg)
         _capture_config_update(msg)
         _capture_agent_switched(msg)
@@ -1066,6 +1117,8 @@ async def _drain_notifications(
             if not read_msg.method:
                 continue
             drained += 1
+            if consume_stale_compaction_status(self, read_msg):
+                continue
             _capture_oauth(read_msg)
             _capture_config_update(read_msg)
             _capture_agent_switched(read_msg)

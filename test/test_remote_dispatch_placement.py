@@ -51,6 +51,7 @@ class Crews:
         self.gate: asyncio.Event | None = None
         self.waiting = 0
         self.both_waiting: asyncio.Event | None = None
+        self.probe_cancelled = False
 
     def add(self, iid: str, mem: float = 50.0, disk: float = 200.0, **over: Any) -> None:
         room = {"mem_free_gb": mem, "disk_free_gb": disk, "load_per_cpu": 0.2}
@@ -80,7 +81,11 @@ class Crews:
     @asynccontextmanager
     async def proxy_request(self, iid, method, path, *, params=None, data=None, content_type=""):
         if path == "api/chat/headroom" and self.crews[iid].get("stall"):
-            await asyncio.sleep(60)
+            try:
+                await asyncio.Event().wait()  # blocks until cancelled by wait_for
+            except asyncio.CancelledError:
+                self.probe_cancelled = True
+                raise
         if self.gate is not None and path == "api/chat/slots":
             self.waiting += 1
             if self.waiting == 2 and self.both_waiting is not None:
@@ -300,11 +305,9 @@ def test_a_refusal_other_than_busy_stops_the_placement(recorded, crews):
         {"headroom": {"mem_free_gb": None, "disk_free_gb": 200, "load_per_cpu": 0}},
         {"headroom": {"mem_free_gb": 10**400, "disk_free_gb": 200, "load_per_cpu": 0}},
         {"headroom_status": 404},
-        {"stall": True},
     ],
 )
-def test_an_ineligible_crew_is_skipped(recorded, crews, monkeypatch, over):
-    monkeypatch.setattr(placement, "PROBE_TIMEOUT_S", 0.2)
+def test_an_ineligible_crew_is_skipped(recorded, crews, over):
     crews.add("a", mem=99, **over)
     crews.add("b", mem=4)
 
@@ -313,6 +316,49 @@ def test_an_ineligible_crew_is_skipped(recorded, crews, monkeypatch, over):
 
     _run(crews, 1, body)
     assert crews.creates == ["b"]
+
+
+def test_a_stalling_crew_probe_is_skipped(recorded, crews, monkeypatch):
+    """A crew whose headroom probe never returns is skipped; ineligibility is
+    decided by the probe stub returning None, not by a wall-clock race."""
+    crews.add("a", mem=99)
+    crews.add("b", mem=4)
+    real_candidate = placement._candidate
+
+    async def _candidate_stub(state, mgr, row, mem_gb, disk_gb):
+        if getattr(row, "id", "") == "a":
+            return None  # simulates _candidate timing out on a stalled probe
+        return await real_candidate(state, mgr, row, mem_gb, disk_gb)
+
+    monkeypatch.setattr(placement, "_candidate", _candidate_stub)
+
+    async def body(state, items):
+        assert await _place(state, items[0]) == "b"
+
+    _run(crews, 1, body)
+    assert crews.creates == ["b"]
+
+
+def test_candidate_returns_none_when_probe_stalls(crews, monkeypatch):
+    """_candidate returns None and the stall Event is cancelled when the probe
+    takes longer than PROBE_TIMEOUT_S.
+
+    Only crew 'a' is probed here, so PROBE_TIMEOUT_S applies to that one probe
+    in isolation with no competitor.  The Event().wait() never returns on its
+    own; wait_for fires CancelledError into it after the timeout elapses, which
+    sets probe_cancelled via the except clause in proxy_request.
+    """
+    crews.add("a", mem=99, stall=True)
+    monkeypatch.setattr(placement, "PROBE_TIMEOUT_S", 0.01)
+
+    async def go():
+        state = _state(crews)
+        row = next(r for r in state.instances_registry.list() if r.id == "a")
+        result = await placement._candidate(state, crews, row, 2.0, 10.0)
+        assert result is None
+        assert crews.probe_cancelled, "wait_for must have cancelled the stalled probe"
+
+    asyncio.run(go())
 
 
 def test_an_unreadable_status_or_registry_places_nothing(recorded, crews, monkeypatch):
@@ -416,5 +462,67 @@ def test_an_explicit_create_in_flight_counts_against_its_crew(recorded, crews):
             assert placement._INFLIGHT[state] == {"a": 1}
             assert await _place(state, items[0]) == "b"
         assert placement._INFLIGHT[state] == {}
+
+    _run(crews, 1, body)
+
+
+# ── wave 8: a retired crew is never placed on again ──────────────────────────
+
+
+def test_placement_skips_a_crew_the_item_was_retired_from(recorded, crews):
+    crews.add("lab-a", mem=500.0, disk=2000.0)  # the roomiest, but the item died there
+    crews.add("lab-b")
+
+    async def body(state: Any, items: list[str]) -> None:
+        (item_id,) = items
+        work_ledger.apply_remote_bind(
+            CONDUCTOR,
+            item_id,
+            worker_session_key="chat-old",
+            worker_instance_id="lab-a",
+        )
+        work_ledger.apply_remote_report(
+            CONDUCTOR,
+            item_id,
+            status="progress",
+            summary="pushed",
+            artifacts={"branch": "wave8-try1"},
+            reported_at="2026-10-29T10:00:00+00:00",
+        )
+        work_ledger.apply_remote_retire(
+            CONDUCTOR,
+            item_id,
+            worker_session_key="chat-old",
+            worker_instance_id="lab-a",
+            reason="crew_unreachable",
+        )
+        result, name = await placement.place(
+            state,
+            state.instances_manager,
+            CONDUCTOR,
+            {"work_item": item_id},
+            board=CONDUCTOR,
+        )
+        assert name == "lab-b" and crews.creates == ["lab-b"]
+        assert result["previous_branch"] == "wave8-try1"
+        item = work_ledger.read_work_item(CONDUCTOR, item_id)
+        assert item.worker_instance_id == "lab-b"
+        assert item.retired_bindings[0]["worker_instance_id"] == "lab-a"
+
+    _run(crews, 1, body)
+
+
+def test_placement_of_a_never_retired_item_carries_no_previous_branch(recorded, crews):
+    crews.add("lab-a")
+
+    async def body(state: Any, items: list[str]) -> None:
+        result, _name = await placement.place(
+            state,
+            state.instances_manager,
+            CONDUCTOR,
+            {"work_item": items[0]},
+            board=CONDUCTOR,
+        )
+        assert "previous_branch" not in result
 
     _run(crews, 1, body)

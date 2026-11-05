@@ -132,7 +132,7 @@ const ALL_TARGETS: readonly RefreshTarget[] = [
  *  install. Every cron writer runs in the gateway and announces itself.
  *
  *  Every other kind invalidates everything, and so do a kind this client does
- *  not know and a frame with no kinds. That includes `history`, pushed at the
+ *  not know and a frame with no kinds. That includes `turn_end`, pushed at the
  *  end of a turn: a turn can write config, workspaces and crewmate pins
  *  through an agent tool or a shell, and nothing else announces those writes,
  *  so the turn-end frame is what refreshes them. */
@@ -145,7 +145,7 @@ const sameTarget = (a: RefreshTarget, b: RefreshTarget) =>
   a.exact === b.exact && a.queryKey.length === b.queryKey.length && a.queryKey.every((k, i) => k === b.queryKey[i])
 
 /** How long the cron caches wait after a turn-end frame before they re-read.
- *  A `history` frame ends every turn on every session, and on a busy install
+ *  A `turn_end` frame ends every turn on every session, and on a busy install
  *  that is many a minute; each one re-read the whole job list (twice, with the
  *  Schedule page open), which is a large read when jobs carry long results.
  *  A turn writes a job through the gateway's own cron tools, which announce
@@ -184,7 +184,9 @@ function scheduleTurnEndCronRefresh(qc: QueryClient, onCronsStale?: () => void):
   }, TURN_END_CRON_REFRESH_MS)
 }
 
-const isTurnEndOnly = (kinds?: readonly string[]) => !!kinds?.length && kinds.every(kind => kind === 'history')
+/** `turn_end` ends a turn; `history` follows a close or a delete. */
+const TURN_END_KINDS: readonly string[] = ['turn_end', 'history']
+const isTurnEndOnly = (kinds?: readonly string[]) => !!kinds?.length && kinds.every(kind => TURN_END_KINDS.includes(kind))
 
 /**
  * Invalidate the React Query caches a `refresh` frame names in `kinds`
@@ -200,7 +202,7 @@ const isTurnEndOnly = (kinds?: readonly string[]) => !!kinds?.length && kinds.ev
  * (the artifact library after an auth-expired window, #10867) would otherwise
  * stay empty until its own kind is pushed.
  *
- * A frame that names only `history` refreshes everything but the cron caches
+ * A frame that names only `turn_end` or `history` refreshes everything but the cron caches
  * at once, and those once per `TURN_END_CRON_REFRESH_MS` (an errored one at
  * once, as above). `onCronsStale` is called whenever the cron caches are
  * re-read, now or when that window ends, for a reader that holds the job list
@@ -259,6 +261,12 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // another tab, which is how the update switches learn of it) was never
   // delivered either. Only observed readers refetch.
   queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  // The runtime monitor contract is fetched once with no staleTime, so a
+  // gateway restart that registered a contributed monitor kind while the
+  // socket was down would otherwise never refresh: its monitors would read as
+  // blocked until the page reloads. Re-fetch it so the new vocabulary installs
+  // and the existing re-seed re-normalizes the affected records.
+  queryClient.invalidateQueries({ queryKey: ['monitor-contract'] })
   // `credential_redaction_changed` is pushed to CONNECTED owner sockets
   // with no replay, so a flip made from another window while this socket
   // was down never reached this document. Re-read the switch and, ONLY if

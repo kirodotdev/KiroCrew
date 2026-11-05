@@ -1,35 +1,17 @@
 """Boot a REAL pod on Windows, through the real Task Scheduler, and reclaim it.
 
-Everything in ``test_pod_windows.py`` fakes ``schtasks`` so the backend has
-coverage on the Linux matrix. This file is the other half: it creates an actual
-scheduled task, boots the worktree's actual gateway under it, waits for
-``/api/health``, and then proves ``pod down`` leaves neither a task nor a
-process. Nothing here can be established by a fake, which is why it is a
-separate file with its own preconditions.
+Creates a real scheduled task, boots the gateway, waits for ``/api/health`` and
+proves ``pod down`` leaves no task or process (``test_pod_windows.py`` fakes
+``schtasks``).
 
-**It never skips.** A skip is how a boot canary rots: the job stays green while
-the thing it was written to prove stops running. Every precondition this test
-needs -- ``schtasks`` usable by the runner user, a built venv in the checkout --
-is asserted with ``pytest.fail`` naming the cause, so the CI step's
-``grep "1 passed"`` cannot pass on a test that did not really run.
+**It never skips**: every precondition fails with its cause, so the CI step's
+``grep "1 passed"`` cannot pass on a test that did not run. It is in
+``windows-collect-ignore.txt`` (needs a built ``.venv``; too slow for a shard), and
+the canary step in ``ci.yml`` names it explicitly.
 
-**Not collected by the sharded Windows job.** It is listed in
-``windows-collect-ignore.txt`` because it needs a built ``.venv`` that the
-shards' ``uv pip install --system`` does not create, and because a five-minute
-boot does not belong in a duration-balanced shard. The dedicated canary step in
-``ci.yml`` names the file explicitly on the pytest command line, which bypasses
-``collect_ignore`` by design (see that file's header).
-
-Health goes over **TCP** here, unlike the Linux path's private AF_UNIX socket:
-CPython on Windows has no ``AF_UNIX``. So the port is read back from ``pod up
---json`` rather than re-derived, because allocation can move a pod off its
-first-preference slot and the recorded claim is the only authority.
-
-The pod plane is rooted at a SHORT absolute path (``C:\\kcpb<hex>``) rather than
-under pytest's ``tmp_path``. A deep temporary directory is how the sibling
-POSIX work hit an AF_UNIX path-length ceiling; here the risk is Windows'
-``MAX_PATH`` reaching the pod's own nested run/session directories, and the
-mitigation is the same one: keep the root short.
+Health goes over TCP (no ``AF_UNIX`` on Windows CPython), so the port is read from
+``pod up --json``. The plane root is a short path (``C:\\kcpb<hex>``) to stay under
+``MAX_PATH``.
 """
 
 from __future__ import annotations
@@ -114,17 +96,9 @@ def _probe_health(port: int) -> int:
 def plane(tmp_path_factory) -> dict[str, str]:
     """A hermetic pod plane the developer's real pods cannot collide with.
 
-    The unit prefix is unique per run, so the task lands in its own Task
-    Scheduler folder and ``active_names`` cannot see another plane's pods. The
-    base port is pushed above the default band for the same reason.
-
-    ``KIROCREW_POD_KIRO_BIN`` pins the agent backend to a fake launcher, which is
-    what lets the pod's gateway finish booting on a runner with no kiro-cli:
-    ``config.environment_vars`` translates it to the ``KIROCREW_KIRO_BIN`` the
-    gateway reads, and the Windows wrapper sets that in the task's environment.
-    Without it the pod boots, answers health, and its background session dies with
-    "kiro-cli not found", so the canary would be asserting a gateway that cannot
-    run a single agent turn.
+    A per-run unit prefix and a base port above the default band keep it apart.
+    ``KIROCREW_POD_KIRO_BIN`` points at a fake launcher (passed on as
+    ``KIROCREW_KIRO_BIN``), or the session dies with "kiro-cli not found" on a runner.
     """
     root = _short_plane_root()
     (root / "pods").mkdir(parents=True, exist_ok=True)
@@ -174,13 +148,8 @@ def plane(tmp_path_factory) -> dict[str, str]:
 def served_dist():
     """Require a served SPA bundle; never write one into the checkout.
 
-    ``pod up`` fails loud when ``static/dist`` is missing, which is correct
-    product behaviour and the wrong thing for this test to re-litigate: what is
-    under test is Task Scheduler supervision, not the Vite build. The CI job
-    places a one-file stand-in BEFORE pytest runs (see the canary job in
-    ``ci.yml``); a developer runs ``npm run build`` or drops the same stand-in.
-    The test itself writes nothing under ``src/``: a hard timeout or a worker
-    kill would bypass any cleanup it promised.
+    CI places a one-file ``static/dist`` stand-in before pytest. The test writes
+    nothing under ``src/``: a hard timeout would skip any cleanup it promised.
     """
     index = CHECKOUT / "src" / "kiro_crew" / "static" / "dist" / "index.html"
     if not index.exists():
@@ -214,17 +183,9 @@ def _plane_pod_names(env: dict[str, str]) -> list[str]:
 def _tasks_matching(env: dict[str, str], prefix: str) -> list[str]:
     """Scheduled tasks this plane still holds, decided by EXIT CODE.
 
-    Never by parsing ``/Query`` output: that output is LOCALIZED (this backend's
-    module docstring, point 4), so a field-label match works on an English runner
-    and silently finds nothing on any other -- a residue guard that fails OPEN
-    exactly where a residue guard matters. ``win.task_exists`` is keyed on the exit
-    code for that reason, and the names to probe come from the plane's own state
-    rather than from text: what ``pod ls`` reports, plus every directory under the
-    plane's pod root, so a pod whose listing entry is gone while its task remains is
-    still probed.
-
-    An unanswerable Task Scheduler reports residue PRESENT. Teardown must not delete
-    a live pod's tree because the check that would have stopped it could not run.
+    ``/Query`` output is localized, so text matching would fail open. Names come from
+    ``pod ls`` plus every directory under the pod root. An unanswerable Task
+    Scheduler reports residue PRESENT, so teardown never deletes a live pod's tree.
     """
     if not IS_WINDOWS:
         return []
@@ -510,6 +471,8 @@ def test_require_backend_probes_real_task_creation(monkeypatch):
     the only honest check is to try."""
     monkeypatch.setattr(win, "_PROBE_OK", False)
     win.require_backend()  # must not raise on a normal user session
+    # A passing probe is cached, so the next verb does not spawn it again.
+    assert win._PROBE_OK is True
 
 
 def test_a_real_task_round_trips_through_create_run_and_delete(cfg):

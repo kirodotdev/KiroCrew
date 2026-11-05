@@ -24,6 +24,7 @@ from kiro_crew.knowledge import store as knowledge_store
 from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.memory import MemoryStore
+from kiro_crew.messaging.tables import display_width
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionManager
 from kiro_crew.skills import SkillsLoader
@@ -32,8 +33,14 @@ from kiro_crew.skills import SkillsLoader
 logger = logging.getLogger("kiro_crew.cli")
 
 
-def _knowledge_stats(args) -> None:
-    """``kirocrew knowledge stats [--json]`` -- read-only counts, no repair verb."""
+def _knowledge_stats(args) -> int:
+    """``kirocrew knowledge stats [--json]`` -- read-only counts, no repair verb.
+
+    Returns a process exit code: 0 on success, 1 when the library is not
+    configured or its schema is behind this build -- both print an error, so a
+    bare 0 there would read as success to a script (`kirocrew knowledge stats &&
+    …`) that then acts on empty output.
+    """
 
     db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
     as_json = bool(getattr(args, "json", False))
@@ -45,7 +52,7 @@ def _knowledge_stats(args) -> None:
             print(json.dumps({"error": "not_configured"}))
         else:
             print("Knowledge Library is not configured (no knowledge.db). Ingest documents first.")
-        return
+        return 1
     # Read-only means the FILE is opened read-only. A normal open runs the
     # schema migration, whose orphan sweep takes the writer lock and deletes
     # itemless source rows -- a write this verb must not make. The trade is
@@ -67,7 +74,7 @@ def _knowledge_stats(args) -> None:
                 "read-only and does not migrate; start the gateway or run "
                 "`kirocrew knowledge dedup --apply` once to migrate it, then retry."
             )
-        return
+        return 1
     finally:
         store.db.close()
     sel().log_tool_invocation(
@@ -97,29 +104,37 @@ def _knowledge_stats(args) -> None:
                 indent=2,
             )
         )
-        return
+        return 0
     print(
         f"Knowledge Library: {stats.sources} source(s), "
         f"{stats.documents} document(s), {stats.items} item(s)"
     )
     if not stats.per_source:
-        return
-    # Width from the data, so a long source name does not wrap the count columns.
-    name_width = max(len(s.name) for s in stats.per_source)
-    print(f"\n  {'SOURCE'.ljust(name_width)}  {'DOCS':>6}  {'ITEMS':>6}")
+        return 0
+    # Width from the data, so a long source name does not wrap the count columns,
+    # measured in display columns so a CJK or accented name keeps them aligned.
+    name_width = max(display_width("SOURCE"), *(display_width(s.name) for s in stats.per_source))
+    header_pad = " " * (name_width - display_width("SOURCE"))
+    print(f"\n  SOURCE{header_pad}  {'DOCS':>6}  {'ITEMS':>6}")
     for s in stats.per_source:
-        print(f"  {s.name.ljust(name_width)}  {s.documents:>6}  {s.items:>6}")
+        name_pad = " " * (name_width - display_width(s.name))
+        print(f"  {s.name}{name_pad}  {s.documents:>6}  {s.items:>6}")
+    return 0
 
 
-def _knowledge(args) -> None:
-    """``kirocrew knowledge dedup|stats`` -- duplicate collapse and read-only counts."""
+def _knowledge(args) -> int:
+    """``kirocrew knowledge dedup|stats`` -- duplicate collapse and read-only counts.
+
+    Returns a process exit code: 0 on success, 1 on an error the command printed
+    (a library that is not configured or whose schema is behind this build, or an
+    unknown sub-action), so a script can tell a failed read from an empty one.
+    """
     action = getattr(args, "knowledge_action", None)
     if action == "stats":
-        _knowledge_stats(args)
-        return
+        return _knowledge_stats(args)
     if action != "dedup":
         print("Usage: kirocrew knowledge dedup [--apply] | kirocrew knowledge stats [--json]")
-        return
+        return 2
     apply = bool(getattr(args, "apply", False))
     db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
     if not db_path.exists():
@@ -127,7 +142,7 @@ def _knowledge(args) -> None:
             session_key="cli", source="cli", tool_name="knowledge_dedup", outcome="not_configured"
         )
         print("Knowledge Library is not configured (no knowledge.db). Ingest documents first.")
-        return
+        return 1
     if apply:
         store = KnowledgeStore(str(db_path))
     else:
@@ -150,7 +165,7 @@ def _knowledge(args) -> None:
             "read-only and does not migrate; start the gateway or run "
             "`kirocrew knowledge dedup --apply` once to migrate it, then retry."
         )
-        return
+        return 1
     finally:
         store.db.close()
     sel().log_tool_invocation(
@@ -163,12 +178,13 @@ def _knowledge(args) -> None:
     mode = "APPLIED" if apply else "DRY RUN -- no changes; pass --apply to delete"
     if not results:
         print(f"[{mode}] No cross-source duplicate documents found.")
-        return
+        return 0
     verb = "Deleted" if apply else "Would delete"
     print(f"[{mode}] {len(results)} duplicate document(s):\n")
     for r in results:
         print(f"  {verb}: {r['loser']}  ({r['items_deleted']} chunks)")
         print(f"      keep: {r['winner']}   [{r['reason']}]")
+    return 0
 
 
 def _consolidate_cmd(args) -> None:

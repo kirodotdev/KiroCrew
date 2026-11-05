@@ -224,7 +224,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "list_change_kinds",
             "description": (
                 "List the change-card kinds you can propose (settings, schedules, "
-                "crewmates, capabilities, templates, MCP servers, connections, "
+                "Bots, capabilities, templates, MCP servers, connections, "
                 "secrets, app trust, denied commands, saved workflows), each with "
                 "its params schema and which fields the user may edit on the card."
             ),
@@ -257,7 +257,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "get_member_capabilities",
             "description": (
-                "Read one crewmate's current tools, tool approvals, MCP servers and "
+                "Read one Bot's current tools, tool approvals, MCP servers and "
                 "skills in exactly the shape a crewmate.capabilities draft takes: "
                 "rows {section, id, label, state, editable}, its template, and "
                 "whether the draft needs enroll=true. Call it before proposing "
@@ -415,7 +415,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "gate_off (a setting such as a feature preview is off; setting_id "
                 "names it, or is null when no setting turns it on), "
                 "needs_selection (the user must first open one item, e.g. a "
-                "crewmate, named in selection), "
+                "Bot, named in selection), "
                 "predicate_unmet (something the path needs is not true in their "
                 "tab, named in predicates; see conditions for what each means), "
                 "hidden_in_scope (a sidebar, menu or panel on the path is closed, "
@@ -1184,11 +1184,8 @@ def _find_with_live(query: str, lang: str | None, surface: str | None) -> dict[s
 def _with_live(d: dict[str, Any], *, obs: dict[str, Any] | None = None) -> dict[str, Any]:
     """Add ``live`` to each search result: what the user's tab shows right now.
 
-    One bounded ask of the gateway for the curated ids among the results; the
-    gateway asks one tab and answers within the wait or not at all. A result
-    the tab did not answer for (no tab, a late reply, another build, an id no
-    tab can observe) is ``live: {status: not_observed}``. Never fails the
-    search: the static answer stands either way.
+    One bounded ask of the gateway, which asks one tab. A result the tab did not
+    answer for is ``live: {status: not_observed}``; the search never fails on it.
 
     A result whose plan the tab's state blocks also carries ``blocker``:
     ``gate_off`` (a gate on the path is off, with the ``setting_id`` that turns

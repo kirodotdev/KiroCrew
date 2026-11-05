@@ -18,15 +18,18 @@ import { flushSync } from 'react-dom'
 import { OverlayPortal, useCloseWhenCrewHidden, useLocalCrewHidden } from './overlayRoot'
 import { noteInPlaceResize } from '../hooks/virtualizer/inPlaceResize'
 import { TOUCH_REPLAY_WINDOW_MS } from './InstantTip'
-import { Check, ChevronRight, Copy, Link2Off, Lock, Shield, TriangleAlert, X } from 'lucide-react'
+import { Check, ChevronRight, Copy, Link2Off, Lock, Shield, X } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import type { Element as HastElement, Root as HastRoot, RootContent, Text as HastText } from 'hast'
 import { copyToClipboard } from '../utils/clipboard'
-import ErrorNotice from './ErrorNotice'
 import { api } from '../api/client'
 import { falsePositiveIssueUrl } from '../prompts/redactionReport'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { ActionRow, btnCls, btnPrimaryCls, btnWarnCls, CODE, ErrorLine, escapeInvisibleChars, FeedbackButton, linkBtnCls, pillCls, StatusLine } from './redactionPrimitives'
+import { RevealValue, useRevealCache, type RevealCache } from './RedactedValueReveal'
+
+export { escapeInvisibleChars }
 
 
 /** Where the RFC explains redaction; every "About" link opens it. */
@@ -46,6 +49,9 @@ export interface CredentialRecord {
   source: CredentialSource | null
   view_command: string | null
   profile_command: string | null
+  /** Handle of the removed value in gateway memory, for the owner's reveal.
+   *  Null when the value was not kept (an older reply, or too large). */
+  reveal_id: string | null
 }
 
 export interface BlockedLink {
@@ -63,6 +69,8 @@ const COMMAND_MAX = 1000
 const PATH_MAX = 512
 const SECTION_RE = /^[A-Za-z0-9 _./:@-]{1,64}$/
 const CRED_KEYS = ['ordinal', 'rule', 'label', 'source', 'view_command', 'profile_command']
+const REVEAL_KEY = 'reveal_id'
+const REVEAL_ID_RE = /^rv_[A-Za-z0-9_-]{22}$/
 
 /** Control, format and bidi characters (Unicode category C): a command or
  *  path carrying one can read differently on screen from what it runs. */
@@ -92,9 +100,11 @@ export function normalizeCredentialRecords(raw: unknown): CredentialRecord[] {
   for (const item of raw.slice(0, 64)) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue
     const r = item as Record<string, unknown>
-    const keys = Object.keys(r)
+    const keys = Object.keys(r).filter(k => k !== REVEAL_KEY)
     if (keys.length !== CRED_KEYS.length || !CRED_KEYS.every(k => k in r)) continue
     const { ordinal, rule, label, source, view_command: view, profile_command: profile } = r
+    const handle = r[REVEAL_KEY]
+    if (handle !== undefined && handle !== null && !(typeof handle === 'string' && REVEAL_ID_RE.test(handle))) continue
     if (typeof ordinal !== 'number' || !Number.isInteger(ordinal) || ordinal < 0) continue
     if (typeof rule !== 'string' || !RULE_RE.test(rule)) continue
     if (typeof label !== 'string' || (label !== '' && !LABEL_RE.test(label))) continue
@@ -108,6 +118,7 @@ export function normalizeCredentialRecords(raw: unknown): CredentialRecord[] {
       source: source as CredentialSource | null,
       view_command: view as string | null,
       profile_command: profile as string | null,
+      reveal_id: typeof handle === 'string' ? handle : null,
     })
   }
   return out
@@ -138,14 +149,6 @@ export function openableBlockedLinkUrl(url: unknown, domain: string): string | n
   return url
 }
 
-/** Every control, format or bidi character as visible percent-escapes, so the
- *  text on screen cannot read differently from where it points. */
-export function escapeInvisibleChars(text: string): string {
-  const bytes = new TextEncoder()
-  return text.replace(/\p{C}/gu, ch =>
-    Array.from(bytes.encode(ch), b => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join(''),
-  )
-}
 
 /** Keep only well-formed blocked-link records, dropping a bad one individually. */
 export function normalizeBlockedLinks(raw: unknown): BlockedLink[] {
@@ -289,6 +292,8 @@ interface RedactionUi {
    *  coach after the first block it explains. */
   coached: boolean
   openId: string | null
+  /** The owner's revealed values for this reply, cleared when it unmounts. */
+  revealCache: RevealCache
   triggerRef: React.RefObject<HTMLElement | null>
   toggle: (id: string, trigger: HTMLElement) => void
   close: () => void
@@ -300,6 +305,7 @@ const RedactionUiCtx = createContext<RedactionUi>({
   coached: false,
   blockedLinks: [],
   openId: null,
+  revealCache: { values: new Map(), requests: new Map(), alive: false },
   triggerRef: { current: null },
   toggle: () => {},
   close: () => {},
@@ -323,6 +329,7 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
     return first ? first.cardId : null
   })
   const triggerRef = useRef<HTMLElement | null>(null)
+  const revealCache = useRevealCache()
   const close = useCallback(() => {
     setOpenId(null)
     const el = triggerRef.current
@@ -360,8 +367,8 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
   const value = useMemo(() => {
     const map = new Map(credentials.map(r => [r.ordinal, r]))
     const first = credentials.length ? Math.min(...credentials.map(r => r.ordinal)) : -1
-    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, messageTs, coached, openId, triggerRef, toggle, close }
-  }, [credentials, blockedLinks, slotKey, replyKey, messageTs, coached, openId, toggle, close])
+    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, messageTs, coached, openId, revealCache, triggerRef, toggle, close }
+  }, [credentials, blockedLinks, slotKey, replyKey, messageTs, coached, openId, revealCache, toggle, close])
   return <RedactionUiCtx.Provider value={value}>{children}</RedactionUiCtx.Provider>
 }
 
@@ -370,65 +377,8 @@ export function useRedactionUi(): RedactionUi {
 }
 
 // ── shared primitives (the prototype's .btn / .pop / .act / .disc / .foot) ──
+// The buttons, status lines and action row live in ./redactionPrimitives.
 
-// Touch targets grow to 44px on hover-less (touch) screens, as the prototype asks.
-const touchTarget = '[@media(hover:none)]:min-h-11'
-const btnBase = 'inline-flex items-center justify-center whitespace-nowrap rounded-md border bg-card px-2.5 py-[3px] text-[12px] leading-[18px] min-h-7 text-card-fg cursor-pointer hover:border-border-strong hover:bg-bg-hover disabled:cursor-default disabled:opacity-70'
-const btnCls = [btnBase, 'border-border', touchTarget].join(' ')
-const btnPrimaryCls = [btnBase, 'border-accent bg-accent-subtle', touchTarget].join(' ')
-const btnWarnCls = [btnBase, 'border-warn', touchTarget].join(' ')
-// inline-flex so the label centres inside the 44px touch box instead of
-// sitting at its top; an <a> otherwise lays its text out from the top edge.
-const linkBtnCls = ['inline-flex items-center justify-start border-0 bg-transparent px-0.5 py-1 min-h-6 text-left text-accent cursor-pointer', touchTarget].join(' ')
-const pillCls = 'inline-block whitespace-nowrap rounded-full border border-border px-[7px] text-[11px] leading-4 text-muted'
-const CODE = 'rounded border border-border bg-bg-elevated px-1 font-mono text-[12px]'
-
-/** A button whose label swaps to a confirmation for a moment ("Copied"). */
-function FeedbackButton({ className, label, done, onClick, testId }: {
-  className: string
-  label: string
-  done: string
-  onClick: () => Promise<boolean> | boolean
-  testId?: string
-}) {
-  const [busy, setBusy] = useState(false)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
-  return (
-    <button
-      type="button"
-      className={className}
-      disabled={busy}
-      data-testid={testId}
-      onClick={async () => {
-        if (busy) return
-        const ok = await onClick()
-        if (!ok) return
-        setBusy(true)
-        timer.current = setTimeout(() => setBusy(false), 1600)
-      }}
-    >
-      <span aria-live="polite">{busy ? done : label}</span>
-    </button>
-  )
-}
-
-/** A persistent status line with its own action (the prototype's .fbline). */
-function StatusLine({ children, testId }: { children: React.ReactNode; testId?: string }) {
-  return (
-    <div role="status" data-testid={testId} className="mt-1.5 flex flex-wrap items-center gap-2 rounded-lg border border-ok bg-ok-subtle px-2 py-1.5 text-[12px] leading-[18px] text-card-fg">
-      {children}
-    </div>
-  )
-}
-
-function ErrorLine({ message, testId }: { message: string; testId?: string }) {
-  return (
-    <div className="mt-1.5">
-      <ErrorNotice variant="inline" askAgent message={message} testId={testId} />
-    </div>
-  )
-}
 
 /** How long a reveal takes; the exit keeps its content mounted this long. */
 export const REVEAL_MS = 180
@@ -831,34 +781,6 @@ function CardFrame() {
   )
 }
 
-/** The prototype's .act row: what an action does, and its button. */
-function ActionRow({ title, note, command, warning, children }: {
-  title: React.ReactNode
-  note?: string
-  command?: string | null
-  /** A red line under the command, for a command the reader must check. */
-  warning?: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="mt-1.5 flex items-center justify-between gap-2.5 rounded-lg border border-border bg-card px-2 py-1.5 text-[12px] leading-[18px] text-card-fg max-[640px]:flex-col max-[640px]:items-stretch">
-      <div className="min-w-0">
-        <div>
-          {title}
-          {note && <span className="text-[11px] text-muted"> {note}</span>}
-        </div>
-        {command && <code className="inline-block break-words rounded bg-bg-elevated px-[.4em] py-[.15em] font-mono text-[12px] text-text">{escapeInvisibleChars(command)}</code>}
-        {warning && (
-          <div data-testid="redaction-command-warning" className="mt-1 flex items-start gap-1 text-[11px] font-medium leading-4 text-danger">
-            <TriangleAlert size={12} aria-hidden="true" className="mt-0.5 shrink-0" />
-            <span>{warning}</span>
-          </div>
-        )}
-      </div>
-      {children}
-    </div>
-  )
-}
 
 function Foot({ children }: { children: React.ReactNode }) {
   return <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] leading-4 text-muted">{children}</div>
@@ -1186,8 +1108,8 @@ export function CredentialTag({ ordinal, placeholder }: { ordinal: number; place
       >
         {credentialMatched(record.rule)}
         <br />
-        {/* The security floor, said instead of offering a reveal: the value
-            was never saved, so nothing here can show it. */}
+        {/* The floor: the value was never saved. Only the owner can reveal it,
+            from the card, while the gateway still holds it in memory. */}
         <span data-testid="credential-preview-floor">{i18nT('components.redaction.preview_cred_floor')}</span>
       </PreviewPanel>
     </>
@@ -1213,6 +1135,7 @@ function sourceLine(source: CredentialSource | null) {
 
 function CredentialCard({ record }: { record: CredentialRecord }) {
   useLanguageGeneration()
+  const ui = useRedactionUi()
   const session = SESSION_TOKEN_RULES.has(record.rule)
   const id = `rx-cred-${record.ordinal}`
   const src = record.source
@@ -1226,6 +1149,7 @@ function CredentialCard({ record }: { record: CredentialRecord }) {
         <br />
         {sourceLine(src)}
       </div>
+      <RevealValue key={`${ui.slotKey ?? ''}|${record.reveal_id ?? ''}`} revealId={record.reveal_id} slotKey={ui.slotKey} cache={ui.revealCache} />
       {primary && (
         <TerminalAction
           title={session ? i18nT('components.redaction.cred_profile_title') : i18nT('components.redaction.cred_view_title')}
@@ -1335,6 +1259,7 @@ export function RedactionCoach({ count, slotKey }: { count: number; slotKey?: st
           <li className="my-0.5"><Trans i18nKey="components.redaction.coach_fact_saved" components={[<b key="0" />, <b key="1" />]} /></li>
           <li className="my-0.5"><Trans i18nKey="components.redaction.coach_fact_always" components={[<b key="0" />, <b key="1" />]} /></li>
           <li className="my-0.5"><Trans i18nKey="components.redaction.coach_fact_source" components={[<b key="0" />, lock]} /></li>
+          <li className="my-0.5"><Trans i18nKey="components.redaction.coach_fact_secrets" components={[<b key="0" />]} /></li>
         </ol>
         <div className="mt-1.5 text-[12px] leading-[18px] text-muted">{i18nT('components.redaction.coach_foot')}</div>
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
@@ -1950,6 +1875,7 @@ export function RedactedCodeBlock({ code, lang, base }: { code: string; lang?: s
   for (let o = base; o < base + n; o++) if (credentials.has(o)) ids.push(`rx-cred-${o}`)
   return (
     <>
+      {/* 'code-block' is a stable theming hook — see website/docs/theming-contract.md */}
       <div className="code-block group/code my-2 overflow-hidden rounded-xl border border-border bg-bg-elevated" data-testid="redacted-code-block">
         <div className="flex min-h-7 items-center justify-between py-1 pl-3 pr-1 text-[13px] text-muted">
           <span className="font-mono">{lang || 'code'}</span>

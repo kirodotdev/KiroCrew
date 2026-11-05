@@ -1,3 +1,4 @@
+import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { mdImageDestToPath } from './fileTokens'
@@ -108,8 +109,15 @@ export function pinHandoffY(foldY: number): number {
  * draws as a one-line note with no text, and it is not something they asked.
  */
 function isPrompt(item: DisplayItem | undefined): boolean {
-  if (!item || item.kind !== 'single') return false
-  const { msg } = item
+  return !!item && item.kind === 'single' && isPromptMessage(item.msg)
+}
+
+/**
+ * The message-level form of the rule above: whether `msg` is a prompt the
+ * person typed. The one spelling of it, shared by the pinned banner and the
+ * session's initial prompt (`pages/chat/initialPrompt.ts`, #25977).
+ */
+export function isPromptMessage(msg: ChatMessage): boolean {
   return msg.role === 'user' && !isSubagentCompletionMessage(msg) && msg.meta?.steerState !== 'retracted'
 }
 

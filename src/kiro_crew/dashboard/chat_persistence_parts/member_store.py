@@ -265,7 +265,7 @@ async def pin_private_agent_store(
     )
 
     changed = (
-        f"Crew Member {selected!r} changed during private memory assignment; "
+        f"Bot {selected!r} changed during private memory assignment; "
         "no private memory was granted"
     )
 
@@ -328,7 +328,7 @@ def _member_restore_identity(slot_name: str) -> tuple[str, str] | None:
     if not members_mod.is_dispatchable_member_name(member):
         logger.warning(
             "restore: member slot %r has no dispatchable dm binding; leaving it "
-            "unpublished until the Crew Member config or binding is repaired",
+            "unpublished until the Bot config or binding is repaired",
             redact_log_via_context(slot_name),
         )
         return _SKIP_MEMBER_RESTORE

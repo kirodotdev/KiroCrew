@@ -109,13 +109,9 @@ class TestLlmCronAdmission:
     ):
         """The upgrade's capture and the old build's session record agree at dispatch.
 
-        0.7.0-insider.1 to .5 fired a member schedule once and left
-        ``{memory_store, agent: <member selector>}`` under ``cron:<id>``. The
-        start-of-process capture keeps the ``agent_id`` the schedule named, and
-        the single-agent fire then binds that capture under the same stable key
-        with ``replace_existing`` False -- which refused the record until the
-        capture reconciled it. Driven through the real callback: the fire runs,
-        dispatches the named agent, and the record carries the capture.
+        The stored record is ``{memory_store, agent: <member selector>}`` under ``cron:<id>``,
+        as 0.7.0-insider.1 to .5 left it. The fire binds the capture with
+        ``replace_existing`` False, so the capture must reconcile with that record.
         """
         import json
         import os

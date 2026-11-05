@@ -290,7 +290,9 @@ class WatchdogConfig:
             "probably-thinking window) and for any per-agent "
             "watchdog_tool_stall_* override. Also bounds an opaque MCP tool "
             "whose only WORKING evidence is movement somewhere in the runtime's "
-            "process tree. Every other WORKING reading (a matched shell child, "
+            "process tree, and a Windows shell tool whose only WORKING evidence "
+            "is CPU movement in processes started since its dispatch. Every "
+            "other WORKING reading (a matched shell child, "
             "a declared wait, a keepalive-pinging core tool) is deferred before "
             "this cap is consulted and is bounded only by the turn's own ceiling. "
             "Default 2h, clamped against the transport's per-prompt timeout like "
@@ -394,6 +396,16 @@ class WorkLedgerConfig:
             "measured size of one self-contained clone with its dependencies. Used "
             "only with remote_dispatch on; a value that is not a positive number "
             "uses the default.",
+        ),
+    )
+    remote_dispatch_retire_minutes: float = field(
+        default=30.0,
+        metadata=_meta(
+            "Remote dispatch retire timeout (minutes)",
+            "How long a crew a work item is bound to may stay unreachable before the "
+            "conductor's next ledger read retires that binding and leaves the item "
+            "unbound for redispatch on another crew. Used only with remote_dispatch "
+            "on; a value that is not a positive number uses the default.",
         ),
     )
 

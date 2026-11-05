@@ -56,27 +56,32 @@ def test_the_doc_does_not_claim_a_backend_condition_on_skill_injection(doc_text:
 def test_steering_is_still_the_backend_gated_half(doc_text: str) -> None:
     """The `file://` half IS backend-gated, so the page must keep saying so.
 
-    The whole gate expression is matched as one contiguous block, ending at the
-    ``_load_steering_resources()`` call it guards. ``is_cc`` is read at four sites in
-    that module, so a token match anywhere would keep this green with the steering
-    gate's own condition dropped.
+    The whole gate is matched as one contiguous block, ending at the
+    ``_load_steering_resources(project)`` call it guards, in the one helper session start
+    and post-compaction re-injection share; both callers are pinned to route
+    through it. A token match on ``is_cc`` anywhere would stay green with the
+    steering gate's own condition dropped.
     """
-    source = (
-        Path(__file__).parent.parent / "src" / "kiro_crew" / "context_assembly" / "session_start.py"
-    ).read_text(encoding="utf-8")
+    owner = Path(__file__).parent.parent / "src" / "kiro_crew" / "context_assembly"
+    source = (owner / "inclusion.py").read_text(encoding="utf-8")
     gate = (
-        "        not essentials\n"
-        "        and not is_custom\n"
-        "        and is_cc\n"
-        "        and ctx._group_included(context_groups, ctx.CONTEXT_GROUP_PROJECT)\n"
-        "    ):\n"
-        "        steering_ctx = ctx._load_steering_resources()\n"
+        "    if not is_cc or essentials:\n"
+        '        return ""\n'
+        "    if agent and not is_kirocrew_default_agent(agent):\n"
+        '        return ""\n'
+        "    if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):\n"
+        '        return ""\n'
+        "    return ctx._load_steering_resources(project)\n"
     )
     assert gate in source, (
         "the steering block's gate no longer reads is_cc together with the default-agent "
         "and project-group conditions, so the page's 'steering is the backend-gated half' "
         "is stale"
     )
+    for caller in ("session_start.py", "turn.py"):
+        assert "_inclusion.steering_resources_part(" in (owner / caller).read_text(
+            encoding="utf-8"
+        ), f"{caller} no longer reads steering resources through the shared gate"
     assert "The `file://` steering block does NOT follow that shape." in doc_text
 
 
@@ -201,12 +206,8 @@ def test_app_skill_mapping_names_the_namespaced_path(
 ) -> None:
     """The page's app-skill rule: one namespaced entry per skill, never the flat link.
 
-    Driven through ``_register_skills`` for every case the page lists: a plain skill
-    gets both links, while a skill named after its app, the reserved ``auto`` and a
-    name a real directory already holds get the namespaced link only. The ``~/`` half
-    is driven through ``expand_skill_uri``, which must expand against the home and
-    ignore ``KIROCREW_HOME``. The mapping half is driven through the loader's
-    ``_scoped_entries``, the selection a session's skill block is built from.
+    A plain skill gets both links; one named after its app, ``auto``, or an existing
+    directory gets only the namespaced one. ``expand_skill_uri`` ignores ``KIROCREW_HOME``.
     """
     import json
 

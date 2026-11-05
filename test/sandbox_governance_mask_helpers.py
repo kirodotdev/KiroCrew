@@ -18,12 +18,11 @@ _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX launcher
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in a module that imports this fixture calls monkeypatch.undo()
-def _no_host_ssh_probe(monkeypatch):
+def _no_host_ssh_probe(_floor_monkeypatch):
     """A namespace plan asks the HOST's ``ssh -V`` for accept-new support.
 
     The mask lists read out of the plan do not depend on that answer, and a real ssh
     spawned from the test process is a host dependency this module is not about.
     Pinned so no binary runs.
     """
-    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+    _floor_monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)

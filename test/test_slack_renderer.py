@@ -632,7 +632,7 @@ class TestApprovalDecider:
         assert "rqT" not in SlackApprovalDecider._REGISTRY
 
     def test_concurrent_sessions_same_rid_do_not_collide(self):
-        # Regression: kiro-cli request ids restart at 1 per session, so two
+        # kiro-cli request ids restart at 1 per session, so two
         # concurrent threads both produce request_id == "1". The registry must
         # be namespaced by session_key so a click on thread B's button resolves
         # ONLY thread B's pending tool — never thread A's.
@@ -707,11 +707,9 @@ class _FlakyTaskSlack(_RecSlack):
 class TestTaskCardNeverAbandonsTheStream:
     """A refused task card must not cost the reader their in-progress message.
 
-    Rotating on a task-card failure stops the stream the reader is watching and
-    continues the answer in a NEW message, so the thread reads as a reply that
-    failed followed minutes later by an unexplained second reply.
-    The card is decoration; skipping it withholds no answer text, and
-    ``_append_stream`` still rotates when real text is refused.
+    Rotating would continue the answer in a NEW message, which reads as a failed
+    reply then an unexplained second one. ``_append_stream`` still rotates when
+    real text is refused.
     """
 
     def test_refused_task_card_does_not_rotate(self):
@@ -829,6 +827,23 @@ class TestStreamMachinery:
         assert all(len(p) <= 50 and p.endswith(" ") for p in pieces), pieces
         assert _append_pieces("x" * 120, limit=50) == ["x" * 50, "x" * 50, "x" * 20]
         assert _append_pieces("") == []
+
+    def test_append_pieces_skip_a_break_too_early_in_the_piece(self):
+        from kiro_crew.slack.renderer import _append_pieces
+
+        assert _append_pieces("Hi\n" + "x" * 150, limit=100) == ["Hi\n" + "x" * 97, "x" * 53]
+        text = "Title\n" + "w" * 40 + " " + "z" * 80
+        assert _append_pieces(text, limit=100) == ["Title\n" + "w" * 40 + " ", "z" * 80]
+
+    def test_append_pieces_keep_a_break_a_quarter_in(self):
+        from kiro_crew.slack.renderer import _append_pieces
+
+        assert _append_pieces("a" * 30 + "\n" + "b" * 100, limit=100) == [
+            "a" * 30 + "\n",
+            "b" * 100,
+        ]
+        url = "https://example.com/" + "u" * 75
+        assert _append_pieces("Open:\n" + url + " tail", limit=100) == ["Open:\n", url + " tail"]
 
     def test_an_over_limit_reply_streams_whole_across_appends(self):
         """Slack caps one markdown_text append at 12,000 characters.
@@ -1002,7 +1017,7 @@ class _StepClock:
 
 
 class TestNoStreamOptionsFiltering:
-    """Regression: [OPTIONS:...] markup must never leak into no-stream
+    """[OPTIONS:...] markup must never leak into no-stream
     chat.update calls (the streaming path already filters via bracket-hold)."""
 
     def test_options_markup_not_leaked_in_no_stream_updates(self):
@@ -1123,11 +1138,9 @@ def _start_stream_bodies(web):
 class TestStreamRecipientRouting:
     """chat.startStream needs recipient routing, and the renderer holds it.
 
-    Slack rejects the call with ``missing_recipient_user_id`` when the field is
-    absent; the renderer then demotes to the non-streaming chat.update surface,
-    which still produces a correct reply. That is why these assertions read the
-    OUTGOING request body rather than the rendered text -- a test that only
-    checks the reply text passes either way.
+    Without it Slack answers ``missing_recipient_user_id`` and the renderer falls
+    back to chat.update, which still replies correctly, so these tests read the
+    OUTGOING request body rather than the reply text.
     """
 
     def test_open_stream_sends_recipient_user_id(self):
@@ -1593,11 +1606,9 @@ class TestOptionsFooterCancellationDefersFinalize:
 class TestTransportRedactionNotice:
     """The DEFAULT Slack path posts a redaction notice below a rewritten answer.
 
-    Driven through the real TurnDriver so the StreamRedactor writes the
-    placeholder exactly as production does. The tally counts the final
-    display-safe body plus the posted 💭 reasoning, mirroring the native
-    handler's per-turn count; shared wording is pinned in
-    ``test_credential_redaction_notice.py``.
+    Driven through the real TurnDriver so the StreamRedactor writes the placeholder.
+    The tally counts the final body plus the posted 💭 reasoning; shared wording is
+    pinned in ``test_credential_redaction_notice.py``.
     """
 
     _SECRET_URI = "postgresql://user:SuperSecret123@db.example.com:5432/prod"

@@ -72,6 +72,11 @@ workspace-authorized session tools.
     OK <n> watched, <m> fired | load/cpu <x> (<posture>) | mem <G>G
        | banned <k> | foreign <k> | deliver init-timeout <a>, watchdog <b>
 
+A field the host cannot measure prints ``n/a`` after its label instead of a
+value: ``load/cpu n/a``, ``mem n/a``, and ``banned n/a | foreign n/a`` when there
+is no ``/proc`` to scan. An unmeasured count is never printed as ``0``, which
+would read as a scan that ran and found nothing.
+
 ``banned`` counts fleet-owned matches only -- a banned command shape running in
 an unrelated checkout on the same host is somebody else's business, and counting
 it made the conductor stop a worker that was not the offender. Those are
@@ -131,6 +136,9 @@ Deliberately boring properties, do not weaken:
     ``--mark-handled``.
   * A per-session problem (unreadable file, malformed line) degrades that one
     row, never the cycle. Exit 0 when the probe ran; 2 on malformed config.
+  * ``--mark-handled`` never writes over a state file it cannot read: a present
+    file that cannot be read, or is not UTF-8 JSON, is refused with exit 4 and
+    left byte-for-byte as it was. Exit 3 is a stale digest.
 """
 
 from __future__ import annotations
@@ -221,6 +229,8 @@ _recorded_proto = _sessions._recorded_proto
 _stalled_since_disposition = _sessions._stalled_since_disposition
 _digest = _sessions._digest
 _load_state = _sessions._load_state
+_load_state_strict = _sessions._load_state_strict
+StateUnreadable = _sessions.StateUnreadable
 _suppressed = _sessions._suppressed
 
 # The process side: banned command shapes, a runner's argv, and who owns a process.
@@ -660,7 +670,11 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
     proc_root = Path(os.environ.get("KIROCREW_PROBE_PROC_ROOT") or "/proc")
     banned = 0
     foreign = 0
-    if proc_root.is_dir():
+    # Without a proc root the scan never runs, so its counts are unknown, not
+    # zero. ``banned 0`` would be byte-identical to a scan that ran and found
+    # nothing, so the summary prints ``n/a`` like the load and mem fields do.
+    scanned = proc_root.is_dir()
+    if scanned:
         for entry in proc_root.iterdir():
             if not entry.name.isdigit():
                 continue
@@ -867,7 +881,8 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
         else "load/cpu n/a"
     )
     mem_part = f"mem {mem_gb:.0f}G" if mem_gb is not None else "mem n/a"
-    return lines, f"{load_part} | {mem_part} | banned {banned} | foreign {foreign}"
+    scan_part = f"banned {banned} | foreign {foreign}" if scanned else "banned n/a | foreign n/a"
+    return lines, f"{load_part} | {mem_part} | {scan_part}"
 
 
 def _sessions_dir() -> Path:
@@ -1072,7 +1087,18 @@ def mark_handled(cfg: dict[str, Any], state_path: Path, key: str, tag: str, dige
             file=sys.stderr,
         )
         return 3
-    state = _load_state(state_path)
+    # The mark writes back the map it reads, so a tolerant read here would turn
+    # one unreadable state file into a handled set holding only this key. Refuse
+    # instead and leave the file exactly as it is; the patrol's own read stays
+    # tolerant because it never writes.
+    try:
+        state = _load_state_strict(state_path)
+    except StateUnreadable as exc:
+        print(
+            f"refused: state file {state_path} is unreadable ({exc}); not overwriting it",
+            file=sys.stderr,
+        )
+        return 4
     handled = _handled_of(state)
     state["handled"] = handled
     entry: dict[str, Any] = {

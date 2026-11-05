@@ -52,6 +52,7 @@ from kiro_crew.acp_backends import (
 )
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
 from kiro_crew.platform.guest_paths import GuestPathParams
+from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL
 from kiro_crew.session_environment import WORKSPACE_DENY_ALIASES, WORKSPACE_TOOL_KINDS
 
 # Logs under the facade's name, which operators and tests filter on.
@@ -487,6 +488,40 @@ _KAS_NON_COMMAND_TOOLS: dict[str, tuple[str, str]] = {
 }
 
 
+#: The server name KAS's remote tool wrapper stamps on ``mcpTool.identity`` for
+#: the built-ins it serves remotely, and the prefix it puts on their tool ids.
+#: KAS serves ``web_search`` this way: the tool_call frame names no server (a
+#: built-in), while the permission request carries
+#: ``{serverName: "remote", toolName: "web_search"}`` with toolId
+#: ``remote_web_search``.
+_KAS_REMOTE_WRAPPER_SERVER = "remote"
+_KAS_REMOTE_WRAPPER_ID_PREFIX = "remote_"
+
+
+def _is_kas_remote_builtin(
+    id_server: str, id_tool: str, tool_id: object, cached_server: str
+) -> bool:
+    """Whether a permission frame's identity is KAS's remote wrapper naming a built-in.
+
+    Only the exact shape KAS emits for a built-in it serves remotely: the
+    preceding tool_call named no server, the identity server is the wrapper's,
+    the toolId is the wrapper prefix plus the identity's tool name, and that
+    toolId is a built-in Crew already maps to a kiro-cli name
+    (:data:`KIRO_CLI_NAME_BY_KAS_TOOL`). Such a frame is not two frames
+    disagreeing about which MCP server served the call: no MCP server did, and
+    the call is judged as the built-in its toolId names. The wrapper server is
+    never adopted, so no server-keyed grant can fire for it.
+    """
+    return (
+        not cached_server
+        and id_server == _KAS_REMOTE_WRAPPER_SERVER
+        and bool(id_tool)
+        and isinstance(tool_id, str)
+        and tool_id == f"{_KAS_REMOTE_WRAPPER_ID_PREFIX}{id_tool}"
+        and tool_id in KIRO_CLI_NAME_BY_KAS_TOOL
+    )
+
+
 def kas_consent_tool(params: object) -> tuple[str, str]:
     """The Crew tool and target a KAS permission request's own ``_meta.kiro`` names.
 
@@ -524,6 +559,58 @@ def kas_consent_tool(params: object) -> tuple[str, str]:
     if not isinstance(target, str) or not target.strip():
         return "", ""
     return crew_name, target.strip()
+
+
+#: The ``mcpServer.source`` claude-agent-acp stamps on a server the client handed it
+#: on the ``session/new`` array. A user, project or plugin server of the harness's own
+#: config carries another source, so a name Crew placed cannot be claimed by one.
+CLAUDE_CREW_PLACED_MCP_SOURCE = "dynamic"
+
+
+def claude_mcp_identity(
+    tool_call: object, stated_tool_name: str, placed_servers: Iterable[str]
+) -> tuple[str, str]:
+    """The ``(server, tool)`` claude-agent-acp names for an MCP call Crew placed.
+
+    claude-agent-acp writes ``_meta.claudeCode`` on the permission request's
+    ``toolCall``: ``toolName`` (``mcp__<server>__<tool>``) and ``mcpServer``
+    ``{name, source}``. Both are the adapter's, not the model's, the trust class of
+    ``_meta.kiro``. A pair is returned only when every check holds, and ``("", "")``
+    otherwise, so the call keeps the empty identity it had before:
+
+    * ``source`` is :data:`CLAUDE_CREW_PLACED_MCP_SOURCE`, so the server came off the
+      array Crew built and not the user's ``~/.claude`` config;
+    * the server is one of *placed_servers*, the names Crew put on that array;
+    * ``toolName`` is exactly ``mcp__<server>__<tool>`` for that server, and equals
+      *stated_tool_name*, the name the preceding ``tool_call`` frame stamped;
+    * both halves pass :func:`mcp_identity_name`, the bound Crew's MCP surface admits.
+
+    The title is never read: it is the model-influenced half of the frame.
+    """
+    meta = tool_call.get("_meta") if isinstance(tool_call, dict) else None
+    claude = meta.get("claudeCode") if isinstance(meta, dict) else None
+    if not isinstance(claude, dict):
+        return "", ""
+    server_block = claude.get("mcpServer")
+    if not isinstance(server_block, dict):
+        return "", ""
+    if server_block.get("source") != CLAUDE_CREW_PLACED_MCP_SOURCE:
+        return "", ""
+    server = mcp_identity_name(server_block.get("name"))
+    if not server or server not in set(placed_servers):
+        return "", ""
+    tool_name = claude.get("toolName")
+    prefix = f"mcp__{server}__"
+    if (
+        not isinstance(tool_name, str)
+        or tool_name != stated_tool_name
+        or not tool_name.startswith(prefix)
+    ):
+        return "", ""
+    tool = mcp_identity_name(tool_name[len(prefix) :])
+    if not tool:
+        return "", ""
+    return server, tool
 
 
 def build_permission_event(
@@ -573,7 +660,8 @@ def build_permission_event(
     :data:`~kiro_crew.acp.harness_tool_names.GOOSE_READ_ONLY_BUILTINS`). Every
     other session's event is built exactly as before.
     ``harness_mcp_servers`` are the server names
-    Crew placed on the session, so an opencode MCP tool's fused name is split.
+    Crew placed on the session, so an opencode MCP tool's fused name is split and a
+    claude MCP call names its server (:func:`claude_mcp_identity`).
 
     Single source of truth shared by ``AcpClient`` and ``AcpSessionHandle`` so
     the two transports cannot drift on the kiro/claude permission payload shape:
@@ -939,9 +1027,17 @@ def build_permission_event(
                 or mcp_identity_unreadable(_identity.get("toolName"))
             ):
                 _mcp_identity_unreadable = True
-            if _id_server and _id_server != _mcp_server_name:
+            if (
+                _id_server
+                and _id_server != _mcp_server_name
+                and not _is_kas_remote_builtin(
+                    _id_server, _id_tool, _frame_kiro.get("toolId"), _mcp_server_name
+                )
+            ):
                 # Never adopted (see the design note above): refused on the
-                # harness handed the store, ignored elsewhere.
+                # harness handed the store, ignored elsewhere. KAS's remote
+                # wrapper naming a built-in is exempt: it is not a second MCP
+                # server, and the call is judged by its toolId below.
                 if identity_unreadable_cache is not None:
                     _mcp_identity_unreadable = True
             if _id_server and _id_server == _mcp_server_name and not _tool_name and _id_tool:
@@ -957,6 +1053,21 @@ def build_permission_event(
     # payload would leave this False and fail closed in
     # AcpEvent.child_mcp_identity_trusted.
     _mcp_identity_trusted = _cached_server is not None and _cached_tool is not None
+    # claude-agent-acp's tool_call frame names an MCP tool only in its fused
+    # ``toolName``, so the cache above holds empty names for it; the permission
+    # request adds the server. The pair is adopted only on top of that cache hit,
+    # and only for a server Crew placed (``claude_mcp_identity``).
+    if (
+        harness_backend == ACP_BACKEND_CLAUDE
+        and envelope is None
+        and _mcp_identity_trusted
+        and not _mcp_server_name
+        and not _tool_name
+        and harness_tool_name_cache is not None
+    ):
+        _mcp_server_name, _tool_name = claude_mcp_identity(
+            tool_call, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers
+        )
     if harness_backend == ACP_BACKEND_STRANDS:
         # The Strands card carries no identity channel, so the caches above hold
         # empty names. The envelope is the identity: Kiro Crew's gate module read
@@ -997,9 +1108,9 @@ def build_permission_event(
         _harness_tool_id = qualified_harness_tool_id(
             harness_backend, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers
         )
-    # claude-agent-acp states no tool name on the permission request itself, so
-    # the kiro-cli built-in a claude read tool stands for comes only from the name
-    # its preceding tool_call frame stamped. Only a Side Chat session gets it: the
+    # The kiro-cli built-in a claude read tool stands for comes only from the name
+    # its preceding tool_call frame stamped (an MCP call's server and tool are read
+    # above, by ``claude_mcp_identity``). Only a Side Chat session gets it: the
     # name is what the READ_ONLY gate accepts as a read, and in any other session
     # it would also bind kiro-cli-named deny and governance rules to claude calls.
     _harness_builtin_tool = ""

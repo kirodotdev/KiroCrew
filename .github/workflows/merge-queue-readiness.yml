@@ -112,11 +112,11 @@ jobs:
     # both outcomes read like flaky ejections rather than a capacity problem.
     #
     # What makes it a trade rather than a defect: five of the six polled
-    # workflows already reach this group. `client-py.yml` and
-    # `internal-content-scan.yml` (through `internal-content-scan-gate.yml`'s
-    # reusable call) carry the label unconditionally in this repository, and
-    # `ci.yml`, `fast-gate.yml` and `build.yml` reach it on their actor-miss
-    # leg; only `main-ratchet-audit.yml` stays hosted. Several `ci.yml` jobs
+    # workflows already reach this group. `client-py.yml` carries the label
+    # unconditionally in this repository, and `ci.yml`, `fast-gate.yml`,
+    # `build.yml` and `internal-content-scan.yml` (through
+    # `internal-content-scan-gate.yml`'s reusable call) reach it on their
+    # actor-miss leg; only `main-ratchet-audit.yml` stays hosted. Several `ci.yml` jobs
     # reach it with no fleet branch at all, so every merge group already waits
     # on this cap, and this adds one more waiter rather than creating the
     # exposure.

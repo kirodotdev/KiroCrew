@@ -10,6 +10,7 @@ from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401
 from acp_client_helpers import _POSIX_ONLY
 
 from kiro_crew.acp.client import AcpClient, AcpProcessDied
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 # ── Process tree cleanup tests ──
 
@@ -719,12 +720,11 @@ class TestKillProcess:
         client = AcpClient()
         proc = MagicMock()
         proc.returncode = None
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-        proc.pid = 42
+        proc.pid = UNALLOCATABLE_PID
         proc.stdin = proc.stdout = proc.stderr = None
         proc.wait = AsyncMock(return_value=0)
         client._process = proc
-        client._pid = 42
+        client._pid = UNALLOCATABLE_PID
         client._child_pids = {}
 
         def _sync_forbidden(*_a, **_kw):
@@ -746,14 +746,14 @@ class TestKillProcess:
             await client._kill_process(force=False)
 
         assert mock_async.await_count == 1
-        assert mock_async.await_args.args == (42, platform_compat.SIGTERM)
+        assert mock_async.await_args.args == (UNALLOCATABLE_PID, platform_compat.SIGTERM)
         assert client._kill_sent == (int(platform_compat.SIGTERM), "stop requested")
 
         # Reset process state for the SIGKILL path (force=True)
         proc.returncode = None
         proc.wait = AsyncMock(return_value=0)
         client._process = proc
-        client._pid = 42
+        client._pid = UNALLOCATABLE_PID
         client._child_pids = {}
 
         with (
@@ -771,7 +771,7 @@ class TestKillProcess:
             await client._kill_process(force=True)
 
         assert mock_async_kill.await_count == 1
-        assert mock_async_kill.await_args.args == (42, platform_compat.SIGKILL)
+        assert mock_async_kill.await_args.args == (UNALLOCATABLE_PID, platform_compat.SIGKILL)
         assert client._kill_sent == (int(platform_compat.SIGKILL), "forced stop")
 
 
@@ -781,7 +781,7 @@ class TestResetStateExtended:
     def test_sandbox_cleanup_removes_file(self, tmp_path):
         client = AcpClient()
         sb_file = tmp_path / "sandbox.sb"
-        sb_file.write_text("sandbox profile")
+        sb_file.write_text("sandbox profile", encoding="utf-8")
         client._sandbox_cleanup = str(sb_file)
         client._process = None
         client._child_pids = {}

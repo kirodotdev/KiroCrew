@@ -22,11 +22,11 @@
  * to the server value delivered by `api.chatSlots`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { fireEvent, render, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
-import { createTestStore } from './helpers'
+import { createTestStore, settleSidebarRowAnim } from './helpers'
 import type { RootState } from '../store'
 import { ThemeProvider } from '../hooks/useTheme'
 
@@ -212,6 +212,8 @@ describe('sidebar rename failure recovery (#10151)', () => {
 
     expect(titleInStore(store)).toBe('Accepted Title')
     await waitFor(() => expect(renameSlotMock).toHaveBeenCalledWith(SLOT_KEY, 'Accepted Title'))
+    // The rows re-mount once the lane's first population has painted.
+    await settleSidebarRowAnim()
     // Let the resolved promise settle: no recovery refetch may fire on success.
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(chatSlotsMock).not.toHaveBeenCalled()
@@ -244,13 +246,15 @@ describe('sidebar rename failure recovery (#10151)', () => {
     await waitFor(() => expect(chatSlotsMock).toHaveBeenCalled())
 
     // A live WS update for the OTHER slot lands while the recovery read is in flight.
-    store.dispatch(sseSlotTitle({ key: OTHER_KEY, title: WS_TITLE }))
+    act(() => { store.dispatch(sseSlotTitle({ key: OTHER_KEY, title: WS_TITLE })) })
 
     // Now the stale server list resolves (other slot still on its OLD title).
-    resolveChatSlots([
-      { key: SLOT_KEY, title: SERVER_TITLE },
-      { key: OTHER_KEY, title: 'Other Server Title' },
-    ])
+    await act(async () => {
+      resolveChatSlots([
+        { key: SLOT_KEY, title: SERVER_TITLE },
+        { key: OTHER_KEY, title: 'Other Server Title' },
+      ])
+    })
 
     // The renamed slot snaps back to its server truth...
     await waitFor(() => expect(titleInStore(store)).toBe(SERVER_TITLE))
@@ -276,8 +280,8 @@ describe('sidebar rename failure recovery (#10151)', () => {
 
     // A newer frame changes THIS slot's title mid-recovery: the store title is
     // no longer the refused optimistic value, so the compare-and-set must skip.
-    store.dispatch(sseSlotTitle({ key: SLOT_KEY, title: NEWER_TITLE }))
-    resolveChatSlots([{ key: SLOT_KEY, title: SERVER_TITLE }])
+    act(() => { store.dispatch(sseSlotTitle({ key: SLOT_KEY, title: NEWER_TITLE })) })
+    await act(async () => { resolveChatSlots([{ key: SLOT_KEY, title: SERVER_TITLE }]) })
 
     // Give the recovery continuation a tick to run; it must NOT overwrite NEWER_TITLE.
     await new Promise(resolve => setTimeout(resolve, 0))

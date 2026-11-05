@@ -84,6 +84,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         "autocompact_pct",
         "telegram_account",
         "starred",
+        # The starred crew's left-dock position: same home as ``starred``,
+        # read only from ``GET /api/members`` by the dock.
+        "star_order",
         # Shipped on GET /api/members (the profile card's own read), not here:
         # the crew editor echoes this row back, and must not round-trip it.
         "approval_mode",

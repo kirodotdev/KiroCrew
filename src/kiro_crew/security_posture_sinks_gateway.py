@@ -16,7 +16,7 @@ from __future__ import annotations
 
 _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
-        "Interrupted work in a mate reply",
+        "Interrupted work in a Bot reply",
         "dashboard/responsive_chat.py",
         "The bounded interrupted-turn reference passed to the next model prompt. "
         "Structural markers are neutralized, then exfiltration URLs and "
@@ -54,10 +54,10 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "value passes the credential redactor before it reaches the card.",
     ),
     (
-        "Mate goals",
+        "Bot goals",
         "member_goals.py",
-        "The goals, key results and their readings a mate may write "
-        "about itself, on their way to the Goals tab, the mate's tools and its "
+        "The goals, key results and their readings a Bot may write "
+        "about itself, on their way to the Goals tab, the Bot's tools and its "
         "saved goal reports. Each string passes the "
         "exfiltration-URL then the credential redactor before it leaves the record.",
     ),
@@ -113,7 +113,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "than emitting it unredacted.",
     ),
     (
-        "Fold values filled into a mate's dashboard page",
+        "Fold values filled into a Bot's dashboard page",
         "dashboard/handlers/member_dashboard.py",
         "Every string a template's fold paths resolve to, on its way into the page's "
         "own data island. A fold value is whatever a conductor wrote into the crew "
@@ -252,7 +252,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "agent_capabilities.py",
         "Owner-facing capability rows, Parent-change previews and impact summaries. "
         "safe_view applies redact_via_context before serialization and masks credential "
-        "map values while preserving their structure. A crewmate's in-place editor "
+        "map values while preserving their structure. A Bot's in-place editor "
         "(`mate_capabilities`) returns through the same safe_view. Retained secret "
         "values and source-content digests remain server-side.",
     ),
@@ -268,6 +268,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "body passes the shared exfiltration-URL then credential chain in the "
         "emitter rather than at its call sites, so a new call site cannot forget, "
         "and a redaction that fails writes the empty string instead of the input.",
+    ),
+    (
+        "Live browser metadata broadcasts",
+        "browser_harness/live_hub.py",
+        "Every textual value of the browser_live websocket event, including page "
+        "URLs, titles, step labels and nested quick-ask text, passes the platform-aware "
+        "credential and exfiltration-URL redactor at publish time. A scanner failure "
+        "drops the event. The replay routes (handlers/browser_recordings.py) pass "
+        "their turn list and turn detail JSON through the same function. Browser "
+        "state and binary pixel frames are unchanged.",
     ),
     (
         "Subagent wait broadcasts",
@@ -308,6 +318,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Selected facts, experiences, corrections, and owner-selected copy results "
         "returned to the dashboard or the memory_recall tool. Nested fields pass "
         "through the shared credential + exfiltration-URL chain before serialization.",
+    ),
+    (
+        "Bedrock Knowledge Base retrieval queries",
+        "knowledge/connectors/bedrock_kb.py",
+        "The user's knowledge-search query text as sent to the AWS Bedrock "
+        "Retrieve API -- an off-host egress boundary. A query pasted with a "
+        "credential-shaped token or an exfiltration-shaped URL would land in "
+        "a third-party service's request log, so the query runs the shared "
+        "credential + exfiltration-URL chain immediately before the client "
+        "call, once per remote search.",
     ),
     (
         "Managed-venv update failures",
@@ -382,42 +402,6 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "role ARN, and an endpoint override can carry an inline-credential URL -- "
         "so the first stderr line goes through the shared credential + "
         "exfiltration-URL chain at the source, before it is put on an `Identity`.",
-    ),
-    (
-        "Browser CLI install failures",
-        "browser_cli/install.py",
-        "The stderr of a failed `npm install -g @playwright/cli` / browser download, "
-        "which reaches TWO surfaces: a `logger.warning` line (durable, and pasted "
-        "into bug reports via `kirocrew logs`) and the Settings > Browser error card. "
-        "npm quotes the command's own environment back on failure, so the text can "
-        "carry a registry `_authToken`, an inline-credential proxy URL, or a "
-        "`*_TOKEN=` echo -- shapes the shared credential family does NOT match, so "
-        "this sink adds its own npm patterns on top of the shared two-pass and "
-        "redacts at the source rather than at either boundary.",
-    ),
-    (
-        "Browser install job failure detail",
-        "browser_cli/install_job.py",
-        "The `error_detail` of the gateway's browser install job, returned by "
-        "`GET /api/browser/install` and in every 409 `install_already_running` "
-        "body. Failed-step output is redacted by `install._step` at the source; "
-        "exception and error fallbacks are not. `bounded_detail` re-redacts every "
-        "carrier on the FULL text before the 2000-character cut, using only "
-        "`redact_install_output` (the shared two-pass plus npm patterns), so a "
-        "pre-redaction cut cannot split a credential past its matching anchor.",
-    ),
-    (
-        "Browser panel launch failures",
-        "browser_cli/launcher.py",
-        "The CLI's own words when the Browser panel's address bar could not open a "
-        "page (`playwright-cli -s=panel-… open|goto` failing), shown VERBATIM in the "
-        "panel's failure card; the gateway log gets only the session name and the "
-        "exit code, never the text. The daemon's stack quotes its "
-        "environment and the URL the human typed, so the text can carry a "
-        "query-string credential or a `*_TOKEN=` echo; `_error_text` distills the "
-        "message and runs the shared credential + exfiltration-URL chain on the "
-        "kept lines BEFORE the cap, so a truncated head cannot leak what the tail "
-        "would have matched.",
     ),
     (
         "Azure DevOps comment bodies",
@@ -835,8 +819,8 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Reply-thread stream and store",
         "dashboard/chat_threads.py",
-        "Three boundaries of a reply thread on a mate chat message: the "
-        "StreamRedactor on the mate's live reply (as the side panel's), the "
+        "Three boundaries of a reply thread on a Bot chat message: the "
+        "StreamRedactor on the Bot's live reply (as the side panel's), the "
         "thread envelope (parent, surrounding chat and prior replies, which "
         "kiro-cli persists into its own session file), and every stored reply "
         "and quoted parent on its way out of the sidecar to the browser.",
@@ -864,12 +848,33 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Streamed and non-streamed completions served to third-party clients.",
     ),
     (
-        "A Crew Mode root's worker list and timeline",
+        "An Ultra Mode root's worker list and timeline",
         "dashboard/handlers/crew_workers.py",
         "The side panel's worker cards (a closed worker's saved title, the ledger "
         "line through the board's deep redactor) and every timeline bar and mark "
         "label, which are slices of transcript rows: each passes exfiltration-URL "
         "and credential redaction (the display battery for timeline labels) "
         "before it reaches the browser.",
+    ),
+    (
+        "One crew member's in-place recap",
+        "dashboard/handlers/crew_worker_recap.py",
+        "The Bot Sessions tab's recap: the work item's title, report summary, "
+        "decision, artifacts, PR link and pending approval tool names, each passed "
+        "through the work-ledger board's deep redactor before it reaches the browser.",
+    ),
+    (
+        "Remote session Git views",
+        "coder/session_browse.py",
+        "Git status, log and diff output and error text pass the shared "
+        "exfiltration-URL and credential redactor at the gateway before reaching "
+        "the dashboard, preserving record separators and patch framing.",
+    ),
+    (
+        "Agent spec chooser descriptions",
+        "agent_spec_pin_ops.py",
+        "Each claimant's `description` and package label, read from a spec file an "
+        "agent may have written, pass the exfiltration-URL and credential redactors "
+        "before they are carried in the chat metadata of the spec chooser card.",
     ),
 )

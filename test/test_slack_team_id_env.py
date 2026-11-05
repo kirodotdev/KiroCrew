@@ -27,6 +27,7 @@ from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.slack import enterprise, team_ids
 from kiro_crew.slack.client import RealSlackClient
 from kiro_crew.slack.team_ids import SLACK_TEAM_ID_ENV
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 CHANNEL = "C0ABC123"
 TEAM = "T0HOME42"
@@ -96,8 +97,7 @@ async def _spawn_env(client: AcpClient, *, claude: bool = False) -> dict[str, st
         patch("kiro_crew.session._track_session_pid"),
     ):
         mock_proc = MagicMock()
-        # nosemgrep: kirocrew.mock-pid-allocatable -- mocked process, never signalled
-        mock_proc.pid = 12345
+        mock_proc.pid = UNALLOCATABLE_PID
         mock_proc.returncode = None
         mock_exec.return_value = mock_proc
         try:

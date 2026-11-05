@@ -30,7 +30,7 @@ from kiro_crew.cloud.login_target import (
     target_from_whoami,
 )
 from kiro_crew.deploy.engine import resolve_aws_bin
-from kiro_crew.sandbox import SandboxCeilingUnsealable
+from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 from kiro_crew.terminal_safe import safe_terminal_line
 from kiro_crew.validation import ValidationError
 
@@ -755,6 +755,19 @@ def handle_cloud(args: argparse.Namespace) -> int:
         # handler prints ANY builder of the exception, including ones in modules it does
         # not own, and ``ui.fail`` writes straight to the terminal. Escaping at each
         # builder keeps a new SINK safe; escaping at the sink keeps a new BUILDER safe.
+        ui.fail(safe_terminal_line(str(exc)))
+        return 1
+    except SandboxUnavailableError as exc:
+        # No OS-level sandbox backend on this host, so wrap_argv fail-closed
+        # before the very first `aws` call the launch path makes (every cloud
+        # verb runs its CLI through cloud.aws.run_aws -> wrap_argv). The spawn
+        # cannot be safely isolated and the sandbox requirement stands -- cloud
+        # launch still refuses -- but the refusal must read as the clean,
+        # host-setup one-liner the sibling sandbox errors print, not a raw
+        # traceback. Caught for the whole dispatch table, like
+        # SandboxCeilingUnsealable above: any verb reaching run_aws can raise it.
+        # safe_terminal_line because the message carries host-diagnostic probe
+        # text (a filename, an errno) written straight to the terminal.
         ui.fail(safe_terminal_line(str(exc)))
         return 1
     except CloudActionDenied as exc:

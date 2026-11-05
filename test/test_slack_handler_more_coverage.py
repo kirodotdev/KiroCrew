@@ -591,16 +591,11 @@ class TestAutoTitleToolRejection:
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
 
     def test_lock_is_rebound_when_the_event_loop_changes(self):
-        """The module-global auto-title lock must keep working when the running
-        event loop changes.
+        """The module-global auto-title lock keeps working when the event loop changes.
 
-        ``pytest-asyncio`` gives every async test a fresh loop, and on
-        Python 3.10+ acquiring an ``asyncio.Lock`` from a loop other than the
-        one it was first used on raises ``RuntimeError`` — which the bare
-        ``except Exception:`` in ``_maybe_auto_title_slack`` then swallowed,
-        silently skipping the permission-rejection branch. Prove the contract
-        deterministically with two distinct loops instead of replaying the
-        order-dependent CI flake.
+        An ``asyncio.Lock`` used from a second loop raises ``RuntimeError``, which
+        ``_maybe_auto_title_slack``'s ``except Exception:`` would swallow, skipping
+        the permission-rejection branch. Two distinct loops make it deterministic.
         """
 
         def _run_once(session_key: str):
@@ -1447,9 +1442,11 @@ class TestLinkedThreadRouting:
             *,
             _directive_user_origin,
             _directive_channel_origin,
+            _directive_source_channels,
         ):
             assert _directive_user_origin is True
             assert _directive_channel_origin is True
+            assert _directive_source_channels == ("C1",)
             ran.append(text)
 
         monkeypatch.setattr(chat_mod, "_run_chat", _fake_run_chat)

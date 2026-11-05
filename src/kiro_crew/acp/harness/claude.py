@@ -20,9 +20,11 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
-from kiro_crew import model_registry
+from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness.base import ProcessAdapter, SpawnContext, SpawnPlan
 from kiro_crew.acp.transport_errors import AcpError
@@ -73,6 +75,14 @@ _CLAUDE_ACP_PKG_ENTRY = Path(CLAUDE_ACP_NPM_PKG, *NODE_ADAPTER_ENTRY_SEGMENTS)
 # The adapter's own import of the ACP SDK, the completeness check every Node
 # adapter shares (see ``acp.launch.ACP_SDK_DEP_MARKER``).
 _CLAUDE_ACP_DEP_MARKER = launch_mod.ACP_SDK_DEP_MARKER
+# The native binary inside the npm ``@anthropic-ai/claude-code`` package (its
+# package.json "bin" field). On Windows ``npm i -g`` exposes it only through a
+# ``claude.cmd`` shim, which Node refuses to spawn without a shell; this is the file
+# that shim runs.
+_CLAUDE_CODE_NPM_EXE = Path("@anthropic-ai", "claude-code", "bin", "claude.exe")
+# Batch files: what Node's spawn rejects with EINVAL when given no shell
+# (the CVE-2024-27980 fix), so never a value for CLAUDE_CODE_EXECUTABLE.
+_WINDOWS_BATCH_SUFFIXES = frozenset({".cmd", ".bat"})
 
 # Cache the PATH with the resolution result. A failed resolve is cached too, so
 # recomputing PATH at the error site could report directories that were never searched.
@@ -107,6 +117,42 @@ def _resolve_claude_acp_bin() -> tuple[list[str] | None, str]:
     )
 
 
+#: ``platform.machine()`` spellings -> the arch suffix of the SDK's native packages.
+_SDK_NATIVE_ARCH = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
+
+
+def _sdk_bundles_native_binary(resolved: object) -> bool:
+    """Whether the adapter's SDK has its per-platform native binary installed.
+
+    *resolved* is the adapter resolution (``(argv, search_path)``), cached by the
+    spawn that runs first. The SDK ships that binary as an optional dependency,
+    ``@anthropic-ai/claude-agent-sdk-<platform>-<arch>[-musl]``, and Node resolves
+    it by walking up from the adapter's entry script, so this walks the same way
+    and looks for the ``claude`` file inside. Blocking: it stats files.
+    """
+    import platform
+    import sys
+
+    argv = resolved[0] if isinstance(resolved, tuple) and resolved else None
+    arch = _SDK_NATIVE_ARCH.get(platform.machine().lower())
+    if not isinstance(argv, list) or not arch:
+        return False
+    pattern = f"claude-agent-sdk-{sys.platform}-{arch}*"
+    for part in argv:
+        entry = Path(str(part))
+        if not entry.is_file():
+            continue
+        for directory in Path(os.path.realpath(entry)).parents:
+            scope = directory / "node_modules" / "@anthropic-ai"
+            if scope.is_dir() and any(
+                (pkg / name).is_file()
+                for pkg in scope.glob(pattern)
+                for name in ("claude", "claude.exe")
+            ):
+                return True
+    return False
+
+
 def _resolve_claude_code_executable() -> str | None:
     """Find the Claude backend CLI binary for CLAUDE_CODE_EXECUTABLE.
 
@@ -125,6 +171,10 @@ def _resolve_claude_code_executable() -> str | None:
          still finds an installed ``claude``.
 
     Returns the resolved path, or ``None`` when no ``claude`` is found.
+
+    The adapter starts this file with Node's ``execFile``/``spawn`` and no shell, so
+    on Windows a lookup that lands on the npm ``claude.cmd`` shim is replaced by the
+    ``claude.exe`` the shim runs (:func:`_spawnable_claude_executable`).
     """
     # Read through the client at call time: its unit tests rebind
     # ``kiro_crew.acp.client.subprocess_mod`` under ``_mise_which``, and the client's
@@ -137,12 +187,41 @@ def _resolve_claude_code_executable() -> str | None:
 
     mise_resolved = _mise_which(CLAUDE_CODE_BIN)
     if mise_resolved:
-        return mise_resolved
+        return _spawnable_claude_executable(mise_resolved)
 
     search_path = augmented_path(os.environ.get("PATH", ""))
     # Casing-normalize (Windows): a `which`-resolved .EXE reaches the launcher shim
     # with its true on-disk name (see ``acp.launch._normalize_exe_casing``).
-    return launch_mod._normalize_exe_casing(shutil.which(CLAUDE_CODE_BIN, path=search_path))
+    return _spawnable_claude_executable(
+        launch_mod._normalize_exe_casing(shutil.which(CLAUDE_CODE_BIN, path=search_path))
+    )
+
+
+def _spawnable_claude_executable(found: str | None) -> str | None:
+    """*found*, unless it is a Windows batch shim Node cannot spawn without a shell.
+
+    A ``.cmd``/``.bat`` is swapped for the npm package's ``claude.exe`` beside it
+    (:func:`~kiro_crew.acp.launch._npm_windows_shim_target`). A batch shim with no
+    such binary answers ``None``: handing it over would only move the failure into
+    the adapter as ``spawn EINVAL``, while an unset variable lets the SDK use its own
+    bundled binary or say plainly that none is installed.
+    """
+    if found is None or not platform_compat.IS_WINDOWS:
+        return found
+    if Path(found).suffix.casefold() not in _WINDOWS_BATCH_SUFFIXES:
+        return found
+    target = launch_mod._npm_windows_shim_target(found, CLAUDE_CODE_BIN, _CLAUDE_CODE_NPM_EXE)
+    if target:
+        return target
+    logger.warning(
+        "%s resolves to the batch shim %s, which Node cannot spawn without a shell, "
+        "and no %s was found beside it; not passing it as CLAUDE_CODE_EXECUTABLE. "
+        "Set CLAUDE_CODE_EXECUTABLE to the claude.exe to use.",
+        CLAUDE_CODE_BIN,
+        found,
+        _CLAUDE_CODE_NPM_EXE.as_posix(),
+    )
+    return None
 
 
 def _claude_adapter_installed_version(argv: list[str]) -> str:
@@ -266,6 +345,15 @@ class ClaudeLaunch(ProcessAdapter):
             ),
         )
 
+    async def prepare_spawn_env(
+        self,
+        env: dict[str, str],
+        *,
+        to_thread: Callable[..., Awaitable[Any]],
+    ) -> None:
+        """:meth:`apply_spawn_env` through the guarded hop: its lookup runs ``mise``."""
+        await to_thread(self.apply_spawn_env, env)
+
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Point the adapter's SDK at a native ``claude`` binary, unless one is named.
 
@@ -278,6 +366,9 @@ class ClaudeLaunch(ProcessAdapter):
         claude_exe = _resolve_claude_code_executable()
         if claude_exe:
             env["CLAUDE_CODE_EXECUTABLE"] = claude_exe
+        elif _sdk_bundles_native_binary(_claude_acp_argv_cache):
+            # The SDK runs its own binary; nothing is missing.
+            logger.debug("%s not on PATH; the adapter's SDK ships its own", CLAUDE_CODE_BIN)
         else:
             logger.warning(
                 "%s not found on PATH; the claude-agent-acp adapter will "

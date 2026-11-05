@@ -74,6 +74,11 @@ def rule_ids(result: rr.RedactionResult) -> list[str]:
     return [r.rule_id for r in result.records]
 
 
+def _named(name: str, values: list[str]) -> list[object]:
+    """Params whose ids name the case group they belong to."""
+    return [pytest.param(v, id=f"{name}-{v}") for v in values]
+
+
 # ── Loading ──
 
 
@@ -102,6 +107,48 @@ def _minimal(**row: object) -> dict[str, object]:
     return {"version": 1, "rules": [{k: v for k, v in base.items() if v is not None}]}
 
 
+_BAD_ROWS: dict[str, list[tuple[dict[str, object], str]]] = {
+    "bad_row_is_refused": [
+        ({"colour": "red"}, "unknown field"),
+        ({"tier": "severe"}, "unknown tier"),
+        ({"detector": "entropy"}, "unknown detector"),
+        ({"validate": "luhn"}, "unknown validator"),
+        ({"pattern": None}, "pattern must be"),
+        ({"corpus": None}, "corpus must be"),
+        ({"corpus": "rules/other"}, "corpus must be"),
+        ({"id": "Bad Id"}, "malformed"),
+        ({"pattern": "tst_[a-z]+"}, "unbounded"),
+        ({"pattern": "(?P<v>tst_[a-z]{8,})"}, "unbounded"),
+        ({"pattern": "(?P<v>tst_[a-z]{1,50000})"}, "unbounded"),
+        ({"pattern": "(?P<v>tst_[a-z]*)"}, "unbounded"),
+        ({"pattern": "tst_[a-z]{8}"}, "named group 'v'"),
+        ({"pattern": "(?P<v>tst_[a-z{8}"}, "does not compile"),
+        ({"replace": "signature"}, "replace must be"),
+        ({"labels": ["token"]}, "labels do not apply"),
+        ({"pair_with": {"pattern": "AKIA[A-Z0-9]{16}", "window": 10}}, "pair_with does not"),
+        ({"allow": {"prefixes": ["x"]}}, "unknown field"),
+        ({"allow": {"patterns": ["x+"]}}, "unbounded"),
+    ],
+    "detector_specific_fields_are_checked": [
+        ({"detector": "labelled", "pattern": None}, "labels are required"),
+        ({"detector": "labelled", "labels": ["token"]}, "pattern does not apply"),
+        (
+            {"detector": "url_param", "pattern": None, "labels": ["token"], "replace": "match"},
+            "replaces the value only",
+        ),
+        ({"detector": "key_id_pair"}, "needs pair_with"),
+        (
+            {"detector": "key_id_pair", "pair_with": {"pattern": "A{1,4}", "window": 0}},
+            "window must be",
+        ),
+        (
+            {"detector": "key_id_pair", "pair_with": {"pattern": "A{1,4}", "window": "near"}},
+            "window must be an integer",
+        ),
+    ],
+}
+
+
 class TestLoading:
     def test_packaged_table_loads_and_is_cached(self) -> None:
         table = rr.load_table()
@@ -119,54 +166,12 @@ class TestLoading:
     @pytest.mark.parametrize(
         "row, needle",
         [
-            ({"colour": "red"}, "unknown field"),
-            ({"tier": "severe"}, "unknown tier"),
-            ({"detector": "entropy"}, "unknown detector"),
-            ({"validate": "luhn"}, "unknown validator"),
-            ({"pattern": None}, "pattern must be"),
-            ({"corpus": None}, "corpus must be"),
-            ({"corpus": "rules/other"}, "corpus must be"),
-            ({"id": "Bad Id"}, "malformed"),
-            ({"pattern": "tst_[a-z]+"}, "unbounded"),
-            ({"pattern": "(?P<v>tst_[a-z]{8,})"}, "unbounded"),
-            ({"pattern": "(?P<v>tst_[a-z]{1,50000})"}, "unbounded"),
-            ({"pattern": "(?P<v>tst_[a-z]*)"}, "unbounded"),
-            ({"pattern": "tst_[a-z]{8}"}, "named group 'v'"),
-            ({"pattern": "(?P<v>tst_[a-z{8}"}, "does not compile"),
-            ({"replace": "signature"}, "replace must be"),
-            ({"labels": ["token"]}, "labels do not apply"),
-            ({"pair_with": {"pattern": "AKIA[A-Z0-9]{16}", "window": 10}}, "pair_with does not"),
-            ({"allow": {"prefixes": ["x"]}}, "unknown field"),
-            ({"allow": {"patterns": ["x+"]}}, "unbounded"),
+            pytest.param(row, needle, id=f"{name}-row{i}-{needle}")
+            for name, cases in _BAD_ROWS.items()
+            for i, (row, needle) in enumerate(cases)
         ],
     )
     def test_bad_row_is_refused(self, row: dict[str, object], needle: str) -> None:
-        with pytest.raises(rr.RuleTableError, match=needle):
-            rr.build_table(_minimal(**row))
-
-    @pytest.mark.parametrize(
-        "row, needle",
-        [
-            ({"detector": "labelled", "pattern": None}, "labels are required"),
-            ({"detector": "labelled", "labels": ["token"]}, "pattern does not apply"),
-            (
-                {"detector": "url_param", "pattern": None, "labels": ["token"], "replace": "match"},
-                "replaces the value only",
-            ),
-            ({"detector": "key_id_pair"}, "needs pair_with"),
-            (
-                {"detector": "key_id_pair", "pair_with": {"pattern": "A{1,4}", "window": 0}},
-                "window must be",
-            ),
-            (
-                {"detector": "key_id_pair", "pair_with": {"pattern": "A{1,4}", "window": "near"}},
-                "window must be an integer",
-            ),
-        ],
-    )
-    def test_detector_specific_fields_are_checked(
-        self, row: dict[str, object], needle: str
-    ) -> None:
         with pytest.raises(rr.RuleTableError, match=needle):
             rr.build_table(_minimal(**row))
 
@@ -465,40 +470,6 @@ class TestLabelledSecretField:
         assert rr.PLACEHOLDER in result.text
 
     @pytest.mark.parametrize(
-        "text",
-        [
-            '{"max_tokens": 4096, "token_type": "bearer", "expires_in": 3600}',
-            "next_token=abcdefgh1234 page_token=ijklmnop5678",
-            "input_tokens: 1200\noutput_tokens: 3400",
-            "token_endpoint: https://idp.example.com/oauth/token",
-            "secret_name = prod/db/credentials",
-            "aws_access_key_id = AKIA" + "0" * 16,
-            "public_key: ssh-ed25519-abcdefgh",
-            "tokenizer = cl100k_base",
-            "password: abc",
-            "password: changeme",
-            "password = ${DB_PASSWORD}",
-            "password = $DB_PASSWORD",
-            "password = <your-password>",
-            "password = {{ vault_password }}",
-            "password = %DB_PASSWORD%",
-            "password = ********",
-            "api_key = xxxxxxxxxxxxxxxx",
-            "api_key = ...",
-            "api_key: your-api-key-here",
-            "password = [REDACTED: credential]",
-            "<password>abc</password>",
-            "<password>${DB_PASSWORD}</password>",
-            "<username>alice-the-admin</username>",
-            '{"name": "region", "value": "us-east-1-west"}',
-            '{"name": "password", "type": "string"}',
-            '<add key="LogLevel" value="verbose-debug" />',
-        ],
-    )
-    def test_non_secret_is_kept(self, text: str) -> None:
-        assert redact(text).text == text
-
-    @pytest.mark.parametrize(
         "line, value",
         [
             ("DB_PASSWORD={v}", "P@ss,w0rd!long"),
@@ -562,16 +533,6 @@ class TestLabelledSecretField:
         if "{w}_key" in template:
             text = template.format(w=word, W=word.title(), v=value)
         assert value not in redact(text).text
-
-    @pytest.mark.parametrize(
-        "text", ["GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}", "token: ${{ secrets.NPM_TOKEN }}"]
-    )
-    def test_ci_expression_is_kept(self, text: str) -> None:
-        assert redact(text).text == text
-
-    @pytest.mark.parametrize("text", ["use_password: false", "has_secret=true", "secret: null"])
-    def test_flag_words_are_kept(self, text: str) -> None:
-        assert redact(text).text == text
 
     @pytest.mark.parametrize(
         "template",
@@ -720,6 +681,7 @@ class TestFullTable:
         ids = [rule.id for rule in rr.load_table().rules]
         assert len(ids) == 29
         assert len(set(ids)) == 29
+        assert "labelled.session_generic" not in ids
 
     def test_every_vendor_rule_has_a_sample(self) -> None:
         table = rr.load_table()
@@ -829,8 +791,136 @@ class TestStructuralRows:
         )
         assert rule_ids(result) == ["url.userinfo_password"]
 
+
+class TestSessionCookie:
     @pytest.mark.parametrize(
-        "text",
+        "template, expected_rule_id",
+        [
+            ("Set-Cookie: sessionid={v}; Path=/; HttpOnly; Secure", "labelled.session_cookie"),
+            ("Cookie: theme=dark; PHPSESSID={v}; lang=en", "labelled.session_cookie"),
+            ("Cookie: JSESSIONID={v}", "labelled.session_cookie"),
+            ("Set-Cookie: connect.sid={v}; Path=/", "labelled.session_cookie"),
+            ("Set-Cookie: ASP.NET_SessionId={v}; path=/", "labelled.session_cookie"),
+            (
+                'curl -H "Cookie: session={v}" https://app.example.com/me',
+                "labelled.session_cookie",
+            ),
+        ],
+    )
+    def test_session_value_is_redacted_and_other_cookies_kept(
+        self, template: str, expected_rule_id: str
+    ) -> None:
+        value = synth(32, ALNUM, 80)
+        result = redact(template.format(v=value))
+        assert result.text == template.format(v=rr.PLACEHOLDER)
+        assert rule_ids(result) == [expected_rule_id]
+
+    def test_short_or_placeholder_session_is_kept(self) -> None:
+        for text in ("session=abc", "sessionid=<session-id>", "session: ${SESSION}"):
+            assert redact(text).text == text
+
+
+class TestNonCredentialValuesUnderCredentialNames:
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "password=Required1",
+            "password=enabledXYZ",
+            "password=requiredpass",
+            "secret=hiddenvalue",
+            "session=chat-1830",
+            "tmux_session: main-work",
+            "password=hunter2",
+            '"access_token": "{v}"',
+            "session={v}",
+            "password=${{X}} hunter2-tail",
+        ],
+    )
+    def test_real_value_is_still_redacted(self, template: str) -> None:
+        value = synth(24, ALNUM, 90)
+        text = template.format(v=value)
+        result = redact(text)
+        assert result.text != text
+        assert value not in result.text
+        assert "hunter2" not in result.text
+
+    @pytest.mark.parametrize(
+        "text, secret",
+        [
+            ("password=sunflower", "sunflower"),
+            ("password=password", "=password"),
+            ("Authorization: Bearer abcdefghijklmnopqrstuvwx", "abcdefghijklmnopqrstuvwx"),
+            ("Cookie: PHPSESSID=01234567890123456789012345678901", "0123456789012345"),
+            ("Cookie: ASP.NET_SessionId=abcdefghijklmnopqrstuvwx", "abcdefghijklmnop"),
+            ("Cookie: JSESSIONID=AABBCCDDEEFFAABBCCDDEEFFAABBCCDD", "AABBCCDDEEFF"),
+            ("Cookie: session=abcdefghijklmnopqrstuvwx", "abcdefghijklmnop"),
+            ("password: ${PREFIX} note=MySecret7!", "MySecret7!"),
+            ("password = ${PREFIX} note=MySecret7!", "MySecret7!"),
+            ("password=sunshine", "sunshine"),
+            ("DB_PASSWORD=postgres", "postgres"),
+            ('"password": "admin"', "admin"),
+            ("MYSQL_ROOT_PASSWORD=root", "=root"),
+            ("secret=letmein", "letmein"),
+            ("Authorization: Basic hunter", "hunter"),
+            ("api_key=abcdefghijklmnopqrstuvwx", "abcdefghijklmnop"),
+            ("PHPSESSID=abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnop"),
+            ("session=ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ABCDEFGHIJKLMNOP"),
+            ("JSESSIONID=0123456789012345678901234567", "0123456789012345"),
+            ("password=${{ a }}REALPASS}} next=1", "REALPASS"),
+            ("password={{ a }}REALPASS}} next=1", "REALPASS"),
+            ("password=$ABC9 user=bob", "$ABC9"),
+            ("password=<s3cr3t> user=bob", "s3cr3t"),
+            ('{"password": {{ x }}hunter2}', "hunter2"),
+            ("cfg(password={{ x }}hunter2)", "hunter2"),
+            ("mytool --password {{x}}hunter2 --verbose", "hunter2"),
+        ],
+    )
+    def test_single_class_and_lowercase_credentials_are_redacted(
+        self, text: str, secret: str
+    ) -> None:
+        assert secret not in redact(text).text
+
+
+@pytest.mark.parametrize(
+    "text",
+    _named(
+        "non_secret_is_kept",
+        [
+            '{"max_tokens": 4096, "token_type": "bearer", "expires_in": 3600}',
+            "next_token=abcdefgh1234 page_token=ijklmnop5678",
+            "input_tokens: 1200\noutput_tokens: 3400",
+            "token_endpoint: https://idp.example.com/oauth/token",
+            "secret_name = prod/db/credentials",
+            "aws_access_key_id = AKIA" + "0" * 16,
+            "public_key: ssh-ed25519-abcdefgh",
+            "tokenizer = cl100k_base",
+            "password: abc",
+            "password: changeme",
+            "password = ${DB_PASSWORD}",
+            "password = $DB_PASSWORD",
+            "password = <your-password>",
+            "password = {{ vault_password }}",
+            "password = %DB_PASSWORD%",
+            "password = ********",
+            "api_key = xxxxxxxxxxxxxxxx",
+            "api_key = ...",
+            "api_key: your-api-key-here",
+            "password = [REDACTED: credential]",
+            "<password>abc</password>",
+            "<password>${DB_PASSWORD}</password>",
+            "<username>alice-the-admin</username>",
+            '{"name": "region", "value": "us-east-1-west"}',
+            '{"name": "password", "type": "string"}',
+            '<add key="LogLevel" value="verbose-debug" />',
+        ],
+    )
+    + _named(
+        "ci_expression_is_kept",
+        ["GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}", "token: ${{ secrets.NPM_TOKEN }}"],
+    )
+    + _named("flag_words_are_kept", ["use_password: false", "has_secret=true", "secret: null"])
+    + _named(
+        "url_without_a_real_password_is_kept",
         [
             "https://db.internal:5432/app",
             "https://user@example.com/path",
@@ -839,28 +929,97 @@ class TestStructuralRows:
             "see https://example.com/a:b/c@d",
         ],
     )
-    def test_url_without_a_real_password_is_kept(self, text: str) -> None:
-        assert redact(text).text == text
+    + _named(
+        "NonCredentialValuesUnderCredentialNames-is_kept",
+        [
+            "password=required",
+            '"access_token": "expired"',
+            '{"password": {"type": "string", "required": true}}',
+        ],
+    ),
+)
+def test_text_without_a_real_secret_is_kept(text: str) -> None:
+    assert redact(text).text == text
 
 
-class TestSessionCookie:
+class TestPlaceholderHeadRedaction:
     @pytest.mark.parametrize(
         "template",
         [
-            "Set-Cookie: sessionid={v}; Path=/; HttpOnly; Secure",
-            "Cookie: theme=dark; PHPSESSID={v}; lang=en",
-            "Cookie: JSESSIONID={v}",
-            "Set-Cookie: connect.sid={v}; Path=/",
-            "Set-Cookie: ASP.NET_SessionId={v}; path=/",
-            'curl -H "Cookie: session={v}" https://app.example.com/me',
+            'password=${PW} api_key=""{v}',
+            'password=${PW} api_key="${KEY}"{v}',
+            "password=${PW} api_key=={v}",
+            "password=${A} secret=${B} api_key={v}",
+            "password=${PW} api_key=abc;{v}",
         ],
     )
-    def test_session_value_is_redacted_and_other_cookies_kept(self, template: str) -> None:
-        value = synth(32, ALNUM, 80)
-        result = redact(template.format(v=value))
-        assert result.text == template.format(v=rr.PLACEHOLDER)
-        assert rule_ids(result) == ["labelled.session_cookie"]
+    def test_placeholder_head_does_not_hide_a_later_secret(self, template: str) -> None:
+        value = synth(20, ALNUM, 92)
+        text = template.replace("{v}", value)
+        result = redact(text)
+        assert value not in result.text
+        assert result.records
 
-    def test_short_or_placeholder_session_is_kept(self) -> None:
-        for text in ("session=abc", "sessionid=<session-id>", "session: ${SESSION}"):
-            assert redact(text).text == text
+    def test_single_placeholder_is_kept(self) -> None:
+        text = "password = ${DB_PASSWORD}"
+        result = redact(text)
+        assert result.text == text
+        assert result.records == ()
+
+
+class TestBackToBackTemplates:
+    @pytest.mark.parametrize(
+        "text",
+        _named(
+            "run_of_templates_is_kept",
+            [
+                "mytool --password ${A}${B} --v",
+                'curl -H "Authorization: Bearer ${A}${B}" u',
+                "mytool --token {{a}}{{b}} x",
+                "password=${A}${B}",
+                "api_key: {{a}}{{b}}",
+            ],
+        )
+        + _named(
+            "template_with_brace_or_separator_is_kept",
+            [
+                'db_password: "{{ vault_db_password | default({}) }}"',
+                'password: "{{ x if y else {} }}"',
+                'password: "{{ a }}-{{ b }}"',
+                'password: "{{ a }}/{{ b }}"',
+                "token: ${A}-${B}",
+            ],
+        ),
+    )
+    def test_templates_without_a_secret_are_kept(self, text: str) -> None:
+        result = redact(text)
+        assert result.text == text
+        assert result.records == ()
+        assert redact(result.text).text == text
+
+    @pytest.mark.parametrize(
+        "head, run",
+        [("password=", "${A}${B}"), ("mytool --token ", "{{a}}{{b}}")],
+    )
+    def test_run_with_glued_text_is_redacted_whole(self, head: str, run: str) -> None:
+        secret = "hunter2" + synth(3, ALNUM, 93)
+        result = redact(head + run + secret)
+        assert secret not in result.text
+        assert result.records
+        assert result.text == head + rr.PLACEHOLDER
+        assert redact(result.text).text == result.text
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            'password: "{{ a }}-{{ b }}{v}"',
+            'password: "{{ x | default({}) }}{v}"',
+            "password: {{ a }} {v}",
+        ],
+    )
+    def test_secret_after_template_is_redacted(self, template: str) -> None:
+        secret = synth(20, ALNUM, 94)
+        result = redact(template.replace("{v}", secret))
+        assert secret not in result.text
+        assert result.records
+        assert redact(result.text).text == result.text

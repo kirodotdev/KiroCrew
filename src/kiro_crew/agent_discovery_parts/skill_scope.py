@@ -23,8 +23,14 @@ from kiro_crew.agent_discovery_parts.spec_fields import (
     expand_skill_uri,
     skill_resource_uris,
 )
-from kiro_crew.agent_discovery_parts.spec_reads import _kiro_agents_dir, _read_agent_spec
+from kiro_crew.agent_discovery_parts.spec_reads import (
+    AmbiguousAgentSpecError,
+    _kiro_agents_dir,
+    _read_agent_spec,
+    declared_spec_claim,
+)
 from kiro_crew.agent_discovery_parts.spec_snapshot import parsed_agent_specs
+from kiro_crew.agent_files import KIROCREW_DEFAULT_AGENT_NAMES, WORKER_AGENT_FILENAME
 from kiro_crew.config.paths import project_agents_dir
 
 # Logs under the facade's name, which operators and tests filter on.
@@ -39,10 +45,14 @@ class SkillScopeResolutionError(ValueError):
 # raised class as ``module.qualname``, so the owner module must not leak into it.
 SkillScopeResolutionError.__module__ = "kiro_crew.agent_discovery"
 
-#: The templates that see the whole catalog while they map no skill. The worker
-#: maps exactly the default's ``skill://`` entries (``_mirror_worker_skill_resources``),
-#: so an unmapped worker has an unmapped dispatcher and sees what it sees.
-WHOLE_CATALOG_TEMPLATES = frozenset({"kirocrew", "kirocrew-worker"})
+#: The templates that see the whole catalog while they map no skill: every default
+#: agent (:data:`~kiro_crew.agent_files.KIROCREW_DEFAULT_AGENT_NAMES`, which holds the
+#: crewmate's conductor and worker beside ``kirocrew``) and the dispatch worker. The
+#: worker maps exactly the default's ``skill://`` entries
+#: (``_mirror_worker_skill_resources``), so an unmapped worker has an unmapped
+#: dispatcher and sees what it sees. Built from the default-agent set so a name added
+#: there gets the catalog in ``skill_search`` as it does in the startup directory.
+WHOLE_CATALOG_TEMPLATES = KIROCREW_DEFAULT_AGENT_NAMES | {Path(WORKER_AGENT_FILENAME).stem}
 
 
 def skill_search_refusal(spec: dict[str, Any]) -> str | None:
@@ -101,6 +111,61 @@ def can_inherit_skills(spec: dict[str, Any]) -> bool:
     return isinstance(tools, list) and "*" not in tools
 
 
+#: Whether a mapped crewmate conductor's skills ADD the user's ``~/.kiro/skills`` and
+#: workspace ``.kiro/skills``. A one-release deprecation: the intended scope is the
+#: mapping alone (``docs/decisions/``, "conductors stay simple"), and the next
+#: release sets this to ``False`` and removes it. While it is on, a new crewmate
+#: chat that inherits a skill shows one notice naming the change
+#: (``mate_conductor_inherited_skills``).
+MATE_CONDUCTOR_INHERITS_USER_SKILLS = True
+
+
+def mate_conductor_scope(
+    agent: str, spec: dict[str, Any], globs: list[str], project_dir: str | Path | None
+) -> list[str]:
+    """*globs* for *agent*, with the inherited trees added for the crewmate conductor.
+
+    THE one place the rule lives, so no caller can skip it: ``agent_skill_globs``
+    returns through it on every path (whatever ``inherit_defaults`` a caller
+    passes), and KAS's ``kas_skill_scope._spec_globs`` calls it too. The
+    crewmate's conductor maps only the skills its own prompt names
+    (``service_agents._install_mate_conductor_agent``); that mapping ADDS to the
+    user's ``~/.kiro/skills`` and workspace ``.kiro/skills``, never replaces them.
+    Any other agent, an unmapped conductor (which inherits on its own rule) and a
+    spec that may not inherit get *globs* unchanged. The crewmate worker's mapping
+    is the crewmate's own Abilities choice, so it keeps the rule every mapped
+    agent follows.
+    """
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if (
+        not MATE_CONDUCTOR_INHERITS_USER_SKILLS
+        or agent != MATE_CONDUCTOR_AGENT
+        or not globs
+        or not can_inherit_skills(spec)
+    ):
+        return globs
+    return list(dict.fromkeys([*globs, *inherited_skill_globs(project_dir)]))
+
+
+def mate_conductor_inherited_skills(project_dir: str | Path | None) -> list[str]:
+    """The skill names the crewmate conductor takes from the user's trees, or ``[]``.
+
+    Read through :func:`agent_skill_globs`, so it is empty whenever the conductor
+    inherits nothing: the flag above is off, its spec maps no skill, or it may not
+    inherit. A name is the folder that holds a ``SKILL.md`` in an inherited tree.
+    """
+    import glob
+
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if not MATE_CONDUCTOR_INHERITS_USER_SKILLS:
+        return []
+    scope = agent_skill_globs(MATE_CONDUCTOR_AGENT, project_dir=project_dir)
+    inherited = [g for g in inherited_skill_globs(project_dir) if g in scope]
+    return sorted({Path(m).parent.name for g in inherited for m in glob.glob(g)})
+
+
 def inherited_skill_globs(
     project_dir: str | Path | None, *, kiro_home_dir: Path | None = None
 ) -> list[str]:
@@ -155,7 +220,9 @@ def agent_skill_globs(
     Session callers also pass ``inherit_defaults=True``: a custom agent whose
     spec resolves with no ``skill://`` entry then gets
     :func:`inherited_skill_globs` rather than ``[]``.
-    Resolved from the :func:`parsed_agent_specs` snapshot when no project is supplied.
+    Resolved through :func:`declared_spec_claim` on the hardened parsed-spec
+    snapshot for user-level agents; the selected path anchors relative skill URIs.
+    Project agents keep precedence over the user-level pin.
     The crewmate conductor and worker resolve from the crewmate folder; *session_key*
     names the worker's crewmate (``mate_worker.mate_service_scope_spec``).
     """
@@ -163,6 +230,8 @@ def agent_skill_globs(
         return []
     from kiro_crew.mate_worker import mate_service_scope_spec
 
+    data: dict[str, Any] | None
+    path: Path | None
     mate = mate_service_scope_spec(agent, session_key) if agents_dir is None else None
     if mate is not None:
         data, path = mate
@@ -177,56 +246,60 @@ def agent_skill_globs(
         ]
         if not globs and inherit_defaults and can_inherit_skills(data):
             return inherited_skill_globs(project_dir)
-        return globs
+        # Whatever *inherit_defaults* says: every caller (the session scope, the
+        # injection plan, the triggered-skill filter, KAS's deny rule) reads the
+        # crewmate conductor's mapping through this one rule.
+        return mate_conductor_scope(agent, data, globs, project_dir)
+    path = None
+    data = None
     if project_dir:
-        rows = list_agents(agents_dir=agents_dir, project_dir=str(project_dir))
-        winner = next((row for row in rows if row.name == agent), None)
-        if winner is None or not winner.filename:
-            if strict and agent not in WHOLE_CATALOG_TEMPLATES:
-                raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
+        roster = list_agents(agents_dir=agents_dir, project_dir=str(project_dir))
+        winner = next((row for row in roster if row.name == agent), None)
+        if winner is not None and winner.filename and winner.scope == SCOPE_PROJECT:
+            path = project_agents_dir(str(project_dir)) / winner.filename
+            data = _read_agent_spec(path, operation="agent_skill_globs", source="unknown")
+            if strict and data is None:
+                raise SkillScopeResolutionError(f"Cannot read skill scope for agent {agent!r}")
+    if path is None:
+        directory = agents_dir if agents_dir is not None else _kiro_agents_dir()
+        rows = parsed_agent_specs(directory, operation="agent_skill_globs", source="unknown")
+        try:
+            claim = declared_spec_claim(
+                directory,
+                agent,
+                operation="agent_skill_globs",
+                source="unknown",
+                parsed_rows=rows,
+            )
+        except AmbiguousAgentSpecError as exc:
+            if strict:
+                raise SkillScopeResolutionError(str(exc)) from exc
             return []
-        if winner.scope == SCOPE_PROJECT:
-            directory = project_agents_dir(str(project_dir))
-        elif agents_dir is not None:
-            directory = agents_dir
+        if claim is not None:
+            path, data = claim.path, claim.spec
         else:
-            directory = _kiro_agents_dir()
-        path = directory / winner.filename
-        data = _read_agent_spec(path, operation="agent_skill_globs", source="unknown")
-        if strict and data is None:
-            raise SkillScopeResolutionError(f"Cannot read skill scope for agent {agent!r}")
-        globs = [
-            g
-            for uri in skill_resource_uris(data or {})
-            if (g := expand_skill_uri(uri, path, project_dir=project_dir))
-        ]
-        if (
-            not globs
-            and inherit_defaults
-            and agent not in WHOLE_CATALOG_TEMPLATES
-            and data is not None
-            and can_inherit_skills(data)
-        ):
-            return inherited_skill_globs(project_dir)
-        return globs
-    # ``f`` is the ORIGINAL path: ``f.stem`` and ``expand_skill_uri`` below
-    # must see it so a symlinked spec's relative globs stay anchored where
-    # the symlink lives.
-    for data, f in parsed_agent_specs(agents_dir, operation="agent_skill_globs", source="unknown"):
-        if data.get("name") != agent and f.stem != agent:
-            continue
-        globs = [g for uri in skill_resource_uris(data) if (g := expand_skill_uri(uri, f))]
-        if (
-            not globs
-            and inherit_defaults
-            and agent not in WHOLE_CATALOG_TEMPLATES
-            and can_inherit_skills(data)
-        ):
-            return inherited_skill_globs(project_dir)
-        return globs
-    if strict and agent not in WHOLE_CATALOG_TEMPLATES:
-        raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
-    return []
+            # A filename is an alias only when no spec declares the requested name.
+            fallback = next(((spec, f) for spec, f in rows if f.stem == agent), None)
+            if fallback is not None:
+                data, path = fallback
+    if path is None:
+        if strict and agent not in WHOLE_CATALOG_TEMPLATES:
+            raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
+        return []
+    globs = [
+        g
+        for uri in skill_resource_uris(data or {})
+        if (g := expand_skill_uri(uri, path, project_dir=project_dir))
+    ]
+    if (
+        not globs
+        and inherit_defaults
+        and agent not in WHOLE_CATALOG_TEMPLATES
+        and data is not None
+        and can_inherit_skills(data)
+    ):
+        return inherited_skill_globs(project_dir)
+    return mate_conductor_scope(agent, data or {}, globs, project_dir)
 
 
 def served_provider_label(provider: object) -> str | None:
