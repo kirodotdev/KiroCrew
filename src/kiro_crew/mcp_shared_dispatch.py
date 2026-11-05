@@ -52,7 +52,7 @@ from kiro_crew.mcp_shared_calls import (
     _StepPool,
 )
 from kiro_crew.mcp_shared_policy import (
-    _NEGATIVE_CACHE_TTL,
+    _NEGATIVE_CACHE_PROBE_INTERVAL,
     _POLICY_DETAIL_MAX_CHARS,
     _UNRESOLVED_REFUSES_CALL,
     ToolPolicy,
@@ -864,7 +864,7 @@ def _run_stdio_dispatch_loop(
                         f"broken{_cause}. No agent spec is implicated and nothing needs "
                         f"editing. Refusing the call rather than ignoring an "
                         f"operator's exclusion list; the call succeeds on retry "
-                        f"within {_NEGATIVE_CACHE_TTL:.0f}s of the gateway "
+                        f"within {_NEGATIVE_CACHE_PROBE_INTERVAL:.0f}s of the gateway "
                         f"answering again."
                     )
                 else:
