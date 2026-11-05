@@ -7160,6 +7160,8 @@
       "create_folder": "创建文件夹",
       "default_agent": "默认智能体",
       "default_agent_hint": "在此处新建会话时预先选中。",
+      "default_prompt": "默认首条提示词",
+      "default_prompt_hint": "从此文件夹新建对话时，放入其消息输入框，不会自动发出。子文件夹不会继承。",
       "enter_to_submit": "按回车提交",
       "folder_settings": "文件夹设置",
       "icon": "图标",

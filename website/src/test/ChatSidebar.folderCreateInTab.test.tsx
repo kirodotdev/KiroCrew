@@ -27,6 +27,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatSlot, ChatFolder } from '../types'
@@ -105,7 +106,7 @@ const SLOTS = [{ key: ORIGIN, title: 'Session 1', messages: 1, running: false, m
 // Expanded and empty: the header "+" AND the empty-folder row both render.
 const FOLDERS: ChatFolder[] = [{ id: FOLDER_ID, name: 'Alpha', order: 0, collapsed: false }]
 
-function renderSidebar(onOpenSlotInNewTab?: (key: string, opts?: { background?: boolean }) => void) {
+function renderSidebar(onOpenSlotInNewTab?: (key: string, opts?: { background?: boolean }) => void, folders: ChatFolder[] = FOLDERS) {
   const store = createTestStore({
     dashboard: {
       status: { platform: 'linux' }, connected: true, slots: SLOTS, slotsLoaded: true,
@@ -122,7 +123,7 @@ function renderSidebar(onOpenSlotInNewTab?: (key: string, opts?: { background?: 
     } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  qc.setQueryData(['chat-folders'], FOLDERS)
+  qc.setQueryData(['chat-folders'], folders)
   render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -187,6 +188,21 @@ describe('ChatSidebar - list-view folder create open-as-tab gestures', () => {
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
     // The whole point: the user is still on the session they were reading.
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it("a background tab stages none of the folder's default first prompt", async () => {
+    // The tab can open long after a staged prompt expires, so it opens empty.
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      const onOpen = vi.fn()
+      renderSidebar(onOpen, [{ ...FOLDERS[0], default_prompt: 'Triage the queue' }])
+      fireEvent.click(plusButton(), { ctrlKey: true })
+      await created()
+      await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
+      expect(setItem.mock.calls.some(([k]) => k === PREFILL_STORAGE_KEY)).toBe(false)
+    } finally {
+      setItem.mockRestore()
+    }
   })
 
   it('Ctrl+Shift-click on the folder "+" creates WITHOUT activating and opens a foreground tab', async () => {

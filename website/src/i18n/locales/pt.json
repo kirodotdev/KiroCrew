@@ -7550,6 +7550,8 @@
       "create_folder": "Criar pasta",
       "default_agent": "Agente padrão",
       "default_agent_hint": "Pré-selecionado para novas conversas criadas aqui.",
+      "default_prompt": "Primeiro prompt padrão",
+      "default_prompt_hint": "Colocado, sem ser enviado, na caixa de mensagem de um novo chat iniciado a partir desta pasta. As subpastas não o herdam.",
       "enter_to_submit": "Enter para enviar",
       "folder_settings": "Configurações da pasta",
       "icon": "Ícone",

@@ -60,6 +60,27 @@ MAX_CHAT_FOLDERS = 500
 #: also the only fields a mate's home folder takes from anyone.
 LAYOUT_ONLY_FIELDS = frozenset({"collapsed", "order"})
 
+#: The longest ``default_prompt`` a folder keeps. Every slots frame carries the
+#: whole folder list, so this bounds what each folder adds to every frame.
+MAX_FOLDER_DEFAULT_PROMPT_CHARS = 4000
+
+
+def clean_folder_default_prompt(raw: object) -> str:
+    """A folder's ``default_prompt`` as stored, kept as typed: ``None`` or blank is ``""``.
+
+    Raises:
+        FolderCreateError: a non-string, or one longer than
+            :data:`MAX_FOLDER_DEFAULT_PROMPT_CHARS`.
+    """
+    if raw is None:
+        return ""
+    if not isinstance(raw, str) or len(raw) > MAX_FOLDER_DEFAULT_PROMPT_CHARS:
+        raise FolderCreateError(
+            f"default_prompt must be text of at most {MAX_FOLDER_DEFAULT_PROMPT_CHARS} characters",
+            "default_prompt_invalid",
+        )
+    return raw if raw.strip() else ""
+
 
 def _validate_folder_tags(state: DashboardState, raw: Any) -> tuple[list[str] | None, str | None]:
     """Validate a folder ``tags`` payload against the tag vocabulary.
@@ -501,6 +522,7 @@ async def create_folder_record(
     project_dir: str = "",
     default_agent: str = "",
     default_destination_crew: str = "",
+    default_prompt: object = "",
     color: str = "",
     icon: str = "",
     request_app: str = "",
@@ -552,7 +574,8 @@ async def create_folder_record(
     Raises:
         FolderCreateError: if the folder was refused (unusable name, missing
             parent, unusable ``project_dir``, unknown color, non-emoji
-            ``icon``, or a ``unique_project_dir`` collision).
+            ``icon``, an unusable ``default_prompt``, or a
+            ``unique_project_dir`` collision).
         FolderOwnershipError: if an app tried to nest under a folder it does
             not own.
         FolderMateHomeLockedError: if the parent is a mate's home folder, or
@@ -600,6 +623,7 @@ async def create_folder_record(
         # Same contract shape as ``color``: a stored icon is always a single
         # grapheme-exact emoji, whichever caller created the folder.
         raise FolderCreateError("icon must be a single emoji", "icon_invalid")
+    default_prompt = clean_folder_default_prompt(default_prompt)
     # Off-loop like project_dir: each entry's realpath + isdir + sensitive-path
     # scan touches the filesystem, and the scaffold calls this once per folder.
     resolved_steering: list[str] = []
@@ -629,6 +653,8 @@ async def create_folder_record(
         folder["color"] = color
     if icon:
         folder["icon"] = icon
+    if default_prompt:
+        folder["default_prompt"] = default_prompt
     if resolved_steering:
         # Omitted when empty, like ``color``/``tags``: "absent means none" stays
         # the single on-disk representation.

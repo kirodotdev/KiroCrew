@@ -7355,6 +7355,8 @@
       "create_folder": "Ordner erstellen",
       "default_agent": "Standard-Agent",
       "default_agent_hint": "Für neue Chats, die hier erstellt werden, vorausgewählt.",
+      "default_prompt": "Standard-Startprompt",
+      "default_prompt_hint": "Steht ungesendet im Nachrichtenfeld eines neuen Chats, der aus diesem Ordner gestartet wird. Unterordner erben ihn nicht.",
       "enter_to_submit": "Eingabetaste zum Bestätigen",
       "folder_settings": "Ordnereinstellungen",
       "icon": "Symbol",
