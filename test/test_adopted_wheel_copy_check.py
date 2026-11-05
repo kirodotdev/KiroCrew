@@ -21,7 +21,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github" / "scripts" / "adopted_wheel_copy_check.py"
-WORKFLOW = ROOT / ".github" / "workflows" / "code-review.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "pr-hygiene.yml"
 SHIPPED_PINS = ROOT / "src" / "kiro_crew" / "apps" / "adoption-pins.json"
 
 PAPYRUS = "KiroCrewCaptain/kirocrew-app-papyrus"

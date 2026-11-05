@@ -64,7 +64,8 @@ pull_request
   |
   |-- ci.yml            "CI"           lint, sharded tests, coverage gate, e2e
   |-- build.yml         "Build"        wheel + desktop/installer artifacts build
-  |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep, PR hygiene
+  |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep
+  |-- pr-hygiene.yml    "PR Hygiene"   title, commit count, description sections
   |-- issue-gate.yml    "Issue Gate"   PR names a sized issue, blocking once enabled (paused)
   |-- pr-policy.yml     "PR Policy"    four read-only policies as steps of one job, one check row:
   |                                      PR Size: file count and hours open; owner approval at 80 files (shadow)
@@ -962,9 +963,9 @@ same restriction applies to every inline PR route and both platform resolvers.
 The same actor check covers the existing inline routes, including every
 unconditional Fast Gate. Pages and the main ratchet audit also admit manual
 runs from listed actors. The four non-agentic code-review checks
-(`autosde-rules`, `inclusive-language`, `pr-hygiene`, `sast`) use the PR
-route; the merge-conflict label job and the reusable wheel/dependency-audit
-jobs use the fleet only for push events, keeping scheduled and manual callers
+(`autosde-rules`, `inclusive-language` and `sast` in `code-review.yml`,
+`pr-hygiene` in `pr-hygiene.yml`) use the PR route; the merge-conflict label job
+and the reusable wheel/dependency-audit jobs use the fleet only for push events, keeping scheduled and manual callers
 off it -- on the `kirocrew-runners` group in this repository, and on
 `ubuntu-latest` in a fork, which cannot reach that group.
 Their permissions and triggers are unchanged. `sast` alone changed its steps:
@@ -1346,8 +1347,8 @@ choose at run time.** Twenty jobs take this form. Six fire on no pull request at
 all -- `build-wheel.yml`, `dependency-vulnerability.yml`,
 `pr-merge-conflict-label.yml`, both `pages.yml` jobs, and `ci.yml`'s
 `cancel-superseded-run`, whose `if:` is a push to `main` -- and fourteen are the
-pull-request lanes: `code-review.yml`'s four, `fast-gate.yml`'s three,
-`ci.yml`'s `changes` and `await-fast-gate`, `build.yml`'s `build-wheel` and
+pull-request lanes: `code-review.yml`'s three, `pr-hygiene.yml`'s one,
+`fast-gate.yml`'s three, `ci.yml`'s `changes` and `await-fast-gate`, `build.yml`'s `build-wheel` and
 `desktop-matrix`, `pr-policy.yml`, `dependency-review.yml`'s `license-gate` and
 `macos-on-demand.yml`'s `decide`.
 Every one keeps its CodeBuild fleet route and changed only what happens when the
@@ -1383,14 +1384,14 @@ stops landing on the enterprise-shared standard pool.
 **What reaches this leg is mostly NOT fork traffic, which is the thing to
 measure rather than assume.** The fleet branch admits the `pull_request` actions
 `opened` and `synchronize` only, and these workflows subscribe to more than
-that: `code-review.yml` adds `reopened` and `edited`, `pr-policy.yml` adds
-`reopened`, `edited`, `labeled` and `unlabeled`, `dependency-review.yml` adds
-`reopened`, `labeled` and `unlabeled`, `macos-on-demand.yml` adds `reopened`
-and `labeled`, and `codeql.yml` adds `reopened` and `ready_for_review`. So every
-label a bot adds or removes, every description edit, and every draft marked
-ready for review, on an ordinary same-repository pull request from a listed
-actor, misses the fleet and lands here. Measured over one 6-hour window on the
-two workflows carrying
+that: `code-review.yml` and `pr-hygiene.yml` add `reopened` and `edited`,
+`pr-policy.yml` adds `reopened`, `edited`, `labeled` and `unlabeled`,
+`dependency-review.yml` adds `reopened`, `labeled` and `unlabeled`,
+`macos-on-demand.yml` adds `reopened` and `labeled`, and `codeql.yml` adds
+`reopened` and `ready_for_review`. So every label a bot adds or removes, every
+description edit, and every draft marked ready for review, on an ordinary
+same-repository pull request from a listed actor, misses the fleet and lands
+here. Measured over one 6-hour window on the two workflows carrying
 most of it, 317 of 357 such jobs (88%) were same-repository runs on a
 non-admitted action and only 40 (11%) were fork pull requests. A merge group
 queued by an unlisted actor lands here too.
@@ -2884,6 +2885,18 @@ never the pull request's copy.
 No model, no secrets, so it is safe on forks and always runs. It is the grep-half
 of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
 
+Its three diff jobs read the diff and nothing else. `pr-hygiene`, which judges
+the title and body, is the whole of `pr-hygiene.yml`. Both files hear `edited`
+and both are readiness lanes.
+
+`code-review.yml` keeps `edited` because a base retarget is an `edited` event,
+and a retarget moves the diff the scans read. So a title or body edit re-runs
+the scans too. They cannot skip it: Readiness keeps a lane's newest run, so a
+run with the scans skipped would replace one whose scan failed (#26840). And
+without `edited`, a head could keep a scan made against an earlier base. Letting
+an edit skip the scans needs Readiness to check which base a run scanned
+(#31076).
+
 - **`autosde-rules`** blocks unambiguous frontend violations on added lines: an
   inline `<svg viewBox>` outside brand-mark components (`KiroGhost.tsx`, `*Logo.tsx`,
   `*Ghost.tsx`), a `<div>`/`<span>` with `onClick` and no `role`, `.innerHTML =`,
@@ -2921,8 +2934,8 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   `.vulnerability-exceptions.json`, and a registry stall or connection fault is
   retried inside one shared time budget before it fails (see the
   transient-failure contract in the security spec).
-- **`pr-hygiene`** enforces a Conventional-Commits PR title (it becomes the
-  squash-merge message), at most two commits (`git rev-list --count <= 2`), and a
+- **`pr-hygiene`** (`pr-hygiene.yml`) enforces a Conventional-Commits PR title (it
+  becomes the squash-merge message), at most two commits (`git rev-list --count <= 2`), and a
   `## Pattern harvest` section on `fix`/`revert` PRs containing either
   `Rule candidate:` or `Not generalizable:`. One commit stays the norm; the second
   is there so a mechanical follow-up (a regenerated artifact, a formatting sweep)
@@ -4258,8 +4271,8 @@ reads the head's `pull_request` workflow runs **once** and picks the latest run 
 monitored workflow out of that page, and publishes **one `PR Readiness` commit
 status plus one `readiness:` label**.
 
-- **Always required:** Fast Gate, CI, Build, Code Review, Issue Gate, and
-  Internal Content Scan (the same-repository workflow or the fork check-run). `Fast Gate` is a lane in
+- **Always required:** Fast Gate, CI, Build, Code Review, PR Hygiene, Issue Gate,
+  and Internal Content Scan (the same-repository workflow or the fork check-run). `Fast Gate` is a lane in
   its own right and not merely CI's precondition — a red gate must red the PR, and
   `await-fast-gate` reports `failure` rather than the gate that actually broke, so
   the readable verdict has to come from the gate workflow itself. It carries CI's
@@ -5344,7 +5357,7 @@ Making `PR Readiness` a required status remains an explicit branch-protection
 or ruleset setting outside the workflow.
 
 The aggregate covers the latest PR result for Fast Gate, CI, Build, Code Review,
-Issue Gate, Internal Content Scan, Opus 5.5 Review, GPT 6.1 Review (two GPT passes plus
+PR Hygiene, Issue Gate, Internal Content Scan, Opus 5.5 Review, GPT 6.1 Review (two GPT passes plus
 conditional Opus adjudication), Security Scope Review, Design Review, UX Review,
 and First Principles Review. For managed CodeQL it requires
 both the dynamic analysis workflow and the exact-head `CodeQL` security result
@@ -5378,7 +5391,7 @@ carrying an older expected SHA is ignored, so a late
 run cannot relabel the new revision. A code-free `pull_request_target` handler
 updates same-repository and fork PRs from the trusted base workflow. Actions
 that start or restart validation for the same SHA, including a PR description
-edit that re-runs Code Review, force the aggregate to `checking` before run
+edit that re-runs Code Review and PR Hygiene, force the aggregate to `checking` before run
 lookup so an older successful same-SHA run cannot keep readiness green. A lane's
 completion, same-repository or `fork-*`, reaches readiness only through
 `pr-readiness-sweep.yml`, within one sweep tick (~5 minutes): `pr-readiness.yml`

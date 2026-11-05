@@ -54,7 +54,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "fork-pr-description.yml"
-# The rules themselves: one script, shared with PR Hygiene in code-review.yml.
+# The rules themselves: one script, shared with PR Hygiene in pr-hygiene.yml.
 SCRIPT = ROOT / ".github" / "scripts" / "pr-description-check.sh"
 
 pytestmark = pytest.mark.skipif(
@@ -727,7 +727,7 @@ def test_pr_hygiene_runs_the_same_rules_for_every_pr() -> None:
     """Fork and same-repo PRs must follow one rule set, so PR Hygiene -- which
     blocks PR Readiness -- runs the same script and fails on its verdict."""
     doc = yaml.safe_load(
-        (ROOT / ".github" / "workflows" / "code-review.yml").read_text(encoding="utf-8")
+        (ROOT / ".github" / "workflows" / "pr-hygiene.yml").read_text(encoding="utf-8")
     )
     steps = doc["jobs"]["pr-hygiene"]["steps"]
     step = next(s for s in steps if s.get("name") == "Require the PR template sections")

@@ -56,7 +56,7 @@ With ``--check-body`` it also reads the PR body the skill writes --
 
 * **Pattern harvest.** On a ``fix``/``revert`` title the body needs a
   ``## Pattern harvest`` heading and a ``Rule candidate:`` or ``Not generalizable:``
-  line, the rule CI's PR Hygiene step enforces inline in ``code-review.yml`` (so there is
+  line, the rule CI's PR Hygiene step enforces inline in ``pr-hygiene.yml`` (so there is
   no script to run from the base). A miss prints CI's message and is exit 26. The
   three ``HARVEST_*`` patterns are that step's; a test fails if the workflow's change.
 
@@ -141,7 +141,7 @@ SIBLING_CHECK = ".github/scripts/sibling_list_check.py"
 PROOF_CHECK = ".github/scripts/proof_line_check.py"
 PROVE_RECORD = "prepare-pr-prove.json"
 
-# CI's Pattern harvest rule, copied from PR Hygiene in .github/workflows/code-review.yml
+# CI's Pattern harvest rule, copied from PR Hygiene in .github/workflows/pr-hygiene.yml
 # (grep -qiE there, re.IGNORECASE | re.MULTILINE here). A test pins each to the workflow.
 HARVEST_TITLE_RE = r"^(fix|revert)([(!:]|$)"
 HARVEST_HEADING_RE = r"^##+ *Pattern harvest"

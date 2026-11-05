@@ -2,7 +2,7 @@
 
 CI's PR Hygiene step fails a ``fix``/``revert`` pull request whose body has no
 ``## Pattern harvest`` heading, or whose section has no ``Rule candidate:`` or
-``Not generalizable:`` line. The rule is inline shell in ``code-review.yml``, so
+``Not generalizable:`` line. The rule is inline shell in ``pr-hygiene.yml``, so
 ``--check-body`` carries a copy of its three patterns; this file pins the copy to
 the workflow and checks the local verdicts match CI's.
 """
@@ -17,7 +17,7 @@ from skill_script_helpers import load_skill_script
 ROOT = Path(__file__).resolve().parent.parent
 PREPARE_PR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr"
 SCRIPT = PREPARE_PR / "scripts" / "diff_signals.py"
-WORKFLOW = ROOT / ".github" / "workflows" / "code-review.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "pr-hygiene.yml"
 
 ds = load_skill_script("prepare_pr_diff_signals_harvest_under_test", SCRIPT)
 
