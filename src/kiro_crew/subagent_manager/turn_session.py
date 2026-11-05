@@ -40,11 +40,23 @@ def _facade() -> ModuleType:
 
 
 def resolve_parent_policy(self: RunEventCoordinator, info: SubagentInfo) -> str:
-    """The approval policy the child's tool calls inherit: the parent session's, else
-    ``auto`` from the spawn's own ``approval_mode``, yolo, the global config (only with no
-    live parent) or ``auto_approve_subagent_tools``, each fallback audited."""
+    """The approval policy the child's tool calls inherit: the spawn-tree root
+    session's, else ``auto`` from the spawn's own ``approval_mode``, yolo, the global
+    config (only with no live parent) or ``auto_approve_subagent_tools``, each fallback
+    audited.
+
+    Read off the run's resolved spawn-tree root (``trust_root_key``, stamped once at
+    admission), not its immediate ``parent_session_key``: at depth 2+ the parent key is
+    ``subagent:<id>``, which carries no policy, so reading it would treat a nested run of
+    a trusted chat as untrusted here as well as at the spawn gate. For a direct child the
+    root IS the parent key, so this reads that key. A run whose root could not be resolved
+    carries an empty ``trust_root_key`` and gets no policy — fail closed. A record with no
+    stamp (``trust_root_key == ""``) falls back to its ``parent_session_key``: for a
+    direct child that is the root, and for a nested record that is its ``subagent:``
+    parent, which carries no policy and so still fails closed."""
     _sa = _facade()
-    parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
+    trust_key = info.trust_root_key or info.parent_session_key
+    parent_policy = self._manager._sessions.get_approval_policy(trust_key)
     # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
     if not parent_policy and info.approval_mode == "auto":
         parent_policy = "auto"

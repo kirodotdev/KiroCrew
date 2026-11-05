@@ -454,7 +454,17 @@ is_tracked_channel = _owner_channel_upload.is_tracked_channel
 
 
 def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str:
-    """The parent session key of the sub-agent running under *session_key*, or ``""``.
+    """The session key whose tab a card for the sub-agent running under
+    *session_key* must appear in, or ``""``.
+
+    That tab is the one at the ROOT of the run's spawn tree — a nested run
+    (depth 2+) surfaces on the chat/cron/channel its chain traces back to, the
+    same tab its trust is read from, not its immediate ``subagent:<id>`` parent,
+    which names no tab. So this returns the run's resolved spawn-tree root
+    (``trust_root_key``, stamped once at admission) when it has one, and its
+    immediate ``parent_session_key`` otherwise — for a DIRECT child that parent
+    IS the root, and a record with no stamp routes to its immediate parent (so a
+    run whose root was never resolved still gets a tab rather than vanishing).
 
     Matches on BOTH spellings a run can be keyed by — its ``conversation_key`` (a
     continuable run) and ``subagent:<id>`` — the same comparison
@@ -504,10 +514,14 @@ def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str
         )
 
     best = max(matches, key=_rank)
-    parent = getattr(best, "parent_session_key", "")
+    # The spawn-tree root is where the card belongs; the immediate parent is the
+    # fallback for a direct child (whose root IS its parent) and for a record
+    # that carries no stamp.
+    root = getattr(best, "trust_root_key", "")
+    target = root if isinstance(root, str) and root else getattr(best, "parent_session_key", "")
     # isinstance, not truthiness: a stubbed manager can hand back a
     # non-str here and dashboard_slot_key would treat it as a key.
-    return parent if isinstance(parent, str) else ""
+    return target if isinstance(target, str) else ""
 
 
 def _sel():

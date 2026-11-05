@@ -109,6 +109,22 @@ class SubagentInfo:
     # record, and the handler answers 429 from that absence.
     error_code: str = ""
     parent_session_key: str = ""
+    # The session key at the ROOT of this run's spawn tree — the chat, cron or
+    # channel a nested chain traces back to. Resolved ONCE at admission by
+    # following ``parent_session_key`` through sub-agent records until a
+    # non-``subagent:`` key (gate.py ``_resolve_trust_root``), then read for the
+    # trust lookup and for prompt/card routing so a run at ANY depth inherits
+    # the root's trust and surfaces on the root's tab.
+    #   - direct child of a root session: this is ``parent_session_key`` itself
+    #     (that key already IS the root), so the trust and routing read the root
+    #     key directly.
+    #   - nested child (depth 2+): the resolved root of the chain, not the
+    #     immediate ``subagent:<id>`` parent (which carries no approval policy
+    #     and names a tab no surface reads).
+    #   - empty only when the chain cannot be proven (a broken or cyclic link):
+    #     the trust read of an empty key returns no policy, so such a run FAILS
+    #     CLOSED to untrusted.
+    trust_root_key: str = field(default="", kw_only=True)
     # Lineage depth: 1 for a child of a root session (chat, cron, channel),
     # its parent's depth + 1 for a child of a sub-agent. Set at admission,
     # which refuses a spawn past ``_MAX_SPAWN_DEPTH``.

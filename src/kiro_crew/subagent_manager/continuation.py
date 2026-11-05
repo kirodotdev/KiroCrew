@@ -729,6 +729,27 @@ class ContinuationCoordinator(ManagerComponent):
         )
         if type(run_depth) is not int:
             run_depth = None
+        # The run's spawn-tree root, inherited like its depth ONLY when this
+        # continuation keeps the run's originating parent. The owner may continue
+        # a resumable run under a DIFFERENT ``parent_session``; carrying the old
+        # root there would run the new turn under the previous chat's trust and
+        # route its cards to the previous chat. So the stamp is carried only when
+        # ``parent_session_key`` still equals the original's parent; a changed
+        # parent (or no live original, e.g. after a restart) passes ``None`` and
+        # lets admission re-resolve the root from the parent chain actually in
+        # effect — which grants no more trust than that parent's own root and
+        # fails closed when the chain cannot be proven. Not read from persisted
+        # state: the record does not store it, and a same-parent continuation of
+        # a direct child re-resolves its root (its own ``parent_session_key``)
+        # correctly without it.
+        run_trust_root = None
+        if (
+            original is not None
+            and isinstance(original.trust_root_key, str)
+            and original.trust_root_key
+            and parent_session_key == original.parent_session_key
+        ):
+            run_trust_root = original.trust_root_key
         # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
         # cwd to the pool project before it validates the agent name, so a run
         # spawned against a project-local agent (defined under that project's
@@ -766,6 +787,7 @@ class ContinuationCoordinator(ManagerComponent):
             memory_store=memory_store,
             _memory_mode=_memory_mode,
             _depth=run_depth,
+            _trust_root_key=run_trust_root,
             app=app,
             **(
                 {"_execution_context": _execution_context.to_record()}

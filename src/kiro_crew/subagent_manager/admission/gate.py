@@ -80,6 +80,74 @@ class _GateMixin(ManagerComponent):
     # ``gate_execution``.
     resolve_spawn_execution = _gate_execution.resolve_spawn_execution
 
+    def _resolve_trust_root(self, parent_session_key: str) -> str:
+        """The session key at the ROOT of the spawn tree a child of
+        *parent_session_key* joins — the chat, cron or channel its chain traces
+        back to — or ``""`` when the chain cannot be proven.
+
+        A direct child of a root session has a non-``subagent:`` parent key, which
+        IS the root, so this returns it verbatim. A nested child's parent key is
+        ``subagent:<id>``; its parent run was itself admitted through this gate
+        and stamped with its own resolved root, so the child's root is that stamp
+        — one read, correct at any depth, because each level fixes its root from
+        the level above it.
+
+        Fails CLOSED. A ``subagent:`` parent whose run record is absent (evicted,
+        lost to a restart) or whose stamp is empty (its own chain was unprovable)
+        yields ``""``: the caller reads trust off this key, and an empty key has
+        no approval policy, so a run whose root cannot be established is treated
+        untrusted rather than inheriting a trust it cannot trace. A cycle cannot
+        form — the stamp is written once at admission from an already-resolved
+        ancestor, never re-derived — so this makes no walk that could loop.
+        """
+        prefix = "subagent:"
+        if not parent_session_key or not parent_session_key.startswith(prefix):
+            # The parent is the root (or there is no parent): its own key is the
+            # root key. An empty parent key stays empty — fail-closed untrusted.
+            return parent_session_key
+        parent_id = parent_session_key[len(prefix) :]
+        # The parent run, by the same identity rule the depth walk uses: the run
+        # the key names, plus a continuation of it (its own id, the original's
+        # ``conversation_key``). One key can match more than one record — the
+        # original run and a continuation of it from a DIFFERENT chat, each with
+        # its own root. Collect each tier's roots AND whether any match in that
+        # tier carries no root: live records are the authority, finished records
+        # a last-resort fallback only, so a lingering tombstone never shadows a
+        # run actually spawning now.
+        live_roots: set[str] = set()
+        done_roots: set[str] = set()
+        live_empty = False
+        done_empty = False
+        for a in self._manager._agents.values():
+            is_named = a.id == parent_id
+            is_continuation = (
+                getattr(a, "conversation_key", "") or f"{prefix}{a.id}"
+            ) == parent_session_key
+            if not (is_named or is_continuation):
+                continue
+            root = getattr(a, "trust_root_key", "")
+            root = root if isinstance(root, str) and root else ""
+            if not getattr(a, "done", False):
+                live_roots.add(root) if root else None
+                live_empty = live_empty or not root
+            else:
+                done_roots.add(root) if root else None
+                done_empty = done_empty or not root
+        # Choose the tier that decides: live matches if any, else finished ones.
+        # Within that tier the answer is the ONE agreed root, and only when every
+        # match in it carries that root. It FAILS CLOSED to ``""`` (untrusted)
+        # otherwise — no match at all, more than one distinct root (a conversation
+        # continued by another chat leaves two records with different roots, and
+        # picking by order or recency could auto-approve under a chat the run does
+        # not belong to — in Shared Crew, another person), or a match whose own
+        # chain was unprovable and left its stamp empty (trusting the tier's root
+        # then would grant trust through a record that cannot trace it). An empty
+        # stamp in the NON-deciding tier is ignored: live records override
+        # finished ones outright.
+        if live_roots or live_empty:
+            return next(iter(live_roots)) if len(live_roots) == 1 and not live_empty else ""
+        return next(iter(done_roots)) if len(done_roots) == 1 and not done_empty else ""
+
     def spawn_impl(
         self,
         task: str,
@@ -128,6 +196,7 @@ class _GateMixin(ManagerComponent):
         _stop_before_memory_read: bool = False,
         _memory_reading: "tuple[float, str] | None" = None,
         _depth: int | None = None,
+        _trust_root_key: str | None = None,
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | MemoryReadPoint | None":
         """Spawn a subagent for *task*.
 
@@ -135,8 +204,11 @@ class _GateMixin(ManagerComponent):
 
         1. YOLO mode → immediate execution
         2. ``approval_mode="auto"`` from caller → immediate execution
-        3. parent session trust (``approval_policy == "auto"``, the dashboard
-           Trust toggle) → auto-approved execution
+        3. spawn-tree ROOT trust (``approval_policy == "auto"`` on the chat/cron/
+           channel at the root of this run's spawn tree, the dashboard Trust
+           toggle) → auto-approved execution. A nested sub-agent (depth 2+) reads
+           the root's trust, not its immediate ``subagent:<id>`` parent's (which
+           carries no policy); see ``_resolve_trust_root``.
         4. ``auto_approve_subagent_spawn`` config → auto-approved execution
         5. ``on_spawn_approval`` callback → interactive approval, unless the
            callback reports it has no surface to raise the prompt on, in which
@@ -351,6 +423,21 @@ class _GateMixin(ManagerComponent):
             _proven_depth = 1
         _carried_depth = _depth if type(_depth) is int else 0
         _depth = max(_carried_depth, _proven_depth)
+        # Spawn-tree ROOT, resolved ONCE here and stamped on the run so every
+        # later trust read and every prompt/card route reads the chat/cron/
+        # channel at the root of the chain rather than the immediate
+        # ``subagent:<id>`` parent (which carries no approval policy and names a
+        # tab no surface reads). Carried by every re-entry from ``queue_params``
+        # exactly like ``_depth``, so a drain, retry or continuation keeps the
+        # root it was admitted under after the parent record is gone. Taking a
+        # carried value when present means the root is fixed at FIRST admission;
+        # re-deriving it later could read a mutated chain. A broken, cyclic or
+        # unresolvable chain leaves it ``""`` — the trust read of an empty key
+        # returns no policy, so a run whose root cannot be proven FAILS CLOSED to
+        # untrusted rather than inheriting trust it cannot establish.
+        _trust_root = _trust_root_key if type(_trust_root_key) is str else ""
+        if not _trust_root:
+            _trust_root = self._resolve_trust_root(parent_session_key)
         # The second half of a claimed dispatch is never refused for depth: its
         # first half already was checked, and a refusal here would return the
         # claimed row to the store as claimable work the caller was told was
@@ -658,6 +745,11 @@ class _GateMixin(ManagerComponent):
             "crew": crew,
             "_memory_mode": _memory_mode,
             "_depth": _depth,
+            # Queued alongside ``_depth`` and for the same reason: the drain
+            # re-enters ``spawn`` from this dict alone, and the root must be the
+            # one fixed at first admission, not re-derived off a chain that may
+            # have changed (or vanished) while the row waited on capacity.
+            "_trust_root_key": _trust_root,
             # Same rule for the asking turn: `spawn_async` re-enters from this
             # dict (prepare -> write -> re-enter), so a follow-up whose asking
             # ordinal was pinned by its watcher would otherwise be re-read from
@@ -1549,6 +1641,7 @@ class _GateMixin(ManagerComponent):
             crew=crew,
             memory_mode=_memory_mode,
             depth=_depth,
+            trust_root_key=_trust_root,
             **run_fields,
         )
         info._start_price_gb = candidate_price
@@ -1597,10 +1690,16 @@ class _GateMixin(ManagerComponent):
             except RuntimeError:
                 pass  # no running loop (sync/test context)
 
-        # Check parent session trust (approval_policy="auto") set by dashboard trust toggle.
+        # Spawn-tree ROOT trust (approval_policy="auto"), set by the dashboard
+        # Trust toggle on the chat/cron/channel at the root of this run's chain.
+        # Read off the resolved root stamped above, NOT ``parent_session_key``:
+        # at depth 2+ the parent key is ``subagent:<id>``, which carries no
+        # policy, so reading it would treat a nested child of a trusted chat as
+        # untrusted. For a direct child the root IS the parent key, so this reads
+        # that key directly. An unresolvable chain leaves ``_trust_root`` empty,
+        # and ``get_approval_policy("")`` returns no "auto" — fail closed.
         parent_trusted = (
-            parent_session_key
-            and self._manager._sessions.get_approval_policy(parent_session_key) == "auto"
+            _trust_root and self._manager._sessions.get_approval_policy(_trust_root) == "auto"
         )
 
         # Shared Crew: each run's runtime starts in its initiator's containment slice.
