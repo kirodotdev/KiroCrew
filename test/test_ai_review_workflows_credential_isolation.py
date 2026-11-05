@@ -25,6 +25,7 @@ from ai_review_workflows_helpers import (
     _step_script,
     _workflow,
 )
+from installer_test_helpers import run_bounded
 
 
 def _lane_jobs(lane: str) -> dict:
@@ -862,3 +863,63 @@ class TestReviewSandboxFailsClosed:
         # or it proves nothing about the sandbox those passes get.
         env = _step_env("fork-gpt-review.yml", self.STEP)
         assert env.get("CODEX_BIN") == "${{ runner.temp }}/review-cli/node_modules/.bin/codex"
+
+    def _run_environ_probe(self, tmp_path: Path, codex_filter: str, env_stub: str | None = None):
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the verify step is exercised on POSIX runners")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        codex = bin_dir / "codex"
+        codex.write_text(
+            '#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\nshift\n'
+            + codex_filter
+            + 'exec "$@"\n',
+            encoding="utf-8",
+        )
+        (bin_dir / "sudo").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        if env_stub is not None:
+            (bin_dir / "env").write_text(env_stub, encoding="utf-8")
+        for stub in bin_dir.iterdir():
+            stub.chmod(0o755)
+        (tmp_path / "README.md").write_text("checkout\n", encoding="utf-8")
+        script = tmp_path / "verify.sh"
+        script.write_text(self._script(), encoding="utf-8", newline="\n")
+        return run_bounded(
+            [bash, str(script)],
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "CODEX_BIN": str(codex),
+                "CRED_FILE": str(tmp_path / "absent"),
+            },
+            cwd=str(tmp_path),
+        )
+
+    @pytest.mark.skipif(not Path("/proc/self/environ").is_file(), reason="reads a Linux /proc")
+    @pytest.mark.parametrize("own_proc", [False, True])
+    def test_it_fails_closed_when_another_process_environment_is_readable(
+        self, tmp_path: Path, own_proc: bool
+    ) -> None:
+        # A stand-in `codex sandbox` that runs the command unconfined sees every
+        # job process in /proc, so the step must refuse. With `own_proc` it
+        # refuses /proc/<pid>/environ reads, as a sandbox with its own /proc
+        # view does, and the step must pass.
+        hide = 'case "$*" in */environ*) exit 2;; esac\n' if own_proc else ""
+        proc = self._run_environ_probe(tmp_path, hide)
+        assert proc.returncode == (0 if own_proc else 1), proc.stdout + proc.stderr
+        assert ("could read another process's environment" in proc.stdout) is not own_proc
+
+    @pytest.mark.skipif(not Path("/proc/self/environ").is_file(), reason="reads a Linux /proc")
+    def test_it_fails_closed_when_the_marked_sibling_never_shows_its_marker(
+        self, tmp_path: Path
+    ) -> None:
+        # A sibling whose environment never carries the marker leaves nothing for
+        # the sandboxed read to miss, so a refusal there would prove nothing: the
+        # step must fail closed instead of reporting the boundary as holding.
+        # The `env` stand-in drops `-i KC_SANDBOX_PROBE=sibling` and runs `sleep`.
+        hide = 'case "$*" in */environ*) exit 2;; esac\n'
+        proc = self._run_environ_probe(tmp_path, hide, env_stub='#!/bin/sh\nshift 2\nexec "$@"\n')
+        assert proc.returncode == 1, proc.stdout + proc.stderr
+        assert "never became readable outside the sandbox" in proc.stdout
+        assert "cannot read another process's environment (expected)" not in proc.stdout
