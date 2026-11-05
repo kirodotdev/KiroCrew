@@ -23,6 +23,11 @@ emptied transcript is reported as nothing heard rather than written into an agen
 notes). It is the recogniser's own artefact, so it is not applied to `apple` or
 `transcribe`.
 
+aiohttp does not cancel a handler when its client leaves, so the batch endpoint
+checks its uploader every `_CLIENT_GONE_POLL_SECS` while the decode runs and
+cancels the decode when the connection is closing. The engine answers that
+cancellation by aborting the native decode before the endpoint deletes the clip.
+
 The batch endpoint's response contract: a decode that heard nothing
 (`transcribe_audio` returns `""`) is `200 {"text": ""}`; a failed decode
 (`transcribe_audio` returns `None`) or an unexpected error is `500` with
