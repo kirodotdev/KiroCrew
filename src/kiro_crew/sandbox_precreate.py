@@ -373,6 +373,11 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # frozen at ``{}`` keeps redacting after the owner switches off, which is
     # narrower than the truth (criterion 2).
     "credential_redaction.json",
+    # The owner's MCP message-body fields: ``mcp_body_fields.owner_rows`` reads an
+    # absent, empty, ``{}`` and unreadable store alike as no rows (criterion 1); the
+    # writer publishes through ``atomic_write`` (new inode), so a sandboxed reader
+    # frozen at ``{}`` sees fewer allowed fields than the owner set (criterion 2).
+    "mcp_body_fields.json",
     "settings_seeds.json",
     # The operator's grants of ``owner`` trust to a hand-configured app registry.
     # Satisfies both criteria the way ``ssh_auth_sock_consent.json`` does:

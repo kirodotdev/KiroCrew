@@ -596,6 +596,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # what keeps the switch the owner's regardless of how a command spells the
     # way there.
     "credential_redaction.json",
+    # The MCP message-body fields the owner allowed. Same class: a writable list
+    # lets an agent allow its own fields past the tool_input size ceiling. Read
+    # only by the gateway's gate; an absent or unreadable file reads as no rows.
+    "mcp_body_fields.json",
     # The Browser Harness prefix (``browser_harness.install.PREFIX_LEAF``): the
     # venv whose interpreter the unsandboxed gateway EXECUTES for the daemon and
     # the helper worker, plus Kiro's Chromium beside it. A write would choose the
@@ -1044,6 +1048,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # Allowed hosts for the exfiltration check. Host names, not credentials; the
     # risk is a write, answered by the read-only seal.
     "redaction-allow",
+    # The owner's MCP message-body fields: server, tool and field names, no
+    # credential. The risk is a write, answered by the read-only seal.
+    "mcp_body_fields.json",
     # The operator's cloud configuration and the launch record beside it. Neither holds
     # a credential (``CloudConfig`` documents the file as the operator's own, with none),
     # and in-sandbox code READS both: the provisioner selector resolves the Fargate block

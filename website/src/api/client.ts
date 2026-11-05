@@ -118,6 +118,8 @@ export type {
   DeniedUserRule,
   AwsConsentStatus,
   CredentialRedactionState,
+  McpBodyFieldRow,
+  McpBodyFieldsData,
   DeniedCommandsData,
   GovernanceScopeDetail,
   GovernanceScope,

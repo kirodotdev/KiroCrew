@@ -33,6 +33,7 @@ from kiro_crew.hooks import (
     untruncated_shell_title,
 )
 from kiro_crew.llm_helpers_parts.tool_input_denials import (
+    _MAX_SCANNABLE_TOOL_INPUT_CHARS,
     _edit_target_denial,
     _extract_tool_input_strings,
     _first_tool_input_denial,
@@ -52,6 +53,11 @@ from kiro_crew.security import (
     is_denied_synthesized_target,
     redact_credentials,
     redact_exfiltration_urls,
+)
+from kiro_crew.security.mcp_body_fields import (
+    body_field_denial,
+    body_field_keys,
+    named_size_refusal,
 )
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.tool_gate_busy import hook_gate_busy
@@ -490,6 +496,29 @@ async def _resolve_permission(
         )
         else frozenset()
     )
+    # A third-party MCP tool's message-body fields (``security.mcp_body_fields``:
+    # the reviewed defaults plus the rows the dashboard owner allowed). Same
+    # identity and params bar as the Kiro Crew rows above, and only for a call no
+    # Kiro Crew row covers. The rows are resolved in ``_scan_off_loop`` because the
+    # owner's are read from disk. A body field gets the document detectors with the
+    # 256 KiB ceiling and never reaches the shell matcher or the deny-rule list.
+    _body_field_server = getattr(event, "mcp_server_name", "") or ""
+    _body_field_tool = getattr(event, "tool_name", "") or ""
+    _body_field_params: dict | None = (
+        event.raw_tool_params
+        if (
+            _edit_params is None
+            and _scoped_params is None
+            and not _mcp_body_keys
+            and _body_field_server
+            and _body_field_tool
+            and not getattr(event, "is_shell", False)
+            and getattr(event, "raw_params_trusted", False)
+            and getattr(event, "mcp_identity_trusted", False)
+            and isinstance(getattr(event, "raw_tool_params", None), dict)
+        )
+        else None
+    )
     _scoped_truncated = False
     _body_strings: list[str] = []
     if _edit_params is not None:
@@ -564,7 +593,16 @@ async def _resolve_permission(
             edit_hit = _edit_target_denial(_gated_params, event.diff_path, event.tool_kind)
             if edit_hit is not None:
                 return (*edit_hit, "always_deny_input")
-        if _scoped_truncated:
+        input_strings, scoped_truncated = _input_strings, _scoped_truncated
+        field_bodies: list[str] = []
+        if _body_field_params is not None:
+            field_keys = body_field_keys(_body_field_tool, _body_field_server)
+            if field_keys:
+                rest, field_bodies = split_document_bodies(_body_field_params, field_keys)
+                field_rest = command_shaped_strings(rest, body_keys=frozenset())
+                scoped_truncated = field_rest.truncated
+                input_strings = list(field_rest)
+        if scoped_truncated:
             # The field-scoped walk could not finish, so the strings it did
             # collect are not the whole payload: refuse rather than scan a part.
             return (
@@ -573,17 +611,36 @@ async def _resolve_permission(
                 "",
                 "always_deny_input",
             )
-        if _input_strings:
+        if input_strings:
             input_hit = _first_tool_input_denial(
-                _input_strings, _denied_regexes, exempt_command=_path_tier_exempt(event)
+                input_strings, _denied_regexes, exempt_command=_path_tier_exempt(event)
             )
             if input_hit is not None:
+                if input_hit[0] == "oversize" and _body_field_params is not None:
+                    input_hit = _named_size_refusal(input_hit)
                 return (*input_hit, "always_deny_input")
         if _body_strings:
             body_hit = _first_tool_input_denial(_body_strings, _denied_regexes, command_rules=False)
             if body_hit is not None:
                 return (*body_hit, "always_deny_input")
+        if field_bodies:
+            field_hit = body_field_denial(field_bodies)
+            if field_hit is not None:
+                return (*field_hit, "always_deny_input")
         return None
+
+    def _named_size_refusal(hit: tuple[str, str, str]) -> tuple[str, str, str]:
+        # A trusted MCP call refused for one top-level field's size: name the tool
+        # and field, and remember the refusal so the dashboard owner can allow that
+        # exact row (``security.mcp_body_fields.named_size_refusal``).
+        assert _body_field_params is not None
+        reason = named_size_refusal(
+            _body_field_params,
+            _body_field_server,
+            _body_field_tool,
+            _MAX_SCANNABLE_TOOL_INPUT_CHARS,
+        )
+        return hit if reason is None else (hit[0], reason, hit[2])
 
     _hit = await asyncio.to_thread(_scan_off_loop)
     if _hit is not None:

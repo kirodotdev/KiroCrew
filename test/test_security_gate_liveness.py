@@ -682,7 +682,11 @@ def _url_payload_command(n: int) -> str:
 #: Raised by one, from 34,522, for the TickTick consent host in ``exfil_oauth``'s
 #: ``_OAUTH_AUTHORIZATION_ENDPOINTS``: one allowlist entry, no new machinery. Re-measured.
 #: Raised by one, from 34,523, for the Railway consent host in the same set, likewise.
-_PACKAGE_LINE_BUDGET = 34_524
+#: Raised by 179, from 34,524, for ``mcp_body_fields``: the owner's list of
+#: third-party MCP message-body fields, judged by the document detectors under the
+#: 256 KiB source-body ceiling, plus its keystone leaf in ``paths_lists``. Nothing is
+#: relaxed for any other field; every non-body argument keeps the full scan.
+_PACKAGE_LINE_BUDGET = 34_703
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
