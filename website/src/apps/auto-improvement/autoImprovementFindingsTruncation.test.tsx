@@ -18,8 +18,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
 
-import { createTestStore } from './helpers'
-import AutoImprovementPage from '../apps/auto-improvement/AutoImprovementPage'
+import { createTestStore } from '../../test/helpers'
+import AutoImprovementPage from './AutoImprovementPage'
 
 /** `n` ledger rows in a status that renders but draws no per-row PR query. */
 function findings(n: number) {

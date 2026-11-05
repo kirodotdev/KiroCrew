@@ -46,7 +46,7 @@ def test_apply_stdin_is_the_diffs_exact_bytes(tmp_path, monkeypatch, stage):
         rc = 1 if len(seen) == 1 else 0
         err = "error: patch failed"
         if isinstance(kwargs.get("input"), bytes):
-            err = err.encode()  # a run without text mode answers in bytes
+            err = err.encode()  # type: ignore[assignment]  # a run without text mode answers in bytes
         return subprocess.CompletedProcess(argv, rc, err[:0], err)
 
     # Patched through the driver facade, which mirrors both names onto driver_commit.

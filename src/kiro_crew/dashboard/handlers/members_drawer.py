@@ -225,7 +225,7 @@ async def api_member_activity(request: web.Request) -> web.Response:
     Response entries carry an allowlist of fields only: ``ts`` (epoch
     seconds), ``via`` (how the member was engaged — ``chat`` is a session
     the user opened with it, ``select_crew`` is a routing decision, ``spawn``
-    is a delegated run, ``auto-improvement`` is an auto-improvement run), and
+    is a delegated run, and an app's id is a run that app's own runner made), and
     ``project``. Session keys stay out of the payload: the drawer renders
     what happened, not handles into other sessions.
 

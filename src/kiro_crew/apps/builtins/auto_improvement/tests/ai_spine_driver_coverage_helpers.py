@@ -137,7 +137,7 @@ class _Git:
         rc, out, err = self._take(joined)
         if binary:
             # Without text mode a real run answers in bytes; answer the same way.
-            out, err = out.encode(), err.encode()
+            out, err = out.encode(), err.encode()  # type: ignore[assignment]
         return subprocess.CompletedProcess(args=list(argv), returncode=rc, stdout=out, stderr=err)
 
     def seen(self, prefix: str) -> list[str]:
@@ -443,7 +443,7 @@ def _make(tmp_path, *, profile=None, caps=None, **kw):
     clone = tmp_path / "clone"
     clone.mkdir(parents=True, exist_ok=True)
     d = drv.Driver(
-        profile=profile if profile is not None else _Profile(),
+        profile=profile if profile is not None else _Profile(),  # type: ignore[arg-type]
         clone=clone,
         branch="auto_improvement/feature",
         archive_root=tmp_path / "results",

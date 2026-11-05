@@ -2,11 +2,10 @@
  * A seed prompt that provably never ran must not leave a recorded, empty
  * session -- and a seed that MAY be running must never be torn down.
  *
- * Two app seeders guard this -- Issue Radar and Auto Improvement. Both used to
- * read the raw `api.sendChat` response through `readSendReceipt` themselves;
- * both now call the chat-core transport `sendTurn` and branch on its receipt
- * status. This file pins that mapping for BOTH seeders, so the contract cannot
- * drift between them again:
+ * Issue Radar's seeder guards this. It used to read the raw `api.sendChat`
+ * response through `readSendReceipt` itself; it now calls the chat-core transport
+ * `sendTurn` and branches on its receipt status. This file pins that mapping (the
+ * Auto Improvement seeder pins the same contract in its own app directory):
  *
  *   - `refused`         -> slot deleted, nothing recorded, the server's own
  *                          reason surfaces (a refusal inside a 200 is the case a
@@ -22,7 +21,7 @@
  *                          probe the server cannot answer, means it is or may be
  *                          running -> recorded and opened, never cancelled and
  *                          never left orphaned. The policy lives once, in
- *                          `utils/seedReceipt.ts`, and both seeders call it.
+ *                          `utils/seedReceipt.ts`, and every seeder calls it.
  *   - `dispatched` / `queued` -> recorded normally.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -56,7 +55,6 @@ vi.mock('../chat-core/transport/sendTurn', () => ({ sendTurn }))
 vi.mock('../apps/issue-radar/api', () => ({ issueRadarApi: { saveInvestigation, getInvestigation } }))
 
 import { useAgentSession as useIssueRadarSession } from '../apps/issue-radar/lib/agentSession'
-import { useAgentSession as useAutoImproveSession } from '../apps/auto-improvement/lib/agentSession'
 
 const receipt = (status: SendReceipt['status'], reason?: string): SendReceipt =>
   ({ status, body: {}, ...(reason ? { reason } : {}) })
@@ -75,7 +73,6 @@ beforeEach(() => {
   }))
   apiMock.chatFolders.mockResolvedValue([
     { id: 'repo-1', name: 'Issue Radar - demo-repo' },
-    { id: 'repo-2', name: 'Auto-Improve - acme/demo-repo' },
   ])
 })
 
@@ -200,91 +197,4 @@ describe('Issue Radar seed — the sendTurn receipt decides', () => {
     expect(deletedSlot()).toBe(false)
     expect(saveInvestigation).toHaveBeenCalled()
   })
-})
-
-describe('Auto Improvement seed — the same receipt contract', () => {
-  const saved = vi.fn()
-
-  /** The record store is this app's own backend, reached with bare `fetch`:
-   *  GET answers "no record yet", PUT is captured so the test can tell whether a
-   *  session was recorded. */
-  beforeEach(() => {
-    saved.mockReset()
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-      if (init?.method === 'PUT') {
-        saved(init.body)
-        return { ok: true, json: async () => ({ session: { slot_key: 'slot-1', status: 'open' } }) }
-      }
-      return { ok: true, json: async () => ({ session: null }) }
-    }))
-  })
-
-  async function open() {
-    const { result } = renderHook(() => useAutoImproveSession())
-    let opened: unknown = null
-    await act(async () => {
-      opened = await result.current.openSession({
-        kind: 'pr',
-        id: 42,
-        repo: 'acme/demo-repo',
-        title: 'PR #42 · seed',
-        prompt: 'seed',
-      })
-    })
-    return { opened: opened as Awaited<ReturnType<typeof result.current.openSession>>, result }
-  }
-
-  it('sends the seed through the transport, addressed to the new slot', async () => {
-    sendTurn.mockResolvedValue(receipt('dispatched'))
-    await open()
-    expect(sendTurn).toHaveBeenCalledWith({ message: 'seed', slot: 'slot-1' })
-  })
-
-  it.each([
-    ['with the server\'s reason', 'slot agent mismatch', /slot agent mismatch/],
-    ['with the core\'s own copy when the body carried none', undefined, String(i18nT('pages.chatPage.could_not_start_a_new_session'))],
-  ] as const)('tears down and records nothing on `refused` %s', async (_label, reason, expected) => {
-    sendTurn.mockResolvedValue(receipt('refused', reason))
-
-    const { opened, result } = await open()
-    expect(opened).toBeNull()
-    await waitFor(() => expect(result.current.error?.message).toMatch(expected))
-    expect(deletedSlot()).toBe(true)
-    expect(saved).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    ['transport-error', 'empty', { messages: [], total: 0 }, true],
-    ['transport-error', 'seeded', { messages: [{ role: 'user' }], total: 1 }, false],
-    ['response-late', 'empty', { messages: [], total: 0 }, true],
-    ['response-late', 'seeded', { messages: [{ role: 'user' }], total: 1 }, false],
-  ] as const)('on `%s` asks the slot: %s -> tears down %s', async (status, _label, detail, tornDown) => {
-    sendTurn.mockResolvedValue(receipt(status))
-    apiMock.chatSlotDetail.mockResolvedValue(detail)
-
-    const { opened, result } = await open()
-    if (tornDown) {
-      expect(opened).toBeNull()
-      await waitFor(() => expect(result.current.error).toBeTruthy())
-      expect(saved).not.toHaveBeenCalled()
-    } else {
-      expect(opened).not.toBeNull()
-      expect(result.current.error).toBeNull()
-      expect(saved).toHaveBeenCalled()
-    }
-    expect(deletedSlot()).toBe(tornDown)
-  }, 10_000)
-
-  it.each(['unknown', 'dispatched', 'queued'] as const)(
-    'keeps the slot and records the session on `%s`',
-    async (status) => {
-      sendTurn.mockResolvedValue(receipt(status))
-
-      const { opened, result } = await open()
-      expect(opened).not.toBeNull()
-      expect(result.current.error).toBeNull()
-      expect(deletedSlot()).toBe(false)
-      expect(saved).toHaveBeenCalled()
-    },
-  )
 })

@@ -31,10 +31,10 @@ from typing import Any
 
 import pytest
 
-from conftest import requires_symlinks
 from kiro_crew.apps.builtins.auto_improvement.backend import pr_checks
 from kiro_crew.apps.builtins.auto_improvement.backend import pr_watchers as W
 from kiro_crew.apps.builtins.auto_improvement.backend import store
+from kiro_crew.apps.builtins.auto_improvement.tests.symlink_capability import requires_symlinks
 from kiro_crew.testing.wait import wait_until
 
 #: Captured BEFORE any fixture patches the module, so the two subprocess-owning helpers
@@ -218,7 +218,7 @@ def _await_status(
         return snapshot if snapshot.get("status") in statuses else None
 
     return wait_until(
-        reached,
+        reached,  # type: ignore[arg-type]
         timeout=timeout,
         describe=lambda: f"watcher never reached {statuses}; last={reg.status(fp) or {}}",
     )
@@ -1092,7 +1092,7 @@ class TestNudgeLoop:
             reg._watchers["fp1"] = st
         # Set the flag only AFTER the first status read, so the pass is entered and the stop
         # is observed inside `_wait` rather than at the top of the loop.
-        monkeypatch.setattr(reg, "_fetch_status", lambda *a: event.set() or {"ok": False})
+        monkeypatch.setattr(reg, "_fetch_status", lambda *a: event.set() or {"ok": False})  # type: ignore[func-returns-value]
         reg._nudge_loop(st, "", event, loop, StubRunner())
         assert st.status == W.STATUS_STOPPED
         assert st.nudges == 1
@@ -1206,7 +1206,7 @@ class TestRunAgentPass:
         reg, st = self._reg_and_state(tmp_path)
         asked: list[int] = []
         monkeypatch.setattr(
-            reg, "_export_is_durable", lambda state, clone, attempt: asked.append(attempt) or False
+            reg, "_export_is_durable", lambda state, clone, attempt: asked.append(attempt) or False  # type: ignore[func-returns-value]
         )
 
         class Boom:
@@ -1235,7 +1235,7 @@ class TestRunAgentPass:
     ) -> None:
         reg, st = self._reg_and_state(tmp_path)
         monkeypatch.setattr(reg, "_export_is_durable", lambda *a: True)
-        assert reg._run_agent_pass(st, str(tmp_path), _status(), StubRunner(object()), 1) is True
+        assert reg._run_agent_pass(st, str(tmp_path), _status(), StubRunner(object()), 1) is True  # type: ignore[arg-type]
         assert "unknown" in st.last_note
 
     def test_an_isolation_breach_is_terminal(self, tmp_path: Path, git: FakeGit) -> None:
@@ -1547,7 +1547,7 @@ class TestRunWatcher:
         def _loop_body(state: W.WatcherState, *a: Any) -> None:
             state.clone = str(mine)
 
-        reg._nudge_loop = _loop_body  # type: ignore[method-assign]
+        reg._nudge_loop = _loop_body  # type: ignore[assignment,method-assign]
         reg._run_watcher(st, threading.Event(), loop)
         assert not mine.exists()
 
@@ -1572,7 +1572,7 @@ class TestRunWatcher:
             state.clone = str(mine)
             state.unexported_work = True
 
-        reg._nudge_loop = _loop_body  # type: ignore[method-assign]
+        reg._nudge_loop = _loop_body  # type: ignore[assignment,method-assign]
         reg._run_watcher(st, threading.Event(), loop)
         assert mine.is_dir()
         assert any("only copy" in line["text"] for line in reg.get_log("fp1")["lines"])

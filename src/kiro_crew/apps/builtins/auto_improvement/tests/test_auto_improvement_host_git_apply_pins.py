@@ -16,7 +16,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew.apps.builtins.auto_improvement.backend import commit as commit_mod
 from kiro_crew.apps.builtins.auto_improvement.spine import driver_commit
@@ -25,6 +24,13 @@ pytestmark = [
     pytest.mark.skipif(os.name == "nt", reason="marker programs are POSIX shell scripts"),
     pytest.mark.skipif(shutil.which("git") is None, reason="git not available"),
 ]
+
+#: The config that turns git's auto maintenance off: a commit otherwise starts a
+#: detached ``git maintenance run --auto`` that outlives the call.
+GIT_MAINTENANCE_OFF_CONFIG: tuple[tuple[str, str], ...] = (
+    ("maintenance.auto", "false"),
+    ("gc.auto", "0"),
+)
 
 
 def _g(cwd: Path, *args: str, stdin: bytes | None = None) -> subprocess.CompletedProcess:
@@ -37,7 +43,12 @@ def _g(cwd: Path, *args: str, stdin: bytes | None = None) -> subprocess.Complete
         GIT_CONFIG_GLOBAL=os.devnull,
         GIT_CONFIG_NOSYSTEM="1",
     )
-    env.update(git_maintenance_off_entries(env))
+    # Every GIT_* entry was dropped above, so these are the only config entries:
+    # git's auto maintenance stays off in the fixture repos.
+    env["GIT_CONFIG_COUNT"] = str(len(GIT_MAINTENANCE_OFF_CONFIG))
+    for index, (key, value) in enumerate(GIT_MAINTENANCE_OFF_CONFIG):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
     return subprocess.run(
         ["git", *args], cwd=cwd, env=env, input=stdin, capture_output=True, timeout=30
     )
@@ -99,7 +110,7 @@ def test_stage_winner_uses_the_pinned_apply(tmp_path):
     clone, marker, patch = _poisoned_clone(tmp_path)
     driver = SimpleNamespace(clone=clone, branch="work", log=SimpleNamespace(error=print))
 
-    assert driver_commit._stage_winner(driver, SimpleNamespace(diff=patch)) is True
+    assert driver_commit._stage_winner(driver, SimpleNamespace(diff=patch)) is True  # type: ignore[arg-type]
     assert (clone / "a.txt").read_text() == "two\n"
     assert not marker.exists(), marker.read_text()
 

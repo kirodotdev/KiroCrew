@@ -3,8 +3,8 @@ import { join } from 'node:path'
 
 import { describe, it, expect } from 'vitest'
 
-import { sessionKey, truncate } from '../apps/auto-improvement/lib/agentSession'
-import { findingPrompt, prPrompt, rulerPrompt, runPrompt } from '../apps/auto-improvement/lib/prompts'
+import { sessionKey, truncate } from './lib/agentSession'
+import { findingPrompt, prPrompt, rulerPrompt, runPrompt } from './lib/prompts'
 
 /** A fixture repo for the cases that are about kind + id, not the repo segment. */
 const R = 'octo/repo'
@@ -188,7 +188,7 @@ describe('openSession re-entry latch (double-click cannot orphan a conversation)
    * first suspension point, which reads exactly. Raised by the GPT review.
    */
   const SRC = readFileSync(
-    join(__dirname, '..', 'apps', 'auto-improvement', 'lib', 'agentSession.ts'),
+    join(__dirname, 'lib', 'agentSession.ts'),
     'utf-8',
   )
 
@@ -230,7 +230,7 @@ describe('the slot is titled at birth, not renamed afterwards', () => {
    * WHERE the title travels, which reads exactly.
    */
   const TITLE_SRC = readFileSync(
-    join(__dirname, '..', 'apps', 'auto-improvement', 'lib', 'agentSession.ts'),
+    join(__dirname, 'lib', 'agentSession.ts'),
     'utf-8',
   )
 

@@ -50,8 +50,8 @@ def _kindless_write_with_a_read_purpose():
     )
     # Preconditions: this is the shape the bug needs. If the builder ever
     # stops reporting the purpose, the test below would pass vacuously.
-    assert ev.tool_kind == ""
-    assert ev.tool_purpose == _PURPOSE
+    assert ev.tool_kind == ""  # type: ignore[union-attr]
+    assert ev.tool_purpose == _PURPOSE  # type: ignore[union-attr]
     return ev
 
 

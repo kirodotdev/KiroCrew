@@ -694,25 +694,6 @@ def test_heartbeat_queue_and_its_lock_are_owner_only(home: Path) -> None:
     assert _mode(target.parent) == 0o700
 
 
-def test_auto_improvement_run_archive_is_owner_only(home: Path) -> None:
-    """Through the root the supervisor passes (``store.results_dir()``), not a tmp dir."""
-    from kiro_crew.apps.builtins.auto_improvement.backend import store
-    from kiro_crew.apps.builtins.auto_improvement.spine.archive import Archive
-
-    root = store.results_dir()
-    assert home in root.parents
-    archive = Archive(root)
-    archive.write_meta({"run": 1})
-    archive.save_candidate(cand_id="c1", diff="--- a\n+++ b\n", detail={"k": "v"})
-    archive.append_row({"status": "kept"})
-    archive.write_drift(1, {"note": "x"})
-
-    assert _readable_by_others(home / "apps") == []
-    assert _mode(root / "results.tsv") == 0o600
-    assert _mode(root / "candidates.jsonl") == 0o600
-    assert _mode(root / "candidates" / "c1.diff") == 0o600
-
-
 def test_a_crewmate_dashboard_instance_is_owner_only(
     home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

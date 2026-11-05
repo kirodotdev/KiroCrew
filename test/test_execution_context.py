@@ -578,6 +578,12 @@ def test_every_binder_declares_whether_it_vouches():
         ("session_agent_selection.py", "record_agent_selection"): "vouch",
         ("subagent_manager/run_turn.py", "publish_execution"): "ABSENT",
         ("subagent_persistence_state.py", "bind_session_memory_mode"): "ABSENT",
+        # A test of the auto-improvement app publishing each role's execution on a
+        # test-owned key, which never reaches the vouch.
+        (
+            "apps/builtins/auto_improvement/tests/test_auto_improvement_members.py",
+            "test_owner_recovery_preserves_healthy_role",
+        ): "ABSENT",
     }
     assert actual == expected
 

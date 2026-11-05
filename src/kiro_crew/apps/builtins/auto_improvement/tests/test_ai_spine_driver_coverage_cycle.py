@@ -12,25 +12,6 @@ from __future__ import annotations
 import types
 
 import pytest
-from ai_spine_driver_coverage_helpers import _isolate_env  # noqa: F401
-from ai_spine_driver_coverage_helpers import git_fixture  # noqa: F401
-from ai_spine_driver_coverage_helpers import (
-    DIFF,
-    LOG,
-    _Clock,
-    _Gate,
-    _Keeper,
-    _make,
-    _measurement,
-    _Measurer,
-    _Pipeline,
-    _Profile,
-    _proposal,
-    _Proposer,
-    _Ruler,
-    _SlottedRuler,
-    _stub_preflight,
-)
 
 from kiro_crew.apps.builtins.auto_improvement.spine import driver as drv
 from kiro_crew.apps.builtins.auto_improvement.spine import ledger as L
@@ -48,6 +29,25 @@ from kiro_crew.apps.builtins.auto_improvement.spine.contracts import (
 )
 from kiro_crew.apps.builtins.auto_improvement.spine.keeper import DISCARD_NOISE, KEPT
 from kiro_crew.apps.builtins.auto_improvement.spine.pr_pipeline import CrOutcome
+from kiro_crew.apps.builtins.auto_improvement.tests.ai_spine_driver_coverage_helpers import (  # noqa: F401
+    DIFF,
+    LOG,
+    _Clock,
+    _Gate,
+    _isolate_env,
+    _Keeper,
+    _make,
+    _measurement,
+    _Measurer,
+    _Pipeline,
+    _Profile,
+    _proposal,
+    _Proposer,
+    _Ruler,
+    _SlottedRuler,
+    _stub_preflight,
+    git_fixture,
+)
 
 # ─────────────────────────── one proposal through its track ───────────────────────────
 
@@ -473,7 +473,7 @@ def _loop_driver(tmp_path, git, *, caps=None, profile=None, keeps=0, **kw):
 def test_a_dry_run_exercises_exactly_one_cycle(tmp_path, git):
     d = _loop_driver(tmp_path, git)
     cycles: list = []
-    d.run_cycle = lambda cycle: cycles.append(cycle) or 0
+    d.run_cycle = lambda cycle: cycles.append(cycle) or 0  # type: ignore[func-returns-value]
     stats = d.run(dry_run=True)
     assert stats.cycles == 1
     assert cycles == [1]
@@ -616,7 +616,7 @@ def test_the_cycle_index_resumes_from_the_archive(tmp_path, git):
     d = _loop_driver(tmp_path, git)
     d.archive.append_row({"cycle": 11, "cand_id": "old", "status": "kept"})
     seen: list = []
-    d.run_cycle = lambda cycle: seen.append(cycle) or 0
+    d.run_cycle = lambda cycle: seen.append(cycle) or 0  # type: ignore[func-returns-value]
     d.run(dry_run=True)
     assert seen == [12]
 

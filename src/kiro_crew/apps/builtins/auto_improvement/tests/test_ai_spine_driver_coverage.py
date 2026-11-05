@@ -31,25 +31,6 @@ import types
 from pathlib import Path
 
 import pytest
-from ai_spine_driver_coverage_helpers import _isolate_env  # noqa: F401
-from ai_spine_driver_coverage_helpers import git_fixture  # noqa: F401
-from ai_spine_driver_coverage_helpers import (
-    COMMITTED_HEAD,
-    DIFF,
-    LOG,
-    _AgentRunner,
-    _BugRunner,
-    _BuildGate,
-    _Isolation,
-    _make,
-    _measurement,
-    _Profile,
-    _proposal,
-    _Ruler,
-    _SlottedCalib,
-    _SlottedRuler,
-    _stub_preflight,
-)
 
 from kiro_crew.apps.builtins.auto_improvement.spine import driver as drv
 from kiro_crew.apps.builtins.auto_improvement.spine import ledger as L
@@ -61,6 +42,25 @@ from kiro_crew.apps.builtins.auto_improvement.spine.contracts import (
     BugGateResult,
 )
 from kiro_crew.apps.builtins.auto_improvement.spine.preflight import PreflightResult
+from kiro_crew.apps.builtins.auto_improvement.tests.ai_spine_driver_coverage_helpers import (  # noqa: F401
+    COMMITTED_HEAD,
+    DIFF,
+    LOG,
+    _AgentRunner,
+    _BugRunner,
+    _BuildGate,
+    _isolate_env,
+    _Isolation,
+    _make,
+    _measurement,
+    _Profile,
+    _proposal,
+    _Ruler,
+    _SlottedCalib,
+    _SlottedRuler,
+    _stub_preflight,
+    git_fixture,
+)
 
 # ─────────────────────────── construction ───────────────────────────
 
@@ -188,8 +188,8 @@ def test_preflight_adopts_the_calibrated_band_and_derived_tolerances(tmp_path, m
     assert profile.calibration.noise_band == 7.5
     assert d.guardrail_tolerances == {"rss": 1.0, "boot": 9.0}
     assert seen["band_cap_ms"] == 25.0
-    assert callable(profile.ruler.stop_check)
-    assert profile.ruler.stop_check() is False
+    assert callable(profile.ruler.stop_check)  # type: ignore[union-attr]
+    assert profile.ruler.stop_check() is False  # type: ignore[union-attr]
 
 
 def test_preflight_survives_a_ruler_that_refuses_a_stop_check_and_a_frozen_band(
@@ -233,7 +233,7 @@ def test_preflight_retires_before_interpreting_success_or_failure(tmp_path, monk
 
     retired: list[str] = []
     d.preflight = _preflight
-    d._retire_if_unsafe = lambda stage: retired.append(stage) or True
+    d._retire_if_unsafe = lambda stage: retired.append(stage) or True  # type: ignore[func-returns-value]
 
     assert d._preflight_checked() is None
     assert retired == ["perf preflight"]

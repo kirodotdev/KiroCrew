@@ -657,7 +657,7 @@ def test_summarize_stream_event_truncates_a_long_hint():
             "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "z" * 200}}]
         },
     }
-    detail = R._summarize_stream_event(obj)["detail"]
+    detail = R._summarize_stream_event(obj)["detail"]  # type: ignore[index]
     assert len(detail) == 78 and detail.endswith("…")
 
 
@@ -676,9 +676,12 @@ def test_summarize_stream_event_falls_back_through_the_hint_keys():
 
 
 def test_summarize_stream_event_surfaces_assistant_text_truncated():
-    obj = {"type": "assistant", "message": {"content": [{"type": "text", "text": "  " + "t" * 300}]}}
+    obj = {
+        "type": "assistant",
+        "message": {"content": [{"type": "text", "text": "  " + "t" * 300}]},
+    }
     act = R._summarize_stream_event(obj)
-    assert act["kind"] == "text" and len(act["detail"]) == 200
+    assert act["kind"] == "text" and len(act["detail"]) == 200  # type: ignore[index]
 
 
 @pytest.mark.parametrize(
@@ -696,9 +699,7 @@ def test_summarize_stream_event_skips_uninteresting_lines(obj):
     assert R._summarize_stream_event(obj) is None
 
 
-@pytest.mark.parametrize(
-    "is_error,detail", [(False, "done"), (True, "error")]
-)
+@pytest.mark.parametrize("is_error,detail", [(False, "done"), (True, "error")])
 def test_summarize_stream_event_reports_the_result_line(is_error, detail):
     obj = {"type": "result", "is_error": is_error}
     assert R._summarize_stream_event(obj) == {"kind": "result", "detail": detail}
@@ -731,7 +732,7 @@ def test_terminate_group_signals_the_whole_process_group(monkeypatch):
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(R, "kill_process_tree", lambda pid, sig: signalled.append((pid, sig)))
     popen = _OneShotPopen()
-    R.AgentRunner._terminate_group(popen)
+    R.AgentRunner._terminate_group(popen)  # type: ignore[arg-type]
     assert signalled == [(popen.pid, R.signal.SIGTERM)]
     assert popen.killed == 0
 
@@ -742,7 +743,7 @@ def test_terminate_group_falls_back_to_kill_when_the_group_signal_fails(monkeypa
 
     monkeypatch.setattr(R, "kill_process_tree", _boom)
     popen = _OneShotPopen()
-    R.AgentRunner._terminate_group(popen)
+    R.AgentRunner._terminate_group(popen)  # type: ignore[arg-type]
     assert popen.killed == 1
 
 
@@ -758,7 +759,7 @@ def test_terminate_group_escalates_to_sigkill_when_the_child_will_not_exit(monke
         def wait(self, timeout=None):
             raise subprocess.TimeoutExpired(cmd="fake-agent", timeout=timeout or 0)
 
-    R.AgentRunner._terminate_group(_Stubborn())
+    R.AgentRunner._terminate_group(_Stubborn())  # type: ignore[arg-type]
     assert signalled == [R.signal.SIGTERM, R.SIGKILL]
 
 
@@ -772,7 +773,7 @@ def test_terminate_group_tolerates_a_child_that_cannot_be_killed_at_all(monkeypa
         def kill(self):
             raise RuntimeError("nope")
 
-    R.AgentRunner._terminate_group(_Unkillable())  # must not raise
+    R.AgentRunner._terminate_group(_Unkillable())  # type: ignore[arg-type]  # must not raise
 
 
 # ── AgentRunner.run: the one-shot json path ─────────────────────────────────
@@ -1093,7 +1094,7 @@ def test_streaming_run_wraps_a_stdout_read_failure(monkeypatch, fake_sel):
 def test_streaming_run_tolerates_a_missing_stderr_pipe(monkeypatch, fake_sel):
     runner = R.AgentRunner(on_activity=lambda ev: None)
     popen = _StreamPopen(['{"type": "result", "result": "ok"}\n'])
-    popen.stderr = None
+    popen.stderr = None  # type: ignore[assignment]
     _wire_spawn(monkeypatch, runner, popen)
     assert runner.run("prompt").ok is True
 
@@ -1193,9 +1194,7 @@ def test_ensure_agent_registered_writes_the_apps_own_spec(monkeypatch, tmp_path)
     assert runner.ensure_agent_registered() is True
     dest = tmp_path / "kiro" / "agents" / f"{runner.agent_name}.json"
     assert dest.is_file()
-    src = (
-        Path(R.__file__).resolve().parent.parent / "agents" / "discovery.json"
-    )
+    src = Path(R.__file__).resolve().parent.parent / "agents" / "discovery.json"
     assert dest.read_bytes() == src.read_bytes()
     assert runner.ensure_agent_registered() is True  # idempotent re-register
 
@@ -1208,7 +1207,6 @@ def test_ensure_agent_registered_writes_nothing_into_a_foreign_owned_shared_dir(
     monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro"))
     shared = tmp_path / "kiro" / "agents"
     monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", shared)
-    monkeypatch.setattr(agent_mod, "ambient_agents_dir", lambda: shared)
     monkeypatch.setattr(
         agent_mod, "_decline_shared_agent_home", lambda **_kw: shared / agent_mod.AGENT_FILENAME
     )
@@ -1740,7 +1738,7 @@ def fake_git(monkeypatch):
     state = {"stdout": "", "argv": None}
 
     def _run(argv, **kw):
-        state["argv"] = list(argv)
+        state["argv"] = list(argv)  # type: ignore[assignment]
         return SimpleNamespace(returncode=0, stdout=state["stdout"], stderr="")
 
     monkeypatch.setattr(R, "require_pinned", lambda cwd: None)
@@ -1923,9 +1921,7 @@ def test_adopt_authored_test_picks_the_shortest_path_then_lexicographically(tmp_
     for name in ("test_bug_b.py", "test_bug_a.py", "test_bug_longer.py"):
         (tmp_path / "test" / name).write_text("", newline="\n")
     repro = _ReproTest()
-    porcelain = (
-        "?? test/test_bug_longer.py\n?? test/test_bug_b.py\n?? test/test_bug_a.py\nxx\n"
-    )
+    porcelain = "?? test/test_bug_longer.py\n?? test/test_bug_b.py\n?? test/test_bug_a.py\nxx\n"
     R._adopt_authored_test(_candidate(repro), tmp_path, porcelain)
     assert repro.test_path == "test/test_bug_a.py"
 
@@ -1954,7 +1950,7 @@ def test_adopt_authored_test_gives_up_on_an_immutable_candidate(tmp_path):
 
 def test_adopt_authored_test_never_raises_on_malformed_porcelain(tmp_path):
     repro = _ReproTest()
-    R._adopt_authored_test(_candidate(repro), tmp_path, None)  # splitlines would raise
+    R._adopt_authored_test(_candidate(repro), tmp_path, None)  # type: ignore[arg-type]  # splitlines would raise
     assert repro.test_path == "test/test_bug_invented.py"
 
 
