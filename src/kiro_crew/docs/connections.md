@@ -104,6 +104,40 @@ looks like the sign-in failed.
 After authorizing: drain the warm pool (or restart the gateway) **first**, then start
 a fresh session.
 
+### Render: an API key instead of a sign-in
+
+Render hosts an MCP server at `https://mcp.render.com/mcp`. It is not in the
+catalogue: Render's sign-in refuses apps it has not registered itself and documents
+no way to register one, so a sign-in started from Kiro Crew cannot complete. It
+takes a Render API key instead.
+
+Before you connect it:
+
+- **Some tools change your account.** They create services and databases that
+  Render bills for, overwrite all of a service's environment variables (any left
+  out are deleted), and start deploys. Rollback is not one of the server's tools;
+  roll back in the Render Dashboard.
+- **The agent holds the key.** A `.env` value reaches the agent's shell, so the
+  agent can also use the key through Render's own API, which can delete services and
+  databases. Picking a workspace in step 4 does not limit the key. Use one you are
+  willing to hand to the agent.
+- **Removing the server does not revoke the key.** Revoke it on Render's Account
+  Settings page.
+
+To connect it:
+
+1. Create an API key on your Render **Account Settings** page.
+2. Add `RENDER_API_KEY=<your key>` to `~/.kiro/crew/.env`, then stop and start the
+   gateway ([Credentials](configuration.md#credentials)).
+3. Add a [remote server](#adding-your-own-mcp-server) named `render`:
+
+   ```json
+   { "url": "https://mcp.render.com/mcp", "headers": { "Authorization": "Bearer ${RENDER_API_KEY}" } }
+   ```
+
+4. In a [cold session](#the-tools-appear-in-the-next-cold-session), tell the agent
+   which Render workspace to use. Every Render tool acts on the workspace it selects.
+
 ## Credentials, and what Kiro Crew can see
 
 `kiro-cli` owns the OAuth chain end to end. On a successful sign-in it writes two
