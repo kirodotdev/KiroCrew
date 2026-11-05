@@ -904,7 +904,9 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
    screen next to the status dot — colour is reinforcement, not the carrier, so
    the row that errored is findable without hovering every entry. Crews you switch
    between often can be PINNED beside the trigger as chips, so the switch costs no
-   dropdown click — see [Pinned crew chips](#pinned-crew-chips).
+   dropdown click — see [Pinned crew chips](#pinned-crew-chips). While a crew's
+   pane fills the page, the browser tab is titled with that crew's name instead
+   of the hidden local page.
 6. **Diagnose** a flaky instance (runs the ladder), or **Disconnect** from its
    row. **Edit settings** / **Remove** live in the row's overflow menu — a row
    shows two primary actions plus that menu, so everything past them is one

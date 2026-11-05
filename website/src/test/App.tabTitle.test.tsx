@@ -2,9 +2,10 @@
  * The main window's browser tab title names where you are, detail first, the
  * same way the popout windows do (`{{label}} — {{productName}}`): the session
  * title, then the panel, then the product, with the attention count kept in
- * front so it survives tab truncation.
+ * front so it survives tab truncation. While a remote crew's pane fills the
+ * page, that crew's registry name stands in for the hidden local detail.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, onTestFinished } from 'vitest'
 import { act, render, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
@@ -13,7 +14,8 @@ import { configureStore } from '@reduxjs/toolkit'
 import dashboardReducer, { addSlotOptimistic, markSlotUnread } from '../store/dashboardSlice'
 import chatReducer, { setActiveSlot } from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
-import instancesReducer from '../store/instancesSlice'
+import instancesReducer, { setActiveId } from '../store/instancesSlice'
+import { api } from '../api/client'
 import App from '../App'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { ChatSlot } from '../types'
@@ -109,5 +111,16 @@ describe('main window tab title', () => {
       store.dispatch(markSlotUnread('s2'))
     })
     await waitFor(() => expect(document.title).toMatch(/^\(\d+\) Fix the login page — Chat — Kiro Crew$/))
+  })
+
+  it('names the remote crew whose pane fills the page, and the local page again on Local', async () => {
+    const noCrews = { instances: [], warm_set_cap: 5 }
+    vi.mocked(api.listInstances).mockResolvedValue({ ...noCrews, instances: [{ id: 'lab-1', name: 'Lab box' }] } as never)
+    onTestFinished(() => { vi.mocked(api.listInstances).mockResolvedValue(noCrews as never) })
+    const store = renderAt('/schedule')
+    act(() => { store.dispatch(setActiveId('lab-1')) })
+    await waitFor(() => expect(document.title).toBe('Lab box — Kiro Crew'))
+    act(() => { store.dispatch(setActiveId(null)) })
+    await waitFor(() => expect(document.title).toBe('Schedule — Kiro Crew'))
   })
 })
