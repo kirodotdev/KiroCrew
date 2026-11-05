@@ -1134,7 +1134,11 @@ late-start adoption. Incognito and Temporary suppress Crew raw-frame recording
 and payload diagnostics, do not resume retained native context, and cannot retain
 native transcripts for continuation. Shared-runtime recording latches off before
 a restricted session can emit its first frame. Normal shutdown and abandoned
-late starts clean the native transcript files supported by the provider. This
+late starts clean the native transcript files supported by the provider. On
+claude, a restricted session's `session/new` envelope also turns Claude Code's
+auto-memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in
+`_meta.claudeCode.options.env`; see
+[claude-code-provider](claude-code-provider.md), "An incognito or temporary chat"). This
 does not add a sandbox or promise control over every external provider's own
 on-disk session format or crash recovery.
 
