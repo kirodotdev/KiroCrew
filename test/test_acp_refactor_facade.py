@@ -805,6 +805,8 @@ def test_a_module_rebound_on_the_facade_reaches_the_moved_helper(
             monkeypatch.setattr(runtime_process_tree, callee, inert)
     # A cached process table would answer before the helper probes anything.
     monkeypatch.setattr(runtime_process_tree, "_ps_table_cache", None)
+    # The children-file branch follows the steered ``sys``, not the host kernel.
+    monkeypatch.setattr(runtime_process_tree, "_CHILDREN_INTERFACE", True)
     for other, value in steer.items():
         monkeypatch.setattr(module, other, value)
     label = f"{facade}.{name}"

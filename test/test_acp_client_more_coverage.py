@@ -26,6 +26,7 @@ from acp_client_more_coverage_helpers import (  # noqa: F401 -- the autouse fixt
 )
 
 import kiro_crew.acp.client as acp_client
+import kiro_crew.acp.runtime_process_tree as runtime_process_tree
 from kiro_crew.acp.client import (
     AcpAuthRequired,
     AcpError,
@@ -331,17 +332,20 @@ class TestProcessTreeHelpers:
 
     def test_direct_children_falls_back_to_pgrep(self, monkeypatch):
         calls: list[list[str]] = []
+        # A kernel without the per-task children files is the one case pgrep answers.
+        monkeypatch.setattr(runtime_process_tree, "_CHILDREN_INTERFACE", False)
 
         def _fake_check_output(cmd, **kwargs):
             calls.append(cmd)
             return b"4242 4243\n"
 
         monkeypatch.setattr(acp_client.subprocess_mod, "check_output", _fake_check_output)
-        # A PID with no /proc entry falls through the Linux fast path to pgrep.
         assert _direct_children(2**30) == [4242, 4243]
         assert calls and calls[0][:2] == ["pgrep", "-P"]
 
     def test_direct_children_swallows_pgrep_failure(self, monkeypatch):
+        monkeypatch.setattr(runtime_process_tree, "_CHILDREN_INTERFACE", False)
+
         def _boom(cmd, **kwargs):
             raise OSError("no pgrep")
 
