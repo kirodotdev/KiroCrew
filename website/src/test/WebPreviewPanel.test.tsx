@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from './helpers'
+import { LocalOverlayRoot } from '../components/overlayRoot'
+import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
 import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, isDashboardOrigin, withCacheBuster, httpEmbedRefusal, isPotentiallyTrustworthyHost } from '../components/WebPreviewPanel'
 
 // The crop button is gated on snip support (getDisplayMedia). Force it on so
@@ -932,6 +934,113 @@ describe('WebPreviewPanel — native browser transport (desktop app)', () => {
     expect(await screen.findByTestId('browser-annotations')).toHaveTextContent(/Click an element on the page/)
     fireEvent.click(screen.getByTestId('browser-annotate'))
     await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+  })
+
+  it('Esc in the dashboard leaves pick mode like Done; Esc in the note editor only cancels the note', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    // A pick opens the editor; Esc there cancels the note and keeps picking.
+    state.items = [TARGET]
+    state.picked = TARGET.id
+    const input = await screen.findByTestId('browser-annotation-note-input')
+    fireEvent.keyDown(input, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('browser-annotation-note-input')).toBeNull())
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating')
+    // A key that ends an IME composition is not a request to stop.
+    fireEvent.keyDown(document.body, { key: 'Escape', isComposing: true })
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    // An open dialog owns Esc; it must not also stop pick mode.
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    document.body.appendChild(dialog)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    dialog.remove()
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    // Focus is in this renderer while picking, so the overlay never sees Esc.
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent(/^Annotate$/))
+  })
+
+  it('Esc pressed while the Preview tab is hidden leaves its pick mode on', async () => {
+    const { annotate } = installAnnotateBridge()
+    const { rerender } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    // Another side-panel tab is showing: the Preview stays mounted, hidden.
+    rerender(<WebPreviewPanel sessionKey="sess-1" active={false} />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    // Back on the Preview, Esc stops it again.
+    rerender(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+  })
+
+  it('Esc pressed while a remote Crew hides the local one leaves its pick mode on', async () => {
+    const { annotate } = installAnnotateBridge()
+    const { rerender } = await renderPanel(<LocalOverlayRoot hidden={false}><WebPreviewPanel sessionKey="sess-1" active /></LocalOverlayRoot>)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    // A remote Crew is in front: the local tree stays mounted, hidden.
+    rerender(<LocalOverlayRoot hidden><WebPreviewPanel sessionKey="sess-1" active /></LocalOverlayRoot>)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    // Back on the local Crew, Esc stops it again.
+    rerender(<LocalOverlayRoot hidden={false}><WebPreviewPanel sessionKey="sess-1" active /></LocalOverlayRoot>)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+  })
+
+  it('an Esc that stops pick mode is consumed before a later window listener (the notification banner) sees it', async () => {
+    const { annotate } = installAnnotateBridge()
+    // Registered first, on window bubble, as an already-showing banner card is.
+    const banner = vi.fn()
+    window.addEventListener('keydown', banner)
+    try {
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
+      fireEvent.click(await screen.findByTestId('browser-annotate'))
+      await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+      expect(banner).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', banner)
+    }
+  })
+
+  it('an Esc that already stopped voice read-back leaves pick mode on', async () => {
+    const { annotate } = installAnnotateBridge()
+    // Registered first on document capture, as the app-level speech stop is.
+    const speech = (e: KeyboardEvent) => { if (e.key === 'Escape') noteEscapeStoppedSpeech(e) }
+    document.addEventListener('keydown', speech, true)
+    try {
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
+      fireEvent.click(await screen.findByTestId('browser-annotate'))
+      await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    } finally {
+      document.removeEventListener('keydown', speech, true)
+    }
+  })
+
+  it('Esc with focus on a field outside the Preview leaves pick mode on', async () => {
+    const { annotate } = installAnnotateBridge()
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    const outside = document.createElement('button')
+    document.body.appendChild(outside)
+    try {
+      fireEvent.keyDown(outside, { key: 'Escape' })
+      expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    } finally {
+      outside.remove()
+    }
   })
 
   it('a pick on the page opens the note editor here, focused; Enter keeps the note in the panel (never sent to the page)', async () => {
