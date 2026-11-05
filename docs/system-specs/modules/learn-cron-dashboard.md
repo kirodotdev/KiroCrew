@@ -1371,7 +1371,14 @@ the scheduler. Its directory is resolved once by `prepare()`: usable means histo
 is fully on, unusable means the store constructs with `enabled` False, where every
 read returns empty and every write is dropped. History readers skip malformed JSONL
 lines (including one nested past the recursion limit, whose `json.loads` raises
-`RecursionError`) and valid JSON values that are not record objects; pagination totals count
+`RecursionError`, and one holding a byte that is not UTF-8: files are read as
+bytes and split before each line is decoded, so such a byte costs its line, not
+the file; each line goes through `json_line.parse_json_object_line`, which
+decodes strictly, so a bad byte inside a field skips that record rather than
+reading it with a replacement character) and valid JSON values that are not
+record objects. The trim and the delete rewrite carry each line they keep byte for
+byte, joined with `os.linesep` and opened with `O_BINARY` as `append_line` writes,
+so a Windows rewrite keeps one ending; pagination totals count
 only readable records. Deleting a job drops invalid index rows while preserving
 other jobs' valid records. Usability is decided by the syscalls
 the store's own paths issue — an `os.stat` of the directory plus the lock-file

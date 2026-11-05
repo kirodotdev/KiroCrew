@@ -35,6 +35,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import append_line, replace_with_retry
 from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
+from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.owner_only_files import owner_only_opener
 
 logger = logging.getLogger(__name__)
@@ -350,14 +351,36 @@ def _trim_file(path: Path, max_records: int) -> None:
     """
     if max_records <= 0 or not path.exists():
         return
-    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    lines = _raw_lines(path)
     if len(lines) <= max_records:
         return
     tmp = path.with_suffix(".tmp")
-    wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(wfd, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines[-max_records:]) + "\n")
+    wfd = os.open(str(tmp), _REWRITE_FLAGS, 0o600)
+    with os.fdopen(wfd, "wb") as f:
+        f.write(_NEWLINE.join(lines[-max_records:]) + _NEWLINE)
     replace_with_retry(tmp, path)
+
+
+#: The line ending a rewrite uses: what a text-mode write of ``"\n"`` produced,
+#: and what ``append_line`` writes, so a rewritten file keeps one ending.
+_NEWLINE = os.linesep.encode("ascii")
+
+#: ``O_BINARY`` as ``append_line`` opens: without it a Windows fd is text mode,
+#: and the CRT would turn ``_NEWLINE``'s ``\n`` into a second ``\r\n``.
+_REWRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+
+
+def _raw_lines(path: Path) -> list[bytes]:
+    """*path*'s JSONL lines as bytes, never decoded as a whole.
+
+    A byte that is not UTF-8 (a torn or foreign write) must cost its own line,
+    not the file: decoding the whole file raises ``UnicodeDecodeError``, which is
+    not an ``OSError``, so it escapes every reader and the append that trims.
+    Rewrites carry the kept lines byte for byte. ``json.dumps`` escapes every
+    character ``str.splitlines`` would split on beyond ``\\n``, so splitting the
+    bytes yields the same records.
+    """
+    return path.read_bytes().strip().splitlines()
 
 
 @dataclass
@@ -384,17 +407,6 @@ class CronRunRecord:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> CronRunRecord:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-
-
-def _parse_history_row(line: str) -> dict[str, Any] | None:
-    """Ignore partial JSONL lines and valid JSON values that are not records."""
-    try:
-        row = json.loads(line)
-    except (ValueError, RecursionError):
-        # RecursionError: a line nested past the interpreter's limit raises it
-        # from json.loads, and it is not a ValueError.
-        return None
-    return row if isinstance(row, dict) else None
 
 
 class CronHistoryStore:
@@ -702,10 +714,10 @@ class CronHistoryStore:
         if not job_path.exists():
             return [], 0
         try:
-            lines = job_path.read_text(encoding="utf-8").strip().splitlines()
+            lines = _raw_lines(job_path)
         except FileNotFoundError:
             return [], 0
-        records = [row for line in lines if (row := _parse_history_row(line)) is not None]
+        records = [row for line in lines if (row := parse_json_object_line(line)) is not None]
         total = len(records)
         records.reverse()
         results = records[offset : offset + limit]
@@ -733,10 +745,10 @@ class CronHistoryStore:
         if not self._index_path.exists():
             return [], 0
         try:
-            lines = self._index_path.read_text(encoding="utf-8").strip().splitlines()
+            lines = _raw_lines(self._index_path)
         except FileNotFoundError:
             return [], 0
-        records = [row for line in lines if (row := _parse_history_row(line)) is not None]
+        records = [row for line in lines if (row := parse_json_object_line(line)) is not None]
         if job_id:
             records = [row for row in records if row.get("job_id") == job_id]
         total = len(records)
@@ -758,11 +770,11 @@ class CronHistoryStore:
         if not job_path.exists():
             return None
         try:
-            lines = job_path.read_text(encoding="utf-8").strip().splitlines()
+            lines = _raw_lines(job_path)
         except FileNotFoundError:
             return None
         for line in lines:
-            row = _parse_history_row(line)
+            row = parse_json_object_line(line)
             if row is not None and row.get("run_id") == run_id:
                 return row
         return None
@@ -838,17 +850,17 @@ class CronHistoryStore:
             if removed:
                 job_path.unlink()
             if self._index_path.exists():
-                lines = self._index_path.read_text(encoding="utf-8").strip().splitlines()
+                lines = _raw_lines(self._index_path)
                 filtered = []
                 for line in lines:
-                    row = _parse_history_row(line)
+                    row = parse_json_object_line(line)
                     if row is not None and row.get("job_id") != job_id:
                         filtered.append(line)
                 if len(filtered) != len(lines):
                     tmp = self._index_path.with_suffix(".tmp")
-                    content = "\n".join(filtered) + "\n" if filtered else ""
-                    wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                    with os.fdopen(wfd, "w", encoding="utf-8") as f:
+                    content = _NEWLINE.join(filtered) + _NEWLINE if filtered else b""
+                    wfd = os.open(str(tmp), _REWRITE_FLAGS, 0o600)
+                    with os.fdopen(wfd, "wb") as f:
                         f.write(content)
                     replace_with_retry(tmp, self._index_path)
             return removed
