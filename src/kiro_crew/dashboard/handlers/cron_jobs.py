@@ -707,8 +707,10 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # below is written once and cannot drift between the three schedule shapes.
     schedule_kwargs: dict[str, Any]
     if every:
+        from kiro_crew.dashboard.body_numbers import body_int
+
         try:
-            every = int(every)
+            every = body_int(every)
         except (ValueError, TypeError):
             return web.json_response(
                 {"error": "'every' must be an integer", "code": "invalid_every"}, status=400
