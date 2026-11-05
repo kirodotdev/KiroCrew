@@ -193,6 +193,8 @@ class TestInstall:
         r2 = install_app(src)
         assert not r2.ok
         assert "already installed" in r2.error
+        # It points at the in-place update rather than only at uninstall.
+        assert f"kirocrew app update {r1.name}" in r2.error
 
     def test_install_with_agents_and_skills(self, tmp_path, app_home):
         src = _make_app_source(
