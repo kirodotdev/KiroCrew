@@ -85,6 +85,52 @@ def blocks_request_remote_media(blocks: Any) -> bool:
     return False
 
 
+#: Action ids only the gateway's own code-channel messages carry (the wrap-up's
+#: Archive button, the hand-off notice's Turn-on button). An agent may not post or
+#: edit in a button that wears one: its handler would act on the owner's click as
+#: consent to a message the agent wrote.
+RESERVED_ACTION_PREFIX = "kc_code_channel_"
+#: Error code for that refusal, shared by both agent block paths.
+BLOCKS_RESERVED_ACTION_ERROR = "blocks_reserved_action"
+
+
+def _id_text(value: str) -> str:
+    """*value* as an id reads once ANSI escapes and control/format characters go,
+    in Unicode compatibility form (NFKC: fullwidth letters as their ASCII ones).
+
+    The agent block paths sanitize after this check (ANSI stripped from keys and
+    values), so a key the check saw as ``"action_id\\x1b[0m"`` can be published as
+    ``"action_id"``. Matching on this normal form keeps the raw check and the
+    published tree in agreement.
+    """
+    import unicodedata
+
+    from kiro_crew.messaging.display_safety import strip_ansi
+
+    text = unicodedata.normalize("NFKC", strip_ansi(value))
+    return "".join(c for c in text if unicodedata.category(c) not in ("Cc", "Cf")).strip().lower()
+
+
+def blocks_use_reserved_action(blocks: Any) -> bool:
+    """Whether a Block Kit tree carries an action id reserved for the gateway."""
+    pending: list[Any] = [blocks]
+    while pending:
+        obj = pending.pop()
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if (
+                    isinstance(key, str)
+                    and _id_text(key) in ("action_id", "block_id")
+                    and isinstance(value, str)
+                    and _id_text(value).startswith(RESERVED_ACTION_PREFIX)
+                ):
+                    return True
+            pending.extend(obj.values())
+        elif isinstance(obj, list):
+            pending.extend(obj)
+    return False
+
+
 def _refuse_remote_media(blocks: Any) -> None:
     """Fail closed on a Block Kit tree that would trigger a server-side fetch."""
     if blocks and blocks_request_remote_media(blocks):

@@ -209,6 +209,38 @@ def test_a_failed_binding_lookup_refuses(env: Env, monkeypatch: pytest.MonkeyPat
     assert denied["error"] == "permit lookup failed"
 
 
+def test_an_answer_in_a_channel_whose_row_is_quarantined_is_refused(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fenced channel (its binding row does not read back) has no binding, and
+    it was never revoked: its kickoff-thread controls still reach no session."""
+    monkeypatch.setattr(env.store, "is_quarantined", lambda channel: channel == CODE)
+    assert env.store.get_binding(CODE) is None and not env.store.was_revoked(CODE)
+    assert routing.options_answer_permitted(CODE, "UOWNER") is False
+    (denied,) = env.sel.ops("slack.code_channel.options")
+    assert denied["error"] == "code channel binding row unreadable"
+
+
+def test_an_answer_in_a_channel_whose_revoked_row_is_malformed_is_refused(
+    env: Env, tmp_path: Any
+) -> None:
+    """A revoked row that does not read back must not read as "never revoked": the
+    channel stays fenced, so a control its session posted reaches no session."""
+    import json
+
+    from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+    path = tmp_path / "revoked-store.json"
+    path.write_text(json.dumps({"revoked": {CODE: {"at": "not a time"}}}), encoding="utf-8")
+    loaded = CodeChannelStore(path)
+    loaded.load()
+    set_store(loaded)
+    assert loaded.get_binding(CODE) is None and not loaded.was_revoked(CODE)
+    assert routing.options_answer_permitted(CODE, "UOWNER") is False
+    (denied,) = env.sel.ops("slack.code_channel.options")
+    assert denied["error"] == "code channel binding row unreadable"
+
+
 def test_code_channels_off_admits_every_answer(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     _bind(env)
     env.activation[ORIGIN] = ACTIVATION_REVIEW

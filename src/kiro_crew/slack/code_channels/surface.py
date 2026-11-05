@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -162,6 +163,29 @@ async def fenced_unrecorded(binding: Binding) -> bool:
     return not (current or binding).archived_at
 
 
+_SLACK_USER_ID = re.compile(r"[UW][A-Z0-9]+")
+
+
+def owner_name() -> str:
+    """Who "the owner" is, for a refusal: ``the Kiro Crew owner (<@U…>)``.
+
+    The owner is this gateway's configured Slack owner (``slack.owner_id``), the
+    one ``is_owner`` checks; a reader can't otherwise tell whether a refusal means
+    the channel's, the workspace's or the app's owner.
+    """
+    try:
+        from kiro_crew.slack import handler
+
+        owner = str(getattr(handler, "_owner_id", "") or "")
+    except Exception:  # pragma: no cover - the plain wording still holds
+        owner = ""
+    # Only a well-formed Slack user id becomes a mention: anything else could
+    # break out of ``<@…>`` and inject formatting.
+    if not _SLACK_USER_ID.fullmatch(owner):
+        return "the Kiro Crew owner"
+    return f"the Kiro Crew owner (<@{owner}>)"
+
+
 def workspace_admitted(team_id: str) -> bool:
     """The per-message workspace gate every inbound Slack path applies (fail closed)."""
     if not team_id:
@@ -182,17 +206,22 @@ async def outbound_permitted() -> bool:
     return await channel_outbound_permitted("slack")
 
 
-def channel_policy_refusal(channel_id: str, *, operation: str, caller: str) -> str:
+def channel_policy_refusal(
+    channel_id: str, *, operation: str, caller: str, audit: bool = True
+) -> str:
     """Why the channel policy refuses *channel_id* (``""`` when it admits it).
 
     The per-channel ceiling (``allowed_channel_ids``, tightest wins) every
-    inbound path and write applies; audited by the policy seam. Fails closed:
-    a policy that can't be read refuses.
+    inbound path and write applies; audited by the policy seam unless *audit* is
+    False (a caller that records the refusal itself). Fails closed: a policy that
+    can't be read refuses.
     """
     from kiro_crew.slack.channel_policy import channel_refusal
 
     try:
-        return channel_refusal(channel_id, operation=operation, caller=caller or "slack")
+        return channel_refusal(
+            channel_id, operation=operation, caller=caller or "slack", audit=audit
+        )
     except Exception:
         logger.warning("code channel %s: channel policy unreadable", channel_id, exc_info=True)
         return "channel policy unreadable"

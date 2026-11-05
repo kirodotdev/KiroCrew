@@ -79,13 +79,14 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.work_ledger_caller import (  # noqa: F401
-        _caller_admission,
+        _CODE_CHANNEL_CALLER,
         _caller_key,
+        _code_channel_caller,
         _contained_channel_caller,
         _own_ledger,
         _reaches_a_channel,
         _worker_binding,
-        caller_admission,
+        caller_admission_with_route,
         contained_channel_caller,
         reaches_a_channel,
         session_is_bound_worker,
@@ -99,7 +100,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _count_recorded,
         _ensure,
         _forward_remote_decide,
+        _is_code_channel_worker,
         _record_conductor_write,
+        _refuse_code_channel_worker,
         _refuse_dispatch_without_ledger,
         _refuse_dispatched_worker,
         _refuse_unowned_worker,
@@ -123,10 +126,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.work_ledger_read import (  # noqa: F401
         _COMPACT_ROW_FIELDS,
         _MAX_EVENT_TAIL,
+        _PUBLISHED_NOTE,
         _QUERY_FALSE,
         _QUERY_TRUE,
         _find_slot,
         _passes_filters,
+        _published_payload,
         _read_options,
         _remote_dispatch_on,
         _remote_row_fields,
@@ -250,4 +255,5 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.work_vocab import (  # noqa: F401
         WORK_CONDUCTOR_FIELDS,
         WORK_MAX_DEPTH_MAX,
+        WORK_MAX_DEPTH_MIN,
     )

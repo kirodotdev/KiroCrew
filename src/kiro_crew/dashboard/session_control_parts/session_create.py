@@ -54,7 +54,12 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     _dispatch_bypass,
     _member_caller,
     caller_slot_key,
+    prewarm_enabled_check,
     session_control_enabled,
+)
+from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+    CONDUCTOR_GUIDANCE,
+    worker_dashboard_link,
 )
 from kiro_crew.dashboard.session_control_parts.crew_filing import (
     _crew_filing_answer,
@@ -233,6 +238,11 @@ async def create_session(
     # Validated before any gate, as `rename_target` does: a malformed title
     # needs no caller lookup and must be refused before anything is allocated.
     clean_title = _clean_new_session_title(title, cap=200, not_done="session not created")
+    # The creator gate below asks whether the caller is a code channel's worker
+    # from the code-channel store's loaded snapshot; load it off the loop first.
+    # Loads the code-channel lineage, then warms the config cache as the LAST await
+    # before the synchronous gates (see `prewarm_enabled_check`).
+    await prewarm_enabled_check()
     caller_key = caller_slot_key(state, caller_session_key)
     if not caller_key:
         raise SessionControlError(
@@ -261,7 +271,33 @@ async def create_session(
     caller_slot = state.get_slot(caller_key)
     if caller_slot is None:
         raise SessionControlError("caller session is not open", code="caller_not_open", status=404)
-    _refuse_ineligible_creator(state, caller_slot)
+    via_code_channel = _refuse_ineligible_creator(state, caller_slot)
+    # A code channel's conductor files its workers in the channel's own folder --
+    # the folder its session is filed in -- beside that session, so the sidebar
+    # nests each worker under the conductor that created it (its lineage edge),
+    # and the channel's diff tab and context bar see it. Not a choice the
+    # channel's words can make: no folder files there, the same folder is
+    # accepted, and every other folder -- including a new one inside it, which
+    # is how a per-agent folder like ``Code channels/kirocrew-worker`` appeared --
+    # is refused.
+    channel_folder = ""
+    if via_code_channel:
+        channel_folder = str(getattr(caller_slot, "folder_id", "") or "")
+        if not channel_folder:
+            raise SessionControlError(
+                "this code channel's session is not filed in a channel folder, so a "
+                "worker has nowhere to start; refile the channel's session and retry",
+                code="code_channel_folder",
+            )
+        if dry_run or (folder_id and folder_id != channel_folder):
+            # A dry run is the MCP folder walk's preflight before it CREATES path
+            # segments, so it is refused before any folder exists.
+            raise SessionControlError(
+                "a code channel's workers are filed beside this session, in the "
+                "channel's own folder, and nest under it: leave the folder out",
+                code="code_channel_folder",
+            )
+        folder_id = channel_folder
     caller_memory_identity = (
         slot_history_key(caller_slot),
         caller_slot.agent,
@@ -325,7 +361,12 @@ async def create_session(
 
         # The conductor test the worker hand-off below uses, off the loop: it
         # reads the config and may rescan the installed agents inline.
-        conductor = await asyncio.to_thread(_conducts_for_a_worker, caller_slot, caller_execution)
+        # A code channel's worker is filed in the channel's own folder (set above),
+        # never moved home by a mate's conductor rule; a mate's home it would land
+        # in is still refused below.
+        conductor = not via_code_channel and await asyncio.to_thread(
+            _conducts_for_a_worker, caller_slot, caller_execution
+        )
         try:
             folder_id, project_folder_id = await mate_home_filing(
                 state, caller_execution, folder_id, conductor=conductor
@@ -379,8 +420,14 @@ async def create_session(
     # resolution, which refuses a peer bound elsewhere.
     from kiro_crew.mate_worker import MATE_WORKER_AGENT
 
-    own_worker = agent_kind in ("", "template") and await asyncio.to_thread(
-        _hands_off_to_own_worker, caller_slot, caller_execution, agent.strip(), agent_kind
+    # Never for a code channel's session: its workers take the channel's own
+    # approval mode, not a crewmate Profile's.
+    own_worker = (
+        not via_code_channel
+        and agent_kind in ("", "template")
+        and await asyncio.to_thread(
+            _hands_off_to_own_worker, caller_slot, caller_execution, agent.strip(), agent_kind
+        )
     )
     if own_worker and caller_execution is None:
         # A conductor slot with no execution record (one from before records)
@@ -1022,7 +1069,21 @@ async def create_session(
             status=409,
         )
     _refuse_moved_caller_identity(state, caller_key, caller_slot, caller_memory_identity)
-    _refuse_ineligible_creator(state, live_caller)
+    if _refuse_ineligible_creator(state, live_caller) != via_code_channel:
+        # Admitted on entry under one rule and now under the other: the folder
+        # filing above was decided for the first, so neither holds any more.
+        raise SessionControlError(
+            "caller session changed how it is admitted while the session was being created",
+            code="caller_admission_changed",
+        )
+    if via_code_channel and str(getattr(live_caller, "folder_id", "") or "") != channel_folder:
+        # The conductor was refiled while this create waited: its worker must file
+        # beside it, where it is NOW, so the decision above does not hold.
+        raise SessionControlError(
+            "this code channel's session moved folder while its worker was being "
+            "created; call again",
+            code="code_channel_folder",
+        )
     # The child's origin tag, read off the caller that is live NOW -- see the
     # reasoning above the folder gate. `_cron_caller` covers a cron's own tab;
     # `_origin` carries the tag onward to every descendant of one.
@@ -1311,6 +1372,16 @@ async def create_session(
                 from kiro_crew.mate_worker import note_worker_session
 
                 note_worker_session(session_key, child_execution)
+            if via_code_channel:
+                # A code channel's worker: its lineage goes into the code-channel
+                # store, which the session cannot write, BEFORE the birth commits.
+                # The transcript's ``created_by`` is restorable but editable from
+                # inside the worker's sandbox; this record is what keeps the worker
+                # one level deep whatever happens to it (``code_channel_root``). A
+                # failed write fails the create through the retraction below.
+                from kiro_crew.slack.code_channels.store import store as code_channel_store
+
+                code_channel_store().record_worker(slot.key, caller_key)
             log.update_metadata(session_key, metadata)
             birth_persisted = True
 
@@ -1519,6 +1590,14 @@ async def create_session(
         **({"inherited": inherited_fields} if inherited_fields else {}),
         **({"inherited_model_dropped": True} if inherited_model_dropped else {}),
         **_crew_filing_answer(folder_named=bool(folder_id), in_crew_tree=in_crew_tree),
+        # A code channel's conductor names the worker it just created to the
+        # channel: a credential-free path link to its dashboard tab.
+        **(
+            {"dashboard_link": link}
+            if via_code_channel and (link := worker_dashboard_link(slot.key))
+            else {}
+        ),
+        **({"guidance": CONDUCTOR_GUIDANCE} if via_code_channel else {}),
     }
 
 
