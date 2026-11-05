@@ -184,3 +184,117 @@ def test_a_matcher_two_allowed_servers_could_name_withholds_all_of_mcp():
         single, ("mcp__a__b__c",), mcp_tool_names=tools
     )
     assert _asks(out) == ["a__b/c"]
+
+
+# ── a bare tool name (``get_creds``), which the gate also names a KAS MCP call by ──
+
+
+def test_a_bare_hook_on_one_mcp_tool_withholds_only_that_tool():
+    """An unattended agent guards one MCP tool with a hook written as its bare
+    name. Every other MCP tool, and every built-in, keeps its auto-approval."""
+    policy = {
+        "rules": [
+            {"capability": "mcp", "match": ["srv/*", "Docs/*"], "effect": "allow"},
+            {"capability": "web_fetch", "effect": "allow"},
+        ]
+    }
+    out = kas_permissions.withhold_hook_gated_auto_approval(
+        policy, ("get_creds",), mcp_tool_names=_tool_names
+    )
+    # Held on every server, listed or not, in each spelling it meets.
+    assert sorted(_asks(out)) == ["*/Get_Creds", "*/get_creds"]
+    assert [r for r in out["rules"] if r["effect"] == "ask" and r["capability"] != "mcp"] == []
+    approved = kas_permissions.auto_approved_capabilities(out)
+    assert {"mcp", "web_fetch"} <= approved
+
+
+def test_a_bare_hook_holds_the_tool_on_a_server_the_policy_does_not_list():
+    """The gate runs the hook on the same-named tool of any server, and a saved
+    answer can decide an unlisted server's call without a request: only an
+    explicit ask on that resource keeps it on Crew's path."""
+    policy = {"rules": [{"capability": "mcp", "match": ["srv/*"], "effect": "allow"}]}
+    out = kas_permissions.withhold_hook_gated_auto_approval(
+        policy, ("get_creds",), mcp_tool_names=_tool_names
+    )
+    assert "*/get_creds" in _asks(out)
+    approved = kas_permissions.auto_approved_capabilities(out)
+    covered = kas_permissions.hook_gated_capabilities(
+        ("get_creds",), mcp_servers={"srv"}, mcp_tool_names=_tool_names
+    )
+    assert kas_permissions.hook_gated_auto_approved(covered, approved) == set()
+
+
+def test_the_bare_hook_holds_the_tool_the_gate_runs_it_on():
+    from kiro_crew.hook_runtime.hook_dispatch import pre_tool_match_names
+    from kiro_crew.hooks import _tool_matches
+
+    names, _ = pre_tool_match_names("call", tool_identity="get_creds", mcp_server="srv")
+    assert any(_tool_matches("get_creds", n) for n in names)
+    names, _ = pre_tool_match_names("call", tool_identity="search", mcp_server="srv")
+    assert not any(_tool_matches("get_creds", n) for n in names)
+
+
+@pytest.mark.parametrize(
+    ("tool_names", "asks"),
+    [
+        # An allowed server with nothing cached is held whole.
+        ({"srv": ["get_creds"]}.get, ["*/get_creds", "Docs/*"]),
+        ({"srv": ["get_creds"], "Docs": ["find"]}.get, ["*/get_creds"]),
+    ],
+)
+def test_a_bare_hook_holds_every_allowed_server_that_could_serve_it(tool_names, asks):
+    policy = {"rules": [{"capability": "mcp", "match": ["srv/*", "Docs/*"], "effect": "allow"}]}
+    out = kas_permissions.withhold_hook_gated_auto_approval(
+        policy, ("get_creds",), mcp_tool_names=tool_names
+    )
+    assert sorted(_asks(out)) == asks
+
+
+@pytest.mark.parametrize(
+    ("matcher", "allows", "tool_names"),
+    [
+        # Meets no cached tool: it may be a harness's name for a built-in.
+        ("nope", [{"capability": "mcp", "match": ["srv/*"], "effect": "allow"}], _tool_names),
+        # Nothing cached anywhere: nothing proves it names an MCP tool.
+        ("get_creds", [{"capability": "mcp", "match": ["srv/*"], "effect": "allow"}], None),
+        # The allowed servers cannot be listed.
+        ("get_creds", [{"capability": "mcp", "effect": "allow"}], _tool_names),
+        # A glob is not a bare name.
+        ("get_cre?s", [{"capability": "mcp", "match": ["srv/*"], "effect": "allow"}], _tool_names),
+    ],
+    ids=["no-cached-match", "no-cache", "unbounded-allow", "glob"],
+)
+def test_a_bare_hook_that_proves_nothing_still_covers_everything(matcher, allows, tool_names):
+    out = kas_permissions.withhold_hook_gated_auto_approval(
+        {"rules": allows},
+        (matcher,),
+        mcp_tool_names=tool_names if tool_names is not None else (lambda server: None),
+    )
+    assert {"capability": "mcp", "effect": "ask"} in out["rules"]
+    assert {"capability": "fs_write", "effect": "ask"} in out["rules"]
+
+
+def test_the_projection_holds_only_the_hooked_mcp_tool(monkeypatch):
+    """Through the real KAS projection of a spec like the reported one: a hook on
+    one MCP tool by its bare name, both servers auto-approved in ``allowedTools``."""
+    from kiro_crew.acp import kas_agents
+
+    monkeypatch.setattr(
+        kas_permissions,
+        "cached_mcp_tool_names",
+        {"creds": ["get_creds", "list_roles"], "search": ["InternalSearch"]}.get,
+    )
+    spec = {
+        "name": "a",
+        "prompt": "p",
+        "tools": ["*"],
+        "allowedTools": ["@creds", "@search"],
+        "hooks": {"preToolUse": [{"matcher": "get_creds", "command": "guard.sh"}]},
+    }
+    matchers = kas_agents.pre_tool_hook_matchers("a", spec)
+    assert matchers == ("get_creds",)
+    out = kas_agents.to_client_custom_agent("a", spec, "p", pre_tool_hook_matchers=matchers)
+    rules = out["permissions"]["rules"]
+    assert _asks(out["permissions"]) == ["*/get_creds"]
+    assert [r for r in rules if r["effect"] == "ask" and r["capability"] != "mcp"] == []
+    assert any(r["capability"] == "mcp" and r["effect"] == "allow" for r in rules)
