@@ -1,4 +1,4 @@
-"""A timezone that cannot be resolved warns once per job, not on every tick (#30324)."""
+"""A timezone that cannot be resolved warns once per job, not on every tick."""
 
 from __future__ import annotations
 
