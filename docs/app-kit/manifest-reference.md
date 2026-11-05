@@ -131,6 +131,33 @@ a warning naming the app, server and env key when it sees one. How an app may
 receive a vault secret is undecided
 ([#10641](https://github.com/kirodotdev/KiroCrew/issues/10641)).
 
+### Host paths in an agent file
+
+An agent file ships inside your app, so it cannot name a path that exists only
+on the host. Write one of these placeholders inside a JSON string instead, and
+the gateway fills it in when it registers the agent (on enable and at gateway
+start):
+
+| Placeholder | Value |
+|---|---|
+| `{APP_ROOT}` | your app's install directory |
+| `{APP_DATA}` | your app's data directory, the one hooks receive as `ctx.data_dir` |
+| `{UV_BIN}` | the absolute path of the `uv` the gateway resolves |
+| `{HOST_PATH}` | the gateway's `PATH`, plus LibreOffice's install directory on Windows when `soffice` is not on `PATH` |
+| `{PATH_SEP}` | the host's `PATH` separator (`:` or `;`) |
+
+The set is fixed and the same for every app. LibreOffice is the one host tool
+`{HOST_PATH}` adds, because Kiro Crew locates it for its own slide previews; find
+any other tool yourself.
+
+Join a subpath with `/`, for example `"{APP_DATA}/vendor/bin"`, and extend
+the `PATH` of a server with `"{HOST_PATH}{PATH_SEP}{APP_DATA}/bin"`. The
+gateway computes every value itself and never reads one from a file. It writes
+the rendered copy under the data home, so your agent cannot rewrite it. An
+agent that names any other `{UPPER_CASE}` placeholder, or one the host cannot
+compute (no `uv`, an empty `PATH`), is not registered. A templated agent cannot
+be a command's `agent`.
+
 ### Session label for a stdio server (`x-kirocrew-session-label`)
 
 A stdio server that needs to know which chat session it serves (to tie its own
