@@ -1063,11 +1063,11 @@ async def create_session(
         raise SessionControlError(
             f"slot cap reached ({MAX_LIVE_SLOTS})",
             code="slot_cap_reached",
-            status=429,
+            status=409,
         )
     # Then the per-creator sub-ceiling. The global cap above bounds the TOTAL but
     # not the distribution, so without this one caller can hold all 500 and the
-    # person's own next chat tab gets the 429 -- the resource is bounded, but not
+    # person's own next chat tab gets the 409 -- the resource is bounded, but not
     # from anyone else's point of view. This is the bound that makes the verb safe
     # to auto-approve: the worst case of an automated creator looping on it is its
     # own 50 slots, not everyone's 500.
@@ -1075,7 +1075,7 @@ async def create_session(
         raise SessionControlError(
             f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
             code="creator_slot_cap_reached",
-            status=429,
+            status=409,
         )
     # The dry run ends HERE, after the last refusal and before the first write.
     # Any new refusal gate belongs above this line, or the preview would pass a

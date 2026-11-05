@@ -533,7 +533,19 @@ def test_the_slot_cap_refuses_a_fork_before_the_copy(tmp_path, monkeypatch):
     with pytest.raises(sc.SessionControlError) as exc:
         _fork(state, caller)
     assert exc.value.code == "slot_cap_reached"
-    assert exc.value.status == 429
+    assert exc.value.status == 409
+    assert set(state._slots) == before
+
+
+def test_the_creator_cap_refuses_a_fork_before_the_copy(tmp_path, monkeypatch):
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    monkeypatch.setattr(sc, "MAX_SLOTS_PER_CREATOR", 0)
+    before = set(state._slots)
+    with pytest.raises(sc.SessionControlError) as exc:
+        _fork(state, caller)
+    assert exc.value.code == "creator_slot_cap_reached"
+    assert exc.value.status == 409
     assert set(state._slots) == before
 
 
@@ -556,7 +568,27 @@ def test_the_ceilings_are_re_read_at_the_mint(tmp_path, monkeypatch):
     with pytest.raises(sc.SessionControlError) as exc:
         _fork(state, caller)
     assert exc.value.code == "slot_cap_reached"
+    assert exc.value.status == 409
     assert set(state._slots) == before, "no child is minted over the ceiling"
+
+
+def test_the_creator_cap_is_re_read_at_the_mint(tmp_path, monkeypatch):
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    real_resolve = chat_fork.resolve_fork_source
+
+    async def _fill_then_resolve(*a, **kw):
+        source = await real_resolve(*a, **kw)
+        monkeypatch.setattr(sc, "MAX_SLOTS_PER_CREATOR", state.creator_slot_count(caller.key))
+        return source
+
+    monkeypatch.setattr(sc, "resolve_fork_source", _fill_then_resolve)
+    before = set(state._slots)
+    with pytest.raises(sc.SessionControlError) as exc:
+        _fork(state, caller)
+    assert exc.value.code == "creator_slot_cap_reached"
+    assert exc.value.status == 409
+    assert set(state._slots) == before
 
 
 def test_trust_revoked_during_preparation_is_not_inherited(tmp_path, monkeypatch):

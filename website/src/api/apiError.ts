@@ -113,14 +113,16 @@ export const isEdgeChallengeError = (e: unknown): boolean =>
   e instanceof ApiError && e.edgeChallenge
 
 /**
- * Is this a live-slot cap refusal? The gateway answers 429 with
+ * Is this a live-slot cap refusal? The gateway answers 409 with
  * `{"code":"slot_cap_reached"}` (global) or `creator_slot_cap_reached`
  * (per-caller) when a new session cannot open because too many are live.
+ * An older gateway, or a remote crew on one, answers the same codes with 429,
+ * so both statuses are accepted.
  * Matches the parsed `code` EXACTLY, not a substring of the body, so an
- * unrelated 429 whose message happens to mention it is not misread.
+ * unrelated 409 or 429 whose message happens to mention it is not misread.
  */
 export const isSlotCapError = (status: number, body: string): boolean => {
-  if (status !== 429) return false
+  if (status !== 409 && status !== 429) return false
   const code = errorBodyCode(body)
   return code === 'slot_cap_reached' || code === 'creator_slot_cap_reached'
 }
@@ -152,20 +154,21 @@ const jsonMessage = (trimmed: string, keys: readonly string[]): string => {
  */
 export const friendlyErrText = (status: number, body: string): string => {
   const trimmed = body.trim()
+  // The live-slot caps -- `slot_cap_reached` (global) and
+  // `creator_slot_cap_reached` (per-caller) -- are hit by Duplicate/Fork (each
+  // mints a new slot) once too many session tabs are open; a generic "wait a few
+  // seconds and reload" is a dead end there, because a reload re-restores the
+  // same open tabs straight back over the cap, so the guidance names the one
+  // thing that clears it. The gateway answers them 409; an older one answered
+  // 429, so the check runs before either status branch. Match the parsed `code`
+  // EXACTLY, not a substring of the body, so an unrelated refusal whose message
+  // happens to contain the text does not get the wrong copy.
+  if (isSlotCapError(status, body)) {
+    return i18nT('api.client.too_many_open_sessions_http_429_close_old')
+  }
   if (status === 429) {
-    // Two different 429s reach here. The live-slot caps -- `slot_cap_reached`
-    // (global) and `creator_slot_cap_reached` (per-caller) -- are hit by
-    // Duplicate/Fork (each mints a new slot) once too many session tabs are
-    // open; a generic "wait a few seconds and reload" is a dead end there,
-    // because a reload re-restores the same open tabs straight back over the
-    // cap, so the guidance names the one thing that clears it. Match the parsed
-    // `code` EXACTLY, not a substring of the body, so an unrelated 429 whose
-    // message happens to contain the text does not get the wrong copy. Any
-    // other 429 the gateway sent names its reason in `error`; one with no reason,
-    // like the tunnel edge's burst throttle, is a wait-and-retry.
-    if (isSlotCapError(status, body)) {
-      return i18nT('api.client.too_many_open_sessions_http_429_close_old')
-    }
+    // Any other 429 the gateway sent names its reason in `error`; one with no
+    // reason, like the tunnel edge's burst throttle, is a wait-and-retry.
     return jsonMessage(trimmed, ['error', 'detail'])
       || i18nT('api.client.rate_limited_by_the_tunnel_edge_http_429_too_man')
   }
