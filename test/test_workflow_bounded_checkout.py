@@ -37,14 +37,6 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset(
         ("code-review.yml", "autosde-rules"),
         ("code-review.yml", "inclusive-language"),
         ("code-review.yml", "pr-hygiene"),
-        # internal-content-scan.yml is a shared workflow_call target that
-        # handles pull_request, push AND merge_group events.  All three shapes
-        # supply different SHA pairs; migrating requires event-shaped fetch
-        # logic across a shared workflow.
-        ("internal-content-scan.yml", "scan"),
-        # release.yml stable-gate runs only on release events and reads the
-        # changelog history to verify the release is documented.
-        ("release.yml", "stable-gate"),
     }
 )
 
@@ -96,8 +88,6 @@ def test_guard_finds_violations_in_current_allowed_set() -> None:
     # that are expected to still be present (the ones not yet migrated).
     still_expected = {
         ("add-contributor.yml", "add"),
-        ("internal-content-scan.yml", "scan"),
-        ("release.yml", "stable-gate"),
     }
     missing = still_expected - found
     assert not missing, (
@@ -135,3 +125,29 @@ def test_a_tight_leg_inside_a_matrix_expression_is_still_flagged(tmp_path: Path)
         encoding="utf-8",
     )
     assert _violations(tmp_path) == [("x.yml", "j")]
+
+
+def test_full_history_jobs_moved_off_a_tight_budget_stay_blobless() -> None:
+    """Jobs that keep fetch-depth: 0 on the runner fleet clone blobless.
+
+    Each one needs full commit history (a tag lookup, a base..head diff), so
+    a bounded fetch is not an option; the blobless filter is what lets the
+    clone finish inside the job budget, and the budget leaves headroom.
+    """
+    for workflow, job_id in (
+        ("internal-content-scan.yml", "scan"),
+        ("release.yml", "stable-gate"),
+        ("fork-internal-content-scan.yml", "fork-internal-content-scan"),
+        ("security-scope-review.yml", "generate"),
+        ("security-scope-review.yml", "validate"),
+        ("security-scope-review.yml", "adjudicate"),
+        ("security-scope-review.yml", "publish"),
+        ("fork-security-scope-review.yml", "generate"),
+        ("fork-security-scope-review.yml", "validate"),
+        ("fork-security-scope-review.yml", "adjudicate"),
+    ):
+        job = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding="utf-8"))["jobs"][job_id]
+        checkout = next(s for s in job["steps"] if "actions/checkout" in str(s.get("uses") or ""))
+        assert checkout["with"]["fetch-depth"] == 0, (workflow, job_id)
+        assert checkout["with"]["filter"] == "blob:none", (workflow, job_id)
+        assert _tightest(job["timeout-minutes"]) >= 20, (workflow, job_id)

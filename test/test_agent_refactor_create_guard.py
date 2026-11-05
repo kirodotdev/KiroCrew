@@ -169,12 +169,9 @@ def _rank(bound: str | None) -> int:
 class _Scope:
     """What each name in one file means, resolved to a fixed point.
 
-    A name maps to the dotted path of the module or object it is bound to,
-    ``"<local>"`` for a def, class or literal, ``"<unknown>"`` for a value only a
-    call or subscript produced, or is absent when the file never binds it (a
-    parameter, such as a fixture). String constants are kept apart, for resolving
-    patch targets spelled as text. When one name has several bindings, the one
-    closest to the facade wins.
+    A name maps to a dotted path, ``"<local>"`` (def, class, literal), ``"<unknown>"``
+    (call or subscript result), or is absent when unbound (a fixture parameter). String
+    constants are kept apart for text patch targets; the binding nearest the facade wins.
     """
 
     def __init__(self, tree: ast.AST) -> None:

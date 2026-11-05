@@ -1199,7 +1199,7 @@ class TestThePreSpawnGate:
         from kiro_crew.apps.builtins.dev_fleet import runtime
 
         launcher = tmp_path / "launcher.sh"
-        launcher.write_text("#!/bin/sh\n")
+        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
         order: list[str] = []
 
         async def _prep(prepare, *, executor=None):
@@ -1309,22 +1309,32 @@ class TestThePreSpawnGate:
         monkeypatch.setattr(live, "_REMOVAL_LEASE_RENEW_SECS", 0.02)
         monkeypatch.setattr(live, "_REMOVAL_LEASE_TTL_SECS", 0.08)
 
+        renew_times: list[float] = []
+
         async def acquire(path: str) -> str | None:
             return "cap-e"
 
         async def renew(token: str) -> bool:
+            renew_times.append(time.monotonic())
             raise live.PointerUnavailable("down for good")
 
         async def release(token: str) -> None:
             pass
 
-        def lease_lost() -> bool:
-            return live.removal_lease_lost("/wt/a")
+        started = time.monotonic()
+
+        def lost_or_well_past_the_ttl() -> bool:
+            # A heartbeat that never gives up keeps renewing; two TTLs of failures
+            # end the wait so the check below, not the wait, reports it.
+            past = bool(renew_times) and renew_times[-1] - started >= 0.16
+            return live.removal_lease_lost("/wt/a") or past
 
         live.install_removal_lease_client((acquire, renew, release))
         try:
             async with live.removal_lease("/wt/a"):
-                await async_wait_until(lease_lost)
+                await async_wait_until(lost_or_well_past_the_ttl)
+                assert live.removal_lease_lost("/wt/a") is True
+                assert await live.confirm_removal_lease("/wt/a") is False
         finally:
             live.install_removal_lease_client(None)
 

@@ -116,9 +116,14 @@ def test_a_child_still_serving_when_the_bound_expires_is_viable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resolved
 ) -> None:
     """Waiting on stdin is what a healthy ACP child does -- accept, do not refuse."""
+    from kiro_crew.agent_sdk import pod_child_probe as probe_mod
+
     monkeypatch.setattr(rt, "_CHILD_VIABILITY_TIMEOUT_SECS", 1.0)
     resolved(_fake_cli(tmp_path, "import time\ntime.sleep(30)\n"))
 
+    # Graded viable, not merely "did not refuse": a signed-out verdict also boots.
+    verdict = probe_mod.probe_pod_child_bootstrap(_pod_env(tmp_path), timeout_secs=1.0).verdict
+    assert verdict == probe_mod.PROBE_VIABLE
     rt._probe_pod_child_bootstrap(_pod_env(tmp_path))  # no raise
 
 
@@ -129,12 +134,18 @@ def test_a_clean_zero_exit_is_viable_not_a_failure(tmp_path: Path, resolved) -> 
     auth store was staged: every healthy child then exited 0 with empty stderr, and
     the probe read that as "could not bootstrap" and refused with exit 78.
     """
+    from kiro_crew.agent_sdk import pod_child_probe as probe_mod
+
     resolved(_fake_cli(tmp_path, "raise SystemExit(0)\n"))
 
+    result = probe_mod.probe_pod_child_bootstrap(_pod_env(tmp_path), timeout_secs=10.0)
+    assert result.verdict == probe_mod.PROBE_VIABLE
     rt._probe_pod_child_bootstrap(_pod_env(tmp_path))  # no raise
 
 
-def test_a_signed_out_child_still_boots(tmp_path: Path, resolved) -> None:
+def test_a_signed_out_child_still_boots(
+    tmp_path: Path, resolved, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Seeding is best-effort, so a signed-out host must still get a bootable pod."""
     resolved(
         _fake_cli(
@@ -147,9 +158,13 @@ def test_a_signed_out_child_still_boots(tmp_path: Path, resolved) -> None:
 
     rt._probe_pod_child_bootstrap(_pod_env(tmp_path))  # no raise
 
+    out = capsys.readouterr().out
+    assert "child bootstrapped but is signed out" in out
+    assert "You are not logged in" in out
+
 
 def test_a_host_without_kiro_cli_is_not_a_refusal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """kiro-cli is a separate prerequisite; its absence has its own message."""
     from kiro_crew.acp import client as acp_client
@@ -157,6 +172,8 @@ def test_a_host_without_kiro_cli_is_not_a_refusal(
     monkeypatch.setattr(acp_client, "_resolve_kiro_bin", lambda **_kw: None)
 
     rt._probe_pod_child_bootstrap(_pod_env(tmp_path))  # no raise
+
+    assert "probe skipped (no kiro-cli on this host)" in capsys.readouterr().out
 
 
 def test_an_unspawnable_child_refuses_rather_than_tracebacks(

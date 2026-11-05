@@ -917,7 +917,7 @@ class TestPinnedTargetDir:
             pinned.write_text("note.txt", "hello")
         assert (ok, err) == (True, "")
         assert (cache / "clip.mp4").read_bytes() == _PAYLOAD
-        assert (cache / "note.txt").read_text() == "hello"
+        assert (cache / "note.txt").read_text(encoding="utf-8") == "hello"
 
     def test_a_staging_file_elsewhere_is_refused_up_front(self, tmp_path: Path) -> None:
         """The staging file is addressed through the target's directory, so it must be there."""

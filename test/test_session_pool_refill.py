@@ -1,14 +1,8 @@
 """How the warm pool refills when its provider factory, defaults or workspace change.
 
-``reload_provider_factory`` resets the pool and refills it with the new provider
-type; ``refresh_defaults`` adopts new defaults without clearing or shutting down
-a live session, draining and restarting only the pool. Pool providers start in
-the workspace ``default_project_dir`` resolves, and a session cwd other than
-the pool's bypasses the pool. The fill lock is held only around the queue
-mutations, so a refresh interleaves between starts, while a second refill is a
-no-op as long as one is live; a provider started under a replaced factory or
-before a new identity epoch is discarded, never enqueued. The shared fixture and
-stand-ins live in ``session_pool_helpers.py``.
+``refresh_defaults`` drains and restarts only the pool, never a live session. A provider
+started under a replaced factory or before a new identity epoch is discarded, never
+enqueued. The shared fixture and stand-ins live in ``session_pool_helpers.py``.
 """
 
 from __future__ import annotations
@@ -29,9 +23,7 @@ from session_pool_helpers import (  # noqa: F401 -- the autouse fixture register
 from kiro_crew.start_priority import PrioritySemaphore
 from kiro_crew.testing.wait import await_until, finished
 
-# ---------------------------------------------------------------------------
 # reload_provider_factory resets pool
-# ---------------------------------------------------------------------------
 
 
 class TestReloadProviderFactoryRefillsPool:
@@ -83,9 +75,7 @@ class TestReloadProviderFactoryRefillsPool:
         await mgr.close_all()
 
 
-# ---------------------------------------------------------------------------
 # refresh_defaults adopts new defaults WITHOUT tearing down live sessions
-# ---------------------------------------------------------------------------
 
 
 class TestRefreshDefaultsSparesLiveSessions:
@@ -193,9 +183,7 @@ class TestRefreshDefaultsSparesLiveSessions:
         await mgr.close_all()
 
 
-# ---------------------------------------------------------------------------
 # default_project_dir
-# ---------------------------------------------------------------------------
 
 
 class TestDefaultProjectDir:
@@ -236,9 +224,7 @@ class TestDefaultProjectDir:
         assert result == ""
 
 
-# ---------------------------------------------------------------------------
 # _pool_cwd initialization and bypass logic
-# ---------------------------------------------------------------------------
 
 
 class TestPoolCwd:
@@ -339,13 +325,10 @@ _MID_REFILL_LOST_RUN_CEILING_SECS = 30.0
 
 
 class TestFillLockReleasedAcrossStart:
-    """``_fill_warm_pool`` holds ``_pool_fill_lock`` only around the queue
-    mutations, releasing it across each per-iteration start-permit wait.
+    """``_fill_warm_pool`` holds ``_pool_fill_lock`` only around the queue mutations.
 
-    A caller that waits on the lock -- ``refresh_defaults`` /
-    ``reload_provider_factory`` from a config apply, the identity sweep's
-    ``_retire_kiro_warm_pool`` -- interleaves between refill iterations and
-    waits at most one start, not the whole refill.
+    A caller waiting on the lock, such as ``refresh_defaults``, waits at most one
+    start, not the whole refill.
     """
 
     @pytest.mark.asyncio
@@ -364,8 +347,7 @@ class TestFillLockReleasedAcrossStart:
             started += 1
             if started == 1:
                 first_started.set()
-            # flake-ok: pre-existing gated start stub, moved verbatim; the finally block sets the event and every outer await is bounded
-            await release_start.wait()
+            await await_until(release_start, what="the test releases the gated start")
 
         def _factory(*a, **kw):
             p = _make_provider()
@@ -406,16 +388,10 @@ class TestFillLockReleasedAcrossStart:
 
     @pytest.mark.asyncio
     async def test_concurrent_refills_do_not_overfill(self):
-        # The fill lock guards the queue mutations only, not whole refills, so
-        # the single-fill guard (``fill_active``) is what keeps a replenish
-        # racing the startup fill from overshooting size.
-        #
-        # ``_start_sem`` is sized at 2 -- larger than the pool -- precisely so
-        # the second fill is NOT blocked on the semaphore. The only thing that
-        # stops it from running a real second refill is the ``fill_active``
-        # guard: with the guard the second fill is an immediate no-op; without
-        # it the second fill runs and parks inside its own start() on
-        # ``release_start``, so the wrapped call below times out.
+        # The fill lock does not span whole refills, so ``fill_active`` keeps a second
+        # fill from overshooting size. ``_start_sem`` is sized at 2 so the second fill
+        # is not blocked on it; without the guard that fill parks on
+        # ``release_start`` and the wrapped call below times out.
         mgr, _ = _make_manager(pool_size=2)
         mgr._start_sem = PrioritySemaphore(2)
 
@@ -427,8 +403,7 @@ class TestFillLockReleasedAcrossStart:
             nonlocal started
             started += 1
             in_start.set()
-            # flake-ok: pre-existing gated start stub, moved verbatim; the finally block sets the event and every outer await is bounded
-            await release_start.wait()
+            await await_until(release_start, what="the test releases the gated start")
 
         def _factory(*a, **kw):
             p = _make_provider()
@@ -478,8 +453,7 @@ class TestFillLockReleasedAcrossStart:
 
         async def _slow_start() -> None:
             in_start.set()
-            # flake-ok: pre-existing gated start stub, moved verbatim; the finally block sets the event and every outer await is bounded
-            await release_start.wait()
+            await await_until(release_start, what="the test releases the gated start")
 
         def _stale_factory(*a, **kw):
             p = _make_provider()
@@ -533,8 +507,7 @@ class TestFillLockReleasedAcrossStart:
 
         async def _slow_start() -> None:
             in_start.set()
-            # flake-ok: pre-existing gated start stub, moved verbatim; the finally block sets the event and every outer await is bounded
-            await release_start.wait()
+            await await_until(release_start, what="the test releases the gated start")
 
         def _factory(*a, **kw):
             p = _make_provider()
@@ -582,8 +555,7 @@ class TestMcpConfigFence:
     def _gated_factory(providers: list, in_start: asyncio.Event, release: asyncio.Event):
         async def _slow_start() -> None:
             in_start.set()
-            # flake-ok: gated start stub as the sibling tests use; the finally block sets the event and every outer await is bounded
-            await release.wait()
+            await await_until(release, what="the test releases the gated start")
 
         def _factory(*a, **kw):
             p = _make_provider()

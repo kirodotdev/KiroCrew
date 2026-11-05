@@ -184,13 +184,22 @@ def test_follow_allows_real_writer_rollover(windows_log, monkeypatch, capsys, du
         return fd
 
     monkeypatch.setattr(platform_compat, "open_log_file_for_tail", read_open)
+    emitted = ""
     ticks = []
 
+    # Stop on what follow has emitted, not on a tick count: an exact count is
+    # passed by for good if one tick goes missing, and follow then polls until
+    # the per-test timeout. The cap bounds the wait at zero wall-clock cost,
+    # because sleep is the monkeypatched tick.
     def tick(_seconds):
+        nonlocal emitted
         ticks.append(1)
+        if len(ticks) > 1000:
+            raise AssertionError(f"follow never emitted the rollover: {emitted!r}")
         if not during_read and len(ticks) == 1:
             rotate()
-        if len(ticks) == 3:
+        emitted += capsys.readouterr().out
+        if "after-2\n" in emitted:
             raise KeyboardInterrupt
 
     _pin_sleep(monkeypatch, tick)
@@ -199,9 +208,10 @@ def test_follow_allows_real_writer_rollover(windows_log, monkeypatch, capsys, du
         cli_server._tail_log_file(windows_log, 1, True)
     finally:
         handler.close()
+    emitted += capsys.readouterr().out
     assert not errors
     assert windows_log.read_text(encoding="utf-8") == "after-1\nafter-2\n"
-    assert capsys.readouterr().out == "x" * 30 + "\nafter-1\nafter-2\n"
+    assert emitted == "x" * 30 + "\nafter-1\nafter-2\n"
 
 
 @pytest.mark.parametrize("replacement", ["new\n", "a much longer replacement than the seed\n"])

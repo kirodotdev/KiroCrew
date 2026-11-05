@@ -1,14 +1,8 @@
 """Consent must precede any billable AWS request.
 
-Three properties, one per step of the fix:
-
-1. The voice-reply provider default is the LOCAL one, so enabling voice reply
-   without naming a provider cannot reach a paid AWS service.
-2. Every gated call site refuses when there is no matching grant, and the grant
-   record lives on the keystone floor where the agent cannot mint it.
-3. The credential source is named (an empty profile is NOT "no account"), and a
-   grant recorded for one account does not survive the profile being repointed
-   at another.
+The voice-reply default provider is local; every gated call site refuses without a
+grant kept on the keystone floor; and a grant does not survive its profile being
+repointed at another account (an empty profile is not "no account").
 """
 
 from __future__ import annotations
@@ -78,7 +72,27 @@ def _grant(service=aws_consent.SERVICE_POLLY, *, profile="", region="us-east-1",
     )
 
 
-# ── Step 1: the default provider is local ──
+def _kb_source_row(profile: str, region: str, name: str = "Team KB") -> dict:
+    """A bedrock_kb row as ``add_source`` leaves it and the bounded SELECT
+    returns it: attested under the grant the caller recorded first, so it holds
+    its target, and its id and uri read back exactly (``identity_exact``)."""
+    import json as _json
+
+    sid, uri = "kb-src-1", f"bedrock-kb://{region}/KBTEST000X"
+    props = {"kb_ids": "KBTEST000X", "profile": profile, "region": region}
+    aws_consent.record_source_attestation(sid, uri, props)
+    return {
+        "id": sid,
+        "uri": uri,
+        "name": name,
+        "properties": _json.dumps(props),
+        "identity_exact": 1,
+    }
+
+
+def _wire_kb_sources(req, rows) -> None:
+    """Give the MagicMock app state a queryable bedrock_kb sources table."""
+    req.app["state"].knowledge_store.db.execute.return_value.fetchall.return_value = rows
 
 
 class TestProviderDefaultIsLocal:
@@ -151,15 +165,10 @@ class TestGrantIsOnTheKeystoneFloor:
         assert mode == 0o600
 
     def test_write_lockdown_precedes_content(self, home, monkeypatch):
-        """The authorization record must never exist in a file that has not
-        been locked down yet.
+        """The authorization record never exists in a file not yet locked down.
 
-        On Windows the POSIX mode bits are a no-op, so the owner-only DACL from
-        ``restrict_to_owner`` is the only protection; applying it after the
-        rename would leave the record readable under the inherited ACL for the
-        write window. Asserted by measuring the file's SIZE at lockdown time —
-        zero means no payload byte existed yet. A post-write stat passes on the
-        wrong ordering too, so it cannot distinguish the two.
+        On Windows the DACL from ``restrict_to_owner`` is the only protection. The file
+        size at lockdown must be zero; a post-write stat passes on either order.
         """
         from kiro_crew import platform_compat
 
@@ -230,12 +239,8 @@ class TestGrantIsOnTheKeystoneFloor:
     def test_a_failed_lockdown_preserves_the_previous_store(self, home, monkeypatch):
         """A failed NEW write must not destroy the PREVIOUS, healthy store.
 
-        Every failure inside ``atomic_write`` happens before the rename, so the
-        final path still holds the last successfully written (and locked-down)
-        record. Both pre-push reviews flagged the alternative — an unlink on any
-        OSError — as data loss: one transient failure would have wiped every
-        recorded authorization. The empty-home test above cannot see that
-        destruction, so this variant seeds a real grant first.
+        Failures in ``atomic_write`` happen before the rename, so an unlink on OSError
+        would wipe every grant. Seeds a real grant, which the empty-home test cannot.
         """
         from kiro_crew import platform_compat
         from kiro_crew.config.loader import aws_consent_path
@@ -254,7 +259,7 @@ class TestGrantIsOnTheKeystoneFloor:
         assert aws_consent_path().read_bytes() == before, "the previous store was altered"
         assert (
             aws_consent.read_grant(aws_consent.SERVICE_POLLY) is not None
-        ), "a failed new grant destroyed the previously recorded authorization"
+        ), "a failed new grant destroyed the recorded authorization"
 
     def test_a_failed_payload_write_preserves_the_previous_store(self, home, monkeypatch):
         """Same property for an ordinary write failure (disk full while creating
@@ -341,7 +346,7 @@ class TestGate:
         What is lost is not a working authorization -- an unreadable store grants
         nothing -- but it may hold the operator's other service grant. Preserved
         rather than refused, because refusing would leave a corrupt file
-        unrecoverable from the dashboard. Found in review.
+        unrecoverable from the dashboard.
         """
         from kiro_crew.config.loader import aws_consent_path
 
@@ -445,11 +450,8 @@ class TestPollySynthesisRefuses:
 class TestAccountIsVerifiedNotAssumed:
     """A profile NAME is not an account: the live account is checked too.
 
-    ``aws configure set credential_process ... --profile <name>`` repoints an
-    existing profile at a different account without touching the credential
-    files, and that command is NOT on the shell denylist -- measured, not
-    assumed. So a grant keyed only on the profile name would keep authorizing
-    calls after the account under it changed. Found in review.
+    ``aws configure set credential_process ... --profile <name>`` repoints a profile
+    at another account and is not on the shell denylist.
     """
 
     def test_same_account_authorizes(self, home):
@@ -482,11 +484,8 @@ class TestAccountIsVerifiedNotAssumed:
     def test_unresolvable_account_is_refused_not_assumed(self, home):
         """Fail CLOSED when the account cannot be re-checked.
 
-        An earlier revision allowed this so a transient STS fault would not stop
-        voice output, but that let a repointed profile bill an unconfirmed
-        account -- and on a host with boto3 but no ``aws`` CLI the account was
-        never verified at all. Refusing costs little, because a grant can only
-        exist where the probe once succeeded.
+        Allowing it would let a repointed profile bill an unconfirmed account. Refusing
+        costs little: a grant exists only where the probe once succeeded.
         """
         _grant(profile="voice", region="us-east-1", account="111122223333")
         unknown = aws_consent.Identity(ok=False, detail="network down")
@@ -524,7 +523,7 @@ class TestAccountIsVerifiedNotAssumed:
 
         The probe is free and goes to the account the operator already consented
         to, so paying it per call costs latency, not money -- and the window it
-        removes is exactly what this check exists for. Found in review.
+        removes is exactly what this check exists for.
         """
         _grant(profile="voice", region="us-east-1", account="111122223333")
         same = aws_consent.Identity(ok=True, account="111122223333")
@@ -564,11 +563,8 @@ class TestAccountIsVerifiedNotAssumed:
 class TestConcurrentWithdrawalFailsClosed:
     """A consent that disappears mid-check must not authorize the call.
 
-    The probe spawns a subprocess, so ``authorize`` has a real suspension point
-    in the middle -- long enough for the operator to press Withdraw or for
-    another request's drift check to revoke. Removing the probe cache in the
-    previous round widened that window, so the grant is re-asserted immediately
-    before the allow. Found in review.
+    The probe spawns a subprocess, so a withdrawal can land mid-``authorize``; the
+    grant is re-asserted just before the allow.
     """
 
     def test_grant_withdrawn_before_the_probe_is_denied(self, home):
@@ -712,14 +708,9 @@ class TestConcurrentWithdrawalFailsClosed:
 class TestConsentEndpointRequiresTheOwner:
     """Confirming a charge spends the OWNER's money, so it is an owner action.
 
-    Narrower than "authenticated" and narrower than "not an app". Two caller
-    classes had to be shut out and only the first is obvious: an app token (an
-    app declaring the endpoint's permission would mint a grant with no human in
-    the loop) and an allowed MESSAGING user (a Slack allow-listed non-owner who
-    runs ``!dashboard`` authenticates with ``app == ""``, so an app-only check let
-    them authorize spending in the owner's account). Reads are refused too: the
-    GET names the account id and caller ARN a keystone read is fenced from. Both
-    found in review.
+    Shuts out app tokens and allowed messaging users: a Slack non-owner running
+    ``!dashboard`` has ``app == ""``. Reads are refused too: the GET names the account
+    id and caller ARN.
     """
 
     def _req(
@@ -989,12 +980,8 @@ class TestEffectiveTargetReadsLiveConfig:
 class TestThereIsNoCliGrantSurface:
     """The agent must not be able to grant itself permission to spend.
 
-    An earlier revision shipped a ``kirocrew aws-consent grant`` verb behind an
-    env-var guard. Review found that single layer bypassable (an in-process agent
-    can unset the variable, and unlike ``kirocrew cloud`` the verb was not also
-    shell-denied), so the surface was removed rather than hardened: the
-    authenticated dashboard is available on every install. This pins that it
-    stays removed -- re-adding a terminal grant re-opens the hole.
+    An env-var guard on a terminal grant verb is bypassable by an in-process agent;
+    the authenticated dashboard is the only grant surface.
     """
 
     def test_cli_exposes_no_consent_command(self):
@@ -1139,7 +1126,7 @@ class TestDescribeVoicesEndpoint:
         assert body == {"voices": []}
         assert spawn.call_count == 0
         # Routed through refuse_and_log, so the denial is audited like every
-        # other gated call site rather than only logged. Found in review.
+        # other gated call site rather than only logged.
         assert [c.kwargs.get("outcome") for c in audit.call_args_list] == ["denied"]
 
 
@@ -1349,13 +1336,43 @@ class TestConsentEndpoint:
         assert grant.profile == "voice"
         assert grant.region == "us-east-1"
 
+    def test_a_grant_write_failure_is_not_reported_as_a_bedrock_source_check(self, home):
+        """Only a failed one-account LOOKUP carries
+        ``bedrock_kb_conflict_check_failed``. A grant write that fails, here
+        for Polly, propagates as the unhandled error it is (the same as every
+        other consent write), instead of telling the operator a Bedrock source
+        could not be checked."""
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        resolved = aws_consent.Identity(ok=True, account="111122223333", arn="arn:aws:iam::1:u/x")
+        with (
+            patch.object(handler.aws_consent, "probe_identity", AsyncMock(return_value=resolved)),
+            patch.object(
+                handler, "_effective_target", AsyncMock(return_value=("voice", "us-east-1"))
+            ),
+            patch.object(handler.aws_consent, "record_grant", side_effect=OSError("disk full")),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            asyncio.run(
+                handler.api_aws_consent_post(
+                    self._post(
+                        {
+                            "service": "polly",
+                            "expectedProfile": "voice",
+                            "expectedRegion": "us-east-1",
+                            "expectedAccount": "111122223333",
+                        }
+                    )
+                )
+            )
+        assert aws_consent.read_grant(aws_consent.SERVICE_POLLY) is None
+
     def test_a_confirmation_for_a_different_account_is_refused(self, home):
         """Confirming what you were SHOWN is the point of the surface.
 
         The consent card and the provider fields are separate queries, so an
         operator could read account A, change the profile, then click Confirm.
         Without this the POST would record account B while A was on screen.
-        Found in review.
         """
         from kiro_crew.dashboard.handlers import aws_consent as handler
 
@@ -1405,7 +1422,7 @@ class TestConsentEndpoint:
 
     @pytest.mark.parametrize("bad", [[], {}, 7, None, True])
     def test_a_non_string_service_is_rejected_not_a_500(self, home, bad):
-        """``{"service": []}`` reached ``list.strip()`` and 500ed. Found in review."""
+        """A non-string ``service`` is rejected before ``list.strip()`` can 500."""
         from kiro_crew.dashboard.handlers import aws_consent as handler
 
         resp = asyncio.run(handler.api_aws_consent_post(self._post({"service": bad})))
@@ -1422,16 +1439,9 @@ class TestConsentEndpoint:
 class TestAuditDecisionRedactsBeforeTruncate:
     """``audit_decision`` must redact ``detail`` BEFORE clipping it to 200 chars.
 
-    The ``resources`` string reaches the durable Security Event Log through
-    ``log_api_access``. SEL's own write-path pass runs over what it is handed,
-    so a credential that the caller has already cut in half at index 200 is a
-    fragment no credential grammar matches, and the partial secret persists in a
-    dashboard-readable audit log. Same invariant as ``redact_and_truncate``:
-    redaction runs over the FULL text, and only then is the text clipped.
-
-    The site sits inside an ``if detail else service`` ternary, so the second
-    test pins the branch the redact-first rewrite must not disturb: an empty
-    ``detail`` still emits the bare ``service`` with no ``": "`` separator.
+    A credential cut at index 200 matches no grammar, so SEL's own pass misses it.
+    Same rule as ``redact_and_truncate``. The second test pins that an empty ``detail``
+    emits the bare ``service`` with no ``": "``.
     """
 
     SECRET = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
@@ -1488,14 +1498,9 @@ class TestAuditDecisionRedactsBeforeTruncate:
 class TestRevocationCannotBeDenied:
     """An agent must not be able to block the owner's withdrawal of consent.
 
-    The store is serialised by an in-process lock, so there is no lock FILE beside
-    the grant for a sandboxed agent to hold. ``is_sensitive_path`` does cover such
-    a sibling, but that is the evadable tier: a runtime-constructed path escapes
-    the text and argv matchers. Sealing the leaf read-only would not close it
-    either, because ``flock(LOCK_EX)`` succeeds on an ``O_RDONLY`` descriptor, so a
-    read-only bind still admits the exclusive hold. What the hold costs is the
-    owner's REVOKE, which leaves consent active for later billable calls: a denial
-    of revocation rather than a disclosure. These pin that there is no such file.
+    The store uses an in-process lock, so no lock file exists for an agent to hold.
+    ``flock(LOCK_EX)`` works on an ``O_RDONLY`` descriptor, so a read-only seal would
+    not stop a hold. These pin that there is no such file.
     """
 
     def test_the_module_defines_no_file_lock(self):
@@ -1549,13 +1554,8 @@ class TestRevocationCannotBeDenied:
 class TestAuditWritesStayOffTheEventLoop:
     """``audit_decision`` writes the Security Event Log, so it must not run inline.
 
-    That write also INITIALISES the log on first use, so a large or corrupt tail
-    makes one call slow, and a slow call on the loop stalls every other request
-    and the heartbeat. Three async paths reach it and all three offload: the
-    endpoints' owner refusal, the per-call verification in :func:`authorize`, and
-    the refusal in :func:`refuse_and_log`. Each case records which thread the
-    audit ran on, because "it is awaited" is not the property being held --
-    running somewhere other than the loop thread is.
+    The first write initialises the log, so one call can be slow. Each case records
+    the thread the audit ran on, because being awaited is not the property.
     """
 
     @staticmethod
@@ -1624,3 +1624,288 @@ class TestAuditWritesStayOffTheEventLoop:
             )
         assert allowed is True
         assert seen == [False], "the verification audit ran on the event loop"
+
+
+# ── The consent POST never imports the Bedrock connector on the event loop ──
+
+
+class TestConfirmNeverImportsTheConnectorOnTheLoop:
+    """``bedrock_kb`` imports boto3 at module level, so it loads only in the worker.
+
+    A Polly or Transcribe confirmation must not load it at all. A meta-path finder
+    records each load's thread and answers None; ``monkeypatch`` restores the original
+    module object so later patches still hit the one the code imports.
+    """
+
+    _MODULE = "kiro_crew.knowledge.connectors.bedrock_kb"
+
+    @pytest.fixture()
+    def loads(self, monkeypatch):
+        """Arms the recorder; yields one ``on_loop`` flag per real load."""
+        import importlib
+        import sys
+
+        module_name = self._MODULE
+        seen: list[bool] = []
+
+        class _Recorder:
+            @staticmethod
+            def find_spec(fullname, path=None, target=None):
+                if fullname == module_name:
+                    try:
+                        asyncio.get_running_loop()
+                    except RuntimeError:
+                        seen.append(False)
+                    else:
+                        seen.append(True)
+                return None  # defer to the real finders
+
+        # A module already loaded is dropped so the POST really loads it, and
+        # both places that name the object are restored at teardown. A process
+        # that never imported it has nothing to drop: the POST's load is the
+        # real first one and stays.
+        already = sys.modules.get(module_name)
+        if already is not None:
+            pkg = importlib.import_module("kiro_crew.knowledge.connectors")
+            monkeypatch.setattr(pkg, "bedrock_kb", already, raising=False)
+            monkeypatch.delitem(sys.modules, module_name)
+        monkeypatch.setattr(sys, "meta_path", [_Recorder, *sys.meta_path])
+        return seen
+
+    @staticmethod
+    def _bedrock_post(rows):
+        req = _consent_request(
+            body={
+                "service": "bedrock-kb",
+                "targetProfile": "team-a",
+                "targetRegion": "us-east-1",
+                "expectedProfile": "team-a",
+                "expectedRegion": "us-east-1",
+                "expectedAccount": "111122223333",
+            }
+        )
+        _wire_kb_sources(req, rows)
+        return req
+
+    _IDENTITY = aws_consent.Identity(
+        ok=True, account="111122223333", arn="arn:aws:iam::111122223333:user/x"
+    )
+
+    @pytest.mark.asyncio
+    async def test_the_recorder_flags_an_import_on_the_loop(self, loads):
+        """The mutation guard: a load on the loop thread is what reads True, so a
+        green sweep below means the loads really ran elsewhere."""
+        import importlib
+
+        importlib.import_module(self._MODULE)
+        assert loads == [True]
+
+    @pytest.mark.asyncio
+    async def test_a_bedrock_confirmation_loads_the_connector_off_the_loop(self, home, loads):
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        with patch.object(aws_consent, "probe_identity", AsyncMock(return_value=self._IDENTITY)):
+            resp = await handler.api_aws_consent_post(self._bedrock_post([]))
+        assert resp.status == 200
+        assert aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB) is not None
+        assert loads, "the connector was never loaded, so nothing was measured"
+        assert True not in loads, "the connector was imported on the event loop"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_translated_in_the_worker_and_refuses_unchanged(
+        self, home, loads
+    ):
+        """The refusal is the one the loop-side ``except`` produced before the
+        translation moved into the worker: same status, same code, same text,
+        and no grant."""
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        req = self._bedrock_post([])
+        req.app["state"].knowledge_store.db.execute.side_effect = RuntimeError("db locked")
+        with patch.object(aws_consent, "probe_identity", AsyncMock(return_value=self._IDENTITY)):
+            resp = await handler.api_aws_consent_post(req)
+        assert resp.status == 503
+        assert json.loads(resp.text) == {
+            "error": (
+                "could not check the existing Bedrock Knowledge Base "
+                "source, so nothing was confirmed; try again"
+            ),
+            "code": "bedrock_kb_conflict_check_failed",
+        }
+        assert aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB) is None
+        assert loads == [False], "the connector was imported on the event loop"
+
+    @pytest.mark.asyncio
+    async def test_a_polly_confirmation_never_loads_the_connector(self, home, loads):
+        """The cost the finding measured: a Polly confirm on a process that has
+        never used Bedrock paid the connector's import, on the loop."""
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        req = _consent_request(
+            body={
+                "service": "polly",
+                "expectedProfile": "voice",
+                "expectedRegion": "us-east-1",
+                "expectedAccount": "111122223333",
+            }
+        )
+        with (
+            patch.object(aws_consent, "probe_identity", AsyncMock(return_value=self._IDENTITY)),
+            patch.object(
+                handler, "_effective_target", AsyncMock(return_value=("voice", "us-east-1"))
+            ),
+        ):
+            resp = await handler.api_aws_consent_post(req)
+        assert resp.status == 200
+        assert loads == [], f"a Polly confirmation loaded the Bedrock connector: {loads}"
+
+
+class TestProbeTimeoutForBudgetedCallers:
+    """A caller under its own budget (Bedrock search) caps the identity probe
+    at what is left of it. Every other caller keeps the exact probe call and
+    the 15 s default."""
+
+    @staticmethod
+    def _record_run_aws(monkeypatch) -> list[int]:
+        from kiro_crew.cloud import aws as cloud_aws
+
+        seen: list[int] = []
+
+        def fake_run_aws(args, profile, region, *, timeout):
+            seen.append(timeout)
+            return 0, "", ""
+
+        monkeypatch.setattr(cloud_aws, "run_aws", fake_run_aws)
+        return seen
+
+    def test_default_callers_keep_the_probe_call_and_15s(self, home, monkeypatch):
+        _grant(profile="voice", region="us-east-1", account="111122223333")
+        same = aws_consent.Identity(ok=True, account="111122223333")
+        with patch.object(aws_consent, "probe_identity", AsyncMock(return_value=same)) as probe:
+            assert asyncio.run(
+                aws_consent.refuse_and_log(
+                    aws_consent.SERVICE_POLLY, profile="voice", region="us-east-1"
+                )
+            )
+        probe.assert_awaited_once_with("voice", "us-east-1", use_cache=False)
+
+        seen = self._record_run_aws(monkeypatch)
+        aws_consent._run_aws(["sts", "get-caller-identity"], "voice", "us-east-1")
+        assert seen == [15]
+
+    def test_a_budgeted_caller_passes_its_remaining_budget(self, home, monkeypatch):
+        _grant(profile="voice", region="us-east-1", account="111122223333")
+        same = aws_consent.Identity(ok=True, account="111122223333")
+        with patch.object(aws_consent, "probe_identity", AsyncMock(return_value=same)) as probe:
+            assert asyncio.run(
+                aws_consent.refuse_and_log(
+                    aws_consent.SERVICE_POLLY,
+                    profile="voice",
+                    region="us-east-1",
+                    probe_timeout=2.2,
+                )
+            )
+        probe.assert_awaited_once_with("voice", "us-east-1", use_cache=False, timeout=2.2)
+
+        # run_aws takes whole seconds: the budget rounds up, with a 1 s floor.
+        seen = self._record_run_aws(monkeypatch)
+        aws_consent._run_aws(["sts", "get-caller-identity"], "voice", "us-east-1", 2.2)
+        aws_consent._run_aws(["sts", "get-caller-identity"], "voice", "us-east-1", 0.01)
+        assert seen == [3, 1]
+
+    def test_a_budget_cut_probe_failure_is_not_cached(self, monkeypatch):
+        def timed_out(args, profile, region, timeout=None):
+            return 124, "", "aws call timed out after 1s: sts get-caller-identity"
+
+        monkeypatch.setattr(aws_consent, "_aws_cli_resolvable", lambda: True)
+        monkeypatch.setattr(aws_consent, "_run_aws", timed_out)
+        monkeypatch.setattr(aws_consent, "_probe_cache", {})
+        key = ("voice", "us-east-1")
+
+        cut = asyncio.run(aws_consent.probe_identity(*key, use_cache=False, timeout=0.5))
+        assert cut.ok is False
+        assert key not in aws_consent._probe_cache
+
+        asyncio.run(aws_consent.probe_identity(*key, use_cache=False))
+        assert key in aws_consent._probe_cache
+
+    def test_the_probe_passes_a_timeout_only_when_budgeted(self, monkeypatch):
+        calls: list[dict] = []
+
+        def fake_run_aws(args, profile, region, **kwargs):
+            calls.append(kwargs)
+            return 0, '{"Account": "111122223333", "Arn": "arn:aws:iam::1:x"}', ""
+
+        monkeypatch.setattr(aws_consent, "_aws_cli_resolvable", lambda: True)
+        monkeypatch.setattr(aws_consent, "_run_aws", fake_run_aws)
+        monkeypatch.setattr(aws_consent, "_probe_cache", {})
+
+        plain = asyncio.run(aws_consent.probe_identity("voice", "us-east-1", use_cache=False))
+        cut = asyncio.run(
+            aws_consent.probe_identity("voice", "us-east-1", use_cache=False, timeout=2.2)
+        )
+        assert plain.ok and cut.ok
+        assert calls == [{}, {"timeout": 2.2}]
+
+
+class TestProbeCacheIsBounded:
+    """``_probe_cache`` is keyed on a request-supplied (profile, region) for
+    ``bedrock-kb`` (``GET /api/aws/consent?service=bedrock-kb&region=...``),
+    and the TTL was only ever read on lookup, so every distinct well-shaped
+    pair left one permanent entry in the gateway process
+    (``a-bound-bounds-every-field-it-retains``, Opus finding 4b102cf833ee)."""
+
+    def test_distinct_keys_cannot_grow_the_cache_past_the_cap(self, monkeypatch):
+        import time
+
+        payload = '{"Account": "111122223333", "Arn": "arn:aws:iam::1:x"}'
+        runs: list[str] = []
+
+        def fake_run_aws(args, profile, region, timeout=None):
+            runs.append(region)
+            if region.startswith("broken-"):
+                raise RuntimeError("refused")  # the exception-path write site
+            if region.startswith("cut-"):
+                return 124, "", "aws call timed out"
+            return 0, payload, ""
+
+        monkeypatch.setattr(aws_consent, "_aws_cli_resolvable", lambda: True)
+        monkeypatch.setattr(aws_consent, "_run_aws", fake_run_aws)
+        monkeypatch.setattr(aws_consent, "_probe_cache", {})
+        cap = aws_consent._PROBE_CACHE_MAX_ENTRIES
+
+        def probe(region: str) -> None:
+            asyncio.run(aws_consent.probe_identity("voice", region, use_cache=False))
+
+        # Twice the cap through the success path, then again through the
+        # exception path: BOTH write sites hold the count at the cap, and
+        # the oldest entries are the ones that leave.
+        for i in range(cap * 2):
+            probe(f"region-{i:03d}")
+        assert len(aws_consent._probe_cache) == cap
+        assert ("voice", f"region-{cap * 2 - 1:03d}") in aws_consent._probe_cache
+        assert ("voice", "region-000") not in aws_consent._probe_cache
+        for i in range(cap):
+            probe(f"broken-{i:03d}")
+        assert len(aws_consent._probe_cache) == cap
+        assert all(region.startswith("broken-") for _, region in aws_consent._probe_cache)
+        assert len(runs) == cap * 3  # every probe ran; the cap bounds retention, not probing
+
+        # Refreshing a key already held evicts nothing, and an expired entry
+        # leaves on the next write even when the cache is far from the cap.
+        probe("broken-000")
+        assert len(aws_consent._probe_cache) == cap
+        aws_consent._probe_cache.clear()
+        stale = ("voice", "stale-region")
+        aws_consent._probe_cache[stale] = (
+            time.monotonic() - aws_consent._PROBE_TTL_SECS - 1.0,
+            aws_consent.Identity(ok=True, account="111122223333"),
+        )
+        probe("fresh-region")
+        assert stale not in aws_consent._probe_cache
+        assert ("voice", "fresh-region") in aws_consent._probe_cache
+
+        # The one rule that already existed stays: a failure under a caller's
+        # budget is not retained at all.
+        asyncio.run(aws_consent.probe_identity("voice", "cut-000", use_cache=False, timeout=0.5))
+        assert ("voice", "cut-000") not in aws_consent._probe_cache

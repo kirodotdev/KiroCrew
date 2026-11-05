@@ -1,24 +1,15 @@
 """What a restart does with the agent folders a previous process left behind.
 
-``_reconcile_orphans`` tombstones each folder no live run tracks as a
-``gateway_restart``: a complete result is ``result_available``, streamed bytes with
-no complete event a ``partial_result``, and no result ``notification_pending``. A
-live PID is killed only while it still belongs to the run, which
-``pid_recorded_at`` decides, and a folder already tombstoned or still tracked is
-skipped. An orphan's notice is redacted, tried by injection first and otherwise
-handed back for the caller's digest; it never promises a result a fragment cannot
-give, says how to resume a run whose conversation survived and follows the run's
-own record, and a failing notice stops no other reconciliation.
-``prune_stale_tombstones`` removes a tombstoned folder past the 7-day age and keeps
-a recent one, and ``spawn_status`` answers from the folder for a run no live
-manager holds, or 404 when there is no folder. The shared ``agent_root`` fixture
-lives in ``subagent_persistence_helpers.py``.
+``_reconcile_orphans`` tombstones each untracked folder as a ``gateway_restart``
+(``result_available``, ``partial_result`` or ``notification_pending``) and kills a live PID
+only while ``pid_recorded_at`` says it is still the run's. Also covers the orphan notice,
+``prune_stale_tombstones`` (7-day age) and ``spawn_status`` from the folder. The
+``agent_root`` fixture is in ``subagent_persistence_helpers.py``.
 """
 
 from __future__ import annotations
 
 import json
-import time
 
 import pytest
 from subagent_persistence_helpers import (  # noqa: F401 -- the fixture is requested by name
@@ -127,14 +118,9 @@ class TestOrphanReconciliation:
     ):
         """ "No result was captured" is not the whole story.
 
-        A run the restart caught before its first token has no ``result.txt``,
-        but the run's own conversation -- every turn and tool call kiro-cli
-        persisted -- is still on disk, and ``spawn_continue`` resumes it from the
-        run's ``state.json`` after a restart (that is retain-by-default's whole
-        point). A notice that says only that nothing was captured sends the parent
-        re-spawning from scratch and paying for the work twice. The notice carries
-        the run's progress and the resume handle, by the same bar ``SessionMap.get``
-        applies: the ``.json`` present AND a ``.jsonl`` holding a turn.
+        The conversation is still on disk and ``spawn_continue`` can resume it, so the notice
+        carries the resume handle, by ``SessionMap.get``'s bar: the ``.json`` present and a
+        ``.jsonl`` holding a turn.
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -249,13 +235,9 @@ class TestOrphanReconciliation:
     ):
         """A run cut off mid-turn is resumable exactly like one that streamed nothing.
 
-        ``result.txt`` is appended per streamed chunk, so a long run the restart
-        catches has usually written an opening fragment and gets the ``⚠️ cut off
-        mid-turn`` notice, not the ``❌ lost`` one. Its conversation survives the
-        restart all the same, so the notice must carry the same resume handle;
-        without it the parent re-spawns the longest runs -- the ones with the most
-        work to lose -- from scratch. A run that recorded a whole
-        answer is finished, so it is never offered a resume.
+        ``result.txt`` is appended per chunk, so long runs usually get the ``⚠️ cut off
+        mid-turn`` notice, not the ``❌ lost`` one, and it carries the same resume handle.
+        A whole answer is never offered a resume.
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -653,21 +635,25 @@ class TestReaperPrunesTombstones:
     """Verify the reaper loop calls prune_stale_tombstones."""
 
     @pytest.mark.asyncio
-    async def test_reaper_prunes_old_tombstones(self, agent_root):
+    async def test_reaper_prunes_old_tombstones(self, agent_root, manual_clock, monkeypatch):
         """Old tombstoned folders are pruned during reaper sweep."""
+        from kiro_crew import subagent_persistence
         from kiro_crew.subagent_persistence import (
             create_agent_folder,
             prune_stale_tombstones,
             write_tombstone,
         )
 
+        # The prune's "now" and the tombstone writer's "died" stamp read one frozen
+        # clock, so a death stamp is an exact offset from the instant the prune uses.
+        manual_clock.install(monkeypatch, subagent_persistence)
+
         # Eight days old: past the 7-day prune cutoff.
         create_agent_folder("old_tomb", task="t")
         write_tombstone("old_tomb", cause="timeout", recovery_action="delivered")
         ts_path = agent_root / "old_tomb" / "tombstone.json"
         ts = json.loads(ts_path.read_text(encoding="utf-8"))
-        # flake-ok: an 8-day-old stamp against the 7-day cutoff leaves a day of margin; never a wait or a deadline; moved verbatim
-        ts["died"] = time.time() - (8 * 86400)
+        ts["died"] = manual_clock.time() - (8 * 86400)
         ts_path.write_text(json.dumps(ts))
 
         # Fresh tombstone: inside the cutoff, so it is kept.

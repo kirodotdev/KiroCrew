@@ -370,11 +370,15 @@ class WorkLedgerProbe(irq.Probe):
                     )
                 )
 
-        if work_ledger.is_stale(
+        running, closed, looping = work_ledger.item_liveness(
+            conductor_key,
             item,
-            worker_running=self._worker_running(item.worker_session_key or ""),
-            worker_closed=self._worker_closed(item.worker_session_key or ""),
-            worker_looping=self._worker_looping(item.worker_session_key or ""),
+            running=self._worker_running,
+            closed=self._worker_closed,
+            looping=self._worker_looping,
+        )
+        if work_ledger.is_stale(
+            item, worker_running=running, worker_closed=closed, worker_looping=looping
         ):
             # The whole liveness conjunction is ``is_stale``'s, not this module's:
             # quiet past the window -- or the worker's session gone, which needs no
@@ -516,8 +520,21 @@ def person_wait_fingerprint(
             for item in open_items
         ):
             return None
+        remote = [item for item in open_items if item.worker_instance_id]
+        if remote and not (
+            work_preview.remote_dispatch()
+            and all(work_ledger.remote_pull_fresh(conductor_key, item) for item in remote)
+        ):
+            # A remote worker's reports reach this board through the hub's
+            # background puller (``remote_puller``), every
+            # ``REMOTE_PULL_INTERVAL_SECS``. While its last pull is fresh the fields
+            # here stand for the peer's and a new report moves the fingerprint like
+            # a local one. A stale, failed or missing pull, or the switch off (no
+            # puller), could hold the patrol past the report that moves the item,
+            # so the patrol runs instead: the liveness fallback.
+            return None
         closed = worker_closed or _always_open
-        if any(closed(item.worker_session_key or "") for item in open_items):
+        if any(_worker_gone(conductor_key, item, closed) for item in open_items):
             return None
         # A worker whose report the harness never delivered has news the report
         # fields do not carry, so its record joins the fingerprint: a new failure
@@ -535,6 +552,18 @@ def person_wait_fingerprint(
     except Exception:  # noqa: BLE001 - a read fault must never hold a patrol
         logger.debug("work-ledger probe: person-wait read failed for %s", conductor_key)
         return None
+
+
+def _worker_gone(
+    conductor_key: str, item: work_ledger.WorkItem, closed: Callable[[str], bool]
+) -> bool:
+    """Whether *item*'s worker session is gone. A remote item answers from its stored
+    pull record (``remote_liveness``), never from this gateway's slot table, where
+    the peer's key names nothing."""
+    remote = work_ledger.remote_liveness(conductor_key, item)
+    if remote is not None:
+        return remote[1]
+    return closed(item.worker_session_key or "")
 
 
 def _conductor_key(raw: object) -> str:

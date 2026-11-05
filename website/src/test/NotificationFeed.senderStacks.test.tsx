@@ -279,6 +279,29 @@ describe('NotificationFeed: clear sits on what it clears', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open notification: From yesterday' }))
   })
 
+  for (const variant of ['mac', 'panel'] as const) {
+    it(`${variant}: a partial clear of the only stack hands focus to the row that survived`, async () => {
+      // Both notes are targets, so there is no neighbour to hand focus to, and
+      // the stack shrinking to one note unmounts the focused header clear.
+      mockDeleteNotification.mockImplementation((ts: string) => ts === '2026-07-24T10:59:00Z'
+        ? Promise.reject(new Error('offline'))
+        : Promise.resolve({}))
+      renderFeed(notes.map(n => ({ ...n, job_id: 'triage' })), variant)
+      fireEvent.click(screen.getByRole('button', { name: variant === 'mac' ? /Expand 2 grouped notifications/ : /1 more/ }))
+      const clear = screen.getByRole('button', { name: 'Clear Cron Job' })
+      clear.focus()
+      fireEvent.click(clear)
+      fireEvent.click(clear)
+      await screen.findByRole('alert')
+      expect(screen.queryByText('Second')).toBeNull()
+      expect(clear.isConnected).toBe(false)
+      // The refocus effect fires after React commits the refocusTick state
+      // update; waitFor awaits that commit rather than reading activeElement
+      // before the effect has run.
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open notification: First' })))
+    })
+  }
+
   it('a failed day clear leaves focus on the clear it pressed', async () => {
     mockDeleteNotification.mockRejectedValue(new Error('boom'))
     renderFeed([

@@ -13,6 +13,7 @@ import { recordEvent } from '../../rum'
 import { Btn, Input, IconButton } from '../ui'
 import { Popover, PopoverTrigger, PopoverContent } from '../ui/popover'
 import RegistryManager from '../RegistryManager'
+import { backendRefusedNotice } from './backendRefused'
 
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -42,6 +43,9 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
       // mc:apps-changed listener in shell/appShell.tsx, for every dispatch site at once.
       window.dispatchEvent(new Event('mc:apps-changed'))
       onInstalled?.(installedName)
+      // Installed, but the host refused its backend: a warning, not only a success.
+      const refused = backendRefusedNotice(installedName, result)
+      if (refused) onError(refused)
       onOpenChange(false)
     } catch (e) {
       onError((e as Error)?.message || i18nT('components.appstore.sourcesPopover.install_failed'))

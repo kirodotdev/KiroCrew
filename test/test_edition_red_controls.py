@@ -100,7 +100,7 @@ def test_user_kiro_hooks_follow_the_policy_in_enterprise(
     monkeypatch.setattr(governance_profiles, "governance_permits", _answer)
     script = tmp_path / "hooks" / "a.sh"
     script.parent.mkdir()
-    script.write_text("#!/bin/sh\nexit 0\n")
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     script.chmod(0o755)
     config: dict = {"hooks": {}}
     mc_cfg = {
@@ -132,19 +132,6 @@ def test_webhooks_off_in_enterprise_even_when_switched_on(
 
     assert store.set_switch(True) is not enterprise
     assert store.is_switch_on() is not enterprise
-
-
-@pytest.mark.parametrize("edition", EDITIONS)
-def test_ops_mission_control_webhook_source_off_in_enterprise(monkeypatch, edition) -> None:
-    from kiro_crew.apps.builtins.ops_mission_control.backend.providers import webhook
-
-    enterprise = _set_edition(monkeypatch, edition)
-    monkeypatch.setattr(webhook, "provider_enabled", lambda _id: False)
-
-    accepted, detail = webhook.enqueue(b"{}", "sha256=x")
-
-    assert accepted is False
-    assert ("enterprise edition" in detail) is enterprise
 
 
 @pytest.mark.asyncio

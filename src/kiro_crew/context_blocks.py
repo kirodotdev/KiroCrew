@@ -67,6 +67,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("user_profile", r"\[USER PROFILE\]"),
     ("ui_language", r"\[UI LANGUAGE\]"),
     ("tool_names", r"\[TOOL NAMES\]"),
+    ("active_model", r"\[ACTIVE MODEL\]"),
     ("response_preferences", r"\[RESPONSE PREFERENCES"),
     ("channel_persona", r"\[CHANNEL\]"),
     ("incognito", r"\[INCOGNITO SESSION\]"),

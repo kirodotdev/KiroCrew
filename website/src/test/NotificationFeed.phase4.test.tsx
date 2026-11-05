@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationFeed from '../components/notifications/NotificationFeed'
 import { safeInternalUrl } from '../components/notifications/notifMeta'
@@ -63,15 +63,19 @@ describe('NotificationFeed Phase 4: inline approval actions', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it('one-click approve resolves via the approvals endpoint', () => {
+  it('one-click approve resolves via the approvals endpoint', async () => {
     renderFeed([approval])
-    fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
+    })
     expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'approve')
   })
 
-  it('one-click reject resolves via the approvals endpoint', () => {
+  it('one-click reject resolves via the approvals endpoint', async () => {
     renderFeed([approval])
-    fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
+    })
     expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'reject')
   })
 

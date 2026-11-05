@@ -60,7 +60,7 @@ import { useChatEventBridges, useColdFileTabHydration } from '../pages/chat/page
 import { __resetBottomTerminal, useBottomTerminal } from '../hooks/useBottomTerminal'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../utils/fenceShell'
 import { openActivityPanel, setPendingInput } from '../store/chatSlice'
-import type { ChatMessage, ChatSlot } from '../types'
+import type { ChatMessage } from '../types'
 import { api, type SlotEnvironment } from '../api/client'
 import { slotEnvironmentQueryKey } from '../components/sessionEnvironmentHooks'
 import { i18nT } from '../i18n/t'
@@ -76,9 +76,7 @@ function harness(overrides: Partial<BridgeOpts> = {}, placement: SlotEnvironment
   const openView = vi.fn()
   const opts: BridgeOpts = {
     activeSlot: 'slot-a',
-    activeSlotRef: { current: 'slot-a' },
     messages: [{ role: 'assistant', content: 'hi' } as ChatMessage],
-    slots: [{ key: 'slot-a' }, { key: 'slot-b' }] as ChatSlot[],
     dispatch: vi.fn() as never,
     queryClient,
     showActionError: vi.fn(),
@@ -164,34 +162,6 @@ describe('Web Preview feed', () => {
     harness()
     harness({ activeSlot: null })
     expect(preview.pending).not.toHaveBeenCalled()
-  })
-})
-
-describe('Electron built-in browser bridges', () => {
-  it('tracks every open slot and untracks one that closed, without re-registering the rest', () => {
-    const trackSession = vi.fn().mockResolvedValue(undefined)
-    ;(window as { browserAPI?: unknown }).browserAPI = { trackSession }
-    const { opts, hook } = harness()
-    expect(trackSession.mock.calls).toEqual([['slot-a', true], ['slot-b', true]])
-    hook.rerender({ ...opts, slots: [{ key: 'slot-b' }] as ChatSlot[] })
-    expect(trackSession.mock.calls.slice(2)).toEqual([['slot-a', false]])
-  })
-
-  it('surfaces the panel on agent-opened for the active slot only', () => {
-    let fire: ((e: { panelId?: string }) => void) | undefined
-    const off = vi.fn()
-    ;(window as { browserAPI?: unknown }).browserAPI = {
-      onAgentOpened: (cb: typeof fire) => { fire = cb; return off },
-    }
-    const { opts, openView, hook } = harness()
-    act(() => { fire!({ panelId: 'slot-b' }) })
-    act(() => { fire!({}) })
-    expect(openView).not.toHaveBeenCalled()
-    act(() => { fire!({ panelId: 'slot-a' }) })
-    expect(opts.dispatch).toHaveBeenCalledWith(openActivityPanel())
-    expect(openView).toHaveBeenCalledWith('browser')
-    hook.unmount()
-    expect(off).toHaveBeenCalled()
   })
 })
 

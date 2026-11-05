@@ -65,7 +65,6 @@ workflow_run_event      Declared by its own literal name -- already the correct
                         per-event Tier 2 shape, and the only events declaration
                         present in the tree today (the workflows app).
 log                     Gateway log stream (broad)
-browser                 browser_event (broad)
 
 ## Scope declarations are SELF-declared
 
@@ -321,6 +320,10 @@ _OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # floor, and a later literal broadcast of this name must not silently start
     # reaching an app token.
     "dashboard_fields",
+    # The outcome of one bulk Resume run (``chat_resume_all.RESUME_ALL_DONE_FRAME``,
+    # ``broadcast_ws_owners``): slot keys and refusal codes across every slot on
+    # the install, for the owner who pressed the button and no one else.
+    "resume_all_done",
 })
 
 
@@ -486,7 +489,6 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     "dashboard_instance_changed": "panels",
     # Privileged
     "log": "log",
-    "browser_event": "browser",
 }
 
 

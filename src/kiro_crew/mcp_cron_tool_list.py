@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
+from kiro_crew.cron_service.model import (
+    _ALERT_AFTER_DEFAULT,
+    _AUTO_PAUSE_MAX,
+    _AUTO_PAUSE_THRESHOLD,
+)
 from kiro_crew.mcp_tool_titles import with_titles
 
 # ``auto_pause_after_failures`` description for the ``cron_add`` and ``cron_update``
@@ -22,6 +26,12 @@ _AUTO_PAUSE_AFTER_DESCRIPTION = (
     f"With 0 or a limit above {_AUTO_PAUSE_THRESHOLD}, retries from the "
     f"{_AUTO_PAUSE_THRESHOLD}th consecutive failure start 5 minutes apart and double "
     "after each further failure, up to one hour apart."
+)
+_ALERT_AFTER_DESCRIPTION = (
+    "Send the failure message only after this many consecutive failed runs "
+    f"(1..{_AUTO_PAUSE_MAX}, default {_ALERT_AFTER_DEFAULT}). The dashboard bell still "
+    "records every failure; policy denials and the run that auto-pauses the job "
+    "always alert."
 )
 
 
@@ -110,7 +120,7 @@ def _list_tools() -> list[dict[str, Any]]:
                         '(e.g. "0 9 * * 1-5" for weekdays at 9AM, '
                         '"30 15 * * 2,4" for Tue/Thu at 3:30PM), evaluated in '
                         "the job's timezone (default: the global config "
-                        "timezone, then UTC)",
+                        "timezone, then 'local')",
                     },
                     "at": {
                         "type": "number",
@@ -125,8 +135,9 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Human time string for one-shot job, parsed server-side. "
                         "Examples: '5pm', '17:00', 'tomorrow 9:30am', 'in 2 hours', "
-                        "'2026-03-28 14:00'. A clock time is read in 'timezone' when given, "
-                        "else the global config timezone, then UTC. "
+                        "'in 3 days', '2026-03-28 14:00'. A clock time, and a relative "
+                        "day or week count, is read in 'timezone' when given, "
+                        "else the global config timezone, then 'local'. "
                         "Prefer this over 'at' for absolute times.",
                     },
                     "channel": {
@@ -151,7 +162,7 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                     "member_id": {
                         "type": "string",
-                        "description": "Crew Member responsible for this schedule. Uses that "
+                        "description": "Bot responsible for this schedule. Uses that "
                         "member's memory. Omit to inherit the creating conversation's "
                         "member; ordinary conversations retain global V1 memory.",
                     },
@@ -184,9 +195,10 @@ def _list_tools() -> list[dict[str, Any]]:
                     "timezone": {
                         "type": "string",
                         "description": "IANA timezone for cron expression evaluation, an at_time "
-                        "clock time, and skip_dates (e.g. 'America/New_York'). Cron hour/minute "
-                        "fields and an at_time such as '9am' are interpreted in this timezone. "
-                        "Falls back to global config timezone, then UTC.",
+                        "clock time, and skip_dates (e.g. 'America/New_York'), or 'local' to follow "
+                        "the time zone of the computer Kiro Crew runs on, wherever it travels. Cron "
+                        "hour/minute fields and an at_time such as '9am' are interpreted in this "
+                        "timezone. Falls back to the global config timezone, then to 'local'.",
                     },
                     "folder": {
                         "type": "string",
@@ -244,14 +256,14 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Shell command for code-based cron execution "
                         "(bypasses LLM entirely). Mutually exclusive with 'script'. "
-                        "When set, 'message' is passed as arguments rather than "
-                        "being sent to an LLM.",
+                        "When set, 'message' is neither sent to an LLM nor passed "
+                        "to the command: put any arguments in the command itself.",
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "Execution timeout in seconds. "
-                        "Defaults: 30s for scripts, 300s for commands. "
-                        "Set higher for long-running tasks.",
+                        "description": "Script/command subprocess timeout in "
+                        "seconds (0..3600; 0 = defaults: 30s script, 300s "
+                        "command). Set higher for long-running tasks.",
                     },
                     "timeout_secs": {
                         "type": "integer",
@@ -264,6 +276,10 @@ def _list_tools() -> list[dict[str, Any]]:
                     "auto_pause_after_failures": {
                         "type": "integer",
                         "description": _AUTO_PAUSE_AFTER_DESCRIPTION,
+                    },
+                    "alert_after_failures": {
+                        "type": "integer",
+                        "description": _ALERT_AFTER_DESCRIPTION,
                     },
                 },
                 "required": ["name"],
@@ -297,6 +313,10 @@ def _list_tools() -> list[dict[str, Any]]:
                     "auto_pause_after_failures": {
                         "type": "integer",
                         "description": _AUTO_PAUSE_AFTER_DESCRIPTION,
+                    },
+                    "alert_after_failures": {
+                        "type": "integer",
+                        "description": _ALERT_AFTER_DESCRIPTION,
                     },
                     "agent": {"type": "string", "description": "New agent name"},
                     "channel": {"type": "string", "description": "New channel ID"},
@@ -333,7 +353,8 @@ def _list_tools() -> list[dict[str, Any]]:
                     "timezone": {
                         "type": "string",
                         "description": "IANA timezone for cron expression evaluation and "
-                        "skip_dates. Falls back to global config timezone, then UTC.",
+                        "skip_dates, or 'local' to follow the computer's time zone. Falls back to "
+                        "the global config timezone, then to 'local'.",
                     },
                     "strict_schedule": {
                         "type": "boolean",

@@ -167,7 +167,7 @@ describe('LogViewer search', () => {
     const marks = screen.getAllByText('needle')
     expect(marks).toHaveLength(2)
     expect(marks[0].tagName).toBe('MARK')
-    expect(screen.getByText(/2 matches|matches/)).toBeInTheDocument()
+    expect(screen.getByText('1 match')).toBeInTheDocument()
   })
 
   it('narrows to matches only, and clearing the query resets that', async () => {

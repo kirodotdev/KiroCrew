@@ -162,12 +162,12 @@ class TestCountInFlightWork:
     @pytest.mark.asyncio
     async def test_final_drain_collects_dashboard_and_stage_tasks(self):
         orch = _make_orchestrator()
-        # flake-ok: pre-existing parked stand-in tasks the finally cancels, moved verbatim; tracked for a de-flake pass
-        normal = asyncio.create_task(asyncio.sleep(60), name="dashboard-turn")
-        # flake-ok: pre-existing parked stand-in task the finally cancels, moved verbatim; tracked for a de-flake pass
-        remote = asyncio.create_task(asyncio.sleep(60), name="dashboard-relay")
-        # flake-ok: pre-existing parked stand-in task the finally cancels, moved verbatim; tracked for a de-flake pass
-        stage = asyncio.create_task(asyncio.sleep(60), name="dashboard-stage:slot-a")
+        # Each stand-in parks on an event nothing sets, so it stays pending until
+        # the finally cancels it. No wall-clock sleep decides when it ends.
+        gate = asyncio.Event()
+        normal = asyncio.create_task(gate.wait(), name="dashboard-turn")
+        remote = asyncio.create_task(gate.wait(), name="dashboard-relay")
+        stage = asyncio.create_task(gate.wait(), name="dashboard-stage:slot-a")
         orch.dashboard_state = SimpleNamespace(
             _slots={
                 "normal": SimpleNamespace(task=normal),
@@ -181,8 +181,10 @@ class TestCountInFlightWork:
         finally:
             for task in (normal, remote, stage):
                 task.cancel()
-            # flake-ok: pre-existing unbounded gather of the cancelled stand-ins, moved verbatim; tracked for a de-flake pass
-            await asyncio.gather(normal, remote, stage, return_exceptions=True)
+            # A cancelled stand-in finishes on its next turn. The ceiling only
+            # names a hang; it does not decide the outcome.
+            _done, pending = await asyncio.wait({normal, remote, stage}, timeout=30)
+            assert not pending, "cancelled stand-in tasks did not finish"
 
 
 class TestCallbackSafeUpdateRestart:

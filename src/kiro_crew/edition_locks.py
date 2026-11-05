@@ -37,7 +37,10 @@ LOCKED_BY_POLICY = "locked by policy"
 #: Ids follow the RFC appendix "Crew key" column.
 UNKEYED_LOCKS: Dict[str, str] = {
     "tunnel": "tunnel.enabled is ignored; no tunnel is started",
-    "telemetry.otlp_hosts": "telemetry.otlp_endpoint is ignored; no metrics leave the host",
+    "telemetry.otlp_hosts": (
+        "telemetry.otlp_endpoint and telemetry.otlp_endpoints are ignored; "
+        "only endpoints this build ships may receive metrics"
+    ),
     # Named for the RFC "developer_mode" policy term; the key that replaces this row
     # is separate work.
     "developer_mode": "KIROCREW_DEV_MODE is ignored; developer-only features stay off",
@@ -48,6 +51,7 @@ CONFIG_PATH_LOCKS: Dict[str, str] = {
     "tunnel.enabled": "tunnel",
     "slack.use_tunnel_url": "tunnel",
     "telemetry.otlp_endpoint": "telemetry.otlp_hosts",
+    "telemetry.otlp_endpoints": "telemetry.otlp_hosts",
 }
 
 _logged: "set[str]" = set()

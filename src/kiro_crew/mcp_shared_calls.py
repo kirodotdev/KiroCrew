@@ -95,16 +95,10 @@ def _remember_cancelled_id(
     cancelled_ids.add(rid)
     order.append(rid)
     protected = protected or set()
-    # Two independent bounds keep the pair from leaking:
-    #   1. Set bound -- evict oldest evictable ids once membership exceeds cap.
-    #   2. Deque bound -- completion sites discard consumed ids from the *set*
-    #      only (the deque is untouched), so without this second guard the
-    #      deque would accumulate one stale entry per cancel and grow without
-    #      limit even while the set stays small. Popping stale entries (already
-    #      discarded from the set) is harmless.
-    # Eviction skips protected ids (rotating them to the back); if only
-    # protected ids remain, ``_evict_oldest_evictable`` returns False and we
-    # stop -- a bounded overflow is preferable to executing a cancelled call.
+    # Both are bounded: completion sites discard ids from the set only, so the
+    # deque needs its own cap or it grows one stale entry per cancel. Protected
+    # ids are never evicted; if only they remain we stop, since a bounded
+    # overflow beats executing a cancelled call.
     while len(cancelled_ids) > cap and order:
         if not _evict_oldest_evictable(cancelled_ids, order, protected):
             break
@@ -116,25 +110,17 @@ def _remember_cancelled_id(
 class DeferredTool:
     """A tool call whose remaining work is a sequence of SHORT steps.
 
-    The dispatch loop runs one worker thread per server, so a tool that spends
-    its whole duration asleep (``wait`` sleeps up to 1800s; ``spawn_sub_agents``
-    polls for up to 7200s) parks that worker and every other caller's call
-    behind it -- on the pooled ``kirocrew-core`` backend that is every dashboard
-    session at once. A handler that only has to WAIT returns one of these from
-    the worker instead of a result string: the worker frees the moment the
-    handler returns, and the loop runs :meth:`step` from its own timer whenever
-    :meth:`due_at` has passed. The call is settled when a step returns text.
+    The loop has one worker thread per server, so a tool that sleeps (``wait`` up
+    to 1800s) would block every caller behind it, on pooled ``kirocrew-core`` every
+    dashboard session. A handler that only waits returns one of these: the worker
+    frees at once, and the loop runs :meth:`step` whenever :meth:`due_at` passes,
+    until a step returns text.
 
-    Contract for a ``step``: it is short (an HTTP round-trip to the loopback
-    gateway, never a sleep), it runs with the call's caller identity installed
-    exactly as the worker had it, and it may raise :class:`ToolCancelled` to end
-    the call with no response. Steps run on a small shared pool, not on the
-    dispatch thread, so a step that blocks on a stalled gateway delays other
-    steps, never the loop's ``ping`` answers or the single worker.
-
-    Outside the dispatch loop -- a direct ``_call_tool`` from a test or the
-    CLI -- :func:`drive_deferred` runs the steps inline, so a deferred tool
-    behaves exactly like a blocking one there.
+    A ``step`` is short (one loopback HTTP round-trip, never a sleep), runs with the
+    call's caller identity installed, and may raise :class:`ToolCancelled` to end
+    the call with no response. Steps run on a shared pool, so a stalled step never
+    blocks ``ping`` answers or the worker. Outside the loop (tests, CLI)
+    :func:`drive_deferred` runs the steps inline.
     """
 
     def due_at(self) -> float:
@@ -173,18 +159,36 @@ class DeferredTool:
         """
         return None
 
+    def on_answered(self, written: bool) -> None:
+        """Hook run once, AFTER the driver wrote the answer that carries the text
+        :meth:`on_settled` was handed.
+
+        ``written`` is True only when the whole frame reached the client's own pipe:
+        False on a torn write, and always False on a pooled backend, whose broker
+        relay confirms nothing. Mark a result delivered here, and only on True.
+
+        Runs on the driver's thread with the caller identity installed and blocks
+        it, so send at most one short request. Calls that end any other way
+        (cancelled, refused, failed) never hear this.
+        """
+        return None
+
 
 def drive_deferred(deferred: DeferredTool, *, clock: Any = time) -> str:
     """Run ``deferred`` to completion inline, sleeping between steps.
 
     ``clock`` is a module-like object with ``monotonic`` and ``sleep``, so a
     caller can hand in the one its tests patch (``mcp_core.time``). Nothing
-    can cancel an inline drive, so the settling text is committed at once.
+    can cancel an inline drive, so the settling text is committed at once. The
+    text is returned to the caller itself, so :meth:`DeferredTool.on_answered`
+    hears True; an ``on_settled`` that raises propagates first and nothing
+    hears it.
     """
     while True:
         result = deferred.step()
         if result is not None:
             deferred.on_settled(result)
+            deferred.on_answered(True)
             return result
         delay = deferred.due_at() - clock.monotonic()
         if delay > 0:
@@ -220,6 +224,9 @@ class _MappedDeferred(DeferredTool):
     def on_settled(self, text: str) -> None:
         self._inner.on_settled(text)
 
+    def on_answered(self, written: bool) -> None:
+        self._inner.on_answered(written)
+
 
 #: How often the loop reports in-flight deferred ids while any exist
 #: (``INFLIGHT_NOTIFICATION``, sent only to a client that declared
@@ -245,19 +252,12 @@ DEFERRED_STEP_WORKERS = 8
 class _StepPool:
     """A fixed set of worker threads, all created UP FRONT, fed by one queue.
 
-    Not ``concurrent.futures.ThreadPoolExecutor``: that starts its threads
-    lazily inside ``submit``, AFTER the work item is queued, so a thread start
-    that fails under the process's thread ceiling raises out of ``submit`` while
-    the item stays queued and an idle worker runs it later -- for a deferred
-    step, a call just answered with an error could then consume an answer or a
-    collect nobody receives. Here ``submit`` only enqueues and cannot fail; the
-    one place a thread start can fail is construction, where nothing is queued
-    yet, so the caller fails that single call and retries the pool next tick.
-    A PARTIALLY started pool is not kept: ``DEFERRED_PARKED_MAX`` admits calls
-    on the assumption of ``workers`` threads, and one or two threads behind a
-    full table queue an ask's poll past the coordinator's answer grace, so an
-    answer would be lost. The started threads are released and construction
-    raises, which is the refusal path the caller already has.
+    Not ``ThreadPoolExecutor``: it starts threads inside ``submit`` after queueing
+    the item, so a failed thread start raises while the item still runs later,
+    consuming an answer for a call already failed. Here ``submit`` cannot fail;
+    only construction can, with nothing queued. A partly started pool is released
+    and construction raises, because ``DEFERRED_PARKED_MAX`` assumes ``workers``
+    threads and too few would delay an ask's poll past its answer grace.
     """
 
     def __init__(self, workers: int, name: str) -> None:
@@ -541,3 +541,6 @@ class _AuditedDeferred(DeferredTool):
     def on_settled(self, text: str) -> None:
         self._inner.on_settled(text)
         self._audit(text)
+
+    def on_answered(self, written: bool) -> None:
+        self._inner.on_answered(written)

@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { IngestionJob, NamespaceInfo } from '../pages/knowledge/types'
+import { namedCeiling } from './namedCeiling'
+
+// The lazy Graph tab mounts only after its dynamic import resolves, so a wait
+// on it carries a named lost-run ceiling (website/docs/testing.md).
+const LAZY_GRAPH_IMPORT = () => namedCeiling('LAZY_GRAPH_IMPORT', 5000)
 
 /**
  * Coverage for the KnowledgePage shell itself — the paths the source-first
@@ -65,6 +70,7 @@ vi.mock('../pages/knowledge/SourcesList', () => ({
 }))
 
 const { default: KnowledgePage } = await import('../pages/knowledge/index')
+const { i18next } = await import('../i18n/all')
 
 function makeClient() {
   return new QueryClient({
@@ -263,7 +269,7 @@ describe('KnowledgePage — keyboard shortcuts', () => {
   it('Escape inside the search box blurs it instead of reaching the page handler', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
     const input = await screen.findByPlaceholderText(/Search knowledge/i) as HTMLInputElement
-    input.focus()
+    act(() => { input.focus() })
     expect(document.activeElement).toBe(input)
     fireEvent.keyDown(input, { key: 'Escape' })
     expect(document.activeElement).not.toBe(input)
@@ -283,6 +289,18 @@ describe('KnowledgePage — keyboard shortcuts', () => {
     expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument()
   })
 
+  it('renders the flat-results page indicator as one catalog sentence', async () => {
+    flatTotal = 60
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await searchFor('ledger')
+    expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument()
+    // en-XA brackets every catalog value, so "Page" + n + "of" + m reads `[Page] 1 [of] 3`.
+    // The page reads the language at render, so page forward to re-render it.
+    await act(async () => { await i18next.changeLanguage('en-XA') })
+    fireEvent.keyDown(document.body, { key: 'ArrowRight' })
+    expect(await screen.findByText(/^\[[^[\]]* 2 [^[\]]* 3[^[\]]*\]$/)).toBeInTheDocument()
+  })
+
   it('Escape closes an open item before it clears the selection', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
     await searchFor('ledger')
@@ -299,6 +317,57 @@ describe('KnowledgePage — keyboard shortcuts', () => {
     expect(await screen.findByText('1 selected')).toBeInTheDocument()
     fireEvent.keyDown(document.body, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument())
+  })
+})
+
+// The view tabs were plain buttons whose selection was shown by the underline
+// colour alone: no tablist, no aria-selected, one Tab stop per tab.
+describe('KnowledgePage — view tabs', () => {
+  it('exposes the view tabs as a labelled tablist with the selection announced', async () => {
+    render(<KnowledgePage embedded />, { wrapper: Wrapper })
+    const list = await screen.findByRole('tablist', { name: 'Knowledge Library' })
+    const tabs = within(list).getAllByRole('tab')
+    expect(tabs.map(t => t.textContent?.trim())).toEqual(['List View', 'Graph View', 'Sources', 'Settings'])
+    expect(tabs.map(t => t.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false', 'false'])
+    // Roving tabindex: the rail is one Tab stop, on the selected tab.
+    expect(tabs.map(t => t.tabIndex)).toEqual([0, -1, -1, -1])
+    // Every tab controls the one shared panel, which names the selected tab.
+    const panel = screen.getByRole('tabpanel')
+    expect(tabs.every(t => t.getAttribute('aria-controls') === panel.id)).toBe(true)
+    expect(panel.getAttribute('aria-labelledby')).toBe(tabs[0].id)
+    // The embedded Help button shares the row but is not a tablist child.
+    expect(screen.getByRole('button', { name: /Help/ })).toBeInTheDocument()
+    expect(within(list).queryByRole('button', { name: /Help/ })).toBeNull()
+  })
+
+  it('moves the selection with the arrow keys, Home and End', async () => {
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    const listTab = await screen.findByRole('tab', { name: /List View/ })
+    act(() => { listTab.focus() })
+    fireEvent.keyDown(listTab, { key: 'ArrowRight' })
+    const graphTab = screen.getByRole('tab', { name: /Graph View/ })
+    expect(graphTab).toHaveAttribute('aria-selected', 'true')
+    expect(document.activeElement).toBe(graphTab)
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', graphTab.id)
+    // Waits for the lazy KnowledgeGraph import behind Suspense to resolve and render.
+    expect(await screen.findByText('highlight:none', {}, LAZY_GRAPH_IMPORT())).toBeInTheDocument()
+    fireEvent.keyDown(graphTab, { key: 'End' })
+    expect(screen.getByRole('tab', { name: /Settings/ })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(screen.getByRole('tab', { name: /Settings/ }), { key: 'Home' })
+    expect(listTab).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('an arrow press on a focused tab switches tabs without also turning the results page', async () => {
+    flatTotal = 60
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await searchFor('ledger')
+    expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument()
+    const listTab = screen.getByRole('tab', { name: /List View/ })
+    act(() => { listTab.focus() })
+    fireEvent.keyDown(listTab, { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: /Graph View/ })).toHaveAttribute('aria-selected', 'true')
+    await userEvent.click(listTab)
+    expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument()
   })
 })
 
@@ -375,7 +444,7 @@ describe('KnowledgePage — bulk actions', () => {
 describe('KnowledgePage — sources tab and ingest', () => {
   it('hands the backend-advertised formats to the sources panel', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
-    await userEvent.click(await screen.findByRole('button', { name: /Sources/ }))
+    await userEvent.click(await screen.findByRole('tab', { name: /Sources/ }))
     // Built from /config.supported_formats, not from the hardcoded fallback.
     expect(await screen.findByText('accept:.md,.txt')).toBeInTheDocument()
     expect(screen.getByText('noExt:false')).toBeInTheDocument()
@@ -384,14 +453,14 @@ describe('KnowledgePage — sources tab and ingest', () => {
 
   it('lets the panel change the upload namespace', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
-    await userEvent.click(await screen.findByRole('button', { name: /Sources/ }))
+    await userEvent.click(await screen.findByRole('tab', { name: /Sources/ }))
     await userEvent.click(await screen.findByRole('button', { name: 'stub-set-ns' }))
     expect(await screen.findByText('ns:work')).toBeInTheDocument()
   })
 
   it('ingests dropped files under the active namespace and reports each job', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
-    await userEvent.click(await screen.findByRole('button', { name: /Sources/ }))
+    await userEvent.click(await screen.findByRole('tab', { name: /Sources/ }))
     await userEvent.click(await screen.findByRole('button', { name: 'stub-upload' }))
     expect(await screen.findByText('job:notes.md:done')).toBeInTheDocument()
     const ingest = mockKnowledgeApi.mock.calls.find(c => String(c[0]).startsWith('/ingest'))
@@ -402,7 +471,7 @@ describe('KnowledgePage — sources tab and ingest', () => {
   it('reports a per-file error instead of failing the whole upload', async () => {
     ingestError = new Error('unsupported format')
     render(<KnowledgePage />, { wrapper: Wrapper })
-    await userEvent.click(await screen.findByRole('button', { name: /Sources/ }))
+    await userEvent.click(await screen.findByRole('tab', { name: /Sources/ }))
     await userEvent.click(await screen.findByRole('button', { name: 'stub-upload' }))
     expect(await screen.findByText('job:notes.md:error:unsupported format')).toBeInTheDocument()
   })
@@ -411,14 +480,14 @@ describe('KnowledgePage — sources tab and ingest', () => {
 describe('KnowledgePage — graph tab', () => {
   it('mounts the graph lazily and shows no entity section until one is picked', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
-    await userEvent.click(await screen.findByRole('button', { name: /Graph View/ }))
+    await userEvent.click(await screen.findByRole('tab', { name: /Graph View/ }))
     expect(await screen.findByText('highlight:none')).toBeInTheDocument()
     expect(screen.queryByText('Items mentioning:')).not.toBeInTheDocument()
   })
 
   it('lists the items that mention the entity selected in the graph', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
-    await userEvent.click(await screen.findByRole('button', { name: /Graph View/ }))
+    await userEvent.click(await screen.findByRole('tab', { name: /Graph View/ }))
     await userEvent.click(await screen.findByRole('button', { name: 'stub-graph-pick' }))
     expect(await screen.findByText('Items mentioning:')).toBeInTheDocument()
     expect(await screen.findByText('Ledger design')).toBeInTheDocument()
@@ -428,14 +497,14 @@ describe('KnowledgePage — graph tab', () => {
   it('says so when the selected entity has no items', async () => {
     entityItemsFixture = []
     render(<KnowledgePage />, { wrapper: Wrapper })
-    await userEvent.click(await screen.findByRole('button', { name: /Graph View/ }))
+    await userEvent.click(await screen.findByRole('tab', { name: /Graph View/ }))
     await userEvent.click(await screen.findByRole('button', { name: 'stub-graph-pick' }))
     expect(await screen.findByText('No items found')).toBeInTheDocument()
   })
 
   it('clearing the entity selection removes the section', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
-    await userEvent.click(await screen.findByRole('button', { name: /Graph View/ }))
+    await userEvent.click(await screen.findByRole('tab', { name: /Graph View/ }))
     await userEvent.click(await screen.findByRole('button', { name: 'stub-graph-pick' }))
     await screen.findByText('Items mentioning:')
     await userEvent.click(screen.getByRole('button', { name: 'Clear entity selection' }))
@@ -444,7 +513,7 @@ describe('KnowledgePage — graph tab', () => {
 
   it('opening an entity item returns to the list tab with that item open', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
-    await userEvent.click(await screen.findByRole('button', { name: /Graph View/ }))
+    await userEvent.click(await screen.findByRole('tab', { name: /Graph View/ }))
     await userEvent.click(await screen.findByRole('button', { name: 'stub-graph-pick' }))
     await userEvent.click(await screen.findByText('Ledger design'))
     expect(await screen.findByText('detail:i9')).toBeInTheDocument()

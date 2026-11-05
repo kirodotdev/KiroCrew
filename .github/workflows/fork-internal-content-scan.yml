@@ -62,7 +62,9 @@ jobs:
     # and the steps below materialize no fork code on either runner.
     runs-on:
       group: kirocrew-runners
-    timeout-minutes: 15
+    # A full-history checkout on the runner fleet can take most of fifteen
+    # minutes even with the blobless filter below; 20 leaves headroom.
+    timeout-minutes: 20
     # Only a SUCCESSFUL Stage 1 run that was itself a FORK pull request.
     if: >-
       github.event.workflow_run.event == 'pull_request'
@@ -236,6 +238,10 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.base_sha }}
           fetch-depth: 0
+          # Blobless: every commit still arrives and the checked-out tree is
+          # complete; git fetches older blobs on demand instead of downloading
+          # every historical blob up front.
+          filter: blob:none
           persist-credentials: false
 
       - name: Fetch authentic diff (data only — never applied to the tree)

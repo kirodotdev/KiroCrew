@@ -502,12 +502,17 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
 
   const registerM = useMutation({
     mutationFn: (names: string[]) => awsControlApi.registerProfiles(names),
-    onSuccess: () => {
+    onSuccess: (_result, names) => {
       // Invalidating the account list is what makes the just-registered profile
       // show up without a manual refresh.
       queryClient.invalidateQueries({ queryKey: appKey(['accounts']) })
       queryClient.invalidateQueries({ queryKey: appKey(['profiles-available']) })
-      setChecked(new Set())
+      // Only the registered names leave the draft: a box checked while the
+      // request ran is the user's next pick.
+      setChecked((prev) => {
+        const kept = new Set([...prev].filter((name) => !names.includes(name)))
+        return kept.size === prev.size ? prev : kept
+      })
     },
   })
 
@@ -787,9 +792,13 @@ function AccountsPane({ accountsQ, selected, onUse, openAddAccounts = false }: {
           // never name two different numbers.
           <span data-testid="accounts-totals">
             {i18nT('apps.awsControl.page.totals_summary', {
+              count: data.accounts.length,
               accounts: fmtNumber(data.accounts.length),
-              keys: fmtNumber(data.totals.profiles),
-              healthy: fmtNumber(data.totals.profilesHealthy),
+              keys: i18nT('apps.awsControl.page.keys_healthy', {
+                count: data.totals.profiles,
+                n: fmtNumber(data.totals.profiles),
+                healthy: fmtNumber(data.totals.profilesHealthy),
+              }),
             })}
           </span>
         ) : undefined}

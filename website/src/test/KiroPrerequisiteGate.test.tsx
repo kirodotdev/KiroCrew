@@ -6,7 +6,7 @@
  * eligibility in KiroPrerequisiteGate.agentPicker.test.tsx; the status and probe
  * fixtures they share live in KiroPrerequisiteGateTestUtils.tsx.
  */
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { KiroPrerequisiteStatus } from '../api/client'
 import KiroPrerequisiteGate, {
@@ -430,7 +430,7 @@ describe('KiroPrerequisiteGate', () => {
       // retry affordance — the banner is the single action.
       expect(screen.queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
       // Clearing the banner flips the whole surface back to the setup copy.
-      window.dispatchEvent(new CustomEvent('mc-auth-cleared'))
+      act(() => { window.dispatchEvent(new CustomEvent('mc-auth-cleared')) })
       expect(await screen.findByText(/Ask the .* owner to install/)).toBeInTheDocument()
       expect(screen.getByText(/gateway owner needs to finish setup/)).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()

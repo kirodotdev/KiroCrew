@@ -185,6 +185,26 @@ class TestBase64BlobMirror:
         assert f"const EXFIL_B64_RE = /{self.SPELLING}/i" in text
 
 
+class TestGitObjectNameCarveOutMirror:
+    """The blob signal's git-object-name carve-out is spelled identically.
+
+    Both halves judge the MAXIMAL blob match against exactly 40 lowercase
+    hex digits. A drift (one half admitting uppercase, or any length) would keep
+    a commit permalink on one surface and redact it on the other, or widen the
+    carve-out into a hex-token bypass on one of them.
+    """
+
+    SHAPE = r"[0-9a-f]{40}"
+
+    def test_backend_carries_the_shape(self) -> None:
+        text = (BACKEND_PKG / "exfil_git_object.py").read_text(encoding="utf-8")
+        assert f'_GIT_OBJECT_NAME_RE = re.compile(r"{self.SHAPE}")' in text
+
+    def test_frontend_carries_the_shape(self) -> None:
+        text = FRONTEND.read_text(encoding="utf-8")
+        assert f"const EXFIL_GIT_OBJECT_NAME_RE = /^{self.SHAPE}$/" in text
+
+
 class TestDeliberateNonMirrors:
     """Two JWT regexes are intentionally NOT pinned to the backend."""
 
@@ -311,3 +331,30 @@ class TestPrefilledIssueCarveOutParity:
             "the dashboard no longer renders its own anchor from the structured "
             "field — the trusted issue-link channel moved"
         )
+
+
+def test_blocked_link_card_offers_allow_only_for_hosts_the_server_accepts() -> None:
+    """The card's Allow gate mirrors the server's allowed-host shape exactly.
+
+    `RedactionCards.tsx` hides "Allow for this host" with its own copy of the
+    host regex because the browser cannot import Python. If the two drift, the
+    card offers an Allow the server always refuses, or hides one it would
+    accept. The expectation is derived from the backend regex at run time.
+    """
+    from kiro_crew.security import redaction_allow
+
+    backend = redaction_allow._HOST_RE.pattern
+    assert backend.startswith("\\A") and backend.endswith("\\Z")
+    expected = "^" + backend[2:-2].replace("\\Z", "$") + "$"
+    cards = (ROOT / "website" / "src" / "components" / "RedactionCards.tsx").read_text(encoding="utf-8")
+    match = re.search(r"^const ALLOWABLE_HOST_RE = /(.+)/$", cards, re.MULTILINE)
+    assert match, "ALLOWABLE_HOST_RE is no longer a one-line regex literal in RedactionCards.tsx"
+    assert match.group(1) == expected
+    # The loopback-name refusal sits beside the regex on both sides.
+    assert not redaction_allow.valid_host("foo.localhost")
+    suffix = re.search(r"^const LOOPBACK_SUFFIX = '([^']+)'$", cards, re.MULTILINE)
+    assert suffix and suffix.group(1) == redaction_allow.LOOPBACK_SUFFIX
+    assert "!h.endsWith(LOOPBACK_SUFFIX)" in cards
+    tld_cap = re.search(r"^const MAX_TLD_LEN = (\d+)$", cards, re.MULTILINE)
+    assert tld_cap and int(tld_cap.group(1)) == redaction_allow.MAX_TLD_LEN
+    assert "tld.length <= MAX_TLD_LEN" in cards

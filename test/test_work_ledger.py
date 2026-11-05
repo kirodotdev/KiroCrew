@@ -54,7 +54,8 @@ def test_worker_statuses_are_exactly_four_and_separate_blocked_from_question():
     assert set(worker_statuses(False)) == {"progress", "done", "blocked", "question"}
 
 
-def test_event_kinds_are_exactly_seven():
+def test_event_kinds_are_exactly_nine():
+    # ``retire`` and ``destroy`` are the hub's own remote-dispatch writes (wave 8).
     assert wl.EVENT_KINDS == {
         "create",
         "bind",
@@ -63,6 +64,8 @@ def test_event_kinds_are_exactly_seven():
         "verdict",
         "close",
         "steer",
+        "retire",
+        "destroy",
     }
 
 
@@ -765,6 +768,13 @@ def test_the_concreteness_rules_are_exactly_accept_evals_error_only_guards():
         {"kind": "pr_merged", "pr": 7},
         {"kind": "pr_merged", "pr": 7, "repo": "TBD"},
         {"kind": "pr_merged", "pr": 7, "repo": "-owner/name"},
+        {"kind": "edition_check", "check": "TBD", "ref": "ID-1"},
+        {"kind": "edition_check", "ref": "ID-1"},
+        {"kind": "edition_check", "check": "name"},
+        {"kind": "edition_check", "check": "Name", "ref": "ID-1"},
+        {"kind": "edition_check", "check": "name", "ref": "-ID-1"},
+        {"kind": "edition_check", "check": "name", "ref": "ID-1\n"},
+        {"kind": "edition_check", "check": "name", "ref": 7},
     ]
     batch = {"items": [{"id": f"it_{n:08d}", "accept": spec} for n, spec in enumerate(specs)]}
     proc = subprocess.run(
@@ -785,6 +795,14 @@ def test_the_concreteness_rules_are_exactly_accept_evals_error_only_guards():
     # ``pr_merged`` shells out too, so its valid form is asserted concrete and
     # evaluated nowhere, as for ``pr_checks`` above.
     assert wl.is_acceptance_concrete({"kind": "pr_merged", "pr": 7, "repo": "owner/name"}) is True
+    # ``edition_check`` shells out too, so its valid form is asserted concrete and
+    # evaluated nowhere, as for ``pr_checks`` above. A placeholder ref matches the
+    # evaluator's ref pattern and would reach ``kirocrew``, so it is held to the
+    # placeholder rule here rather than run.
+    assert (
+        wl.is_acceptance_concrete({"kind": "edition_check", "check": "name", "ref": "TBD"}) is False
+    )
+    assert wl.is_acceptance_concrete({"kind": "edition_check", "check": "name", "ref": "ID-1"})
 
 
 def test_accept_batch_carries_status_and_does_not_filter_on_it():
@@ -1455,6 +1473,11 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # dashboard OWNER (cookie, owner-gated), the member is a live session of the
         # root's own tree the route resolved itself, and no key reaches a payload.
         "dashboard/handlers/crew_workers.py",
+        # The conductor row's open-work summary (``crew_work``) reads the ledger's
+        # pure rules only -- ``WorkItem``, ``is_stale``, ``quiet_since`` -- over the
+        # ``work`` fold the crew log already published. It opens no store file,
+        # resolves no caller, and its only reader is the owner's own slot frame.
+        "dashboard/crew_work.py",
         # The operator-run cleanup sweep behind ``kirocrew ledger-sweep``.
         # It is a seam deliberately, and it does not weaken the rule the
         # allowlist exists for: it resolves NO caller identity — there is no
@@ -1517,6 +1540,18 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # key is bound to, never an item and never another session's. Reads nothing
         # but the worker's own binding and item.
         "undelivered_call_watch.py",
+        # The hub half of remote dispatch (rfc-conductor-remote-dispatch wave 4). A
+        # remote worker reports into its OWN crew's store, so the hub files those
+        # reports on the conductor's read: it reads the conductor's own board (the
+        # key the read route resolved) and writes worker-owned fields only through
+        # ``apply_remote_report``, on an item already bound to that crew. It takes
+        # no supplied identity; ``create_bound`` binds the caller's own item.
+        "dashboard/handlers/remote_ingest.py",
+        # Its background puller (rfc-conductor-remote-dispatch open question 1). It
+        # takes no identity and writes nothing itself: it lists the boards holding an
+        # open crew-bound item (``boards_with_open_remote``) and hands each to
+        # ``remote_ingest.ingest_board``, which files exactly as on a read.
+        "dashboard/handlers/remote_puller.py",
         # ``conductor_wake.py`` was listed here while it resolved a worker slot to its
         # conductor's binding for the close and turn-end triggers. Both triggers are
         # gone and the one that remains is a crew-log bus subscription whose event

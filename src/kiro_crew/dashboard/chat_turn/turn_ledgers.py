@@ -10,11 +10,13 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.chat_delivery import attachment_meta
 from kiro_crew.dashboard.chat_utils import RecoveryPayload
 from kiro_crew.dashboard.recovery_replays import replays_of
+from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
 from kiro_crew.wakatime.heartbeats import CADENCE_MIN_INTERVAL_SECS
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         COMMANDS_OFF_META_KEY,
+        START_BACKGROUND_META_KEY,
         SUBAGENT_COMPLETION_KIND,
         KiroCrewConfig,
         ReplayFamily,
@@ -140,6 +142,10 @@ def _queue_recovery(
         # arrived as turn content stays turn content when its retry drains, or
         # the retry would run the words the original turn was told not to.
         _recovery_meta[COMMANDS_OFF_META_KEY] = True
+    if turn._turn_start_background:
+        # The same holds for a BACKGROUND start a bulk Resume asked for: nobody
+        # waits on its retry either, so the retry starts BACKGROUND too.
+        _recovery_meta[START_BACKGROUND_META_KEY] = True
     if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
         # ORIGINAL replays must preserve the triggering row's attachment
         # lists. The provider prompt already carries the full markers, but
@@ -179,6 +185,10 @@ def _queue_recovery(
     # its message or a continuation) is the same Regenerate's next attempt: it
     # settles the previous reply, not this turn.
     carry_regenerate_target(slot, _recovery_qid)
+    # A recovery of a channel message is still that channel's words: it keeps
+    # the channels admission judges it by. A restriction only, so it is kept
+    # even on a turn whose channel-origin flag a restart removed.
+    stamp_source_channels(slot, _recovery_qid, getattr(turn, "_directive_source_channels", ()))
     if content == turn.message and _turn_is_completion:
         # A verbatim requeue still replays the completion; runner-written
         # text queued after it (a continuation, a retry prompt) does not.
@@ -208,6 +218,12 @@ def _queue_recovery(
                 getattr(state, "sessions", None), _refusal_key or session_key
             ),
         )
+    # A queued continuation means the turn is NOT a terminal dead end: it will
+    # run on this same slot. Retract any dead-turn bell a terminal arm set
+    # earlier this turn (a refusal arm whose Stop-hook continuation is queued
+    # afterward, a transient give-up that is then re-queued), so the finally
+    # choke point does not ring "a chat stopped" while the chat continues.
+    turn.died_notice = None
     return _recovery_qid
 
 

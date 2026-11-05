@@ -187,7 +187,7 @@ The operator's seed message names a spec file (JSON). Fields you consume now:
                   "credit_budget_per_item": 100, "topup_ceiling": 2},
   "policy": {"keep_unused_seams": true, "refuse_design_asks": true,
               "refuse_benign_duplication": true},
-  "interface": {"folder_name": "pipeline-{id}", "digest_language": "auto"}
+  "interface": {"digest_language": "auto"}
 }
 ```
 
@@ -247,9 +247,10 @@ never relabel it success in the friction report.
    that is neither of its options, and every such value engages no branch at all
    — so the mode the operator asked for is silently off while the spec says it is
    on. Report the message verbatim and stop; do not guess a default, and do not
-   open the folder or claim an item first, because a run that has already
+   claim an item first, because a run that has already
    dispatched a worker cannot un-dispatch it. Only after exit 0 may you read the
-   spec and use its values. Then `chat_folder_create` the pipeline folder.
+   spec and use its values. Do not create folders or pass `folder` when you
+   dispatch; the person's folders are theirs to arrange.
 2. Build the queue from the work source (or adopt the operator's seeded
    backlog), then **subtract the items an open PR claims to close** with
    `scripts/coverage_filter.py` before recording it — see "Queue build
@@ -329,7 +330,7 @@ your `[DASHBOARD]` block names one; with no such block you have no page yet, and
 the write is refused.
 
 `panel_publish` and `dashboard_write` belong to the `@kirocrew-panel` server,
-which is mounted only on a crew member's own chat session (with `agent.crew_panel`
+which is mounted only on a Bot's own chat session (with `agent.crew_panel`
 on). The `kirocrew-pipeline-conductor` agent spec mounts `@kirocrew-core`,
 `@kirocrew-dashboard` and `@kirocrew-work` and not that server, so in an ordinary
 dashboard chat neither tool exists. Check your tool list once at startup: if
@@ -521,8 +522,7 @@ sessions end up on one item and mutual-yield deadlock):
 Then **claim atomically** — the lock label and the assignee in ONE call, never
 two. The forge is the cross-operator lock and your ledger is only a cache of
 it; a claim written as two calls is a window another operator dispatches into.
-Only after the claim lands: `session_create` (titled `{id}: {item}`, filed into
-the pipeline folder), seed it with the work-order brief, record
+Only after the claim lands: `session_create` (titled `{id}: {item}`), seed it with the work-order brief, record
 `{state: dispatched, session, ts}` in the ledger.
 
 **The claim is only valid while a worker holds it.** If ANY post-claim step
@@ -857,12 +857,12 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 > In `pod_required` mode, keep the worktree byte-clean and run `kirocrew pod
 > scenarios`, choose the closest shipped state, boot the UNMODIFIED worktree in
 > that scenario, and drive the externally visible failing behavior through
-> `pod api`, pod-e2e/Playwright, or another real product route. Run pod
+> `pod api`, pod-e2e/Playwright (Dev Fleet app), or another real product route. Run pod
 > status/token/API commands through the worktree's `./.venv/bin/kirocrew` after
 > provisioning: the globally installed binary may be sandbox-blind to the pod
-> process's sockets and fail closed on ownership proof. If `playwright-cli`
-> cannot launch on the host, the repository's own Playwright runner against the
-> same live pod is equivalent evidence; record the engine and launch flags, and
+> process's sockets and fail closed on ownership proof. If the `browser`
+> tool cannot open the pod's loopback origin on the host, the repository's own
+> Playwright runner against the same live pod is equivalent evidence; record the engine and launch flags, and
 > treat a missing REQUIRED engine (for example Safari/WebKit-specific behavior)
 > as `missing=<capability>` rather than silently substituting Chromium.
 > Record the scenario, exact probe, and failing observable. A unit test, direct
@@ -1090,8 +1090,13 @@ carry **metadata only** — the probe never emits transcript text:
 ```
 🔔 <key>  <age>s <TAG> i=<index> d=<digest12>
 BANNED pid=<pid> rule=<regex|argv:<shape>> cwd=fleet|unknown age=<secs|?>s scope=suite|paths|unknown cmd=<program,flags,+withheld>
-OK <n> watched, <m> fired | load/cpu <x> (ok|hot) | mem <n>G | banned <n> | foreign <n> | deliver init-timeout <a>, watchdog <b>
+OK <n> watched, <m> fired | load/cpu <x> (ok|hot)|n/a | mem <n>G|n/a | banned <n>|n/a | foreign <n>|n/a | deliver init-timeout <a>, watchdog <b>
 ```
+
+`n/a` in place of a value means the host could not measure that field.
+`banned n/a | foreign n/a` means there is no `/proc` to scan (for example on
+Windows), so the banned-ops response cannot fire there; it is never a clean
+reading.
 
 A tail with no protocol tag reads as `-` and never fires on its own, and a
 protocol word inside a tool card is quoted text rather than a report — so a worker
@@ -1140,7 +1145,12 @@ When a ruling needs content, read that one session through the
 workspace-authorized session tools. Act, then `--mark-handled KEY TAG DIGEST`
 (DIGEST is the `d=` field on the fired line), or the signal re-fires forever. A
 stale digest is refused (exit 3): the payload moved on since you read it —
-re-probe and act on what is there now, never mark blind.
+re-probe and act on what is there now, never mark blind. A mark against a state
+file that exists but cannot be read is refused (exit 4) and the file is left
+untouched, because writing past it would erase every disposition it holds. A
+transient lock clears on the next attempt; a file that keeps refusing needs a
+person to repair or remove `<config>.state.json`, so escalate it rather than
+retrying every cycle.
 
 **Classification anchors at the START of a worker's message, and tolerates
 leading markdown.** A worker that writes `**BLOCKED:**` is following the protocol
@@ -1456,7 +1466,8 @@ no file argument.
 A zero banned count is not proof that no such run exists. Known misses: an
 unquoted separator (`|`, `&`) inside an option value ahead of `-n N`, a pytest
 console script installed with `pip install --user`, and a count carried in the
-`addopts` of a file named by `-c other.ini`.
+`addopts` of a file named by `-c other.ini`. On a host with no `/proc` the scan
+does not run at all, and the count prints `n/a` rather than `0`.
 
 Standing constants: `session_ceiling` machine-wide, `-n0` on every worker test
 run, targeted tests only, ≤2 subagents per worker. `-n0` rather than a small

@@ -4,7 +4,7 @@ import { useVisibleTabCatchUp, settleCatchUp, type CatchUpLatch } from '../hooks
 import type { FileWatchFrame } from '../hooks/useFileWatch'
 import { api } from '../api/client'
 import { downloadFileName, partialDownloadName } from '../utils/fileReadUrl'
-import { downloadBlob } from '../utils/download'
+import { saveBlob } from '../utils/download'
 import { fetchFileRead, fileReadQueryKey, isPartialRead } from '../utils/fileReadQuery'
 import { documentBodyEpochNow } from '../hooks/usePanelTabs'
 import { copyToClipboard } from '../utils/clipboard'
@@ -179,8 +179,10 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveW
     // file's own: with the original gone, that would pass a prefix off as it.
     // The suffix sits before the extension (`notes.partial.md`) so the OS still
     // reads the file by its real type.
-    downloadBlob(new Blob([content], { type: 'text/plain;charset=utf-8' }), partialCopy ? partialDownloadName(filePath) : downloadFileName(filePath))
-  }, [content, filePath, partialCopy])
+    // saveBlob rejects only when an in-app browser's hand-off fails.
+    saveBlob(new Blob([content], { type: 'text/plain;charset=utf-8' }), partialCopy ? partialDownloadName(filePath) : downloadFileName(filePath))
+      .catch(() => reportActionError(i18nT('components.markdownPanel.download_failed')))
+  }, [content, filePath, partialCopy, reportActionError])
   const [lastCopyCopied, setLastCopyCopied] = useState(false)
   const lastCopyCopiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(lastCopyCopiedTimer.current), [])

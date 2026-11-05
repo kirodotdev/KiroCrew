@@ -13,6 +13,7 @@ from kiro_crew.dashboard.handlers.messaging import (
     api_notification_channel_settings,
     api_notification_channels,
 )
+from kiro_crew.dashboard.notification_coordinator import unread_count
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.notifications.bus import MONITOR_CHANNEL
 from kiro_crew.notifications.settings import (
@@ -125,7 +126,7 @@ class TestSinkIntegration:
                 "body": "b",
             }
         )
-        assert state._unread_count == 1  # only the cron note counts
+        assert unread_count(state._notification_log) == 1  # only the cron note counts
         hb = state._notification_log[0]
         assert hb["silenced"] is True and hb["priority"] == "passive"
         # Still in history (mute silences, it does not destroy)
@@ -143,7 +144,7 @@ class TestSinkIntegration:
                 "body": "b",
             }
         )
-        assert state._unread_count == 0
+        assert unread_count(state._notification_log) == 0
 
     def test_approval_still_interrupts(self, monkeypatch, tmp_path):
         """system.approval cannot be silenced even with a rogue settings row
@@ -164,7 +165,7 @@ class TestSinkIntegration:
         note = state._notification_log[0]
         assert "silenced" not in note
         assert note["priority"] == "critical"
-        assert state._unread_count == 1
+        assert unread_count(state._notification_log) == 1
 
 
 def _make_app(state) -> web.Application:

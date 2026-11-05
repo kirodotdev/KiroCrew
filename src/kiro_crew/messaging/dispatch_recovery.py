@@ -145,28 +145,20 @@ async def charge_turn_failure(
 ) -> None:
     """Charge one failed turn to *session_key*'s breaker, unless a SHARED process died.
 
-    The channel dispatchers catch a failed turn generically, so a dying runtime
-    reaches them as one more exception and every tenant of that process charges
-    its own breaker for it -- the misattribution :mod:`kiro_crew.runtime_death`
-    exists to end, arriving by a path no typed handler covers. One helper rather
-    than one copy per channel: four copies of an attribution rule drift, and the
-    rule is identical because the counter is.
+    Channel dispatchers catch failed turns generically, so without this every
+    tenant of a dying shared process charges its own breaker
+    (:mod:`kiro_crew.runtime_death`). Shared by all channels so the rule cannot
+    drift.
 
-    Only a process death is ever exempt. Every other failure is the turn's own
-    and charges exactly as before -- consulting the death record for an unrelated
-    exception would exempt a real fault whenever some co-tenant's death happened
-    to be recorded against the same provider.
+    Only a process death is exempt; checking the death record for any other
+    exception would excuse a real fault whenever a co-tenant's death was recorded.
 
-    *provider* must be the one this turn ACQUIRED, never a fresh lookup. The
-    recovery around these handlers replaces a dead session, so a lookup at
-    failure time answers for the replacement and the question silently becomes
-    "was the NEW runtime shared".
+    *provider* must be the one this turn ACQUIRED, never a fresh lookup: recovery
+    replaces a dead session, so a later lookup asks about the replacement.
 
-    The exemption is bounded, and at the limit it PERFORMS the actuator rather
-    than charging the counter it stood in for. ``record_failure`` trips into this
-    same reset, so a session on a permanently dying shared runtime recovers after
-    the threshold rather than after twice it, and its own failure count is left
-    alone -- it never misbehaved.
+    The exemption is bounded: at the threshold it performs the reset itself instead
+    of charging the counter, so a session on a permanently dying shared runtime
+    recovers after the threshold (not twice it) with its own failure count intact.
     """
     threshold = _breaker_threshold(sessions)
     if (

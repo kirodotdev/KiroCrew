@@ -230,7 +230,10 @@ class TestOpusTwoStageArchitecture:
             # Line-anchored: the surrounding prose names the number too, and a
             # comment is not a budget.
             budgets = re.findall(r"(?m)^ *--max-turns (\d+) *$", _workflow(lane))
-            assert budgets == [str(self.TURN_BUDGET)] * 2, (lane, budgets)
+            # The fork lane carries a third copy: validation's rate-limit retry,
+            # whose inputs are pinned identical to validation's.
+            stages = 3 if lane == "fork-opus-review.yml" else 2
+            assert budgets == [str(self.TURN_BUDGET)] * stages, (lane, budgets)
 
     def test_the_job_wall_leaves_room_for_two_exhausted_stages(self) -> None:
         """Both stages share one job, so the wall bounds their SUM."""

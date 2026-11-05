@@ -1,14 +1,8 @@
 """Session control's stop verb and the retry guard on its escalation.
 
-Covers ``stop_target`` reaching ``stop_slot_turn`` as the Stop button does, its
-out-of-bounds refusal, an off-loop SEL prewarm, a config warm after it and before
-the gate, and nothing between gate and stop; also a created session's ``tab_id``
-and ``origin`` birth metadata and the create handler's config warm after ``_body``.
-
-The retry cases pin that a repeat inside the window keeps the queue and steers and
-logs ``escalation_withheld``, a repeat against a fresh turn cancels it, and a stop
-past the window or a second button press escalates. Also covers a send kept queued
-through a hard stop's settle, ``already_stopping``, and the window's keys and sweep.
+A repeat inside the retry window keeps the queue instead of hard-killing, because an MCP
+client re-sends a stop that timed out; a stop past the window or a second button press
+still escalates.
 """
 
 from __future__ import annotations
@@ -40,13 +34,9 @@ from kiro_crew.dashboard.handlers import session_control as handlers_sc
 def test_birth_metadata_carries_the_slots_own_identity_and_origin(tmp_path, monkeypatch):
     """A created-then-idle session's only disk record is this metadata line.
 
-    `_save_slot_to_history` returns early on an empty message window, so a session
-    that is created and never messaged never reaches the normal save path. Omitting
-    `tab_id` makes rehydrate mint a fresh one -- which breaks the ownership match
-    this design depends on -- and omitting `origin` makes it come back
-    unattributed, dropping it out of `slots:user`.
-
-    Mutation guard: removing either key from the dict fails here.
+    `_save_slot_to_history` skips an empty message window. Without `tab_id` rehydrate
+    mints a new one and ownership stops matching; without `origin` the session drops
+    out of `slots:user`.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -69,13 +59,8 @@ def test_birth_metadata_carries_the_slots_own_identity_and_origin(tmp_path, monk
 def test_nothing_suspends_between_the_stop_gate_and_the_stop(tmp_path, monkeypatch):
     """The SEL prewarm must run BEFORE authorization, not between it and the act.
 
-    `await` is a suspension point. With the prewarm sitting between
-    `authorize_target` and `stop_slot_turn`, a user action landing in that window
-    -- linking the target to a channel -- makes the decision stale, and a turn gets
-    cancelled on a session that became channel-backed after `mirrored_target`
-    already passed. `send_message` documents the same rule for its cooldown claim.
-
-    Mutation guard: moving the prewarm back below the gate flips this order.
+    An `await` between `authorize_target` and `stop_slot_turn` lets a user link the
+    target to a channel after `mirrored_target` passed, so the decision goes stale.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -104,8 +89,7 @@ def test_nothing_suspends_between_the_stop_gate_and_the_stop(tmp_path, monkeypat
 
     assert order[:1] == ["sel"], f"the prewarm must precede authorization; got {order}"
     assert order.index("authorize") < order.index("stop")
-    # The decisive assertion: authorization and the act must be ADJACENT, so no
-    # await can separate them.
+    # Authorization and the act must be adjacent, so no await can separate them.
     assert (
         order.index("stop") - order.index("authorize") == 1
     ), f"something ran between the gate and the act it authorizes: {order}"
@@ -114,18 +98,9 @@ def test_nothing_suspends_between_the_stop_gate_and_the_stop(tmp_path, monkeypat
 def test_the_config_warm_is_the_last_suspension_before_the_stop_gate(tmp_path, monkeypatch):
     """A warm with an `await` after it is no warm at all.
 
-    `session_control_enabled` is synchronous and its `KiroCrewConfig.load()`
-    re-reads and validates the file on the first call after a config edit. The warm
-    exists so the gate's own read is a cache hit -- but a config edit landing in any
-    suspension BETWEEN the warm and the gate changes the fingerprint, so the gate
-    misses the cache and does that read on the loop regardless.
-
-    `stop_target` has its own SEL prewarm await, so warming in the handler (before
-    the body read AND before that prewarm) left two suspensions in the gap. The warm
-    therefore belongs immediately after the SEL prewarm.
-
-    Mutation guard: moving the warm back above the SEL prewarm, or into the handler,
-    puts `sel` between it and `authorize`.
+    The warm makes the gate's synchronous `KiroCrewConfig.load()` a cache hit; a config
+    edit in any suspension between them misses the cache. So the warm sits right after
+    the SEL prewarm await, not in the handler.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -170,12 +145,8 @@ def test_the_config_warm_is_the_last_suspension_before_the_stop_gate(tmp_path, m
 def test_create_warms_the_config_after_reading_the_body():
     """The body read suspends, so a warm above it can be stale by the gate.
 
-    `create_session`'s first statement is the synchronous enabled check, so the warm
-    has to sit below `_body` -- which awaits `request.json()` -- and above the call.
-    Asserted on source order because the suspension being guarded against is the
-    handler's own `await`, which a runtime probe cannot observe without racing it.
-
-    Mutation guard: moving the warm back above `_body` flips these positions.
+    Asserted on source order: the suspension guarded against is the handler's own
+    `await`, which a runtime probe cannot observe without racing it.
     """
     src = Path(handlers_sc.__file__).read_text(encoding="utf-8")
     create = src[src.index("async def api_session_control_create") :]
@@ -192,8 +163,7 @@ def test_create_warms_the_config_after_reading_the_body():
 def test_stop_constructs_the_sel_off_loop_before_stopping(tmp_path, monkeypatch):
     """`stop_slot_turn`'s idle branch logs with no await before it.
 
-    So a first `session_stop` on a fresh gateway would construct the log on the
-    loop. Mutation guard: dropping the prewarm runs `sel()` on the loop thread.
+    So a first `session_stop` on a fresh gateway would construct the log on the loop.
     """
     import threading
 
@@ -244,10 +214,8 @@ def test_stop_goes_through_the_same_path_as_the_stop_button(tmp_path, monkeypatc
     out = asyncio.run(sc.stop_target(state, caller_session_key=_key(caller), target="chat-2"))
 
     assert out["target"] == "chat-2"
-    # No `force`: `stop_slot_turn` escalates on a second press regardless of one,
-    # so the tool does not advertise a flag a first call cannot honour. A FIRST
-    # stop still carries `escalate=True` — the retry guard withholds it only for a
-    # repeat, so the button's semantics are unchanged for a call that is not one.
+    # A first stop carries `escalate=True`; the retry guard withholds it only for a
+    # repeat.
     assert seen == {"slot": "chat-2", "source": "session_control", "escalate": True}
 
 
@@ -265,10 +233,8 @@ def test_stop_is_refused_for_a_session_out_of_bounds(tmp_path):
 def _stoppable(state, slot):
     """A target with a live turn and unconsumed work behind it.
 
-    Both lists are what the hard-kill path clears, so they are the evidence a
-    retry read as an escalation would destroy. ``stop_turn`` answers "cancelled"
-    rather than "idle" so the soft stop stays PENDING — the state a retry arrives
-    into, and the only state from which escalation is reachable at all.
+    The hard kill clears both lists. ``stop_turn`` answers "cancelled" so the soft stop
+    stays pending, the only state from which escalation is reachable.
     """
     _busy(slot)
     slot._queue.append({"id": "q1", "content": "the next thing"})
@@ -279,18 +245,10 @@ def _stoppable(state, slot):
 
 
 def test_a_retried_stop_keeps_the_queue_instead_of_escalating(tmp_path, monkeypatch):
-    """The defect: a timeout retry is read as a second press and discards work.
+    """A timeout retry must not be read as a second press that hard-kills.
 
-    `stop_slot_turn` hard-kills on any second stop while the first is still
-    pending, and the kill clears `_queue` and `_pending_steers`. An MCP client
-    that got no response inside `_post`'s 30s timeout re-sends the same request,
-    so a caller that asked once silently got the destructive variant — the
-    exposure is worst for the unattended agent this verb exists for, which
-    retries without anyone deciding anything.
-
-    Mutation guard: dropping `escalate=` from `stop_target`'s call, or the
-    `escalate and` guard in `stop_slot_turn`, empties both lists here and leaves
-    `_stop_state` at "killing".
+    An MCP client re-sends after `_post`'s 30s timeout, and a hard kill clears
+    `_queue` and `_pending_steers`.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -313,13 +271,7 @@ def test_a_retried_stop_keeps_the_queue_instead_of_escalating(tmp_path, monkeypa
 def test_a_repeat_still_stops_a_target_that_started_running_again(tmp_path, monkeypatch):
     """Withholding the escalation must not withhold the STOP.
 
-    The retry guard suppresses a kill, not a cancel. A repeat that arrives after
-    the first stop has settled and the target has picked up its next turn is a
-    plain first stop as far as that turn is concerned, and has to cancel it.
-
-    Mutation guard: short-circuiting `stop_target` on a repeat — returning the
-    first call's answer without calling `stop_slot_turn` — leaves this second turn
-    running.
+    A repeat after the target picked up its next turn is a first stop for that turn.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -341,13 +293,8 @@ def test_a_repeat_still_stops_a_target_that_started_running_again(tmp_path, monk
 def test_a_stop_after_the_window_still_escalates(tmp_path, monkeypatch):
     """Escalation is delayed, not removed.
 
-    A stop that STILL finds the target winding down once the window has closed is
-    the case escalating was written for, and the capability has to survive: the
-    alternative contract (never escalate from the RPC) was rejected because it
-    takes the hard kill away from the agent surface entirely.
-
-    Mutation guard: withholding escalation unconditionally leaves `_stop_state` at
-    "soft_pending" and the queue intact.
+    A stop that still finds the target winding down after the window must hard-kill,
+    or the agent surface loses the kill entirely.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -365,15 +312,7 @@ def test_a_stop_after_the_window_still_escalates(tmp_path, monkeypatch):
 
 
 def test_a_withheld_escalation_is_recorded(tmp_path, monkeypatch):
-    """Read from the other side: the absorbed retry must be visible too.
-
-    The issue's complaint is that queued messages went "with no record that a
-    retry rather than a decision caused it". Suppressing the kill silently would
-    leave the same gap inverted — an audit in which a de-duplicated retry is
-    indistinguishable from a stop nobody made.
-
-    Mutation guard: dropping the metadata key.
-    """
+    """An absorbed retry is logged, so the audit can tell it from a stop nobody made."""
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     _stoppable(state, _peer_target(state, "chat-2", caller))
@@ -393,12 +332,8 @@ def test_a_withheld_escalation_is_recorded(tmp_path, monkeypatch):
 def test_the_stop_button_still_escalates_on_a_second_press(tmp_path, monkeypatch):
     """The button's contract is unchanged, and that is the point of the default.
 
-    A person pressing Stop again has watched the cooperative stop fail to take, so
-    the second press IS a decision. Only the RPC, which cannot tell a decision
-    from a re-sent request, gives that up.
-
-    Mutation guard: defaulting `escalate` to False in `stop_slot_turn` breaks this
-    without touching the session-control tests above.
+    A second press is a decision. Only the RPC, which cannot tell a decision from a
+    re-sent request, gives that up.
     """
     from kiro_crew.dashboard.chat_handlers import stop_slot_turn
 
@@ -429,12 +364,9 @@ def _owed_completion(slot, text: str = "[Subagent completion event] a1 finished"
 class _SettlingManager:
     """The slice of ``SubagentManager`` a hard stop settles discarded deliveries through.
 
-    ``during`` runs inside the settle's suspension: the window in which the real
-    manager waits on the child's teardown gate and writes its tombstones on a thread.
-
-    A stop pushes a slots update, and a push whose coalescing window is open
-    serializes every slot, which reads the manager's running and queued sub-agents.
-    This double answers those reads with "none", as an idle manager does.
+    ``during`` runs inside the settle call, before the caller resumes. The slot reads
+    answer "none", as an idle manager does, because a stop's slots update serializes
+    every slot.
     """
 
     def __init__(self, during=None) -> None:
@@ -443,8 +375,6 @@ class _SettlingManager:
 
     async def settle_queued_delivery(self, deliveries) -> None:
         self.settled.extend(deliveries)
-        # flake-ok: pre-existing single yield standing in for the settle's suspension point; moved verbatim and it waits for nothing
-        await asyncio.sleep(0)
         if self._during is not None:
             self._during()
 
@@ -471,12 +401,9 @@ def _slots_window_always_open(monkeypatch):
 
 @pytest.mark.usefixtures("_slots_window_always_open")
 def test_a_send_that_lands_while_a_hard_stop_settles_stays_queued(tmp_path, monkeypatch):
-    """The hard kill discards what was queued when it was pressed and settles the
-    sub-agent deliveries those entries owed. That settle can suspend, and a send
-    that lands meanwhile takes the busy branch and is acknowledged as queued, so the
-    kill must leave it queued, as it does a send that lands a moment later.
+    """A send acknowledged as queued during the hard kill's settle stays queued.
 
-    Mutation guard: clearing ``slot._queue`` after the settle's await wipes the send.
+    The kill discards only what was queued when it was pressed.
     """
     from kiro_crew.dashboard.chat_handlers import stop_slot_turn
 
@@ -536,10 +463,8 @@ def test_a_hard_stop_still_discards_and_settles_what_was_queued_before_it(tmp_pa
 def test_the_no_op_reply_says_which_of_its_two_facts_it_hit(tmp_path, monkeypatch):
     """`info` alone merges "was never running" with "its cancel is in flight".
 
-    The de-duplicated retry lands on the second one routinely now, and a caller
-    that renders both alike tells that caller the opposite of what happened.
-
-    Mutation guard: hardcoding `already_stopping` either way collapses the two.
+    The de-duplicated retry routinely lands on the second, so `already_stopping`
+    tells them apart.
     """
     from kiro_crew.dashboard.chat_handlers import stop_slot_turn
 
@@ -566,12 +491,8 @@ def test_the_no_op_reply_says_which_of_its_two_facts_it_hit(tmp_path, monkeypatc
 def test_the_window_is_anchored_at_the_first_stop_not_slid_by_repeats():
     """Escalation is suppressed for ONE window, not for as long as retries arrive.
 
-    A sliding window would put a hard kill out of reach of any caller polling
-    faster than the window — trading a silent queue loss for a capability that can
-    never be reached again.
-
-    Mutation guard: refreshing the stored timestamp on a repeat makes the third
-    call read as a repeat as well.
+    A sliding window would put the hard kill out of reach of any caller polling
+    faster than the window.
     """
     first_at = 100.0
     assert stop_retry.allow_escalation("chat-1", "chat-2", now=first_at) is True
@@ -615,11 +536,7 @@ def test_an_unattributable_stop_cannot_escalate():
 
 
 def test_expired_windows_are_swept_rather_than_accumulated():
-    """The map must not grow for the gateway's lifetime.
-
-    Mutation guard: dropping the sweep keeps both keys, so a long-lived gateway
-    holds one entry per pair of slots that ever stopped each other.
-    """
+    """The map must not grow for the gateway's lifetime."""
     stop_retry.allow_escalation("chat-1", "chat-2", now=100.0)
     stop_retry.allow_escalation("chat-3", "chat-4", now=100.0)
     stop_retry.allow_escalation("chat-5", "chat-6", now=100.0 + stop_retry.WINDOW_SECS + 1.0)

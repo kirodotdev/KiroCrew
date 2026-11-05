@@ -154,6 +154,14 @@ describe('AppHost — guard surfaces', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/apps')
   })
 
+  it('explains a built-in skipped at boot instead of loading its bundle', () => {
+    renderHost(appRecord({ unavailable: { reason: 'PermissionError: denied' } }))
+
+    expect(screen.getByTestId('page-title').textContent).toBe('Ledger Lens')
+    expect(screen.getByText(/could not load when the gateway started.*PermissionError: denied/)).toBeTruthy()
+    expect(screen.queryByTestId('sdk-provider')).toBeNull()
+  })
+
   it('treats a missing ui.entry as an agent-only app, not an error', () => {
     renderHost(appRecord({
       manifest: { version: '1.2.3', description: 'Reads your books and explains them.' },

@@ -39,17 +39,21 @@ def _handle(**overrides: object) -> SimpleNamespace:
         keep_transcript=False,
         memory_mode="persistent",
         child_fidelity_aware=False,
+        delete_delay_secs=0.0,
         set_model=AsyncMock(),
     )
     base.update(overrides)
     return SimpleNamespace(**base)
 
 
-def _runtime(backend: str = ACP_BACKEND_KAS, *, alive: bool = True) -> SimpleNamespace:
+def _runtime(
+    backend: str = ACP_BACKEND_KAS, *, alive: bool = True, cloud: bool = False
+) -> SimpleNamespace:
     new_handle = _handle(model="")
     kept: list[str] = []
     runtime = SimpleNamespace(
         acp_backend=backend,
+        is_cloud_sandbox=cloud,
         _agent="kirocrew",
         is_alive=lambda: alive,
         evict_session=AsyncMock(),
@@ -93,6 +97,43 @@ class TestTheMark:
         provider = _provider(_runtime(ACP_BACKEND_KIRO))
         assert provider.mcp_config_wire_reinject is False
         provider.mark_mcp_config_changed()
+        assert provider._mcp_reinject_pending is False
+
+
+class TestACloudSession:
+    """A Kiro Cloud session sends no MCP servers, so a local MCP edit has nothing
+    to change in it. Re-loading it anyway would run outside the cloud start's
+    resume hold, and the approvals KAS replays on that load would be rejected
+    as unroutable instead of reaching the user's approval card."""
+
+    def test_it_ignores_the_mark(self) -> None:
+        provider = _provider(_runtime(cloud=True))
+        provider.mark_mcp_config_changed()
+        assert provider._mcp_reinject_pending is False
+
+    @pytest.mark.asyncio
+    async def test_it_never_reloads_even_with_a_mark_pending(self) -> None:
+        runtime = _runtime(cloud=True)
+        provider = _provider(runtime)
+        old = provider._handle
+        provider._mcp_reinject_pending = True
+        await provider.apply_pending_mcp_reinjection()
+        runtime.evict_session.assert_not_awaited()
+        runtime.load_session.assert_not_awaited()
+        assert provider._handle is old
+        assert provider._mcp_reinject_pending is False
+
+    def test_the_writer_neither_resets_nor_marks_it(self) -> None:
+        """The dashboard writer's gate: a cloud session must not force a reset of
+        every live session, and the mark it hands out must not stick."""
+        from kiro_crew.mcp_hot_reload import (
+            live_sessions_apply_mcp_live,
+            mark_reinjecting_providers,
+        )
+
+        provider = _provider(_runtime(cloud=True))
+        assert live_sessions_apply_mcp_live([provider]) is True
+        mark_reinjecting_providers([provider])
         assert provider._mcp_reinject_pending is False
 
 
@@ -207,12 +248,20 @@ class TestTheApply:
         runtime = _runtime()
         provider = _provider(
             runtime,
-            _handle(keep_transcript=True, memory_mode="ephemeral", child_fidelity_aware=True),
+            _handle(
+                keep_transcript=True,
+                memory_mode="ephemeral",
+                child_fidelity_aware=True,
+                delete_delay_secs=1800.0,
+            ),
         )
         provider.mark_mcp_config_changed()
         await provider.apply_pending_mcp_reinjection()
         assert runtime.new_handle.keep_transcript is True
         assert runtime.new_handle.memory_mode == "ephemeral"
+        # A delayed record kept across the swap: the new handle's 0 would delete it
+        # at once when the session ends.
+        assert runtime.new_handle.delete_delay_secs == 1800.0
         # This turn's admission opted the OLD handle in; the new one must not fall
         # back to the fail-closed default mid-turn.
         assert runtime.new_handle.child_fidelity_aware is True

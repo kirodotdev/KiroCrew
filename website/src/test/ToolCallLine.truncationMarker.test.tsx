@@ -52,7 +52,8 @@ function storeWith(cut: { at: number; count: number } | undefined) {
 const marker = () => screen.queryByTestId('tool-payload-truncated')
 const panelText = () => document.querySelector('pre')?.textContent ?? ''
 
-afterEach(async () => { await i18next.changeLanguage('en') })
+// The row is still mounted when this runs, so the language reset re-renders it: do that inside act().
+afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
 
 describe('ToolCallLine truncation marker', () => {
   it('renders the marker at the seam with a locale-grouped count, head above and tail below', () => {

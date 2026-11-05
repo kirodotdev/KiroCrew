@@ -66,20 +66,9 @@ def test_no_refusal_in_this_module_is_prose_only() -> None:
 def test_the_ratchet_can_actually_fail() -> None:
     """Self-check: a scan matching nothing would pass the assertion above vacuously.
 
-    The count moves when a refusal enters or leaves this module's own body. Two
-    corpus-read refusals now answer through `chat_utils.history_corpus_unreadable`,
-    which sets the code by construction, so the scanner does not see them here —
-    a stronger guarantee than a per-site scan, but two fewer sites to count. There
-    is no ``slot_not_persistent`` site: an incognito or temporary session forks
-    and the child inherits its mode. The one memory-mode refusal in the module is
-    ``fork_source_memory_mode_invalid``, for a parent whose persisted mode is
-    outside the allowlist. The two app-isolation refusals answer through
-    `slot_ownership.deny_app_slot_access`, the shared per-slot decision, which
-    returns ``slot_not_found`` by construction, so the scan finds those two
-    sites in that module rather than here. The no-such-slot 404 answers through
-    `slot_ownership.slot_not_found`, the same response, so it is counted there
-    too. The over-capacity corpus refusal (``fork_corpus_too_large``) adds one
-    site, and so does the read-only remote-crew refusal (``relay_archive_read_only``).
+    The count covers this module's own refusal sites. Refusals answered through
+    `chat_utils.history_corpus_unreadable`, `slot_ownership.deny_app_slot_access` and
+    `slot_ownership.slot_not_found` set the code there and are counted in those modules.
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
     assert len(coded) == 26, f"scanner reached {len(coded)} coded sites, expected 26"
@@ -275,12 +264,8 @@ async def test_a_parent_with_an_unrecognised_persisted_mode_is_refused(
 async def test_the_three_404s_stay_indistinguishable(tmp_path, monkeypatch) -> None:
     """An app-scoped caller must not be able to tell the three 404s apart.
 
-    ``404`` (not ``403``) is deliberate: it makes a slot owned by another app, an
-    unscoped slot, and a slot that does not exist look identical to a caller
-    behind the App Kit isolation boundary, so the boundary cannot be abused to
-    enumerate slots (CWE-204). The added ``code`` is a NEW field on that same
-    response, so it is a new place for the three to diverge — this pins that
-    they do not. The true reason stays recorded server-side via SEL.
+    The ``404`` hides other-app, unscoped and missing slots alike (CWE-204); the ``code``
+    field must not tell them apart either. The true reason is recorded via SEL.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _seeded_state(tmp_path)
@@ -339,16 +324,8 @@ async def test_every_refusal_carries_both_a_code_and_its_prose(tmp_path, monkeyp
 def test_an_unreadable_mid_rotation_corpus_refuses_instead_of_approximating() -> None:
     """The full-corpus read failing must FAIL CLOSED, by source inspection.
 
-    Driving this through the wire needs a mid-rotation chain plus a read that
-    throws only on the second call, which the seeded fixture cannot express; the
-    property that matters is structural, so it is asserted structurally.
-
-    Why it matters: a fallback prepending only THIS key's
-    rotated head, so a rotation on a LATER chain member left earlier members'
-    rotated rows missing and shifted every index. An index-addressed fork then
-    copied different messages than the reader pointed at, with nothing on screen
-    to say so. A retryable refusal is visible and recoverable; a silently wrong
-    fork is neither.
+    The seeded fixture cannot express a mid-rotation read failure. A fallback would shift
+    indexes, so an index-addressed fork would silently copy the wrong messages.
     """
     from pathlib import Path
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import threading
 import zlib
 from types import SimpleNamespace
@@ -34,6 +35,8 @@ from kiro_crew.vector_memory import (
     _lesson_slug,
     _split_stored,
 )
+
+_CRON_LOGGER = "kiro_crew.dashboard.handlers.cron"
 
 
 def _discriminating_embed(text: str) -> list[float]:
@@ -360,24 +363,32 @@ class TestResolveAndSupersede:
         finally:
             await asyncio.to_thread(vs.close)
 
-    async def test_deletes_contradicted_keys(self):
+    async def test_deletes_contradicted_keys(self, tmp_path):
         from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
 
-        state = MagicMock()
-        vs = MagicMock()
-        candidates = [{"key": "lesson.old", "rule": "Use X", "similarity": 0.6}]
-        with patch(
-            "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
-            new=AsyncMock(return_value=[("lesson.old", '{"rule": "Use X"}')]),
-        ), patch("kiro_crew.dashboard.handlers.cron._sel"):
-            await _resolve_and_supersede(state, "dashboard:ui", "Do NOT use X", candidates, vs)
-        # COMPARE-AND-DELETE: the body read at write time rides along, so a row
-        # replaced while the verdict ran is not tombstoned by key alone.
-        vs.delete_semantic.assert_called_once_with(
-            "lesson.old", "contradiction_superseded", expect_value_json='{"rule": "Use X"}'
-        )
+        vs = VectorMemoryStore(db_path=tmp_path / "memory.db")
+        await asyncio.to_thread(vs.init)
+        try:
+            await asyncio.to_thread(
+                vs.set_semantic, "lesson.old", {"rule": "Use X", "category": "tool"},
+                1.0, "user_explicit",
+            )
+            # COMPARE-AND-DELETE: the body read at write time rides along, so a row
+            # replaced while the verdict ran is not tombstoned by key alone.
+            seen_body = (await asyncio.to_thread(vs.get_lessons))[0]["value_json"]
+            candidates = [{"key": "lesson.old", "rule": "Use X", "similarity": 0.6}]
+            with patch(
+                "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
+                new=AsyncMock(return_value=[("lesson.old", seen_body)]),
+            ), patch("kiro_crew.dashboard.handlers.cron._sel"):
+                await _resolve_and_supersede(
+                    MagicMock(), "dashboard:ui", "Do NOT use X", candidates, vs
+                )
+            assert await asyncio.to_thread(vs.get_semantic, "lesson.old") is None
+        finally:
+            await asyncio.to_thread(vs.close)
 
-    async def test_swallows_exceptions(self):
+    async def test_swallows_exceptions(self, caplog):
         """A failed sweep must not propagate — the lesson is already persisted."""
         from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
 
@@ -387,26 +398,46 @@ class TestResolveAndSupersede:
         with patch(
             "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
             new=AsyncMock(side_effect=RuntimeError("boom")),
-        ):
+        ), caplog.at_level(logging.WARNING, logger=_CRON_LOGGER):
             # Must not raise.
             await _resolve_and_supersede(state, "dashboard:ui", "new", candidates, vs)
         vs.delete_semantic.assert_not_called()
+        # Swallowed but told: a sweep that keeps failing leaves contradicted lessons.
+        assert [r.getMessage() for r in caplog.records if r.name == _CRON_LOGGER] == [
+            "Background contradiction sweep failed"
+        ]
 
-    async def test_one_bad_key_does_not_abort_batch(self):
+    async def test_one_bad_key_does_not_abort_batch(self, tmp_path, monkeypatch):
         """A failure on one key still drains the remaining contradicted keys."""
         from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
 
-        state = MagicMock()
-        vs = MagicMock()
-        vs.delete_semantic.side_effect = [RuntimeError("already deleted"), None]
-        candidates = [{"key": "lesson.a", "rule": "r", "similarity": 0.6}]
-        with patch(
-            "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
-            new=AsyncMock(return_value=[("lesson.a", None), ("lesson.b", None)]),
-        ), patch("kiro_crew.dashboard.handlers.cron._sel"):
-            await _resolve_and_supersede(state, "dashboard:ui", "new", candidates, vs)
-        # Both keys attempted despite the first raising.
-        assert vs.delete_semantic.call_count == 2
+        vs = VectorMemoryStore(db_path=tmp_path / "memory.db")
+        await asyncio.to_thread(vs.init)
+        try:
+            for key in ("lesson.a", "lesson.b"):
+                await asyncio.to_thread(
+                    vs.set_semantic, key, {"rule": key, "category": "tool"},
+                    1.0, "user_explicit",
+                )
+            real_delete = vs.delete_semantic
+
+            def _delete(key, *args, **kwargs):
+                if key == "lesson.a":
+                    raise RuntimeError("already deleted")
+                return real_delete(key, *args, **kwargs)
+
+            monkeypatch.setattr(vs, "delete_semantic", _delete)
+            candidates = [{"key": "lesson.a", "rule": "r", "similarity": 0.6}]
+            with patch(
+                "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
+                new=AsyncMock(return_value=[("lesson.a", None), ("lesson.b", None)]),
+            ), patch("kiro_crew.dashboard.handlers.cron._sel"):
+                await _resolve_and_supersede(MagicMock(), "dashboard:ui", "new", candidates, vs)
+            # The second key is still retired despite the first raising.
+            assert await asyncio.to_thread(vs.get_semantic, "lesson.b") is None
+            assert await asyncio.to_thread(vs.get_semantic, "lesson.a") is not None
+        finally:
+            await asyncio.to_thread(vs.close)
 
     async def test_a_rule_retiered_while_the_verdict_ran_is_not_tombstoned(self, tmp_path):
         """The tier filter must not be defeatable by timing.

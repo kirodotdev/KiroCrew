@@ -12,7 +12,7 @@ import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 import { i18nT } from '../i18n/t'
 import { fmtTimeNumeric } from '../i18n/format'
-import { type AutoNudgeLoop, cycleText as loopCycleText, nextCycleText, judgeReading, judgeVerdictTime, loopFinished, PULL_REQUEST_WATCH_KINDS, AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
+import { type AutoNudgeLoop, cycleText as loopCycleText, nextCycleText, judgeReading, judgeVerdictTime, loopFinished, isPullRequestWatchKind, AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
 export type { AutoNudgeLoop } from './autoNudgeLoop'
 
 interface Props {
@@ -643,7 +643,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     ? null
     : loop?.stopped_reason === 'stop_sentinel'
       ? { key: 'components.autoNudgePopover.done_stop_file', check: true }
-      : !PULL_REQUEST_WATCH_KINDS.has(loop?.monitor_kind ?? '')
+      : !isPullRequestWatchKind(loop?.monitor_kind)
         ? loop?.monitor_outcome === 'success'
           ? { key: 'components.autoNudgePopover.done_subject_finished', check: true }
           : { key: 'components.autoNudgePopover.done_subject_ended', check: false }

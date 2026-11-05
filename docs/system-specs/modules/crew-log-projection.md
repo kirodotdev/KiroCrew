@@ -400,7 +400,7 @@ reopened.
 | `panel` | The crew's published webview, folded from `panel/published` entries in the member's own DM session log. |
 | `agentic` | The mate's own dynamic-dashboard values, the latest per field, folded from `dashboard/agentic_value` entries in the member's own DM session log. It keeps up to `DASHBOARD_VALUE_LIMIT` fields, re-checks each value's declared type and byte size against the template manifest, and evicts the least recently written field past the cap. |
 | `mistakes` | The mate's mistake book: refused dashboard writes grouped by `(code, field)` from `dashboard/agentic_refused` entries, worst group first, carrying the correction a later accepted write recorded. It keeps up to `MISTAKE_GROUP_LIMIT` groups. |
-| `custom` | The latest record per type a script cron bound to the mate, or an installed app holding the `/api/member-records/*` grant, appended through the record door (`dashboard/handlers/agent_panel_record.py` for the cron's `ctx.crew_log_append`, `agent_panel_record_app.py` for the app's `POST /api/member-records/{slug}`; both call `record_through_door`), from `dashboard/custom_value` entries: `latest` keyed by the record `type` the writer named (an app's is stored as `<app id with - as _>__<type>`, one bindable path segment that splits one way, so two apps never share a key and `__` is refused in every caller's type), each row `{data, at, seq, writer, member, crew_key}` where `data` is the writer's object (at most `CUSTOM_RECORD_BYTES` serialized, `CUSTOM_RECORD_DEPTH` deep) and `writer` (`cron:<job id>` or `app:<app id>`) and `member` are what the gateway stamped, never the body; `types_omitted` (types evicted past `CUSTOM_TYPE_LIMIT`, least recently written first) and `wrote` (accepted records over the slot's life). Every cap is re-applied on read, and a line naming no type or no writer is skipped, so a planted line is never keyed. Read over the slot's units in succession, like `agentic`, because the latest record per type is what it keeps. Lives in `crew_log/projection_dashboard.py` beside `agentic`. |
+| `custom` | The latest record per type a script cron bound to the mate, or an installed app holding the `/api/member-records/*` grant, appended through the record door (`dashboard/handlers/agent_panel_record.py` for the cron's `ctx.crew_log_append`, `agent_panel_record_app.py` for the app's `POST /api/member-records/{slug}`; both call `record_through_door`), from `dashboard/custom_value` entries: `latest` keyed by the record `type` the writer named (an app's is stored as `<app id with - as _>__<type>`, one bindable path segment that splits one way, so two apps never share a key and `__` is refused in every caller's type), each row `{data, at, seq, writer, member, crew_key}` where `data` is the writer's object (at most `CUSTOM_RECORD_BYTES` serialized, `CUSTOM_RECORD_DEPTH` deep) and `writer` (`cron:<job id>` or `app:<app id>`) and `member` are what the gateway stamped, never the body; `types_omitted` (types evicted past `CUSTOM_TYPE_LIMIT`, least recently written first) and `wrote` (accepted records over the slot's life). Every cap is re-applied on read, and a line naming no type or no writer is skipped, so a planted line is never keyed. Read over the slot's units in succession, like `agentic`, because the latest record per type is what it keeps. A row also carries `max_age_s` and `stale_after` (the entry's own `time` plus the writer's declared `max_age_s`, never a body-supplied time) when the writer declared one, and `failed_at` / `last_error` once a `dashboard/custom_failed` entry for the same writer folds after it; `failures` lists each writer's latest failed run (at most `CUSTOM_FAILURE_LIMIT`, evictions counted in `failures_omitted`), newest first, so a cron that never landed a record is still visible. Lives in `crew_log/projection_dashboard.py` beside `agentic`. |
 | `goal` | A mate's goal record, from the newest `dashboard/goal_recorded` snapshot: `goal` (the first goal's text), `goals`, `goals_total`, `goals_omitted`, `milestones` (each with its target and the reading the mate last recorded, as text, and its time; whether a milestone is reached is the mate's own word in that reading, never judged here), `milestones_total`, `milestones_omitted` and `changes`. It keeps up to `CREWMATE_ROW_LIMIT` rows per list and `CREWMATE_TEXT_LIMIT` characters per cell; every count covers the whole snapshot, and `*_omitted` says how many rows a list cut. |
 | `worker` | INTERNAL, bound by no page and served by no route: one worker's `row` and the `parent` its first opener named, folded over that worker's own units (`worker_units`); the per-worker part `workers` merges. Lazy. |
 | `waiting` | What a mate waits on the person for, from the newest `dashboard/waiting_changed` snapshot: `items` (newest first), `count` (how many wait in all, from the snapshot's `total`), `omitted` (how many the list cut; each item's `options_omitted` likewise for its choices), `newest` (the newest item's text, `""` when nothing waits) and `changes`. It keeps up to `CREWMATE_WAITING_LIMIT` items, the same bound the producer cuts at, and `CREWMATE_OPTION_LIMIT` choices each. |
@@ -463,10 +463,17 @@ its remembered position -- after checking each unit's `_UnitMark` fingerprint an
 proving the newest unit's already-folded prefix intact, which it needs because the store
 can rewrite a committed prefix on its recovery paths. The proof is the unit's CUT COUNT
 (`CrewLog.cuts`, section 7.2), read in a few bytes; hashing that prefix is the fallback
-for a log that states no count. A changed unit list, a unit whose seq went backwards,
-growth in any unit but the newest, a cut count that moved, a prefix that hashes
-differently, or a cold memo each force a full refold, because each would otherwise be a
-wrong answer rather than a slow one.
+for a log that states no count. A unit list that only GAINED units at its end -- a
+session rollover -- is continued too: the held newest unit is read from above what the
+cell folded and each new unit from its first record, in the order a cold fold reads
+them, with the same ordinal bases, so a long-lived slot does not refold its whole
+history on every rollover. With no warm cell, the savepoint beside the newest unit is
+tried first, then the one beside the newest OLDER unit that has one (a restart after a
+rollover): it is admitted on the unit list it was written for and carried over the
+later units the same way. Any other change to the unit list, a unit whose seq went
+backwards, growth in any unit but the held newest, a cut count that moved, a prefix that
+hashes differently, or a cold memo each force a full refold, because each would
+otherwise be a wrong answer rather than a slow one.
 
 The radar fold's own rules, applied to the bytes as the writer applies them to a
 request: an entry naming a crew other than the fold's first is left out (every unit
@@ -968,10 +975,13 @@ when it arrives. `test_two_concurrent_folds_never_pair_one_passs_seq_with_anothe
 forces the interleaving rather than racing for it, and reports the mismatch as "3 items at
 seq 2" when the lock is removed.
 
-**A closed session drops its slot's memos.** `session/closed` wakes the worker like any
-other type and it calls `forget_slot_folds(slot=...)`: a unit that will never append
-again has no value being held warm for it. This costs the next read of that slot one
-cold fold and never an answer.
+**A closed session seals, then drops, its slot's memos.** `session/closed` wakes the worker
+like any other type. For each eager slot fold it first calls `seal_slot_fold`, which
+brings a held cell up to the log and writes its savepoint whatever the advance (a closed
+unit will not earn the usual threshold again), then `forget_slot_folds(slot=...)`: a unit
+that will never append again has no value being held warm for it. The next read of that
+slot, after a restart or a reopen in a new unit, resumes from that savepoint. A slot with
+no held cell is not sealed, so the worker never folds cold here.
 
 **The warm slot memos are bounded by RESIDENT BYTES, and each cell is charged what it
 retains.** `slot_fold_cache_bytes()` is the one ceiling for every slot cell together,
@@ -1552,10 +1562,23 @@ creator by its display name, never by a raw slot id. A creator that still has a
 live row reads "Created by {name} (not running, so shown top-level)"; the
 parenthetical names the one reason a created row is top-level that real creation
 order can produce (a cycle is the other, and cannot arise from ``session_create``,
-which never lets a child create its own ancestor). A creator that has closed and
-resolves to no name reads the fixed "Created by a closed session" -- the
-user-facing fact is that the creator closed, and the slot id nobody can read adds
-nothing. The slot the log cited is kept only on the `data-orphan-of` attribute,
+which never lets a child create its own ancestor). A creator that has closed is
+named by its LAST-KNOWN title when the payload carries one: "Created by {title}
+(closed)". `lineage_parents` adds `parent.title` only for a creator with no live
+row in that payload (checked under both spellings of `slot`, so a cycle or
+self-citation on a live creator never gets one), read from
+`dashboard/creator_titles.py` -- a bounded in-memory LRU (1024 spellings) that
+every live row's already-redacted title is written to by the same join (slots
+rows), by the sampler before it (Sessions-table rows), and by `push_slot_patch`
+for a title published as a patch (a rename, via
+`session_memory.remember_slot_title`), so neither payload
+reads history metadata from disk. The not-yet-generated placeholder title is
+never stored. A creator the process never saw live (closed before a restart,
+or evicted from the LRU) carries no `title`, and the row reads the fixed
+"Created by a closed session" -- the user-facing fact is that the creator
+closed, and the slot id nobody can read adds nothing. The sidebar's orphan glyph
+reads the same way: "Opened by {title} (closed)" with `parent.title`, "Opened by
+a closed session" without. The slot the log cited is kept only on the `data-orphan-of` attribute,
 for the sidebar glyph, not in this visible text. The line is VISIBLE text, never
 a native `title`: a keyboard or touch reader sees no tooltip, and this row has
 nothing else that says it. The table re-checks the edge it is handed --
@@ -2039,8 +2062,8 @@ neither fold a savepoint it ever gets to use.
 **At the NEWEST unit**, which is the only unit a continuation lets grow and the one whose
 bytes the witness stands for. The file therefore inherits the `crew-log` fence and is
 removed with the unit, and a slot that gains a unit -- a session reset -- finds no
-savepoint at its new newest unit and folds cold once, which is what the warm cell already
-does for a changed unit list.
+savepoint at its new newest unit. A warm cell in the same process carries over that
+rollover; a new process with no warm cell folds cold once.
 
 **The identity block carries the whole unit vector**, because the state was folded over
 all of it: the slot key, the units in fold order, and every EARLIER unit's whole mark

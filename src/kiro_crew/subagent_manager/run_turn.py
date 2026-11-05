@@ -548,7 +548,9 @@ async def _run_inner_impl(
         fresh_session=is_new and not _resumed,
         spec=_spec,
     )
-    full_message = _hook_prefix + full_message
+    from kiro_crew.prompt_segments import prepend_injected
+
+    full_message = prepend_injected(_hook_prefix, full_message)
     # The run's permission ladder. Imported here because this body runs on
     # the facade's globals (bind_component_globals), not this module's.
     from kiro_crew import tool_permission
@@ -693,6 +695,12 @@ async def _run_inner_impl(
         # "a slot/session-scoped equivalent" — the sticky marker for the
         # session lives on the provider via TURN_FALLBACK_ATTR.
         _fb_state = FallbackState(configured_fallback_chain())
+        # Every replay of the original prompt goes out through this, so a fallback
+        # swap below is stated in its [ACTIVE MODEL] line rather than the model the
+        # prompt was built on. A continuation prompt carries no such line.
+        from kiro_crew.llm_helpers import ActiveModelLine
+
+        _active_line = ActiveModelLine(full_message, client)
         msg = full_message
         while True:
             usage.begin(client)
@@ -736,10 +744,11 @@ async def _run_inner_impl(
                 _refused_turn: LLMEvent | None = None
                 # The completion that ends this prompt, if the stream sent one.
                 _ended: LLMEvent | None = None
+                _prompt = _active_line.current() if msg is full_message else msg
                 stream = (
-                    client.stream(msg)
+                    client.stream(_prompt)
                     if prompt_timeout is None
-                    else client.stream(msg, timeout=prompt_timeout)
+                    else client.stream(_prompt, timeout=prompt_timeout)
                 )
                 async for _ev in stream:
                     if not _ev.runtime_global:
@@ -1016,6 +1025,8 @@ async def _run_inner_impl(
     # waited for this turn.
     _turn_t0 = time.monotonic()
     _row_t0[0] = _turn_t0
+    from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_MODEL_FALLBACK, engine_served_model
+
     async for event in _stream_with_transient_retry():
         # Refresh the activity clock for every event kind that BELONGS to
         # this session (thinking chunks, tool-call updates, etc.) before
@@ -1246,6 +1257,21 @@ async def _run_inner_impl(
                 # wait turned into a denial) reads on: a stream the stop tore
                 # down raises at the next read, a live one meets the bail.
                 break
+        elif event.kind == EVENT_MODEL_FALLBACK:
+            # The engine moved this run onto another model. Persisted now,
+            # while the run is live and holds its conversation, as the refined
+            # model above is; the ending only mirrors it in memory.
+            _moved_to = engine_served_model(client)
+            if _moved_to and _moved_to != info.resolved_model:
+                info.resolved_model = _moved_to
+                try:
+                    await self._manager._write_state_off_loop(
+                        info, "engine fallback model", resolved_model=_moved_to
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to persist engine fallback model for %s", info.id, exc_info=True
+                    )
         elif event.kind == EVENT_AGENT_SWITCHED:
             # A mid-run mode switch runs a different agent, so ITS spec hooks gate
             # the permission requests that follow, not the previous agent's. An
@@ -1376,6 +1402,7 @@ async def _run_inner_impl(
     cleaned, _ = extract_options(result_text) if result_text else (result_text, [])
     # Read before the fallback annotation, which is not a reply.
     _no_reply = not cleaned.strip()
+    info.returned_reply = not _no_reply
     if cleaned:
         from kiro_crew.security import (
             redact_credentials,
@@ -1384,12 +1411,31 @@ async def _run_inner_impl(
 
         cleaned, _ = redact_exfiltration_urls(cleaned)
         cleaned, _ = redact_credentials(cleaned)
+    # The engine may have moved this run onto another model inside its last
+    # prompt (acp/engine_fallback.py). The panel's model chip, the
+    # ``subagent_done`` frame and the completion card all read
+    # ``info.resolved_model``, set at spawn from the session's served model,
+    # so a fallback the engine made would otherwise leave them naming the
+    # model that refused. Set here without an await, so the ending below is
+    # still claimed first-arrival-wins. ``state.json`` already has it: the
+    # move was persisted when its notice arrived (``EVENT_MODEL_FALLBACK``).
+    _engine_model = engine_served_model(client)
+    if _engine_model and _engine_model != info.resolved_model:
+        info.resolved_model = _engine_model
     # Model-fallback visibility (agent.fallback_model): a run served by a
     # fallback model must say so in the delivered result — same contract as
     # the cron/heartbeat annotation and the dashboard notice card. One
     # shared spelling (llm_helpers.annotate_model_fallback) redacts the
     # config-sourced model ids the same way as the result body.
-    cleaned = annotate_model_fallback(cleaned, client)
+    cleaned = annotate_model_fallback(
+        cleaned,
+        client,
+        stop_reason=(
+            str(getattr(_complete_event, "stop_reason", "") or "")
+            if _complete_event is not None
+            else None
+        ),
+    )
     # EVENT_COMPLETE only says the stream ENDED. Classify its stop reason
     # (one mapping for every entry: acp.types.classify_stop_reason) so a
     # stall, a runtime cancel or a transport death is never recorded as a

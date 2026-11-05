@@ -17,6 +17,8 @@ import { Btn } from '../../components/ui'
 import { useTranslation } from 'react-i18next'
 import { type MemberRosterRow } from '../../api/client'
 import CrewAvatar from '../../components/CrewAvatar'
+import { crewDisplayName } from '../../components/AgentSelector'
+import { defaultLookFor } from '../../lib/avatarPoses'
 import { type AutomationRecord } from '../../monitoring/automation'
 import { motion } from 'framer-motion'
 import { cn } from '../../lib/utils'
@@ -181,8 +183,8 @@ export function MemberRow({
           }}
           aria-pressed={!!view.starred}
           disabled={starPending.has(view.name)}
-          aria-label={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: view.name })}
-          title={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: view.name })}
+          aria-label={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: crewDisplayName(view) })}
+          title={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: crewDisplayName(view) })}
           // 24x24 minimum target (the icon is 13px): a touch that lands beside
           // the glyph must hit the star, not the row button underneath.
           className={`absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded hover:bg-bg-hover transition-opacity ${
@@ -202,9 +204,11 @@ export function MemberRow({
 }
 
 /** The intentionally-empty roster: one hero, one call to action. Type scale and
- *  tokens follow `EmptyState` in components/ui.tsx; the face is the real ghost at
+ *  tokens follow `EmptyState` in components/ui.tsx; the face is a real avatar at
  *  full strength rather than EmptyState's 12%-opacity icon, because here the
- *  avatar IS the subject (what a crewmate looks like), not decoration. */
+ *  avatar IS the subject (what a crewmate looks like), not decoration. It is the
+ *  icon a new crewmate gets by default (`defaultLookFor`), the same one the New
+ *  crewmate card previews before a name is typed. */
 export function CrewmateEmptyHero({ onCreate, onAdvanced, held, onImport }: {
   onCreate: () => void
   /** Opens the New crewmate card with its Advanced settings unfolded. */
@@ -223,7 +227,7 @@ export function CrewmateEmptyHero({ onCreate, onAdvanced, held, onImport }: {
   const { t } = useTranslation()
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 py-10 text-center animate-rise" data-testid="crewmate-empty-hero">
-      <div className="mb-1 opacity-90"><CrewAvatar seed="crewmate" size={72} /></div>
+      <div className="mb-1 opacity-90"><CrewAvatar seed="crewmate" avatar={defaultLookFor('')} size={72} /></div>
       <div className="text-[17px] font-semibold text-text-strong" data-testid="crewmate-empty-title">{t('pages.membersPage.empty_title')}</div>
       <p className="m-0 max-w-[400px] text-[13.5px] leading-relaxed text-muted">{t('pages.membersPage.empty_body')}</p>
       <Btn

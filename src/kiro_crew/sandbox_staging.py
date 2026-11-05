@@ -749,6 +749,20 @@ def _sweep_legacy_auth_store_temps() -> list[str]:
     :func:`_refuse_multilinked_credential_leaves` gives at length: the live home exists and
     is therefore masked, so nothing inside it was planted from a sandbox, while an unused
     home is neither.
+
+    A clean pass over the LIVE home is remembered for the rest of the process, keyed by
+    that directory's identity, so later spawns skip listing it: the live root holds every
+    ``session_token_*.sig`` mapping, which makes a listing cost grow with the number of
+    sessions. It rests on two facts. The live home is masked, so nothing inside it is
+    planted from a sandbox (the reasoning :func:`_refuse_multilinked_credential_leaves`
+    gives), and this build's publisher stages in the masked :data:`_AUTH_STORE_STAGING_LEAF`,
+    never at a root-level name, so no legacy-shaped name appears there after a clean pass
+    unless a pre-upgrade ``kirocrew`` (an older CLI, or a second older gateway on the same
+    home) runs against it concurrently -- a temp that writes is swept from the next process
+    start. A pass that saw a match is never remembered, so a kept orphan is reported on
+    every spawn. Every other root is listed on every pass: those homes hold nothing the
+    gateway writes, so the listing is cheap, and a sandbox can write into them while they
+    are unmasked, which a memo would hide.
     """
     removed: list[str] = []
     try:
@@ -761,9 +775,20 @@ def _sweep_legacy_auth_store_temps() -> list[str]:
         if dir_fd is None:
             continue
         try:
+            identity: tuple[int, int] | None = None
+            if root == live_home:
+                try:
+                    info = os.fstat(dir_fd)
+                    identity = (info.st_dev, info.st_ino)
+                except OSError:
+                    identity = None
+                if identity is not None and _LEGACY_AUTH_SWEEP_CLEAN.get(root) == identity:
+                    continue
+            matched = False
             for name in os.listdir(dir_fd):
                 if not name.startswith(_AUTH_STORE_LEGACY_TEMP_PREFIX) or not name.endswith(".tmp"):
                     continue
+                matched = True
                 candidate = os.path.join(root, name)
                 try:
                     info = os.lstat(name, dir_fd=dir_fd)
@@ -846,9 +871,23 @@ def _sweep_legacy_auth_store_temps() -> list[str]:
                     safe_terminal_line(candidate),
                 )
                 removed.append(candidate)
+            if identity is not None:
+                if matched:
+                    # Never remembered: a kept orphan is reported again on the next spawn,
+                    # and a removed one is confirmed gone by a fresh listing.
+                    _LEGACY_AUTH_SWEEP_CLEAN.pop(root, None)
+                else:
+                    _LEGACY_AUTH_SWEEP_CLEAN[root] = identity
         finally:
             os.close(dir_fd)
     return removed
+
+
+#: Live data-home roots a :func:`_sweep_legacy_auth_store_temps` pass listed and found no
+#: legacy temp in, mapped to the directory identity ``(st_dev, st_ino)`` taken before that
+#: listing; a later pass over the same directory skips the ``os.listdir``. Per process, so
+#: every gateway start lists the live root at least once.
+_LEGACY_AUTH_SWEEP_CLEAN: dict[str, tuple[int, int]] = {}
 
 
 def _sweep_one_md_notebook_state_dir(root: str) -> list[str]:

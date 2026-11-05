@@ -122,6 +122,33 @@ visible area (a chat container, a modal). Safe area is **padding, not size**:
 `padding-bottom: env(safe-area-inset-bottom)`, which resolves to 0 without
 `viewport-fit=cover`.
 
+**Inset all four edges, not only top and bottom.** Side insets are real: the notch sits
+on one side in iOS landscape, and a foldable's outer display can move the system
+controls to the side. A `fixed inset-0` container that lays out a dialog or a sheet
+uses `p-safe` (it had no padding) or `p-safe-or-<n>` (it had `p-<n>`: the same gutter,
+widened only where an inset is wider). A dim backdrop with nothing laid out inside it
+bleeds to every edge and needs neither. A fixed surface whose width is the viewport minus
+a gutter (`w-[calc(100%-4rem)]`) subtracts twice the wider side inset as well,
+`w-[calc(100%-max(4rem,var(--safe-area-x)+var(--safe-area-x)))]`, because a centred box
+keeps the same gutter on both sides. Write the doubling as a sum, not `2*`. Every one of these is 0 where the platform reports no inset, so
+nothing moves on a desktop. `src/test/safeArea.guard.test.ts` enforces both rules and
+lists the surfaces that inset their content themselves.
+
+**A fold resizes the viewport live.** A book-style foldable reports widths from about
+380px (the outer display, and each of two side-by-side windows on the inner one) to
+about 950px (the inner display in landscape), so folding or unfolding with the dashboard
+open crosses the `md` breakpoint in both directions. The shell switches its grid in
+place and the route element underneath is never unmounted, which is what keeps the open
+chat and its draft. Do not key a shell or a page on `useIsMobile()`, and do not branch a
+route element's component type on it. `src/test/App.foldResize.test.tsx` walks those
+widths.
+
+**`useIsMobile()` is the one form signal.** During an animated form switch the hook
+reports the form being drawn, which can trail the live media query by a frame or two. A
+component that decides phone versus desktop layout reads the hook, not its own
+`matchMedia('(max-width: 767px)')` or a raw width; `md:` classes stay for spacing and
+grids, which may flip a frame early without harm.
+
 **The shell is an application, not a zoomable document — page zoom is off on touch.**
 Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
 *inner*, so there is no axis left to reach what the magnification pushed outside the
@@ -215,29 +242,30 @@ claim is restated (`docs/guides/remote-and-mobile.md`; `website/index.html` only
 points back here) — an unqualified version points a low-vision user at a control
 that is not there.
 
-**Any touch input below 16px zooms the viewport on focus, and WebKit does not zoom
-back out.** The scale is `clampTo(16 / fontSize, minimumScale, maximumScale)` from the
-FIELD's computed size, so a `text-sm` field can leave the user zoomed in — and with
-page zoom off there is no pinch-out to undo it. **There is deliberately no app-wide
-floor for this, and adding one needs evidence from a real device first**, because CSS
-cannot express a floor at all: it can only SET a
-size, so the two available shapes are wrong in opposite directions. A rule broad
-enough to reach every field SHRINKS the ones that are deliberately larger — measured,
-not hypothetical: `input:not([type=…]):not([type=…])` is (0,2,1) and beat the artifact
-rename field's `text-2xl`, snapping a 24px title to 16px on a phone. A narrower
-selector list misses fields instead, because a size can arrive as a named utility, an
-arbitrary value (`text-[13px]`), an `!important` modifier or an inline style, and no
-list contains the next one. A guard test rescues neither shape: ~120 of this app's
-fields are routed through the `<Input>` primitive or the `useAutoGrowTextarea`
-hook rather than a native tag, so a source sweep for `<input>` cannot see them and
-reports green.
+**Focus zoom is off, so no field needs a 16px floor.** WebKit zooms the viewport when
+a field below 16px takes focus, by `clampTo(16 / fontSize, minimumScale, maximumScale)`
+from the FIELD's computed size. The authored `maximum-scale=1` clamps that scale to 1:
+on an iPhone a 14px field (the Settings search) takes focus without zooming. Fields
+therefore keep their authored size on touch, and the composer uses the message font
+setting on every device. One size for the composer's typed text and its placeholder
+is also what keeps an empty composer one line tall: its auto-size measures the
+placeholder at the field's font size, so a field held at 16px over a 14px hint
+measured the hint a line too tall on a 375px phone (#28843).
 
-Two things make withholding the floor the safer side of that trade. The focus zoom is
-**pre-existing** — it is not introduced by suppressing pinch, which removes only the
-recovery gesture — and whether it can fire at all once `maximum-scale=1` is authored
-depends on the same engine path that decides whether WebKit honours the viewport keys,
-which is not answerable from source. Settle it on a device; if it does fire, the fix
-belongs in the field components, where a real `max(16px, authored)` is expressible.
+**There is deliberately no app-wide 16px field rule either**, because CSS cannot
+express a floor at all: it can only SET a size, so the two available shapes are wrong
+in opposite directions. A rule broad enough to reach every field SHRINKS the ones that
+are deliberately larger — measured, not hypothetical: `input:not([type=…]):not([type=…])`
+is (0,2,1) and beat the artifact rename field's `text-2xl`, snapping a 24px title to
+16px on a phone. A narrower selector list misses fields instead, because a size can
+arrive as a named utility, an arbitrary value (`text-[13px]`), an `!important`
+modifier or an inline style, and no list contains the next one. A guard test rescues
+neither shape: ~120 of this app's fields are routed through the `<Input>` primitive or
+the `useAutoGrowTextarea` hook rather than a native tag, so a source sweep for
+`<input>` cannot see them and reports green. If focus zoom ever comes back (the
+viewport key dropped, or an engine that stops honouring it), the fix belongs in the
+field components, where a real `max(16px, authored)` is expressible, and the
+composer's placeholder has to move with its field.
 
 **The `meta-viewport` axe rule is left ENABLED, deliberately.** `@axe-core/react` scans
 every render, so `user-scalable=no` reports a critical WCAG 1.4.4 finding on every scan.

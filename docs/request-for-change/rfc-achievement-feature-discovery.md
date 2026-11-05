@@ -1,12 +1,12 @@
 ---
 title: Milestones for new-user feature discovery — one milestone table, quiet surfaces
-status: draft
+status: accepted
 author: zejiangg
 created: 2026-10-29
-last-audited: 2026-10-30
+last-audited: 2026-10-31
 audited-at: 95f78562f1
 doc-pr: null
-implementation-prs: []
+implementation-prs: [26512, 26488]
 tracking-issues: [26327]
 supersedes: []
 superseded-by: []
@@ -14,11 +14,13 @@ superseded-by: []
 
 # RFC: Milestones for New-User Feature Discovery
 
-- **Status:** Draft. Nothing built; this document changes no code. Decisions D1–D3 were made on 2026-10-29 and D4–D14 on 2026-10-30 by the product owner (section 7.1). Acceptance is requested from a maintainer; the status flips to `accepted` when one records it here.
+- **Status:** Accepted. The product owner merged this RFC and started the build of Ship 1. Decisions D1–D3 were made on 2026-10-29 and D4–D14 on 2026-10-30 by the product owner (section 7.1).
 - **Verified at:** `95f78562f1`. Every code reference below was read at that commit.
 - **Tracks:** [#26327](https://github.com/kirodotdev/KiroCrew/issues/26327).
 - **Hard constraint:** the sign-in / first-run flow does not change. `website/src/components/OnboardingFlow.tsx` stays as it is.
-- **Naming:** the file name keeps the earlier word "achievement" so links stay stable. The design itself uses "milestone" throughout (D14).
+- **Naming:** the file name keeps the earlier word "achievement" so links stay stable. The internal keys, routes, metrics and state file use "milestone" (D14). The user-facing names changed on 2026-10-31 (D15).
+- **Amended 2026-10-31 (product owner):** section 8 renames the panel to "Explore", adds a daily "Try today" pick, keeps the existing suggestion cards on the new-chat page, puts the 15-second intro video at the top of the Explore panel, adds progress bars and a calm badge wall under "Your progress", lists the Ship 2 items (8.10), and gives the top-bar ring its own "Explore N/M" pill beside the readout capsule (8.7, D17). Where an earlier section disagrees with section 8, section 8 wins; those passages are marked "Replaced by section 8". Implementation: backend [#26512](https://github.com/kirodotdev/KiroCrew/pull/26512), frontend [#26488](https://github.com/kirodotdev/KiroCrew/pull/26488).
+- **Amended 2026-11-01 (product owner):** feature videos show only in the Explore panel's top video card, which plays one random unfinished clip; the startup popup is removed; the intro clip ships through the signed CDN manifest, not inside the package (8.11, D18).
 
 ## One-page summary
 
@@ -34,7 +36,7 @@ superseded-by: []
 | Streak | days in a row 3 / 7 / 30 / 100 | Ship 1 |
 | Running at once | chats running at once 5 / 20 / 50 | Ship 2 |
 
-Four quiet surfaces read this one table (D14):
+Four quiet surfaces read this one table (D14). Surfaces 1–3 as written in this list are replaced by section 8 (D15–D17): the panel is "Explore" with "Try today" and "Your progress" (progress bars and a badge wall), the intro video is a card at the top of that panel, the new-chat page keeps its suggestion cards and swaps only the last one for a "Try today" entry card, and the top-bar ring sits in its own pill beside the readout capsule, labeled "Explore N/M" with the streak as smaller text.
 
 1. **Top-bar indicator.** A small ring for new-feature progress, with the current streak number beside it. Clicking it opens the Milestones panel: plain checkmarks, progress bars, dates, current and best streak, "Mark as done" and "Mark all as done".
 2. **New-chat empty state.** A short clip plus 3 cards = the next 3 untried **new-feature** milestones. Usage milestones and streaks never appear here, because no surface may nudge the user to open more chats and spend more. Once every new-feature milestone is handled, the empty state returns to today's page.
@@ -50,7 +52,7 @@ Four quiet surfaces read this one table (D14):
 
 It is deterministic and never calls a model. The local file is user-editable; that is accepted for a personal tool, with no anti-cheat.
 
-**Decided.** D1: low-cost rows send directly, others prefill. D2: the daily task is a real Mate model turn. D3: the main switch defaults on (2026-10-29). D4–D8: one table, surfaces, rollout, open-question defaults, the Crew Mode signal. D9: local only. D10: count events. D11: manual marking. D12: streaks. D13: milestones first, features as a group. D14: quiet style and the "milestone" name (2026-10-30). See 7.1.
+**Decided.** D1: low-cost rows send directly, others prefill. D2: the daily task is a real Mate model turn. D3: the main switch defaults on (2026-10-29). D4–D8: one table, surfaces, rollout, open-question defaults, the Crew Mode signal. D9: local only. D10: count events. D11: manual marking. D12: streaks. D13: milestones first, features as a group. D14: quiet style and the "milestone" name (2026-10-30). D15: "Explore" naming, daily "Try today" pick, one entry card on the new-chat page. D16: the final Ship 1 Explore panel with progress bars and badges, and a Ship 2 list. D17: intro video only in Explore, the "Explore N/M" pill beside the readout capsule, and tiered badges (2026-10-31, section 8). D18: every feature video only in Explore, one random unfinished clip, no startup popup, intro via the CDN manifest (2026-11-01, 8.11). See 7.1.
 
 **Still open.** Only Q7 (relationship to Feature Tips), deferred to the "Later" batch. See 7.2.
 
@@ -61,7 +63,7 @@ It is deterministic and never calls a model. The local file is user-editable; th
 | First-run flow | `website/src/components/OnboardingFlow.tsx` | Unchanged. This design only takes effect after it ends |
 | Empty chat page | `website/src/pages/chat/page/ChatEmptyState.tsx` | Surface 2 changes this |
 | Top bar | `website/src/shell/topbar/shellHeader.tsx` (the notification bell lives here) | Surface 1's indicator sits next to the bell |
-| Feature Videos | `src/kiro_crew/feature_videos.py`, `GET /api/feature-videos/next` (`api_feature_videos_next` in `dashboard/routes/realtime.py`) | Reuse the clips and the `seen/dismissed` state; its `used_when` probes are used only for the one-time backfill (4.4) |
+| Feature Videos | `src/kiro_crew/feature_videos.py`, `GET /api/feature-videos/library` (`api_feature_videos_library` in `dashboard/routes/realtime.py`; replaced `/next` on 2026-11-01, 8.11) | Reuse the clips and the `seen/dismissed` state; its `used_when` probes are used only for the one-time backfill (4.4) |
 | Feature Tips | `src/kiro_crew/tips.py` | Model-generated; kept. The milestone table never goes through a model |
 | Mate first welcome | `src/kiro_crew/dashboard/mate_welcome.py`, copy in `src/kiro_crew/crewmate_prompts.json` | Surface 4 reuses `dispatch_hidden_turn` and the copy table |
 | Mate check-ins (daily/weekly) | `src/kiro_crew/dashboard/goal_reminder.py` | Surface 4 follows its hidden-turn pattern; does not reuse its hosted cron (see 4.8) |
@@ -270,7 +272,7 @@ GET  /api/milestones
     "notices": ["widgets", "chats-opened:10"]               // due and not yet shown
   }
 
-POST /api/milestones/event          { "id": "widgets", "action": "starter_clicked" | "skipped" | "video_seen" | "notice_shown" | "panel_opened" }
+POST /api/milestones/event          { "id": "widgets", "action": "starter_clicked" | "starter_arrived" | "skipped" | "video_seen" | "notice_shown" | "panel_opened" }   // starter_arrived: section 9
 POST /api/milestones/mark-done      { "id": "slack" }    // features group only, see 4.6
 POST /api/milestones/mark-all-done  {}                   // every open feature row, see 4.6
 POST /api/milestones/skip-all       {}                   // empty state "Don't show again", see 4.5
@@ -344,6 +346,8 @@ v1 no longer needs `knowledge_nonempty` (the knowledge base moved to Later).
 
 ### 4.5 Surface 2: the new-chat empty state
 
+> **Replaced by section 8 (D15, 2026-10-31).** The layout below (a clip tied to the first recommended row, "Things you can try", three cards with "Do it" / "Fill it in for me" / "Take a look" buttons, "Skip" and "Don't show again") is not built. The new-chat page keeps its existing suggestion cards and replaces only the last one with a single "Try today" entry card (8.6). The intro video moves to the top of the Explore panel (8.2). The send-mode rules and the low-cost table in this section still apply, now to the "Try it" button in the Explore panel.
+
 `ChatEmptyState.tsx` switches to the milestone layout only when all of these hold, and otherwise stays as it is today:
 
 - `GET /api/milestones` returns `enabled: true` with a non-empty `recommended`;
@@ -373,7 +377,7 @@ Things you can try
 - "Skip" adds the row to `skipped` and the next one moves up.
 - "Don't show again" calls `POST /api/milestones/skip-all`, which marks every remaining new-feature row skipped. The empty state immediately returns to today's page; the panel keeps showing true progress, and features used later still count. It differs from "Mark all as done" in the panel (4.6), which marks rows done instead.
 - The "Start a new chat" button and the error message stay as they are.
-- The clip reuses the `StartupVideoModal` player component; watching it records `seen` in the Feature Videos state under the same video id, so the startup modal does not play it again.
+- *(Replaced by section 8.2 and 8.11: the video card at the top of the Explore panel; there is no startup modal.)* The clip reuses the `StartupVideoModal` player component; watching it records `seen` in the Feature Videos state under the same video id, so the startup modal does not play it again.
 - Cards use a fixed layout filled only with text (i18n strings); no model output is rendered.
 
 **How a starter task reaches the composer.** The existing channel: `createSlot(...)` creates a chat, then `dispatch(setPendingInput(text))`, and `usePendingInputIntake` (`launchIntake.ts`) puts the text into the new chat's composer and lights up `prefillHint`.
@@ -407,6 +411,8 @@ Clicking a starter task completes nothing by itself. The row is done when the fe
 Only `widgets` and `parallel-chats` send directly. Sending directly is the most direct way to deliver a result first; it is limited to low-cost rows because it spends turns on the user's behalf and skips the moment where the user sees what will happen.
 
 ### 4.6 Surface 1: top-bar indicator and Milestones panel
+
+> **Replaced in part by section 8 (D15, D17, 2026-10-31).** The indicator is its own pill beside the readout capsule, not a control next to the bell. It reads "Explore 2/7" with "5-day streak" as smaller text, rather than a bare number (8.7). Advanced badges use one calm color (8.4). The panel is named "Explore"; its parts and order are in 8.2. "Mark as done", "Mark all as done", the per-row dates and the no-nudging rules below still apply.
 
 **Indicator (D14).** A small, quiet control next to the notification bell in `shellHeader.tsx`. No trophy and no badge colors:
 
@@ -449,12 +455,14 @@ Running at once  4 / 5      ▓▓▓▓▓▓▓▓░░   ○5  ○20  ○50
 ### 4.7 Surface 3: quiet notice
 
 - One small line through the existing toast component, in a corner, in the normal text color, dismissing itself after a few seconds; it blocks nothing and takes no focus. No icon animation, confetti or sound.
-- Fixed text: "Milestone: {title}"; for a tier, "Milestone: 100 chats" or "Milestone: 7-day streak". Clicking it opens the panel at that row.
+- Fixed text: "Milestone: {title}"; for a tier, "Milestone: 100 chats" or "Milestone: 7-day streak". Clicking it opens the panel at that row. *(Wording replaced by section 8.5: the notice drops the word "Milestone".)*
 - Each feature row and each tier is announced once (`noticed`). Backfilled and manual rows are not announced.
-- When one read finds several new milestones, they merge into one line, "3 new milestones", which opens the panel.
+- When one read finds several new milestones, they merge into one line, "3 new milestones", which opens the panel. *(Wording replaced by section 8.5.)*
 - Notices for usage tiers and streaks carry no button and no text like "13 more chats to the next one". Nothing is ever shown about a streak being at risk or lost.
 
 ### 4.8 Surface 4: Mate walkthrough and daily task (Ship 2)
+
+> **Unchanged by section 8, and still out of Ship 1 (D15).** The client-side "Try today" pick (8.3) is not this daily task: it makes no model turn. If the daily task ships later, it should raise a feature from the same day's "Try today" list so the two never disagree.
 
 Both cover **new-feature rows only** and never mention usage milestones or streaks.
 
@@ -503,7 +511,7 @@ Managed fleets: a policy-managed install can turn the whole thing off through th
 
 ### 4.10 i18n
 
-- Frontend text: `milestone.<id>.title`, `.blurb`, `.starter_prompt`, `.tier`, plus the layout strings ("Milestones", "New features", "Sessions", "Messages", "Streak", "Running at once", "{n} days · best {best}", "Things you can try", "Do it", "Fill it in for me", "Take a look", "Try it", "Skip", "Don't show again", "Mark as done", "Marked done", "Mark all as done", "Mark every new feature as done?", "Let the Mate show me", "Milestone: {title}", "{n} new milestones"), added to `website/src/i18n/locales/en.json`; other locales are filled in through the `TRANSLATION-PROMPT.md` process, with `catalogParity.test.ts` as the backstop.
+- *(The layout string list below is replaced by section 8.8.)* Frontend text: `milestone.<id>.title`, `.blurb`, `.starter_prompt`, `.tier`, plus the layout strings ("Milestones", "New features", "Sessions", "Messages", "Streak", "Running at once", "{n} days · best {best}", "Things you can try", "Do it", "Fill it in for me", "Take a look", "Try it", "Skip", "Don't show again", "Mark as done", "Marked done", "Mark all as done", "Mark every new feature as done?", "Let the Mate show me", "Milestone: {title}", "{n} new milestones"), added to `website/src/i18n/locales/en.json`; other locales are filled in through the `TRANSLATION-PROMPT.md` process, with `catalogParity.test.ts` as the backstop.
 - Mate copy: `crewmate_prompts.json` gains `milestone.walkthrough` and `milestone.daily_nudge`, with their purpose and placeholders written in the `_about` section. Language is handled by `with_language()`; the copy itself is written in English.
 - Starter prompts are translated, because the user sees them in the composer; for the two direct-send rows, what gets sent is text in the user's language.
 
@@ -533,6 +541,9 @@ Product telemetry uses only the existing anonymous metrics counters (`metrics.ev
 | `organic` | A hook counted the event with no recent starter click (always for usage tiers and streaks) | Yes |
 | `backfill` | Credited once at upgrade | No |
 | `manual` | "Mark as done" or "Mark all as done" | No |
+| `arrived` | A Try today "Try it" landed on its page (section 9): a visit, not proven use | No |
+
+`reached` also carries `recommended_by` (`tip` / `explore` / `video` / `several` / `none`): which in-product recommendation (a feature tip shown or acknowledged, an Explore starter click, a feature video seen) last pointed at the feature within 14 days before its first use. It is read from a local record in the state file and cleared on the first reach; `backfill`, `manual` and usage tiers always read `none`. The full rules are in `docs/system-specs/modules/metrics.md`, "Recommendation attribution".
 
 Success criteria (read 4 weeks after Ship 1):
 
@@ -564,10 +575,9 @@ Success criteria (read 4 weeks after Ship 1):
 
 | Batch | Contents | Exit criteria |
 |---|---|---|
-| Prerequisite | Compute the baseline from existing data: share of new installs that used ≥3 features within 7 days (D7 / former Q6). First confirm the existing telemetry can tell new installs apart | Ship 1 is blocked until the baseline number is written into an appendix of this RFC |
 | Ship 1 | `milestones.py` + local state file + event hooks for the 7 new-feature rows, sessions, messages and the streak (3.4) + one-time backfill with the new probes (`channel_connected:slack`, `mate_thread_has_user_turn`) + `GET /api/milestones` and `event` / `mark-done` / `mark-all-done` / `skip-all` + config keys (default `true`) + top-bar indicator + Milestones panel + empty state + quiet notices + i18n + metrics. On for everyone with the release (D3) | Backend: each hook counts once per successful event and nothing for a refused or failed one; a counter never goes down, and deleting an artifact, task or chat undoes nothing; the streak counts one per local day, resets current after a missed day, never lowers best, and handles the user's midnight and a restart; a hook error never breaks its caller; backfill runs once, credits with `source: backfill` and shows no notice; `mark-done` and `mark-all-done` write `source: manual`, refuse non-feature ids, and take no client time; only feature rows can enter `recommended`; `send` defaults to `prefill` and an off-list `send` row is dropped; the file is 0600 and holds no content. Frontend: nothing shows before load; direct send happens only for `widgets` and `parallel-chats`; skipped rows stay open in the panel; once everything is handled the empty state returns to today's page and the indicator stays; each notice shows once; no streak-loss text anywhere |
 | Ship 2 | "Running at once" (peak counter) + Mate walkthrough + one line in the Mate's first welcome + daily task (D2) + passive notification | The peak only grows, survives restart, and writes the file only on a new high; the walkthrough hidden turn fires once and not while the Mate is busy; the daily task sends once per day across multiple tabs, reloads and restarts; nothing is sent before the first welcome finishes; frequency drops after 3 ignored days in a row; nothing is sent with `milestones_daily_nudge` off |
-| Later | Knowledge base and voice feature rows (voice is not in v1, D7 / former Q8); relationship to Feature Tips (Q7); cross-machine sync, if ever wanted, using the merge seam in 4.4; after 4 weeks of data, review the rows, thresholds (including `turns`), ordering, low-cost list and defaults | Against the success criteria in 4.11 |
+| Later | The baseline, computed after launch from retained data: share of new installs that used ≥3 features within 7 days (D7 / former Q6), after first confirming the existing telemetry can tell new installs apart; the number goes into an appendix of this RFC. It no longer blocks Ship 1. Knowledge base and voice feature rows (voice is not in v1, D7 / former Q8); relationship to Feature Tips (Q7); cross-machine sync, if ever wanted, using the merge seam in 4.4; after 4 weeks of data, review the rows, thresholds (including `turns`), ordering, low-cost list and defaults | Against the success criteria in 4.11 |
 
 ## 7. Decisions and open questions
 
@@ -577,7 +587,7 @@ Success criteria (read 4 weeks after Ship 1):
 
 - **D1 (former Q1) Should a starter task send on click, or only prefill?** Low-cost rows send directly; every other row only prefills the composer, and the Mate row sends no prompt but opens the Mate chat. The low-cost rules and the per-row classification are in 4.5: `widgets` and `parallel-chats` send directly. Checked against the five rules, the scheduled-task row moved from direct send to prefill.
 - **D2 (former Q2) Model turn or fixed copy for the daily prompt?** A real Mate model turn, at most once a day, triggered the first time the user opens the Mate chat that day. A model turn speaks the user's language and can use context; fixed copy would need a new "write an assistant message without running a model" path that does not exist today. An `O_EXCL` day marker keeps spend to at most one turn a day across tabs, reloads and restarts. See 4.8.
-- **D3 (former Q3) Main switch on or off by default?** On. Off by default would mean new users never see it. Existing users see it after upgrading, but features they already used are credited by the backfill. Managed fleets can turn it off with a capability policy. See 4.9.
+- **D3 (former Q3) Main switch on or off by default?** On. Off by default would mean new users never see it. Existing users see it after upgrading, but features they already used are credited by the backfill. Managed fleets can turn it off with a capability policy. See 4.9. *(Superseded by D18 on 2026-11-01: Explore ships behind a default-off Feature Preview.)*
 
 **2026-10-30, product owner:**
 
@@ -591,7 +601,11 @@ Success criteria (read 4 weeks after Ship 1):
 - **D11 Manual marking.** Each open feature row has "Mark as done", and the panel has one control to mark them all (first named "Unlock all", renamed "Mark all as done" by D14). Both write the local file with `source: manual`. Usage milestones cannot be set by hand. Metrics tell organic, backfill and manual apart. No anti-cheat. See 4.6 and 4.11.
 - **D12 Streaks.** Count local days in a row with at least one user-sent turn, in the user's time zone. Show current and best. Missing a day resets current, never best. Tiers 3 / 7 / 30 / 100 days, on best. Same local file. No penalty and no notice about losing a streak. See 3.3.
 - **D13 Milestones first, features as one group.** The top level is milestones: new features, sessions (10 / 100 / 1000), messages, streak and running at once. The empty state still suggests only untried new features, never volume milestones or streaks, so the spend risk is unchanged. See 3.1.
-- **D14 Quiet style and the "milestone" name.** No trophy icon and no fanfare. The top bar has a small ring for feature progress with the streak number beside it; the panel is a plain "Milestones" list with checkmarks and thin progress bars; a new milestone is one small line. The design uses "milestone" for all terms, keys, routes, metrics and the state file; the RFC file name keeps "achievement" so links stay stable. The local counters are user-editable, which is accepted for a personal tool. See 4.6 and 4.7.
+- **D14 Quiet style and the "milestone" name.** No trophy icon and no fanfare. The top bar has a small ring for feature progress with the streak number beside it; the panel is a plain "Milestones" list with checkmarks and thin progress bars; a new milestone is one small line. The design uses "milestone" for all terms, keys, routes, metrics and the state file; the RFC file name keeps "achievement" so links stay stable. The local counters are user-editable, which is accepted for a personal tool. See 4.6 and 4.7. *(Amended by D17 on 2026-10-31: the top-bar label is "Explore N/M" with the streak as smaller text, and reached tiers show as tiered badges, Advanced ones in one calm color.)*
+
+**2026-11-01, product owner:**
+
+- **D18 Explore ships behind a default-off Feature Preview.** Explore (the top-bar pill, the panel, notices and the Try today card) now shows only when Settings > Developer > Feature previews > Explore (`mc-preview-explore`) is on. It is off by default. Reason: Ship 1 reached every user at once, and parts are not ready for all of them, for example the intro clip has Chinese text in its frames. With the preview on, `dashboard.milestones_enabled` keeps working as the user's own switch, so the preview is a release gate, not a second user setting. Counting continues while the preview is off, so nothing is lost when it is turned on. Supersedes D3. Revisit when Explore leaves preview.
 
 ### 7.2 Open questions
 
@@ -599,10 +613,170 @@ Success criteria (read 4 weeks after Ship 1):
 
 Q4, Q5, Q6 and Q8 were closed by D7.
 
+**2026-10-31, product owner:**
+
+- **D15 "Explore", "Try today" and one entry card.** Crew is a work tool, so the user-facing text drops game words. The panel is "Explore", with "Try today" (up to 3 untried features for today) and "Your progress" (streak and usage counts). The new-chat page keeps its suggestion cards and replaces only the last one with a "Try today" entry card. The top-bar ring shows a dot while "Try today" has something left; where it sits is set by D17. The Mate daily task stays out of Ship 1. See section 8.
+- **D16 Final Ship 1 Explore panel, and a Ship 2 list.** Top to bottom: a "Kiro Crew in 15 seconds" intro video card (the only home for that video; no startup popup, not on the new-chat page), Try today (quick untried features only), Your progress (a "Getting started" pair for the first days, a progress bar toward each next tier, and a badge wall), then the full feature list. Badges are Regular (quiet line icon) or Advanced (one calm color); only Ship 2's Hard tier is showy, because owner feedback said trophies felt like too much. The streak stays "a day you used Crew" in Ship 1. Ship 2 items are listed in 8.10. See 8.2–8.4 and 8.9–8.10.
+- **D17 Final Ship 1 rulings on the video, the top-bar entry and badges.** Three rulings settle what the build shows:
+  1. *Intro video.* The video lives only in the "Kiro Crew in 15 seconds" card at the top of the Explore panel. It is not on the new-chat page, and there is no standalone startup popup for it. The new-chat page keeps its suggestion cards, with a "Try today" card as the last one while untried features remain. See 8.2 and 8.6.
+  2. *Top-bar entry.* The ring sits in its own pill beside the readout capsule, as its own button, not inside the capsule, so the capsule keeps at most two buttons per row. The pill shows the ring and the label "Explore N/M" (for example "Explore 2/7"), with the streak ("5-day streak") as smaller secondary text. A small dot shows while something is left to try. Clicking it opens Explore. This replaces D15's capsule placement. See 8.7.
+  3. *Badges (amends D14).* Your progress has a tiered badge wall, and each usage row shows a progress bar. The Regular tier uses quiet line icons; the Advanced tier uses one calm color; the showy style of the hardest tier is Ship 2. The overall style stays quiet. See 8.4 and 8.10.
+
+**2026-11-01, product owner:**
+
+- **D18 Feature videos only in Explore (amends D16, D17 and 8.2).** Every feature video shows only in the video card at the top of the Explore panel; the startup popup (`StartupVideoModal`) is removed for all clips, along with the Meet your Mates dialog and the rail "New" tag that only it set. The card plays one clip drawn at random from those this machine has not finished (no `seen` / `dismissed` verdict), keeps that pick for the page session, and is hidden when none are left. The "Kiro Crew in 15 seconds" intro is distributed like every other clip, through the signed CDN manifest, and is no longer bundled in the package. See 8.11.
+
+## 8. Amendment, 2026-10-31 (product owner)
+
+This section records D15, D16 and D17. Where an earlier section disagrees with it, this section wins. The local file, the API routes, switches, metrics and the security rules in sections 3–5 do not change, except for the one new counter in 8.4.
+
+### 8.1 Naming and style: "Explore"
+
+Crew is a work tool, so the look stays calm. User-facing text does not use "quest" or "trophy", and "milestone" is no longer the panel's name. Reached tiers show as badges (8.4), drawn as quiet line icons or a calm color; no trophies, confetti or fanfare. Owner feedback on Slack was that trophies felt like too much.
+
+| Earlier name | New name |
+|---|---|
+| Milestones panel | **Explore** |
+| New features group | **Try today** (today's pick, 8.3); the full list stays below it |
+| Sessions, Messages, Streak, Running at once | **Your progress** |
+| Top-bar number `4` | **`Explore 2/7`**, with **`4-day streak`** as smaller text (8.7) |
+
+Internal names do not change. The module, config keys, routes, metric names, i18n key prefix and state file keep "milestone" (D14).
+
+### 8.2 The Explore panel, top to bottom
+
+The panel opens from the top-bar ring (8.7). Its parts, in order:
+
+| # | Part | Section |
+|---|---|---|
+| 1 | "Kiro Crew in 15 seconds" intro video card | 8.2 below |
+| 2 | Try today | 8.3 |
+| 3 | Your progress: Getting started, progress bars, badge wall | 8.4, 8.5 |
+| 4 | The full feature list, with "Try it" and "Mark as done" as in 4.6 | 4.6 |
+
+**Intro video card.** One "Kiro Crew in 15 seconds" card plays the 15-second intro video. It stays until the person watches it or closes it, and then it is gone for good. That choice is stored locally, in the same Feature Videos `seen` / `dismissed` state on this machine (the local `feature_videos_state.json`). When the clip is not available on this install, the card is not shown. This card is the only home for the intro video: it is not on the new-chat page (8.6), and it is not shown through the standalone startup popup (`StartupVideoModal`). *(Amended by D18 on 2026-11-01: the card shows any unfinished feature clip, and there is no startup popup for any clip. See 8.11.)*
+
+A "Try it" button anywhere in the panel keeps the send modes in 4.5: only `widgets` and `parallel-chats` send at once, the Mate row opens its page, and every other row only fills the composer.
+
+### 8.3 Try today
+
+"Try today" shows up to 3 new-feature rows the user has not tried, picked fresh for each local day.
+
+- **Only quick rows.** Try today picks only feature rows a person can finish in a few minutes: `widgets`, `parallel-chats`, `mate`, `scheduled-task` and `slack`. `pr-watch` (needs a PR link and waits on CI) and `crew-mode` (spend has no upper bound) stay in the full list but are never picked. The quick list is a fixed constant in the client.
+- **Ring of rows.** The quick rows that are not `unavailable`, in `order`, as a ring. Its size `N` does not change when a row is done or skipped, so the starting point stays put for the whole day.
+- **Pick.** Take the day number `d` (days since 1970-01-01 in the user's local time zone, the same day rule as the streak in 3.3). Start at index `d mod N`, walk forward around the ring, and take the first 3 rows whose state is `open`. The same day and the same state always give the same pick, on every tab and after a reload.
+- **Drop out.** When a row becomes `done` (used, reached through its own "Try it" as in section 9, or "Mark as done" elsewhere in the panel) or `skipped` ("Skip" on its row), it leaves today's list at once. The other picked rows stay where they are, and the next `open` row further round the ring takes the free place, if there is one. So "Try today" holds fewer than 3 rows only when fewer than 3 quick rows are `open`.
+- **Where it runs.** In the client, from the existing `GET /api/milestones` response (each feature row's `state`). No new server route, no new state field and no model turn. The server's `recommended` field is not used for this pick.
+- **Empty.** When no quick row is `open`, "Try today" shows nothing, the top-bar dot is off (8.7), and the new-chat page shows no entry card (8.6).
+
+### 8.4 Your progress
+
+"Your progress" is where reached tiers live. It has three parts.
+
+**Getting started (first days only).** A pair of rows shows first, above everything else in Your progress:
+
+| Row | Done when | "Try it" |
+|---|---|---|
+| Get a first finished result | the first user-sent turn ends without an error | fills the composer with a short starter task |
+| Set up a morning brief | the `scheduled-task` counter is at least 1 | fills the composer with a daily 9am "brief me on today" scheduled task (prefill only, rule 1 in 4.5) |
+
+- The pair shows during the person's first 7 local days, counted from `first_seen` of the `turns-sent` counter, and only while at least one of the two is not done. After that it is hidden; both rows still count and earn their badges.
+- "First finished result" is the one new counter in this amendment: `first-result`, recorded by the turn-end path for a user-sent turn that finished without an error, through the same best-effort `milestones.record()` helper (3.4). Hidden turns do not count. In the one-time upgrade backfill (4.4), it is credited with `source: backfill` when the backfilled `chats-opened` count is above 0, so an existing user is not asked to do it again.
+- "Set up a morning brief" reuses the `scheduled-task` counter; it needs no new hook.
+
+**Progress bars.** Every usage row shows a thin bar toward its **next** tier, with the numbers beside it: "Chats opened 137 / 1000", "Streak 5 / 7 days", "Messages sent 412 / 1000". A row whose last tier is reached shows a full bar and its final number. Feature rows have one tier, so they show as done or not done, without a bar. No bar carries nudging text such as "13 more to go".
+
+**Badge wall.** When a tier is reached, its badge is added to a badge wall at the bottom of Your progress, with the date. Nothing is unlocked by hand except feature rows through "Mark as done" (4.6). Badges have tiers by how hard they are:
+
+| Badge tier | Examples | Look |
+|---|---|---|
+| Regular | every feature row (first scheduled task, Slack connected, first finished result); chats opened 10; messages sent 100; streak 3 and 7 days | quiet line icon, normal text color |
+| Advanced | chats opened 100; messages sent 1000; streak 30 days | one calm accent color, no motion |
+| Hard (Ship 2) | chats opened 1000; messages sent 10000; streak 100 days; 50 running at once | see 8.10; in Ship 1 these draw in the Advanced look |
+
+The badge tier is a fixed client-side table keyed by milestone id and tier value. It is derived from data the API already returns (`tiers_reached_at`, feature `state` and `done_at`), so it adds no server field.
+
+**Streak (Ship 1).** The streak keeps its rule from 3.3: a local day counts when the person sent at least one turn ("a day you used Crew"). A Try today arrival (section 9) also counts that day.
+
+### 8.5 Notice wording
+
+The quiet notice (4.7) keeps its behavior, but drops the word "Milestone": "First widget done", "100 chats opened", "7-day streak", and for several at once "3 new in Explore". Clicking it opens the panel at that badge. It never animates in Ship 1.
+
+### 8.6 New-chat page: one entry card
+
+The new-chat page (`website/src/components/WelcomeView.tsx`) keeps only its existing personal suggestion cards (`SuggestedCards`, served by `GET /api/suggestions`, with the built-in fallback cards).
+
+- While Try today has at least one row (8.3), the **last** suggestion card is replaced by one "Try today" entry card. Clicking it opens the Explore panel. It does not start a starter task itself.
+- When Try today is empty, no suggestion card is replaced.
+- The entry card waits for `GET /api/milestones` to load; until then, and when the main switch is off, the page shows the normal cards.
+- No intro clip, no "Things you can try" row, no extra row of cards, no "Skip" or "Don't show again" on this page. Apart from the one entry card, the page is as it is today.
+
+This replaces the layout in 4.5. `POST /api/milestones/skip-all` has no caller in the Ship 1 frontend.
+
+### 8.7 Top bar: an "Explore" pill beside the readout capsule (D17)
+
+- The ring sits in its own pill, as its own button, beside the existing top-bar readout capsule (the capsule that holds the credits and system readouts in `website/src/shell/topbar/shellHeader.tsx`). It is not a segment inside the capsule, so the capsule keeps at most two buttons per row, and it is not a new control next to the bell.
+- The pill shows the ring and a visible label, "Explore N/M": `N` is `features.done` and `M` is `features.total` from 4.6, for example "Explore 2/7". The label says what the ring measures and where the click goes.
+- The current streak shows after the label as smaller secondary text, "5-day streak", when it is 1 or more, and nothing when it is 0.
+- The ring shows a small dot while Try today (8.3) has at least one row left today. The dot carries no number and no color change.
+- Clicking the pill opens the Explore panel.
+- The phone layout, which does not render the capsule, shows the same entry just before the notification bell.
+
+This replaces the placement and label in 4.6 and D15.
+
+### 8.8 Labels
+
+The layout strings in 4.10 become: "Explore", "Kiro Crew in 15 seconds" and the intro card's close label, "Try today", "Your progress", "Getting started", "Get a first finished result", "Set up a morning brief", the morning-brief starter prompt, "{value} / {next}", "Explore {done}/{total}", "{n}-day streak", "{n} days · best {best}", the badge-wall heading and per-badge date, "Try it", "Skip", "Mark as done", "Marked done", "Mark all as done", "Mark every new feature as done?", the "Try today" entry-card title and line, and the notice strings in 8.5. "Things you can try", "Do it", "Fill it in for me", "Take a look", "Don't show again", "Milestones", "Milestone: {title}" and "{n} new milestones" are removed. The button never says "Do it": "Try it" is the one label, and the row's blurb says whether it sends at once or fills the composer.
+
+### 8.9 Ship 1 scope
+
+Ship 1 is as in section 6, with these changes:
+
+- The Explore panel as in 8.2: intro card, Try today, Your progress (Getting started, progress bars, badge wall with Regular and Advanced looks), full feature list.
+- The new-chat page as in 8.6, and the top bar as in 8.7.
+- Backend: the `first-result` counter and its turn-end hook (8.4). Nothing else on the server changes for this amendment.
+- The streak counts a day the person used Crew (8.4).
+
+The Mate walkthrough and the daily task (4.8) stay out of Ship 1.
+
+### 8.10 Ship 2 list
+
+Listed only; each item gets its own design before it is built.
+
+| Item | What it adds |
+|---|---|
+| Easy repeat actions in Try today | Daily actions beside new features: send a message, finish a chat, read today's brief |
+| Streak rule change | The streak goes up by one only on a day when every Try today item is done. A backend rule change to 3.3 |
+| Hard badge tier | Chats opened 1000, streak 100 days, 50 running at once: a showier, animated badge. Motion respects the reduced-motion setting. Only this tier is showy |
+| Weekly recap card | A card in Your progress, computed locally from the counts with no model turn. The full recap goes to its own chat, with one line in the notification bell and optional Slack |
+| Morning-brief result card | Shows the latest result of the morning brief scheduled task |
+| Running at once | The peak counter in 3.3 |
+| Mate walkthrough and daily task | As in 4.8 |
+
+### 8.11 Amendment, 2026-11-01: feature videos only in Explore (D18)
+
+- **One home.** Feature videos show only in the video card at the top of the Explore panel. The startup popup (`StartupVideoModal`), its launch sequencing gate, the Meet your Mates dialog it drew, and the rail "New" tag its "Not now" set are removed. `GET /api/feature-videos/next`, the popup's pick, is removed; `GET /api/feature-videos/library` lists every eligible clip instead. `/status`, `/feedback` and `/fetch-all` stay.
+- **Which clip.** The card draws one clip at random from the listed ones: on disk, no `seen` / `dismissed` verdict, version floor met, and no `used_when` probe firing (the existing eligibility rules). The pick stays the same for the page session (closing and reopening Explore shows the same clip) and is drawn again only when that clip is finished. When nothing is listed, the card is hidden. Watching 80% records `seen`; closing records `dismissed`.
+- **Where the intro comes from.** The "Kiro Crew in 15 seconds" clip ships through the signed CDN manifest like every other clip (`scripts/feature-videos/`), and is no longer a static asset in the package. A clip is played only once the gateway has downloaded and sha256-checked it, so the card follows the existing `dashboard.feature_videos_enabled` switch and `capabilities.feature_videos_download` ceiling. The source clip is English only.
+- **What does not change.** The `seen` / `dismissed` state file and its meaning, the manifest format and signing, the download pass, and the Settings cache readout.
+
 ## Appendix: what does not change
 
 - `website/src/components/OnboardingFlow.tsx`: unchanged.
-- `feature_videos.py` selection rules and `seen/dismissed` semantics: unchanged; it only gains probes, which the milestone backfill also uses.
+- `feature_videos.py` eligibility rules and `seen/dismissed` semantics: unchanged; it gains probes, which the milestone backfill also uses. Where the clip is shown and who draws it changed on 2026-11-01 (8.11).
 - `session_pulse_counter.py`: unchanged; the milestone counter only shares its call site.
 - Mate first welcome: only one line of copy appended after `welcome.offer_tools`; the flow and the one-time marker are unchanged.
 - Crew Mode: its toggle, stamp and lock rules are unchanged; it is only read at turn start.
+
+## 9. Amendment, 2026-11-01: "Try it" completes a Try today row (D19)
+
+**D19 (product owner, 2026-11-01).** For a Try today row, what counts as done is simply "you went there". Once the row's "Try it" lands on the row's page (the new chat for a prompt row, the page for a route row), the row is done and that local day counts toward the streak. Try today rows drop "Mark as done", because "Try it" covers them. This amends D10, D11 and 8.3 for Try today rows only. Getting started, the rows Try today never picks, and every usage milestone keep their real counters and their "Mark as done".
+
+Before this, "Try it" only opened a row's page or chat, and a Try today row was done only by real use or "Mark as done".
+
+- **When it counts.** After a Try today "Try it", the client waits up to a minute for the place it leads to: the row's page for a route row (path and query), or the new chat on a chat page for a prompt row. When the router shows it, the client posts `starter_arrived` for that row on `POST /api/milestones/event`. A click whose navigation the user refused (the leave guard), a create that never took the view, or a move elsewhere sends nothing.
+- **What the server checks.** The server counts an arrival only within 10 minutes of the same row's `starter_clicked`, which it stamped itself; the client sends no time and no count. It writes `reached` with `source: "arrived"`, adds the row to `noticed` (no notice: the user just did it), emits `reached` with `via: "arrived"`, and counts today for the streak as 3.3 does. A second arrival is a no-op: the row is already done and the day already counted. `features_completed` reports `mixed` when any row was reached this way.
+- **A failed save.** When the arrival write fails, Explore says so and offers "Try again", which posts the arrival again: no second chat, no second prompt.
+- **What it never touches.** Only feature rows are accepted (a usage id gets 400). Getting started rows, the rows Try today never picks, and every usage milestone and tier keep their real counters; their "Try it" does not complete them.
+- **Copy.** Try today shows one line under its heading: "Done once Try it takes you there. Today counts toward your streak." Its rows show "Try it" only.
+- **No new store.** The same state file, the same event route and one new `reached` source. No new route and no new state field.

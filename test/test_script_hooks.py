@@ -1025,10 +1025,54 @@ class TestRunScriptHookShellDenyList:
         )
         result = await run_script_hook(hook, "ctx")
         assert result.exit_code == 2  # PreToolUse "block tool" convention
+        assert result.refused  # never ran: told apart from a hook that exited 2
+        assert result.pre_tool_blocks  # a Hooks-page hook stays fail-closed
         assert not sentinel.exists(), "the denied command reached the shell"
         assert "Blocked by security policy" in result.error
         assert hook.last_status == "blocked"
         assert hook.last_error and "Blocked by security policy" in hook.last_error
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("spec_origin", "vetted"),
+        [("user", False), ("project", True), ("", True)],
+        ids=["user-level-spec", "project-spec", "hooks-page"],
+    )
+    async def test_only_a_user_level_spec_hook_skips_the_deny_list(
+        self, tmp_path: Path, spec_origin: str, vetted: bool
+    ):
+        # The deny list guards commands a model or a sandboxed process chose. A
+        # user-level spec hook is operator-written into a tree every sandboxed
+        # process sees read-only, so it runs as kiro-cli runs it; a project spec
+        # (an agent-writable checkout) and a Hooks-page hook stay vetted. The
+        # witness runs first and the push is refused by the git-publish floor.
+        sentinel = tmp_path / "ran"
+        witness = _script_command(
+            tmp_path / "witness.py", f"open({str(sentinel)!r}, 'w').close()\n"
+        )
+        hook = ScriptHook(
+            id="spec:a1:PreToolUse:0",
+            name="spec",
+            event=HOOK_EVENT_PRE_TOOL_USE,
+            # ``|| true`` keeps the exit 0 once the push itself fails to reach a remote.
+            command=f"{witness} && git push origin main --dry-run >/dev/null 2>&1 || true",
+            timeout=30,
+            enabled=True,
+            spec_origin=spec_origin,
+        )
+        result = await run_script_hook(hook, "ctx", cwd=str(tmp_path))
+        assert result.refused is vetted
+        assert sentinel.exists() is not vetted
+
+    def test_hooks_json_cannot_claim_a_spec_origin(self):
+        # The exemption is keyed on an in-memory field that from_dict never reads
+        # and to_dict never writes, so a sandboxed process editing hooks.json
+        # cannot opt its hook out of the deny list.
+        hook = ScriptHook.from_dict(
+            {"id": "spec:x", "event": HOOK_EVENT_PRE_TOOL_USE, "spec_origin": "user"}
+        )
+        assert hook.spec_origin == ""
+        assert "spec_origin" not in ScriptHook(spec_origin="user").to_dict()
 
     @pytest.mark.asyncio
     async def test_a_benign_command_still_runs_unchanged(self, tmp_path: Path):

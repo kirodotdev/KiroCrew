@@ -33,7 +33,7 @@ from push_guard_helpers import (
 )
 
 from kiro_crew import platform_compat
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import default_timeout, wait_until
 
 # pytest resolves a fixture in the requesting test's module, so each shared
 # fixture this module uses is bound here by name.
@@ -1044,12 +1044,15 @@ class TestPushGuardChildren:
             if how == "SIGHUP":
                 assert proc.returncode == 40 and b"interrupted" in err, err
         finally:
-            if proc.poll() is None:
-                os.killpg(proc.pid, getattr(signal, "SIGKILL"))
-                # flake-ok: reaps the guard this finally block just SIGKILLed; moved verbatim
-                proc.wait()
-            if child and platform_compat.pid_exists(child):
-                os.kill(child, getattr(signal, "SIGKILL"))  # only the sleeper this test planted
+            try:
+                if proc.poll() is None:
+                    os.killpg(proc.pid, getattr(signal, "SIGKILL"))
+                    # A guard that outlives its SIGKILL raises TimeoutExpired here
+                    # instead of hanging the worker; the sleeper cleanup below still runs.
+                    proc.wait(timeout=default_timeout())
+            finally:
+                if child and platform_compat.pid_exists(child):
+                    os.kill(child, getattr(signal, "SIGKILL"))  # only the sleeper this test planted
 
     def test_an_exit_code_of_124_is_not_a_timeout(self, repo_pair, tmp_path, monkeypatch):
         clone_dir, _ = repo_pair

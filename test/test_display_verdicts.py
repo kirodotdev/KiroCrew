@@ -640,3 +640,34 @@ def test_the_boot_sweep_keeps_no_per_file_list(home, monkeypatch):
     dv._sweep(root, home / "sessions")
     assert list(root.iterdir()) == []
     assert events.count("unlink") == 51
+
+
+def test_a_save_projection_audits_no_allowed_host_use(home, allowed, monkeypatch):
+    """The save-time projection restores links nobody sees: no use event, no memo.
+
+    Otherwise the event would record a display that never happened and fill the
+    per-process memo, so the reader's real first view would write nothing.
+    """
+    from kiro_crew.security import exfil
+    from kiro_crew.security.exfil import redact_exfiltration_urls_with_records
+
+    logged: list = []
+
+    class _Log:
+        def log(self, event) -> None:
+            logged.append(event)
+
+    monkeypatch.setattr(exfil, "SecurityEventLog", _Log)
+    monkeypatch.setattr(exfil, "_ALLOWED_HOST_AUDITED", set())
+    allowed.add(HOST)
+    url = f"https://{HOST}/page?state=" + "a" * 260
+    saved, _, records = redact_exfiltration_urls_with_records(url)
+    row = {"role": "assistant", "content": saved, "meta": {"blocked_links": records}}
+
+    dv.project(KEY, "ws1", [json.dumps(row)])
+    assert logged == []
+
+    with dv.session(KEY):
+        shown = _prepare_messages([row], False, live_child="", workspace="ws1")
+    assert url in json.dumps(shown)
+    assert [e.metadata["workspace"] for e in logged] == ["ws1"]

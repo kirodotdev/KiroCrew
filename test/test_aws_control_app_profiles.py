@@ -331,11 +331,9 @@ class TestProfileUnregister:
     def _run(self, reg, body, *, grants=None, revoke_raises=None):
         """Drive the handler over an in-memory registry.
 
-        ``grants`` maps a profile name to the services whose grant names it, which
-        is what the (mocked) ``revoke_for_profile`` sweep answers. Returns
-        ``(response, revoke_mock, invalidated_mock, credential_writers)``;
-        ``credential_writers`` are the two mocks that must stay uncalled for the
-        route to be registry-only.
+        ``grants`` is what the mocked ``revoke_for_profile`` answers. Returns
+        ``(response, revoke_mock, invalidated_mock, credential_writers)``; the two
+        credential writers must stay uncalled for the route to be registry-only.
         """
         handlers = _registered()
         grants = grants or {}

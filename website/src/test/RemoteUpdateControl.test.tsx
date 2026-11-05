@@ -137,6 +137,59 @@ describe('RemoteUpdateControl', () => {
     expect(screen.getByRole('button', { name: 'Update Old box' })).toHaveTextContent('Try again')
   })
 
+  it('shows the counts while the crew finishes its running work', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, phase: 'waiting_for_idle', waiting: { turns: 2, background: 3 } },
+    })
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    expect(
+      await screen.findByText(/Waiting for Old box to finish its running work .*chat turns: 2, background tasks: 3/),
+    ).toBeInTheDocument()
+  })
+
+  it.each([
+    ['still_busy', /still running work after 10 minutes, so it was not restarted/],
+    ['peer_cannot_wait', /cannot report its running work, so it was not restarted\. Update it from its own dashboard/],
+    ['idle_check_failed', /could not check its running work, so it was not restarted/],
+  ] as const)('a job that stopped short of the restart (%s) offers Restart now', async (code, text) => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, state: 'failed', phase: 'waiting_for_idle', code, finished_at: 2 },
+    })
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    expect(await screen.findByText(text)).toBeInTheDocument()
+    // The generic next step would contradict the message, which names its own.
+    expect(screen.queryByText(/Fix the cause on Old box/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Restart now' })).toBeInTheDocument()
+    if (code === 'peer_cannot_wait') {
+      // A retry reaches the same old gateway and ends the same way.
+      expect(screen.queryByRole('button', { name: 'Update Old box' })).toBeNull()
+    } else {
+      expect(screen.getByRole('button', { name: 'Update Old box' })).toHaveTextContent('Try again')
+    }
+  })
+
+  it('Restart now asks first, then starts a job that does not wait', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, state: 'failed', phase: 'waiting_for_idle', code: 'still_busy', finished_at: 2 },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    await u.click(await screen.findByRole('button', { name: 'Restart now' }))
+    expect(api.updateRemoteInstance).not.toHaveBeenCalled()
+    await u.click(screen.getByRole('button', { name: /Restart “Old box” and stop its work/ }))
+    expect(api.updateRemoteInstance).toHaveBeenCalledTimes(1)
+    expect(api.updateRemoteInstance).toHaveBeenCalledWith('old', { force: true })
+  })
+
+  it('a failed update that did not stop for running work offers no Restart now', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, state: 'failed', error: 'release feed unreachable', finished_at: 2 },
+    })
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    expect(await screen.findByText(/release feed unreachable/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull()
+  })
+
   it('says when the update landed but the restart failed', async () => {
     vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
       job: { ...RUNNING, state: 'failed', phase: 'restarting', error: 'systemd refused', finished_at: 2 },

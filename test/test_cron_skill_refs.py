@@ -35,11 +35,9 @@ def test_referenced_skill_names_missing_file_is_empty(tmp_path, monkeypatch):
 def test_referenced_skill_names_survives_every_corruption_class(tmp_path, monkeypatch):
     """Corrupt stores must not raise into the skill lifecycle.
 
-    This reader shares `_read_job_records` with the doctor scan and the
-    off-thread enabled count, so the corruption classes it survives are
-    asserted here too -- a shared guard is only worth what each call site
-    actually demonstrates. Opens with a positive control so a later empty set
-    is the guard, not a token-matching regression.
+    This reader shares `_read_job_records` with the doctor scan, so each call site
+    asserts the corruption classes itself. The positive control first makes a later
+    empty set the guard, not a token-matching regression.
     """
     monkeypatch.setattr(cron_mod, "config_dir", lambda: tmp_path)
     store = tmp_path / "crons.json"

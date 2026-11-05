@@ -8,7 +8,7 @@ import type { RootState } from '../index'
 import type { ChatMessage } from '../../types'
 import { emitSlotRead } from '../../lib/slotReadRelay'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
-import { armConfirmedCloseHold, markSlotRead, removeSlotOptimistic } from '../dashboardSlice'
+import { armConfirmedCloseHold, markSlotRead, confirmOrphanUnread, removeSlotOptimistic } from '../dashboardSlice'
 import { slotLastTsOf } from '../slotLastTs'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../../utils/thunkError'
@@ -20,6 +20,7 @@ import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
 import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
+import { keepPendingCoordinatorApprovals } from './coordinatorApprovals'
 import {
   bumpRunEpoch,
   enterActiveSlot,
@@ -31,6 +32,7 @@ import { parkActiveTranscript, retainServerTotal, seedContextUsage, setPagingCur
 import { hydrateQueuedBubbles } from './queue'
 import { loadSlotActivity } from './activity'
 import { walkWindowBackTo } from './windowWalk'
+import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
 
 /** `switchSlot`'s argument. The plain-string spelling is the overwhelmingly
  *  common one; the object form exists for caller classes that must opt out of a
@@ -203,6 +205,7 @@ export const switchSlot = createAsyncThunk<
     // any older page still in flight is superseded even when the key is unchanged.
     abortActiveOlderFetch()
     dispatch(markSlotRead(key))
+    void dispatch(confirmOrphanUnread(key))
     // Opening a session is the canonical read gesture: relay it so every
     // other open dashboard window retires this slot's unread bubble too —
     // but only AFTER the transcript fetch succeeds (see the emits by the
@@ -540,6 +543,8 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       if (typeof openArg === 'object' && openArg !== null && openArg.gesture === true) {
         state.userOpen = { key, seq: (state.userOpen?.seq ?? 0) + 1 }
       }
+      // A persisted row carrying a send's id proves that send was delivered.
+      pruneDeliveredAttempts(state, key, persistedSendIds(fetchedMessages))
       const reportedRunning = action.payload.running
       const running = historyReportsRunning(state, key, reportedRunning, action.payload)
       const endedTurnHistory = reportedRunning && !running
@@ -750,6 +755,9 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       next = hydrateQueuedBubbles(next, queue)
       next = preserveSettledMcpOauth(existing, next)
       next = preserveSettledUpsertRows(existing, next)
+      // A pending coordinator card lives only in this tab (see
+      // `coordinatorApprovals`), so the page cannot carry it.
+      next = keepPendingCoordinatorApprovals(existing, next)
       next = deduplicateByMid(next)
       next = preserveSettledStopState(existing, next)
       // Switching back to an already-loaded slot re-fetches a history that is

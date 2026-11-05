@@ -423,6 +423,9 @@ async def test_an_empty_turn_sends_no_swap_frame(state) -> None:
     slot = _arm(state)
     state.broadcast_ws.reset_mock()
     await chat_runner.settle_regenerate(state, slot)
+    # The previous reply stays and the stashed variants, which belong to no reply, go.
+    assert [m["content"] for m in slot.messages] == ["hi", "old"]
+    assert (slot._regenerate_target, slot._pending_variants) == (None, [])
     assert not [c for c in state.broadcast_ws.call_args_list if c.args[0] == "chat_variant_switch"]
 
 

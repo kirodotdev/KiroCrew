@@ -538,7 +538,8 @@ class TestConsolidateSession:
         conv_log.append("dashboard:chat-ok", "user", "hello world")
 
         with patch.object(consolidator, "_consolidate", new_callable=AsyncMock) as mock_consolidate:
-            await consolidator.consolidate_now("dashboard:chat-ok")
+            # A completed pass that advanced nothing still reports done.
+            assert await consolidator.consolidate_now("dashboard:chat-ok") is True
             mock_consolidate.assert_called_once_with("dashboard:chat-ok", include_history=True)
 
     @pytest.mark.asyncio
@@ -554,7 +555,7 @@ class TestConsolidateSession:
         consolidator = HistoryConsolidator(log=conv_log, memory=mem)
 
         with patch.object(consolidator, "_consolidate", new_callable=AsyncMock) as mock_consolidate:
-            await consolidator.consolidate_now("dashboard:chat-nonexist")
+            assert await consolidator.consolidate_now("dashboard:chat-nonexist") is True
             mock_consolidate.assert_not_called()
 
 

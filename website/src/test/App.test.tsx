@@ -7,7 +7,8 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile'
 import { join } from 'node:path'
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
-import { renderWithProviders, createTestStore } from './helpers'
+import { renderWithProviders as renderBare, createTestStore } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { readIndexCss } from './indexCssSource'
 import App, { NavBadge } from '../App'
 import { sseConnected, sseDisconnected, markSlotUnread } from '../store/dashboardSlice'
@@ -87,6 +88,8 @@ vi.mock('../api/client', () => ({
     kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: 'claude' } }),
     system: vi.fn().mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 }),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
+    // The left dock reads the roster; an empty one keeps its notice out of these frames.
+    members: vi.fn().mockResolvedValue({ members: [] }),
     chatSlotReasoningEffort: vi.fn().mockResolvedValue({}),
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
@@ -149,6 +152,14 @@ globalThis.ResizeObserver = class {
   unobserve() {}
   disconnect() {}
 } as typeof ResizeObserver
+
+// Chain: App's shell issues its mount-time queries (apps, instances, system, usage, ...) and each
+// answer updates App. A test that ends on its render returns this wait. It starts in the same tick,
+// before the first answer lands, so none of them lands after the test's last barrier.
+let rendered: ReturnType<typeof renderBare>
+const renderWithProviders: typeof renderBare = (...args) => (rendered = renderBare(...args))
+const shellSettled = (held = 0) =>
+  waitFor(() => expect(rendered.queryClient.isFetching()).toBe(held), namedCeiling('SHELL_QUERIES_SETTLED', 5000))
 
 describe('App routing', () => {
   // Most rows read the expanded rail's labels; the rail starts collapsed, so
@@ -419,12 +430,15 @@ describe('App routing', () => {
       expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
       // And nothing may have marked first run complete.
       expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
+      // The one query still fetching is the held-open boot.
+      return shellSettled(1)
     })
   })
 
   it('renders chat page at /chat', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+    return shellSettled()
   })
 
   it('sizes the app shell in dvh so mobile browser chrome cannot cover the bottom row', () => {
@@ -435,6 +449,7 @@ describe('App routing', () => {
     const shell = screen.getByTestId('dashboard-shell').closest('.h-screen')
     expect(shell).not.toBeNull()
     expect(shell!.className).toContain('supports-[height:100dvh]:h-dvh')
+    return shellSettled()
   })
 
   // CapabilitiesPage is a lazy route chunk, so it lands after a Suspense tick.
@@ -459,6 +474,7 @@ describe('App routing', () => {
   it('renders logs page at /logs', () => {
     renderWithProviders(<App />, { route: '/logs' })
     expect(screen.getByTestId('logs-page')).toBeInTheDocument()
+    return shellSettled()
   })
 
   // Route-only pages load through React.lazy; each must still mount behind its
@@ -511,6 +527,7 @@ describe('App routing', () => {
   it('redirects unknown routes to /chat', () => {
     renderWithProviders(<App />, { route: '/nonexistent' })
     expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+    return shellSettled()
   })
 
   it('renders nav items', () => {
@@ -540,6 +557,7 @@ describe('App routing', () => {
     expect(screen.queryByLabelText('Report an issue on GitHub')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Kiro Discord community')).toBeInTheDocument()
     expect(screen.queryByLabelText('Kiro website (kiro.dev)')).not.toBeInTheDocument()
+    return shellSettled()
   })
 
   it('rail "Report issue" opens the diagnostics Report a Problem modal', async () => {
@@ -569,6 +587,7 @@ describe('App routing', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByText('Artifacts')).toBeInTheDocument()
     expect(screen.queryByText('Knowledge')).not.toBeInTheDocument()
+    return shellSettled()
   })
 
   it('does not double-render Secretary when the builtin Secretary app is enabled', async () => {
@@ -758,7 +777,7 @@ describe('App routing', () => {
     listApps.mockRejectedValue(new Error('gateway down'))
     try {
       const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
-      queryClient.setQueryData(['apps'], [])
+      act(() => { queryClient.setQueryData(['apps'], []) })
       expect(queryClient.getQueryState(['apps'])?.isInvalidated).toBe(false)
       act(() => { window.dispatchEvent(new Event('mc:apps-changed')) })
       await waitFor(() => {
@@ -976,6 +995,7 @@ describe('App routing', () => {
     // The wordmark renders as two colored segments ('Kiro ' + 'Crew').
     expect(screen.getAllByText('Crew').length).toBeGreaterThan(0)
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('uses installed theme branding in the left rail and browser favicon', async () => {
@@ -1037,6 +1057,7 @@ describe('App routing', () => {
     expect(trigger).not.toHaveClass('border-border', 'bg-card', 'rounded-md', 'rounded-full')
     fireEvent.click(trigger)
     expect(screen.getByRole('dialog', { name: 'Search everywhere' })).toBeInTheDocument()
+    return shellSettled()
   })
 
   it('renders the search trigger in the header centre track, not as a positioned overlay', () => {
@@ -1069,6 +1090,7 @@ describe('App routing', () => {
     // max-two-buttons-per-row rule forbids.
     expect([...centre.children]).toHaveLength(2)
     expect(centre.children[1]).toBe(screen.getByTestId('focus-mode-toggle'))
+    return shellSettled()
   })
 
   it('sizes the top-bar search from the window alone, with equal side tracks', () => {
@@ -1316,6 +1338,7 @@ describe('App routing', () => {
       transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
     })
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   // ── Shell entrance animation is one-shot ──────────────────────────────────
@@ -1334,6 +1357,7 @@ describe('App routing', () => {
 
     // Re-showing the pane cannot replay an animation that is no longer applied.
     expect(shell).not.toHaveClass('animate-rise')
+    return shellSettled()
   })
 
   it('does not retire the shell entrance from a descendant animation', () => {
@@ -1350,6 +1374,7 @@ describe('App routing', () => {
     fireEvent.animationEnd(child, { animationName: 'rise' })
 
     expect(shell).toHaveClass('animate-rise')
+    return shellSettled()
   })
 
   it('keeps the shell entrance applied for an unrelated keyframe on the shell', () => {
@@ -1359,6 +1384,7 @@ describe('App routing', () => {
     fireEvent.animationEnd(shell, { animationName: 'fade-in' })
 
     expect(shell).toHaveClass('animate-rise')
+    return shellSettled()
   })
 
   it('retires the shell entrance even when the animation is interrupted', () => {
@@ -1379,6 +1405,7 @@ describe('App routing', () => {
     } finally {
       vi.useRealTimers()
     }
+    return shellSettled()
   })
 
   it('starts the rail collapsed on a fresh profile and keeps a stored expand', () => {
@@ -1394,6 +1421,7 @@ describe('App routing', () => {
     nav = screen.getByRole('navigation', { name: 'Main navigation' })
     expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('hosts the collapse control in the nav menu row and hides the Main group heading', () => {
@@ -1415,6 +1443,7 @@ describe('App routing', () => {
     expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
     expect(localStorage.getItem('mc-nav')).toBe('1')
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('lets the brand toggle expand the rail while preview expand mode is active', () => {
@@ -1438,6 +1467,7 @@ describe('App routing', () => {
     })
     expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('restores the pre-expand rail state when preview expand mode ends untouched', () => {
@@ -1457,6 +1487,7 @@ describe('App routing', () => {
     expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     // The auto-collapse is transient: it never writes the persisted preference.
     expect(localStorage.getItem('mc-nav')).toBe('0')
+    return shellSettled()
   })
 
   it('hides the community row when the sidebar is collapsed', () => {
@@ -1471,6 +1502,7 @@ describe('App routing', () => {
     expect(wrapper).not.toBeNull()
     expect(wrapper).toHaveAttribute('inert')
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('keeps Request a Feature visible in the header actions cluster in both sidebar states', () => {
@@ -1488,6 +1520,7 @@ describe('App routing', () => {
     expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
     expect(localStorage.getItem('mc-nav')).toBe('0')
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('keeps feature-request instructions hidden from the persisted user message', async () => {
@@ -1534,12 +1567,14 @@ describe('App routing', () => {
     // The dot's accessible name carries the cause; with no auth banner up it
     // is the reconnecting variant (see #9692).
     expect(screen.getByLabelText(/Gateway offline/i)).toBeInTheDocument()
+    return shellSettled()
   })
 
   it('keeps theme controls available from Settings', () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Theme controls live in Settings > Display rather than the shell header.
     expect(screen.getByText('Settings')).toBeInTheDocument()
+    return shellSettled()
   })
 
   it('renders approval mode buttons with tooltips', () => {

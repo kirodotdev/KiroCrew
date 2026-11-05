@@ -54,7 +54,7 @@ declares more than the free space where it extracts.
 | crons | `crons.json` |
 | config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `project_dir`, `workspace_dir` |
 | skills | `skills/` directory |
-| crew-teams | `crew-teams/teams.json` (the mate team list) |
+| crew-teams | `crew-teams/teams.json` (the Bot team list) |
 | workspace | `workspace/`, `plan_memory/` directories |
 | notifications | `notifications.jsonl` |
 | security | `telemetry_salt` |
@@ -278,8 +278,8 @@ So a merge never destroys anything on the receiving machine. If you want the
 snapshot to win, use `--mode replace`.
 
 **The dashboard's import follows the same rule for settings.** The import on
-Settings > Imports (a `.zip` from the dashboard's export) defaults to Merge too,
-and its Merge never overwrites a settings document: `config.json`,
+Settings > Import / Export (a `.zip` from the dashboard's export) defaults to
+Merge too, and its Merge never overwrites a settings document: `config.json`,
 `ui-prefs.json` (the browser-held settings) and `notification_settings.json` are
 installed only where this install has none, and one this install already has is
 kept exactly as it is. Like `kirocrew restore`, it never installs the archive's

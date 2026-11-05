@@ -261,7 +261,7 @@ def _read_global_mcps() -> Any:
         raw = read_bytes_with_retry(_GLOBAL_MCP_JSON).decode("utf-8")
         data = loads_mcp_config(raw, jsonc=True)
         return data.get("mcpServers", {})
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
 

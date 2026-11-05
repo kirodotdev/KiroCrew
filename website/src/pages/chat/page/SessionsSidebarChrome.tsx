@@ -256,7 +256,7 @@ export default function SessionsSidebarChrome({
         // covers the whole safe-area height like the App nav drawer it
         // replaces on this route -- the rail's brand mark then sits where
         // that drawer's did. Close: scrim tap, swipe, Back -- all unchanged.
-        morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? `mobile-sessions-overlay fixed ${titleInTopbar ? 'top-safe' : 'top-safe-offset-[42px]'} bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0` : ''}>
+        morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? `mobile-sessions-overlay fixed ${titleInTopbar ? 'top-safe' : 'top-safe-offset-[42px]'} bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0` : 'kc-vt-sessions'}>
         {/* Phone chat page: ONE drawer holds the shell's navigation rail (72px,
             from MobileNavRailContext) beside the sessions pane, Discord-style, so
             the bar above needs no second drawer trigger. The pane keeps its

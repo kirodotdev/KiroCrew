@@ -306,7 +306,7 @@ export function useVirtualChat<T>(
   const heights = useHeightOwner({
     sessionId, heightScopeKey, itemCount, estimatedHeight, itemsRef, getKeyRef, windowRange, shift,
   })
-  const { heightIndexRef, heightIndex, getH, offsetIndex, heightCommit, totalHeight, offsetBefore, offsetAfter } = heights
+  const { heightIndexRef, heightIndex, getH, offsetIndex, heightCommit, totalHeight, offsetBefore, offsetAfter, paintedHeightsRef } = heights
 
   // Keep the tracked scroller element in sync after every commit, so the
   // observer effects below re-attach the moment the node appears (or changes).
@@ -314,7 +314,9 @@ export function useVirtualChat<T>(
     syncScrollerEl()
   })
 
-  const ops = useWindowOperations({ overscan, getH, scrollerRef, leadingOffset, itemsRef, heightIndexRef, view, follow })
+  const ops = useWindowOperations({
+    overscan, getH, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef, view, follow,
+  })
   const pinning = usePinning({
     followOutput, overscan, scrollerRef, itemsRef, runActiveRef, getH, setWindowRange, follow, reading,
   })

@@ -19,13 +19,16 @@ This lives in ``messaging`` rather than in one channel package because none of
 the three hazards is channel-specific: Discord, Telegram, iMessage, Weixin and
 WhatsApp all deliver a ``<thinking>`` block and a pipe table as written.
 
-Stdlib-only leaf: regex and string work with no imports from this package, so it
-stays importable from any channel and adds nothing to a boot path.
+Near-leaf: regex and string work whose one import from this package is
+:mod:`kiro_crew.messaging.tables`, itself stdlib-only, so it stays importable
+from any channel and adds nothing to a boot path.
 """
 
 from __future__ import annotations
 
 import re
+
+from kiro_crew.messaging.tables import _cells
 
 __all__ = [
     "MERMAID_INFO",
@@ -102,8 +105,13 @@ def _is_separator(line: str) -> bool:
 
 
 def _row_cells(row: str) -> list[str]:
-    """The cells of a pipe row, outer delimiters and per-cell padding dropped."""
-    return [cell.strip() for cell in row.strip().strip("|").split("|")]
+    """The cells of a pipe row, outer delimiters and per-cell padding dropped.
+
+    The split is the table renderer's own: an escaped ``\\|`` and a pipe inside
+    an inline code span are cell text, not a boundary, so ``| `a|b` | or |``
+    stays two cells instead of tearing the code span across a label.
+    """
+    return _cells(row)
 
 
 def _flatten_rows(header: list[str], rows: list[list[str]]) -> list[str]:
@@ -170,35 +178,140 @@ def flatten_pipe_tables(text: str) -> str:
 #: info string against this rather than re-deriving the spelling.
 MERMAID_INFO = "mermaid"
 
-# graph/flowchart edges: ``A[label] -->|text| B[label]`` or bare ``A --> B``.
+# One graph/flowchart node: ``A``, ``A[label]``, ``A{label}`` or ``A(label)``.
+# Only the square and brace labels are read; a round one is consumed unread.
+_GRAPH_NODE = r"\w+(?:\[[^\]]*\]|\{[^}]*\}|\([^)]*\))?"
+_GRAPH_NODE_RE = re.compile(r"(\w+)(?:\[([^\]]*)\]|\{([^}]*)\}|\([^)]*\))?")
+# Nodes joined by ``&`` (``B & C``) share every edge into and out of the group.
+_GRAPH_GROUP = rf"{_GRAPH_NODE}(?:[ \t]*&[ \t]*{_GRAPH_NODE})*"
+# One group followed by one arrow, ``A[label] -->|text|``: a line is a chain of
+# these steps ending in a bare group, ``A --> B --> C`` being two steps and ``C``.
+_GRAPH_STEP_RE = re.compile(rf"({_GRAPH_GROUP})[ \t]*(?:-->|---|-\.->|==>)(?:\|([^|]*)\|)?[ \t]*")
+_GRAPH_GROUP_RE = re.compile(_GRAPH_GROUP)
+_GRAPH_STATEMENT_SEPARATOR_RE = re.compile(r"[ \t]*;[ \t]*")
+# One ``src arrow dst`` edge found anywhere in a line the statement parser draws
+# nothing from. A label may hold its own opener, as in ``A["Read [ x"]``; the
+# search starts only at a word start.
 _GRAPH_EDGE_RE = re.compile(
-    r"(\w+)(?:\[([^\]]*)\]|\{([^}]*)\}|(?:\([^)]*\)))?"
+    r"(?<!\w)(\w+)(?:\[([^\]]*)\]|\{([^}]*)\}|(?:\([^)]*\)))?"
     r"\s*(-->|---|-\.->|==>)(?:\|([^|]*)\|)?\s*"
     r"(\w+)(?:\[([^\]]*)\]|\{([^}]*)\}|(?:\([^)]*\)))?"
 )
-# sequenceDiagram messages: ``Actor->>Actor: message``.
-_SEQ_RE = re.compile(r"(\S+?)\s*(->>|-->>|->|-->)\s*(\S+?):\s*(.+)")
+# sequenceDiagram messages: ``Actor->>Actor: message``. A ``+`` or ``-`` before
+# the target activates or deactivates it; it is not part of the target's name.
+_SEQ_RE = re.compile(r"(\S+?)\s*(->>|-->>|->|-->)\s*[+-]?(\S+?):\s*(.+)")
 
 #: Indent every flattened edge carries, so the diagram reads as a block under
 #: whatever heading the caller puts above it rather than as loose sentences.
 _EDGE_INDENT = "  "
 
+#: Most edges one flowchart is flattened into. ``&`` groups on both sides of an
+#: arrow draw every node pair, so a short line can name millions of edges; one
+#: ellipsis line marks any additional edges.
+_MAX_GRAPH_EDGES = 500
+
+
+def _graph_nodes(group: str, labels: dict[str, str]) -> list[str]:
+    """The node ids in one ``&`` *group*, recording each square or brace label."""
+    ids: list[str] = []
+    for match in _GRAPH_NODE_RE.finditer(group):
+        node, square, brace = match.groups()
+        if square or brace:
+            labels[node] = square or brace
+        ids.append(node)
+    return ids
+
+
+def _graph_line_edges(
+    line: str, labels: dict[str, str], budget: int
+) -> tuple[list[tuple[str, str | None, str]], bool]:
+    """Return this flowchart line's edges up to *budget* and an overflow flag.
+
+    A line can contain semicolon-separated statements. Each statement is a chain
+    whose ``&`` groups draw one edge per node pair. Bare node statements record
+    labels without drawing edges, and ``%%`` comment lines draw nothing. Pair
+    construction stops as soon as one edge would exceed *budget*.
+    """
+    edges: list[tuple[str, str | None, str]] = []
+    position = 0
+    while True:
+        groups: list[str] = []
+        edge_labels: list[str | None] = []
+        end = position
+        step = _GRAPH_STEP_RE.match(line, end)
+        while step:
+            groups.append(step.group(1))
+            edge_labels.append(step.group(2))
+            end = step.end()
+            step = _GRAPH_STEP_RE.match(line, end)
+
+        tail = _GRAPH_GROUP_RE.match(line, end)
+        if tail:
+            groups.append(tail.group(0))
+            end = tail.end()
+        elif groups:
+            edge_labels.pop()  # the last arrow points at nothing, as in ``A --> B -->``
+        else:
+            break
+
+        nodes = [_graph_nodes(group, labels) for group in groups]
+        for index, edge_label in enumerate(edge_labels):
+            for src in nodes[index]:
+                for dst in nodes[index + 1]:
+                    if len(edges) >= budget:
+                        return edges, True
+                    edges.append((src, edge_label, dst))
+
+        separator = _GRAPH_STATEMENT_SEPARATOR_RE.match(line, end)
+        if not separator:
+            break
+        position = separator.end()
+    return edges, False
+
 
 def _graph_arrows(body: str) -> str:
-    """A ``graph``/``flowchart`` body as one indented arrow per edge, or ``""``."""
+    """Return a ``graph``/``flowchart`` body as indented arrows.
+
+    An ellipsis after :data:`_MAX_GRAPH_EDGES` arrows marks omitted edges.
+    ``""`` means no edge can be read from the body.
+    """
+    if not any(arrow in body for arrow in ("-->", "---", "-.->", "==>")):
+        return ""
+
     labels: dict[str, str] = {}
     edges: list[str] = []
     for line in body.split("\n")[1:]:  # the first line is the graph declaration
-        match = _GRAPH_EDGE_RE.search(line.strip())
-        if not match:
+        stripped = line.strip()
+        if stripped.startswith("%%"):
             continue
-        src, src_square, src_brace, _arrow, edge_label, dst, dst_square, dst_brace = match.groups()
-        if src_square or src_brace:
-            labels[src] = src_square or src_brace
-        if dst_square or dst_brace:
-            labels[dst] = dst_square or dst_brace
-        joint = f" ({edge_label.strip()}) " if edge_label else " "
-        edges.append(f"{_EDGE_INDENT}{labels.get(src, src)} →{joint}{labels.get(dst, dst)}")
+        line_edges, overflow = _graph_line_edges(stripped, labels, _MAX_GRAPH_EDGES - len(edges))
+        if not line_edges and not overflow:
+            match = _GRAPH_EDGE_RE.search(stripped)
+            if match:
+                if len(edges) >= _MAX_GRAPH_EDGES:
+                    overflow = True
+                else:
+                    (
+                        src,
+                        src_square,
+                        src_brace,
+                        _arrow,
+                        edge_label,
+                        dst,
+                        dst_square,
+                        dst_brace,
+                    ) = match.groups()
+                    if src_square or src_brace:
+                        labels[src] = src_square or src_brace
+                    if dst_square or dst_brace:
+                        labels[dst] = dst_square or dst_brace
+                    line_edges = [(src, edge_label, dst)]
+        for src, edge_label, dst in line_edges:
+            joint = f" ({edge_label.strip()}) " if edge_label else " "
+            edges.append(f"{_EDGE_INDENT}{labels.get(src, src)} →{joint}{labels.get(dst, dst)}")
+        if overflow:
+            edges.append(f"{_EDGE_INDENT}...")
+            break
     return "\n".join(edges)
 
 

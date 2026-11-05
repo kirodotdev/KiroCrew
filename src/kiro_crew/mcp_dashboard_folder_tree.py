@@ -120,28 +120,14 @@ _NEG_INF = float("-inf")
 def _chat_folder_order(folder: dict) -> int:
     """A folder's sidebar sort position. Anything that is not a finite number is 0.
 
-    The endpoint stores whatever int a PATCH hands it and never renumbers, so a
-    row can carry a duplicate order, a gap, or (from an older store) no ``order``
-    key at all. The sidebar tolerates all three; so must every reader here.
+    Rows may carry duplicate orders, gaps or no ``order`` key; all must be tolerated.
+    Only a real JSON number is accepted, the same set the frontend accepts, so the
+    value sorts identically on both sides (``int("1e3")`` raises where ``Number``
+    reads 1000). A float truncates like ``Math.trunc``; ``bool`` is excluded because
+    ``typeof true`` is not ``'number'``. The clamp to ``2**53 - 1`` keeps rows that
+    ``JSON.parse`` would collapse to one value from comparing as ordered here.
 
-    Only a real JSON number is accepted, and the frontend's counterpart accepts
-    exactly the same set. That is deliberate: this value has to sort IDENTICALLY
-    here and in the sidebar, and the two languages' conversions of everything else
-    do not agree — ``int("0x10")`` and ``int("1e3")`` raise where ``Number`` reads
-    16 and 1000, ``int([5])`` raises where ``Number`` reads 5. Rejecting the whole
-    class costs nothing (the endpoint only ever writes an int) and removes the
-    parity question instead of answering it per type.
-
-    A float truncates toward zero, matching ``Math.trunc``, and ``bool`` is
-    excluded even though it is an ``int`` subclass, because ``typeof true`` is not
-    ``'number'`` on the other side. The result is clamped to the range JavaScript
-    represents exactly: Python ints are unbounded, but the sidebar reads the same
-    row through ``JSON.parse``, where ``2**53 + 1`` and ``2**53`` collapse to one
-    value — so without the clamp those two rows compare as ordered here and as
-    EQUAL there, and there the name tie-break decides the pair instead.
-
-    This is a SORT KEY: an escaping exception would abort the whole sort and take
-    down every folder tool rather than one row, so nothing here may raise.
+    This is a SORT KEY: an exception would abort every folder tool, so nothing raises.
     """
     value = folder.get("order")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -151,53 +137,27 @@ def _chat_folder_order(folder: dict) -> int:
     return max(-_CHAT_FOLDER_ORDER_LIMIT, min(_CHAT_FOLDER_ORDER_LIMIT, int(value)))
 
 
-# A-Z to a-z and nothing else, written out rather than looked up. Every Unicode
-# version ever published maps this range identically, so both sides can fold it
-# without consulting a table — which is the whole reason the fold stops here.
+# A-Z to a-z only, written out: every Unicode version maps this range the same,
+# so both sides fold it without a table.
 _ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 def _chat_folder_name_key(folder: dict) -> bytes:
     """A folder name as the frontend's ``<`` would compare it.
 
-    ``chat_folder_tree`` is where an agent picks a ``before``/``after`` anchor, so a
-    sequence that differs from the rendered one aims the anchor at the wrong gap.
-    That makes this key part of a contract with ``folderTree.bySidebarOrder``, and
-    every operation in it has to mean the same thing in both languages.
+    An agent picks ``before``/``after`` anchors from ``chat_folder_tree``, so this key
+    must match ``folderTree.bySidebarOrder`` exactly or the anchor hits the wrong gap.
 
-    No Unicode-table fold. ``str.lower()`` reads the interpreter's tables and
-    ``String.prototype.toLowerCase()`` reads the browser's, so a character whose case
-    mapping was added or changed between the interpreter's version and the browser's
-    folds differently on the two sides — a skew no code here can close, because
-    neither side owns both tables.
+    Only ``A``-``Z`` fold (the frontend folds them by arithmetic): any wider fold reads
+    each runtime's own Unicode tables, which can differ. The fold still matters because
+    stores from before ``order`` tie every sibling at 0, so the name decides the order.
 
-    ``A``-``Z`` fold anyway, through the literal 26-entry table above. That range's
-    case mapping is fixed for every Unicode version ever published and the frontend
-    does the same fold by ARITHMETIC on the code unit, so it carries no version
-    dependency while still ordering ``alpha`` before ``Beta``. The distinction is
-    worth drawing because a store written before ``order`` existed has every sibling
-    tied at 0 — the whole tie-break decides those sidebars, so a fold that only
-    ordered by raw code unit would show them uppercase-first until the first drag.
+    ``utf-16-be`` bytes give JavaScript's code-unit order, which differs from Python's
+    code-point order above U+FFFF. ``surrogatepass`` because a stored name can hold a
+    lone surrogate, which the strict codec raises on (and a sort key must not raise).
 
-    ``utf-16-be`` rather than the str itself: Python orders str by CODE POINT while
-    JavaScript orders by UTF-16 CODE UNIT, and the two disagree above U+FFFF — an
-    astral character's surrogates start at 0xD800, so Python sorts U+1F600 after
-    U+FF21 and JavaScript sorts it before. Comparing the big-endian UTF-16 bytes is
-    code-unit order. This is a fixed encoding, not a table lookup, so it carries no
-    version dependency either.
-
-    ``surrogatepass`` because a folder name is persisted JSON and can hold a LONE
-    surrogate, which the strict codec refuses outright — and a raised encoder
-    inside a sort key takes down every folder tool, not one row. Passing it through
-    also keeps the byte-for-byte match: a JavaScript string holds that same lone
-    unit and compares it as 0xD800, which is exactly what these bytes carry.
-
-    A name that is not a ``str`` reads as empty rather than being stringified, and
-    the frontend's counterpart does the same. Stringifying is where the two
-    languages part company: ``str({"a": 1})`` is ``"{'a': 1}"`` where
-    ``String({a: 1})`` is ``"[object Object]"``, and ``str(True)`` is ``"True"``
-    where ``String(true)`` is ``"true"``. Reading the whole class as empty makes
-    both sides agree by construction instead of per type.
+    A non-``str`` name reads as empty, as on the frontend, because the two languages
+    stringify objects and booleans differently.
     """
     name = folder.get("name")
     text = name if isinstance(name, str) else ""
@@ -207,14 +167,10 @@ def _chat_folder_name_key(folder: dict) -> bytes:
 def _chat_folder_created(folder: dict) -> float | None:
     """A folder's creation stamp as the sidebar reads it, or ``None`` when it has none.
 
-    ``created_at`` is epoch seconds written by every folder creator since the
-    sidebar's ``created`` sort existed; a row from before that carries no key. The
-    acceptance rule is ``_chat_folder_order``'s, for the same reason: this value
-    orders the ``created`` mode on both sides, so only a real, finite JSON number
-    counts and everything else reads as "no stamp" identically here and in the
-    sidebar's ``folderCreated``. Both sides clamp to the range JavaScript holds
-    exactly, and an unbounded int is clamped BEFORE the ``float`` call because
-    ``float(10**400)`` raises -- and this is a sort key, so nothing here may.
+    ``created_at`` is epoch seconds; older rows lack it. It uses
+    ``_chat_folder_order``'s acceptance rule to match the sidebar's ``folderCreated``.
+    An int is clamped BEFORE ``float`` because ``float(10**400)`` raises, and a sort
+    key must not raise.
     """
     value = folder.get("created_at")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -233,20 +189,14 @@ _DIGIT_RUNS = _re.compile(r"[0-9]+|[^0-9]+")
 def _chat_folder_natural_key(folder: dict) -> tuple[tuple[Any, ...], ...]:
     """The ``name`` sort mode's key: case-folded natural order, ``01.`` < ``02.`` < ``10.``.
 
-    The folded name is cut into maximal runs of ASCII digits and of everything
-    else, and the runs are compared position by position. A digit run compares by
-    its integer value -- leading zeros stripped, then length, then the digits, so
-    the value is compared without ever being converted to a number and an
-    arbitrarily long run cannot overflow on either side. A text run compares as
-    ``_chat_folder_name_key`` does (UTF-16 code units of the ``A``-``Z``-folded
-    text). Where a digit run meets a text run, the digit run sorts first; where
-    every compared run is equal, the shorter name sorts first.
+    The folded name is cut into runs of ASCII digits and of other text. A digit run
+    compares by length after stripping leading zeros, then by digits, so a long run
+    never overflows on either side; a text run compares as ``_chat_folder_name_key``.
+    A digit run sorts before a text run; on equal runs the shorter name sorts first.
 
-    Only ``0``-``9`` is a digit, deliberately: ``str.isdigit`` reads the
-    interpreter's Unicode tables where the sidebar's ``/[0-9]/`` does not, and a
-    key that agrees with ``folderTree.naturalNameCompare`` by construction is the
-    whole point -- ``chat_folder_tree`` in this mode must list what the sidebar
-    draws. Ties (``01`` against ``1``) fall through to the ``custom`` key.
+    Only ``0``-``9`` is a digit: ``str.isdigit`` reads Unicode tables that the
+    sidebar's ``/[0-9]/`` does not, and this key must match
+    ``folderTree.naturalNameCompare``. Ties (``01`` against ``1``) fall to ``custom``.
     """
     name = folder.get("name")
     text = (name if isinstance(name, str) else "").translate(_ASCII_FOLD)
@@ -263,17 +213,10 @@ def _chat_folder_natural_key(folder: dict) -> tuple[tuple[Any, ...], ...]:
 def _chat_folder_sort_key(mode: str) -> Callable[[dict], tuple[Any, ...]]:
     """The sibling sort key for one folder sort mode.
 
-    ``custom`` is the stored ``order`` then the folded name -- the only order that
-    existed before the mode did, and the one every placement (``before``/``after``)
-    is computed in. ``name`` and ``created`` are VIEW orders layered on top: each
-    ends in the ``custom`` key so two folders the mode cannot separate keep the
-    order the person arranged, and so the whole key stays total on both sides.
-    ``created`` is newest first, the direction the sidebar's session list already
-    reads in; a folder with no stamp sorts as older than every stamped one.
-
-    An unknown mode reads as ``custom`` rather than raising, because this is
-    called from a listing an agent depends on and the loader has already reduced
-    the stored value to a known one.
+    ``custom`` is stored ``order`` then folded name; placements are computed in it.
+    ``name`` and ``created`` end in the ``custom`` key so ties keep the person's
+    arrangement. ``created`` is newest first; an unstamped folder sorts oldest.
+    An unknown mode reads as ``custom`` rather than raising.
     """
 
     def custom(folder: dict) -> tuple[Any, ...]:
@@ -296,34 +239,19 @@ def _chat_folder_siblings(
 ) -> list[dict]:
     """Direct children of ``parent_id``, in the order the sidebar renders them.
 
-    The comparator mirrors the sidebar's own (``folderTree.folderComparator``
-    sorts each parent's children by the person's folder sort mode -- stored
-    ``order`` then name in ``custom``), because a caller saying "put this after
-    that" means after what the PERSON SEES. Sorting by ``order`` alone would
-    disagree with the rendered list wherever two siblings share a number, which
-    the store permits.
+    The comparator mirrors ``folderTree.folderComparator``, because "put this after
+    that" means after what the person sees, and siblings may share an ``order``.
 
-    ``mode`` defaults to ``custom`` because that is the order a POSITION lives in:
-    the placement helpers call this to find the gap a ``before``/``after`` anchor
-    names, and a gap only exists in the stored order. The tree LISTING passes the
-    person's mode instead, so it shows what the sidebar shows.
-
-    The name key is ``_chat_folder_name_key``, which folds ``A``-``Z`` and compares
-    the UTF-16 encoding, so ``Apple`` sorts between ``alpha`` and ``apricot``.
-    Nothing outside that range folds: a wider fold would read each runtime's own
-    Unicode tables, and the sidebar's runtime is not this one — see that function
-    for which mappings are left alone and why.
+    ``mode`` defaults to ``custom`` because a ``before``/``after`` gap only exists in
+    the stored order; the tree listing passes the person's mode to match the sidebar.
     """
     kids = [f for f in folders if f.get("id") and str(f.get("parent_id") or "") == parent_id]
     return sorted(kids, key=_chat_folder_sort_key(mode))
 
 
-# ``chat-sidebar/folderBlocks.tsx``'s ``renderFolderBlock`` returns nothing for ``depth > 10``, so a
-# row nested deeper is not drawn. The store caps folder COUNT but not nesting, so
-# such a tree is legal rather than corrupt. Only the reported DEPTH is clamped
-# here, never the row: this listing is an agent's one view of the tree and it
-# carries each folder's live sessions, so dropping a folder would hide those
-# sessions to buy indentation parity on a row nobody can see anyway.
+# ``chat-sidebar/folderBlocks.tsx``'s ``renderFolderBlock`` draws nothing past depth 10.
+# Nesting is not capped, so only the reported depth is clamped, never the row:
+# dropping a folder would hide its live sessions from the agent.
 _SIDEBAR_MAX_DRAWN_DEPTH = 10
 
 
@@ -332,20 +260,10 @@ def _chat_folder_render_order(
 ) -> list[tuple[str, int]]:
     """``(folder_id, depth)`` in sidebar render order — pre-order, siblings by ``mode``.
 
-    Depth-first from the top level, so a child always follows its parent, which
-    is the shape the sidebar draws. Siblings sort with ``_chat_folder_sort_key``
-    for the person's folder sort mode, at every depth, because the sidebar applies
-    its comparator to every parent's children alike. Two defences the sidebar also
-    carries: a row whose ``parent_id`` names a folder absent from this list renders
-    at the top level rather than being dropped, and a parent cycle can neither
-    loop the walk nor swallow the folders caught in it (those are appended at the
-    end).
-
-    Depth is clamped to ``_SIDEBAR_MAX_DRAWN_DEPTH`` so the indentation cannot claim
-    a level the sidebar does not draw. Every row is still listed at that depth: an
-    anchor beside a row the person cannot see writes an ``order`` nobody reads,
-    which is a smaller cost than hiding the folder and the live sessions filed in
-    it from the only tree view an agent gets.
+    As the sidebar does, a row whose ``parent_id`` is missing renders at the top
+    level, and folders caught in a parent cycle are appended at the end. Depth is
+    clamped to ``_SIDEBAR_MAX_DRAWN_DEPTH``, but every row is still listed so no
+    folder's live sessions are hidden from the agent.
     """
     known = {str(f.get("id") or "") for f in folders if f.get("id")}
     by_parent: dict[str, list[dict]] = {}
@@ -383,21 +301,10 @@ def _chat_folder_render_order(
 def _free_slot_order(siblings: list[dict], index: int) -> int | None:
     """An unused ``order`` that lands a folder at ``index``, or ``None`` if none fits.
 
-    Positioning a folder means writing several rows when the siblings have to be
-    renumbered, and several writes cannot be made atomic from here — so the cheap
-    case is worth taking whenever the store already has room: before the first
-    sibling, after the last, or in a gap between two adjacent ones. Then the whole
-    reposition is ONE write and cannot land half-applied.
-
-    ``siblings`` is the destination's children WITHOUT the folder being placed, in
-    render order. ``None`` means the neighbours are adjacent integers, which is
-    what a sidebar drag leaves behind, and the caller must renumber instead.
-
-    An edge slot at ``±_CHAT_FOLDER_ORDER_LIMIT`` is also not free. The neighbour's
-    order is read back through the same clamp, so a value one past the bound
-    returns as the bound itself — equal to the anchor rather than outside it, which
-    hands the pair to the name tie-break and can place the folder on the wrong
-    side. There is no representable slot there, so the caller renumbers.
+    A free slot makes the move ONE write, which cannot land half-applied the way a
+    multi-row renumber can. ``siblings`` excludes the folder being placed, in render
+    order. ``None`` (adjacent neighbours, or an edge at ``±_CHAT_FOLDER_ORDER_LIMIT``,
+    where the clamp would tie the new order with the anchor) means renumber.
     """
     if not siblings:
         return 0

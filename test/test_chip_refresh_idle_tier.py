@@ -184,7 +184,9 @@ def restored(tmp_path, monkeypatch):
         seed.conversation_log.append(history_key, "user", f"{key} question")
         shared = f" and {_pr(99)}" if n < 3 else ""
         seed.conversation_log.append(history_key, "assistant", f"opened {_pr(n)}{shared}")
-    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": _KEYS, "ts": 0.0}))
+    (tmp_path / "open_slots.json").write_text(
+        json.dumps({"keys": _KEYS, "ts": 0.0}), encoding="utf-8"
+    )
     state = _make_state(tmp_path / "sessions")
     assert cp.restore_open_slots(state) == len(_KEYS)
     return state

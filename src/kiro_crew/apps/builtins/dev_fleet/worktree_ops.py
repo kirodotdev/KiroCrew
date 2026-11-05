@@ -163,7 +163,7 @@ async def _prunable(path: str, branch: str | None) -> dict:
     # looking at, and whether a discard is even offerable.
     dirt_tracked, dirt_untracked = await repository._dirty_split(path) if dirty else (None, [])
     try:
-        age_h = round((time.time() - Path(path).stat().st_ctime) / 3600, 1)
+        age_h = round((time.time() - (await asyncio.to_thread(Path(path).stat)).st_ctime) / 3600, 1)
     except OSError:
         age_h = None
     base = {
@@ -789,6 +789,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _POD_START_REFUSAL,
         _WT_LOCKS,
         _is_number,
+        _limit_argv,
         _mint_pod_token_locked,
         _pod_checkout_guard,
         _pod_down,
@@ -798,6 +799,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _pod_provision,
         _pod_provision_dismiss,
         _pod_restart,
+        _pod_start,
         _pod_status,
         _pod_token,
         _pod_up,

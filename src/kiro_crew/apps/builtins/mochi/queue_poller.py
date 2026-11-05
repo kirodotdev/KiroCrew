@@ -50,7 +50,9 @@ failure-bookkeeping path, byte-for-byte prompts included.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -215,6 +217,12 @@ class QueuePollerCallbacks(Protocol):
         ...
 
 
+def _task_identity(task: dict[str, Any]) -> str:
+    """*task* without its completion fields, as a key: the same task in any read."""
+    body = {k: v for k, v in task.items() if k not in ("done", "executed_at")}
+    return json.dumps(body, sort_keys=True, default=str)
+
+
 class QueuePoller:
     """Second-cadence executor over ``mochi-queue.json``."""
 
@@ -254,6 +262,13 @@ class QueuePoller:
         self._spawn_future: asyncio.Future[bool] | None = None
         self._spawn_deadline: int | None = None
         self._current_spawn_id: str | None = None
+        # Done markers the last write-back failed to save: the identity of each
+        # task that ran (``_task_identity``) -> its executed_at. Kept until a
+        # write succeeds, so a task that ran is not run again from a queue file
+        # that never recorded it. Matched on the whole task, not its id alone:
+        # a replan may reuse an id for a new task, which must still run, while
+        # a reminder ``full_replace`` carries over unchanged is the same task.
+        self._unwritten_done: dict[str, Any] = {}
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -375,6 +390,13 @@ class QueuePoller:
 
         # 2. Missing queue → trigger plan (first run / deleted file).
         if queue is None:
+            # A deleted queue is a reset: the tasks its unsaved markers belong to
+            # are gone, so a task submitted again later is new and must run. A
+            # file that exists but did not read keeps them for the next write.
+            if self._unwritten_done and not await asyncio.to_thread(
+                os.path.exists, self._queue_path
+            ):
+                self._unwritten_done.clear()
             if self._can_trigger_plan():
                 self._plan_triggered = True
                 self._plan_spawn_at = self._clock()
@@ -417,7 +439,11 @@ class QueuePoller:
 
         # 3. Due deterministic tasks. mood/notify: all; move: one per poll.
         now_ms = self._clock()
-        due_tasks = qf.get_executable_tasks(queue, now_ms)
+        due_tasks = [
+            t
+            for t in qf.get_executable_tasks(queue, now_ms)
+            if _task_identity(t) not in self._unwritten_done
+        ]
         queue_modified = False
         move_executed = False
 
@@ -547,7 +573,9 @@ class QueuePoller:
         # 6. Route check — plan / replan / execute.
         route = qf.route_poll(queue, now_ms=self._clock())
         if route in ("plan", "replan"):
-            if queue_modified:
+            # A completion whose write-back failed is excluded from this poll,
+            # so it never sets queue_modified; it still has to reach the file.
+            if queue_modified or self._unwritten_done:
                 queue = qf.cleanup_done_tasks(queue, now_ms=self._clock())
                 try:
                     # Off the event loop: the lock is held across processes (the
@@ -633,6 +661,14 @@ class QueuePoller:
     def _locked_merge_write(self, queue: Any) -> None:
         """Merge done-markers onto a FRESH read, then replace, all under the
         lock. Blocking — call via ``asyncio.to_thread``."""
+        # The completions to keep if this write does not land: every done task
+        # in the snapshot this poll worked from, by identity, plus the ones an
+        # earlier failed write left unsaved. Taken before the fresh read, so they
+        # name the tasks that ran rather than whatever the fresh read holds now.
+        pending = dict(self._unwritten_done)
+        for task in queue.get("tasks", []):
+            if task.get("done"):
+                pending.setdefault(_task_identity(task), task.get("executed_at") or "")
         with qf.queue_mutation(self._queue_path):
             fresh_queue = qf.read_queue(self._queue_path)
             if fresh_queue is None:
@@ -640,7 +676,10 @@ class QueuePoller:
                 # reset cleared it between our poll snapshot and this locked
                 # write). Merging done-markers onto — and writing back — our STALE
                 # pre-reset snapshot would RESURRECT exactly the tasks the reset
-                # just removed. Honour the reset: write nothing.
+                # just removed. Honour the reset: write nothing. The unsaved
+                # markers go with a confirmed deletion only; a file that exists
+                # but did not read keeps them for the next write.
+                self._unwritten_done = {} if not os.path.exists(self._queue_path) else pending
                 return
             for stale_task in queue.get("tasks", []):
                 if stale_task.get("done"):
@@ -655,11 +694,20 @@ class QueuePoller:
                     if fresh is not None and not fresh.get("done"):
                         fresh["done"] = True
                         fresh["executed_at"] = stale_task.get("executed_at")
+            if self._unwritten_done:
+                for fresh in fresh_queue.get("tasks", []):
+                    ran_at = self._unwritten_done.get(_task_identity(fresh))
+                    if ran_at is not None and not fresh.get("done"):
+                        fresh["done"] = True
+                        fresh["executed_at"] = ran_at
             queue = qf.cleanup_done_tasks(fresh_queue, now_ms=self._clock())
             try:
                 qf.write_queue_atomic(self._queue_path, queue)
             except OSError:
                 logger.exception("[QueuePoller] failed to write queue")
+                self._unwritten_done = pending
+            else:
+                self._unwritten_done.clear()
 
     # ── Task execution ─────────────────────────────────────────────────────
 

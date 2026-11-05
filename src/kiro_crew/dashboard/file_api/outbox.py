@@ -76,6 +76,24 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
     raw_path = body.get("path", "")
     raw_filename = body.get("filename", "")
     raw_desc = body.get("description", "")
+    # A non-string field is caller error: redact() below would raise TypeError,
+    # a 500.
+    if not all(isinstance(v, str) for v in (raw_path, raw_filename, raw_desc)):
+        _sel().log_tool_invocation(
+            session_key="api",
+            source="api",
+            tool_name="file_send",
+            tool_kind="notify",
+            outcome="denied",
+            error="invalid_field_type",
+        )
+        return web.json_response(
+            {
+                "error": "path, filename and description must be strings",
+                "code": "invalid_field_type",
+            },
+            status=400,
+        )
     # Reject files whose names/paths contain sensitive patterns
     if redact(raw_filename) != raw_filename or redact(raw_path) != raw_path:
 
@@ -431,15 +449,16 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
     # The range is cut from bytes the checks above already cleared, so a partial
     # response never carries content the full one would refuse.
     range_header = request.headers.get("Range")
-    if range_header:
-        size = len(raw)
-        parsed = _parse_range_header(range_header, size)
-        if parsed is None:
-            return web.json_response(
-                {"error": "range not satisfiable", "code": "bad_range"},
-                status=416,
-                headers={"Content-Range": f"bytes */{size}"},
-            )
+    size = len(raw)
+    parsed = _parse_range_header(range_header, size) if range_header else "ignore"
+    if parsed is None:
+        return web.json_response(
+            {"error": "range not satisfiable", "code": "bad_range"},
+            status=416,
+            headers={"Content-Range": f"bytes */{size}"},
+        )
+    if parsed != "ignore":
+        # A malformed Range is ignored, not refused: the whole body, 200.
         start, end = parsed
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         return web.Response(status=206, body=raw[start : end + 1], headers=headers)

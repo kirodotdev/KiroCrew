@@ -104,6 +104,8 @@ def task_filing_transaction() -> LoopBoundLock:
 
 
 _MAX_TASKS = 500
+#: Longest task id kept; every route keys on the id.
+_MAX_TASK_ID_CHARS = 64
 _MAX_DESCRIPTION = 2000
 _MAX_CONTEXT = 4000
 _MAX_REF_FIELD_LEN = 500
@@ -165,7 +167,7 @@ def _normalize_task(raw: Any) -> dict[str, Any] | None:
         # boundary while `description` beside it was scrubbed. Redact BEFORE the
         # truncation, so a marker cannot be sliced in half into something the
         # scanner does not recognise.
-        "id": redact(str(raw.get("id") or f"t{uuid.uuid4().hex[:8]}"))[:64],
+        "id": redact(str(raw.get("id") or f"t{uuid.uuid4().hex[:8]}"))[:_MAX_TASK_ID_CHARS],
         "description": description[:_MAX_DESCRIPTION],
         "assignee": redact(str(raw.get("assignee") or "").strip())[:200],
         "priority": priority if priority in k.TASK_PRIORITIES else k.DEFAULT_TASK_PRIORITY,
@@ -193,14 +195,24 @@ def _normalize_task(raw: Any) -> dict[str, Any] | None:
     }
 
 
-def read_normalized(meeting_id: str, root: Any) -> list[dict[str, Any]]:
+def read_normalized(
+    meeting_id: str, root: Any, *, for_update: bool = False
+) -> list[dict[str, Any]]:
     """Every task from ``tasks.json``, coerced and redacted. BLOCKING.
 
     Public because the meeting-lifecycle ``/outputs`` poll returns the task list
     too: it MUST come through here rather than straight off
     ``store.read_tasks``, or agent-written text reaches the dashboard unredacted.
+
+    Every helper that writes the list back passes ``for_update=True``, which reads
+    through ``store.read_tasks_for_update``: an unparseable file is moved aside
+    before the write and an unreadable one refuses it, so one edit never saves
+    over the tasks still in the file.
     """
-    doc = store.read_tasks(meeting_id, root)
+    if for_update:
+        doc = store.read_tasks_for_update(meeting_id, root)
+    else:
+        doc = store.read_tasks(meeting_id, root)
     out: list[dict[str, Any]] = []
     # Ids are DE-DUPLICATED here, because `tasks.json` is agent-written and nothing
     # stops the model emitting `t1` twice. Every route keys on the id, so a duplicate
@@ -212,16 +224,34 @@ def read_normalized(meeting_id: str, root: Any) -> list[dict[str, Any]]:
     # so discarding it would lose meeting content to fix a bookkeeping problem. The
     # suffix is derived from the position, so the same file always normalizes to the
     # same ids — a client that just read the list can still act on what it saw.
-    seen: set[str] = set()
+    rows: list[tuple[int, dict[str, Any]]] = []
     for index, raw in enumerate(doc.get("tasks", [])[:_MAX_TASKS]):
         task = _normalize_task(raw)
-        if task is None:
-            continue
+        if task is not None:
+            rows.append((index, task))
+    # A new name never takes an id another row already has, so a first row keeps
+    # its own id, and the suffix is fitted inside the 64-character cap rather than
+    # cut off by it.
+    taken = {task["id"] for _, task in rows}
+    seen: set[str] = set()
+    for index, task in rows:
         if task["id"] in seen:
-            task["id"] = f"{task['id']}-{index}"[:64]
+            task["id"] = _unused_task_id(task["id"], index, taken)
+            taken.add(task["id"])
         seen.add(task["id"])
         out.append(task)
     return out
+
+
+def _unused_task_id(task_id: str, index: int, taken: set[str]) -> str:
+    """``<task_id>-<n>`` for the first ``n`` from *index* not in *taken*, at most 64 chars."""
+    n = index
+    while True:
+        suffix = f"-{n}"
+        candidate = task_id[: _MAX_TASK_ID_CHARS - len(suffix)] + suffix
+        if candidate not in taken:
+            return candidate
+        n += 1
 
 
 async def handle_get_tasks(request: web.Request) -> web.Response:
@@ -246,11 +276,9 @@ def _append_task(meeting_id: str, body: dict[str, Any], root: Any) -> dict[str, 
     """
     with _TASKS_LOCK:
         if store.read_meeting_meta(meeting_id, root) is None:
-            raise store.MeetingsPathError(
-                "meeting not found", status=404, code="meeting_not_found"
-            )
+            raise store.MeetingsPathError("meeting not found", status=404, code="meeting_not_found")
         description = field_str(body, "description", required=True, max_len=_MAX_DESCRIPTION)
-        tasks = read_normalized(meeting_id, root)
+        tasks = read_normalized(meeting_id, root, for_update=True)
         if len(tasks) >= _MAX_TASKS:
             raise BadRequest(f"a meeting is limited to {_MAX_TASKS} tasks")
         task = _normalize_task(
@@ -278,6 +306,10 @@ async def handle_add_task(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+#: Task keys only the review and file routes write; a field edit leaves them as stored.
+_REVIEW_OWNED = frozenset({"review_status", "filed_ref"})
+
+
 def _patch_task(
     meeting_id: str, task_id: str, fields: dict[str, Any], root: Any
 ) -> dict[str, Any] | None:
@@ -291,12 +323,17 @@ def _patch_task(
     would discard any task added concurrently.
     """
     with _TASKS_LOCK:
-        tasks = read_normalized(meeting_id, root)
+        tasks = read_normalized(meeting_id, root, for_update=True)
         updated: dict[str, Any] | None = None
         for index, task in enumerate(tasks):
             if task["id"] != task_id:
                 continue
-            merged = {**task, **fields, "id": task_id}
+            # The review state and the filing record are set only by the review and
+            # file routes, which keep a filed task filed. Taking them from a field
+            # edit would let one PATCH reset a filed task to pending, so the File
+            # action creates a second item in the tracker.
+            editable = {key: value for key, value in fields.items() if key not in _REVIEW_OWNED}
+            merged = {**task, **editable, "id": task_id}
             normalized = _normalize_task(merged)
             if normalized is None:
                 raise BadRequest("description cannot be empty")
@@ -313,14 +350,12 @@ async def handle_update_task(request: web.Request) -> web.Response:
     """Patch one task's editable fields."""
     meeting_id = _meeting_id(request)
     body = await json_body(request)
-    task_id = field_str(body, "id", required=True, max_len=64)
+    task_id = field_str(body, "id", required=True, max_len=_MAX_TASK_ID_CHARS)
     fields = body.get("fields")
     if not isinstance(fields, dict):
         raise BadRequest("fields must be a JSON object")
 
-    payload = await asyncio.to_thread(
-        _patch_task, meeting_id, task_id, fields, data_root(request)
-    )
+    payload = await asyncio.to_thread(_patch_task, meeting_id, task_id, fields, data_root(request))
     if payload is None:
         return web.json_response({"error": "task not found", "code": "task_not_found"}, status=404)
     return web.json_response(payload)
@@ -333,7 +368,7 @@ def _drop_task(meeting_id: str, task_id: str, root: Any) -> list[dict[str, Any]]
     same read-modify-write reason as :func:`_patch_task`.
     """
     with _TASKS_LOCK:
-        tasks = read_normalized(meeting_id, root)
+        tasks = read_normalized(meeting_id, root, for_update=True)
         remaining = [t for t in tasks if t["id"] != task_id]
         if len(remaining) == len(tasks):
             return None
@@ -344,7 +379,7 @@ def _drop_task(meeting_id: str, task_id: str, root: Any) -> list[dict[str, Any]]
 async def handle_delete_task(request: web.Request) -> web.Response:
     meeting_id = _meeting_id(request)
     body = await json_body(request)
-    task_id = field_str(body, "id", required=True, max_len=64)
+    task_id = field_str(body, "id", required=True, max_len=_MAX_TASK_ID_CHARS)
     # Under `_FILING_LOCK`, not just `_TASKS_LOCK`.
     #
     # A filing is prepare -> provider-create -> record, and the middle step is an
@@ -361,9 +396,7 @@ async def handle_delete_task(request: web.Request) -> web.Response:
     # filing (no external item), and one after it removes a task that is genuinely
     # filed — both coherent, unlike the interleaving.
     async with _FILING_LOCK:
-        remaining = await asyncio.to_thread(
-            _drop_task, meeting_id, task_id, data_root(request)
-        )
+        remaining = await asyncio.to_thread(_drop_task, meeting_id, task_id, data_root(request))
     if remaining is None:
         return web.json_response({"error": "task not found", "code": "task_not_found"}, status=404)
     return web.json_response({"ok": True, "tasks": remaining})
@@ -415,7 +448,7 @@ def _record_filing(
     pre-await snapshot, which would silently revert concurrent edits.
     """
     with _TASKS_LOCK:
-        tasks = read_normalized(meeting_id, root)
+        tasks = read_normalized(meeting_id, root, for_update=True)
         for index, task in enumerate(tasks):
             if task["id"] == task_id:
                 tasks[index] = {
@@ -460,7 +493,7 @@ async def handle_file_task(request: web.Request) -> web.Response:
     meeting_id = _meeting_id(request)
     body = await json_body(request)
     root = data_root(request)
-    task_id = field_str(body, "id", required=True, max_len=64)
+    task_id = field_str(body, "id", required=True, max_len=_MAX_TASK_ID_CHARS)
 
     # One critical section from the read that decides whether to file, through the
     # provider call, to the record. See `_FILING_LOCK`: the provider call is an await,
@@ -483,9 +516,7 @@ async def _file_task_locked(meeting_id: str, task_id: str, root: Any) -> web.Res
     # the bug. Read from the fresh list, so it reflects the first filing's write.
     if target.get("review_status") == k.REVIEW_PUSHED:
         audit("meetings.task_file", f"duplicate:{task_id}", outcome="ok")
-        return web.json_response(
-            {"ok": True, "ref": target.get("filed_ref") or {}, "tasks": tasks}
-        )
+        return web.json_response({"ok": True, "ref": target.get("filed_ref") or {}, "tasks": tasks})
 
     provider = taskprov.get_task_provider(str(config.get("task_provider") or ""), root)
     draft = taskprov.TaskDraft(
@@ -515,7 +546,8 @@ async def _file_task_locked(meeting_id: str, task_id: str, root: Any) -> web.Res
                 "ok": False,
                 "error": f"could not file the task ({type(exc).__name__})",
                 "code": "task_file_failed",
-            }, status=502
+            },
+            status=502,
         )
 
     # RE-READ under the lock rather than writing the list captured before the
@@ -555,7 +587,7 @@ def _set_review_state(
     for them to resolve and the response still carries the true list.
     """
     with _TASKS_LOCK:
-        tasks = read_normalized(meeting_id, root)
+        tasks = read_normalized(meeting_id, root, for_update=True)
         found = False
         for index, task in enumerate(tasks):
             if task["id"] == task_id:
@@ -575,7 +607,7 @@ async def handle_review_task(request: web.Request) -> web.Response:
     """Set a task's review state (pending / archived)."""
     meeting_id = _meeting_id(request)
     body = await json_body(request)
-    task_id = field_str(body, "id", required=True, max_len=64)
+    task_id = field_str(body, "id", required=True, max_len=_MAX_TASK_ID_CHARS)
     state = field_str(body, "review_status", required=True, max_len=32)
     if state not in (k.REVIEW_PENDING, k.REVIEW_ARCHIVED):
         raise BadRequest("review_status must be 'pending' or 'archived'")

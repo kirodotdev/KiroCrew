@@ -108,12 +108,13 @@ class TestSharedSpellings:
         )
 
     def test_siblings_read_their_spelling_from_the_home(self) -> None:
-        """The three sites outside the two original homes compile the shared strings."""
+        """The core sites outside the two original homes compile the shared strings.
+
+        A built-in app that compiles one of them too pins that in its own ``tests/``.
+        """
         from kiro_crew import sel
-        from kiro_crew.apps.builtins.pptx_maker.backend import routes as pptx_routes
         from kiro_crew.metrics import schema as metrics_schema
 
-        assert pptx_routes._ENCODED_CREDENTIAL_RE.pattern == cp.AWS_KEY_ID
         assert metrics_schema._HIGH_ENTROPY_PATTERNS[0].pattern == cp.AWS_KEY_ID
         # SEL shares only the PREFIXES: its body is mixed-case and boundary-bounded,
         # a different pattern rather than another spelling of the same one.

@@ -16,6 +16,10 @@ from aiohttp import web
 from kiro_crew.dashboard import chat, handlers
 from kiro_crew.dashboard.handlers._shared import guarded_route
 from kiro_crew.dashboard.remote_chat_guard import remote_chat_refusal
+from kiro_crew.dashboard.session_files import (
+    api_project_session_file_diff,
+    api_project_session_files,
+)
 
 
 def _local_files(handler: Callable[..., Any]) -> Callable[..., Any]:
@@ -65,9 +69,12 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/project/git/status", _local_files(handlers.api_project_git_status))
     app.router.add_get("/api/project/git/log", _local_files(handlers.api_project_git_log))
     app.router.add_get("/api/project/git/repos", handlers.api_project_git_repos)
+    app.router.add_get("/api/project/session-files", api_project_session_files)
+    app.router.add_get("/api/project/session-file-diff", api_project_session_file_diff)
     app.router.add_get("/api/project/tree", handlers.api_project_tree)
     app.router.add_post("/api/upload", handlers.api_upload)
     app.router.add_post("/api/upload/file", handlers.api_upload_file)
+    app.router.add_post("/api/directory-upload", handlers.api_directory_upload)
     app.router.add_post("/api/slack/upload-file", handlers.api_slack_upload_file)
     app.router.add_post("/api/channel/upload-file", handlers.api_channel_upload_file)
     app.router.add_post("/api/slack/pins", handlers.api_slack_pins)

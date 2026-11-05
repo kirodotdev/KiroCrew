@@ -121,7 +121,7 @@ class TestCliFileOnlyUninstallDoesNotClaimAStop:
             patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value=""),
             patch("kiro_crew.cli_commands.trust_grant_removal_blocked", return_value=""),
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
-            patch("kiro_crew.cli_commands.deregister_app"),
+            patch("kiro_crew.cli_commands.deregister_app", return_value=MagicMock(errors=[])),
             patch("kiro_crew.cli_commands.get_app_manifest", return_value=_manifest(entry_point)),
             patch("kiro_crew.cli_commands.recorded_backend_port", return_value=recorded_port),
             patch(

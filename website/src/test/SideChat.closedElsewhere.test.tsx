@@ -25,6 +25,7 @@ vi.mock('../api/client', () => ({
     sideTurn: vi.fn(),
     sideTools: vi.fn().mockResolvedValue({ read_only_tools: true }),
     sideQueueEdit: vi.fn().mockResolvedValue({ ok: true, depth: 1 }),
+    sideClose: vi.fn().mockResolvedValue({ ok: true, was_open: true }),
     chatSlots: vi.fn().mockResolvedValue([]),
     voiceConfig: vi.fn().mockResolvedValue({ autoSpeak: false }),
     approvals: vi.fn().mockResolvedValue([]),
@@ -1003,5 +1004,93 @@ describe('SideChat: the conversation closes in another tab while a question is o
     await act(async () => { loseResponse(new Error('response lost')); await Promise.resolve() })
 
     await waitFor(() => expect(readSideChatDraft(SLOT)).toBe('edited wording'))
+  })
+})
+
+describe('SideChat: says why the conversation emptied when another tab refreshes the context', () => {
+  const NOTICE = 'Refreshing the context in another tab cleared this side chat'
+
+  beforeEach(() => {
+    localStorage.clear()
+    clearSideChatDrafts()
+    WS_INSTANCES.length = 0
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    vi.mocked(api.sideClose).mockClear()
+    vi.mocked(api.sideQueueEdit).mockReset().mockResolvedValue({ ok: true, depth: 1 })
+  })
+
+  afterEach(() => {
+    act(() => {
+      appStore.dispatch(sideClose(SLOT))
+      clearSideChatDrafts()
+    })
+    vi.unstubAllGlobals()
+  })
+
+  /** A settled exchange, with a question this tab queued behind it. */
+  async function showConversation() {
+    act(() => {
+      appStore.dispatch(sideClose(SLOT))
+      appStore.dispatch(sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q1', message_id: 'u1' }))
+      appStore.dispatch(sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'answer one', final: true, message_id: 'a1' }))
+      appStore.dispatch(sseSideQueue({ slot: SLOT, action: 'push', queue_id: 'q-mine', content: 'my queued question', raw: true }))
+    })
+    renderWithProviders(<><SocketHarness /><SideChat slot={SLOT} /></>, { store: appStore })
+    await screen.findByText('answer one')
+    return WS_INSTANCES[0]
+  }
+
+  it('says another tab cleared it, beside the question it handed back, until a new conversation begins', async () => {
+    const socket = await showConversation()
+
+    act(() => {
+      socket.simulateMessage({ type: 'chat.side_closed', data: { kind: 'side', slot: SLOT, origin_client: 'another-tab' } })
+    })
+
+    expect(await screen.findByText(NOTICE)).toHaveAttribute('role', 'status')
+    expect(screen.queryByText('answer one')).toBeNull()
+    expect(screen.getByLabelText('Ask a side question')).toHaveValue('my queued question')
+
+    act(() => {
+      socket.simulateMessage({ type: 'chat.side_result', data: { slot: SLOT, run_id: 'r2', role: 'user', content: 'asked in another tab', message_id: 'u2' } })
+    })
+
+    await screen.findByText('asked in another tab')
+    expect(screen.queryByText(NOTICE)).toBeNull()
+  })
+
+  it('replaces an error from the closed conversation with the close notice', async () => {
+    vi.mocked(api.sideQueueEdit).mockRejectedValueOnce(new Error('queue entry not found'))
+    const socket = await showConversation()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByLabelText('Edit queued message'))
+    await user.clear(screen.getByLabelText('Edit queued message'))
+    await user.type(screen.getByLabelText('Edit queued message'), 'edited wording{Enter}')
+    expect(await screen.findByText('Could not update that queued question')).toBeVisible()
+
+    act(() => {
+      socket.simulateMessage({ type: 'chat.side_closed', data: { kind: 'side', slot: SLOT, origin_client: 'another-tab' } })
+    })
+
+    expect(await screen.findByText(NOTICE)).toHaveAttribute('role', 'status')
+    expect(screen.queryByText('Could not update that queued question')).toBeNull()
+  })
+
+  it('says nothing new in the tab whose Refresh context cleared it', async () => {
+    const socket = await showConversation()
+    act(() => {
+      appStore.dispatch(sseSideQueue({ slot: SLOT, action: 'drain', queue_id: 'q-mine' }))
+    })
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('Refresh context'))
+    await waitFor(() => expect(api.sideClose).toHaveBeenCalledWith(SLOT))
+    act(() => {
+      socket.simulateMessage({ type: 'chat.side_closed', data: { kind: 'side', slot: SLOT, origin_client: TAB_ID } })
+    })
+
+    await waitFor(() => expect(screen.queryByText('answer one')).toBeNull())
+    expect(screen.queryByText(NOTICE)).toBeNull()
   })
 })

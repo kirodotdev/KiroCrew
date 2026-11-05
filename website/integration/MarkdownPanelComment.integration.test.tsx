@@ -133,14 +133,16 @@ describe('MarkdownPanel comment/copy flow', () => {
     expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
   })
 
-  it('copies text to clipboard when Copy is clicked', () => {
+  it('copies text to clipboard when Copy is clicked', async () => {
     render(<Providers><MarkdownPanel {...defaultProps} /></Providers>)
     const preview = document.querySelector('.msg-content')!
     mockSelectionInContainer(preview as HTMLElement, 'test paragraph')
     fireEvent.mouseUp(document, { clientX: 100, clientY: 80 })
     act(() => { vi.advanceTimersByTime(60) })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    })
     expect(writeText).toHaveBeenCalledWith('test paragraph')
   })
 

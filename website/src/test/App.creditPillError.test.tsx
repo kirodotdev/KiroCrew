@@ -51,6 +51,8 @@ vi.mock('../api/client', () => ({
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
+    // ThemeProvider's catalog query retries every 1s, 2s, 4s... until a read succeeds, and each failed retry notifies it.
+    themes: vi.fn().mockResolvedValue({ themes: [] }),
   },
   isAuthBannerShown: vi.fn(() => false),
   ApiError: class ApiError extends Error {
@@ -250,6 +252,9 @@ describe('top-bar credit segment — failed vs loading', () => {
     // The modal re-renders with the no-reading notice and the primary Refresh...
     await screen.findByText(i18nT('components.kiroAccountModal.credit_usage_no_reading'))
     expect(screen.getByRole('button', { name: i18nT('components.kiroAccountModal.refresh_balance') })).toBeEnabled()
+    // AppShell retires its entrance class from a 600ms backstop timer armed at mount, then re-renders. Let that
+    // update land before the window opens, or it arrives mid-window outside act. The 5000 is the ceiling for it.
+    await waitFor(() => expect(screen.getByTestId('dashboard-shell')).not.toHaveClass('animate-rise'), { timeout: 5000 })
     // ...and is still there once any close (and its exit animation) would have
     // landed. An auto-close on `none` removes the dialog well inside this window.
     await new Promise(resolve => setTimeout(resolve, 600))

@@ -14,7 +14,6 @@ import { OPERAND_QUOTE_PAIRS, DEFAULT_QUOTE_PAIR } from '../../scripts/lib/qa-ch
 import { CATALOGS } from './catalogs'
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE } from './languages'
 import { BULK_DELETE_TOKEN } from '../pages/SchedulePage'
-import { BULK_PR_CLOSE_TOKEN, SEQUENTIAL_MERGE_TOKEN } from '../apps/issue-radar/components/PrBulkBar'
 
 function flatten(obj: unknown, prefix = ''): Record<string, string> {
   const out: Record<string, string> = {}
@@ -58,68 +57,26 @@ describe('bulk-delete confirmation token', () => {
     }
   })
 
-  it('the PR bulk-close token is a code constant, never a catalog value', () => {
-    // Same rule, second call site: Issue Radar's bulk close gates on a typed
-    // token. The hazard is identical — a translated token locks every non-English
-    // user out of the action — but the guard has to name this token explicitly,
-    // because the assertion above only scans the `pages.schedulePage.` prefix.
-    expect(BULK_PR_CLOSE_TOKEN).toBe('close prs')
-    // It must not collide with ANY label in the bar, in any language: a token equal
-    // to the button the user just pressed can be satisfied by copying that button,
-    // which is not the deliberate second act a confirmation is for.
-    for (const { code } of AUTHORED) {
-      const offenders = Object.entries(FLAT[code])
-        .filter(([k, v]) =>
-          k.startsWith('apps.issueRadar.components.prBulkBar.')
-          && v.trim().toLowerCase() === BULK_PR_CLOSE_TOKEN)
-        .map(([k]) => k)
-      expect(offenders, `${code} exposes the PR close token as copy: ${offenders.join(', ')}`)
-        .toEqual([])
-    }
-  })
-
-  it('the PR sequential-merge token is a code constant, never a catalog value', () => {
-    // Third call site, same rule. This token guards the one IRREVERSIBLE action in the
-    // bar, so a translation that happened to equal it would be the worst version of
-    // this bug: the confirmation could be satisfied by copying a visible label.
-    expect(SEQUENTIAL_MERGE_TOKEN).toBe('merge prs')
-    // And it must differ from the close token, or typing one would arm the other —
-    // two irreversibly different actions behind one phrase.
-    expect(SEQUENTIAL_MERGE_TOKEN).not.toBe(BULK_PR_CLOSE_TOKEN)
-    for (const { code } of AUTHORED) {
-      const offenders = Object.entries(FLAT[code])
-        .filter(([k, v]) =>
-          k.startsWith('apps.issueRadar.components.prBulkBar.')
-          && v.trim().toLowerCase() === SEQUENTIAL_MERGE_TOKEN)
-        .map(([k]) => k)
-      expect(offenders, `${code} exposes the PR merge token as copy: ${offenders.join(', ')}`)
-        .toEqual([])
-    }
-  })
-
-  it('keeps the instruction verb separate from the "Type" column header', () => {
+  it('keeps the instruction sentence separate from the "Type" column header', () => {
     // English "Type" is a noun in the table header and an imperative verb in
     // the confirmation. One shared key forced translators to pick one meaning,
     // and es/pt both picked the noun ("Tipo delete para confirmar"), which is
-    // not an instruction. Two keys is the fix; this asserts they stay two.
+    // not an instruction. The instruction is its own whole-sentence key.
     for (const { code } of AUTHORED) {
-      expect(FLAT[code]['pages.schedulePage.type_verb_to_confirm'],
-        `${code} is missing the verb form`).toBeTruthy()
+      expect(FLAT[code]['pages.schedulePage.type_token_to_confirm'],
+        `${code} is missing the instruction`).toBeTruthy()
       expect(FLAT[code]['pages.schedulePage.type'],
         `${code} is missing the column header`).toBeTruthy()
     }
   })
 
-  it('does not reuse the column-header noun as the instruction verb', () => {
-    // In English the two are legitimately the same word. In a language that
-    // distinguishes them, an identical value means the noun leaked into the
-    // instruction — the exact es/pt defect.
-    const same = NON_DEFAULT.filter(({ code }) =>
-      FLAT[code]['pages.schedulePage.type_verb_to_confirm']
-        === FLAT[code]['pages.schedulePage.type'])
-      .map(({ code }) => code)
-    expect(same, `verb and noun forms are identical in: ${same.join(', ')} — `
-      + 'the instruction likely reads as a noun').toEqual([])
+  it('keeps exactly one <token/> slot in the instruction, in every language', () => {
+    // The token renders through the slot, so a value that drops it hides the
+    // word the user must type, and a doubled one shows it twice.
+    for (const { code } of AUTHORED) {
+      const v = FLAT[code]['pages.schedulePage.type_token_to_confirm']
+      expect(v.split('<token/>').length - 1, `${code}: ${v}`).toBe(1)
+    }
   })
 })
 
@@ -131,9 +88,10 @@ describe('destructive confirmations are translated', () => {
    * cosmetic one.
    */
   const DESTRUCTIVE = [
-    'pages.schedulePage.this_permanently_removes_the_selected_job_one',
-    'pages.schedulePage.this_permanently_removes_the_selected_job_other',
-    'pages.schedulePage.and_their_run_history_this_action_cannot_be_undo',
+    'pages.schedulePage.bulk_delete_removes_jobs_and_history_one',
+    'pages.schedulePage.bulk_delete_removes_jobs_and_history_other',
+    'pages.schedulePage.delete_n_scheduled_jobs_title_one',
+    'pages.schedulePage.delete_n_scheduled_jobs_title_other',
     // Auto-Improvement's commit confirmation: it pushes to a real branch and a published
     // commit cannot be recalled, so an operator reading it in English they do not speak is
     // being asked to authorize an irreversible remote change they cannot evaluate.
@@ -196,6 +154,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'crewEditorNext.band_remove_confirm_title', // ability-name operand of the Added-band remove confirmation
   'components.remoteUpdate.confirm', // crew-name operand of the Update remote confirmation, quoted per locale
   'components.remoteUpdate.confirm_hint', // same operand on the confirmation's explanation line
+  'components.remoteUpdate.restart_now_confirm', // crew-name operand of the Restart now confirmation, quoted per locale
   // The code-execution grant's title AND body. #5725 quoted only the title, which left
   // the scope sentence one line under it reading as prose about every app (#6016).
   'components.appstore.trustAppModal.failed', // bare {{app}} #6016
@@ -205,6 +164,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'components.appstore.trustAppModal.scope', // bare {{app}} #6016
   'components.appstore.trustAppModal.title', // bare {{app}} on the code-execution grant #5725
   'pages.appDetailPage.session_approval_confirm_title', // bare {{name}} on the chat-control grant #11192
+  'pages.appsPage.uninstall_app_title', // app-name operand of the Library uninstall confirmation, quoted per locale
   'components.artifactFolderDeleteDialog.delete_folder', // already quoted; pin #5725
   'pages.artifactDeployPage.destroy_confirm',
   'pages.artifactDeployPage.recall_confirm',
@@ -218,6 +178,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.devFleetPage.make_name_live', // ASCII quotes → locale pair #5725
   'pages.devFleetPage.rebase_name', // ASCII quotes → locale pair #5725
   'pages.devFleetPage.remove_name', // ASCII quotes → locale pair #5725
+  'pages.chat.quickAsk.confirm_then', // {{button}} is page-authored DOM text, quoted in all catalogs at introduction
   'pages.overview.agentTemplatesTab.delete_confirm', // quoted in all catalogs at introduction (#12481)
   'pages.overview.promptsTab.delete_confirm', // quoted in all catalogs at introduction (#4634)
   'pages.overview.skillsTab.delete_confirm',
@@ -272,6 +233,9 @@ export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
  * kind-word form and record that decision.
  */
 export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
+  'pages.membersPage.dashboard_download_confirm_body':
+    'kind-word form: the {{name}} operand is the bot\'s display name, joined to its kind '
+    + 'word ("{{name}}\'s Dashboard"), in a confirm for a download, which removes nothing',
   'components.redaction.link_open_confirm_title':
     'the {{host}} operand is a hostname the blocked-link record already passed through a '
     + 'strict host shape (letters, digits, dots, hyphens, underscores, or a bracketed IPv6 '
@@ -281,6 +245,9 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     + 'link_open_confirm_title, so it cannot carry a space or a quote',
   'components.redaction.link_open_confirm_body':
     'the {{chars}} operand is a non-negative integer character count, never user text',
+  'pages.chatSidebar.resume_all_confirm_body':
+    'the {{limit}} operand is RESUME_ALL_MAX_RUNNING, a positive integer constant in code, '
+    + 'never user text',
   'components.awsConsentGate.confirmed_on':
     'not a confirmation prompt: a past-tense receipt fragment whose only operand is a '
     + 'machine-formatted date from fmtDate, never user-supplied text',

@@ -21,8 +21,17 @@ from typing import Any, TypeVar
 from aiohttp import web
 
 from kiro_crew import model_registry
-from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, is_valid_timezone, parse_time_string
-from kiro_crew.cron_service.model import validate_auto_pause_after_failures
+from kiro_crew.cron import (
+    CronStoreBusy,
+    CronStoreUnreadable,
+    is_valid_timezone,
+    never_fires_warning,
+    parse_time_string,
+)
+from kiro_crew.cron_service.model import (
+    validate_alert_after_failures,
+    validate_auto_pause_after_failures,
+)
 from kiro_crew.dashboard.cron_inject import (
     chat_folder_exists,
     chat_folder_move_refuses_store,
@@ -274,13 +283,29 @@ async def api_cron_tools(request: web.Request) -> web.Response:
             status=400,
         )
 
+    presented_token = request.headers.get("X-Session-Token", "")
+
     def dispatch() -> str:
+        # A tool that calls back into the gateway (cron_add creating a missing
+        # folder through POST /api/cron-folders) must name the same session
+        # behind an attestation, or that route answers it as a caller it cannot
+        # name. Forward the caller's own token, and only when it verifies to the
+        # session this request was already verified as.
+        token = ""
+        if isinstance(presented_token, str) and presented_token:
+            from kiro_crew.session_token_sig import verify_session_token
+
+            if verify_session_token(presented_token) == actual:
+                token = presented_token
         # ContextVars are isolated by to_thread. Restore the prior value even
         # on failure; no caller identity survives into a later request.
         previous = current_caller()
         set_current_caller(
             CallerContext(
-                session_key=actual, session_type=actual.partition(":")[0], from_gateway=True
+                session_key=actual,
+                session_type=actual.partition(":")[0],
+                from_gateway=True,
+                session_token=token,
             )
         )
         try:
@@ -390,10 +415,9 @@ def _refuse_mate_home_chat_folder(
     except Exception:  # pragma: no cover - audit must never change the outcome
         logger.debug("SEL audit for %s failed", operation, exc_info=True)
     error = (
-        "This schedule's runs are filed in a mate's folder, and only that mate can "
-        "move them out."
+        "This schedule's runs are filed in a Bot's folder, and only that Bot can " "move them out."
         if moving_out
-        else "That chat folder belongs to a mate, so this schedule's runs cannot be "
+        else "That chat folder belongs to a Bot, so this schedule's runs cannot be "
         "filed there. Pick another folder, or choose not to file runs."
     )
     return web.json_response({"error": error, "code": "mate_home_locked"}, status=403)
@@ -445,6 +469,15 @@ async def _persist_holding_folder(
         return await persist()
 
     return await state.hold_folders(_section)
+
+
+def _with_schedule_warnings(body: dict[str, Any], job: Any) -> dict[str, Any]:
+    """Add a ``warnings`` list to a saved job's success body when its cron never fires."""
+    schedule = getattr(job, "schedule", None)
+    warning = never_fires_warning(schedule) if schedule is not None else ""
+    if warning:
+        body["warnings"] = [warning]
+    return body
 
 
 async def api_crons_create(request: web.Request) -> web.Response:
@@ -513,6 +546,11 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if timezone_val and not is_valid_timezone(timezone_val):
         safe_tz, _ = redact_credentials(redact_exfiltration_urls(timezone_val)[0])
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
+    # A "local" (or default) clock time is read in the host's zone: have it read
+    # before the clock becomes a stored instant, which nothing corrects later.
+    from kiro_crew.host_timezone import ensure_host_timezone
+
+    await ensure_host_timezone()
     at_ts, at_err = _resolve_one_shot_at(body, timezone_val)
     if at_err is not None:
         return at_err
@@ -545,6 +583,22 @@ async def api_crons_create(request: web.Request) -> web.Response:
     timeout_secs, timeout_err = timeout_secs_from_body(body)
     if timeout_err is not None:
         return timeout_err
+    # The two failure limits take the PATCH contract: checked before anything is
+    # written, so a bad value is a 400 the form can name, and ``null`` is refused
+    # rather than read as "use the default". An absent key keeps the default.
+    failure_limits: dict[str, int] = {}
+    for limit_field, validate_limit in (
+        ("auto_pause_after_failures", validate_auto_pause_after_failures),
+        ("alert_after_failures", validate_alert_after_failures),
+    ):
+        if limit_field not in body:
+            continue
+        try:
+            failure_limits[limit_field] = validate_limit(body[limit_field])
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": f"invalid_{limit_field}"}, status=400
+            )
     # Same folder_id contract as PATCH /api/crons/{id}: string or null → "",
     # anything else is a 400 so the two entry points cannot diverge.
     folder_id = body.get("folder_id", "")
@@ -637,6 +691,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         add_kwargs["enabled"] = False
     if timeout_secs is not None:
         add_kwargs["timeout_secs"] = timeout_secs
+    add_kwargs.update(failure_limits)
     # An app token's job is stamped as that app's, exactly as ``CronSDK`` stamps
     # it: without the stamp every later reader (the app's own PATCH/DELETE, the
     # cron session's scope, the disabled-app fire gate, uninstall cleanup) takes
@@ -699,7 +754,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
 
     # The fingerprint of the job as this write made it: a card step records it,
     # so its Undo's baseline is what the card made, not a later edit.
-    return web.json_response({"ok": True, "id": job.id, "revision": cron_job_revision(job)})
+    created: dict[str, Any] = {"ok": True, "id": job.id, "revision": cron_job_revision(job)}
+    return web.json_response(_with_schedule_warnings(created, job))
 
 
 async def api_cron_delete(request: web.Request) -> web.Response:
@@ -1007,6 +1063,15 @@ async def api_cron_update(request: web.Request) -> web.Response:
 
         app = _app_caller(request)
         kwargs["audit_actor"] = f"app:{app}" if app else audit_actor(request, "dashboard")
+    if "alert_after_failures" in body:
+        try:
+            kwargs["alert_after_failures"] = validate_alert_after_failures(
+                body["alert_after_failures"]
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_alert_after_failures"}, status=400
+            )
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
     try:
@@ -1039,7 +1104,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
             getattr(job, "chat_folder_id", ""),
         )
     state.push_refresh("crons")
-    return web.json_response({"ok": True, "id": job.id})
+    return web.json_response(_with_schedule_warnings({"ok": True, "id": job.id}, job))
 
 
 async def api_cron_enable(request: web.Request) -> web.Response:

@@ -49,6 +49,7 @@ from typing import Any, Iterator
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
+from kiro_crew.owner_only_files import owner_only_opener
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def _record_lock() -> Iterator[None]:
     path = self_arm_record_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.parent / _LOCK_NAME
-    with open(lock_path, "a+", encoding="utf-8") as fh:
+    with open(lock_path, "a+", encoding="utf-8", opener=owner_only_opener) as fh:
         with platform_compat.file_lock(fh.fileno(), exclusive=True):
             yield
 
@@ -119,7 +120,7 @@ def _write_record(entries: dict[str, dict[str, Any]]) -> None:
     )
 
 
-def record_self_arm(loop_id: str, slot_key: str) -> None:
+def record_self_arm(loop_id: str, slot_key: str, *, default_patrol: bool = False) -> None:
     """Record that *loop_id* on *slot_key* was armed by that session's own turn.
 
     A pure UPSERT of one entry: every other entry is preserved verbatim. The
@@ -136,10 +137,19 @@ def record_self_arm(loop_id: str, slot_key: str) -> None:
     failed write: the caller (the authorizer) treats that as fail-closed -- a
     self-armed loop that cannot be recorded would never be allowed to fire, so
     it must not be reported as armed.
+
+    *default_patrol* records the gateway's fixed default patrol on a crewmate's
+    own thread (``autonudge_authz.admits_member_default_patrol``) instead of a
+    genuine self-arm. Such an entry never answers :func:`is_recorded_self_arm`;
+    only :func:`is_recorded_default_patrol` reads it, and the fire-time guard then
+    also checks that the stored loop still carries the fixed patrol.
     """
+    entry: dict[str, Any] = {"slot_key": str(slot_key), "armed_ts": time.time()}
+    if default_patrol:
+        entry["default_patrol"] = True
     with _record_lock():
         entries = _read_record()
-        entries[str(loop_id)] = {"slot_key": str(slot_key), "armed_ts": time.time()}
+        entries[str(loop_id)] = entry
         _write_record(entries)
 
 
@@ -161,6 +171,27 @@ def is_recorded_self_arm(loop_id: str, slot_key: str) -> bool:
     Total: any failure to read is ``False`` (refuse). Both the id AND the slot
     must match, so a forged loop that reuses a recorded id on a different slot
     does not inherit the authorization.
+
+    A default-patrol grant (:func:`record_self_arm` with ``default_patrol``) is
+    not a self-arm and answers False here, so it vouches for nothing a self-arm
+    does beyond the patrol's own wake.
     """
     entry = _read_record().get(str(loop_id))
-    return entry is not None and entry.get("slot_key") == str(slot_key)
+    return (
+        entry is not None
+        and entry.get("slot_key") == str(slot_key)
+        and entry.get("default_patrol") is not True
+    )
+
+
+def is_recorded_default_patrol(loop_id: str, slot_key: str) -> bool:
+    """Whether the trust record holds a default-patrol grant for *loop_id* on *slot_key*.
+
+    Total like :func:`is_recorded_self_arm`: any failure to read is False.
+    """
+    entry = _read_record().get(str(loop_id))
+    return (
+        entry is not None
+        and entry.get("slot_key") == str(slot_key)
+        and entry.get("default_patrol") is True
+    )

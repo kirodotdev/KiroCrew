@@ -39,12 +39,8 @@ state = aws_control_backup_retention_helpers.state
 class TestUnclaimedArchivesAreReported:
     """An archive no sweep can ever reclaim is a cost, so it is on the record.
 
-    A key this install wrote but recorded no version for is never deleted and holds
-    no ``keep`` slot, so its bytes are billed forever with nothing in the app naming
-    them. Counting them is the difference between a cost an owner can see and one
-    they can only find on an invoice.
-
-    Built without ``_prune``, which records a version for every owned key by design.
+    A key with no recorded version is never deleted and holds no ``keep`` slot. Built
+    without ``_prune``, which records a version for every owned key.
     """
 
     def _sweep(self, drive, rows, recorded, newest):
@@ -135,16 +131,9 @@ class TestUnclaimedArchivesAreReported:
     def test_a_key_the_install_no_longer_remembers_is_not_counted(self, drive, state, audit):
         """The disclosed limit: this is a floor ON the remembered set, not over the prefix.
 
-        A key with neither an ``uploads`` entry nor a version record leaves
-        :func:`retention_owned_keys` entirely, so the sweep filters it out before this
-        measurement and it reads 0 here however many bytes it holds. That stays the
-        contract: this pair is read against the ``keep`` count to say what retention will
-        collect out of the set it can SEE, and absorbing an object nothing has a record of
-        would make it a figure that answers neither question.
-
-        ``unrecorded`` counts it beside this pair and claims nothing about whose it is,
-        so the object is visible without being attributed to anyone. Both halves are
-        asserted here so neither can drift into the other.
+        A key with no ``uploads`` entry and no version record leaves
+        :func:`retention_owned_keys`, so it reads 0 here; ``unrecorded`` counts it
+        instead. Both halves are asserted so neither drifts into the other.
         """
         state(3)
         rows = _archives(backup.KIND_SNAPSHOT, ["01", "02", "03"])
@@ -169,15 +158,9 @@ class TestUnclaimedArchivesAreReported:
 class TestTheUnclaimedFloorReachesTheStatusRead:
     """The audit event is not where an operator decides whether retention is working.
 
-    The sweep already measured the archives it can never retire, but the counts landed
-    only in a SEL event and a log line. An operator who enables a count to bound their
-    bill reads the status endpoint, sees the count, and has no way to see the part of
-    the bill the count will never touch -- which is the whole reason the bill does not
-    fall. So the last sweep's pair is persisted and served beside it.
-
-    Built on ``TestUnclaimedArchivesAreReported._sweep`` for the same reason that class
-    is: ``_prune`` records a version for every owned key by design, so an unclaimed key
-    cannot be produced through it.
+    An operator reads the status endpoint, so the last sweep's pair is persisted and
+    served there. Built on ``TestUnclaimedArchivesAreReported._sweep``, since ``_prune``
+    cannot produce an unclaimed key.
     """
 
     _sweep = TestUnclaimedArchivesAreReported._sweep
@@ -313,15 +296,9 @@ class TestTheUnclaimedFloorReachesTheStatusRead:
 class TestVersionRecordsOutliveThePanelHistory:
     """A version record's lifetime is the ARCHIVE's, not the 20-per-kind listing's.
 
-    ``MAX_REMEMBERED_UPLOADS`` is a number chosen for a panel, so it must not decide
-    what retention is able to retire. An install pushing nightly with retention off
-    (the shipped default) passes that bound on its 201st push; every archive behind it
-    keeps its version record, so a keep count enabled later can still reach it. Without
-    a recorded version the ownership test refuses an archive and its bytes are billed
-    for as long as the bucket keeps it, which is the floor these tests hold at zero.
-
-    A record ends only when a listing the sweep trusted proves its object is gone, with
-    ``MAX_RECORDED_VERSIONS`` as a ceiling rather than a horizon.
+    ``MAX_REMEMBERED_UPLOADS`` is sized for a panel, so it must not decide what retention
+    can retire. A record ends only when a trusted listing proves its object gone, with
+    ``MAX_RECORDED_VERSIONS`` as a ceiling.
     """
 
     def _sweep(self, drive, *, kind=backup.KIND_SNAPSHOT, newest="", install=INSTALL):
@@ -395,13 +372,9 @@ class TestVersionRecordsOutliveThePanelHistory:
         assert len(held) == backup.MAX_REMEMBERED_UPLOADS + 1
 
     def test_an_archive_whose_panel_record_aged_out_is_now_retired(self, drive, state):
-        """The reclaim this whole change exists for, end to end.
+        """An archive absent from ``uploads`` but in ``upload_versions`` is retired.
 
-        The oldest archive is absent from ``uploads`` (its panel entry aged out) and
-        present in ``upload_versions``. Before this change the sweep filtered it out of
-        the listing on the ``uploads`` membership test alone, so it could never be a
-        candidate however old it was. It is retired here on the SAME proof as any other
-        archive: the recorded id is the version the listing shows as current.
+        Same proof as any other archive: the recorded id is the listing's current version.
         """
         state(1)
         rows = _archives(backup.KIND_SNAPSHOT, ["01", "02", "03"])
@@ -559,14 +532,8 @@ class TestVersionRecordsOutliveThePanelHistory:
     def test_a_corrupted_record_map_is_left_alone_rather_than_emptied(self, drive, state):
         """Driven DIRECTLY, because the sweep cannot reach this branch.
 
-        A corrupted ``upload_versions`` means :func:`uploaded_versions` reads empty, so no
-        key can pass ``_current_version_is_ours`` and the sweep refuses at its
-        trusted-listing gate before the prune runs -- which the test below pins. Driving
-        the sweep here therefore passed with the guard replaced by an unconditional wipe:
-        it proved the gate, not the guard. So the guard is exercised through its own
-        function, and what it protects is real either way -- publishing an empty map from
-        here would throw away every version record on the strength of one bad read, and
-        rebuilding a corrupted level is `_merge_uploads`'s decision, not this one.
+        A corrupted map makes the sweep refuse at its trusted-listing gate first, so a
+        sweep-driven test would pass with the guard replaced by a wipe.
         """
         state(3)
         rows = _archives(backup.KIND_SNAPSHOT, ["01", "02"])
@@ -608,16 +575,9 @@ class TestVersionRecordsOutliveThePanelHistory:
 class TestTheBackstopSaysWhatItDropped:
     """A bound bounds every field it retains, and its overflow is COUNTED out loud.
 
-    ``MAX_RECORDED_VERSIONS`` is the one place left that can still drop a version
-    record without a listing having proved anything. What it drops is not display
-    history: it is the proof that makes an archive retireable, so those archives stop
-    being collectable. Silently, a truncated tail reads exactly like a population that
-    never held those records -- and with retention off the sweep returns before any
-    listing, so no later measurement covers them either.
-
-    The cap is monkeypatched small rather than exercised at 5001 entries: the number is
-    pinned by its own sibling test above, while what these assert is the MECHANISM, and
-    a five-thousand-entry fixture would buy nothing but runtime.
+    ``MAX_RECORDED_VERSIONS`` drops the proof that makes an archive retireable, and a
+    silent truncation looks like records that never existed. The cap is patched small;
+    its value is pinned by a sibling test.
     """
 
     def test_the_persisted_map_counts_and_names_what_it_drops(self, monkeypatch, caplog):
@@ -684,15 +644,9 @@ class TestTheBackstopSaysWhatItDropped:
 class TestUnrecordedObjectsAreCountedWithoutBeingClaimed:
     """The other half of the bill, counted and left strictly alone.
 
-    ``unclaimed`` is a floor on the archives this install REMEMBERS, and it reads 0 for
-    an object the sweep has no record of at all -- those are filtered out before that
-    measurement is taken. So before this pair they were counted nowhere: an operator
-    enabling a keep count saw a zero floor and a bill that did not fall.
-
-    The count asserts nothing about whose they are, and nothing acts on it. Two things
-    land in it and this code cannot separate them: this install's own archives whose
-    records aged out under the old bound, and another writer's objects under a prefix
-    that is co-writable by design.
+    ``unclaimed`` reads 0 for objects with no record at all. The count claims nothing
+    about whose they are: this install's lost records and another writer's objects
+    under the co-writable prefix look the same.
     """
 
     _sweep = TestUnclaimedArchivesAreReported._sweep

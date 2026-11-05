@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { appPathname } from '@/lib/basePath'
+import { runLayoutFormChange } from '@/lib/layoutFormTransition'
 
 /* Exported for the top-bar rung-budget test: the <640px icon-only rung base in
    index.css needs the desktop readouts to be unreachable below the pill's
@@ -23,31 +24,94 @@ function currentMql(): MediaQueryList | null {
 }
 
 // A single missed or deferred `change` delivery used to strand the breakpoint;
-// these only notify — getSnapshot still reads .matches, so a no-op wake bails.
+// these only notify — a no-op wake bails.
 const WINDOW_RECHECK_EVENTS = ['orientationchange', 'resize', 'pageshow'] as const
 // visibilitychange fires at the document, not the window.
 const DOCUMENT_RECHECK_EVENTS = ['visibilitychange'] as const
 
-function subscribe(cb: () => void) {
-  // Closed over, so the cleanup detaches from the SAME list this attached to even if
+// ONE set of listeners for every consumer, so a form change reaches all of them
+// in the same synchronous update: `runLayoutFormChange` wraps that update in a
+// view transition, which needs the whole old form captured before ANY consumer
+// re-renders and the whole new form in place when its callback returns. A
+// listener per consumer would let consumers flip one at a time.
+const listeners = new Set<() => void>()
+// The form every consumer is currently rendering. Moves only when the listeners
+// are notified, so a re-render that happens between the media query flipping
+// and the transition's callback (another resize handler's state update) still
+// draws the old form. `null` while nothing is subscribed: reads go live.
+let committed: boolean | null = null
+let attachedMql: MediaQueryList | null = null
+
+function readLive() {
+  return currentMql()?.matches ?? false
+}
+
+function notifyAll() {
+  for (const cb of [...listeners]) cb()
+}
+
+// The form a started switch is heading to, until its update runs. One resize
+// fires both the list's `change` and the window's `resize`, and a view
+// transition runs its update a frame later, so the second signal arrives while
+// the first switch is still pending; starting another would cut the first one
+// short.
+let pending: boolean | null = null
+
+function onSignal(e?: Event) {
+  const next = readLive()
+  if (next === pending) return
+  if (committed === null || next === committed) { pending = null; committed = next; notifyAll(); return }
+  pending = next
+  // The update commits the form the viewport has WHEN it runs: a resize back
+  // across the breakpoint before then leaves nothing to switch.
+  // Every consumer may have unmounted before it runs; reads then stay live.
+  runLayoutFormChange(() => {
+    pending = null
+    if (listeners.size === 0) return
+    committed = readLive()
+    notifyAll()
+  }, { toNarrow: next, cause: e?.type ?? 'change' })
+}
+
+function attach() {
+  // Closed over, so detaching reaches the SAME list this attached to even if
   // `window.matchMedia` is replaced while the subscription is live.
-  const mql = currentMql()
-  mql?.addEventListener('change', cb)
+  attachedMql = currentMql()
+  attachedMql?.addEventListener('change', onSignal)
   if (typeof window !== 'undefined') {
-    for (const type of WINDOW_RECHECK_EVENTS) window.addEventListener(type, cb)
-    for (const type of DOCUMENT_RECHECK_EVENTS) document.addEventListener(type, cb)
+    for (const type of WINDOW_RECHECK_EVENTS) window.addEventListener(type, onSignal)
+    for (const type of DOCUMENT_RECHECK_EVENTS) document.addEventListener(type, onSignal)
   }
+}
+
+function detach() {
+  attachedMql?.removeEventListener('change', onSignal)
+  attachedMql = null
+  if (typeof window !== 'undefined') {
+    for (const type of WINDOW_RECHECK_EVENTS) window.removeEventListener(type, onSignal)
+    for (const type of DOCUMENT_RECHECK_EVENTS) document.removeEventListener(type, onSignal)
+  }
+}
+
+function subscribe(cb: () => void) {
+  if (listeners.size === 0) {
+    attach()
+    committed = readLive()
+  } else if (currentMql() !== attachedMql) {
+    // `window.matchMedia` was replaced under a live subscription: follow the new list.
+    attachedMql?.removeEventListener('change', onSignal)
+    attachedMql = currentMql()
+    attachedMql?.addEventListener('change', onSignal)
+  }
+  listeners.add(cb)
   return () => {
-    mql?.removeEventListener('change', cb)
-    if (typeof window !== 'undefined') {
-      for (const type of WINDOW_RECHECK_EVENTS) window.removeEventListener(type, cb)
-      for (const type of DOCUMENT_RECHECK_EVENTS) document.removeEventListener(type, cb)
-    }
+    listeners.delete(cb)
+    if (listeners.size === 0) { detach(); committed = null; pending = null }
   }
 }
 
 function getSnapshot() {
-  return currentMql()?.matches ?? false
+  return committed ?? readLive()
 }
 
 function getServerSnapshot() {

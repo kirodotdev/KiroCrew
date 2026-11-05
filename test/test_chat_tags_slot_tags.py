@@ -15,6 +15,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state, _make_tags_app
 
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.dashboard.state_parts import slot_sidebar
+from kiro_crew.testing.clock import ManualClock
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _hermetic_signing_secret = chat_tags_helpers._hermetic_signing_secret
@@ -239,8 +241,7 @@ class TestSlotTags:
         assert all(new_revision > old for old in old_revisions)
         # A backward clock step cannot regress the claim below the counter.
         monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
-        # flake-ok: pre-existing patch of the stdlib time.time_ns the state module reads, undone by monkeypatch at teardown; moved verbatim, tracked for a de-flake pass
-        monkeypatch.setattr(state_module.time, "time_ns", lambda: 1_000_000)
+        ManualClock(start=0.001).install(monkeypatch, slot_sidebar)
         assert state_module.ensure_tags_revision_epoch() == int(epoch_file.read_text().strip())
         assert state_module.ensure_tags_revision_epoch() > int(new_revision.split(".")[0])
 
@@ -332,8 +333,7 @@ class TestSlotTags:
         epoch_file = tmp_path / state_module._TAGS_REVISION_EPOCH_FILE
         epoch_file.write_text("garbage\n")
         # Backward clock: far below any epoch a healthy process would have claimed.
-        # flake-ok: pre-existing patch of the stdlib time.time_ns the state module reads, undone by monkeypatch at teardown; moved verbatim, tracked for a de-flake pass
-        monkeypatch.setattr(state_module.time, "time_ns", lambda: 1_000_000)
+        ManualClock(start=0.001).install(monkeypatch, slot_sidebar)
         monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
         monkeypatch.setattr(state_module, "_TAGS_REVISION_SEQ", 0)
         assert state_module.ensure_tags_revision_epoch() is None
@@ -377,12 +377,9 @@ class TestSlotTags:
     async def test_assign_app_token_denied_on_foreign_slot(self, tmp_path, monkeypatch):
         """An app caller gets the indistinguishable 404 and writes nothing.
 
-        Tagging is a write to a session's own state, the same class as filing
-        (``api_chat_slot_folder``), and the ``chat_tag_assign`` MCP tool reaches
-        this route on behalf of app agents whose visibility is only scoped
-        client-side — so the boundary must hold here. Both an UNSCOPED slot and
-        another app's slot answer ``slot_not_found``: a distinct code per reason
-        would make the route an existence oracle.
+        ``chat_tag_assign`` reaches this route for app agents scoped only client-side. An
+        UNSCOPED slot and another app's slot both answer ``slot_not_found``, so the route
+        is no existence oracle.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -487,11 +484,8 @@ class TestSlotTags:
     ):
         """Ownership is re-asked under the write lock, not only before the awaits.
 
-        The pre-await check passes (the app's slot is the only claimant); a
-        foreign slot then binds to the same transcript while the body is being
-        read. The under-lock re-check must see the new claimant and refuse
-        with nothing saved — otherwise the earlier answer is stale by the time
-        the write lands.
+        A foreign slot binds to the transcript while the body is read; the under-lock
+        re-check must refuse with nothing saved.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -1084,18 +1078,11 @@ class TestSlotTags:
 
     @pytest.mark.asyncio
     async def test_non_person_signal_enumeration_each_leg_gates(self, tmp_path, monkeypatch):
-        """Regression guard on the gate's non-person enumeration AS IT STANDS.
-        Person-identity is the absence of three signals — internal-secret
-        transport, a resolved app claim, a ``member:`` principal — and this test
-        pins that each of those three independently causes gating while the
-        person (presenting none) is not gated, on a row-backed person-reserved
-        tag. It does NOT prove a hypothetical fourth principal class would fail:
-        the enumeration is the accepted contract (keying on the mint path's
-        positive owner predicate was rejected because it gates the person on a
-        no-owner install), so a new auth representation must be added to this
-        enumeration AND to this test together. The sibling fences
-        (``member_slot_write_refused``, the app-isolation check) key on the same
-        three representations."""
+        """Each non-person signal alone gates a person-reserved tag; the person is not gated.
+
+        The signals are internal-secret transport, an app claim and a ``member:`` principal.
+        A new auth representation must be added to the enumeration AND to this test.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from aiohttp import web as _web
 

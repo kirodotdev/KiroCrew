@@ -15,12 +15,16 @@ happens to have.
 """
 
 import contextlib
+import inspect
 import io
+from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew import cli_doctor
+from kiro_crew.acp.types import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk import INSTALLED, MISSING, UNKNOWN, BackendInstallState
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 
 
 def _state(installed: str, **over) -> BackendInstallState:
@@ -32,7 +36,14 @@ def _state(installed: str, **over) -> BackendInstallState:
     )
 
 
-def _report(monkeypatch, state, *, on_path: bool = True) -> str:
+def _report(
+    monkeypatch,
+    state,
+    *,
+    on_path: bool = True,
+    required: bool = False,
+    issues: list[str] | None = None,
+) -> str:
     """Run the reporting block with the probe stubbed, capturing stdout.
 
     ``state=None`` stands for a probe that raised: the function catches it and must
@@ -41,7 +52,12 @@ def _report(monkeypatch, state, *, on_path: bool = True) -> str:
     ``on_path=False`` is the case a plain PATH lookup cannot see: the probe resolved
     the adapter through ``CLAUDE_AGENT_ACP_BIN``, a vendored ``node_modules`` or a
     ``mise`` shim, so ``shutil.which`` returns ``None`` for a WORKING install.
+
+    ``required`` stands for a selected role running the harness; pass ``issues`` to
+    read what the row recorded.
     """
+    if issues is None:
+        issues = []
 
     def _probe(_backend):
         if state is None:
@@ -58,7 +74,7 @@ def _report(monkeypatch, state, *, on_path: bool = True) -> str:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         with contextlib.suppress(SystemExit):
-            cli_doctor._doctor_claude_backend()
+            cli_doctor._doctor_claude_backend(issues, required=required)
     return buf.getvalue()
 
 
@@ -139,10 +155,71 @@ def test_the_reporting_does_not_run_the_whole_doctor():
 
 
 @pytest.mark.parametrize("verdict", [INSTALLED, MISSING, UNKNOWN])
-def test_no_verdict_is_a_hard_failure(monkeypatch, verdict):
-    """Claude Code is optional and kiro-cli is the floor, so no verdict may raise."""
-    out = _report(monkeypatch, _state(verdict, missing_components=("claude-agent-acp",)))
+def test_no_verdict_is_a_hard_failure_when_nothing_selects_it(monkeypatch, verdict):
+    """Unselected, Claude Code is optional and kiro-cli is the floor: no issue, no raise."""
+    issues: list[str] = []
+    out = _report(
+        monkeypatch, _state(verdict, missing_components=("claude-agent-acp",)), issues=issues
+    )
     assert "claude-acp:" in out
+    assert issues == []
+
+
+_HALF_INSTALL = {
+    "missing_components": ("claude-agent-acp", "claude"),
+    "install_command": "npm i -g @agentclientprotocol/claude-agent-acp",
+}
+
+
+def test_a_selected_harness_missing_a_component_is_an_issue(monkeypatch):
+    """A selected role spawns this harness, so its absence fails every session.
+
+    Printing "optional agent backend" and ending "ready" sent the operator away
+    with a doctor that passed and a backend that cannot start.
+    """
+    issues: list[str] = []
+    out = _report(monkeypatch, _state(MISSING, **_HALF_INSTALL), required=True, issues=issues)
+    assert "❌ claude-agent-acp, claude not found (a selected backend runs it)" in out
+    assert "optional agent backend" not in out
+    assert "npm i -g @agentclientprotocol/claude-agent-acp" in out
+    assert issues == ["claude-acp: claude-agent-acp, claude not found"]
+
+
+@pytest.mark.parametrize("state", [_state(INSTALLED), _state(UNKNOWN), None])
+def test_a_selected_harness_that_is_installed_or_uncheckable_is_no_issue(monkeypatch, state):
+    """Only a MISSING verdict is evidence of absence; an unanswered check is not."""
+    issues: list[str] = []
+    _report(monkeypatch, state, required=True, issues=issues)
+    assert issues == []
+
+
+def _cfg(main: str, member: str) -> SimpleNamespace:
+    return SimpleNamespace(agent=SimpleNamespace(acp_backend=main, member_acp_backend=member))
+
+
+@pytest.mark.parametrize(
+    ("cfg", "expected"),
+    [
+        (_cfg(ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO), True),
+        (_cfg(ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE), True),
+        (_cfg(ACP_BACKEND_CLAUDE, ACP_BACKEND_CLAUDE), True),
+        (_cfg(ACP_BACKEND_KIRO, ACP_BACKEND_KIRO), False),
+        (_cfg(ACP_BACKEND_KAS, ACP_BACKEND_KIRO), False),
+    ],
+)
+def test_either_selected_role_makes_the_harness_required(cfg, expected):
+    """The main and the crewmate backend each count, by positive identity."""
+    assert cli_doctor._selected_roles_run_claude(cfg) is expected
+
+
+def test_doctor_passes_the_selection_to_the_row():
+    """``_doctor`` hands the row the selection, not a constant.
+
+    Read from source because running ``_doctor`` reaches the host (see the module
+    docstring); the predicate itself is pinned by the test above.
+    """
+    src = inspect.getsource(cli_doctor._doctor)
+    assert "_doctor_claude_backend(issues, required=_selected_roles_run_claude(cfg))" in src
 
 
 @pytest.mark.parametrize("on_path", [True, False])

@@ -27,6 +27,7 @@ import {
 } from '../../components/ui'
 import { activeLocale, fmtDateTime } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 import SegmentedControl from '../../components/SegmentedControl'
 import WorkflowSourceCode from '../../apps/workflows/WorkflowSourceCode'
 import WorkflowsRuns from '../../apps/workflows/WorkflowsRuns'
@@ -101,7 +102,7 @@ export default function WorkflowLibraryTab() {
   const [lastRunId, setLastRunId] = useState('')
   const editorGeneration = useRef(0)
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: ['workflow-definitions'],
     queryFn: () => api.workflowDefinitions(),
   })
@@ -110,6 +111,13 @@ export default function WorkflowLibraryTab() {
     () =>
       definitions.find((definition) => definition.id === selectedId) ?? null,
     [definitions, selectedId],
+  )
+  // Unsaved editor content: a draft that diverges from the definition it was
+  // loaded from (or, with nothing selected, any non-empty editor). Used to
+  // withhold the error hand-off, which unmounts this tab and would discard it.
+  const editorDirty = useMemo(
+    () => !editorsMatch(editor, selected ? editorFromDefinition(selected) : EMPTY_EDITOR),
+    [editor, selected],
   )
   const visible = useMemo(() => {
     const locale = activeLocale()
@@ -528,7 +536,27 @@ export default function WorkflowLibraryTab() {
           )}
 
           {error ? (
-            <p className="text-sm text-danger mt-3">{errorText(error)}</p>
+            // The list read failing was a bare text-danger line: no role=alert
+            // for assistive tech, no retry, no hand-off. ErrorNotice announces
+            // it and the retry refetches the same query. The hand-off unmounts
+            // this tab, so it is offered ONLY when nothing is unsaved -- a draft
+            // being authored (`creating`) or an editor diverging from its source
+            // (`editorDirty`) would otherwise be discarded when the user follows
+            // "Ask the agent".
+            <div className="mt-3 flex flex-col items-start gap-2">
+              {/* No hand-off while anything unsaved is on screen: navigating to
+                  the agent unmounts this tab and would destroy it. Three such
+                  values: a draft being authored (`creating`), an editor that
+                  diverges from its selected definition (`editorDirty`), and a
+                  typed-but-unsent workflow run payload (`runInput`). */}
+              <ErrorNotice
+                message={errorText(error)}
+                askAgent={!creating && !editorDirty && runInput.trim() === ''}
+              />
+              <Btn disabled={isFetching} onClick={() => void refetch()}>
+                {i18nT('pages.overview.workflowLibrary.retry')}
+              </Btn>
+            </div>
           ) : null}
           {mutationError ? (
             <p className="text-sm text-danger mt-3">

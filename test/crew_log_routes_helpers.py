@@ -27,9 +27,8 @@ GATEWAY = "gateway"
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_crew_log_routes*.py modules calls monkeypatch.undo()
-def _isolated_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+def _isolated_home(tmp_path, _floor_monkeypatch):
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     yield
 
 

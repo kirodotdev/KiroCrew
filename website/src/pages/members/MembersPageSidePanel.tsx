@@ -307,17 +307,6 @@ export function useMembersPageSidePanel({
   // in the strip without moving the store, and that tab must load when it is the
   // one on screen.
   const [shownTabId, setShownTabId] = useState<string | null>(null)
-  // Whether the Schedules tab is holding unsaved work. Declared here rather than beside
-  // its own guards because the mount decision below reads it: see `keepMountedForDraft`.
-  const [schedAtStake, setSchedAtStake] = useState(false)
-  // Has the user just accepted a discard? Then retention stands down for that one exit.
-  // A ref, not state: the exit that sets it re-renders the page by itself (it hides the
-  // panel), and the flag must already be true at that render.
-  const schedReleased = useRef(false)
-  // Whether the Schedules section is mounted, readable from the release effect in
-  // MembersPageProfile.tsx without making it depend on a value computed later in
-  // this render (`schedulesMounted`, in MembersPage.tsx).
-  const schedulesMountedRef = useRef(false)
   const activeTabId = shownTabId ?? tabsCtl.activeId
   const dashboardVisible = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
   const [dashboardVisitedFor, setDashboardVisitedFor] = useState<string | null>(null)
@@ -428,7 +417,9 @@ export function useMembersPageSidePanel({
   }, [openSessionOnChatPage, schedAtStakeRef, schedGuardRef])
   const drivingSessions = useMemo(() => {
     if (!activeMemberKey) return []
-    const mine = liveSlots.filter((s) => !!s.created_by && s.created_by === activeMemberKey)
+    // Every session in the mate's tree, by the server's own `mate_root` stamp: an
+    // adopted or released session keeps its birth `created_by` but has left it.
+    const mine = liveSlots.filter((s) => s.key !== activeMemberKey && s.mate_root === activeMemberKey)
     const byKey = new Map(mine.map((s) => [s.key, s]))
     const prev = committedDrivingRef.current
     const sameSet =
@@ -489,8 +480,8 @@ export function useMembersPageSidePanel({
   return {
     panelDefaultW, profileCardW, activeMemberKey, tabsCtl, projectDir, hiddenViews, openMemberSideChat,
     openCrewWorkLog, openCrewView, sessionRoster, retryThreadsFlag, threadsFlagFailed, threadsFlagRetrying,
-    threadsOn, openThreadMid, threadsQuery, closeReplyThread, threadHooks, setShownTabId, schedAtStake,
-    setSchedAtStake, schedReleased, schedulesMountedRef, dashboardVisitedFor, closeOverlay, sidePanelOnScreen,
+    threadsOn, openThreadMid, threadsQuery, closeReplyThread, threadHooks, setShownTabId,
+    dashboardVisitedFor, closeOverlay, sidePanelOnScreen,
     sidePanelHiddenNow, actionError, setActionError, actionInfo, showActionError, revealPanelAfterOpen, openArtifact,
     openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openArtifactGuarded,
     openSessionGuarded, drivingSessions,

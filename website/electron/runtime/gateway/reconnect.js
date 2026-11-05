@@ -7,7 +7,9 @@ const {
   snapshotIncumbentForRespawn,
   recoverIncumbentWithBackoff,
   INCUMBENT_RETRY_STATUS,
+  LOCK_HOLDER_START_GRACE_MS,
 } = require("../../gateway-recovery");
+const { RESPAWN_SUPERSEDED } = require("./respawn-owner");
 
 const ADOPTED_RECOVERY_WAIT_MS = 30_000;
 
@@ -27,6 +29,9 @@ const ADOPTED_RECOVERY_WAIT_MS = 30_000;
  *        ownership of a gateway a service manager rebound.
  * @param {(failure: object|null) => void} deps.setGatewayStartFailure  clears
  *        the start-failure record before each reconnect.
+ * @param {() => Promise<boolean|string>} deps.respawnGateway  the supervisor's
+ *        respawn owner (respawn-owner.js); RESPAWN_SUPERSEDED means an update
+ *        install took over, so the recovery stops without connecting.
  */
 function createReconnect({
   app,
@@ -44,7 +49,7 @@ function createReconnect({
   setGatewayOwnership,
   setGatewayStartFailure,
   checkBackend,
-  startGateway,
+  respawnGateway,
   showLoadingThenConnect,
   showUnrecoverableGatewayError,
   waitForPortFree,
@@ -77,6 +82,30 @@ function createReconnect({
     glog("liveness: external gateway reachable again — refetching token and reconnecting");
     setGatewayStartFailure(null);
     return showLoadingThenConnect(window, BACKEND_URL, { reconnect: true });
+  }
+
+  // A new gateway now answers on the port. Reuse the full boot decision table
+  // for it: a weaker ad-hoc health check could silently adopt a cross-family
+  // or draining process.
+  async function reconnectToNewHolder(window, why) {
+    const owner = await probeGatewayPortOwner(PORT);
+    const health = await fetchHealthInfo();
+    const decision = decideGatewayAction(app.getVersion(), health, {
+      localOwner: owner,
+    });
+    const readiness = await fetchGatewayReadiness();
+    if (window.isDestroyed() || quitting()) return;
+    if (decision.action === "reuse" && readiness !== "shutting-down") {
+      glog(`liveness: ${why} :${PORT} (owner=${owner}, reason=${decision.reason}, readiness=${readiness}) — reconnecting to the restarted gateway`);
+      setGatewayOwnership(classifyAdoptedGateway({
+        reason: decision.reason,
+        localOwner: owner,
+      }));
+      setGatewayStartFailure(null);
+      return showLoadingThenConnect(window, BACKEND_URL, { reconnect: true });
+    }
+    glog(`liveness: :${PORT} was re-bound by an unusable holder (owner=${owner}, action=${decision.action}, readiness=${readiness}) — cannot reconnect or spawn over it`);
+    return showUnrecoverableGatewayError(window, PORT, "held");
   }
 
   async function reconnectOrRespawnAdoptedGateway(window) {
@@ -139,6 +168,32 @@ function createReconnect({
     // there is no pid to wait on; "captured" names the pid to outwait. Both
     // then confirm the socket is free before spawning.
     const incumbentPids = capture.verdict === "released" ? null : capture.pids;
+    const lockNamedHolder = capture.verdict === "captured" && capture.via === "lock";
+    if (lockNamedHolder) {
+      // The lock named a live holder that did not hold the port. It may be
+      // draining, or it may be a gateway still STARTING (it takes the lock
+      // before it binds). Spawning would only be refused by its lock, so wait,
+      // bounded, for it to exit or to start answering. This runs before the
+      // port-free check: a holder that binds meanwhile is a gateway to
+      // reconnect to, not a port conflict.
+      glog(`liveness: gateway.lock holder pid ${incumbentPids} does not hold :${PORT} — waiting up to ${LOCK_HOLDER_START_GRACE_MS}ms for it to exit or start serving`);
+      sendStatus("Waiting for the gateway to finish starting…");
+      const outcome = await waitForIncumbentExit(incumbentPids, "liveness", {
+        // A holder that answers while it shuts down is still draining: keep
+        // waiting for it to exit instead of reconnecting to it.
+        isServing: async () => {
+          try { await checkBackend(HEALTH_URL); }
+          catch { return false; }
+          return (await fetchGatewayReadiness()) !== "shutting-down";
+        },
+        timeoutMs: LOCK_HOLDER_START_GRACE_MS,
+        pollMs: 1000,
+      });
+      if (!window || window.isDestroyed() || quitting()) return;
+      if (outcome === "serving") {
+        return reconnectToNewHolder(window, "gateway.lock holder started serving");
+      }
+    }
     if (!(await waitForPortFree())) {
       glog(`liveness: :${PORT} still held by a process we did not spawn — surfacing port-held instead of waiting forever`);
       return showUnrecoverableGatewayError(window, PORT, "held");
@@ -156,34 +211,16 @@ function createReconnect({
       });
       if (window.isDestroyed() || quitting()) return;
       if (verdict === "rebound") {
-        // Reuse the full boot decision table for the new holder. A weaker ad-hoc
-        // health check could silently adopt a cross-family or draining process.
-        const owner = await probeGatewayPortOwner(PORT);
-        const health = await fetchHealthInfo();
-        const decision = decideGatewayAction(app.getVersion(), health, {
-          localOwner: owner,
-        });
-        const readiness = await fetchGatewayReadiness();
-        if (window.isDestroyed() || quitting()) return;
-        if (decision.action === "reuse" && readiness !== "shutting-down") {
-          glog(`liveness: service manager re-bound :${PORT} (owner=${owner}, reason=${decision.reason}, readiness=${readiness}) — reconnecting to the restarted gateway`);
-          setGatewayOwnership(classifyAdoptedGateway({
-            reason: decision.reason,
-            localOwner: owner,
-          }));
-          setGatewayStartFailure(null);
-          return showLoadingThenConnect(window, BACKEND_URL, { reconnect: true });
-        }
-        glog(`liveness: :${PORT} was re-bound by an unusable holder (owner=${owner}, action=${decision.action}, readiness=${readiness}) — cannot reconnect or spawn over it`);
-        return showUnrecoverableGatewayError(window, PORT, "held");
+        return reconnectToNewHolder(window, "service manager re-bound");
       }
       glog(`liveness: :${PORT} stayed free past the rebind grace — no manager respawned it; spawning our own backend`);
     }
 
-    await waitForIncumbentExit(incumbentPids, "liveness");
+    // A lock-named holder was already outwaited above.
+    if (!lockNamedHolder) await waitForIncumbentExit(incumbentPids, "liveness");
     sendStatus("Starting a fresh gateway…");
     setGatewayStartFailure(null);
-    await startGateway();
+    if ((await respawnGateway()) === RESPAWN_SUPERSEDED) return;
     if (window.isDestroyed() || quitting()) return;
     return showLoadingThenConnect(window, BACKEND_URL, { reconnect: true });
   }

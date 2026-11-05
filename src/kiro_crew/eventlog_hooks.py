@@ -821,19 +821,11 @@ def member_slug_for_slot(slot_key) -> "str | None":
 
         if not members_mod.is_member_session_key(slot_key):
             return None
-        key = slot_key
-        for prefix in ("dashboard_", "dashboard:"):
-            if key.startswith(prefix):
-                key = key[len(prefix) :]
-                break
-        prefix = members_mod.DM_SLOT_KEY_PREFIX
-        if not key.startswith(prefix):
-            return None
         # Through the shared parser, which drops the ``.memory-<store>`` suffix
         # a V2 member's slot key carries. Reading the tail directly leaves the
         # ``.`` in place, validate_slug refuses it, and every durable event for
         # that member is silently dropped.
-        slug = members_mod.slug_from_dm_slot_key(key)
+        slug = members_mod.slug_from_dm_slot_key(members_mod._slot_part(slot_key))
         if slug is None:
             return None
         # Round-trip through validate_slug so a malformed tail reads as "not a

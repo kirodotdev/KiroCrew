@@ -57,27 +57,31 @@ describe('useVirtualChat: height-sync spacer repricing keeps the top visible row
     const { el, state } = makeScroller({ scrollTop: 1000, scrollHeight: 5000, clientHeight: 400 })
     const ref: RefObject<HTMLDivElement | null> = { current: el }
     const items = mkItems(30)
+    // The total each render commits, read during that render (the hook's
+    // `result` only advances after the commit's effects).
+    let total = 0
     const view = renderHook(
-      (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
+      (props: UseVirtualChatOptions<Item>) => {
+        const v = useVirtualChat<Item>(props)
+        total = v.totalHeight
+        return v
+      },
       { initialProps: { items, sessionId: 'anchor-sync', getKey, externalScrollerRef: ref, followOutput: false } },
     )
 
     // Mount a visible row whose screen position SHIFTS between the sync's
-    // anchor capture (first rect read → top 100) and the compensation
-    // effect's re-read after the commit (subsequent reads → top 130),
-    // simulating the spacer above it re-pricing by +30px. jsdom has no real
-    // layout, so the shift is expressed through the self-mutating mock.
+    // anchor capture (top 100) and the compensation effect's re-read after
+    // the commit (top 130), simulating the spacer above it re-pricing by
+    // +30px. jsdom has no real layout, so the shift is expressed through the
+    // mock: the row reads 100 until the render that commits the reprice (its
+    // total changes), and 130 from then on. Keyed on that commit, not
+    // on a count of rect reads, so a read anywhere else (the window
+    // recompute's) does not move it.
     const node = document.createElement('div')
     Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
-    // Read #1 is the seed measurement itself (fractional heights read the
-    // rect), #2 is captureTopAnchorFrom inside the sync's anchor capture, #3
-    // the candidate-collection pass (the capture stores a LIST of visible
-    // fallback anchors, one more rect read per row), #4+ the compensation
-    // effect.
-    let reads = 0
+    const pricedTotal = total
     node.getBoundingClientRect = () => {
-      reads += 1
-      const top = reads <= 3 ? 100 : 130
+      const top = total === pricedTotal ? 100 : 130
       return { top, bottom: top + 250, left: 0, right: 390, width: 390, height: 250, x: 0, y: top, toJSON: () => ({}) } as DOMRect
     }
     act(() => { view.result.current.measureRef(5)(node) })
@@ -158,17 +162,24 @@ describe('useVirtualChat: height-sync spacer repricing keeps the top visible row
     const { el, state } = makeScroller({ scrollTop: 1000, scrollHeight: 5000, clientHeight: 400 })
     const ref: RefObject<HTMLDivElement | null> = { current: el }
     const items = mkItems(30)
+    // The total each render commits, read during that render (the hook's
+    // `result` only advances after the commit's effects).
+    let total = 0
     const view = renderHook(
-      (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
+      (props: UseVirtualChatOptions<Item>) => {
+        const v = useVirtualChat<Item>(props)
+        total = v.totalHeight
+        return v
+      },
       { initialProps: { items, sessionId: 'anchor-late', getKey, externalScrollerRef: ref, followOutput: false } },
     )
 
+    // The same row as the first case: 100 until the reprice commits, 130 after.
     const node = document.createElement('div')
     Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
-    let reads = 0
+    const pricedTotal = total
     node.getBoundingClientRect = () => {
-      reads += 1
-      const top = reads <= 3 ? 100 : 130
+      const top = total === pricedTotal ? 100 : 130
       return { top, bottom: top + 250, left: 0, right: 390, width: 390, height: 250, x: 0, y: top, toJSON: () => ({}) } as DOMRect
     }
     act(() => { view.result.current.measureRef(5)(node) })
@@ -222,14 +233,13 @@ describe('useVirtualChat: height-sync spacer repricing keeps the top visible row
     // reader who was 20px from its end, and the engine clamps them to the new
     // maximum. The witness row -- everything that shrank lies above it -- is
     // 1500px higher in the document and seen through a viewport 1480px
-    // higher, so it reads 20px higher than it was captured (reads #1-#3 are
-    // the seed and the sync's capture, as in the first test).
+    // higher, so it reads 20px higher than it was captured (100 until the
+    // render that commits the shrunk total, 80 from then on, as in the first
+    // test).
     const node = document.createElement('div')
     Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
-    let reads = 0
     node.getBoundingClientRect = () => {
-      reads += 1
-      const top = reads <= 3 ? 100 : 80
+      const top = total === 9000 ? 100 : 80
       return { top, bottom: top + 250, left: 0, right: 390, width: 390, height: 250, x: 0, y: top, toJSON: () => ({}) } as DOMRect
     }
     act(() => { view.result.current.measureRef(5)(node) })

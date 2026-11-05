@@ -112,12 +112,21 @@ const xt = vi.hoisted(() => {
       FakeWebLinksAddon.instances.push(this)
     }
   }
-  return { FakeTerminal, FakeFitAddon, FakeWebLinksAddon }
+  class FakeSearchAddon {
+    static instances: FakeSearchAddon[] = []
+    findNext = vi.fn()
+    findPrevious = vi.fn()
+    clearDecorations = vi.fn()
+    onDidChangeResults = vi.fn(() => ({ dispose: vi.fn() }))
+    constructor() { FakeSearchAddon.instances.push(this) }
+  }
+  return { FakeTerminal, FakeFitAddon, FakeWebLinksAddon, FakeSearchAddon }
 })
 
 vi.mock('@xterm/xterm', () => ({ Terminal: xt.FakeTerminal }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: xt.FakeFitAddon }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: xt.FakeWebLinksAddon }))
+vi.mock('@xterm/addon-search', () => ({ SearchAddon: xt.FakeSearchAddon }))
 
 const registry = vi.hoisted(() => ({
   ensureTerminalConnection: vi.fn(),
@@ -151,6 +160,7 @@ const touch = vi.hoisted(() => ({ value: false }))
 vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => touch.value }))
 
 import CliPanel, {
+  prewarmTerminal,
   __resetTerminalThemeSyncForTests,
   disposeTerminalSession,
   isThemeSignal,
@@ -305,6 +315,7 @@ beforeEach(() => {
   registry.wrongMachine.value = false
   xt.FakeTerminal.instances = []
   xt.FakeFitAddon.instances = []
+  xt.FakeSearchAddon.instances = []
   touch.value = false
   stubLayout()
   setClipboard({ writeText: vi.fn(() => Promise.resolve()) })
@@ -342,9 +353,11 @@ describe('CliPanel mount', () => {
     expect(term.fontFamilyWrites).toEqual([])
   })
 
-  it('loads the fit and web-links addons and seeds the theme from CSS custom properties', () => {
+  it('loads the fit, web-links, and search addons and seeds the theme from CSS custom properties', () => {
     const { term } = mount()
-    expect(term.addons).toHaveLength(2)
+    // fit + web-links + search (#10176 scrollback find).
+    expect(term.addons).toHaveLength(3)
+    expect(xt.FakeSearchAddon.instances.length).toBeGreaterThan(0)
     // No custom properties are set in the test document, so every slot falls
     // back to its hard-coded default rather than an empty string. The 16 ANSI
     // entries are asserted here only as wiring — that the palette reaches
@@ -462,6 +475,22 @@ describe('CliPanel mount', () => {
       view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
       expect(view.term.focusCalls).toBe(1)
     } finally { chip.remove() }
+  })
+
+  it('attaches a terminal built ahead of time, focusing it in the opening tap with no stand-in', () => {
+    const sessionId = nextId()
+    live.add(sessionId)
+    prewarmTerminal(sessionId, 390, 300)
+    const term = xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1]
+    expect(term.openCalls).toBe(1)
+    const host = term.element!.parentElement!
+    expect(host.style.left).toBe('-10000px')
+    const view = mount({ sessionId, deferOpen: true })
+    expect(view.term).toBe(term)
+    expect(term.openCalls).toBe(1) // re-attached, not opened again
+    expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
+    expect(term.focusCalls).toBe(1)
+    expect(host.isConnected).toBe(false)
   })
 
   it('focuses an already-opened terminal straight away even while its host holds new ones', () => {

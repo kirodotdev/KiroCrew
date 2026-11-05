@@ -243,6 +243,16 @@ class _FakeClient:
         return self._window
 
 
+class _FakeSessionProvider:
+    """Mimics a session provider with no inner client."""
+
+    def __init__(self, served_model: str) -> None:
+        self.served_model = served_model
+
+    def context_window_tokens(self) -> int:
+        return 0
+
+
 def test_window_for_client_prefers_live_reported_window():
     # A real usage_update populated the live window — trust it verbatim, via the
     # public accessor (even when it disagrees with the model id).
@@ -254,6 +264,27 @@ def test_window_for_client_falls_back_to_resolved_model_id():
     # No live window yet (0) — derive from the resolved model id.
     client = _FakeClient(model="opus-4.8", window=0)
     assert ctx.window_for_provider_client(client) == 200_000
+
+
+def test_window_for_session_provider_falls_back_to_served_model():
+    client = _FakeSessionProvider(served_model="opus-4.8")
+    assert ctx.window_for_provider_client(client) == 200_000
+    client.served_model = ""
+    assert ctx.window_for_provider_client(client) is None
+    client.served_model = object()  # type: ignore[assignment]
+    assert ctx.window_for_provider_client(client) is None
+
+
+def test_window_for_session_provider_swallows_served_model_error():
+    class _BrokenSessionProvider:
+        def context_window_tokens(self) -> int:
+            return 0
+
+        @property
+        def served_model(self) -> str:
+            raise RuntimeError("model not ready")
+
+    assert ctx.window_for_provider_client(_BrokenSessionProvider()) is None
 
 
 def test_window_for_client_auto_model_returns_none():

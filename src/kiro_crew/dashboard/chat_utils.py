@@ -49,7 +49,7 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 #: English fallback below, read verbatim by non-dashboard consumers (channel
 #: mirrors, SSE, an older frontend); the dashboard ignores it and renders
 #: localized copy keyed on this token instead
-#: (``website/src/pages/chat/transientNotice.ts``). A structured token rather
+#: (``website/src/pages/chat/gatewayNotice.ts``). A structured token rather
 #: than prose-matching so the wording can change on either side without the
 #: other silently falling back to raw English -- the drift class
 #: ``test_recovery_marker_parity.py`` exists for. Both sides are still
@@ -263,13 +263,26 @@ _BLOCKED_SLASH_COMMANDS = (
 )
 
 # Commands the dashboard serves without the harness: the composer opens /side
-# itself, and the slash gate answers /agent <name>, /clear, /goal, /prompts and
-# /workflow before any session work. On a harness in
-# ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` every other harness command only gets a
-# notice, so GET /api/slash-commands lists these (plus /compact, which has a gate
-# of its own) and nothing else there.
+# itself, and the slash gate answers /agent, /clear, /context, /goal, /help, /mcp,
+# /model, /prompts, /tools, /usage and /workflow before any session work. On a
+# harness in ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` every other harness command
+# only gets a notice, so GET /api/slash-commands lists these (plus /compact, which
+# has a gate of its own) and nothing else there.
 _DASHBOARD_SERVED_SLASH_COMMANDS = frozenset(
-    {"/agent", "/clear", "/goal", "/prompts", "/side", "/workflow"}
+    {
+        "/agent",
+        "/clear",
+        "/context",
+        "/goal",
+        "/help",
+        "/mcp",
+        "/model",
+        "/prompts",
+        "/side",
+        "/tools",
+        "/usage",
+        "/workflow",
+    }
 )
 
 # Slash-command descriptions surfaced by the dashboard API
@@ -360,8 +373,9 @@ def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
     """Whether *first_word* should be forwarded to the harness as a command.
 
     Two rules, and the second exists because of a trap. A member of
-    :data:`_SLASH_COMMANDS` is a command on every provider. Under ``claude_code``
-    the harness owns its own command set, so ANY leading slash is forwarded —
+    :data:`_SLASH_COMMANDS` is a command on every provider. When *cc_provider* says
+    the harness owns its own command set (the ``claude_code`` label, or a backend in
+    ``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``), ANY leading slash is forwarded —
     except a quick-prompt token, which is not a command at all but a macro
     :meth:`ContextBuilder.build_message` expands into an instruction. Forwarding one
     would hand the harness a command it has no definition for, and the token would
@@ -617,13 +631,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         background_wake_pending,
         chat_done_payload,
         chunk_generation,
+        idle_compaction_blocker,
         subagents_attached,
         subagents_attached_async,
         synthesis_fire_verdict,
+        wire_session_idle_compaction_probe,
         wire_session_subagent_probe,
     )
     from kiro_crew.dashboard.chat_utils_display import (  # noqa: F401
         _DISPLAY_CLEAN_GENERATION,
+        _DISPLAY_PREVIEW_BY_OBJECT_MAX,
+        _DISPLAY_PREVIEW_BY_OBJECT_MAX_CHARS,
         _DISPLAY_PREVIEW_CACHE_MAX_BYTES,
         _DISPLAY_PREVIEW_CACHE_MAX_ENTRIES,
         _DISPLAY_REDACTION_CACHE_MAX_BYTES,
@@ -644,6 +662,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _display_clean_old,
         _display_clean_seen,
         _display_clean_young,
+        _display_preview_by_object,
+        _display_preview_by_object_chars,
+        _display_preview_by_object_context,
         _display_preview_cache,
         _display_preview_cache_bytes,
         _display_preview_cache_info,
@@ -664,8 +685,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _redact_meta_for_role,
         _redact_value,
         _redacted_preview,
+        _redacted_preview_by_digest,
         _remember_preview,
+        _remember_preview_by_object,
         _remember_redacted,
+        _same_preview_context,
         _variant_for_emit,
         adopt_variant_text,
         drop_records_without_placeholders,
@@ -724,6 +748,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_system_injection_item,
         payload_for_replay,
         releases_past_subagent_hold,
+        teardown_hold_active,
     )
     from kiro_crew.dashboard.chat_utils_slack_options import (  # noqa: F401
         _forget_slack_options_message,
@@ -746,6 +771,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.chat_utils_slots import (  # noqa: F401
         _INCOGNITO_PREFIX,
+        _PUBLISHED_SLOT_KEYS_LOCK,
         _TEMPORARY_PREFIX,
         ReplacementTightening,
         _apply_incognito_prefix,
@@ -753,11 +779,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _installed_theme_persona,
         _maybe_consolidate,
         _maybe_inject_persona,
+        _owe_listing_refresh,
+        _pay_listing_refresh,
+        _published_keys_of,
         _resettle_restricted_key,
         _sync_dashboard_slots,
         apply_pending_slot_memory_mode,
         dashboard_slot_key,
         effective_session_key,
+        listing_slot_snapshot,
         reject_if_slot_under_construction,
         replacement_shares_transcript,
         restore_replacement_if_handover_did_not_land,
@@ -840,6 +870,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
         ATTACHMENT_META_KEYS,
+        source_channels_of,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
         BUSY_RECOVERY_PREFIX,

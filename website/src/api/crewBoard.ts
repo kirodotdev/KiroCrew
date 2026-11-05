@@ -34,7 +34,7 @@ export interface WorkBoardEvent {
   id: string
   ts: string
   item_id: string
-  kind: 'create' | 'bind' | 'report' | 'decision' | 'verdict' | 'close'
+  kind: 'create' | 'bind' | 'report' | 'decision' | 'steer' | 'verdict' | 'close'
   /** Present on a `report` line: the status the worker reported. */
   status: WorkReportStatus
   /** Blanked by the server on a `bind` line, whose text is a session key. */
@@ -54,6 +54,8 @@ export interface WorkBoardItem {
   round: number
   fails: number
   status: WorkReportStatus
+  /** Who a blocked / question report waits on: `approval` / `needs_human` name a person. */
+  reason?: string | null
   /** The worker's own account of where the work is. Rendered as the row's
    *  last line, standing in for the session ledger's `next`, which this store
    *  has no equivalent of. */
@@ -78,6 +80,9 @@ export interface WorkBoardItem {
   report_undelivered?: { tool: 'work_report' | 'work_brief'; at: string } | null
   /** A question with no NEWER answering decision. Lifts the row into the band. */
   outstanding: boolean
+  /** The item waits on the PERSON: a blocked / question report naming one, not
+   *  answered since by the conductor or a steer. Absent on an older gateway. */
+  awaits_person?: boolean
   terminal: boolean
   alive: AliveState
   events: WorkBoardEvent[]
@@ -110,6 +115,10 @@ export interface WorkBoardResponse {
    * the page ignores. Each belongs in the change that adds its reader.
    */
   take_over_available: boolean
+  /** The conductor's offered answers per open item (goal-board's agentic `asks`
+   *  field), read by the Ultra Mode Board's Needs your input. Absent on an older
+   *  gateway. */
+  asks?: Record<string, string[]>
 }
 
 /** The two affordances Phase 4 names for an orphaned item. */

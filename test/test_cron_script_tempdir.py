@@ -91,7 +91,7 @@ def _make_script(tmp_path: Path, body: str) -> Path:
     crons_dir = tmp_path / ".kirocrew" / "crons"
     crons_dir.mkdir(parents=True, exist_ok=True)
     script = crons_dir / "job.py"
-    script.write_text(body)
+    script.write_text(body, encoding="utf-8")
     return script
 
 

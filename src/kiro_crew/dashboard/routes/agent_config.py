@@ -16,6 +16,7 @@ from kiro_crew.dashboard.handlers.acp_backend_status import (
     api_acp_backend_recheck,
     api_acp_backend_status,
 )
+from kiro_crew.dashboard.handlers.agent_spec_pins import api_agent_spec_pin_write
 from kiro_crew.dashboard.handlers.gateway_footprint import api_mcp_gateway_footprint
 from kiro_crew.dashboard.handlers.mcp_custom import (
     api_mcp_custom_add,
@@ -36,6 +37,8 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/agent/config", handlers.api_agent_config)
     app.router.add_get("/api/config/default-agent", handlers.api_default_agent)
     app.router.add_put("/api/config/default-agent", handlers.api_default_agent)
+    # Which spec file a contested agent name runs (agent.spec_pins); owner-only.
+    app.router.add_put("/api/agent-spec-pins/{agent}", api_agent_spec_pin_write)
     app.router.add_get("/api/config/schema", handlers.api_config_schema)
     # Per-backend selectability + whether THIS machine has the harness installed.
     # Beside the schema route because the dashboard's backend switch reads both:

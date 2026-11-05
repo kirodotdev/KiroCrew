@@ -183,6 +183,21 @@ export const PREVIEW_CREWMATE_HARNESS = `${PREVIEW_FLAG_PREFIX}crewmate-harness`
 export const PREVIEW_CREW_MODE = `${PREVIEW_FLAG_PREFIX}crew-mode`
 
 /**
+ * Explore: the top-bar "Explore N/7" pill and its phone twins (the bar ring and
+ * the overflow-menu row), the Explore sheet, the milestone notice, the Try today
+ * card on a new chat, and the Display > Explore switch.
+ *
+ * Read it through `useExplorePreview()` (`hooks/usePreviewFlag.ts`).
+ *
+ * Default OFF, because the sheet is still settling and its intro video carries
+ * burned-in Chinese text that every other language would see. OFF draws none of
+ * those surfaces and sends no milestones read from the new-chat page. With it
+ * ON, `dashboard.milestones_enabled` stays the inner switch. The backend keeps
+ * recording milestones either way: this gates the INGRESS only.
+ */
+export const PREVIEW_EXPLORE = `${PREVIEW_FLAG_PREFIX}explore`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -200,6 +215,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_SESSION_ENVIRONMENTS,
   PREVIEW_CREWMATE_HARNESS,
   PREVIEW_CREW_MODE,
+  PREVIEW_EXPLORE,
 ]
 
 /**

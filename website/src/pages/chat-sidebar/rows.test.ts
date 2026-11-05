@@ -58,7 +58,7 @@ function inputs(rows: Slot[], over: InputOverrides = {}): SidebarRowInputs {
       tags: { resolved: new Set(), raw: new Set(), ...f.tags },
       search: { text: '', folderMatches: null, ...f.search },
       status: { active: new Set(), hidden: new Set(), paused: false, recentWindowMs: 60 * MINUTE, ...f.status },
-      folders: { hiddenSubtree: new Set(), active: false, ...f.folders },
+      folders: { hiddenSubtree: new Set(), pinnedSubtree: new Set(), active: false, ...f.folders },
       models: { passes: () => true, active: false, ...f.models },
     },
     clears: over.clears ?? clears(),
@@ -889,7 +889,7 @@ describe('row views compare by value', () => {
     expect(sameRowView(rows.views(scene()).view(b, AT), moved.view(b, AT))).toBe(false)
   })
 
-  const EXTRAS: ConductorRowView = { depth: 1, childCount: 2, expanded: false, aggregate: { needsYou: 1, running: 0 }, orphanOf: null, citesParent: null, anchorOnly: false }
+  const EXTRAS: ConductorRowView = { depth: 1, childCount: 2, expanded: false, aggregate: { needsYou: 1, running: 0 }, orphanOf: null, orphanTitle: null, citesParent: null, anchorOnly: false }
   const withExtras = (c: ConductorRowView | undefined) => rows.views(scene()).view(a, { ...AT, conductor: c })
 
   it('compares the conductor extras by value', () => {
@@ -901,7 +901,7 @@ describe('row views compare by value', () => {
   })
 
   const fieldChanges: Array<[keyof ConductorRowView, ConductorRowView[keyof ConductorRowView]]> = [
-    ['depth', 2], ['childCount', 3], ['expanded', true], ['orphanOf', 'gone'], ['citesParent', 'parent'], ['anchorOnly', true],
+    ['depth', 2], ['childCount', 3], ['expanded', true], ['orphanOf', 'gone'], ['orphanTitle', 'Gone chat'], ['citesParent', 'parent'], ['anchorOnly', true],
   ]
   it.each(fieldChanges)('a changed conductor %s is a different row', (field, value) => {
     expect(sameRowView(withExtras(EXTRAS), withExtras({ ...EXTRAS, [field]: value }))).toBe(false)

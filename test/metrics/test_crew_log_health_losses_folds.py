@@ -235,6 +235,8 @@ class TestFoldStart:
         monkeypatch.setattr("kiro_crew.metrics.provider.get_recorder", lambda: _Rec(explode=True))
         with as_fold_worker():
             _one_pass("slot", "cold", ("work",))  # must not raise
+            # The lost point still consumed the stamp, so a later pass cannot report it.
+            assert health._claim.origin == {}
 
 
 class TestFoldPassStamps:

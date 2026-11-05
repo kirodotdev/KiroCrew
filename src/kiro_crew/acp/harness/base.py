@@ -50,6 +50,7 @@ __all__ = [
     "SpawnContext",
     "SpawnPlan",
     "TeardownPolicy",
+    "UnroutablePermissionRelay",
 ]
 
 
@@ -146,6 +147,8 @@ class ProcessSession(Protocol):
     _deepseek_gate_nonce: str
     _deepseek_read_only_issue: str
     _copilot_mcp_config_path: str
+    _launch_mcp_servers: list[Any] | None
+    _mcp_relaunch_pending: bool
 
     def _agent_env_for_spawn(self) -> dict[str, str]:
         """``agent.env`` for the spawn in progress, read at most once per spawn: a
@@ -313,6 +316,34 @@ class SessionExtras:
     ``kas_agents.hoist_servers_for_session``. ``None`` on every other host.
     """
 
+    app_launches: Mapping[str, Mapping[str, Any]] | None = None
+    """The shipped launch per builtin app server that gets a session identity.
+
+    Resolved off the loop with the payload by
+    ``kas_app_identity.resolve_app_identity_launches`` and handed to the same
+    hoist, which tokens those servers as it tokens the managed ones. ``None`` on
+    every other host.
+    """
+
+    withdrawn_stub_names: frozenset[str] = frozenset()
+    """Session-level stubs the caller selected that this payload does not mount.
+
+    For a KAS crewmate worker: the names in ``worker_stub_names`` whose server the
+    projected worker spec drops or mutes. That spec is read after the stubs were
+    selected, so a mute saved in between shows here, and the caller removes those
+    stubs from the session-level array. Empty on every other host.
+    """
+
+    withheld_credentials_notice: str = ""
+    """The session-start notice naming MCP servers that start without part of
+    their declared ``env`` or ``headers``, by server and key name, never a value.
+
+    For a host whose payload carries the agent's servers over the ACP wire, where
+    Crew withholds credential-bearing fields
+    (``kas_agents.withheld_credentials_notice``). ``""`` on every other host and
+    when nothing was withheld.
+    """
+
 
 # ── Seam 5: notification aliases ──
 
@@ -375,6 +406,20 @@ class TeardownPolicy:
     stall silently, and this layer exists so a per-host fact is stated once by the
     host that knows it.
     """
+
+    local_only: bool = False
+    """Unregister without the destructive verb unless privacy requires deletion."""
+
+
+# ── Unroutable permission answer ──
+
+
+class UnroutablePermissionRelay(Protocol):
+    """The runtime's audited fail-closed answer for an unroutable permission request."""
+
+    async def _answer_unroutable_permission(
+        self, msg: Any, session_id: str, *, reason: str
+    ) -> None: ...
 
 
 # ── Seam 9: reclaim ──
@@ -565,6 +610,7 @@ class HarnessAdapter(LaunchAdapter):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        worker_stub_names: frozenset[str] | None = None,
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -573,6 +619,10 @@ class HarnessAdapter(LaunchAdapter):
         session-level entries -- declaring one twice lets the weaker declaration
         shadow the keyed one. Empty extras is the normal answer for a host that
         took its agent at spawn time.
+
+        ``worker_stub_names`` is handed in only for a KAS crewmate worker: the
+        names of the stubs ``session/new`` injects for that session, from the
+        caller's one overlay lookup. A host that projects nothing ignores it.
         """
 
     def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:
@@ -609,6 +659,53 @@ class HarnessAdapter(LaunchAdapter):
         A host that takes its tools from an agent spec returns ``requested``
         unchanged, which is what keeps its wire byte-identical.
         """
+
+    def session_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        agent: str | None,
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        """The ``session/new`` / ``session/load`` params to send, and the agent to activate.
+
+        Asked after the runtime built the request and before it goes out. Every host
+        the backend table serves sends what the runtime built and activates the agent
+        the caller asked for, so this answer returns BOTH of the caller's objects
+        unchanged, and the request stays byte-identical to one built without this
+        seam. A host that places the session where Kiro Crew's agent does not exist
+        (:class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness`) reshapes
+        the request and activates nothing. Raising ``AcpRuntimeError`` here refuses
+        the start before anything is sent.
+        """
+        return params, agent
+
+    def holds_replayed_permission(self, session_id: str) -> bool:
+        """Whether a permission request for *session_id* arrived inside a resume hold.
+
+        Read by the runtime's reader for a permission request that names a session.
+        Every host the backend table serves answers ``False``, so the request is
+        routed to the session's queue as before.
+        """
+        return False
+
+    def unroutable_permission(
+        self,
+        runtime: UnroutablePermissionRelay,
+        msg: Any,
+        session_id: str,
+        *,
+        reason: str,
+    ) -> Callable[[], Awaitable[None]]:
+        """How a permission request no session queue reads gets its answer.
+
+        Asked on the reader, before the answer task is admitted, so a host can
+        snapshot its own state at the moment the frame arrived. Every host the
+        backend table serves answers with the runtime's audited fail-closed reject,
+        unchanged.
+        """
+        return lambda: runtime._answer_unroutable_permission(msg, session_id, reason=reason)
 
     def activation_refusal(self, agent: str, resp: dict[str, Any]) -> str | None:
         """Why *agent* must NOT be activated on the session *resp* just opened, or ``None``.
@@ -666,6 +763,19 @@ class HarnessAdapter(LaunchAdapter):
     @abc.abstractmethod
     def teardown(self) -> TeardownPolicy:
         """How one session ends, and whether ending it destroys the record."""
+
+    def release(self, agent_capabilities: Mapping[str, Any] | None) -> TeardownPolicy | None:
+        """The verb that frees a session from the process and KEEPS its record.
+
+        Asked only by a caller that wants the record to outlive the session for
+        a while, and deletes it later with :attr:`teardown`. ``None`` means this
+        host has no such verb distinct from its teardown, and the caller ends the
+        session with :attr:`teardown` as it always did. That is the answer for a
+        host whose teardown already keeps the record, and for one whose process
+        did not advertise the verb: the handshake is passed in so a host can
+        refuse when its running engine is older than the verb.
+        """
+        return None
 
     # How a live session's model changes, and how privileged tools are made to
     # ask, are deliberately NOT asked here. Both answers already live in a

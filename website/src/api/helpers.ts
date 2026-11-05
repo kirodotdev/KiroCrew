@@ -38,7 +38,10 @@ export function sanitize(html: string): string {
  *  with the trailing zero kept. */
 export function fmtSpeed(kbs: number): string {
   const bytesPerSec = kbs * 1024
-  return bytesPerSec >= 1_000_000
+  // Pick the band from the value the kB band would print, so 999,950 B/s
+  // (which rounds to 1000 kB) reads 1.0MB/s instead of 1,000kB/s.
+  const kB = Math.round(bytesPerSec / 1000)
+  return kB >= 1000
     ? fmtUnit(bytesPerSec / 1_000_000, 'megabyte-per-second', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-    : fmtUnit(Math.round(bytesPerSec / 1000), 'kilobyte-per-second', { maximumFractionDigits: 0 })
+    : fmtUnit(kB, 'kilobyte-per-second', { maximumFractionDigits: 0 })
 }

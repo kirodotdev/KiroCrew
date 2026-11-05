@@ -48,6 +48,14 @@ from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.dashboard import agent_admin
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="dashboard_agents_composition_contract")
+
+SHARED_FACADE_CHECKS = (
+    "the_globstar_matcher_reads_patterns_as_the_reviewers_do",
+    "the_owner_set_is_the_package",
+)
+
 _FACADE = agents.__name__
 _FACADE_PATH = Path(agents.__file__).resolve()
 _OWNER_PACKAGE = agent_admin.__name__
@@ -465,10 +473,6 @@ def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
 
 
 # ── the composition ───────────────────────────────────────────────────────────
-
-
-def test_the_owner_set_is_the_package() -> None:
-    assert {info.name for info in pkgutil.iter_modules([str(_OWNER_DIR)])} == set(_BASE_OWNERS)
 
 
 def _shape(obj: Any) -> str:
@@ -1551,13 +1555,6 @@ def _rules_missing_owners(rules: list[dict]) -> tuple[set[str], dict[str, list[s
         if gaps:
             missing[rule["id"]] = gaps
     return matched, missing
-
-
-def test_the_globstar_matcher_reads_patterns_as_the_reviewers_do() -> None:
-    assert _globstar("src/a/**/*.py").match("src/a/b.py")
-    assert _globstar("src/a/**/*.py").match("src/a/x/y/b.py")
-    assert not _globstar("src/a/*.py").match("src/a/x/b.py")
-    assert _globstar("src/a/**").match("src/a/x/b.py")
 
 
 def test_every_review_rule_on_the_facade_also_covers_its_owners() -> None:

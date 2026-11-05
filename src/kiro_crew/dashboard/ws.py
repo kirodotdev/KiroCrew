@@ -17,6 +17,7 @@ from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.constants import crew_log_enabled
 from kiro_crew.dashboard import websocket_hub as _ws_hub
+from kiro_crew.dashboard import ws_slot_diff as _ws_slot_diff
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG, is_relay_teammate
 from kiro_crew.dashboard.origin import check_origin
@@ -82,6 +83,20 @@ _WS_STATUS_INTERVAL = 5  # seconds between dashboard status pushes
 #: wording the run-folder reader gives an orphan, because it is the same fact: the
 #: writer went away without recording how the run ended.
 _ORPHANED_UNKNOWN = "Orphaned (unknown cause)"
+
+
+async def _send_browser_live_snapshot(ws: web.WebSocketResponse) -> None:
+    """Send each chat's current ``browser_live`` state to a NEW owner socket.
+
+    The hub publishes on change only, so without this a reloaded tab shows no
+    browser card, and a quick ask waiting on the person stays hidden until it
+    times out. Same frame and same redaction as the hub's own publish; owner
+    sockets only, like every other ``browser_live`` frame.
+    """
+    from kiro_crew.browser_harness.live_hub import LIVE_EVENT, get_live_hub
+
+    for data in get_live_hub().snapshot_events():
+        await ws.send_str(json.dumps({"type": LIVE_EVENT, "data": data}))
 
 
 async def _send_slot_projection_subscribed(ws: web.WebSocketResponse) -> None:
@@ -818,8 +833,15 @@ async def _serve_ws(
     # ``getattr``: request doubles in the suite are plain dicts with no query.
     query = getattr(request, "query", None) or {}
     declared_caps = {cap.strip() for cap in str(query.get("caps", "")).split(",")}
+    # The operator's rollback lever: a capability named there is served as absent.
+    declared_caps = _ws_slot_diff.without_disabled_caps(declared_caps)
+    _ws_slot_diff.note_missing_caps(bool(ws["_is_dashboard_user"]), declared_caps)
     ws[SLOT_PATCH_WS_FLAG] = bool(ws["_is_dashboard_user"]) and (
         SLOT_PATCH_CAPABILITY in declared_caps
+    )
+    # ``slot_diff.1`` beside it: send the coalesced list as row deltas.
+    ws[_ws_hub.SLOT_DIFF_WS_FLAG] = bool(ws[SLOT_PATCH_WS_FLAG]) and (
+        _ws_hub.SLOT_DIFF_CAPABILITY in declared_caps
     )
     # ``fold_delta.1``: send this tab only the boards it watches (dashboard users only).
     state.set_fold_delta_capable(ws, _ws_hub.FOLD_DELTA_CAPABILITY in declared_caps)
@@ -951,6 +973,10 @@ async def _serve_ws(
                 await state.send_members_subscribed(ws)
             except Exception:
                 logger.debug("members_subscribed baseline not sent", exc_info=True)
+            try:
+                await _send_browser_live_snapshot(ws)
+            except Exception:
+                logger.debug("browser_live snapshot not sent", exc_info=True)
         if is_dashboard_user:
             # The same shape for SLOT folds, and the same reason: a revision floor the
             # client holds BEFORE it issues a baseline read, so a read already on the
@@ -1704,6 +1730,8 @@ async def _serve_ws(
                         )
                     elif msg_type == "fold_watch":  # replaces the set; no-op unless capable
                         state.set_fold_watch(ws, data.get("slots"))
+                    elif msg_type == "slots_resync":  # a diff missed its base
+                        _ws_slot_diff.handle_slots_resync(state, ws)
                     elif msg_type == "slot_focused":
                         if not owner_request:
                             # SEL: the owner gate is a permission decision —
@@ -1737,7 +1765,6 @@ async def _serve_ws(
                                 id(ws),
                                 data.get("slot"),
                                 announce=data.get("announce") is True,
-                                hidden=data.get("hidden") is True,
                             )
                             note_foreground(state, id(ws), data.get("slot"))
                     elif msg_type == "slot_read":

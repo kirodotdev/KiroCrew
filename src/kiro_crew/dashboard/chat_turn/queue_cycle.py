@@ -9,6 +9,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.dashboard.chat_utils import SYNTHESIS_HELD, SYNTHESIS_UNKNOWN
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
         logger,
         spawn_guarded_turn,
         synthesis_fire_verdict,
+        teardown_hold_active,
         title_then_refresh,
     )
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
         _arm_parked_queue_drain,
         _mark_turn_end,
         _start_next_queued_turn,
+        idle_slot_admits_drain,
     )
     from kiro_crew.dashboard.chat_turn.regenerate_swap import settle_regenerate
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
@@ -175,6 +178,11 @@ def _arm_synthesis_recheck(state: DashboardState, slot: _ChatSlot) -> None:
                 and not slot.turn_running
                 and not slot._closing
                 and state._slots.get(slot.key) is slot
+                # This path reaches `_launch_synthesis` without passing the
+                # fire site in `_finish_queue_cycle`, so the hold has to be
+                # read here too or the timer drains a held queue behind the
+                # synthesis turn — the loss the hold exists to stop.
+                and not teardown_hold_active(state, slot)
             )
 
         if not _still_wanted():
@@ -197,6 +205,57 @@ def _arm_synthesis_recheck(state: DashboardState, slot: _ChatSlot) -> None:
         )
     except RuntimeError:
         slot._synthesis_recheck = None
+
+
+def _chosen_restored_head(slot: _ChatSlot) -> Any:
+    """The queue head's id when it is a restored card a "Run now" chose, else ``None``."""
+    head = slot._queue[0] if slot._queue else None
+    if (
+        isinstance(head, dict)
+        and head.get(RESTORED_QUEUE_KEY)
+        and head.get(RESTORED_SEND_CHOSEN_KEY)
+    ):
+        return head.get("id")
+    return None
+
+
+async def _start_chosen_restored_after_release(
+    state: DashboardState, slot: _ChatSlot, session_key: str
+) -> None:
+    """Start the restored card a "Run now" chose while this cycle held the slot.
+
+    The turn's own drain runs past a restored card the user has not chosen, and
+    the click's own start (``turn_stop._start_chosen_restored_card``) refuses
+    while the ending turn still holds the slot. A click landing in between would
+    answer success and the card would never run. Run after the slot is released,
+    under the slot's lock and the idle-slot drain checks, so this and the click's
+    own start cannot both start it, and never while a stop is in flight (the
+    click's stop then starts it itself) or a teardown holds the queue.
+    *session_key* is the session this cycle ended; a slot rebound since is left
+    to the click's own start, which re-authorizes against the new session. A card
+    the drain cannot start yet (a sub-agent hold) stays chosen and the next turn end
+    drains it.
+    """
+    try:
+        async with slot._lock:
+            chosen = _chosen_restored_head(slot)
+            if (
+                chosen is None
+                or effective_session_key(slot) != session_key
+                or teardown_hold_active(state, slot)
+                or not idle_slot_admits_drain(state, slot)
+            ):
+                return
+            slot._turn_admission_reserved = True
+            try:
+                started = await _start_next_queued_turn(state, slot, required_queue_id=chosen)
+            finally:
+                slot._turn_admission_reserved = False
+        if started:
+            state.push_slots_update()
+    except Exception:
+        # A background task: an error here would otherwise surface only at exit.
+        logger.warning("chosen restored card could not start on slot %s", slot.key, exc_info=True)
 
 
 async def _finish_queue_cycle(
@@ -238,7 +297,11 @@ async def _finish_queue_cycle(
         # Running, delivering, pending in memory, or queued in the store: the
         # one fire-gate read (`synthesis_fire_verdict`).
         verdict = await synthesis_fire_verdict(state, slot)
-        will_synthesize = verdict == SYNTHESIS_CLEAR and not _drop_single_turn_synthesis(slot)
+        will_synthesize = (
+            verdict == SYNTHESIS_CLEAR
+            and not _drop_single_turn_synthesis(slot)
+            and not teardown_hold_active(state, slot)
+        )
         if verdict == SYNTHESIS_UNKNOWN:
             _arm_synthesis_recheck(state, slot)
         if not will_synthesize and drain and slot._queue and not slot._last_turn_auth_required:
@@ -286,9 +349,7 @@ async def _finish_queue_cycle(
     owner = slot.task
     stop_pending = slot._stop_state != "idle"
     stop_session_key = effective_session_key(slot)
-    # A held queue keeps what it held when the hold was decided. A send that
-    # queues during the read below is the user's next send, the one a hold
-    # resumes on, so it gets the floor either way.
+    # A held queue keeps what it held when the hold was decided.
     held = {entry.get("id") for entry in slot._queue}
     while True:
         queued = [entry.get("id") for entry in slot._queue]
@@ -303,6 +364,12 @@ async def _finish_queue_cycle(
         if (
             not drain
             and arrived
+            # Naming the id here would read as an explicit request at the choke
+            # point and turn the hold off, so the arrival would be answered by
+            # the conversation the person asked to drop. Being their next send
+            # does not change which conversation answers it. The retry drains
+            # it once the discard lands.
+            and not teardown_hold_active(state, slot)
             and await _start_next_queued_turn(state, slot, required_queue_id=arrived)
         ):
             return
@@ -337,6 +404,14 @@ async def _finish_queue_cycle(
     slot.task = None
     state.push_slots_update()
     await _send_chat_done(state, slot, payload=payload)
+    if drain and _chosen_restored_head(slot) is not None:
+        # A task of its own: it takes the slot's lock, which a caller of this
+        # cycle may hold.
+        chosen_start = asyncio.ensure_future(
+            _start_chosen_restored_after_release(state, slot, stop_session_key)
+        )
+        state._background_tasks.add(chosen_start)
+        chosen_start.add_done_callback(state._background_tasks.discard)
     reached_provider = slot._cycle_reached_provider
     slot._cycle_reached_provider = False
     if not reached_provider:
@@ -346,7 +421,9 @@ async def _finish_queue_cycle(
     # status now instead of leaving the sidebar chips on TTL rotation and the
     # detail panel on no refresh at all.
     state.refresh_slot_source_status(slot.key)
-    state.push_refresh("history")
+    # The Older Sessions listing drops open slots, so a turn cannot change it;
+    # ``turn_end`` refreshes the caches a turn can write and skips that listing.
+    state.push_refresh("turn_end")
     # Chain the titling attempt into a refresh check, waiting out a
     # still-running on-send attempt first (see title_then_refresh). Both the
     # untitled and the already-titled case go through the same chain: an
@@ -536,6 +613,16 @@ class _TurnExit:
         self.stop_reason: str | None = None
 
 
+def _end_browser_live_turn(slot: _ChatSlot) -> None:
+    """Close the live browser card's turn for this slot, if one was opened."""
+    try:
+        from kiro_crew.browser_harness.live_hub import get_live_hub
+
+        get_live_hub().turn_ended(slot.key)
+    except Exception:  # noqa: BLE001 - the card never fails the turn's hand-off
+        logger.debug("browser live turn_ended failed", exc_info=True)
+
+
 async def _end_turn_tail(
     state: DashboardState,
     slot: _ChatSlot,
@@ -600,7 +687,7 @@ async def _end_turn_tail(
             # full cold start the eager path exists to hide. Keyed on what
             # actually tore down, not on what was queued -- a discard left armed
             # behind attached sub-agents changed nothing to respawn for.
-            if await _consume_pending_reset(state, slot, allow_discard=True):
+            if await _consume_pending_reset(state, slot, allow_discard=True, own_turn=True):
                 schedule_eager_spawn(state, slot, start_priority=outcome.start_priority)
         except Exception:
             logger.debug("_consume_pending_reset failed", exc_info=True)
@@ -619,6 +706,11 @@ async def _end_turn_tail(
         slot._turn_channel_narrowed = False
         slot._turn_channel_origin = False
         slot._turn_user_sent = False
+        # The live browser card's turn ends with the agent's: the screencast
+        # stops, the input lock opens and the card folds to its done line. The
+        # turn was opened by the first ``browser`` op (``handlers/browser_ops``),
+        # so a turn that never browsed has no session here and this is a no-op.
+        _end_browser_live_turn(slot)
     # The owner mark is cleared on EVERY exit, the handed-off depth-1 exit
     # included: a `/prompts get` hand-off ends the turn from the nested frame
     # (the outermost frame runs no tail), and a mark that survived it would be

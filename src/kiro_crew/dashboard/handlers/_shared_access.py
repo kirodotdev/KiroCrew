@@ -215,6 +215,10 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
     token = published if isinstance(published, str) else ""
     carried: dict[str, str] = {}
     ttl_ceiling = MAX_SESSION_TTL_SECS
+    if request.get("auth_tailnet_direct") is True:
+        # A token-free direct tailnet request has no session to lend, and a
+        # bearer link minted from it would work without the daemon's whois.
+        return {"no_refresh": "1"}, 0
     if not token:
         # Authenticated without a readable token (unexpected on this surface):
         # fail closed by bounding the mint rather than trusting it.

@@ -8,11 +8,13 @@ under ``/api/apps/<name>``). The MCP server process holds the internal secret;
 the agent never sees a credential. Four planes must stay mutually consistent, and
 each has a failure mode this module pins:
 
-- the **schema** in ``validation_parts/app_schemas.py`` — field types/lengths and ``status``
+- the **schema**, built by the core from the fields this app declares in
+  ``agent_tools.py`` (``apps.builtin_agent_tools``) — field types/lengths and ``status``
   restricted to the one forward-progress value. The id grammar and the
   ``text or status`` rule are the backend's (``_h_thread``), not restated
   here, so this module does not test the schema for them;
-- the **handler** in ``mcp_tools/apps.py`` — the proxied URL it builds (with
+- the **handler**, the core's one declared-tool handler in ``mcp_tools/apps.py``
+  run on this app's declaration — the proxied URL it builds (with
   the ids URL-quoted so neither can rewrite the route), the
   ``{role, text, status}`` body it posts, and redaction of the response;
 - the **gateway's mixed-internal path set** admitting EXACTLY
@@ -24,11 +26,14 @@ each has a failure mode this module pins:
   that merely agrees with the admission set (TestRouteIsReal).
 """
 
+import json
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from aiohttp import web
 
+from kiro_crew.apps import builtin_agent_tools
 from kiro_crew.apps.routes import (
     _PROXY_STRIP_HEADERS,
     handle_app_api_proxy,
@@ -38,7 +43,7 @@ from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS
 from kiro_crew.dashboard.token_auth import internal_path_matches
 from kiro_crew.mcp_tools import apps
 from kiro_crew.validation import (
-    DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
+    MCP_CORE_SCHEMAS,
     ValidationError,
     validate_tool_args,
 )
@@ -52,7 +57,7 @@ _THREAD_PATH = "/apps/design-tweak/api/thread"
 
 class TestSchema(unittest.TestCase):
     def _validate(self, **kwargs):
-        return validate_tool_args(kwargs, DESIGN_TWEAK_UPDATE_THREAD_SCHEMA)
+        return validate_tool_args(kwargs, MCP_CORE_SCHEMAS["design_tweak_update_thread"])
 
     def test_a_text_note_passes(self):
         cleaned = self._validate(request_id="r-1", comment_id="c.2", text="editing")
@@ -98,7 +103,7 @@ class TestHandler(unittest.TestCase):
             return resp if resp is not None else {"ok": True}
 
         with mock.patch.object(apps.mcp_core, "_post", _fake_post):
-            out = apps.design_tweak_update_thread("design_tweak_update_thread", args)
+            out = apps.HANDLERS["design_tweak_update_thread"]("design_tweak_update_thread", args)
         return out, captured
 
     def test_per_comment_url_carries_id_and_cid(self):
@@ -221,7 +226,9 @@ class TestRouteIsReal(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_tool_posts_the_admitted_served_path(self):
         """The URL the handler builds is exactly the admitted path."""
-        self.assertEqual(apps._DESIGN_TWEAK_THREAD_URL, _THREAD_PATH)
+        self.assertEqual(
+            builtin_agent_tools.agent_tool("design_tweak_update_thread").url, _THREAD_PATH
+        )
         self.assertTrue(internal_path_matches(_THREAD_PATH, _MIXED_INTERNAL_API_PATHS))
 
 
@@ -275,6 +282,13 @@ class TestToolRegistry(unittest.TestCase):
         names = {s["name"] for s in apps.schemas()}
         self.assertIn("design_tweak_update_thread", names)
         self.assertIn("design_tweak_update_thread", apps.HANDLERS)
+
+    def test_the_tool_is_gated_on_the_name_the_app_installs_under(self):
+        manifest = json.loads((Path(__file__).parents[1] / "app.json").read_text(encoding="utf-8"))
+        tool = builtin_agent_tools.agent_tool("design_tweak_update_thread")
+        self.assertEqual(tool.app, manifest["name"])
+        self.assertEqual(apps.TOOL_APPS["design_tweak_update_thread"], manifest["name"])
+        self.assertIs(apps.HANDLERS["design_tweak_update_thread"], apps.builtin_agent_tool)
 
 
 if __name__ == "__main__":

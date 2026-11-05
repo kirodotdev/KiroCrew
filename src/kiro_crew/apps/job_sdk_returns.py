@@ -335,17 +335,14 @@ def _lazy_call_shape(fn: Any) -> str:
     Three shapes return a lazy object instead of doing the work: a coroutine
     function, an async generator function, and a plain generator function. The
     SDK calls its runner on a worker thread and discards the return value, so for
-    all three the body never executes. Before the execution-side check existed
-    such a run was then recorded ``done``; today :func:`_undriven_result` reads the
-    returned object and records ``failed``, so this guard is a fast, friendly error
-    at registration rather than the safety property.
-    One defect with three spellings, so the check names the class rather than the
-    one spelling that was reported.
+    all three the body never executes. :func:`_undriven_result` reads the returned
+    object and records ``failed``, so this guard is a fast, friendly error at
+    registration rather than the safety property. The check names the class of
+    lazy callables rather than any one of the three shapes.
 
     A callable OBJECT is examined through its ``__call__``, because that is what
     invocation actually reaches -- ``inspect`` reports the instance itself as an
     ordinary object, so a check written against bare functions passes it through.
-    That was the gap two reviewers found in the first version of this guard.
 
     No legitimate runner is refused by this: a callable whose invocation returns a
     lazy object cannot do the work the SDK is calling it to do, whatever it is.

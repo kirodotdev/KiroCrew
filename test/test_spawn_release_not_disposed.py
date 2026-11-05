@@ -1,7 +1,8 @@
 """A release that disposed nothing says so instead of claiming ``released``.
 
-A backend that owns its own session store (codex, claude, ...) has no delete
-route in ``_cleanup_session_files_sync``, which answers ``False`` for it. The
+A backend that owns its own session store (codex, opencode, ...) has no delete
+route in ``_cleanup_session_files_sync``, which answers ``False`` for it. Claude
+has one (``test_claude_transcripts.py``). The
 manager answers ``not_disposed`` for that, the HTTP route carries it as a
 status, and the tool tells the parent the session may still resume.
 Nothing here deletes the backend's own store.
@@ -30,7 +31,7 @@ def _manager(provider: str) -> SubagentManager:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("provider", ["codex", "opencode"])
 async def test_a_harness_owned_store_is_reported_not_disposed(provider: str) -> None:
     # The real cleanup runs: it has no route for these providers and says False.
     mgr = _manager(provider)

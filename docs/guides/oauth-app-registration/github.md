@@ -92,7 +92,7 @@ GitHub's host guide warns that "end users will be able to discover your 'client 
 
 ## 6. Verify the connection
 
-1. Open **Capabilities → Connections**. The GitHub card should read **Connect** instead of **Needs configuration**.
+1. Open **Customize → Connections**. The GitHub card should read **Connect** instead of **Needs configuration**.
 2. Click **Connect**. A github.com page opens listing the requested scopes and, if you belong to restricted organizations, a **Request** or **Grant** control per organization.
 3. Click **Authorize**. Local installs return to the dashboard automatically; remote installs show the paste box described in section 2.
 4. The card should now read **Connected**.

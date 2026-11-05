@@ -1,6 +1,7 @@
 """Hand a browser-built download back to the browser from a real URL.
 
-The artifact page's Download builds the file in the browser and clicks an
+Several dashboard downloads (an artifact, a diagram export, a share image, a
+lightbox picture, a file's last copy) build the file in the browser and click an
 ``<a download>`` pointing at a ``blob:`` URL. An Android in-app browser (an app
 embedding a WebView) drops that click: a WebView saves nothing on its own, it
 passes the URL to the host app, and the host app cannot fetch a ``blob:`` URL
@@ -14,6 +15,8 @@ bytes keeps that policy instead of re-deriving it here.
 
 Security posture:
 
+* Only the few types those downloads produce are accepted. ``image/png`` is the
+  one binary type, sent base64-encoded; every type is served the same way.
 * Ordinary dashboard auth on both routes; neither is on the token-auth bypass
   list. The caller only gets back bytes it sent.
 * The GET answers ``Content-Disposition: attachment`` with
@@ -28,6 +31,8 @@ Security posture:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 import secrets
 import threading
@@ -55,13 +60,17 @@ _MAX_ENTRIES = 16
 #: under the dashboard app's own body limit.
 _MAX_REQUEST_BYTES = 2 * _MAX_BYTES + 1024 * 1024
 
-#: The types the page's export uses; anything else is refused.
+#: The types the browser-built downloads use; anything else is refused.
 _CONTENT_TYPES = {
     "text/plain": "text/plain; charset=utf-8",
     "text/html": "text/html; charset=utf-8",
     "application/json": "application/json; charset=utf-8",
     "image/svg+xml": "image/svg+xml; charset=utf-8",
+    "image/png": "image/png",
 }
+#: Types whose bytes are not text, so they must arrive base64-encoded.
+_BINARY_TYPES = frozenset({"image/png"})
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 #: The plain ``filename=`` fallback must be a quoted ASCII token, and some
 #: Android download handlers read only that form, not ``filename*``.
@@ -94,8 +103,11 @@ def _bad(error: str, code: str, status: int = 400) -> web.Response:
 async def api_stash_artifact_download(request: web.Request) -> web.Response:
     """``POST /api/artifact-downloads`` — stash a file, return a URL to download it.
 
-    Body: ``{"filename": str, "type": str, "content": str}``, where ``type`` is
-    one of the page export's content types.
+    Body: ``{"filename": str, "type": str, "content": str, "encoding"?: "base64"}``,
+    where ``type`` is one of the accepted content types. With ``encoding:
+    "base64"`` the decoded bytes are kept exactly and served with the bare type,
+    no charset, since a text file the page did not build (a legacy svg) may not be
+    UTF-8. A binary type must use base64.
     """
     # Capped before the read: the app-wide body limit is far larger than one file.
     body, refusal = await read_bounded_json(request, max_bytes=_MAX_REQUEST_BYTES)
@@ -105,7 +117,8 @@ async def api_stash_artifact_download(request: web.Request) -> web.Response:
         return _bad("invalid json", "bad_body")
     filename = body.get("filename")
     content = body.get("content")
-    content_type = _CONTENT_TYPES.get(str(body.get("type") or ""))
+    declared_type = str(body.get("type") or "")
+    content_type = _CONTENT_TYPES.get(declared_type)
     if not isinstance(filename, str) or not filename.strip() or len(filename) > _MAX_NAME_CHARS:
         return _bad("filename required", "bad_filename")
     if "/" in filename or "\\" in filename:
@@ -114,10 +127,20 @@ async def api_stash_artifact_download(request: web.Request) -> web.Response:
         return _bad("unsupported type", "bad_type")
     if not isinstance(content, str):
         return _bad("content required", "bad_content")
+    as_base64 = body.get("encoding") == "base64" or declared_type in _BINARY_TYPES
+    if as_base64:
+        content_type = declared_type
     try:
-        raw = content.encode("utf-8")
-    except UnicodeEncodeError:
+        if as_base64:
+            raw = base64.b64decode(content, validate=True)
+        else:
+            raw = content.encode("utf-8")
+    # ValueError: b64decode refuses a str holding non-ASCII characters.
+    except (UnicodeEncodeError, binascii.Error, ValueError):
         return _bad("content is not encodable", "bad_encoding")
+    # A binary body must be what it claims, so nothing else rides the png type.
+    if declared_type == "image/png" and not raw.startswith(_PNG_SIGNATURE):
+        return _bad("content is not a png", "bad_content")
     if len(raw) > _MAX_BYTES:
         return _bad("file too large", "too_large", status=413)
 

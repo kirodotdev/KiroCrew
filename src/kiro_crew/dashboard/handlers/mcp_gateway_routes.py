@@ -126,7 +126,7 @@ def _local_overlay_section() -> dict:
         return {}
     try:
         raw = json.loads(read_config_text(path))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         # Unreadable overlay: treat as absent. The loader logs and ignores it
         # too, so behaving otherwise here would diverge from the runtime.
         return {}
@@ -510,14 +510,36 @@ def _env_pooling_outcome(
     stand-in env handed to ``_needs_private_backend`` holds only the key names
     the row recorded as vault references; no declared value is read here.
     """
+    branches = _env_decl_branches(row, forward_declared_env, identity_keys)
+    blocked = "unwrapped" in branches
+    private = bool(branches) and all(b == "private" for b in branches)
+    return blocked, private
+
+
+def _env_blocks_every_share(
+    row: dict[str, Any], forward_declared_env: bool, identity_keys: Collection[str]
+) -> bool:
+    """True when, with sharing on, the env leaves this row with nothing shared.
+
+    Narrower than ``blocked`` from :func:`_env_pooling_outcome`: one declaration
+    that pools is enough for the server to share, so this needs some declaration
+    left unwrapped and none pooled.
+    """
+    branches = _env_decl_branches(row, forward_declared_env, identity_keys)
+    return "unwrapped" in branches and "pooled" not in branches
+
+
+def _env_decl_branches(
+    row: dict[str, Any], forward_declared_env: bool, identity_keys: Collection[str]
+) -> list[str]:
+    """The rewriter's branch for each declaration: pooled, unwrapped or private."""
     from kiro_crew.mcp_gateway.rewriter import _needs_private_backend, _withheld_env_count
     from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
 
     decls = row.get("env_decls")
     if decls is None:
         decls = [(frozenset(row.get("env_names", ())), frozenset())]
-    blocked = False
-    private = bool(decls)
+    branches: list[str] = []
     for names, ref_keys in decls:
         withheld = _withheld_env_count(
             dict.fromkeys(names, ""), forward_declared_env, identity_keys
@@ -525,11 +547,12 @@ def _env_pooling_outcome(
         if withheld and _needs_private_backend(
             withheld, dict.fromkeys(ref_keys, SECRET_URI_PREFIX)
         ):
-            continue
-        private = False
-        if withheld:
-            blocked = True
-    return blocked, private
+            branches.append("private")
+        elif withheld:
+            branches.append("unwrapped")
+        else:
+            branches.append("pooled")
+    return branches
 
 
 def _launch_specs_for(names: set[str]) -> dict[str, list[SimpleNamespace]]:
@@ -662,6 +685,10 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
             else (False, False)
         )
         pooling_blocked = env_blocked
+        # Computed whatever the switch says: the confirm for turning sharing ON
+        # must leave out a server that will share nothing once it is on, and
+        # ``pooling_blocked_by_env`` reads false while sharing is off.
+        nothing_shared = _env_blocks_every_share(row, forward_declared_env, identity_keys)
         result.append(
             {
                 "name": name,
@@ -674,6 +701,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
                 "entry_poolable": row["entry_poolable"],
                 "pooling_blocked_by_env": pooling_blocked,
+                "pooling_blocked_by_env_when_shared": nothing_shared,
                 "private_backend": env_private,
                 "agents": sorted(row["agents"]),
                 "transport": row["transport"],

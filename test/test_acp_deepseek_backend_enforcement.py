@@ -34,12 +34,8 @@ def test_the_shared_construction_tail_carries_nothing_from_this_adapter(
 ) -> None:
     """harness-parity H13: no work of this adapter's runs on the Kiro construction path.
 
-    The launch tail and the post-spawn path are shared by EVERY backend, the kiro one
-    included, so anything of this adapter's placed there runs on every Kiro session
-    start. Every entry point of the adapter -- its launch, its env steps, its probe,
-    its vault and key-name reads, its seal and patch writers -- is booby-trapped here,
-    and the full Kiro launch is then driven through ``_spawn`` (and its post-spawn
-    bookkeeping) to the same launch facts the committed golden records.
+    The launch tail is shared by every backend, so every adapter entry point is
+    booby-trapped and a full Kiro launch is driven through ``_spawn`` to the golden facts.
     """
     import acp_launch_capture as capture_mod
 
@@ -69,22 +65,9 @@ def test_the_shared_construction_tail_carries_nothing_from_this_adapter(
 def test_a_denial_the_harness_reports_does_not_trip_the_ungated_call_guard() -> None:
     """A denied call cannot be mistaken for one that ran without asking.
 
-    Two shapes of denial reach a gated session, and neither trips the guard, for two
-    different reasons observed against the harness rather than assumed:
-
-    * a SANDBOX denial happens while the tool body runs, so the call was gated
-      normally first -- the plugin upgraded the downstream ``allow`` to ``ask``, the
-      client answered, and only then did the sandbox refuse the write. Its id is in
-      the asked set, so the ``completed`` it reports is a call the gate saw;
-    * a POLICY denial from a downstream ``tools/pre-execute`` listener is preserved
-      by the plugin WITHOUT asking, which is the point -- the harness's own refusal
-      must not soften into a question. Such a call never runs, and the harness
-      reports it ``failed`` rather than ``completed``.
-
-    The guard only ever fires on ``completed``, so the second shape is outside it by
-    construction. This pins that, because the alternative -- treating a preserved
-    deny as an ungated execution -- would kill the harness every time an operator's
-    own policy plugin said no.
+    A sandbox denial comes after the gate asked, so its id is in the asked set. A
+    ``tools/pre-execute`` policy denial is kept without asking and reports ``failed``,
+    and the guard fires only on ``completed``.
     """
     import asyncio
 
@@ -138,14 +121,8 @@ def test_a_denial_the_harness_reports_does_not_trip_the_ungated_call_guard() -> 
 def test_the_load_marker_is_never_written_into_a_sealed_leaf() -> None:
     """The marker is written by the CHILD, so it cannot live where the child cannot write.
 
-    The gate-artifact leaf is sealed read-only against every harness child on
-    purpose, so that no child can plant what a later session loads
-    (``sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES``). That makes it exactly the
-    wrong home for the one file the child must create: a marker directed there is
-    never written, the read-back reports an absent gate, and every session is
-    refused for a gate that had in fact loaded. This pins the pairing itself rather
-    than the current path spelling, so moving the marker back under any sealed leaf
-    fails here instead of in production.
+    The gate-artifact leaf is sealed (``sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES``), so a
+    marker there is never written and every session is refused. Pins the pairing, not the path.
     """
     from kiro_crew import sandbox as sandbox_module
     from kiro_crew.acp import client as client_module
@@ -168,12 +145,8 @@ def test_the_load_marker_is_never_written_into_a_sealed_leaf() -> None:
 def test_every_file_the_gate_writers_leave_in_the_leaf_is_swept(monkeypatch, tmp_path) -> None:
     """The leaf's invariant is a ratchet for this harness too, not a comment.
 
-    The pi suite pins that every name ITS writers produce is claimed by the leaf
-    sweep's family table; this harness's writers landed in the same leaf without
-    that pin, so the sealed plugin and its patch were never reclaimed after the
-    gateway that wrote them exited -- one pair per gateway process, forever. The
-    property is asserted here so a future writer dropping a differently-named file
-    into the leaf fails this test rather than leaving an unswept file behind.
+    Every name the writers produce must be claimed by the sweep's family table, or one
+    sealed plugin and patch pair leaks per gateway process.
     """
     from kiro_crew import sandbox as sandbox_module
     from kiro_crew.acp import client as client_module
@@ -252,17 +225,8 @@ def test_a_live_gateways_dsh_gate_artifacts_survive_the_sweep(monkeypatch, tmp_p
 def test_a_completed_call_the_gate_never_asked_about_stops_the_session() -> None:
     """The in-band guard that speaks for the SESSION's own child, not for a probe.
 
-    The read-back proves the gate loaded in the child it booted. That the harness
-    then asks for every call is its own behaviour, which no client-side read pins
-    across upgrades -- and this harness's marker is written by the gate itself, so
-    the read-back attests that Crew's code ran rather than that the harness reports
-    it running. This is the check that does not depend on either: a
-    ``tool_call_update`` reaching ``completed`` for an id no permission frame ever
-    named is a call that ran with none of Crew's controls consulted, so the harness
-    is stopped and the turn fails rather than continuing ungoverned.
-
-    Shared with pi deliberately -- one tripwire, one state, so a fix to either
-    lands in both.
+    A ``completed`` for an id no permission frame named ran with no Crew control, so the
+    harness is stopped. The read-back only proves the gate loaded. Shared with pi.
     """
     import asyncio
 
@@ -410,11 +374,8 @@ def _deepseek_completed(tool_call_id: str):
 def test_a_re_asked_call_is_judged_on_its_fresh_verdict_not_the_stale_deny(monkeypatch) -> None:
     """A denial must not outlive the id it was recorded against, and here ids recur.
 
-    This harness forwards the PROVIDER's tool-call id, and an OpenAI-compatible
-    provider that mints per-response ids repeats them across the several steps it runs
-    in one turn -- so the same id can be denied once and legitimately asked about again.
-    A denial that survived the second ask would kill a healthy session on the approved
-    call's own ``completed`` frame, which is why a fresh ask clears the deny.
+    Provider tool-call ids repeat across steps of one turn, so a fresh ask clears the
+    deny; otherwise the approved call's ``completed`` would kill the session.
     """
     import asyncio
 
@@ -449,12 +410,8 @@ def test_a_re_asked_call_is_judged_on_its_fresh_verdict_not_the_stale_deny(monke
 def test_a_completed_call_consumes_its_ask_so_a_reused_id_must_be_asked_again(monkeypatch) -> None:
     """An approval must not outlive the call it was given for, because ids recur here.
 
-    The mirror of the stale-deny case above: this harness forwards the PROVIDER's
-    tool-call id, and a provider that mints per-response ids repeats ``call_0`` across
-    the steps of one turn. An ask that survived its call's ``completed`` frame would
-    vouch for the NEXT ``call_0`` -- one the gate was never asked about -- and the
-    tripwire would trust it. So the terminal frame consumes the id's state, and a
-    reused id is an unasked call until a fresh permission frame names it.
+    Providers repeat ``call_0`` across steps, so the terminal frame consumes the id's
+    state; otherwise the old ask would vouch for the next, unasked ``call_0``.
     """
     import asyncio
 
@@ -487,11 +444,8 @@ def test_a_completed_call_consumes_its_ask_so_a_reused_id_must_be_asked_again(mo
 def test_a_failed_terminal_consumes_the_gate_state_too(monkeypatch) -> None:
     """``failed`` is the other terminal, and it must not leave a verdict behind either.
 
-    A denied call is EXPECTED to fail, and that failure ends the call. Were the deny
-    to survive it, a later reuse of the id that the gate approved afresh would still
-    be judged on the old deny -- the stale-state kill the fresh-ask discard exists to
-    prevent -- and were an ask to survive its call's failure, the reuse would inherit
-    an approval it never earned.
+    A surviving deny would misjudge a reused id the gate approved afresh; a surviving
+    ask would hand the reuse an approval it never earned.
     """
     import asyncio
 
@@ -522,13 +476,8 @@ def test_a_failed_terminal_consumes_the_gate_state_too(monkeypatch) -> None:
 def test_registering_an_unverified_harness_as_selectable_is_refused(monkeypatch) -> None:
     """KNOWN must not be enough to reach the switch, and this is where that is enforced.
 
-    The guard outlives its original subject. deepseek was the harness that needed
-    it -- KNOWN, so a governance rule could deny it, and unrouted, so it must not
-    reach the switch -- and now that its routing is VERIFIED there is no KNOWN id
-    left that is UNVERIFIED (``test_no_known_backend_is_unverified``). So the
-    refusal is exercised by making this same id unrouted again, which keeps the
-    guard covered for the next harness onboarded in that state rather than
-    deleting it with the condition that motivated it.
+    No KNOWN id is UNVERIFIED (``test_no_known_backend_is_unverified``), so the refusal is
+    exercised by making this id unrouted for the test.
     """
     from kiro_crew.agent_sdk import backends as sdk_backends
 
@@ -599,11 +548,8 @@ def test_a_routed_harness_still_registers() -> None:
 def test_no_known_backend_is_unverified() -> None:
     """The audit the refusal rests on, kept as a test so it cannot go quietly stale.
 
-    deepseek was the one member of this set, and this change empties it. If a
-    harness ever resolves to ``UNVERIFIED`` again -- including by being absent from
-    the routing table, which ``routing_for`` answers ``UNVERIFIED`` for -- the
-    refusal above starts applying to it. That may be right, but it must be noticed
-    rather than discovered when an edition's registration begins failing.
+    A harness absent from the routing table also resolves to ``UNVERIFIED``, and the
+    refusal above would then apply to it; this makes that visible.
     """
     unverified = {b for b in ACP_BACKENDS_KNOWN if routing_for(b) is Routing.UNVERIFIED}
     assert unverified == set()
@@ -620,15 +566,9 @@ def test_no_known_backend_is_unverified() -> None:
 def test_it_carves_nothing_out_of_the_deny_list_because_its_key_comes_from_the_vault() -> None:
     """An ENFORCED harness that is fed its key names NO leaf, and that is the point.
 
-    ``adapter_hidden_credential_dirs`` denies the whole read-gate floor minus the
-    harness's own leaf, so every other enforced harness spares one or it cannot
-    authenticate -- and that carve-out applies to the whole sandboxed process TREE,
-    which on a harness shipping ``bash`` means the model can ``open()`` the
-    operator's provider key. This harness resolves a key from its INHERITED
-    ENVIRONMENT above both files, so Crew hands it one from its own vault
-    (``agent.deepseek_env``) and both leaves stay masked. Asserted against the
-    resolved mask, not just the declaration: a projection that stopped honouring an
-    empty ``adapter_own_leaves`` would reopen them.
+    A carved-out leaf is readable by the whole process tree, including ``bash``. This
+    harness reads its key from the environment (``agent.deepseek_env``), so both leaves
+    stay masked; asserted on the resolved mask.
     """
     from kiro_crew.agent_sdk import host_auth
     from kiro_crew.agent_sdk import tool_gate as gate

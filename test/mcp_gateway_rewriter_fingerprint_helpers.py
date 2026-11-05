@@ -54,8 +54,7 @@ def _mk_tree(
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim; no test of the family calls monkeypatch.undo()
-def _forward_declared_env_on(monkeypatch: pytest.MonkeyPatch) -> None:
+def _forward_declared_env_on(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Force declared-env forwarding ON for this module.
 
     Under cause-B pre-classification a poolable server that declares env while
@@ -66,11 +65,11 @@ def _forward_declared_env_on(monkeypatch: pytest.MonkeyPatch) -> None:
     the flag ON. ``test_forward_declared_env_change_invalidates`` overrides
     this per-call to prove the flag is itself a fingerprint input.
     """
-    monkeypatch.setattr(rewriter, "forward_declared_env_enabled", lambda: True)
+    _floor_monkeypatch.setattr(rewriter, "forward_declared_env_enabled", lambda: True)
     # Same reasoning for the identity set: pin it to the default (nothing opted
     # in) so these tests never read the developer's real config, and let
     # ``test_pool_identity_env_change_invalidates`` override it per-call.
-    monkeypatch.setattr(rewriter, "pool_identity_env_keys", lambda: frozenset())
+    _floor_monkeypatch.setattr(rewriter, "pool_identity_env_keys", lambda: frozenset())
 
 
 def _rewrite(root: Path, **overrides: Any) -> tuple[dict[str, int], dict[str, str]]:

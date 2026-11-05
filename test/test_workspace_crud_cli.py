@@ -15,6 +15,11 @@ from pathlib import Path
 import pytest
 
 from conftest import requires_symlinks
+
+# ``main`` imports the mirrored facade lazily. Imported here, before any test
+# patches ``config_dir`` or ``sel``, so its owners bind the real objects: a
+# first import under those patches composes a family that disagrees with itself.
+from kiro_crew import cli_commands  # noqa: F401
 from kiro_crew import platform_compat
 from kiro_crew.cli import main
 
@@ -64,12 +69,17 @@ class TestWorkspaceArgparse:
     ) -> None:
         """Req 6.1: workspace subparser with list/create/update/delete."""
         cfg_path = _write_config(tmp_path, _base_config())
-        # Verify each subcommand is accepted by argparse (no SystemExit(2)).
-        for subcmd, argv in [
-            ("list", ["kirocrew", "workspace", "list"]),
-            ("create", ["kirocrew", "workspace", "create", "--name", "newtest"]),
-            ("update", ["kirocrew", "workspace", "update", "staging"]),
-            ("delete", ["kirocrew", "workspace", "delete", "staging"]),
+        # Verify each subcommand is accepted by argparse (no SystemExit(2)) and
+        # leaves the workspace set it promises in the config file.
+        for subcmd, argv, expected in [
+            ("list", ["kirocrew", "workspace", "list"], ["default", "staging"]),
+            (
+                "create",
+                ["kirocrew", "workspace", "create", "--name", "newtest"],
+                ["default", "newtest", "staging"],
+            ),
+            ("update", ["kirocrew", "workspace", "update", "staging"], ["default", "staging"]),
+            ("delete", ["kirocrew", "workspace", "delete", "staging"], ["default"]),
         ]:
             with (
                 unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
@@ -78,6 +88,8 @@ class TestWorkspaceArgparse:
             ):
                 # Should not raise SystemExit(2) (argparse error)
                 main()
+            stored = json.loads(cfg_path.read_text(encoding="utf-8"))
+            assert sorted(stored["workspaces"]) == expected, subcmd
             # Re-write config since delete/create mutate it
             _write_config(tmp_path, _base_config())
 
@@ -298,6 +310,26 @@ class TestWorkspaceList:
         # Non-default workspace present without marker
         assert "staging" in out
         assert "workspace-staging" in out
+
+    def test_list_prints_each_row_on_one_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A newline or control character in a stored field stays inside its row."""
+        data = _base_config()
+        data["workspaces"]["staging"] = {"dir": "work\nspace\x07-staging"}
+        cfg_path = _write_config(tmp_path, data)
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "list"]),
+        ):
+            main()
+
+        lines = capsys.readouterr().out.splitlines()
+        # Header plus one line per workspace: the newline did not split a row.
+        assert len(lines) == 3
+        row = next(line for line in lines if line.startswith("staging "))
+        assert "work\\x0aspace-staging" in row
+        assert "\x07" not in row
 
 
 # ── Create errors (Req 5.4, 5.5) ──

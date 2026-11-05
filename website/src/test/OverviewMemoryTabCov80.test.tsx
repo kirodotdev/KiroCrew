@@ -178,6 +178,106 @@ describe('MemoryTab — settings', () => {
     expect(await screen.findByText(/Saved/)).toBeInTheDocument()
   })
 
+  it('reports a refused settings save instead of showing Saved', async () => {
+    api.saveMemorySettings.mockRejectedValue(new Error('zzq-owner-only'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    const inputs = await waitFor(() => {
+      const found = screen.getAllByRole('spinbutton') as HTMLInputElement[]
+      expect(found[0].value).toBe('4')
+      return found
+    })
+    fireEvent.change(inputs[0], { target: { value: '6' } })
+    const save = saveIn(/Memory Settings/i)
+    await userEvent.click(save)
+
+    expect(await screen.findByText(/Could not save the memory settings/i)).toBeInTheDocument()
+    expect(screen.getByText(/zzq-owner-only/)).toBeInTheDocument()
+    expect(save.textContent).not.toContain('Saved')
+  })
+
+  it('says the settings were not loaded when their read fails', async () => {
+    api.memorySettings.mockRejectedValue(new Error('zzq-gateway-down'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    expect(await screen.findByText(/Could not load the memory settings/i)).toBeInTheDocument()
+    expect(screen.getByText(/zzq-gateway-down/)).toBeInTheDocument()
+    expect(screen.queryByText(/Could not save the memory settings/i)).toBeNull()
+  })
+
+  it('clamps an emptied or out-of-range box to the bounds it saves, and sends only edited fields', async () => {
+    api.memorySettings.mockResolvedValue({
+      history_idle_hours: 4, history_max_days: 730, migrated: false,
+    })
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    const inputs = await waitFor(() => {
+      const found = screen.getAllByRole('spinbutton') as HTMLInputElement[]
+      expect(found[1].value).toBe('730')
+      return found
+    })
+    // An emptied idle box: saved and shown as the 0.5 minimum, not 0.
+    fireEvent.change(inputs[0], { target: { value: '' } })
+    await userEvent.click(saveIn(/Memory Settings/i))
+    await waitFor(() => expect(api.saveMemorySettings).toHaveBeenCalledWith({ history_idle_hours: 0.5 }))
+    expect(inputs[0].value).toBe('0.5')
+    // The untouched retention value set outside the tab is left alone.
+    expect(inputs[1].value).toBe('730')
+
+    fireEvent.change(inputs[0], { target: { value: '99' } })
+    fireEvent.change(inputs[1], { target: { value: '9000' } })
+    await userEvent.click(saveIn(/Memory Settings/i))
+    await waitFor(() => expect(api.saveMemorySettings).toHaveBeenLastCalledWith({
+      history_idle_hours: 24, history_max_days: 365,
+    }))
+    expect(inputs[0].value).toBe('24')
+    expect(inputs[1].value).toBe('365')
+  })
+
+  it('keeps an edit made while a save is in flight for the next Save', async () => {
+    let finish: (v: { ok: boolean }) => void = () => {}
+    api.saveMemorySettings.mockImplementationOnce(() => new Promise(r => { finish = r }))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    const inputs = await waitFor(() => {
+      const found = screen.getAllByRole('spinbutton') as HTMLInputElement[]
+      expect(found[0].value).toBe('4')
+      return found
+    })
+    fireEvent.change(inputs[0], { target: { value: '6' } })
+    await userEvent.click(saveIn(/Memory Settings/i))
+    fireEvent.change(inputs[1], { target: { value: '45' } })
+    // One save at a time: "Saved" can only answer the request that carried the edit.
+    expect(saveIn(/Memory Settings/i)).toBeDisabled()
+    await act(async () => { finish({ ok: true }) })
+
+    await userEvent.click(saveIn(/Memory Settings/i))
+    await waitFor(() => expect(api.saveMemorySettings).toHaveBeenLastCalledWith({ history_max_days: 45 }))
+  })
+
+  it('does not let a slow settings load overwrite a box already edited', async () => {
+    let load: (v: object) => void = () => {}
+    api.memorySettings.mockImplementationOnce(() => new Promise(r => { load = r }))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    const inputs = await waitFor(() => screen.getAllByRole('spinbutton') as HTMLInputElement[])
+    fireEvent.change(inputs[0], { target: { value: '6' } })
+    await act(async () => { load({ history_idle_hours: 4, history_max_days: 730, migrated: false }) })
+    expect(inputs[0].value).toBe('6')
+    expect(inputs[1].value).toBe('730')
+
+    await userEvent.click(saveIn(/Memory Settings/i))
+    await waitFor(() => expect(api.saveMemorySettings).toHaveBeenCalledWith({ history_idle_hours: 6 }))
+  })
+
+  it('does not let a first load that lands after a save overwrite the saved box', async () => {
+    let load: (v: object) => void = () => {}
+    api.memorySettings.mockImplementationOnce(() => new Promise(r => { load = r }))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    const inputs = await waitFor(() => screen.getAllByRole('spinbutton') as HTMLInputElement[])
+    fireEvent.change(inputs[0], { target: { value: '6' } })
+    await userEvent.click(saveIn(/Memory Settings/i))
+    await waitFor(() => expect(api.saveMemorySettings).toHaveBeenCalledWith({ history_idle_hours: 6 }))
+    await act(async () => { load({ history_idle_hours: 4, history_max_days: 30, migrated: false }) })
+    expect(inputs[0].value).toBe('6')
+    expect(inputs[1].value).toBe('30')
+  })
+
   it('hides the retention field, and the text-file editors, once memory is migrated', async () => {
     api.memorySettings.mockResolvedValue({
       history_idle_hours: 3, history_max_days: 90, migrated: true,
@@ -449,6 +549,35 @@ describe('MemoryTab — lessons', () => {
     await screen.findByText('zzq-rule-beta')
     await userEvent.click(screen.getByRole('button', { name: /^Add$/ }))
     expect(api.createLesson).not.toHaveBeenCalled()
+  })
+
+  it('trims the rule, and refuses a whitespace-only one', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('zzq-rule-beta')
+    // The rule box is named for a screen reader, not only by its placeholder.
+    const input = screen.getByRole('textbox', { name: /^Rule$/ }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: '   ' } })
+    await userEvent.click(screen.getByRole('button', { name: /^Add$/ }))
+    expect(api.createLesson).not.toHaveBeenCalled()
+
+    fireEvent.change(input, { target: { value: '  zzq-padded-rule  ' } })
+    await userEvent.click(screen.getByRole('button', { name: /^Add$/ }))
+    await waitFor(() => expect(api.createLesson).toHaveBeenCalledWith('zzq-padded-rule', 'knowledge'))
+  })
+
+  it('keeps the draft and reports a rejected add request', async () => {
+    api.createLesson.mockRejectedValue(new Error('zzq-forbidden'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('zzq-rule-beta')
+    const reads = api.lessons.mock.calls.length
+    const input = screen.getByPlaceholderText(/Rule/) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'zzq-gated-rule' } })
+    await userEvent.click(screen.getByRole('button', { name: /^Add$/ }))
+
+    expect(await screen.findByText(/Could not add the lesson/i)).toBeInTheDocument()
+    expect(screen.getByText(/zzq-forbidden/)).toBeInTheDocument()
+    expect(input.value).toBe('zzq-gated-rule')
+    expect(api.lessons).toHaveBeenCalledTimes(reads)
   })
 
   it('deletes the lesson its row names, then re-reads the list', async () => {

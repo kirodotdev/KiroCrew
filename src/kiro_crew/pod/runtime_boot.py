@@ -14,6 +14,7 @@ because that is the namespace the pod suite patches.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -331,7 +332,10 @@ def require_pod_safe_verb(argv: list[str], name: str) -> None:
     verb = argv[0] if argv else ""
     if verb in _POD_SAFE_VERBS:
         return
-    if verb in _POD_EQUIVALENT:
+    if verb == "restart" and not runtime.IS_WINDOWS:
+        # `pod restart` keeps the pod's HOME; Windows refuses it, so it keeps down/up.
+        hint = f" Use `kirocrew pod restart {name}` instead."
+    elif verb in _POD_EQUIVALENT:
         hint = f" Use `{_POD_EQUIVALENT[verb].format(name=name)}` instead."
     elif verb.startswith("-"):
         hint = " The verb must come first; put global flags after it."
@@ -347,9 +351,11 @@ def require_pod_safe_verb(argv: list[str], name: str) -> None:
 def exec_in_pod(cfg: PodConfig, name: str, argv: list[str]) -> int:
     """``exec`` *argv* as the pod's own kirocrew, in the pod's isolated env.
 
-    Replaces the current process on success, so the child's exit status and its
-    stdio (including a TTY, which matters for ``chat`` / ``tui``) reach the caller
-    untouched. Returns an exit code only when the exec itself fails.
+    On POSIX this replaces the current process on success, so the child's exit
+    status and its stdio (including a TTY, which matters for ``chat`` / ``tui``)
+    reach the caller untouched, and an exit code is returned only when the exec
+    itself fails. Windows has no exec, so there the command runs as a child with
+    inherited stdio and its exit code is returned.
     """
     require_pod_safe_verb(argv, name)
     bin_path, env = pod_context(cfg, name)
@@ -364,12 +370,35 @@ def exec_in_pod(cfg: PodConfig, name: str, argv: list[str]) -> int:
     except OSError as exc:
         print(f"FATAL: could not enter the pod workspace {workspace}: {exc}")
         return 70
+    if runtime.IS_WINDOWS:
+        # Windows has no exec: CPython's os.execve there spawns and ends the
+        # caller, so the command's exit code never reaches it (see boot).
+        return _run_in_pod_as_child(bin_path, argv, env)
     try:
         os.execve(str(bin_path), [str(bin_path), *argv], env)
     except OSError as exc:  # pragma: no cover - exec failure is environmental
         print(f"FATAL: could not exec {bin_path}: {exc}")
         return 70
     return 0  # unreachable on success
+
+
+def _run_in_pod_as_child(bin_path: Path, argv: list[str], env: dict[str, str]) -> int:
+    """Run the pod's kirocrew as a child sharing this console and return its code.
+
+    The child inherits stdio and the cwd :func:`exec_in_pod` already entered. A
+    Ctrl+C reaches the child too, so this keeps waiting instead of exiting first
+    and handing the console to a child that is still running.
+    """
+    try:
+        proc = subprocess.Popen([str(bin_path), *argv], env=env)
+    except OSError as exc:
+        print(f"FATAL: could not run {bin_path}: {exc}")
+        return 70
+    while True:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            continue
 
 
 # --------------------------------------------------------------------------- #

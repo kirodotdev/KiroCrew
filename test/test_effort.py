@@ -99,8 +99,57 @@ class TestModelSupportsEffort:
         # On the claude_code path the value reaching here is the FOLDED Sonnet
         # provider id (translated at the factory boundary), which IS capable.
         assert model_supports_effort("global.anthropic.claude-sonnet-4-6[1m]") is True
-        # A model the registry does NOT list still uses the substring heuristic.
+        # A Haiku id with no readable version stays refused.
         assert model_supports_effort("some-haiku-thing") is False
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-haiku-5.5",
+            "CLAUDE-HAIKU-5.5",
+            "haiku-5.5",
+            "global.anthropic.claude-haiku-5-5[1m]",
+            "anthropic.claude-haiku-5-5-20261001-v1:0",
+            "claude-haiku-5.6",
+            "claude-haiku-6",
+            "claude-haiku-6.0",
+        ],
+    )
+    def test_haiku_5_5_and_later_supports_effort(self, model: str):
+        # kiro-cli accepts /effort on claude-haiku-5.5 (all five levels), so the
+        # picker must offer the control for it and later Haiku.
+        assert model_supports_effort(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-haiku-4.5",
+            "haiku-4.5",
+            "anthropic.claude-haiku-4-5-20251001-v1:0",
+            "claude-3-5-haiku-20241022",
+            "claude-3-haiku-20240307",
+            "claude-haiku-5",
+            "claude-haiku-5.4",
+            "claude-haiku",
+            "haiku",
+        ],
+    )
+    def test_haiku_before_5_5_still_refuses_effort(self, model: str):
+        # kiro-cli answers "Effort configuration is currently not available on
+        # claude-haiku-4.5"; an older or unversioned Haiku keeps the slider hidden
+        # even though the claude_code registry folds claude-haiku-4.5 onto an
+        # effort-capable Sonnet.
+        assert model_supports_effort(model) is False
+
+    def test_haiku_5_5_resolves_a_persisted_level(self):
+        assert (
+            resolve_effort_for_model("claude-haiku-5.5", defaults={"claude-haiku-5.5": "xhigh"})
+            == "xhigh"
+        )
+        assert (
+            resolve_effort_for_model("claude-haiku-4.5", defaults={"claude-haiku-4.5": "xhigh"})
+            is None
+        )
 
 
 class TestEffortSettingsKey:

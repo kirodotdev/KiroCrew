@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowRight, ExternalLink, Lightbulb, Settings, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, ExternalLink, Lightbulb, X } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { useReducedMotion } from '../hooks/useReducedMotion'
 import MarkdownRenderer from './MarkdownRenderer'
 
 import { i18nT } from '../i18n/t'
-import { SettingsLink } from './SettingsLink'
 import { Glass } from './Glass'
+import { Btn, IconButton } from './ui'
 
 // The resolver lives in `utils/docsLink`: a pure function must not live behind a
 // component module, or importing it drags this file's router and markdown
@@ -109,6 +110,71 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
     onDismiss()
   }, [actionRoute, tip.id, navigate, onDismiss, queryClient])
 
+  // A tip opens as a one-line pill (lightbulb, title, chevron, close) so it
+  // never crowds the composer; the full card is one click away. The open state
+  // is keyed by tip id, so the next tip starts closed again.
+  const [openTipId, setOpenTipId] = useState<string | null>(null)
+  const open = openTipId === tip.id
+
+  // The pressed toggle leaves the DOM when the state flips (the pill's title
+  // button becomes the card's collapse button and back), so keyboard and
+  // screen-reader focus would fall to <body>. Move it to the other state's
+  // toggle, but only after a user toggle: a first render or a new tip never
+  // takes focus away from the composer.
+  const pillToggleRef = useRef<HTMLButtonElement>(null)
+  const collapseRef = useRef<HTMLButtonElement>(null)
+  const focusAfterToggleRef = useRef<'card' | 'pill' | null>(null)
+  const openCard = useCallback(() => {
+    focusAfterToggleRef.current = 'card'
+    setOpenTipId(tip.id)
+  }, [tip.id])
+  const collapseCard = useCallback(() => {
+    focusAfterToggleRef.current = 'pill'
+    setOpenTipId(null)
+  }, [])
+  useEffect(() => {
+    const target = focusAfterToggleRef.current
+    focusAfterToggleRef.current = null
+    if (target === 'card' && open) collapseRef.current?.focus()
+    else if (target === 'pill' && !open) pillToggleRef.current?.focus()
+  }, [open])
+
+  // The pill grows into the card: one persistent pane animated with a layout
+  // transition (measured only when `open` flips), so the user sees the same
+  // element change shape. Reduced motion drops the animation, not the single
+  // element.
+  //
+  // A layout animation is a scale transform on the pane, so anything inside it
+  // would be squashed while the box grows. Each state's content therefore sits
+  // in its own `layout="position"` node: framer counter-scales it, so text,
+  // icons and buttons render at true size throughout, and it fades in so the
+  // incoming state never reflows in view. The glass surface itself is not
+  // corrected (Glass owns its radius inline on the host and on every layer),
+  // so its corners stretch slightly for the 0.25s of the transition.
+  const reduceMotion = useReducedMotion()
+  const paneTransition = reduceMotion
+    ? { duration: 0 }
+    : { duration: 0.25, ease: [0.2, 0.8, 0.2, 1] as const }
+  const contentMotion = reduceMotion
+    ? { layout: false as const, initial: false as const }
+    : {
+        layout: 'position' as const,
+        layoutDependency: open,
+        initial: { opacity: 0 },
+        animate: { opacity: 1 },
+        transition: { opacity: { duration: 0.15, ease: 'easeOut' as const }, layout: paneTransition },
+      }
+
+  const dismissButton = (
+    <IconButton
+      onClick={handleDismiss}
+      disabled={feedbackMutation.isPending}
+      aria-label={i18nT('components.tipCard.dismiss_tip')}
+    >
+      <X size={13} aria-hidden="true" />
+    </IconButton>
+  )
+
   return (
     <motion.div
       className="w-full"
@@ -117,103 +183,124 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
       exit={{ y: 4, opacity: 0 }}
       transition={{ duration: 0.25, ease: [0.2, 0.8, 0.2, 1] }}
     >
-    {/* Glass card (components/Glass.tsx, chip variant — the composer's own
-        primitive): the accent is mixed into the glass tint (`glass-accent`),
-        and `.glass-shadow` gives it the same offset-free depth as the composer
-        it is attached to. The motion wrapper above only moves it in. */}
-    <Glass
-      variant="chip"
-      radius={6}
-      data-testid="tip-card"
-      className="glass-accent glass-shadow w-full flex items-start gap-2.5 px-4 py-2 rounded-md text-xs"
-      role="complementary"
-      aria-label={i18nT('components.tipCard.feature_tip')}
-      title={tooltipText}
+    {/* Neutral glass (components/Glass.tsx, chip variant, the composer's own
+        primitive) with `.glass-shadow` for the same depth as the composer it
+        sits on. The accent stays on the lightbulb and the action button, so the
+        tip does not out-shout the composer. */}
+    <motion.div
+      layout={!reduceMotion}
+      layoutDependency={open}
+      transition={paneTransition}
+      className={open ? 'flex w-full' : 'flex min-w-0 w-fit max-w-full'}
     >
-      <Lightbulb size={14} className="shrink-0 mt-0.5" aria-hidden="true" style={{ color: 'var(--accent)' }} />
-
-      <div className="min-w-0 flex-1">
-        <span className="block font-medium text-[12px] leading-tight" style={{ color: 'var(--text)' }}>{tip.title}</span>
-        {/* Full multi-line body — no truncation. A viewport-relative max-height
-            with scroll keeps a very long body from pushing
-            the bottom-anchored card past the viewport on narrow screens —
-            every character stays reachable, nothing is clipped away.
-            Rendered through the sanitized markdown pipeline so inline
-            `code` / **bold** in generated bodies display styled instead of
-            as literal asterisks and backticks; the arbitrary variants strip
-            block margins to keep the strip compact. */}
-        <div
-          data-testid="tip-body"
-          className="text-[12px] leading-snug mt-0.5 break-words overflow-y-auto max-h-[30vh] [&_p]:m-0 [&_pre]:my-1 [&_ul]:my-0 [&_ol]:my-0"
-          style={{ color: 'var(--muted)' }}
+    {!open ? (
+        <Glass
+          variant="chip"
+          radius={999}
+          data-testid="tip-card"
+          className="glass-shadow inline-flex items-center max-w-full pl-1 pr-1 py-0.5 text-[12px]"
+          role="complementary"
+          aria-label={i18nT('components.tipCard.feature_tip')}
+          title={tooltipText}
         >
-          <MarkdownRenderer content={tip.body} />
-        </div>
-        <div className="flex items-center gap-3 mt-1">
-          <div className="flex items-center gap-3 min-w-0">
+          <motion.div key="pill" {...contentMotion} className="flex items-center gap-1 min-w-0 max-w-full">
+          <button
+            ref={pillToggleRef}
+            type="button"
+            onClick={openCard}
+            aria-expanded={false}
+            className="inline-flex items-center gap-2 min-w-0 pl-2 pr-1 py-1 rounded-full bg-transparent border-none cursor-pointer text-text hover:bg-bg-hover transition-colors"
+          >
+            <Lightbulb size={13} className="shrink-0 text-accent" aria-hidden="true" />
+            <span className="font-medium truncate">{tip.title}</span>
+            <ChevronDown size={13} className="shrink-0 text-muted" aria-hidden="true" />
+          </button>
+          <span className="w-px h-3.5 bg-border shrink-0" aria-hidden="true" />
+          {dismissButton}
+          </motion.div>
+        </Glass>
+    ) : (
+      <Glass
+        variant="chip"
+        radius={12}
+        data-testid="tip-card"
+        className="glass-shadow w-full flex"
+        role="complementary"
+        aria-label={i18nT('components.tipCard.feature_tip')}
+        title={tooltipText}
+      >
+        {/* Not counter-scaled, so it clips to the growing pane: while the box
+            opens from pill size, the true-size card content is revealed by the
+            pane's edge instead of spilling past it. The padding lives here so
+            focus rings near the edge stay inside the clip. */}
+        <div className="flex-1 min-w-0 overflow-hidden px-4 py-3.5">
+        <motion.div key="card" {...contentMotion} className="flex items-start gap-3 w-full">
+        <span
+          className="shrink-0 grid place-items-center w-7 h-7 rounded-md"
+          style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)' }}
+          aria-hidden="true"
+        >
+          <Lightbulb size={15} className="text-accent" />
+        </span>
+
+        <div className="min-w-0 flex-1 max-w-[720px]">
+          <span className="block text-[14px] font-semibold leading-5 py-1 text-text">{tip.title}</span>
+          {/* Full multi-line body, no truncation. A viewport-relative
+              max-height with scroll keeps a very long body from pushing the
+              bottom-anchored card past the viewport on narrow screens. Rendered
+              through the sanitized markdown pipeline so inline `code` and
+              **bold** display styled; the arbitrary variants strip block
+              margins to keep the card compact. */}
+          <div
+            data-testid="tip-body"
+            className="text-[13px] leading-relaxed text-muted break-words overflow-y-auto max-h-[30vh] [&_p]:m-0 [&_pre]:my-1 [&_ul]:my-0 [&_ol]:my-0"
+          >
+            <MarkdownRenderer content={tip.body} />
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-2.5">
             {actionRoute && (
-              <button
-                onClick={handleAction}
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium hover:brightness-110 transition"
-                style={{
-                  color: 'var(--accent)',
-                  background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
-                  border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
-                }}
-              >
+              <Btn primary onClick={handleAction} className="text-[12px]">
                 {tip.action?.label}
-                <ArrowRight size={11} aria-hidden="true" />
-              </button>
+              </Btn>
             )}
             {docHref && (
               <a
                 href={docHref}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline hover:brightness-110 transition"
+                className="inline-flex items-center gap-1 text-[12px] text-accent hover:underline"
               >
-                <ExternalLink size={10} aria-hidden="true" />
+                <ExternalLink size={11} aria-hidden="true" />
                 {i18nT('components.tipCard.learn_more')}
               </a>
             )}
-          </div>
-          <div className="flex items-center gap-2 ml-auto shrink-0">
             <button
+              type="button"
               onClick={handleOptOut}
               disabled={optOutMutation.isPending}
-              className="text-[11px] hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{ color: 'var(--muted)' }}
-              aria-label={i18nT('components.tipCard.turn_off_tips')}
+              className="text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {i18nT('components.tipCard.turn_off_tips')}
             </button>
-            {/* The Feature Tips toggle lives in Settings → Chat → Discovery. No
-                `highlight` yet: that toggle has no setting anchor to flash. */}
-            <SettingsLink
-              tab="chat"
-              sub="discovery"
-              className="inline-flex items-center rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)]"
-              style={{ color: 'var(--muted)' }}
-              aria-label={i18nT('components.tipCard.tip_settings')}
-              title={i18nT('components.tipCard.tip_settings')}
-            >
-              <Settings size={12} aria-hidden="true" />
-            </SettingsLink>
           </div>
         </div>
-      </div>
 
-      <div className="flex items-center shrink-0 ml-auto">
-        <button
-          onClick={handleDismiss}
-          disabled={feedbackMutation.isPending}
-          className="p-0.5 rounded transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-40 disabled:cursor-not-allowed"
-          aria-label={i18nT('components.tipCard.dismiss_tip')}
-        >
-          <X size={12} style={{ color: 'var(--muted)' }} />
-        </button>
-      </div>
-    </Glass>
+        <div className="flex items-center gap-0.5 shrink-0 ml-auto -mr-1 -mt-0.5">
+          <IconButton
+            ref={collapseRef}
+            onClick={collapseCard}
+            aria-expanded={true}
+            aria-label={i18nT('components.tipCard.collapse_tip')}
+          >
+            <ChevronUp size={13} aria-hidden="true" />
+          </IconButton>
+          {dismissButton}
+        </div>
+        </motion.div>
+        </div>
+      </Glass>
+    )}
+    </motion.div>
     </motion.div>
   )
 }

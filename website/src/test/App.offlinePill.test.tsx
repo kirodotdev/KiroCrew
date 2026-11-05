@@ -17,8 +17,10 @@
  * reconnection when pasting a token is the fix (issue #9692).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
+import type { QueryClient } from '@tanstack/react-query'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import type { RootState } from '../store'
 import { sseConnected } from '../store/dashboardSlice'
 import App from '../App'
@@ -53,6 +55,8 @@ vi.mock('../api/client', () => ({
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
+    // ThemeProvider's catalog query retries every 1s, 2s, 4s... until a read succeeds, and each failed retry notifies it.
+    themes: vi.fn().mockResolvedValue({ themes: [] }),
   },
   isAuthBannerShown: isAuthBannerShownMock,
   ApiError: class ApiError extends Error {
@@ -73,6 +77,17 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
+
+// These tests assert on the shell's first frame, before the mount-time status read flips `connected`, so they
+// cannot wait first. Everything else the shell starts at mount (apps, instances, slots, the theme boot, about ten
+// queries this mock leaves unanswered, the 600ms timer that retires the entrance class) lands after that frame,
+// and without a wait it lands after the test. Each test ends here: the entrance class gone and every query idle.
+const SHELL_SETTLED = namedCeiling('SHELL_SETTLED', 5000)
+const shellSettled = (queryClient: QueryClient) =>
+  waitFor(() => {
+    expect(screen.getByTestId('dashboard-shell')).not.toHaveClass('animate-rise')
+    expect(queryClient.isFetching()).toBe(0)
+  }, SHELL_SETTLED)
 
 describe('App offline capsule — auth-required accessible name + live region', () => {
   beforeEach(() => {
@@ -95,8 +110,8 @@ describe('App offline capsule — auth-required accessible name + live region', 
   }
   const statusText = (dot: HTMLElement) => dot.querySelector('[role="status"]')?.textContent ?? ''
 
-  it('announces the generic offline cause when WS is disconnected AND no auth banner', () => {
-    renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+  it('announces the generic offline cause when WS is disconnected AND no auth banner', async () => {
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
     const dot = connDot()
     // Accessible name and live region carry the reconnecting cause; the
     // dot has no "Offline" text pill (the capsule's danger tint is the
@@ -112,11 +127,12 @@ describe('App offline capsule — auth-required accessible name + live region', 
     expect(dot.getAttribute('aria-label')).toMatch(/collapse readouts/i)
     expect(dot.getAttribute('aria-label')).toBe(dot.getAttribute('title'))
     expect(statusText(dot)).not.toMatch(/collapse readouts/i)
+    await shellSettled(queryClient)
   })
 
-  it('announces the session-expired cause (name + live region) when the auth banner is shown on mount', () => {
+  it('announces the session-expired cause (name + live region) when the auth banner is shown on mount', async () => {
     isAuthBannerShownMock.mockReturnValue(true)
-    renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
     const dot = connDot()
     // The fix: the accessible name AND the role="status" live region — not
     // just the native title — say the session expired, so a screen-reader
@@ -127,10 +143,11 @@ describe('App offline capsule — auth-required accessible name + live region', 
     // And the generic wording is gone from the announced surfaces.
     expect(dot.getAttribute('aria-label')).not.toMatch(/reconnecting/i)
     expect(statusText(dot)).not.toMatch(/reconnecting/i)
+    await shellSettled(queryClient)
   })
 
-  it('flips name + live region live in response to mc-auth-required / mc-auth-cleared events', () => {
-    renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+  it('flips name + live region live in response to mc-auth-required / mc-auth-cleared events', async () => {
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
     expect(connDot().getAttribute('aria-label')).toMatch(/reconnecting/i)
     expect(statusText(connDot())).toMatch(/reconnecting/i)
 
@@ -147,9 +164,10 @@ describe('App offline capsule — auth-required accessible name + live region', 
     })
     expect(connDot().getAttribute('aria-label')).toMatch(/reconnecting/i)
     expect(statusText(connDot())).toMatch(/reconnecting/i)
+    await shellSettled(queryClient)
   })
 
-  it('announces session-expired even when the transport is still connected (auth wins over connected)', () => {
+  it('announces session-expired even when the transport is still connected (auth wins over connected)', async () => {
     // The independently-sourced state: 403 set authRequired while the socket
     // (Redux `connected`) is still up. A transport-first order would announce
     // "Gateway connected" -- a reassuring lie, uncorrected because the banner
@@ -157,7 +175,7 @@ describe('App offline capsule — auth-required accessible name + live region', 
     // Force both signals ON explicitly (sseConnected pins connected=true so the
     // assertion does not race the mount status fetch; mc-auth-required sets the
     // local auth flag), so the ordering is what the test measures.
-    const { store } = renderWithProviders(<App />, { route: '/chat' })
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
     act(() => {
       store.dispatch(sseConnected())
       window.dispatchEvent(new CustomEvent('mc-auth-required'))
@@ -168,6 +186,7 @@ describe('App offline capsule — auth-required accessible name + live region', 
     // The reassuring "Gateway connected" must NOT be announced in this state.
     expect(statusText(dot)).not.toMatch(/^gateway connected/i)
     expect(dot.getAttribute('aria-label')).not.toMatch(/^gateway connected/i)
+    await shellSettled(queryClient)
   })
 })
 
@@ -183,18 +202,19 @@ describe('App connection indicator — the shape carries the state, not colour a
     return glyph
   }
 
-  it('shows a plug icon when the gateway is connected', () => {
-    const { store } = renderWithProviders(<App />, { route: '/chat' })
+  it('shows a plug icon when the gateway is connected', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
     act(() => { store.dispatch(sseConnected()) })
     const glyph = connGlyph()
     expect(glyph.getAttribute('aria-hidden')).toBe('true')
     expect(glyph.getAttribute('data-conn-state')).toBe('connected')
     expect(glyph.classList.contains('lucide-plug')).toBe(true)
     expect(glyph.classList.contains('lucide-unplug')).toBe(false)
+    await shellSettled(queryClient)
   })
 
-  it('shows an unplugged icon when offline, and its pulse stops under reduced motion', () => {
-    renderWithProviders(<App />, {
+  it('shows an unplugged icon when offline, and its pulse stops under reduced motion', async () => {
+    const { queryClient } = renderWithProviders(<App />, {
       route: '/chat',
       preloadedState: { dashboard: { connected: false, status: { platform: 'darwin' }, slots: [], approvalMode: 'normal' } as unknown as RootState['dashboard'] },
     })
@@ -204,5 +224,6 @@ describe('App connection indicator — the shape carries the state, not colour a
     expect(glyph.classList.contains('lucide-unplug')).toBe(true)
     expect(glyph.classList.contains('lucide-plug')).toBe(false)
     expect(glyph.classList.contains('motion-reduce:animate-none')).toBe(true)
+    await shellSettled(queryClient)
   })
 })

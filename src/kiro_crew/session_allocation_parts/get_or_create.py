@@ -21,19 +21,23 @@ Instance fields read: ``_closing``, ``_deps``, ``_lock``, ``_owner``, ``_start_s
 
 Through ``state`` it also changes the ending fence's and the capability records in place
 (``spawning_reservations``, ``invalidated_reservations``, ``refused_spawns``,
-``capability_failures``) and reads ``ending_keys``.
+``capability_failures``) and reads ``ending_keys``. It also adds and removes an eager
+start's announcement (``speculative_starts``), which a real claim of no higher start
+priority joins.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import (
     AWS_PROFILE_ENV,
@@ -64,6 +68,41 @@ from kiro_crew.start_priority import (
 
 if TYPE_CHECKING:
     from kiro_crew.session_allocation import LLMProvider, ProviderFactory, SessionAllocationService
+
+
+def _model_is_a_launch_argument(provider: Any) -> bool:
+    """Whether *provider*'s harness reads its model at launch, so a switch relaunches it."""
+    backend = getattr(getattr(provider, "client", None), "backend", None)
+    return isinstance(backend, str) and backend in ACP_BACKENDS_MODEL_AT_LAUNCH
+
+
+def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bool:
+    """Whether a resumed session's recorded cwd is a scratch tree its new process cannot read.
+
+    Each process gets its own directory under the scratch root, and the sandbox hides
+    every other one. A conversation that worked in its ``$KIROCREW_SCRATCH`` records
+    that directory as its cwd, but its next process gets a fresh tree, so the old one
+    is hidden from it and the child cannot read its own working directory (kiro-cli
+    exits at start-up with ``EPERM ... uv_cwd`` on macOS). The tree the spawn shares
+    (``shared_scratch``) is re-exposed to it, so a cwd inside that one is kept. With the
+    sandbox off (after the governance floor) nothing is hidden, so the cwd is kept too.
+    """
+    from kiro_crew.agent_scratch import scratch_root
+    from kiro_crew.sandbox_tiers import _clamp_sandbox_mode, configured_sandbox_mode
+
+    path = Path(os.path.realpath(stored_cwd))
+    if not path.is_relative_to(os.path.realpath(scratch_root())):
+        return False
+    try:
+        if _clamp_sandbox_mode(configured_sandbox_mode()) == "off":
+            return False
+    except Exception:
+        # An unreadable floor counts as masked: the session then starts in its
+        # default directory, which it can always read.
+        pass
+    if shared_scratch is not None and path.is_relative_to(os.path.realpath(str(shared_scratch))):
+        return False
+    return True
 
 
 async def _session_runs_remotely(session_key: str) -> bool:
@@ -348,29 +387,53 @@ async def get_or_create(
             # reservation (the ending caller's post-pass read must not count
             # it), waits outside the lock, and comes back to this door.
             held = reserved_key in self.state.ending_keys
+            started: asyncio.Event | None = None
             if not held:
                 self._allocation_reservations.setdefault(reserved_key, set()).add(token)
                 self.advance_ownership_generation(reserved_key)
+                # An eager start announces itself in the same lock hold that
+                # finds no session, so a real claim arriving while it runs can
+                # join it (``_get_or_create_impl``) instead of spawning a
+                # second process for the key.
+                starts = self.state.speculative_starts
+                if (
+                    speculative
+                    and reserved_key not in starts
+                    and reserved_key not in self._sessions
+                ):
+                    started = asyncio.Event()
+                    starts[reserved_key] = (started, start_priority)
         if held:
             fence_deadline = await self.wait_for_ending_fence(reserved_key, fence_deadline)
             continue
         try:
-            result = await self._get_or_create_impl(
-                reserved_key,
-                agent=agent,
-                channel_id=channel_id,
-                approval_policy=approval_policy,
-                model=model,
-                cwd=cwd,
-                extra_env=extra_env,
-                speculative=speculative,
-                speculative_resume=speculative_resume,
-                wait_if_busy=wait_if_busy,
-                _won_race_retries=_won_race_retries,
-                _reservation=token,
-                start_priority=start_priority,
-                **extra_factory_kwargs,
-            )
+            try:
+                result = await self._get_or_create_impl(
+                    reserved_key,
+                    agent=agent,
+                    channel_id=channel_id,
+                    approval_policy=approval_policy,
+                    model=model,
+                    cwd=cwd,
+                    extra_env=extra_env,
+                    speculative=speculative,
+                    speculative_resume=speculative_resume,
+                    wait_if_busy=wait_if_busy,
+                    _won_race_retries=_won_race_retries,
+                    _reservation=token,
+                    start_priority=start_priority,
+                    **extra_factory_kwargs,
+                )
+            finally:
+                # Every exit -- registered, refused, failed, cancelled -- ends
+                # the announcement, so a joined claim never waits on a start
+                # that is over. A failed start leaves no session, and the
+                # joined claim then cold-starts as it would have.
+                if started is not None:
+                    entry = self.state.speculative_starts.get(reserved_key)
+                    if entry is not None and entry[0] is started:
+                        del self.state.speculative_starts[reserved_key]
+                    started.set()
         except SessionEndingError:
             # The key was fenced while this allocation was in flight: a door
             # of the body refused it -- at registration, with the provider
@@ -460,6 +523,7 @@ async def _get_or_create_impl(
     stale_provider: LLMProvider | None = None
     stale_session: Any | None = None
     claimed: Any | None = None
+    joined_start: asyncio.Event | None = None
     factory: ProviderFactory
     try:
         async with self._lock:
@@ -528,6 +592,22 @@ async def _get_or_create_impl(
                 if not owner._provider_factory:
                     raise RuntimeError("No provider factory configured")
                 factory = owner._provider_factory
+                # An eager start for this key is still running: a real claim
+                # waits for it below rather than spawning a second process --
+                # unless the claim outranks it. The eager start waits in every
+                # start queue at its own priority, so a person's FOREGROUND
+                # claim joining a BACKGROUND start would wait behind background
+                # work; that claim cold-starts at its own priority, as before.
+                entry = self.state.speculative_starts.get(key)
+                if (
+                    not speculative
+                    and entry is not None
+                    and not (
+                        start_priority is StartPriority.FOREGROUND
+                        and entry[1] is StartPriority.BACKGROUND
+                    )
+                ):
+                    joined_start = entry[0]
     finally:
         if stale_provider is not None:
             if stale_session is not None:
@@ -540,6 +620,31 @@ async def _get_or_create_impl(
                     key,
                     exc_info=True,
                 )
+
+    if joined_start is not None:
+        # Join the eager start, then claim through the front door: it finds
+        # the session that start registered, or -- when the start failed or
+        # was refused -- no session and no announcement, and cold-starts as
+        # this claim would have without the join.
+        await joined_start.wait()
+        return await owner.get_or_create(
+            key,
+            agent=agent,
+            channel_id=channel_id,
+            approval_policy=approval_policy,
+            model=model,
+            cwd=cwd,
+            extra_env=extra_env,
+            speculative=speculative,
+            speculative_resume=speculative_resume,
+            wait_if_busy=wait_if_busy,
+            _won_race_retries=_won_race_retries,
+            start_priority=start_priority,
+            app_name=app_name,
+            app_launch_agent=app_launch_agent,
+            owning_app=owning_app,
+            **extra_factory_kwargs,
+        )
 
     if claimed is not None:
         session = claimed
@@ -614,7 +719,20 @@ async def _get_or_create_impl(
     if not effective_cwd and (resume_sid or native_fork):
         stored_cwd = owner._session_map.get_cwd(key)
         if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
-            effective_cwd = stored_cwd
+            if await asyncio.to_thread(
+                _stored_cwd_is_hidden_scratch,
+                stored_cwd,
+                extra_factory_kwargs.get("shared_scratch"),
+            ):
+                self._deps.logger.warning(
+                    "session %s: not resuming in %s, an earlier process's scratch "
+                    "directory the sandbox hides from this one; starting in the "
+                    "default directory",
+                    key,
+                    stored_cwd,
+                )
+            else:
+                effective_cwd = stored_cwd
     claim_crew = extra_factory_kwargs.get("crew_agent")
     session_agent = agent
     preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
@@ -747,7 +865,8 @@ async def _get_or_create_impl(
     pooled = None if pool_decision else await owner._drain_and_claim(agent)
     if not pool_decision:
         pool_decision = "hit" if pooled is not None else "miss_empty"
-    owner._record_pool_decision(pool_decision, key)
+    if pooled is None:
+        owner._record_pool_decision(pool_decision, key)
     # Assigned by the cold-start branch inside its semaphore section (the
     # spawn-identity stamp read there must already run under the shield);
     # the pool-claim branch leaves it None and is shielded after the
@@ -755,6 +874,7 @@ async def _get_or_create_impl(
     starting_pid: int | None = None
     if pooled is not None:
         provider = pooled
+        launch_pin = False
         # A warm-pool claim owns a LIVE process from this line on -- the pool
         # path's spawn door. Marked exactly like a cold start past its
         # pre-spawn check, so a claim the ending fence refuses at registration
@@ -856,6 +976,11 @@ async def _get_or_create_impl(
                                 switch_model,
                                 pool_model,
                             )
+                        elif _model_is_a_launch_argument(provider):
+                            # The harness takes its model only at launch, so a
+                            # switch would relaunch the claimed process: the
+                            # chat cold-starts on the pin instead, which is cheaper.
+                            launch_pin = True
                         else:
                             await cast(Any, provider).client.set_model(_send_model)
                             self._deps.logger.info(
@@ -863,7 +988,7 @@ async def _get_or_create_impl(
                                 _send_model,
                             )
                 _effort_override = extra_factory_kwargs.get("reasoning_effort_override")
-                if _effort_override:
+                if _effort_override and not launch_pin:
                     _eff = str(_effort_override)
                     try:
                         if not await provider.change_effort(_eff):
@@ -889,16 +1014,29 @@ async def _get_or_create_impl(
                             key or "?",
                             exc_info=True,
                         )
-            self._deps.logger.info(
-                "Claimed warm-pool process for %s (agent=%s)",
-                key,
-                agent or owner._pool_agent,
-            )
-            owner._schedule_replenish()
+            if launch_pin:
+                # Same teardown as any failed claim, then the cold start below. The
+                # reservation stays in the spawning set the claim put it in, so an
+                # ending caller's read still sees a process in flight; the cold
+                # start's own fence check and cleanup take it from there exactly as
+                # for a fresh spawn.
+                owner._dispatch_hard_kill(provider)
+                owner._schedule_replenish()
+                pooled = None
+                pool_decision = "bypass_model_at_launch"
+            else:
+                self._deps.logger.info(
+                    "Claimed warm-pool process for %s (agent=%s)",
+                    key,
+                    agent or owner._pool_agent,
+                )
+                owner._schedule_replenish()
         except (asyncio.CancelledError, Exception):
+            owner._record_pool_decision(pool_decision, key)
             owner._dispatch_hard_kill(provider)
             raise
-    else:
+        owner._record_pool_decision(pool_decision, key)
+    if pooled is None:
         # A defaulted KAS waits (bounded) for the kiro-cli floor's verdict, so
         # the factory below picks the backend the verdict decided.
         await await_kas_floor_verdict(member=_is_member_key(key))
@@ -1197,7 +1335,7 @@ async def _get_or_create_impl(
                 # entries down with the session it removes. What a
                 # forced stop parked for this key lands at the queue head;
                 # the drains for those entries' channels are woken by the
-                # release that ends this claim (``_wake_adopted_drains``).
+                # release that ends this claim (it reads ``adopted_parked``).
                 if adopt_parked_queue(session, key):
                     session.adopted_parked = True
                 self._deps.logger.info(

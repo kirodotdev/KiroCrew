@@ -126,18 +126,11 @@ async def add(
     admission = self._admit_mutation(
         allow_multiple_persistence=retire_stale_stop_sentinel is not None
     )
-    # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
-    # the awaiting caller is cancelled mid-write, a bare await would release
-    # ``_lock`` while the executor write is still running — a subsequent
-    # add/update could persist newer state first and then be clobbered by
-    # this operation's stale snapshot (lost update after restart). Shielding
-    # keeps the inner task (and the lock) alive until the write completes,
-    # so writes remain strictly serialized; the cancelled caller still sees
-    # CancelledError, with the arm possibly landed (same "mutation may have
-    # already landed" semantics as other cancellation-uncertain mutations).
-    # The inner task is retained in ``_inflight_adds`` (discarded when done)
-    # so it stays SUPERVISED — strongly referenced and completion-logged —
-    # even if every awaiting caller has been cancelled.
+    # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task, so a caller
+    # cancelled mid-write cannot release ``_lock`` while the executor write runs; a
+    # later write would land first and be clobbered by this stale snapshot. The
+    # cancelled caller sees CancelledError with the arm possibly landed.
+    # ``_inflight_adds`` keeps the inner task referenced and completion-logged.
     inner: "asyncio.Task[NudgeLoop]" = asyncio.ensure_future(
         self._add_locked(
             slot_key,
@@ -369,20 +362,13 @@ async def _add_unserialized(
             and not default_patrol
         )
         if existing:
-            # Create-only (``replace_existing=False``) refuses ANY existing
-            # record by default — the dashboard REST creates depend on that:
-            # their documented contract is a 409 that never discards a
-            # retained inspection record. ``replace_stopped`` is the
-            # directive re-arm path's explicit opt-in to narrow the refusal
-            # to ACTIVE records, because a retained INACTIVE row
-            # (approval-stalled, capped, budget-spent, or a terminal record
-            # kept for inspection) otherwise deadlocks the session's only
-            # re-arm: monitor_update's approval-stall refusal names
-            # monitor_start as the remedy. The wake-in-flight guard below
-            # still runs for the replaced-inactive case, so a terminal
-            # record whose accepted wake is awaiting completion evidence
-            # keeps its own refusal rather than having its correlation
-            # orphaned by a replacement.
+            # Create-only (``replace_existing=False``) refuses ANY existing record:
+            # the dashboard REST creates promise a 409 that never discards a retained
+            # inspection record. ``replace_stopped`` narrows the refusal to ACTIVE
+            # records for the directive re-arm, because a retained INACTIVE row would
+            # otherwise deadlock it (monitor_update's approval-stall refusal names
+            # monitor_start as the remedy). The wake-in-flight guard below still runs,
+            # so a record whose accepted wake awaits completion keeps its refusal.
             if (
                 not replace_existing
                 and not displaces_default
@@ -470,31 +456,13 @@ async def _add_unserialized(
             # moment the loop is armed, and user turns from here on only
             # defer delivery, never restart it.
             next_due_ts=now + idle_secs,
-            # The SUBJECT is decided HERE, from the instruction the caller
-            # already wrote -- no target, kind or enable flag is ever passed.
-            # WHETHER to look for one is the ``gate`` argument above, which the
-            # arming surfaces set and this service defaults to False; saying
-            # "rather than from a parameter" was true before that default moved
-            # and is not any more. What has never been a parameter, and is the
-            # point, is the subject: every earlier attempt at this saving
-            # shipped as an opt-in and measured zero adoption -- the switch
-            # existed, the agent arming the loop was mid-task, and nothing made
-            # it worth its five steps. There is no SUBJECT parameter to forget
-            # here: whatever the caller already wrote is where the target comes
-            # from, on every surface. Gating itself is not inherited by
-            # construction, though: each arming surface chooses. monitor_start's
-            # directive gates by default, the generic REST route does not.
-            #
-            # ``gate=False`` is the one escape, and it is an opt-OUT of a
-            # default that lives at the ARMING SURFACE: monitor_start's own
-            # directive gates unless told otherwise, while this service and the
-            # generic REST route default to ungated -- they also arm loops whose
-            # work is not a pull request. So it cannot repeat the zero-adoption
-            # failure on the babysit path, which is the path the evidence is
-            # about. The escape exists because a loop whose duty is to act WHILE
-            # its subject is quiet is invisible to an observation of that
-            # subject; keying that only on the wording of the instruction made a
-            # cadence contract depend on prose.
+            # The SUBJECT is inferred HERE from the instruction the caller wrote;
+            # no target or kind is ever passed, because an opt-in subject parameter
+            # goes unused. WHETHER to look is ``gate``: each arming surface chooses
+            # (monitor_start's directive gates by default; this service and the
+            # generic REST route do not, since they also arm non-PR loops).
+            # ``gate=False`` lets a loop that must act WHILE its subject is quiet opt
+            # out, instead of keying that cadence on the instruction's wording.
             monitor=(
                 infer_monitor(
                     message,
@@ -825,48 +793,24 @@ async def _update_unserialized(
                 # not spend a generation.
                 loop.config_generation += 1
                 generation_advanced = True
-                # The labelled history goes with the generation, for the reason the
-                # criteria path states below: every label in it was earned answering
-                # a question this instruction has just replaced. The instruction IS
-                # the target, so those rows may also be about a different subject
-                # entirely -- but the reset does not turn on that, because a reworded
-                # instruction about the SAME subject is still a changed question, and
-                # that is the case this path is most often used for. Carrying the rows
-                # forward would show the judge a hit rate for a different question
-                # from the one it now faces, and they supersede the single last
-                # verdict, so that reading is what the next tick sees. The rollback restores
-                # every field from the snapshot above, so a retarget that never lands
-                # returns the history untouched.
+                # The labelled history goes with the generation: every label was earned
+                # answering the question this instruction replaced, even when the
+                # subject is the same. Kept, it would show the judge a hit rate for
+                # another question, and it supersedes the last verdict on the next
+                # tick. The rollback restores it from the snapshot above.
                 loop.judge_quiet_streak = 0
                 loop.judge_cursors = {}
                 loop.judge_pr_seen = {}
                 loop.judge_last_verdict = {}
                 loop.judge_recent_verdicts = []
                 _clear_short_reading_hold(loop)
-                # The instruction IS the target, so a changed instruction can
-                # change the subject. Re-infer, or the loop keeps polling the
-                # pull request it was armed on: the new subject is never
-                # watched, and the old one merging would retire the loop while
-                # the work it was retargeted to sits unobserved.
-                #
-                # An unchanged subject keeps its existing monitor rather than a
-                # fresh one -- refining the wording of an instruction about the
-                # same PR is the common use of this path, and rebuilding would
-                # discard the metering counters and the follow-up allowance for
-                # no reason. A message that stops naming one subject clears
-                # the monitor, which returns the loop to a plain timer.
-                #
-                # A loop armed with gate=False is never re-inferred here. Its
-                # caller said the cadence matters, and re-gating it because the
-                # wording changed would revoke that through the documented way
-                # to revise a loop -- silently, since an ungated loop and a
-                # re-gated one look identical until the turns stop arriving.
-                #
-                # The rebinding itself happens AFTER the judge block below, not
-                # here. The brief's target list also names the subject, an update
-                # may carry a new message and a new brief in one call, and the
-                # subject has to be resolved from the pair this loop ends up with
-                # -- deciding it here would read the brief being replaced.
+                # The instruction IS the target, so re-infer the subject, or the loop
+                # keeps polling the old pull request and retires when it merges.
+                # An unchanged subject keeps its monitor (and its metering counters);
+                # a message naming no subject clears it back to a plain timer. A
+                # gate=False loop is never re-inferred: its caller chose the cadence.
+                # The rebinding runs AFTER the judge block below, because the brief's
+                # targets also name the subject and may change in the same call.
                 rebind_monitor = True
         if banner is not None:
             # Display-only, so no deadline or timer consequence — unlike
@@ -874,22 +818,11 @@ async def _update_unserialized(
             # its countdown. "" clears it back to the verbose default.
             loop.banner = banner
         if judge is not None:
-            # ``{}`` clears the owner's own CRITERIA, after which a gated loop runs
-            # under the default brief; ``judge: false`` is what takes the judge off
-            # a live loop, stored as the reserved opt-out marker. Any other object
-            # replaces the criteria. Absent leaves it alone, so an update that only
-            # changes the interval does not disarm the judge.
-            #
-            # Both the streak and the read cursors are reset with it, because they
-            # are facts about the OLD brief: a streak earned under one set of
-            # criteria must not count toward the floor under another, and a cursor
-            # belongs to a target list that may have just changed. The pull-request
-            # baseline goes for the same reason and matters most: it records the
-            # reading a VERDICT was reached on, and that verdict answered the
-            # question being replaced, so keeping it would let an unchanged board
-            # screen the new criteria quiet without ever putting them to the judge.
-            # Resetting costs at most one re-read; keeping them could hold a loop
-            # quiet on a brief nobody armed.
+            # ``{}`` clears the owner's CRITERIA (a gated loop then runs under the
+            # default brief); ``judge: false`` stores the opt-out marker; any other
+            # object replaces the criteria. The streak, read cursors and pull-request
+            # baseline are facts about the OLD brief, so they reset: a kept baseline
+            # would screen the new criteria quiet without ever asking the judge.
             loop.judge = seams.scrubbed_judge_spec(judge)
             loop.judge_quiet_streak = 0
             loop.judge_cursors = {}
@@ -909,32 +842,20 @@ async def _update_unserialized(
             rebind_monitor = rebind_monitor or loop.gate
         requested_watch = str(watch or "").strip()
         if requested_watch:
-            # ARM a subject on a live loop. This is the one subject a message edit cannot
-            # reach: a work-ledger watch observes the session's OWN key, which no wording
-            # contains, so without this field a conductor that armed a plain timer has to
-            # tear its loop down -- losing the cycle count the revision path exists to
-            # keep -- in order to start gating.
-            #
-            # ``gate`` is set with it, the same fold the arm path applies for the same
-            # reason: the tick path reads the STORED flag and refuses to poll a loop whose
-            # gate is False even when it carries a monitor, so leaving the two to disagree
-            # produces a loop that looks armed and observes nothing.
+            # ARM a subject on a live loop: a work-ledger watch observes the session's
+            # OWN key, which no message names, so only this field reaches it without
+            # tearing the loop down and losing its cycle count. ``gate`` is set with it
+            # because the tick path will not poll a gate=False loop, monitor or not.
             loop.gate = True
             rebind_monitor = True
         # ONE place resolves the subject, from the two strings this loop now holds.
         # Reached by a changed instruction and by a replaced brief alike, because
         # either can name a different pull request and only the pair says which.
         if rebind_monitor:
-            # The loop's OWN kind, fed back into every derivation below. A
-            # work-ledger watch's subject is this session, which no message
-            # names, so re-inferring from text alone would answer "this
-            # instruction names nothing observable" and CLEAR the monitor --
-            # turning the documented way to reword an instruction into a
-            # silent way to disarm the watch. For gh-pr it changes nothing.
-            # A watch REQUESTED by this update wins over the loop's current kind, and has
-            # to: on a loop with no monitor the stored kind is "", which re-infers from
-            # text alone, answers "this instruction names nothing observable", and leaves
-            # the monitor None -- so the field would validate, reach here, and do nothing.
+            # The loop's OWN kind feeds every derivation below: a work-ledger subject
+            # is this session, which no message names, so re-inferring from text alone
+            # would CLEAR the monitor on a reword. A watch REQUESTED by this update wins,
+            # since a loop with no monitor stores kind "" and the field would do nothing.
             watch_kind = requested_watch or (loop.monitor.kind if loop.monitor is not None else "")
             session_texts = (
                 retarget_texts if retarget_key == (loop.message, loop.slot_key) else None
@@ -1005,38 +926,22 @@ async def _update_unserialized(
                         current.version,
                     )
                 else:
-                    # A wake claimed for the OLD subject must not be spent on
-                    # the new one. The claim is keyed by loop id, so without
-                    # this the in-flight turn's delivery charges a wake to a
-                    # monitor that has observed nothing, and grants it a
-                    # follow-up allowance it never earned. Remembered so the
-                    # persistence rollback below can hand it back if this
-                    # retarget never lands.
-                    # The claim carries the wake's own text, so it is TAKEN rather
-                    # than tested: the briefs describe the OLD subject's items, and
-                    # the rollback below has to restore exactly what was taken.
+                    # A wake claimed for the OLD subject must not be spent on the new
+                    # one: the claim is keyed by loop id, so the in-flight delivery
+                    # would charge a monitor that observed nothing. The claim (with
+                    # its briefs) is TAKEN so the rollback below can restore it exactly.
                     claim_discarded_for_retarget = loop.id in self._pending_monitor_wake
                     discarded_briefs_for_retarget = self._pending_monitor_wake.pop(loop.id, "")
-                    # And the floor claim, for the identical reason. I added
-                    # that second claim one round ago and wrote on the pull
-                    # request that two hand-written claim sets with two release
-                    # points would go wrong at the third site; this IS that
-                    # site, missed by the same change that predicted it. Third
-                    # time a claim has been released in one set and forgotten
-                    # in another.
+                    # The floor claim goes too, for the same reason: every release
+                    # site must clear both claim sets.
                     floor_discarded_for_retarget = loop.id in self._pending_floor_tick
                     self._pending_floor_tick.discard(loop.id)
                     loop.monitor = inferred
                     if not generation_advanced:
-                        # A BRIEF-only retarget changes the watched subject while
-                        # leaving the instruction alone, so nothing above advances
-                        # the generation -- and a structural-terminal verdict
-                        # recorded for the OLD subject would then still read as
-                        # current and deactivate this new watch. The stale flag is
-                        # not confined to one in-flight turn: it sits on the slot
-                        # until the next genuine turn, so the window is a whole
-                        # interval. Same rule as a changed instruction: a different
-                        # subject is a different configuration.
+                        # A BRIEF-only retarget changes the subject but not the
+                        # instruction, so advance the generation here: otherwise a
+                        # structural-terminal verdict for the OLD subject, which sits
+                        # on the slot until the next real turn, deactivates this watch.
                         loop.config_generation += 1
                         generation_advanced = True
         interval_changed = False
@@ -1064,18 +969,12 @@ async def _update_unserialized(
                 # older process silently retire a watch it cannot even read.
                 pass
             elif active and loop.monitor is not None and loop.monitor.outcome is not None:
-                # A monitor with an outcome is finished -- its subject merged,
-                # or its budget is spent. Reviving it would fire ungated
-                # prompts at a settled subject, because the tick gate
-                # declines to observe a monitor that already has an outcome.
-                #
-                # A current, unsettled monitor falls through to the ordinary
-                # activation below: its delivery is gated per tick, so
-                # resuming it cannot inject an ungated prompt. Spelling both
-                # refusals out separately matters -- collapsing them into one
-                # branch on ``loop.monitor is not None`` swallowed the
-                # revival entirely, leaving the loop neither refused nor
-                # activated.
+                # A monitor with an outcome is finished (merged, or budget spent):
+                # reviving it would fire ungated prompts, because the tick gate does
+                # not observe a settled monitor. An unsettled monitor falls through to
+                # the ordinary activation below, which stays gated per tick. Keep the
+                # two branches apart: one ``loop.monitor is not None`` branch would
+                # neither refuse nor activate.
                 loop.active = False
                 loop.next_due_ts = 0.0
             elif (
@@ -1084,22 +983,13 @@ async def _update_unserialized(
                 and reason_in(loop.stopped_reason, FINISHED_LOOP_REASONS)
                 and not _stop_file_lifted(loop)
             ):
-                # A FINISHED loop: the agent created its stop file, or the watched
-                # subject merged or closed (that one is usually refused above by
-                # its outcome; this also covers a row whose monitor was cleared by
-                # a retarget after it finished). There is nothing to resume --
-                # reviving would re-fire a goal the agent declared met, or poll a
-                # settled subject -- so the revival is declined whoever asks: the
-                # popover's Play, ``monitor_update``, an app reconciler. The
-                # record stays inactive under its reason; clearing it, or arming
-                # a NEW loop that displaces it, are the ways on.
-                #
-                # The one exception is a stop file that is GONE: Issue Radar and
-                # Research Lab arm the same file as an operator's kill switch, and
-                # an operator who deletes it means "run again" -- their reconciler
-                # re-arms the row on its next pass. The goal popover never deletes
-                # the file (the next arm on the slot does, after Clear), so its Done
-                # stays as it is.
+                # A FINISHED loop (its stop file exists, or its subject merged or
+                # closed, including a row whose monitor a later retarget cleared) has
+                # nothing to resume, so the revival is declined whoever asks. Clear
+                # it, or arm a NEW loop that displaces it. Exception: a stop file that
+                # is GONE. Issue Radar and Research Lab use it as an operator kill
+                # switch, and deleting it means "run again"; the goal popover never
+                # deletes it (the next arm after Clear does).
                 logger.info(
                     "AutoNudge: loop %s is finished (%s) — not reviving it",
                     loop.id,
@@ -1118,18 +1008,11 @@ async def _update_unserialized(
                     unreadable_bound_field(loop),
                 )
                 refused_revival = True
-            # TERMINAL-TRANSITION ATOMICITY: a bound-tagged deactivation
-            # (stopped_reason supplied — the _timer's cycle_cap /
-            # runtime_budget paths) must never OVERWRITE a deactivation
-            # that landed first. The race: user pauses right after the
-            # timer detects expiry — the pause persists "manual" and
-            # cancels the timer, but the timer's already-inflight shielded
-            # update would stamp "runtime_budget" over it, making the loop
-            # budget-revivable against an explicit pause. Both transitions
-            # serialize on _lock, so re-checking here closes the race: the
-            # bound's deactivation degrades to a no-op when the loop is
-            # already inactive. The reverse order -- a reasonless pause
-            # arriving after the bound -- is closed two branches down.
+            # TERMINAL-TRANSITION ATOMICITY: a bound-tagged deactivation (the timer's
+            # cycle_cap / runtime_budget, with stopped_reason) must never OVERWRITE one
+            # that landed first, or a user pause just before it becomes budget-revivable.
+            # Both serialize on _lock, so the bound is a no-op on an inactive loop. The
+            # reverse order (a reasonless pause after the bound) is closed two branches down.
             elif (
                 not active
                 and stopped_reason is None
@@ -1208,38 +1091,17 @@ async def _update_unserialized(
                         # about a PAST run, and a revival starts a fresh one.
                         loop.consecutive_start_failures = 0
                         loop.consecutive_failed_cycles = 0
-                        # The user's resume resets the counter BEHIND A SPENT
-                        # BOUND, and only that one: a spent cycle cap zeroes
-                        # ``cycle_count``, a spent time budget re-anchors
-                        # ``created_ts`` (it IS the budget clock -- every reader
-                        # of the runtime left measures from it). Without the
-                        # reset the timer re-stops the loop on its first tick
-                        # unless the bound was raised first (Hermes ``/goal
-                        # resume`` resets the turn counter). Spent means EITHER
-                        # the reason the loop stopped with names that bound,
-                        # read from the snapshot because this revival has
-                        # already cleared the field, OR the bound as it stands
-                        # after this update would refuse the first tick anyway:
-                        # the budget's clock keeps running through a pause, so a
-                        # loop paused by hand with an hour of budget left and
-                        # resumed the next day is as dead a press as one the
-                        # timer stopped, and a cap raised in this same save is
-                        # read here as raised. The OTHER counter is kept: the
-                        # cap is a lifetime limit the user typed, and a pause
-                        # must not quietly turn it into a fresh one, so that
-                        # same overnight pause at 7 of 24 comes back at 7 of 24
-                        # on a fresh clock. A pause with both allowances left
-                        # -- by hand, by the agent, on a stalled approval or a
-                        # session that would not start -- resets nothing. A
-                        # non-string reason simply matches neither bound, and
-                        # the bound reads are type-safe, so no malformed row
-                        # raises here after ``active`` has already flipped and
-                        # leaves the loop half-revived in memory. Opt-in rather
-                        # than a property of every revival: the Research Lab and
-                        # Issue Radar reconcilers re-arm ANY inactive loop of a
-                        # live campaign or crew every few seconds, and a
-                        # ``monitor_update`` bound raise asks for its increment
-                        # -- on those paths a reset would turn the user's cap
+                        # The user's resume resets only the counter behind a SPENT
+                        # bound: a spent cap zeroes ``cycle_count``, a spent time
+                        # budget re-anchors ``created_ts`` (the budget clock), or
+                        # the timer would re-stop the loop on its first tick. Spent
+                        # means the snapshot's stop reason names that bound, OR the
+                        # bound after this update would refuse the first tick (the
+                        # clock runs through a pause). The other counter is kept:
+                        # the cap is a lifetime limit. Bound reads are type-safe so
+                        # a malformed row cannot raise after ``active`` flipped.
+                        # Opt-in (``fresh_run``) because app reconcilers re-arm
+                        # inactive loops every few seconds and would turn the cap
                         # into a per-run allowance.
                         stopped_with = previous["stopped_reason"]
                         if fresh_run and (stopped_with == CYCLE_CAP_REASON or cap_reached(loop)):
@@ -1273,19 +1135,11 @@ async def _update_unserialized(
             # a directive chose to run it again). Advancing the generation
             # invalidates any in-flight stale completion keyed to the old one.
             loop.config_generation += 1
-        # Deadline bookkeeping (BEFORE the snapshot below so it persists):
-        # an interval change restarts an EXISTING countdown at the new
-        # interval — the old deadline encodes the old cadence and honouring
-        # it would make the new setting take a full stale cycle to apply.
-        # Any other patch (message edit, cap raise) keeps the deadline, so
-        # a monitor_update refining the instruction never delays the next
-        # check. Deactivation clears it — a paused loop holds no schedule.
-        # A deadline that is ALREADY cleared (a delivered fire whose turn
-        # is still running — nudge turns commonly call monitor_update)
-        # stays cleared: the turn's END anchors the next full countdown
-        # via notify_turn_complete, and assigning here would start the
-        # interval mid-turn, so a turn longer than the interval would be
-        # followed by a spurious overdue fire instead of a full cycle.
+        # Deadline bookkeeping (BEFORE the snapshot below so it persists): an
+        # interval change restarts an EXISTING countdown at the new interval; any
+        # other patch keeps the deadline; deactivation clears it. A deadline that
+        # is ALREADY cleared (its fire's turn is still running) stays cleared:
+        # notify_turn_complete anchors the next countdown at the turn's END.
         if not loop.active:
             loop.next_due_ts = 0.0
         elif interval_changed and loop.next_due_ts > 0:
@@ -1312,23 +1166,13 @@ async def _update_unserialized(
                 held_on.short_reading_digest = held_digest
                 held_on.short_reading_held = held_count
             if claim_was_held:
-                # The retarget above dropped this loop's pending wake claim,
-                # because a claim earned by the OLD subject must not be spent on
-                # the new one. If the write then fails the retarget did not
-                # happen -- so the claim belongs to the loop again, and leaving
-                # it discarded costs the delivered wake its accounting and its
-                # follow-up turn. Rolling back the fields but not this is the
-                # same incomplete-restore defect as the terminal transition's.
-                # Restored WITH the text it was holding: the claim and the briefs
-                # are one value, so handing the claim back without them would leave
-                # the retried delivery announcing a cycle and naming no item.
+                # The write failed, so the retarget did not happen: hand back the
+                # wake claim it dropped, or the delivered wake loses its accounting
+                # and follow-up turn. The claim and its briefs are one value, so
+                # restore both, or the retried delivery would name no item.
                 self._pending_monitor_wake[loop.id] = discarded_briefs_for_retarget
             if floor_discarded_for_retarget:
-                # Same restore, same reason. This is the fourth hand-written
-                # restore of a per-loop claim in this file, and the review has now
-                # found a claim missing from one of them three separate times --
-                # which is the argument for one transition object with one restore
-                # rather than a fifth.
+                # Same restore for the floor claim.
                 self._pending_floor_tick.add(loop.id)
             raise
         # Re-arm the timer with the new settings — but NEVER while its
@@ -1413,23 +1257,17 @@ def remove_sync(
 def _revoke_self_arm_for(self: AutoNudgeService, loop: NudgeLoop) -> None:
     """Revoke for EVERY loop leaving the store, not only ``self_armed`` ones.
 
-    The ``self_armed`` bit lives in the agent-writable store, so keying the
-    revocation on it would let a forged ``false`` (plus a restart) skip the
-    revoke and leave the keystone entry orphaned for a later loop that
-    reuses the id on the same slot -- the exact adversary the trust record
-    exists to defeat. Revocation therefore keys on the one fact the store
-    cannot forge: the loop is being removed. A loop with no entry costs one
-    offloaded read (``forget_self_arm`` writes only when it deletes).
+    The ``self_armed`` bit lives in the agent-writable store, so a forged
+    ``false`` (plus a restart) would skip the revoke and leave the keystone
+    entry for a later loop reusing the id on the same slot. Revocation keys on
+    the fact the store cannot forge: the loop is being removed. A loop with no
+    entry costs one offloaded read (``forget_self_arm`` writes only on delete).
 
-    The judge's per-loop remark stash and loss notice go here too, for the
-    same reason this is where trust goes: every caller reaches this line only
-    AFTER the store committed the removal, and a rollback that puts a loop
-    back never does. Forgetting at the ``_loops.pop`` instead would strip a
-    restored loop of a stash its next tick still owes a fire for, and read
-    the missing prose as a whole reading. The owner is known here, so only
-    the loop-id-keyed judge state goes; the judge's forgotten state and its
-    take counter exist for a notice whose owner is NOT known and stay as
-    they are.
+    The judge's per-loop remark stash goes here too: every caller reaches this
+    line only AFTER the store committed the removal, while a rollback never
+    does, so forgetting at ``_loops.pop`` would strip a restored loop of a stash
+    it still owes. Only loop-id-keyed judge state goes; the forgotten state and
+    take counter serve a notice whose owner is NOT known and stay.
     """
     from kiro_crew import autonudge_judge as judge
 

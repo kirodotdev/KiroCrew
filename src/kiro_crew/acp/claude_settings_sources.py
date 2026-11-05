@@ -19,8 +19,12 @@ from kiro_crew.user_json import loads_user_json
 CLAUDE_SETTINGS_MAX_BYTES = 1 << 20
 
 
-def _default_config_dir() -> Path | None:
-    """The user's Claude config directory, or None when no home directory resolves."""
+def claude_config_dir() -> Path | None:
+    """The user's Claude config directory, or None when no home directory resolves.
+
+    The resolution the ``claude`` CLI itself makes (``CLAUDE_CONFIG_DIR``, else
+    ``~/.claude``), read in the gateway because the child inherits its environment.
+    """
     override = os.environ.get("CLAUDE_CONFIG_DIR")
     if override:
         return Path(override)
@@ -138,7 +142,7 @@ def other_sources_define_available_models(
     Never raises: a missing, unreadable or malformed file counts as not defining
     the key.
     """
-    user_dir = config_dir if config_dir is not None else _default_config_dir()
+    user_dir = config_dir if config_dir is not None else claude_config_dir()
     managed = (
         managed_dir
         if managed_dir is not None

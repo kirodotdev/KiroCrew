@@ -15,7 +15,7 @@ import { api } from '../api/client'
 import { store as globalStore } from '../store'
 import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot, sseChatMessage, setQuestionCard, resolveQuestionCard, sseAutomation } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
-import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
+import { addNotification, deleteNotification } from '../store/notificationsSlice'
 import type { ChatSlot } from '../types'
 import { ACTIVE, BACKGROUND, WS_INSTANCES, MockWebSocket } from './UseWebSocketCoverageTestUtils'
 
@@ -49,7 +49,7 @@ describe('useWebSocket connection lifecycle', () => {
     vi.stubGlobal('WebSocket', MockWebSocket)
   })
 
-  afterEach(() => { vi.unstubAllGlobals() })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
   function wrapper({ children }: { children: React.ReactNode }) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -238,7 +238,7 @@ describe('useWebSocket connection lifecycle', () => {
       expect(testStore.getState().chat.pendingQuestions[ACTIVE]?.ask_id).toBe('ask-missed')
       expect(result.current.forceReconnect).toBeTypeOf('function')
     } finally {
-      globalStore.dispatch(removeNotificationByTs('4'))
+      globalStore.dispatch(deleteNotification.fulfilled('4', '', '4'))
     }
   })
 

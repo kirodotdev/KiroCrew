@@ -961,6 +961,8 @@ async def _api_prompt_write(request: web.Request) -> web.Response:
                 # too_large means the file outgrew the cap since the edit base
                 # was read — by definition not the state the edit was based on.
                 return "conflict"
+            if outcome == "busy":
+                return "busy"
             if outcome != "ok":
                 return "write refused"
         return None
@@ -996,6 +998,16 @@ async def _api_prompt_write(request: web.Request) -> web.Response:
                 "code": "content_conflict",
             },
             status=409,
+        )
+    if err == "busy":
+        # Every check passed, but another process held the prompt file open at
+        # the final rename (Windows refuses to replace an open file). Nothing
+        # was written, and the same save can succeed once that handle closes,
+        # so this is a retryable 503, not the security refusal below.
+        _refuse(op, "error", "prompt_busy", name=name, scope=scope)
+        return web.json_response(
+            {"error": "the prompt file is open in another program; retry", "code": "prompt_busy"},
+            status=503,
         )
     if err == "write refused":
         # The writer failed closed — a hardlink, a non-regular file, an escape

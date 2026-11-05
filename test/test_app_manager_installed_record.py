@@ -28,9 +28,7 @@ from kiro_crew.apps.manager import (
     uninstall_app,
 )
 
-# ---------------------------------------------------------------------------
 # InstalledApp dataclass
-# ---------------------------------------------------------------------------
 
 
 class TestInstalledApp:
@@ -259,9 +257,7 @@ class TestInstalledApp:
         assert "locked" in result.error
 
 
-# ---------------------------------------------------------------------------
 # InstalledApp property tests (Hypothesis)
-# ---------------------------------------------------------------------------
 
 _valid_origins = st.sampled_from(["builtin", "registry", "local", "external"])
 
@@ -334,9 +330,7 @@ class TestInstalledAppProperties:
         assert meta.lifecycle == "gateway"
 
 
-# ---------------------------------------------------------------------------
 # AppResult
-# ---------------------------------------------------------------------------
 
 
 class TestAppResult:
@@ -357,15 +351,9 @@ class TestAppResult:
 class TestEnabledStateTellsUnreadableFromNotInstalled:
     """``app_enabled_state`` exists to keep those apart, and ``is_file()`` cannot.
 
-    ``Path.is_file()`` answers a silent False for five path shapes that are not
-    absence -- a dangling symlink, a directory or fifo in the file's place, a symlink
-    loop, and a non-directory parent component -- so leading with it made each of them
-    indistinguishable from a deliberate uninstall. A genuine ``stat`` fault such as
-    EACCES was already correct, because ``is_file`` re-raises it.
-
-    The cost is asymmetric now that ``hook_reconcile`` consumes this state unattended
-    on a 15s tick: a wrong ``False`` fires an automatic teardown of a live app's
-    routes and modules, while a ``None`` defers to the next tick.
+    ``Path.is_file()`` answers a silent False for a dangling symlink, a directory or fifo,
+    a symlink loop and a non-directory parent, none of which is absence. ``hook_reconcile``
+    reads this on a 15s tick: a wrong ``False`` tears a live app down, ``None`` defers.
     """
 
     def test_a_dangling_symlink_is_unknown(self, app_home):
@@ -411,15 +399,9 @@ class TestEnabledStateTellsUnreadableFromNotInstalled:
     ):
         """The verdict must come from the path's SHAPE, not the exception class.
 
-        One condition, two classes: POSIX raises NotADirectoryError (ENOTDIR) while
-        Windows maps ERROR_PATH_NOT_FOUND to ENOENT and raises FileNotFoundError --
-        the same class a genuinely missing file raises. Keying absence on that class
-        told the truth on Linux and not on Windows, where a wrong-shape parent still
-        read as a deliberate uninstall and the hook reconciler would tear a LIVE app
-        down for it.
-
-        The Windows mapping is injected so this runs on every platform; the natural
-        path is covered by the test above on whichever platform produces it.
+        POSIX raises NotADirectoryError here, but Windows maps ERROR_PATH_NOT_FOUND to
+        FileNotFoundError, the class a missing file raises. The Windows mapping is injected so
+        this runs on every platform.
         """
         (app_home / "apps").mkdir(parents=True, exist_ok=True)
         (app_home / "apps" / "shape-probe").write_text("not a directory", encoding="utf-8")
@@ -459,18 +441,9 @@ class TestEnabledStateTellsUnreadableFromNotInstalled:
     def test_a_dangling_windows_junction_ancestor_is_unknown(self, app_home, monkeypatch):
         """A dangling junction occupies the path while looking absent to every predicate.
 
-        The same mistake as the error-class one, one predicate over: ``is_symlink`` is
-        False for a Windows directory junction, so a junction whose target is gone
-        presents as ``is_dir=False, exists=False, is_symlink=False`` -- indistinguishable
-        from nothing at all, which is why this walk stepped over it and reported genuine
-        absence. ``app_enabled_state`` then answers False and the hook reconciler tears a
-        LIVE app down.
-
-        Fed as a SHAPE rather than a real junction: os.mkfifo has a POSIX equivalent to
-        skip for, but a junction has none at all, so requiring one would mean this case
-        is only ever exercised on the platform it breaks. The three ordinary predicates
-        are already False for a path that does not exist, which IS the dangling
-        junction's shape, so only the junction probe has to be stood in for.
+        ``is_symlink`` is False for a Windows junction, so a dangling one reads
+        ``is_dir=False, exists=False, is_symlink=False``. Fed as a SHAPE (no POSIX junction
+        exists): a missing path already has that shape, so only the junction probe is stubbed.
         """
         (app_home / "apps").mkdir(parents=True, exist_ok=True)
         junction = app_home / "apps" / "shape-probe"
@@ -486,11 +459,8 @@ class TestEnabledStateTellsUnreadableFromNotInstalled:
     def test_a_dangling_junction_at_the_metadata_path_is_unknown(self, app_home, monkeypatch):
         """The same shape ON the metadata path, which the ancestor walk cannot reach.
 
-        ``Path.parents`` excludes the path itself, so `_absence_is_genuine` inspects
-        every ancestor and never `installed.json`. The self-check beside it asked only
-        `is_symlink`, which a junction answers False, so a junction occupying the
-        metadata path read as a deliberate uninstall while every ancestor was a healthy
-        directory.
+        ``Path.parents`` excludes the path itself, so `_absence_is_genuine` never inspects
+        `installed.json`, and `is_symlink` alone answers False for a junction.
         """
         (app_home / "apps" / "shape-probe").mkdir(parents=True)
         meta = app_home / "apps" / "shape-probe" / "installed.json"

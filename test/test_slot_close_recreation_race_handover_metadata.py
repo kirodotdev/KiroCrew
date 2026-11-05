@@ -31,6 +31,7 @@ from slot_close_recreation_race_helpers import (
 from kiro_crew import members as members_mod
 from kiro_crew.dashboard import chat_handlers as handlers
 from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.testing.wait import await_until, finished
 
 # --------------------------------------------------------------------------- #
 # what the hand-over must NOT cost: the replacement's own metadata
@@ -89,8 +90,7 @@ async def test_delete_handover_keeps_the_replacement_published_metadata(tmp_path
         refresh_mark=24,
     )
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the slot delete finishing once the turn is released")
 
     assert resp.status == 200
     assert state._slots.get(NAME) is replacement, "the replacement was clobbered by the close"
@@ -148,8 +148,7 @@ async def test_delete_handover_keeps_the_original_metadata_when_nobody_replaced_
     assert replacement is not original
     assert not replacement.folder_id, "the replacement must be blank for this case"
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the slot delete finishing once the turn is released")
 
     assert resp.status == 200
     meta = state.conversation_log.get_metadata(HKEY)
@@ -210,8 +209,7 @@ async def test_delete_handover_persists_the_original_uncommitted_metadata(tmp_pa
     assert not replacement._titled, "the replacement must have published nothing for this case"
     assert not replacement.folder_id
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the slot delete finishing once the turn is released")
 
     assert resp.status == 200
     meta = state.conversation_log.get_metadata(HKEY)
@@ -258,8 +256,7 @@ async def test_delete_handover_prefers_the_replacement_line_over_its_own_pending
         state, replacement, title="REPLACEMENT TITLE", folder="folder-replacement"
     )
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the slot delete finishing once the turn is released")
 
     assert resp.status == 200
     meta = state.conversation_log.get_metadata(HKEY)
@@ -311,8 +308,7 @@ async def test_delete_handover_keeps_the_replacement_authorization_attribution(
         state, replacement, title="REPLACEMENT TITLE", folder="folder-replacement"
     )
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the slot delete finishing once the turn is released")
 
     assert resp.status == 200
     meta = state.conversation_log.get_metadata(HKEY)
@@ -440,8 +436,7 @@ async def test_handover_rows_only_write_still_creates_a_first_metadata_line(tmp_
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the slot delete finishing once the turn is released")
 
     assert resp.status == 200
     meta = state.conversation_log.get_metadata(HKEY)
@@ -477,8 +472,7 @@ async def test_delete_handover_rows_only_keeps_both_windows(tmp_path) -> None:
         state, replacement, title="REPLACEMENT TITLE", folder="folder-replacement"
     )
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the slot delete finishing once the turn is released")
 
     assert resp.status == 200
     meta = state.conversation_log.get_metadata(HKEY)
@@ -523,8 +517,7 @@ async def test_cleanup_handover_keeps_the_replacement_published_metadata(tmp_pat
         state, replacement, title="REPLACEMENT TITLE", folder="folder-replacement"
     )
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the cleanup sweep finishing once the turn is released")
 
     assert resp.status == 200
     assert NAME not in _json(resp)["keys"], "a live replacement was reported archived-over"
@@ -563,23 +556,23 @@ async def test_delete_failure_arm_handover_keeps_the_replacement_metadata(
     async def _persist(_state, _slot, *a, **kw):
         if kw.get("closed"):
             entered.set()
-            # flake-ok: the stub parks the close here until the test sets release; moved verbatim
-            await release.wait()
+            await await_until(release, what="the test releasing the parked archive save")
             raise OSError("disk wedged")
         return await real_save(_state, _slot, *a, **kw)
 
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await _reached(entered, close)
-    replacement = state.get_or_create_slot(NAME)
-    assert replacement is not original
-    await _publish_metadata(
-        state, replacement, title="REPLACEMENT TITLE", folder="folder-replacement"
-    )
-    release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    try:
+        await _reached(entered, close)
+        replacement = state.get_or_create_slot(NAME)
+        assert replacement is not original
+        await _publish_metadata(
+            state, replacement, title="REPLACEMENT TITLE", folder="folder-replacement"
+        )
+    finally:
+        release.set()
+    resp = await finished(close, "the slot delete answering once the save is released")
 
     assert resp.status == 500
     assert state._slots.get(NAME) is replacement
@@ -648,8 +641,7 @@ async def test_delete_handover_keeps_a_dismissal_the_replacement_committed(tmp_p
     )
     assert state.conversation_log.get_metadata(HKEY).get("closed") is True
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the slot delete finishing once the turn is released")
 
     assert resp.status == 200
     meta = state.conversation_log.get_metadata(HKEY)
@@ -702,8 +694,7 @@ async def test_delete_handover_erases_a_stale_closed_flag_on_its_own_line(tmp_pa
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not slot
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the slot delete finishing once the turn is released")
 
     assert resp.status == 200
     meta = state.conversation_log.get_metadata(HKEY)
@@ -765,8 +756,7 @@ async def test_delete_divergent_transcript_still_archives_the_original(tmp_path)
     assert replacement is not original
     assert not replacement.linked_session_key, "the replacement must be unbound for this case"
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the slot delete finishing once the turn is released")
 
     assert resp.status == 200
     # The archive the user asked for happened, on the file only the original writes.
@@ -806,8 +796,7 @@ async def test_cleanup_divergent_transcript_still_archives_the_original(tmp_path
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
-    # flake-ok: the close task ends once the test sets release; moved verbatim, a bounded await is tracked for a de-flake pass
-    resp = await close
+    resp = await finished(close, "the cleanup sweep finishing once the turn is released")
 
     payload = _json(resp)
     assert resp.status == 200

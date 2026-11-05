@@ -8,11 +8,17 @@ collide with a developer's live pods.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew.config.paths import _default_home
+
+logger = logging.getLogger(__name__)
+
+#: Highest TCP port.
+_MAX_PORT = 65535
 
 # The canonical live gateway port a pod must never bind. Overridable for hosts
 # that run their live plane elsewhere.
@@ -20,6 +26,9 @@ DEFAULT_LIVE_PORT = 5476
 
 # Pod ports are derived as BASE + (cksum(name) % 199) + 1, i.e. BASE+1 .. BASE+199.
 DEFAULT_BASE_PORT = 7810
+
+#: Highest base whose whole BASE+1 .. BASE+199 band is still bindable.
+_MAX_BASE_PORT = _MAX_PORT - 199
 
 # systemd --user template unit. ``<prefix>@<wt>.service`` is one pod.
 DEFAULT_UNIT_PREFIX = "kirocrew-pod"
@@ -102,11 +111,34 @@ def _env_path_opt(key: str) -> Path | None:
     return _canonical_override(val) if val else None
 
 
-def _env_int(key: str, default: int) -> int:
+def _env_int(key: str, default: int, high: int = _MAX_PORT) -> int:
+    """Port *key* from the environment, or *default* when unset or unusable.
+
+    ``isdigit`` admits characters ``int()`` refuses (U+00B2 SUPERSCRIPT TWO,
+    and any run past ``int()``'s 4300-digit limit), so the conversion is
+    guarded: unguarded, one such value took every pod command down with a
+    traceback. A value outside 1..*high* (``-1``, ``0``, ``70000``) names no
+    usable port, so it falls back to *default* with a warning rather than
+    deriving ports no socket can bind. *high* is 65535 for a port and
+    :data:`_MAX_BASE_PORT` for the derivation base. Blank reads as unset.
+
+    ``pod-e2e.sh`` evaluates this same predicate, conversion and range to find
+    the live plane, and ``test_pod_e2e_harness_paths`` pins the shared
+    expressions, so a change here is carried there in the same commit.
+    """
     val = os.environ.get(key)
-    if val and val.strip().lstrip("-").isdigit():
-        return int(val.strip())
-    return default
+    if not val:
+        return default
+    port = None
+    if val.strip().lstrip("-").isdigit():
+        try:
+            port = int(val.strip())
+        except ValueError:
+            port = None
+    if port is None or not 1 <= port <= high:
+        logger.warning("ignoring %s=%r: not a port in 1-%d; using %d", key, val, high, default)
+        return default
+    return port
 
 
 def default_gateway_path(home: Path, standard: list[str]) -> str:
@@ -253,7 +285,7 @@ class PodConfig:
             pod_root=pod_root,
             pods_dir=pods_dir,
             artifacts_dir=artifacts_dir,
-            base_port=_env_int("KIROCREW_POD_BASE_PORT", DEFAULT_BASE_PORT),
+            base_port=_env_int("KIROCREW_POD_BASE_PORT", DEFAULT_BASE_PORT, _MAX_BASE_PORT),
             live_port=_env_int("KIROCREW_POD_LIVE_PORT", DEFAULT_LIVE_PORT),
             unit_prefix=os.environ.get("KIROCREW_POD_UNIT_PREFIX", DEFAULT_UNIT_PREFIX),
             gateway_path=os.environ.get("KIROCREW_POD_PATH", default_path),

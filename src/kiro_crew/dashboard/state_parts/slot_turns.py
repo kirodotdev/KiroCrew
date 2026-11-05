@@ -290,9 +290,9 @@ def init_turns_fields(self: _ChatSlot) -> None:
     self._approval_stopped = set()
     self._trust = False  # auto-approve tools for this slot
     # True when ``_trust`` came from a Crew Mode conductor's approval card
-    # ("Trust this crew member"). That grant covers this one slot: the sessions it
-    # creates later are born asking (session_create skips the inheritance). Any
-    # direct trust of this slot clears it again.
+    # ("Trust this crew member"). That grant covers this slot and the subagents it
+    # spawns; the sessions and forks it creates later are born asking
+    # (``approval_posture.trust_carries``). Any direct trust of this slot clears it.
     self._trust_card_scoped = False
     # SafetyOverride scope key holding an EXPIRING, SEL-audited auto-approve
     # grant, for an unattended app worker with no human present to click
@@ -316,6 +316,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # In memory only, so a restart drops timed grants along with every other
     # grant on the slot.
     self._trusted_pattern_deadlines = {}
+    # Deny-rule refusal keys a person overrode "for this session" on the
+    # dashboard approval card (``kiro_crew.dashboard.deny_override``). In memory
+    # only, never persisted and never written to ``denied_commands.json``: it
+    # ends with this slot or a gateway restart.
+    self._deny_waivers = set()
     # Depth of the current unbroken Stop-hook continuation run: 0 on a normal
     # turn, incremented on each consecutive hook-continuation turn, reset by
     # any turn that is not a hook continuation. Surfaced to Stop hooks as
@@ -498,6 +503,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # ceiling cut the turn (kirocrew.turn.timeout.cause).
     self._last_turn_awaiting_permission = False
     self._last_turn_children_announced = False
+    # No Crew Mode dispatch notice written on this slot yet. Stamped with the
+    # ``_turn_generation`` whenever one is written, so a turn's later dispatches
+    # write no second notice (crew_dispatch_notice.py). -1 never equals a real
+    # generation, so the first dispatch of the first turn always writes.
+    self._crew_dispatch_notice_turn_gen = -1
     # Agent questions this slot has not answered yet, keyed by the ask's
     # identity: ``{card_id: {"ts": float, "blocking": bool}}``, empty when the
     # agent is not waiting on anything.
@@ -644,9 +654,13 @@ def deferred_context_count(self: _ChatSlot) -> int:
     return self._buffers.deferred_context_count(self)
 
 
-def flush_deferred_notes(self: _ChatSlot) -> int:
+def flush_deferred_notes(
+    self: _ChatSlot, *, broadcast: bool = True, retain: bool | None = None
+) -> int:
     """Flush held notes in order, restoring the unwritten suffix on failure."""
-    return self._buffers.flush_deferred_notes(self, logger=logger)
+    return self._buffers.flush_deferred_notes(
+        self, logger=logger, broadcast=broadcast, retain=retain
+    )
 
 
 def register_approval(

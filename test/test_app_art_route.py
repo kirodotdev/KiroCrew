@@ -1,24 +1,13 @@
 """Serving an installed app's own store art from its install directory.
 
-``/apps/{name}/art/{path}`` exists because the bytes of an installed app's icon,
-hero and screenshots are already on local disk. The blob proxy it replaces
-reaches them by a git clone gated by an SSRF allowlist, which is warmed by a
-network fetch a page render can outrun -- and an ``<img>`` does not retry a 403,
-so a catalog-listed app's art vanished for that paint.
+``/apps/{name}/art/{path}`` serves art already on local disk, so an ``<img>`` never
+meets the blob proxy's 403 (it does not retry). Two narrowings matter:
 
-What decides whether this route is correct is not that it serves a file, but
-**which** files it refuses to serve. Two narrowings carry that, and each has a
-way of failing open:
+**Images only.** ``_ALLOWED_EXTENSIONS`` (the UI-bundle route's list) admits ``.json``,
+which would serve ``installed.json`` and ``app.json``.
 
-**Images only.** ``_ALLOWED_EXTENSIONS`` (the UI-bundle route's list) admits
-``.json``, so reusing it here would also serve ``installed.json`` and
-``app.json`` out of the install directory -- a widening paid to display an icon.
-
-**Declared paths only.** The path must be one the app's own manifest names, so
-the manifest -- not the request -- chooses the file. That is what lets the route
-carry no traversal reasoning of its own, and it is why the containment check is
-STILL required: a manifest is the app's own untrusted content, so a declared
-value is not evidence the file lands inside the install directory.
+**Declared paths only.** The manifest chooses the file, but the manifest is untrusted,
+so the containment check is still required.
 """
 
 from __future__ import annotations
@@ -141,12 +130,8 @@ async def test_an_encoded_slash_smuggles_dot_dot_past_the_router_and_the_handler
 ) -> None:
     """The handler's own ``..`` guard is load-bearing, not belt-and-braces.
 
-    Measured against a real aiohttp router: ``../secret.webp`` and
-    ``assets/%2e%2e/…`` are normalized away before matching and never reach the
-    handler (404 from the router). But ``assets/..%2fsecret.webp`` DOES -- the
-    encoded slash stops the normalization, and ``match_info['path']`` arrives as
-    ``assets/../secret.webp``. So the router alone does not contain this route,
-    and removing the guard would hand that value to a path join.
+    The aiohttp router normalizes ``../`` away, but the encoded slash in
+    ``assets/..%2fsecret.webp`` survives and arrives as ``assets/../secret.webp``.
     """
     status, _ = await _get(f"/apps/{APP}/art/assets/..%2fsecret.webp")
     assert status == 400
@@ -224,14 +209,9 @@ async def test_a_symlink_at_the_declared_NAME_is_refused_even_inside_the_root(
 ) -> None:
     """The property that closes the check-to-use swap.
 
-    Validating a path and then handing it to ``FileResponse`` opened it a SECOND
-    time, so the app that owns this directory could swap a declared name for a
-    symlink between the two and have the gateway read the target instead -- and the
-    gateway is not sandboxed, so that laundered a read the app's own code can be
-    refused. There is no window if the final name may not be a link AT ALL, which is
-    what ``O_NOFOLLOW`` on the pinned open enforces. So a link pointing at a
-    perfectly legitimate file INSIDE the root is refused too: it is the indirection
-    that is refused, not the destination, because only the indirection is swappable.
+    A second open after validation lets the app swap in a symlink, and the gateway is
+    not sandboxed. ``O_NOFOLLOW`` refuses any final link, even one pointing INSIDE the
+    root, because the indirection is what is swappable.
     """
     real = installed / "assets" / "icon.webp"
     assert real.is_file(), "fixture precondition: the link's target is a real art file"
@@ -252,13 +232,8 @@ async def test_a_declared_path_under_a_SYMLINKED_DIRECTORY_is_refused(
 ) -> None:
     """What the containment check is still for, once the pinned open exists.
 
-    ``O_NOFOLLOW`` refuses a link at the final NAME, and the handler's own guard
-    refuses ``..`` -- so the one route left into the containment check is an ANCESTOR
-    that is a link. ``pin_parent`` deliberately does not close that case (its
-    contract: a component swapped BEFORE the parent was resolved is followed by that
-    resolution), so resolving the parent and proving it is under the resolved root is
-    what refuses it. Without the check this serves a file outside the install
-    directory entirely.
+    It catches an ANCESTOR that is a link, which ``O_NOFOLLOW`` and ``pin_parent``
+    (by contract) both follow.
     """
     outside = tmp_path / "elsewhere"
     outside.mkdir()
@@ -315,12 +290,8 @@ async def test_a_declared_NUL_name_answers_404_not_500(
 ) -> None:
     """Reachable over HTTP, and it survives every earlier check.
 
-    The extension allowlist reads the suffix AFTER the bad byte
-    (``bad\\x00.png`` -> ``.png``), and containment resolves the PARENT, which is
-    clean when the bad byte sits in the final component. So the first thing that
-    touches it is the open -- where ``os.open`` raises ``ValueError``, never an
-    ``OSError`` -- and uncaught that is a 500 on a route whose every other refusal
-    is a clean status.
+    The suffix check reads ``.png`` and containment resolves only the parent, so
+    ``os.open`` raises ``ValueError`` (not ``OSError``); uncaught it would be a 500.
     """
     declared = "assets/bad\x00.png"
     monkeypatch.setattr(
@@ -353,11 +324,8 @@ def test_an_unencodable_declared_name_is_refused_at_the_resolver(
 ) -> None:
     """Asserted at the RESOLVER, not over HTTP, because that is where these reach.
 
-    A lone surrogate does not survive the HTTP round trip -- aiohttp cannot encode
-    it into a request target -- so an end-to-end test would 404 on the declaration
-    check and never touch the open. It would pass while proving nothing, which a
-    mutation run showed: removing ``ValueError`` from the open reddened only the NUL
-    case. Calling the resolver directly is what makes these cases discriminating.
+    aiohttp cannot encode a lone surrogate into a request target, so over HTTP it would
+    404 on the declaration check and never reach the open.
     """
     monkeypatch.setattr(
         "kiro_crew.apps.routes.get_app_manifest",
@@ -402,13 +370,8 @@ async def test_a_declared_path_that_is_a_HARDLINK_is_refused(
 ) -> None:
     """The one alias `O_NOFOLLOW` cannot see, and the gateway is not sandboxed.
 
-    A hardlink shares its target's inode, so every path-based guard is blind to it:
-    `is_symlink()` is False, `realpath` yields the alias's OWN name so containment
-    passes, and `O_NOFOLLOW` has no link to refuse. Measured before the fix: such a
-    declared path opened cleanly, reported `S_ISREG`, sat under the size cap, and its
-    bytes were served with a 200 -- laundering a read the app's own sandboxed code
-    can be refused. `st_nlink` is the only signal, and it is only readable on the
-    descriptor.
+    A hardlink passes every path-based guard (`is_symlink()`, `realpath`, `O_NOFOLLOW`);
+    `st_nlink` on the descriptor is the only signal.
     """
     outside = tmp_path / "not-art-at-all"
     outside.write_bytes(b"SENSITIVE-BYTES")
@@ -445,13 +408,8 @@ async def test_a_declared_FIFO_does_not_hang_the_request(
 ) -> None:
     """The reason the flags carry `O_NONBLOCK`, and why `S_ISREG` alone is too late.
 
-    Opening a FIFO blocks until a writer appears, and this handler runs inside
-    `asyncio.to_thread` -- so a declared FIFO parks a thread-pool worker forever and
-    enough requests starve every other blocking call in the gateway. The descriptor
-    checks cannot help, because the block happens BEFORE `fstat`. Measured: the open
-    hangs indefinitely without `O_NONBLOCK` and returns immediately with it.
-
-    If this test ever hangs rather than failing, that IS the regression.
+    Opening a FIFO blocks before `fstat` until a writer appears, parking an
+    `asyncio.to_thread` worker forever. If this test hangs, that IS the regression.
     """
     fifo = installed / "assets" / "piped.webp"
     os.mkfifo(fifo)
@@ -484,15 +442,10 @@ async def test_a_declared_DIRECTORY_is_refused(
 async def test_the_response_neuters_a_scripted_svg_on_this_origin(
     installed: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`.svg` is allowed because an SVG in an `<img>` is script-inert -- but a
-    TOP-LEVEL NAVIGATION to this URL makes the response a DOCUMENT on the
-    dashboard's own origin, where the base CSP is deliberately permissive
-    (``script-src 'self' 'unsafe-inline'``, so widget and MCP-app iframes can run
-    inline script) and would NOT stop a scripted SVG an app declared as its art.
+    """A top-level navigation to an `.svg` makes it a document on the dashboard origin.
 
-    So the response carries its own policy. ``sandbox`` with no tokens gives the
-    document an opaque origin and no script; ``default-src 'none'`` stops it
-    fetching anything.
+    The base CSP allows inline script, so the response carries its own: ``sandbox`` (no
+    script, opaque origin) and ``default-src 'none'``.
     """
     svg = installed / "assets" / "scripted.svg"
     svg.write_bytes(
@@ -525,16 +478,10 @@ async def test_every_served_art_type_carries_the_same_policy(installed: Path) ->
 
 
 def test_both_art_paths_screen_on_the_SAME_extension_set() -> None:
-    """This route REPLACES the blob proxy per surface, so a file one serves and the
-    other refuses means the same app's art renders or 403s depending only on
-    whether it happens to be installed. The two sets were spelled separately and
-    were identical member-for-member with nothing pinning them -- a divergence
-    waiting for whoever edited one of them next.
+    """This route and the blob proxy must accept the same art extensions.
 
-    Asserted on MEMBERS, not on names: a reintroduced duplicate under any name is
-    the defect. ``_ALLOWED_EXTENSIONS`` (the UI-bundle route's set) is a different
-    set on purpose -- it admits ``.json``, which is precisely why this route does
-    not reuse it -- so it must NOT be folded in here.
+    Otherwise an app's art renders or 403s depending on whether it is installed.
+    ``_ALLOWED_EXTENSIONS`` admits ``.json``, so it stays separate.
     """
     # the owner that serves both art paths: the installed-art route and the blob proxy
     owner = importlib.import_module(app_routes.handle_app_art_file.__module__)

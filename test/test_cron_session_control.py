@@ -1,22 +1,12 @@
 """Cron callers on the session-control surface.
 
-A cron job's own slot is admitted as a SOURCE even though nobody is watching it,
-and is bounded by the same ``created_by`` fence a crew member is. These tests pin
-the four halves of that contract:
+A cron's own slot is admitted as a source (a ``workflow-`` caller is not), fenced
+by ``created_by`` to the sessions it created, exempt from the channel-link refusal
+for its ``cron:<job_id>`` link, and mints children as ``SlotOrigin.CRON`` so it
+cannot launder output into the ``slots:user`` scope.
 
-* the admission (a ``cron-`` caller passes the unattended refusal; a
-  ``workflow-`` caller still does not),
-* the fence (a cron reaches the sessions it created and nothing else, including
-  another job's tab),
-* the link exemption (a ``cron:<job_id>`` link is not a channel link, while a
-  real channel link still refuses),
-* the origin of what it creates (``SlotOrigin.CRON``, so a cron cannot launder
-  its output into the ``slots:user`` scope its own slot is kept out of).
-
-Assertions run against REAL slot objects for the same reason the rest of the
-suite does: the guards read ``linked_session_key`` / ``_created_by`` / ``_origin``
-off the production class, and a permissive double would let a dead guard look
-alive.
+Real slot objects are used because the guards read ``linked_session_key`` /
+``_created_by`` / ``_origin`` off the production class.
 """
 
 from __future__ import annotations
@@ -55,14 +45,10 @@ def _fresh_create_budget():
 def _cron_tab(state, job_id: str = JOB_ID, *, created_by: str = ""):
     """A cron job's own tab, as ``inject_cron_result_to_dashboard`` mints it.
 
-    Registers the owning job too, because ownership is read from the JOB and an
-    unfindable one is refused (`cron_owner_unverifiable`) -- a cron tab whose job
-    the registry cannot produce is not a caller. Note what the mint does NOT pass:
-    no ``app=``, which is exactly why the `_app` check cannot see an app's cron.
-
-    The agent is left empty on purpose: the child inherits the caller's, and a
-    name that does not resolve in the test config is refused (``agent_unresolved``)
-    before the gates under test are reached.
+    Registers the owning job too: ownership is read from the job, and an unfindable
+    one is refused (`cron_owner_unverifiable`). The mint passes no ``app=``, so the
+    `_app` check cannot see an app's cron. The agent stays empty because an
+    unresolvable name is refused (``agent_unresolved``) before the gates under test.
     """
     jobs = list(state.crons.list_jobs.return_value or [])
     jobs.append(SimpleNamespace(id=job_id, created_by=created_by))
@@ -224,13 +210,8 @@ class TestAppOwnedCron:
     def test_an_app_owned_cron_is_refused_before_the_target_is_resolved(self, tmp_path):
         """A caller refused for its own identity must learn nothing from the attempt.
 
-        Resolving first makes the refusal an existence oracle: a guessed target
-        answers `target_not_found` when it does not exist and this refusal when it
-        does, so a caller allowed to touch nothing could enumerate session keys and
-        titles by the shape of the error. Same code either way is the assertion.
-
-        Mutation guard: move the refusal back below `_resolve_slot` and the
-        nonexistent-target case answers `target_not_found` instead.
+        Refusing after `_resolve_slot` would be an existence oracle: a different
+        error for missing targets lets the caller enumerate session keys.
         """
         state = _make_state(tmp_path)
         caller = _cron_tab(state, created_by="app:issue-radar")
@@ -256,9 +237,7 @@ class TestAppOwnedCron:
 
         `mcp_cron.cron_add` records the calling session in `session_key` and never
         writes `created_by`, so an app-scoped session's job carries its authority
-        only there. Reading `created_by` alone let it through.
-
-        Mutation guard: drop the session_key branch and this passes silently.
+        only there.
         """
         state = _make_state(tmp_path)
         app_session = state.get_or_create_slot("chat-42", app="issue-radar")
@@ -282,22 +261,11 @@ class TestAppOwnedCron:
         sc._refuse_ineligible_creator(state, caller)
 
     def test_a_job_whose_authoring_session_has_closed_fails_closed(self, tmp_path):
-        """The confinement escape GPT flagged (backend-security-controls).
+        """An app's cron whose owning session is closed must fail closed.
 
-        ``mcp_cron.cron_add`` records an app's authority ONLY in ``session_key``
-        (it never writes ``created_by``). The app then closes its session, so the
-        owning slot is gone and its ``_app`` tag is unreadable. Before this fix the
-        ``owning_slot is not None`` guard failed open and returned ``None``, so the
-        app's own cron could mint a persistent, non-app, sidebar-visible session --
-        precisely the confinement the ``_app`` refusal exists to prevent, reached
-        through a closed session the gate cannot inspect.
-
-        "Cannot verify the owner is not an app" must fail closed, the same
-        direction the missing-job and unreadable-registry cases already take.
-
-        Mutation guard: restore the ``owning_slot is not None and`` short-circuit
-        (drop the unresolvable-owner refusal) and this passes silently, letting the
-        escape back in.
+        ``mcp_cron.cron_add`` records an app's authority only in ``session_key``.
+        Once the app closes that session its ``_app`` tag is unreadable, and an
+        ``owning_slot is not None`` guard would let the cron mint a non-app session.
         """
         state = _make_state(tmp_path)
         caller = _cron_tab(state, created_by="")
@@ -403,8 +371,6 @@ class TestCreatedSessionOrigin:
         prefix mints that grandchild USER, which `ws_event_scope` then delivers to
         any app holding `slots:user`: the two-hop version of the laundering route
         the CRON tag exists to close.
-
-        Mutation guard: drop the `_origin` half of the condition and this fails.
         """
         state = _make_state(tmp_path)
         cron = _cron_tab(state)

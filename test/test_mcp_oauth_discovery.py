@@ -258,6 +258,28 @@ async def test_urls_refused_for_other_reasons_stay_refused_with_no_request(confi
     assert security.oauth_url_contains_credential(url)
 
 
+# A Salesforce-shaped consumer key with a 42-character piece. Only an endpoint the
+# operator lists in oauth_endpoints.json accepts this shape; a discovered one does not.
+_SALESFORCE_KEY_WITH_LONG_PIECE = (
+    "3MVG9d8..zR7ygAqEfBzSFn1PGuFNLKm0YBpQZK1vS.abCdExYz1234567890AbCdEfGhIjKlMnOpQrStUvWx"
+)
+
+
+@pytest.mark.asyncio
+async def test_salesforce_key_only_an_operator_entry_clears_makes_no_request(configured, served):
+    configured(registry={"idp": {"url": MCP_URL}})
+    fetched = served(_documents())
+    url = _consent_url(client_id=_SALESFORCE_KEY_WITH_LONG_PIECE)
+    assert security.oauth_url_contains_credential(url)
+    assert not security.oauth_rejection_is_endpoint_exemptible(url)
+    assert security.oauth_rejection_is_endpoint_exemptible(url, operator_listed=True)
+    assert not await discovery.approve_discovered_oauth_endpoint("idp", url)
+    assert fetched == []
+    assert exfil._OAUTH_DISCOVERED_ENDPOINTS == {}
+    exfil.SecurityEventLog.return_value.log.assert_not_called()
+    assert security.oauth_url_contains_credential(url)
+
+
 @pytest.mark.asyncio
 async def test_approved_endpoint_still_scans_unknown_parameters(configured, served):
     configured(registry={"idp": {"url": MCP_URL}})
@@ -487,6 +509,10 @@ class _FakeAcpClient:
 
 
 class _FakeProviderClient:
+    # A live child's spawn identity: the banner is stamped with it, and a later
+    # read shows the link only for a URL that child is recorded as sending.
+    process_instance = "live-child"
+
     def __init__(self, pending):
         self.client = _FakeAcpClient(pending)
 

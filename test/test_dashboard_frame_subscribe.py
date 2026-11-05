@@ -90,8 +90,10 @@ def _run(bootstrap: str, read: dict[str, Any], page_js: str) -> list[Any]:
             "console.log(JSON.stringify(globalThis.__calls));",
         )
     )
+    # On stdin, not `-e`: Windows caps a command line at 32767 characters.
     done = subprocess.run(
-        [node, "--input-type=module", "-e", program],
+        [node, "--input-type=module"],
+        input=program,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -806,3 +808,189 @@ class TestAMissingCellSaysSo:
         css = dashboard_frame._HOST_CSS
         assert "[data-dashboard-missing='true']::after" in css
         assert "attr(data-dashboard-missing-label)" in css
+
+
+#: A page script counting the page-wide event.
+_COUNT_EVENTS = (
+    "globalThis.__events = 0;"
+    "addEventListener('kirocrew-dashboard', () => { globalThis.__events += 1; });"
+)
+_EVENTS = "__calls.push(globalThis.__events);"
+
+
+def _push(**over: Any) -> str:
+    """A full read in the shape the host posts, as a page-script push."""
+    return f"__push({json.dumps(_read(**over))});"
+
+
+class TestAnUnchangedReadRedrawsNothing:
+    """A read whose values did not move must not redraw the page.
+
+    The tab re-reads the whole page on every fold advance, on a reconnect and on the
+    60 s fallback, so most reads carry exactly what the page already shows. Firing
+    every subscriber and the page event for them made each one redraw the whole page,
+    which a reader sees as the page reloading.
+    """
+
+    def test_a_full_read_with_the_same_values_calls_no_subscriber(self) -> None:
+        calls = _run(dashboard_frame._BOOTSTRAP_JS, _read(), _RECORD + _push(version=1))
+        assert calls == [[2, False, 1]]
+
+    def test_a_full_read_with_the_same_values_fires_no_page_event(self) -> None:
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS, _read(), _COUNT_EVENTS + _push(version=1) + _EVENTS
+        )
+        assert calls == [0]
+
+    def test_a_full_read_with_the_same_values_does_not_rewrite_a_cell(self) -> None:
+        """A page that writes its own text over a bound cell keeps it."""
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _cell_js("boards") + "cell.textContent = 'page text';" + _push(version=1) + _CELL_STATE,
+        )
+        assert calls == [["page text", None, None]]
+
+    def test_a_patch_repeating_a_held_value_calls_no_subscriber(self) -> None:
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _RECORD + "__push({ patch: true, version: 1, fields: { boards: 2 }, missing: [] });",
+        )
+        assert calls == [[2, False, 1]]
+
+    def test_an_equal_read_with_fields_in_a_new_order_is_unchanged(self) -> None:
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(fields={"boards": [1, 2], "owner": "atlas"}),
+            _COUNT_EVENTS + _push(fields={"owner": "atlas", "boards": [1, 2]}, version=1) + _EVENTS,
+        )
+        assert calls == [0]
+
+    def test_a_changed_field_still_calls_back_and_fires_the_event_once(self) -> None:
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _COUNT_EVENTS + "window.kirocrew.subscribe('owner', (v) => __calls.push(['owner', v]));"
+            "window.kirocrew.subscribe('boards', (v) => __calls.push(['boards', v]));"
+            + _push(fields={"boards": 3, "owner": "atlas"}, version=1)
+            + _EVENTS,
+        )
+        assert calls == [["owner", "atlas"], ["boards", 2], ["boards", 3], 1]
+
+    def test_a_changed_read_key_outside_fields_still_fires_the_event(self) -> None:
+        """A page may draw any key of the read, such as ``last_user_at``."""
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _COUNT_EVENTS + _push(version=1, last_user_at="2026-11-01T00:00:00Z") + _EVENTS,
+        )
+        assert calls == [1]
+
+    def test_an_equal_full_read_after_a_patch_redraws_nothing(self) -> None:
+        """A patch keeps the read's ``subject`` and ``last_user_at``, so the full read
+        that repeats it is not taken for a change."""
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(last_user_at="2026-11-01T00:00:00Z"),
+            _COUNT_EVENTS
+            + "__push({ patch: true, version: 1, fields: { boards: 3 }, missing: [] });"
+            + _push(
+                version=2,
+                fields={"boards": 3, "owner": "atlas"},
+                last_user_at="2026-11-01T00:00:00Z",
+            )
+            + "__calls.push(window.kirocrew.last_user_at);"
+            + _EVENTS,
+        )
+        assert calls == ["2026-11-01T00:00:00Z", 1]
+
+    def test_a_host_shaped_patch_keeps_the_held_subject_and_stamp(self) -> None:
+        """The host's patch carries the builder's defaults for ``subject`` and
+        ``last_user_at``; the page keeps its own, and the equal full read after it
+        redraws nothing."""
+        stamp = "2026-11-01T00:00:00Z"
+        patch = _read(fields={"boards": 3}, version=1)
+        patch["patch"] = True
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(subject="session", last_user_at=stamp),
+            _COUNT_EVENTS
+            + f"__push({json.dumps(patch)});"
+            + "__calls.push(window.kirocrew.subject, window.kirocrew.last_user_at);"
+            + _push(
+                version=2,
+                fields={"boards": 3, "owner": "atlas"},
+                subject="session",
+                last_user_at=stamp,
+            )
+            + _EVENTS,
+        )
+        assert patch["subject"] == "crewmate" and patch["last_user_at"] == ""
+        assert calls == ["session", stamp, 1]
+
+    def test_an_unchanged_read_a_minute_later_still_fires_the_event_only(self) -> None:
+        """A page drawing "idle for 20 min" from the clock redraws on the event, so an
+        unchanged read still fires it once a minute, without refill or callbacks."""
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _COUNT_EVENTS + _RECORD + "const t0 = Date.now(); let now = t0;"
+            "Date.now = () => now;"
+            + _push(version=1)
+            + "now = t0 + 61000;"
+            + _push(version=2)
+            + "now = t0 + 62000;"
+            + _push(version=3)
+            + _EVENTS,
+        )
+        assert calls == [[2, False, 1], 1]
+
+    def test_the_minute_tick_refills_a_cell_before_the_page_redraws(self) -> None:
+        """A page that reformats a bound cell's text (a shortened timestamp) redraws
+        from the recorded value on the tick, not from its own earlier output."""
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _cell_js("boards")
+            + "addEventListener('kirocrew-dashboard', () => __calls.push(cell.textContent));"
+            "const t0 = Date.now(); let now = t0; Date.now = () => now;"
+            "cell.textContent = 'page text';"
+            "now = t0 + 61000;" + _push(version=1),
+        )
+        assert calls == ["2"]
+
+    def test_only_missing_moving_still_fires_the_event(self) -> None:
+        """A field going missing changes what the page shows (the dim and the label)."""
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _COUNT_EVENTS + _push(version=1, missing=["boards"]) + _EVENTS,
+        )
+        assert calls == [1]
+
+    def test_missing_and_back_are_still_told_across_unchanged_reads(self) -> None:
+        """The missing contract: "gone" once, "back" once, with full reads between that
+        repeat the same values staying silent."""
+        gone = {"fields": {"owner": "atlas"}, "missing": ["boards"]}
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _RECORD
+            + _push(version=1, **gone)
+            + _push(version=2, **gone)
+            + _push(version=3)
+            + _push(version=4),
+        )
+        assert calls == [[2, False, 1], [2, True, 1], [2, False, 1]]
+
+    def test_the_unchanged_read_still_moves_the_version_the_page_holds(self) -> None:
+        """Skipping the redraw must not skip the bookkeeping: the next patch is checked
+        against the read that just landed."""
+        posted = _posted(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _push(version=9)
+            + "__push({ patch: true, version: 10, fields: { boards: 4 }, missing: [] });",
+        )
+        assert posted == []

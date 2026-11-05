@@ -16,6 +16,8 @@ import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { useListDetailView } from '../../hooks/useListDetailView'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { useProvider } from '../../providers'
 
 import { i18nT } from '../../i18n/t'
@@ -91,7 +93,7 @@ export default function PromptsTab() {
   const [filter, setFilter] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  const { data: prompts = [], isLoading: loading, error } = useQuery<Prompt[]>({
+  const { data: prompts = [], isLoading: loading, isFetching, error, refetch } = useQuery<Prompt[]>({
     queryKey: ['prompts'],
     queryFn: api.prompts,
   })
@@ -244,6 +246,13 @@ export default function PromptsTab() {
     for (const p of filteredPackage) (g[p.package || 'unknown'] ||= []).push(p)
     return Object.entries(g).sort(([a], [b]) => a.localeCompare(b))
   }, [filteredPackage])
+
+  // A long list is cut at the pane's height, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more rows sit below (see MORE_BELOW_MASK). A filter changes the rows, not
+  // the scroller's own box, so no observer on the scroller sees it.
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  useEffect(() => { remeasureList() }, [allFiltered, remeasureList])
 
   // Selection is derived from the UNFILTERED list so that typing in the filter
   // does not blank a detail pane whose prompt is merely hidden by the query.
@@ -518,7 +527,22 @@ export default function PromptsTab() {
         </div>
       )}
       {loading && <p className="text-muted italic text-sm px-3 py-4">{i18nT('pages.overview.promptsTab.loading_prompts')}</p>}
-      {error && <p className="text-danger text-sm px-3 py-4">{error.message || i18nT('pages.overview.promptsTab.failed_to_load_prompts')}</p>}
+      {/* The list read failing left a bare text-danger line with no way back:
+          no retry, no hand-off, and no structured context for one. ErrorNotice
+          recovers the journal report from the message and carries the agent
+          hand-off (askAgent is safe here -- the list read holds no draft), and
+          the retry refetches the same query. */}
+      {error && (
+        <div className="px-3 py-4 flex flex-col items-start gap-2">
+          <ErrorNotice
+            message={error.message || i18nT('pages.overview.promptsTab.failed_to_load_prompts')}
+            askAgent
+          />
+          <Btn disabled={isFetching} onClick={() => void refetch()}>
+            {i18nT('pages.overview.promptsTab.retry_read')}
+          </Btn>
+        </div>
+      )}
 
       {/* The empty state now names the affordance on this page rather than the
           filesystem path this feature replaces. */}
@@ -533,20 +557,24 @@ export default function PromptsTab() {
         /* List-detail: prompt list on the left, the selected prompt's content
          *  (or its editor) on the right — the shape SkillsTab uses. */
         <div className={PANE_SHELL_CLASS}>
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.promptsTab.prompts')}>
-            {filteredUser.length > 0 && (
-              <div className="text-[11px] text-muted font-semibold tracking-wider px-2 py-1.5 mb-1">
-                {i18nT('pages.overview.promptsTab.user_prompts_count', { count: filteredUser.length })}
-              </div>
-            )}
-            {filteredUser.map(renderRow)}
-            {grouped.map(([pkg, items]) => (
-              <div key={pkg} className="mt-2">
-                <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1">{pkg.toUpperCase()}</div>
-                {items.map(renderRow)}
-              </div>
-            ))}
-            {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.promptsTab.no_prompts_match_query', { query: filter })}</div>}
+          {/* The rows scroll in an inner box: a mask clips everything outside
+              the masked element, so on the pane it would also fade the border. */}
+          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 flex flex-col border border-border rounded-md`}>
+            <div ref={attachList} className={`flex-1 min-h-0 overflow-y-auto p-2 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`} role="listbox" aria-label={i18nT('pages.overview.promptsTab.prompts')}>
+              {filteredUser.length > 0 && (
+                <div className="text-[11px] text-muted font-semibold tracking-wider px-2 py-1.5 mb-1">
+                  {i18nT('pages.overview.promptsTab.user_prompts_count', { count: filteredUser.length })}
+                </div>
+              )}
+              {filteredUser.map(renderRow)}
+              {grouped.map(([pkg, items]) => (
+                <div key={pkg} className="mt-2">
+                  <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1">{pkg.toUpperCase()}</div>
+                  {items.map(renderRow)}
+                </div>
+              ))}
+              {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.promptsTab.no_prompts_match_query', { query: filter })}</div>}
+            </div>
           </div>}
 
           {showDetail && <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md bg-card overflow-hidden">

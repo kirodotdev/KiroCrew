@@ -14,6 +14,7 @@ every sibling; shared fixtures live in ``external_registry_helpers.py``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -25,6 +26,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from external_registry_helpers import _catalog_absent  # noqa: F401
 from external_registry_helpers import _explicit_registry_execution_admission  # noqa: F401
+
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # Bound every gated-executor worker wait in this module. A test that gates a
 # move-aside worker on a threading.Event and fails before signalling the
@@ -45,6 +48,33 @@ async def _bounded_off_loop(loop: asyncio.AbstractEventLoop, event: threading.Ev
     """
     signalled = await loop.run_in_executor(None, event.wait, _WORKER_RELEASE_TIMEOUT)
     assert signalled, "worker never signalled within the release timeout"
+
+
+def _settling(task: asyncio.Future) -> object | None:
+    """The ``asyncio.wait`` coroutine a cancelled move-aside task is parked on, else ``None``.
+
+    Cancelled mid-move, ``_move_checkout_aside`` settles its executor worker with
+    ``asyncio.wait`` before it inspects the aside, and every cancel it absorbs re-enters
+    that await, so a new object here is a new settle-await.
+    """
+    awaiting = task.get_coro().cr_await  # type: ignore[attr-defined]
+    if inspect.iscoroutine(awaiting) and awaiting.cr_code is asyncio.wait.__code__:
+        return awaiting
+    return None
+
+
+async def _until_settling(task: asyncio.Future, *, after: object | None = None) -> object:
+    """Wait until the cancelled move-aside task is parked on a settle-await other than *after*.
+
+    Waits on where the handler is parked, not on a loop yield that is only hoped to have
+    reached it. The predicate stays a bool: handing the coroutine itself to
+    ``async_wait_until`` would have it awaited.
+    """
+    await async_wait_until(
+        lambda: _settling(task) not in (None, after),
+        describe=lambda: f"the cancelled task is not parked on a new settle-await: {task!r}",
+    )
+    return _settling(task)
 
 
 class TestMoveCheckoutAsideCancellationSafety:
@@ -106,8 +136,7 @@ class TestMoveCheckoutAsideCancellationSafety:
                 task.cancel()
                 release_thread.set()
                 with pytest.raises(asyncio.CancelledError):
-                    # flake-ok: pre-existing await of the cancelled task, whose worker the release_thread.set() just before it releases and whose wait _WORKER_RELEASE_TIMEOUT bounds, moved verbatim; tracked for a de-flake pass
-                    await task
+                    await await_until(task, what="the cancelled move-aside to settle its worker")
             finally:
                 # Release the worker no matter how the body exits, so a failed
                 # assertion above can never strand the executor thread.
@@ -133,15 +162,22 @@ class TestMoveCheckoutAsideCancellationSafety:
         dest.mkdir()
         old_time = time.time() - 3600
         os.utime(dest, (old_time, old_time))
+        # The filesystem's own clock, read from two files it stamps just before and just
+        # after the move: the refreshed mtime must fall between them, which needs no
+        # window against the host's clock.
+        before_move = tmp_path / "before-move"
+        before_move.touch()
 
         log_lines: list[str] = []
         aside = await reg._move_checkout_aside(dest, log_lines)
+        after_move = tmp_path / "after-move"
+        after_move.touch()
 
         assert aside is not None
         assert not dest.exists()
         assert aside.exists()
-        # flake-ok: pre-existing 60 s freshness window on the refreshed mtime, moved verbatim; tracked for a de-flake pass
-        assert abs(aside.stat().st_mtime - time.time()) < 60, (
+        refreshed = aside.stat().st_mtime
+        assert before_move.stat().st_mtime <= refreshed <= after_move.stat().st_mtime, (
             "the aside's mtime must be refreshed to now, not inherited from "
             "the checkout's original (possibly stale) mtime"
         )
@@ -189,16 +225,14 @@ class TestMoveCheckoutAsideCancellationSafety:
                 # Worker is dispatched and blocked strictly BEFORE the rename.
                 await _bounded_off_loop(loop, worker_started)
                 task.cancel()
-                # Let the handler resume and reach its settle-await; a bare
-                # check-then-race shape would instead re-raise here without ever
+                # Wait until the handler has resumed and parked on its settle-await; a
+                # bare check-then-race shape would instead re-raise here without ever
                 # waiting for the worker.
-                # flake-ok: pre-existing zero-length yield that lets the cancelled task run into its cancellation handler, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0)
+                await _until_settling(task)
                 # Now let the worker perform the rename -- AFTER the cancellation.
                 release_thread.set()
                 with pytest.raises(asyncio.CancelledError):
-                    # flake-ok: pre-existing await of the cancelled task, whose worker the release_thread.set() just before it releases and whose wait _WORKER_RELEASE_TIMEOUT bounds, moved verbatim; tracked for a de-flake pass
-                    await task
+                    await await_until(task, what="the cancelled move-aside to settle its worker")
                 # Confirm the worker's rename actually landed on disk.
                 assert await loop.run_in_executor(
                     None, lambda: rename_done.wait(_WORKER_RELEASE_TIMEOUT)
@@ -265,19 +299,16 @@ class TestMoveCheckoutAsideCancellationSafety:
                 # the coroutine enters its CancelledError handler and reaches the
                 # settle-await (the worker future is still NOT DONE -- held below).
                 task.cancel()
-                # flake-ok: pre-existing zero-length yield that lets the cancelled task run into its cancellation handler, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0)
+                first_settle = await _until_settling(task)
                 # Second cancel: delivered while the handler is parked on its
                 # settle-await. The fix must absorb this and keep settling; the
                 # old bare wait re-raised here and skipped the undo/log.
                 task.cancel()
-                # flake-ok: pre-existing zero-length yield that lets the cancelled task run into its cancellation handler, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0)
+                await _until_settling(task, after=first_settle)
                 # Now let the worker finish so the future settles.
                 release_thread.set()
                 with pytest.raises(asyncio.CancelledError):
-                    # flake-ok: pre-existing await of the cancelled task, whose worker the release_thread.set() just before it releases and whose wait _WORKER_RELEASE_TIMEOUT bounds, moved verbatim; tracked for a de-flake pass
-                    await task
+                    await await_until(task, what="the cancelled move-aside to settle its worker")
             finally:
                 # Release the worker no matter how the body exits.
                 release_thread.set()
@@ -342,12 +373,12 @@ class TestMoveCheckoutAsideCancellationSafety:
                         task = asyncio.ensure_future(reg._move_checkout_aside(dest, log_lines))
                         await _bounded_off_loop(loop, rename_completed)
                         task.cancel()
-                        # flake-ok: pre-existing zero-length yield that lets the cancelled task run into its cancellation handler, moved verbatim; tracked for a de-flake pass
-                        await asyncio.sleep(0)
+                        await _until_settling(task)
                         release_thread.set()
                         with pytest.raises(asyncio.CancelledError):
-                            # flake-ok: pre-existing await of the cancelled task, whose worker the release_thread.set() just before it releases and whose wait _WORKER_RELEASE_TIMEOUT bounds, moved verbatim; tracked for a de-flake pass
-                            await task
+                            await await_until(
+                                task, what="the cancelled move-aside to settle its worker"
+                            )
                     finally:
                         release_thread.set()
 

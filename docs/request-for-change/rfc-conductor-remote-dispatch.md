@@ -29,6 +29,10 @@ Non-goals, Failure, Migration and Open questions sections are revised. The
 [#17662](https://github.com/kirodotdev/KiroCrew/pull/17662) deleted; those
 references now point at what main serves today.
 
+**Revision 2026-11-01.** Owner decision: open question 1 is resolved as a hub
+background puller (§2 "Background pull"), shipped in the same PR as this
+amendment.
+
 ## Summary
 
 A conductor on this gateway can only dispatch workers onto this gateway. This
@@ -206,7 +210,7 @@ peer. The question is how the hub learns them.
 |---|---|---|
 | Tunnel direction | hub → peer, as today | needs peer → hub: a new transport |
 | Peer reach into hub | none | the peer holds a hub credential and a hub route |
-| Wakes | on the conductor's read (patrol cadence) | immediate |
+| Wakes | on the hub's next pull (background puller, 30 s; OQ 1) | immediate |
 | Hub down | nothing lost; the peer copy waits | reports fail or queue on the peer |
 
 **Recommend (a).** (b) breaks both the tunnel shape and §4's "no reach back".
@@ -231,6 +235,11 @@ How (a) works:
   nothing. From there `accept`, wakes from the crew log, and
   `work_ledger_rebuild` work as they do for a local report. A failed fetch keeps
   the last ingested state.
+- **Background pull.** The same pull also runs on the hub with no model turn,
+  every 30 s, for each ledger holding an open crew-bound item, so a remote report
+  wakes the conductor within one interval instead of at its next patrol (open
+  question 1). Runs never overlap; each board is cut off at 10 s and one
+  unreachable crew never stalls another.
 - **`decide` forwards.** `work_ledger_record action=decide` on a remote item
   writes locally, then PATCHes the peer copy. A failed PATCH is reported in the
   tool reply; the local write stands and the next `decide` carries it again.
@@ -319,7 +328,8 @@ memory and refreshes it from every create reply and from `api/chat/headroom`
 on patrol. Reservations are not stored; they are derived from the work ledger.
 Each **open** remote binding reserves one estimate on its crew, including a
 finished worker the conductor keeps open for questions (§3b). An estimate
-starts at 2 GB memory and 10 GB disk. Wave 6 tunes both from measured values.
+started at 2 GB memory and 10 GB disk; wave 6 set measured defaults of 5 GB
+memory and 5 GB disk (open question 6).
 
 **Choosing.** For each eligible crew and each of memory and disk, headroom after
 reservations is `snapshot free − open remote bindings on that crew × estimate`.
@@ -536,12 +546,19 @@ nothing that passes today.
 
 ## Open questions
 
-1. **Remote wakes.** Ingest-on-read means a remote report, `reply` included,
-   wakes nobody until the conductor's next patrol. The `reply` status (§3b)
-   closes the local half: a follow-up answer now wakes a local conductor. Is
-   patrol cadence enough for the remote half, or does a remote item need a
-   hub-side poller? Proposed: patrol cadence; add a poller only if a measured
-   gap shows up.
+1. **Remote wakes.** Resolved (owner decision, 2026-11-01): a hub background
+   puller. Ingest-on-read alone meant a remote report, `reply` included, woke
+   nobody until the conductor's next patrol turn, and the work-ledger probe,
+   which reads only the local ledger, could not see it. With
+   `work_ledger.remote_dispatch` on, the hub now runs the same pull with no model
+   turn every 30 s (`REMOTE_PULL_INTERVAL_SECS`) for each ledger holding an open
+   crew-bound item (`dashboard/handlers/remote_puller.py`). A pulled `done`,
+   `question`, `blocked` or `reply` is filed as an ordinary recorded report, so
+   it wakes the conductor through `conductor_wake` and the probe as a local one
+   does. The hub still pulls and the peer never connects back. The person-wait
+   hold applies to a remote item only while its last pull is fresh (connected,
+   slot list read, no error, under 90 s old); otherwise the patrol runs, as
+   before.
 2. **Folder on the peer.** Should `session_create(crew=)` accept `folder` and file
    the worker into a peer folder? Proposed: no in wave 1; the crew group already
    says where it is.
@@ -550,6 +567,11 @@ nothing that passes today.
    top-level row in the crew's group.
 4. **The owner-only caller rule.** Resolved: #6874 closed unmerged, so wave 1
    adds the §4 caller rule itself. Any later crew-scoped read reuses it.
+   One deliberate exception (maintainer decision by buluoray, #26651): the wave 4
+   ledger-read pull and decide forward may run on a turn the owner did not send,
+   such as a patrol wake. Their reach is the one remote item bound on the
+   caller's own ledger, and both are off unless `work_ledger.remote_dispatch` is
+   on. Later crew-scoped reads still apply the owner-sent rule.
 5. **#12821 and the server-side fence.** #12821 calls `proxy_request` for
    `api/spawn`, outside `_PROXY_ALLOWED_PREFIXES`. Wave 1 makes server-side
    calls pass the fence. Does #12821 get its own named row, or a closed-set
@@ -557,7 +579,9 @@ nothing that passes today.
 6. **Reservation estimate.** 2 GB memory and 10 GB disk per open worker are
    starting guesses. Which measurement replaces them: peak RSS of the worker's
    process tree and the scratch directory's peak size, or a per-repo estimate?
-   Proposed: the per-worker peak, as one global default, in wave 6.
+   Resolved in wave 6: the per-worker peak, as one global default each,
+   5 GB memory and 5 GB disk. Method and numbers are in the session-control
+   spec, "Wave 6: estimate defaults".
 7. **Retire timeout.** Is 30 minutes the right default? Shorter wastes work on a
    crew that comes back; longer strands the item. Proposed: 30 minutes,
    configurable, revisited once wave 8 logs real outage lengths.

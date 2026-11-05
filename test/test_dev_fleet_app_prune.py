@@ -24,7 +24,7 @@ from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until, finished, until_parked
 
 
 # =============================================================================
@@ -226,11 +226,18 @@ async def test_auto_prune_reaper_audits_scan_failure():
     fake_sel = MagicMock()
     fake_sel.log_tool_invocation = lambda **kw: events.append(kw)
 
-    async def _break_after_first_cycle(_secs):
-        raise asyncio.CancelledError  # exit the while True after one cycle
+    # The reaper reads its config at the top of every cycle. The first cycle runs
+    # with a zero interval; the second read ends the loop, so no timer is patched.
+    cfg_reads = []
+
+    def _cfg_once_then_stop():
+        cfg_reads.append(1)
+        if len(cfg_reads) > 1:
+            raise asyncio.CancelledError  # exit the while True after one cycle
+        return (True, 0)
 
     with (
-        patch.object(worktree_ops_mod, "_auto_prune_cfg", return_value=(True, 300)),
+        patch.object(worktree_ops_mod, "_auto_prune_cfg", side_effect=_cfg_once_then_stop),
         patch.object(
             worktree_ops_mod,
             "_auto_prune_once",
@@ -238,8 +245,6 @@ async def test_auto_prune_reaper_audits_scan_failure():
             return_value={"removed": [], "failed": [], "error": "gh down"},
         ),
         patch.object(runtime_mod, "_sel", return_value=fake_sel),
-        # flake-ok: pre-existing worker-wide asyncio.sleep patch that ends the reaper loop after one cycle, moved verbatim; tracked for a de-flake pass
-        patch("asyncio.sleep", _break_after_first_cycle),
     ):
         with pytest.raises(asyncio.CancelledError):
             await mod._auto_prune_reaper()
@@ -394,13 +399,15 @@ async def test_prune_run_caps_concurrency_at_semaphore_limit(reset_prune_state, 
     async def fake_find(nm):
         return {"path": f"/wt/{nm}", "branch": f"feat/{nm}"}, None
 
+    release = asyncio.Event()
+
     async def fake_prunable(path, branch):
         nonlocal inflight, peak
         inflight += 1
         peak = max(peak, inflight)
-        # flake-ok: pre-existing 50 ms hold inside the stubbed prune step so items overlap, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing hold inside the stubbed prune step, moved verbatim; the test asserts the concurrency cap it exercises
-        await asyncio.sleep(0.05)  # hold the semaphore slot
+        # Hold the semaphore slot until the test has seen the cap filled. Every item
+        # that enters before the release is counted in ``peak``, so a broken cap fails.
+        await await_until(release, what="prune hold released by the test")
         inflight -= 1
         return {"ok": True, "code": "merged"}
 
@@ -415,6 +422,9 @@ async def test_prune_run_caps_concurrency_at_semaphore_limit(reset_prune_state, 
         patch.object(worktree_ops_mod, "_worktree_remove", side_effect=fake_remove),
     ):
         await mod._prune_run(names)
+        # Positive signal first: the cap of two is filled before the test lets items finish.
+        await async_wait_until(lambda: inflight == 2, describe=lambda: f"inflight={inflight}")
+        release.set()
         await _await_prune_idle()
 
     assert peak == 2, f"concurrency should reach (and not exceed) the cap of 2, saw {peak}"
@@ -430,6 +440,8 @@ async def test_worktree_remove_serializes_git_mutations(reset_prune_state):
     mutated by only one worker at a time."""
     inside = 0
     overlapped = False
+    entered = asyncio.Event()
+    release = asyncio.Event()
 
     async def fake_run_cmd(cmd, timeout=None, **kw):
         nonlocal inside, overlapped
@@ -437,9 +449,9 @@ async def test_worktree_remove_serializes_git_mutations(reset_prune_state):
             inside += 1
             if inside > 1:
                 overlapped = True
-            # flake-ok: pre-existing 50 ms hold inside the stubbed git removal so workers could overlap, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing hold inside the stubbed git removal, moved verbatim; the test asserts the lock keeps workers apart
-            await asyncio.sleep(0.05)
+            entered.set()
+            # The first removal holds the git section until the test releases it.
+            await await_until(release, what="git removal hold released by the test")
             inside -= 1
         return (0, "", "")
 
@@ -469,10 +481,14 @@ async def test_worktree_remove_serializes_git_mutations(reset_prune_state):
         patch.object(runtime_mod, "_POD_AVAILABLE", False),
         patch.object(runtime_mod, "_run_cmd", side_effect=fake_run_cmd),
     ):
-        results = await asyncio.gather(
-            mod._worktree_remove("wt-1", force=False),
-            mod._worktree_remove("wt-2", force=False),
-        )
+        first = asyncio.create_task(mod._worktree_remove("wt-1", force=False))
+        second = asyncio.create_task(mod._worktree_remove("wt-2", force=False))
+        await await_until(entered, what="first removal reached the git section")
+        # Positive signal before the absence check: the second removal is parked behind
+        # the first on the make-live lock that every removal takes before the git section.
+        await until_parked(live_mod._MAKE_LIVE_LOCK, count=1)
+        release.set()
+        results = await finished(asyncio.gather(first, second), "both removals complete")
     assert all(r.get("ok") for r in results), results
     assert overlapped is False, "git mutations overlapped — _GIT_MUTATION_LOCK not serializing"
 

@@ -52,8 +52,9 @@ NATIVE_CHILD_LABEL_CAP = 512
 
 
 class NativeChildIds(Protocol):
-    """The child-id store :func:`_note_native_child` admits into: an ``AcpSessionHandle``'s,
-    or an ``AcpClient``'s on the claude backend (``client_native_children``)."""
+    """The child-id store :func:`_note_native_child` admits into and
+    :func:`native_child_resume_refusal` reads: an ``AcpSessionHandle``'s, or an
+    ``AcpClient``'s on the claude backend (``client_native_children``)."""
 
     @property
     def _session_id(self) -> str | None: ...
@@ -292,7 +293,7 @@ def _note_native_roster(self: AcpSessionHandle, subagents: object) -> None:
             self._note_native_child(entry.get("sessionId") or entry.get("session_id"))
 
 
-def native_child_resume_refusal(self: AcpSessionHandle, conversation_id: str) -> str | None:
+def native_child_resume_refusal(self: NativeChildIds, conversation_id: str) -> str | None:
     """The typed reason a ``spawn_continue``-style resume of
     ``conversation_id`` must be refused, or None when the id is not one of
     this handle's native children.

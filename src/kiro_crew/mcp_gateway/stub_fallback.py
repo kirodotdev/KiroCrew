@@ -172,8 +172,10 @@ def fallback_counts() -> dict[str, Any]:
                 for line in bounded_records(f, path, label="stub_fallback"):
                     try:
                         rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue  # torn tail line from a racing writer
+                    except (ValueError, RecursionError):
+                        # A torn tail line from a racing writer, or a line nested
+                        # past the recursion limit.
+                        continue
                     if not isinstance(rec, dict):
                         continue
                     ts = rec.get("ts")

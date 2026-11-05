@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import { PINNED_VIEWS, __resetPanelTabs, offerPanelView, openPanelView, usePanelTabs } from '../hooks/usePanelTabs'
+import { PINNED_VIEWS, __resetPanelTabs, dropPanelViews, offerPanelView, openPanelView, panelStripOf, usePanelTabs } from '../hooks/usePanelTabs'
 import { CREW_GROUP_TONE } from '../lib/crewWorkers'
 
 describe('Workers on a Crew Mode slot (U1)', () => {
@@ -46,6 +46,45 @@ describe('Workers on a Crew Mode slot (U1)', () => {
     offerPanelView('fresh', 'workers')
     const { result } = renderHook(() => usePanelTabs('fresh'))
     expect(result.current.activeId).toBe('workers')
+  })
+})
+
+describe('undoing an Ultra Mode turn-on on the strip (#26498)', () => {
+  beforeEach(() => { localStorage.clear(); __resetPanelTabs() })
+
+  it('drops only the named tabs and brings back the tab that was in front', () => {
+    openPanelView('a', 'links')
+    openPanelView('a', 'command-center')
+    openPanelView('a', 'links')
+    const before = panelStripOf('a')
+    openPanelView('a', 'command-center')
+    openPanelView('a', 'workers')
+    dropPanelViews('a', ['workers'], { focus: before.activeId, over: ['workers'] })
+    expect(panelStripOf('a')).toEqual({ ids: ['links', 'command-center'], activeId: 'links' })
+  })
+
+  it('falls back to the first tab when the one to bring back is gone', () => {
+    openPanelView('a', 'links')
+    openPanelView('a', 'workers')
+    dropPanelViews('a', ['workers'], { focus: 'files', over: ['workers'] })
+    expect(panelStripOf('a').activeId).toBe('links')
+  })
+
+  it('brings the tab back when nothing is dropped but Crew was put in front', () => {
+    openPanelView('a', 'workers')
+    openPanelView('a', 'links')
+    openPanelView('a', 'workers')
+    dropPanelViews('a', [], { focus: 'links', over: ['workers'] })
+    expect(panelStripOf('a')).toEqual({ ids: ['workers', 'links'], activeId: 'links' })
+  })
+
+  it('keeps a tab the person picked after the press', () => {
+    openPanelView('a', 'links')
+    openPanelView('a', 'files')
+    openPanelView('a', 'workers')
+    openPanelView('a', 'files')
+    dropPanelViews('a', ['workers'], { focus: 'links', over: ['workers'] })
+    expect(panelStripOf('a').activeId).toBe('files')
   })
 })
 

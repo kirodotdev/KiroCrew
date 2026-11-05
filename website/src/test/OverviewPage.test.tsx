@@ -34,6 +34,9 @@ vi.mock('../api/client', () => ({
   },
 }))
 
+// The Today line's counts, which one test sets to the singular.
+const usageToday = vi.hoisted(() => ({ sessions: 3, messages: 42, toolCalls: 5 }))
+
 // Usage summary card goes through the provider seam.
 vi.mock('../providers', () => ({
   useProvider: () => ({
@@ -43,7 +46,7 @@ vi.mock('../providers', () => ({
     fetchUsage: vi.fn().mockResolvedValue({
       sessions: {
         total: 10,
-        today: { sessions: 3, messages: 42, toolCalls: 5 },
+        today: { ...usageToday },
         thisWeek: { sessions: 8, messages: 100, toolCalls: 12 },
         thisMonth: { sessions: 10, messages: 120, toolCalls: 15 },
         avgMsgsPerSession: 12,
@@ -99,6 +102,23 @@ describe('OverviewPage — mission control', () => {
     expect(screen.getByText('Memory')).toBeInTheDocument()
     expect(await screen.findByText(/Summarizes chats into memory after 3h idle/)).toBeInTheDocument()
     expect(await screen.findByText(/Today:/)).toBeInTheDocument()
+  })
+
+  it('reads the Today line as one phrase with plural counts and a formatted cost', async () => {
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(await screen.findByText('Today: 3 sessions · 42 messages · 63.3K tokens · $4.12')).toBeInTheDocument()
+  })
+
+  it('uses the singular for a count of one on the Today line', async () => {
+    usageToday.sessions = 1
+    usageToday.messages = 1
+    try {
+      renderWithProviders(<OverviewPage />, { store: statusStore() })
+      expect(await screen.findByText('Today: 1 session · 1 message · 63.3K tokens · $4.12')).toBeInTheDocument()
+    } finally {
+      usageToday.sessions = 3
+      usageToday.messages = 42
+    }
   })
 
   it('drills into Memory and back', async () => {

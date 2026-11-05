@@ -14,13 +14,14 @@
  * the two ways the bridge must still fire.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, renderHook, act } from '@testing-library/react'
+import { render, renderHook, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
+import { modelsQueryKey } from '../hooks/useAvailableModels'
 import { switchSlot, openActivityToTab, openActivityPanel } from '../store/chatSlice'
 
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -80,9 +81,9 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 
 import ChatPage from '../pages/ChatPage'
 
-function renderChat(store: ReturnType<typeof createTestStore>) {
+async function renderChat(store: ReturnType<typeof createTestStore>) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
         <ThemeProvider>
@@ -93,6 +94,14 @@ function renderChat(store: ReturnType<typeof createTestStore>) {
       </Provider>
     </QueryClientProvider>,
   )
+  // The page's model-list read answers `{}`: the adapter flags the list degraded and the page re-renders,
+  // after render()'s own act() has returned. Wait for that read (mount -> models read -> degraded flag),
+  // so the flip lands before the test dispatches.
+  await waitFor(
+    () => expect(queryClient.getQueryState(modelsQueryKey('acp'))?.status).toBe('success'),
+    { timeout: 5000 },
+  )
+  return view
 }
 
 describe('ChatPage — side panel focus survives a chat switch', () => {
@@ -102,9 +111,9 @@ describe('ChatPage — side panel focus survives a chat switch', () => {
     __resetPanelTabs()
   })
 
-  it('reopens a chat on the tab the user left it on, not the last requested view', () => {
+  it('reopens a chat on the tab the user left it on, not the last requested view', async () => {
     const store = createTestStore()
-    renderChat(store)
+    await renderChat(store)
     const stripA = renderHook(() => usePanelTabs('slot-a'))
     const stripB = renderHook(() => usePanelTabs('slot-b'))
 
@@ -129,9 +138,9 @@ describe('ChatPage — side panel focus survives a chat switch', () => {
     expect(stripB.result.current.activeId).toBe('changes')
   })
 
-  it('still honours a deliberate view request after the switch', () => {
+  it('still honours a deliberate view request after the switch', async () => {
     const store = createTestStore()
-    renderChat(store)
+    await renderChat(store)
     const strip = renderHook(() => usePanelTabs('slot-b'))
 
     act(() => { store.dispatch(switchSlot.pending('r1', 'slot-b')) })
@@ -142,12 +151,12 @@ describe('ChatPage — side panel focus survives a chat switch', () => {
     expect(strip.result.current.activeId).toBe('workflows')
   })
 
-  it('re-focuses a view requested twice with a strip click in between', () => {
+  it('re-focuses a view requested twice with a strip click in between', async () => {
     // The counter, not the tab value, is the trigger — so a card asking for the
     // view it already asked for still pulls focus back after the user has
     // clicked away in the strip.
     const store = createTestStore()
-    renderChat(store)
+    await renderChat(store)
     const strip = renderHook(() => usePanelTabs('slot-b'))
 
     act(() => { store.dispatch(switchSlot.pending('r1', 'slot-b')) })

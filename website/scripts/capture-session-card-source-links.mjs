@@ -83,7 +83,6 @@ const DASH_CONFIG = {
   restore_window_minutes: 30,
   merge_queued_messages: false,
   widget_density: 'more',
-  use_builtin_browser: true,
   verbosity: 'default',
   quick_send: false,
   session_grid: false,

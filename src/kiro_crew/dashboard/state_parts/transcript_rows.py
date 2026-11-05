@@ -182,10 +182,12 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
         # The same allowed-host scope as _prepare_messages, so the live
         # frame and the history agree on an allowed link: its placeholder
         # becomes the address again, then the display pass runs.
-        from kiro_crew.security.exfil import scoped_exempt_hosts
-        from kiro_crew.security.redaction_allow import allowed_hosts_for
+        from kiro_crew.security.exfil import allowed_host_audit_epoch, scoped_exempt_hosts
+        from kiro_crew.security.redaction_allow import allowed_hosts_for, normalize_workspace
 
-        with scoped_exempt_hosts(allowed_hosts_for(workspace)):
+        epoch = allowed_host_audit_epoch()
+        hosts = allowed_hosts_for(workspace)
+        with scoped_exempt_hosts(hosts, normalize_workspace(workspace), epoch):
             if isinstance(content, str) and isinstance(msg.get("meta"), dict):
                 shown = with_allowed_links_restored({"content": content, "meta": msg["meta"]})
                 content = shown["content"]
@@ -215,14 +217,10 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
     # Deliberately NOT redacted here, unlike the `cls` branch above (which is
     # sanitised by parse_cls_meta). Two reasons, both load-bearing:
     #
-    # 1. This is the LIVE oauth banner's egress path. _emit_mcp_oauth_request
-    #    appends the banner with a real `oauth_url`, already gated by
-    #    security.oauth_url_contains_credential — the shared security gate, which
-    #    exempts standard high-entropy OAuth values only at exact code-owned
-    #    authorization endpoints while scanning everything else fail-closed.
-    #    Running _redact_meta_for_role here would blank a genuine
-    #    Google/GitHub consent URL and break the user's ability to authorize
-    #    an MCP server.
+    # 1. Generic redaction would blank a real consent URL, which is high
+    #    entropy by design. An `mcp_oauth` row is the one exception, and it is
+    #    gated below by _redact_meta_for_role, whose URL gate is the same one the
+    #    emit site applies, so a live banner keeps its link.
     # 2. chat_utils imports from this module, so importing the redactors the
     #    other way would be a cycle.
     #
@@ -231,18 +229,28 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
     # in per-role. Both restore loops pass broadcast=False, and the ONE
     # exception is refresh_channel_window, which replays a channel
     # transcript's tail and passes broadcast_user=True so a message typed in
-    # Slack renders at all (nothing rendered it optimistically here). That
-    # exception cannot carry unredacted meta: ConversationLog.append writes
-    # only role/content/ts/source_thread/source_user for such a row -- no
-    # meta dict -- so the arm below never fires for it, and the row's
-    # content is human-typed, which is deliberately raw at every other
-    # boundary too. The invariant is pinned by
+    # Slack renders at all (nothing rendered it optimistically here).
+    # ConversationLog.append writes only role/content/ts/source_thread/
+    # source_user for such a row -- no meta dict -- and the row's content is
+    # human-typed, which is deliberately raw at every other boundary too. A
+    # line written by anything other than that writer can carry meta, which
+    # is why the `mcp_oauth` arm below gates the link it would draw. The invariant is pinned by
     # test_rehydrate_does_not_broadcast_replayed_messages and
     # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
     # it further without re-checking that meta is still absent.
     direct_meta = restored_meta if restored_meta is not None else msg.get("meta")
     if direct_meta and isinstance(direct_meta, dict):
         payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
+    if role == "mcp_oauth" and isinstance(payload.get("meta"), dict):
+        # An `mcp_oauth` row's meta carries the Authorize link the client draws.
+        # A replayed transcript line (refresh_channel_window broadcasts the
+        # rows it re-appends) can be agent-written, cls and meta alike, so the
+        # link leaves here only under the same provenance and shape gates as
+        # the HTTP history path. A banner the emit site just appended is
+        # recorded before its append and passes unchanged.
+        from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
+
+        payload["meta"] = _redact_meta_for_role(role, payload["meta"])
     return payload
 
 

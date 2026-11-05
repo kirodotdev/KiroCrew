@@ -375,31 +375,19 @@ class BackgroundSessionRuntime:
         # Before the permit: a defaulted KAS waits (bounded) for the kiro-cli
         # floor, so this session starts on the backend the verdict chose.
         await await_kas_floor_verdict()
-        # The factory resolves the background agent's model pin SYNCHRONOUSLY
-        # on the loop from the agent-spec snapshot, which at gateway start has
-        # not been published yet (the first ``mc-discovery`` refresh is still
-        # in flight): a cold snapshot answers "no pin", the session would be
-        # created on the chat model, and it is persistent, so it would stay
-        # there for the gateway's lifetime. This is the one caller that reaches
-        # the lookup cold AND is async, so warm the snapshot here, off the loop,
-        # and the factory's unchanged lookup finds the rows. Once, awaited, no
-        # retry: a failed warm-up costs this session the cold answer only.
-        # Before the permit, so the identity-sweep barrier below covers the
-        # spawn alone, not a directory parse.
+        # Warm the agent-spec snapshot off the loop: the factory reads the model
+        # pin from it synchronously, and at gateway start it is still cold (first
+        # ``mc-discovery`` refresh in flight), which would put this persistent
+        # session on the chat model for the gateway's lifetime. Once, no retry.
+        # Before the permit, so the identity-sweep barrier covers only the spawn.
         await warm_agent_specs(operation="ensure_background", source="unknown")
-        # The permit is retained through stamping AND registration, not just
-        # the process start: the identity sweep drains every cold-start permit
-        # as its quiescence barrier, so releasing the permit while this
-        # provider is started-but-unregistered would let a concurrent sweep
-        # reconcile the store change this spawn straddled while the (possibly
-        # wrong-account) provider is invisible to it -- it would then register,
-        # unstamped by the sweep's epoch handling, after the sweep completed.
-        # Holding the permit keeps this spawn inside the barrier until the
-        # registry can see the result. Explicit acquire/release rather than
-        # ``async with`` so the start-failure return keeps its original
-        # exception semantics while the registration section (whose failures
-        # must PROPAGATE, per the rollback handler below) also stays under the
-        # permit. Lock order matches the sweep's own (permit -> owner._lock).
+        # Hold the permit through stamping AND registration: the identity sweep
+        # drains cold-start permits as its barrier, and a started-but-unregistered
+        # (possibly wrong-account) provider would otherwise register unstamped
+        # after the sweep. Explicit acquire/release, not ``async with``, so the
+        # start-failure return keeps its exception semantics while registration
+        # failures still PROPAGATE (see the rollback handler). Lock order matches
+        # the sweep's (permit -> owner._lock).
         await self._owner._start_sem.acquire(start_priority)
         try:
             try:
@@ -473,11 +461,25 @@ class BackgroundSessionRuntime:
         # tear the fresh provider down instead of registering it.
         await provider.shutdown()
 
+    def _unreadable_backend(self) -> str:
+        """The backend a background runtime takes when ``agent.acp_backend`` is unreadable.
+
+        ``acp_backend_kiro`` in an ``oss`` build, as before. In an enterprise build the
+        build's floor, KAS (RFC D6), because Kiro CLI there needs a remote rule.
+        """
+        from kiro_crew import edition
+
+        if edition.is_enterprise():
+            from kiro_crew.agent_sdk.backends import governance_floor_backend
+
+            return governance_floor_backend()
+        return self._deps.acp_backend_kiro
+
     def _configured_bg_backend_raw(self) -> str | None:
         """Return the configured background backend, or ``None`` if unreadable."""
         logger = self._deps.logger
         try:
-            backend = getattr(self._owner._cfg.agent, "acp_backend", self._deps.acp_backend_kiro)
+            backend = getattr(self._owner._cfg.agent, "acp_backend", self._unreadable_backend())
         except Exception:
             logger.warning(
                 "agent.acp_backend is unreadable; treating the _bg backend as unknown",
@@ -489,7 +491,7 @@ class BackgroundSessionRuntime:
     def _configured_bg_backend(self) -> str:
         """Return the backend background runtimes must spawn under."""
         backend = self._owner._configured_bg_backend_raw()
-        return backend if backend is not None else self._deps.acp_backend_kiro
+        return backend if backend is not None else self._unreadable_backend()
 
     def _bg_backend_supports_runtime(self) -> bool:
         """Whether the configured backend can use the multiplexed runtime."""
@@ -566,14 +568,11 @@ class BackgroundSessionRuntime:
         is logged with every outcome: a staleness recycle and a backend flap have
         different remedies, so the two must never read alike.
 
-        ``park_only`` parks even an idle runtime instead of killing it here. The
-        periodic sweep uses it, because that caller's idle reading can be one
-        statement stale: ``get_bg_session`` pins the runtime under this lock,
-        RELEASES the lock, and only then calls ``create_session`` -- which is
-        where ``_session_inits_in_flight`` is raised. Killing inside that window
-        would surface as ``AcpRuntimeDead`` on a caller that did nothing wrong.
-        Parking cannot: the reaper re-probes on a later tick, by which time the
-        pinned start has either registered (busy -- it stays parked) or failed.
+        ``park_only`` parks even an idle runtime; the periodic sweep needs it
+        because ``get_bg_session`` pins the runtime, RELEASES this lock, and only
+        then raises ``_session_inits_in_flight`` in ``create_session``. Killing in
+        that window raises ``AcpRuntimeDead`` on an innocent caller; the reaper
+        re-probes a parked runtime on a later tick.
         """
         logger = self._deps.logger
         try:
@@ -637,20 +636,12 @@ class BackgroundSessionRuntime:
         """Retire the shared background runtime once it is idle AND stale.
 
         The staleness ceilings (``_DEFAULT_MAX_AGE_SECS`` 6 h,
-        ``_DEFAULT_MAX_RSS_MB`` 500 MiB) were only ever evaluated on the REUSE
-        path in :meth:`get_bg_session`, and the shared runtime's pid is shielded
-        from the orphan sweep for its whole life. A runtime that stops being
-        reused is therefore never asked the question again and never reaped by
-        anything else: it lives until the gateway restarts. Observed on an
-        operator host: 11 agent runtimes holding 6.0 GB, six of them 14.5 h old
-        and five of those over the 500 MiB ceiling, against 4 live slots.
-
-        This is the periodic caller that asks the question off the reuse path, so
-        a runtime nobody is calling is still bounded. It only ever retires a
-        runtime with NO active or initializing session, and it PARKS rather than
-        kills (see ``park_only`` on :meth:`_detach_bg_runtime_locked`), so a
-        co-tenant session can never be dropped by it. Returns True when the slot
-        was freed.
+        ``_DEFAULT_MAX_RSS_MB`` 500 MiB) are otherwise checked only on the REUSE
+        path in :meth:`get_bg_session`, and the orphan sweep shields this pid, so
+        an unused runtime would live until gateway restart. Only a runtime with NO
+        active or initializing session is retired, and it is PARKED, not killed
+        (``park_only`` on :meth:`_detach_bg_runtime_locked`). Returns True when the
+        slot was freed.
         """
         logger = self._deps.logger
         async with self._bg_runtime_lock:
@@ -799,7 +790,7 @@ class BackgroundSessionRuntime:
                 configured_backend = (
                     configured_backend_raw
                     if configured_backend_raw is not None
-                    else self._deps.acp_backend_kiro
+                    else self._unreadable_backend()
                 )
                 runtime_capable = configured_backend in self._deps.runtime_backends()
                 if runtime_capable and runtime is not None and runtime.is_alive():
@@ -875,6 +866,14 @@ class BackgroundSessionRuntime:
                             ),
                         )
 
+                    # Enterprise (RFC D6): a background runtime on a KAS that boot
+                    # proved cannot start is refused before any process, as every
+                    # factory-built session is. A no-op in an oss build.
+                    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+                    from kiro_crew.enterprise_boot import refuse_unstartable_kas
+
+                    if configured_backend == ACP_BACKEND_KAS:
+                        refuse_unstartable_kas()
                     replacement = build_runtime(self.state.inherited_scratch)
                     # Bracket the spawn with identity reads so the runtime
                     # carries a spawn stamp: sessions demuxed onto it inherit
@@ -1000,19 +999,14 @@ class BackgroundSessionRuntime:
     async def _rss_recycle_reason(self, background_key: str) -> str | None:
         """The recycle reason when the background tree is at or over its ceiling.
 
-        The ceiling is ``session.watchdog_rss_max_mb`` when it is positive and
-        below ``BACKGROUND_RSS_FALLBACK_MB``, else that fallback: the per-session
-        knob is sized for chat sessions with many MCP servers, while this
-        internal runtime is the one tree a transcript of oversized records grows
-        without bound, so it keeps its own lower ceiling either way.
-        The RSS sweep in ``session_cleanup`` skips persistent keys and the
-        background key is one, so this is the only path that compares this
-        runtime's tree against that number. It belongs here rather than there
-        because the sweep resets a session in place, while ``recycle_background``
-        spawns the replacement before retiring the old provider.
+        The ceiling is ``session.watchdog_rss_max_mb`` when positive and below
+        ``BACKGROUND_RSS_FALLBACK_MB``, else that fallback: oversized transcript
+        records grow this tree without bound, so it keeps a lower ceiling than
+        chat sessions. The ``session_cleanup`` RSS sweep skips persistent keys
+        (this is one), and ``recycle_background`` spawns the replacement before
+        retiring the old provider, so the check lives here.
 
-        A pid with no reading, or a reading that raises, yields ``None`` so the
-        context and prompt criteria decide the turn on their own.
+        No reading, or one that raises, yields ``None``.
         """
         ceiling = self._deps.rss_max_mb()
         if ceiling <= 0 or ceiling > BACKGROUND_RSS_FALLBACK_MB:

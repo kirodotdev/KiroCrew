@@ -6,12 +6,13 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from typing import Any, Protocol
 
 from aiohttp import web
 
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG
+from kiro_crew.dashboard.turn_heartbeat import TurnHeartbeat
 from kiro_crew.write_buffer_level import level_is_progress_signal
 
 #: Capability a dashboard tab declares in the ``caps`` query parameter of
@@ -21,6 +22,20 @@ SLOT_PATCH_CAPABILITY = "slot_patch"
 #: Socket attribute recording that declaration. Only a dashboard-user socket
 #: carries it; every other socket keeps receiving the full ``slots`` list.
 SLOT_PATCH_WS_FLAG = "_slot_patch"
+
+#: Capability a dashboard tab declares in ``?caps=`` (beside ``slot_patch``) when
+#: its bundle applies ``slots_diff`` frames: the rows of the slot list that changed
+#: since the last list frame it was sent (``state_parts/slots_diff.py``).
+SLOT_DIFF_CAPABILITY = "slot_diff.1"
+
+#: Socket attribute recording that declaration. A flagged socket gets every
+#: coalesced slot list as a ``slots_diff`` frame, or as a sequenced full frame
+#: when it holds no base; the generic and owner ``slots`` fan-outs skip it.
+SLOT_DIFF_WS_FLAG = "_slot_diff"
+
+#: Socket attribute holding the ``(view, seq)`` of the slot list a diff socket was
+#: last sent. Popping it makes the next coalesced list reach the socket in full.
+SLOT_DIFF_SEQ_KEY = "_slot_diff_seq"
 
 #: Capability a dashboard tab declares in ``?caps=`` when its bundle sends
 #: ``fold_watch`` and can live with slot-fold frames for only the boards it watches.
@@ -231,6 +246,8 @@ class WebSocketHub:
         # they watch, may have changed. The crew-log exporter re-derives its bus
         # subscriptions from :meth:`fold_watch_routing` there.
         self._fold_watch_listeners: list[Callable[[], None]] = []
+        #: The one ``heartbeat`` tick for every socket while any turn runs.
+        self.turn_heartbeat = TurnHeartbeat(self.broadcast_heartbeat)
 
     @property
     def _log(self) -> logging.Logger:
@@ -582,6 +599,9 @@ class WebSocketHub:
                 continue
             if skip_patch_clients and ws.get(SLOT_PATCH_WS_FLAG, False):
                 continue
+            # A ``slots_diff`` socket receives the slot list from the diff sender.
+            if skip_owners and ws.get(SLOT_DIFF_WS_FLAG, False) is True:
+                continue
             if not client_allowed(ws, msg_type, data):
                 continue
             try:
@@ -603,7 +623,13 @@ class WebSocketHub:
         for ws in dead:
             remove(ws)
 
-    def _send_ws_owners(self, msg: str, *, skip_slot_patch_clients: bool = False) -> None:
+    def _send_ws_owners(
+        self,
+        msg: str,
+        *,
+        skip_slot_patch_clients: bool = False,
+        skip_slot_diff_clients: bool = False,
+    ) -> None:
         """Send a pre-serialized message only to owner-authenticated clients."""
         dead: list[web.WebSocketResponse] = []
         spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
@@ -613,6 +639,8 @@ class WebSocketHub:
                 dead.append(ws)
                 continue
             if skip_slot_patch_clients and ws.get(SLOT_PATCH_WS_FLAG, False):
+                continue
+            if skip_slot_diff_clients and ws.get(SLOT_DIFF_WS_FLAG, False) is True:
                 continue
             try:
                 spawn(ws, msg)
@@ -656,8 +684,46 @@ class WebSocketHub:
         send_all = self._owner_method("_send_ws_all", self._send_ws_all)
         send_all(msg_type, data, msg)
 
-    async def _await_owner_send(self, ws: web.WebSocketResponse, msg: str) -> None:
+    def broadcast_heartbeat(self, slot_keys: Collection[str]) -> int:
+        """Send one ``heartbeat`` frame to each socket that may see a running turn.
+
+        *slot_keys* are the slots whose turns hold the tick. The frame carries only
+        ``ts``: no client reads which slot is running from it. The scope gate still
+        runs per socket with a slot key, so an app-token socket gets the frame only
+        while a turn runs on a slot it may see, as when each turn sent its own.
+        Returns how many sockets the frame was handed to.
+        """
+        if not self._owner._ws_clients or not slot_keys:
+            return 0
+        ts = time.time()
+        msg = json.dumps({"type": "heartbeat", "data": {"ts": ts}})
+        dead: list[web.WebSocketResponse] = []
+        sent = 0
+        client_allowed = self._owner_method("_ws_client_allowed", self._ws_client_allowed)
+        spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
+        remove = self._owner_method("_remove_ws", self._remove_ws)
+        for ws in list(self._owner._ws_clients):
+            if ws.closed:
+                dead.append(ws)
+                continue
+            if not any(
+                client_allowed(ws, "heartbeat", {"slot": key, "ts": ts}) for key in slot_keys
+            ):
+                continue
+            try:
+                spawn(ws, msg)
+                sent += 1
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            remove(ws)
+        return sent
+
+    async def _await_owner_send(self, ws: web.WebSocketResponse, msg: str | bytes) -> None:
         """Send ``msg`` to one owner tab and wait for as long as the tab reads.
+
+        ``msg`` is a text frame as ``str`` or a binary frame as ``bytes`` (the live
+        browser frames, which carry a JPEG and must not be base64-inflated).
 
         The send returns once the tab's buffer drains, so how long it takes is the
         tab's backlog over its link speed, not a sign that the tab stopped reading.
@@ -670,7 +736,10 @@ class WebSocketHub:
         level shows no reading (``level_is_progress_signal``, or a transport that
         reports no level), only ``WS_OWNER_SEND_MAX_S`` ends it.
         """
-        send = asyncio.ensure_future(ws.send_str(msg))
+        if isinstance(msg, (bytes, bytearray, memoryview)):
+            send = asyncio.ensure_future(ws.send_bytes(bytes(msg)))
+        else:
+            send = asyncio.ensure_future(ws.send_str(msg))
         try:
             loop = asyncio.get_running_loop()
             watch = level_is_progress_signal()
@@ -705,6 +774,20 @@ class WebSocketHub:
         the call returns for every other tab. A tab that still reads keeps its
         send however slow its link, up to ``WS_OWNER_SEND_MAX_S``.
         """
+        return await self._deliver_owners(json.dumps({"type": msg_type, "data": data}))
+
+    async def deliver_ws_owners_bytes(self, payload: bytes) -> int:
+        """Await one BINARY frame to every owner tab; the binary sibling of ``deliver_ws_owners``.
+
+        Same audience (owner sockets only), same per-tab bound and same drop rule
+        for a tab that stopped reading. The payload is sent as one websocket binary
+        message, untouched: the live browser card decodes its own header
+        (``browser_harness.screencast.decode_frame``). Nothing here inspects or
+        logs the bytes, which may be a frame of a logged-in page.
+        """
+        return await self._deliver_owners(bytes(payload))
+
+    async def _deliver_owners(self, msg: str | bytes) -> int:
         targets = [
             ws
             for ws in list(self._owner._owner_ws_clients)
@@ -712,7 +795,6 @@ class WebSocketHub:
         ]
         if not targets:
             return 0
-        msg = json.dumps({"type": msg_type, "data": data})
         results = await asyncio.gather(
             *(self._await_owner_send(ws, msg) for ws in targets),
             return_exceptions=True,
@@ -973,26 +1055,6 @@ class WebSocketHub:
             if not ws.closed and ws.get("_is_dashboard_user", False)
         )
 
-    def broadcast_browser_event(self, event_type: str, data: dict[str, Any]) -> None:
-        """Redact and broadcast a browser activity event."""
-        safe_data: dict[str, Any] = {}
-        for key, value in data.items():
-            if isinstance(value, str):
-                from kiro_crew.security import redact
-
-                value = redact(value)
-            safe_data[key] = value
-        payload: dict[str, Any] = {
-            "type": "browser_event",
-            "event": event_type,
-            "ts": time.time(),
-        }
-        for key, value in safe_data.items():
-            if key not in ("type", "event", "ts"):
-                payload[key] = value
-        broadcast = self._owner_method("broadcast_ws", self.broadcast_ws)
-        broadcast("browser_event", payload)
-
     def register_ws(self, ws: web.WebSocketResponse, *, owner: bool = False) -> None:
         """Register a client and latch the serving loop before its first frame."""
         self._owner._ws_clients.append(ws)
@@ -1043,7 +1105,7 @@ class WebSocketHub:
 
             # last_seqs() iterates and parses every uncached member log on first
             # dashboard connect -- synchronous file I/O that would stall the serving
-            # loop. Offload it, matching the sibling _handle_eventlog_frame read.
+            # loop. Offload it, matching the sibling _replay_suppressed_projections read.
             last_seqs = await asyncio.to_thread(get_service().last_seqs)
         except Exception:
             self._log.debug("members_subscribed: last_seqs read failed", exc_info=True)
@@ -1168,7 +1230,8 @@ class WebSocketHub:
             remove(ws)
 
     async def close_all_ws(self) -> None:
-        """Cancel the flush loop, close sockets in order, then clear registries."""
+        """Cancel the flush loop and heartbeat tick, close sockets, clear registries."""
+        await self.turn_heartbeat.stop()
         if self._owner._flush_task:
             self._owner._flush_task.cancel()
             self._owner._flush_task = None

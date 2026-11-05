@@ -51,6 +51,7 @@ from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger("kirocrew.app.code-review-sage")
 
@@ -364,6 +365,7 @@ async def _ensure_followup_folder(state: Any) -> str:
     folder and build a duplicate. Idempotent — an existing folder is adopted and
     nothing is written.
     """
+    from kiro_crew.dashboard.chat_folder_order import next_folder_order
     from kiro_crew.dashboard.mate_folders import home_owner_of
 
     def _create_or_adopt(folders: list[dict]) -> tuple[bool, str]:
@@ -383,7 +385,7 @@ async def _ensure_followup_folder(state: Any) -> str:
         folder = {
             "id": uuid.uuid4().hex[:12],
             "name": followup.FOLDER_NAME,
-            "order": len(folders),
+            "order": next_folder_order(folders),
             "collapsed": False,
             "hidden": False,
             "parent_id": "",

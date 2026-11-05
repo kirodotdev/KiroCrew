@@ -191,7 +191,7 @@ class TestRunMethod:
 
     @pytest.mark.asyncio
     async def test_run_no_dashboard_uses_api_server(self, tmp_path, monkeypatch):
-        """--no-dashboard waits for and then clears its run marker."""
+        """--no-dashboard publishes, then writes and clears its run marker."""
         import kiro_crew
         from kiro_crew.instances import run_marker
 
@@ -199,11 +199,15 @@ class TestRunMethod:
         orch._dashboard_port = 5476
 
         monkeypatch.setattr(run_marker, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {})
+        monkeypatch.setattr(run_marker, "_DEFAULT_RUN_DIR", tmp_path / "default-run")
         run_marker.write_marker(orch._dashboard_port)
         original_write_marker = run_marker.write_marker
         events = []
+        seen = []
 
         def slow_write_marker(port):
+            seen.append(run_marker.published_listeners(port))
             events.append("write-start")
             # flake-ok: pre-existing sleep inside the slow marker-write stub, moved verbatim; tracked for a de-flake pass
             # nosemgrep: kirocrew.test-sleep-as-barrier -- stub that simulates a slow write, moved verbatim; tracked for a de-flake pass
@@ -236,7 +240,13 @@ class TestRunMethod:
         orch._init_subagents = MagicMock()
         orch._init_task_runner = MagicMock()
         orch._init_dashboard = AsyncMock()
-        orch._init_api_server = AsyncMock()
+        task_at_init = []
+
+        async def _publish():
+            task_at_init.append(orch._marker_write_task)
+            run_marker.note_published_listener(5476, "127.0.0.1")
+
+        orch._init_api_server = AsyncMock(side_effect=_publish)
         orch._init_autonudge = AsyncMock()
         orch._check_for_updates = AsyncMock()
         orch._shutdown = AsyncMock()
@@ -267,6 +277,8 @@ class TestRunMethod:
         assert events == ["write-start", "write-end", "clear"]
         assert not marker.exists()
         assert not pid_marker.exists()
+        assert task_at_init == [None]
+        assert seen == [frozenset({"127.0.0.1"})]
 
     @pytest.mark.asyncio
     async def test_run_stalled_marker_write_does_not_block_shutdown(self, tmp_path, monkeypatch):

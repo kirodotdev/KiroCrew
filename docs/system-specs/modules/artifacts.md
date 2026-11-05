@@ -179,6 +179,11 @@ does not automatically retry. Native answers steer their own waiting turn when
 either live run state or that slot's reloaded dashboard snapshot is running;
 sibling sessions never determine this decision. Approvals are separate from informational blockers.
 
+Failed workflows count as blocked through 24 hours after `ended_at`. Past that
+window they rest in the command-center model as `stopped`, the same state as a
+cancelled run; their error and last log remain attached. Missing or
+invalid end times stay blocked. The workflow history retains the failed outcome.
+
 The automatic card (`SessionStatusFrame`) uses the sandbox-document service with
 an empty sandbox (`TASK_DASHBOARD_SANDBOX`): no scripts, same-origin, forms,
 popups or control bridge. A dedicated document builder (`dashboardDocument.ts`)
@@ -222,6 +227,46 @@ comments. A signed-in dashboard subject who is not the owner gets the shared
 internal-secret transport (the agent `artifact_*` tools, the CLI and app
 drivers) and app tokens within their manifest grant are not dashboard subjects
 and keep their own rules. Pinned by `test/test_artifacts_owner_gate.py`.
+
+### Downloading a Bot's Dashboard
+
+The Bot's live Dashboard tab carries a **Download as HTML** button
+(`CrewDashboardDownload.tsx`). A staged preview and a root session's
+side-panel Dashboard do not. The button asks first, every time, in a confirm
+dialog that says the file shows the page as it is now and that anyone it is
+sent to can read everything on it. The file is a snapshot and does not update.
+
+The file is built in the browser from the document the tab shows
+(`dashboardDownloadFile.ts`): `buildSrcdoc` over the page the gateway
+composed, with the reader's live theme tokens and the frame's own CSP
+(`connect-src 'none'`, no CDN script origins). The gateway has no theme to
+read, so it is not asked to build one. The page's fonts and images are already
+`data:` URLs; the one thing the tab loads by URL is the same-origin Tailwind
+runtime, which is fetched once and inlined in place of its `<script src>`, with
+every casing of `</script` escaped. A page the tab shows without script is
+saved with `pageScripts: false`, so its script does not run in the file either.
+Both kinds are saved inside a small wrapper document: the page is the `srcdoc`
+of one frame with the tab's own grant, `allow-scripts` for a page that may run
+script and the empty sandbox for a page shown without script. The sandbox
+stops the frame opening a window, navigating the wrapper or starting a
+download, a nested frame inherits it, and the wrapper's CSP `default-src
+'none'` (the `frame-src` fallback) stops the frame navigating itself to any
+URL. Saved as a top-level document instead, a page could send what it shows to
+any host by navigating: through its script, or on a static page through a
+nested frame's `target=_top` link, which the tab's empty sandbox stops.
+The wrapper holds no script, and its CSP is the page's own: a `srcdoc` document
+enforces its parent's policy as well as its own, so a narrower wrapper policy
+would stop the page's script. The page runs with the same limits as in the
+tab, so links do not open from the saved file: in the tab they leave through the dashboard's
+link bridge, and a saved file has no dashboard. The frame's sandbox is what
+stops them: a static page's empty sandbox runs no script at all (so its link
+guard does not run either), and a scripted page's frame may neither open a
+window nor navigate. The
+gesture relays are left out too. The 10 MB cap applies to the whole saved file.
+A file over 10 MB, or a runtime that cannot be read, is refused
+with a notice and nothing is saved. The bytes go through `saveBlob`, so the
+in-app-browser hand-off below applies. Uploading the same file to Kiro Space is
+#28622.
 
 ### Artifact files
 
@@ -1647,7 +1692,9 @@ to this kind would store content no reader can parse.
 - **Tolerant load** — `ArtifactStore._read_meta_file()` hands the parsed file to
   `decode_meta` in `kiro_crew.artifact_store.records`, which ignores unknown keys
   and supplies defaults for missing keys, so future schema additions don't break
-  existing files.
+  existing files. A hand-edited `tags` is read as strings: a bare string is one
+  tag, a number its text, and a `null`, bool, object or list entry is dropped,
+  so a list search or a page reading `tags` never meets a non-string.
 - **Frontend rendering** — artifact bodies are rendered in the same sandboxed
   iframe that powers `<mcwidget>`, and that frame loads a **real document** from
   `GET /sandbox-doc/{doc_id}/{tok}` rather than a browser-built `blob:` URL. A
@@ -2517,8 +2564,17 @@ hand-off shows the page's Download failed notice and saves nothing.
   fetches the URL again. Entries expire after 5 minutes and the stash is capped
   in count and bytes, oldest evicted first. One file may be as large as the
   largest stored artifact plus 2 MiB for the export around it.
-- The POST takes only the export's content types; a path in the filename, an
-  unknown type or a missing field is a 400, an oversized file a 413.
+- The POST takes only `text/plain`, `text/html`, `application/json`,
+  `image/svg+xml` and `image/png`; a path in the filename, an unknown type or a
+  missing field is a 400, an oversized file a 413. A png arrives base64-encoded
+  and must start with the png signature, so no other bytes ride that type.
+  `saveBlob` sends every type as base64 with `encoding: "base64"`, so bytes that
+  are not UTF-8 (a legacy svg) are kept exactly and served with no forced charset.
+- Other browser-built downloads use the same hand-off through `saveBlob`
+  (`website/src/utils/download.ts`): a Mermaid export, a share image, a lightbox
+  picture (re-encoded as png when it is another raster type) and a file's last
+  copy. The file panel's Download already has an attachment URL, so inside a
+  WebView it downloads that URL directly at any size.
 
 ### Auto-registration from chat (`kiro_crew.image_artifacts`)
 

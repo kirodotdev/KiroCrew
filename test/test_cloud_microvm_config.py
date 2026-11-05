@@ -488,6 +488,16 @@ class TestTheBaseTemplate:
         assert block, f"{name} is not in the template"
         return block.group(1)
 
+    def test_the_recipe_bucket_refuses_plain_http(self):
+        """The recipe zip carries the crew bundle, so a request without TLS is
+        denied on the bucket itself, whatever endpoint a client was given."""
+        body = self._resource("RecipeBucketPolicy")
+        assert "Bucket: !Ref RecipeBucket" in body
+        assert "Effect: Deny" in body
+        assert 'aws:SecureTransport: "false"' in body
+        assert "!GetAtt RecipeBucket.Arn" in body
+        assert '!Sub "${RecipeBucket.Arn}/*"' in body
+
     def test_the_build_role_can_write_the_build_logs(self):
         """A build role that cannot write its log group does not build without
         logs; it does not build at all.

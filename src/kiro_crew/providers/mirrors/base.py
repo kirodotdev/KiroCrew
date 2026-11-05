@@ -52,6 +52,7 @@ class Concern(Enum):
     PROMPT = "prompt"
     RESOURCES = "resources"
     HOOKS = "hooks"
+    TOOLS_SETTINGS = "toolsSettings"
 
 
 class Disposition(Enum):
@@ -67,6 +68,38 @@ class Disposition(Enum):
     NO_CHANNEL = "no-channel"
     #: Deliberately not sent. A decision, with its reason.
     WITHHELD = "withheld"
+
+
+#: The ``RESOURCES`` reason for a mirror whose harness is handed no spec file. The
+#: doc's class for it is ``no-reader`` (``docs/agent-spec-fields.md``), so the
+#: reason opens with that name. ``skill://`` still arrives because Crew injects
+#: the mapped skill directory on every backend (``context._skills_injection_plan``);
+#: ``file://`` steering is not loaded from this field, because Crew's steering load
+#: is gated to the ``provider=claude_code`` seam; the same file can still arrive
+#: as folder steering or a crew member's essentials. A custom agent's new session is told when its
+#: spec lists any (``dashboard/chat_turn/turn_spec_hooks.py``).
+RESOURCES_NO_READER = (
+    "no-reader: the harness is handed no spec file, so it loads neither scheme. "
+    "skill:// still arrives as the skill directory Crew injects on every backend; "
+    "file:// steering is not loaded from this field, since Crew's steering load "
+    "serves only the provider=claude_code seam (folder steering and crew member "
+    "context are separate routes); a custom agent's new session gets a notice "
+    "naming those entries"
+)
+
+
+#: The ``TOOLS_SETTINGS`` channel on a mirror that does not carry the field. KAS is
+#: the one backend Crew applies ``toolsSettings`` on, through ``permissions`` rules
+#: and the gate tiers that read the spec's shell and write allowlists
+#: (``acp/kas_agents.py``); the same tiers run on every backend's permission
+#: requests, and nothing hands them a mirrored session's allowlists yet. The field's
+#: ``subagent.availableAgents`` is the exception, read by Crew's spawn gate on every
+#: backend (``subagent_parts/agent_policy.py``).
+TOOLS_SETTINGS_GATE_CHANNEL = (
+    "the spec-shell-allowlist and spec-write-allowlist tiers of Crew's own gate "
+    "(hooks.py), fed this session's allowlists on its own permission requests as "
+    "the KAS session handle feeds them"
+)
 
 
 @dataclass(frozen=True)

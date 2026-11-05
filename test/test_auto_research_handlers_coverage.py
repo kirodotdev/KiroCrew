@@ -45,6 +45,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 from auto_research_handlers_coverage_helpers import _isolate_fixture  # noqa: F401
 from auto_research_handlers_coverage_helpers import _no_autonudge  # noqa: F401
 from auto_research_handlers_coverage_helpers import _no_stray_sse_queues  # noqa: F401
@@ -58,6 +59,7 @@ from auto_research_handlers_coverage_helpers import (
     _status,
     _write_finding,
 )
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
 from kiro_crew.testing.wait import async_wait_until
@@ -907,6 +909,29 @@ class TestGrillExpandEndpoint:
         resp = await h._handle_grill_expand(
             _mk("POST", "grill/expand", app=_app(), body={"question": "too short"})
         )
+        assert resp.status == 400
+        assert _body(resp)["error"] == "Question too short"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "question", [12345, ["a long enough question here"], {"q": "x"}, True], ids=repr
+    )
+    async def test_non_string_question_is_a_coded_400(self, question: object):
+        # Served over HTTP, so a `.strip()` crash is the 500 a client sees.
+        app = as_owner(web.Application())
+        app.router.add_post("/grill/expand", h._handle_grill_expand)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/grill/expand", json={"question": question})
+            assert resp.status == 400
+            assert await resp.json() == {
+                "error": "question must be a string",
+                "code": "invalid_field_type",
+            }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [{}, {"question": None}, {"question": ""}])
+    async def test_null_or_missing_question_is_still_too_short(self, body: dict):
+        resp = await h._handle_grill_expand(_mk("POST", "grill/expand", app=_app(), body=body))
         assert resp.status == 400
         assert _body(resp)["error"] == "Question too short"
 

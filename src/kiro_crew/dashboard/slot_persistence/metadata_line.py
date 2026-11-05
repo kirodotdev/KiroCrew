@@ -17,6 +17,7 @@ slot-owned fields belong in ``metadata_codec``.
 from __future__ import annotations
 
 import logging
+import secrets
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -277,6 +278,108 @@ def retained_memory_mode(slot: _ChatSlot, live_session: str) -> str:
     return stricter_memory_mode(slot_mode, execution.memory_mode)
 
 
+def tighten_line_for_appends(
+    conv_log: ConversationLog, slot: _ChatSlot, history_key: str, *, live_session: str
+) -> str | None:
+    """Make the header an append-safe write lands rows under carry *slot*'s privacy.
+
+    The full save rebuilds the metadata line and so records ``memory_mode``
+    on it; an append-shaped write goes through ``ConversationLog.append``,
+    which mints a header with no mode at all when the file is absent and
+    leaves an existing header exactly as it found it. A restricted slot's rows
+    landing that way -- the hand-over drain of a popped slot whose truncation
+    lost its key, the commit gate's own fallback for the same write -- would
+    sit under a line that reads ``persistent``, and every reader that learns
+    from the transcript (consolidation, lessons, injection) gates on that
+    line. So the line is settled FIRST, under the per-session lock the appends
+    take: created when absent, carrying the slot's retained mode; tightened
+    when present, to the stricter of its own mode and the retained one, with
+    the carried execution record folded to match and the store a restricted
+    line must not name cleared. A merge, never a rebuild -- every other field
+    (a replacement's title, folder, tag, pin) stays as the line holds it,
+    exactly as the rows-only save defers them. A persistent slot over an absent
+    line writes nothing: ``append`` mints the mode-less header a persistent
+    session has always had.
+
+    Returns the mode the line carries afterwards, CONFIRMED by re-reading the
+    header under the lock -- or ``None``, and then the caller must not append:
+    the header could not be read (the merge defers on a transient read failure
+    without running its guard, and a corrupt first line that the merge did not
+    rewrite stays unreadable), or it still reads looser than the slot's
+    retained mode. Fail closed on purpose: a row appended under a header whose
+    privacy contract is unverified is exactly the breach this settles, and
+    every caller has a refusal arm that reports or keeps the rows owed.
+
+    Caller holds ``_locked(history_key)`` (or ``atomic_appends``); the merge
+    and the confirming read re-enter it on this thread.
+    """
+    retained = retained_memory_mode(slot, live_session)
+    fields: dict = {}
+    mode = {"value": retained}
+    guard_ran = {"value": False}
+
+    def _tighten_under_lock(meta: dict) -> bool:
+        guard_ran["value"] = True
+        fields.clear()
+        line_mode = line_memory_mode(meta)
+        mode["value"] = stricter_memory_mode(line_mode, retained)
+        if not meta:
+            if mode["value"] == "persistent":
+                return False
+            fields["memory_mode"] = mode["value"]
+            return True
+        if mode["value"] != line_mode:
+            fields["memory_mode"] = mode["value"]
+            # The merge codec's spelling for "names no store" (see the
+            # ``memory_store`` field in ``metadata_codec``): a merge cannot
+            # drop a key, and every reader treats an empty name as absent.
+            fields["memory_store"] = ""
+        carried = dict(meta)
+        _tighten_carried_execution(carried, mode["value"])
+        if carried.get(EXECUTION_CONTEXT_KEY) != meta.get(EXECUTION_CONTEXT_KEY):
+            fields[EXECUTION_CONTEXT_KEY] = carried[EXECUTION_CONTEXT_KEY]
+        return bool(fields)
+
+    if conv_log.update_metadata_if(history_key, fields, _tighten_under_lock):
+        logger.info(
+            "Slot %s: tightened the %s line to %s ahead of an append-safe write",
+            slot.key,
+            history_key,
+            mode["value"],
+        )
+    elif not guard_ran["value"]:
+        logger.warning(
+            "Slot %s: the %s header could not be read; its privacy contract is "
+            "unverified, so no row is appended under it",
+            slot.key,
+            history_key,
+        )
+        return None
+    # The confirmation, not the merge's answer: what the header carries NOW,
+    # under this lock, is what the appended rows will sit under.
+    meta, readable = conv_log.get_metadata_status(history_key)
+    if not readable:
+        logger.warning(
+            "Slot %s: the %s header is unreadable after the tightening merge; no row "
+            "is appended under it",
+            slot.key,
+            history_key,
+        )
+        return None
+    line_mode = line_memory_mode(meta)
+    if stricter_memory_mode(line_mode, retained) != line_mode:
+        logger.warning(
+            "Slot %s: the %s header still reads %s against a retained %s; no row is "
+            "appended under it",
+            slot.key,
+            history_key,
+            line_mode,
+            retained,
+        )
+        return None
+    return line_mode
+
+
 def line_memory_mode(meta: dict) -> str:
     """The ``memory_mode`` the on-disk line already carries, canonicalised.
 
@@ -322,6 +425,19 @@ def _merge_dismissed_line(slot: _ChatSlot, meta: dict) -> list[str] | None:
     if isinstance(carry, list) and carry:
         return _capped_dismissed_line(carry)
     return None
+
+
+def close_identity(closed: bool) -> str:
+    """The ``closed_id`` a save writes beside ``closed_at``: a fresh nonce per close write.
+
+    Unique per write, never reused, so a clear keyed on it
+    (``ConversationLog.clear_closed(only_if_closed_id=...)``) takes off exactly
+    the stamp its writer put there and no other -- in particular not a close
+    of the same key stamped on the same clock tick, which carries an equal
+    ``closed_at`` and could not be told apart by the instant alone. Empty for
+    an open line, where the codec omits the key.
+    """
+    return secrets.token_hex(8) if closed else ""
 
 
 def merge_empty_window(
@@ -432,6 +548,7 @@ def merge_empty_window(
             # Without the close a closed empty newborn's line stays open-shaped
             # and the next restart resurrects a tab the user dismissed.
             closed_at=merged_closed_at,
+            closed_id=close_identity(closed),
             # The value is the snapshot taken WITH the window, never a fresh
             # read: a re-read here would be a second, unpaired observation of
             # the queue.
@@ -742,6 +859,7 @@ def build_full_line(
             last_consolidated=existing_meta.get("last_consolidated", 0),
             closed=closed,
             closed_at=closed_at,
+            closed_id=close_identity(closed),
             dismissed_source_links=dismissed,
             deferred_notes=surviving_hold,
             queued_prompts=_durable_queue,

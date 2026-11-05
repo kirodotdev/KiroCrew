@@ -1071,7 +1071,7 @@ class TestForkSlot:
 
     @pytest.mark.asyncio
     async def test_fork_rejects_when_slot_cap_reached(self, tmp_path, monkeypatch):
-        """Fork must return 429 + denied audit when slot cap hit."""
+        """Fork must return 409 + denied audit when slot cap hit."""
         from unittest.mock import MagicMock
 
         mock_sel = MagicMock()
@@ -1091,7 +1091,7 @@ class TestForkSlot:
         app = _make_app(state)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post("/api/chat/slots/src/fork", json={})
-            assert resp.status == 429
+            assert resp.status == 409
             data = await resp.json()
             assert "cap" in data["error"].lower()
 

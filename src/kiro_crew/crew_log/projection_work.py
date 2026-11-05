@@ -23,6 +23,7 @@ from kiro_crew.work_vocab import (
     WorkBoardForgotten,
     WorkBoardItem,
     WorkBoardView,
+    coerce_retired_bindings,
 )
 
 # --------------------------------------------------------------------------- #
@@ -114,6 +115,8 @@ _WORK_BASELINE_FIELDS: Final[tuple[str, ...]] = (
     "verdict",
     "decision",
     "worker_session_key",
+    "worker_instance_id",
+    "retired_bindings",
     "round",
     "fails",
     "status",
@@ -561,6 +564,11 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
         elif action == "accept":
             # A pending run belongs to the bar it measured; the new bar starts its own.
             item["pending_since"] = None
+        elif action == "retire":
+            # A retire that left the item unbound logs the pair as "", which the
+            # cache holds as unset.
+            for name in ("worker_session_key", "worker_instance_id"):
+                item[name] = item.get(name) or None
     _work_apply_event(item, data, stamp_ms, action)
 
 
@@ -610,9 +618,11 @@ def _work_field(name: str, value: Any) -> Any:
         return dict(value)
     if name in ("round", "fails", "pr"):
         return _as_int(value) if value is not None else None
+    if name == "retired_bindings":
+        return coerce_retired_bindings(value)
     if name == "reason":
         return _work_reason(value)
-    if name in ("verdict", "worker_session_key", "status"):
+    if name in ("verdict", "worker_session_key", "worker_instance_id", "status"):
         return _work_text(name, value) if value is not None else None
     return _work_text(name, value)
 

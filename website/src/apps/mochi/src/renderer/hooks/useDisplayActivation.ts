@@ -59,22 +59,13 @@ export function useDisplayActivation(
       }
     )
 
-    // Fallback: if set-active arrived before this listener registered,
-    // query saved position to check if we should be active
-    const timer = setTimeout(() => {
-      if (!isActiveRef.current) {
-        api?.getWindowPosition?.().then((p) => {
-          if (p && p.x >= 0 && p.y >= 0 && !isActiveRef.current) {
-            // We have a saved position — likely the active overlay
-            // Main process will re-send set-active on next move/heartbeat
-          }
-        })
-      }
-    }, 500)
+    // The listener is mounted: ask the main process for this overlay's
+    // activation. A set-active sent before this point was dropped, and this
+    // request is answered with a fresh one.
+    api?.petReady?.()
 
     return () => {
       off?.()
-      clearTimeout(timer)
     }
   }, [])
 

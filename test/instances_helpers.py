@@ -102,6 +102,8 @@ class _FakeReq:
         self.match_info = match or {}
         self.query = query or {}
         self._body = body
+        # aiohttp's ``Request.can_read_body``: whether a body was sent.
+        self.can_read_body = body is not None
         # Mirrors the aiohttp Request MAPPING, all three reads the owner predicate
         # in ``_guard`` performs: ``.get("user")`` for the subject, ``"app" in``
         # then ``["app"]`` for the app-token claim. A double that serves only

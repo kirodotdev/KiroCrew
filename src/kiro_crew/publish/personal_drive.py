@@ -232,20 +232,19 @@ class PersonalDriveProvider(PublishProvider):
     def _resolve_profile(self, requested: str = "") -> tuple[str, str]:
         """The (profile name, region) to run under, or raise with the fixing action.
 
-        ``requested`` wins over this instance's pinning: it carries the account an
-        EXISTING publication was bound to and must be honoured; empty means a NEW
-        publish, which follows the registry default.
+        ``requested`` is the profile an EXISTING publication was bound to and must be
+        honoured. Empty -- a NEW publish, or a handle that names no profile -- follows
+        the registry default.
 
         ``profiles.resolve_profile`` is the registry's own contract: an empty request
         resolves to the registry default and an unregistered name resolves to ``None``,
         so a publish can only ever run under a registered account.
         """
-        wanted = requested
-        resolved = profiles.resolve_profile(wanted)
+        resolved = profiles.resolve_profile(requested)
         if resolved is None:
-            if wanted:
+            if requested:
                 raise PublishUnavailableError(
-                    _unknown_profile_message(wanted, self._registered_names())
+                    _unknown_profile_message(requested, self._registered_names())
                 )
             raise PublishUnavailableError(_no_profile_message())
         name, region = resolved
@@ -284,9 +283,10 @@ class PersonalDriveProvider(PublishProvider):
         all -- refusing is recoverable by retrying, and acting on an unproven account is
         not. That is the same rule the withdrawal outcomes follow.
 
-        A handle with NO account predates binding and cannot be verified, so it keeps the
-        old behaviour rather than being refused. None exist outside this branch; refusing
-        them would strand every publication made before this change for no gain.
+        A handle with NO account predates binding and cannot be verified, so it is acted
+        on through the profile it names (or the registry default when it names none)
+        rather than refused: refusing it would strand every publication minted before
+        binding for no gain.
         """
         _key, pinned, bound = _parse_external_id(external_id)
         profile, region = self._resolve_profile(bound)
@@ -1513,23 +1513,15 @@ class PersonalDriveProvider(PublishProvider):
 
         if domain:
             self._domains[profile] = domain
-        result = PublishResult(
+        return PublishResult(
             external_id=external_id,
             view_url=self.view_url_for(external_id) if public else "",
             version_number=1,
             concurrency_token=digest,
             owner="",
             notice=notice,
+            notice_code=notice_code,
         )
-        # notice_code is the shared discriminator the frontend selects its per-case
-        # string from (contract: "rolling_out" / "distribution_disabled" / "unknown" /
-        # ""). It is added to PublishResult by the seam half of this change; setting it
-        # here is guarded so this module's own gate does not hard-depend on that half's
-        # landing order -- the field is additive and defaulted, so once it exists this
-        # simply populates it, and until it does the notice text still carries the state.
-        if hasattr(result, "notice_code"):
-            result.notice_code = notice_code
-        return result
 
     async def push_version(
         self, *, external_id: str, file_path: str, expected_token: str

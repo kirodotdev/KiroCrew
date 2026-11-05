@@ -83,6 +83,13 @@ export interface ChatPaneProps {
    *  the pane shows every attachment but cannot open one. Capability by
    *  omission, like `openSideChat`. */
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Reveal the Crew (Workers) tab from a Crew Mode dispatch-notice row. The
+   *  host's single reveal (`handleOpenCrewTab`), threaded down so a split pane
+   *  uses the SAME path as the single-chat surface — it closes Find and rebinds
+   *  the card's slot before opening, which a pane cannot do itself. Capability
+   *  by omission, like `onFileOpen`: a pane with no host reveal leaves the
+   *  notice button disabled rather than half-revealing. */
+  onOpenCrewTab?: (slot: string) => void
   /** Open an artifact named in a reply (`/artifacts/<slug>` link) in the
    *  host's side panel, the way the main chat does. Without it the link is a
    *  plain `target="_blank"` anchor to the standalone artifact view -- a

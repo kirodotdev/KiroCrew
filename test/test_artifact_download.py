@@ -10,6 +10,7 @@ routes sit behind dashboard auth.
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
@@ -99,6 +100,65 @@ def test_a_non_ascii_name_keeps_a_plain_ascii_fallback() -> None:
     disposition = gets[0][1]["Content-Disposition"]
     assert disposition.startswith('attachment; filename="r_p_ort.md";')
     assert "filename*=UTF-8''r%C3%A9p%22ort.md" in disposition
+
+
+_PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+
+
+def test_base64_text_keeps_its_bytes_and_drops_the_forced_charset() -> None:
+    # A legacy svg in Latin-1: decoding it as UTF-8 would corrupt the file.
+    latin1 = '<?xml version="1.0" encoding="ISO-8859-1"?><svg>caf\xe9</svg>'.encode("latin-1")
+    payload = {
+        "filename": "old.svg",
+        "type": "image/svg+xml",
+        "content": base64.b64encode(latin1).decode("ascii"),
+        "encoding": "base64",
+    }
+    status, _data, gets = asyncio.run(_roundtrip(payload))
+
+    assert status == 200
+    _got, headers, body = gets[0]
+    assert body == latin1
+    assert headers["Content-Type"] == "image/svg+xml"
+    assert headers["Content-Security-Policy"] == "sandbox"
+    assert headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_a_png_arrives_base64_and_comes_back_byte_for_byte() -> None:
+    payload = {
+        "filename": "share.png",
+        "type": "image/png",
+        "content": base64.b64encode(_PNG).decode("ascii"),
+    }
+    status, _data, gets = asyncio.run(_roundtrip(payload))
+
+    assert status == 200
+    got_status, headers, body = gets[0]
+    assert got_status == 200
+    assert body == _PNG
+    assert headers["Content-Type"] == "image/png"
+    assert headers["Content-Disposition"].startswith('attachment; filename="share.png"')
+    assert headers["Content-Security-Policy"] == "sandbox"
+    assert headers["X-Content-Type-Options"] == "nosniff"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not base64!",
+        # Non-ASCII: b64decode raises ValueError, not binascii.Error.
+        "\u00e9",
+        # Valid base64 that is not a png: nothing else may ride the png type.
+        base64.b64encode(b"<html><script>x</script>").decode("ascii"),
+    ],
+)
+def test_a_png_that_is_not_one_is_refused(content: str) -> None:
+    status, _data, gets = asyncio.run(
+        _roundtrip({"filename": "a.png", "type": "image/png", "content": content})
+    )
+
+    assert status == 400
+    assert gets == []
 
 
 @pytest.mark.parametrize(

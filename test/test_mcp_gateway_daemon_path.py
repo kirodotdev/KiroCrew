@@ -1,36 +1,12 @@
 """gatewayd's own PATH must carry the MCP launcher dirs, not just ``~/.local/bin``.
 
-The field failure this pins: the dashboard reported an MCP server as "failed to
-start in this session" with ``JSON-RPC error: -32000: backend gone: exit
-rc=127`` for ``slack-mcp``, ``talos-web-mcp`` and ``local-chorus-mcp``, while
-every other pooled server on the same daemon came up fine.
+A wrapper script that exec's a BARE tool name exits 127 ("command not found") when the
+tool's dir is missing from PATH, and the session sees only "backend gone: exit rc=127".
 
-rc=127 is ``/bin/sh``'s "command not found", and the split between the failing
-and working servers is what names the cause. A server whose spec command is an
-absolute binary (``~/.toolbox/bin/builder-mcp``) needs no PATH lookup at all.
-The three failures are the ones whose command is a thin wrapper script that
-exec's a BARE tool name::
-
-    #!/bin/sh
-    exec <tool> <subcommand> local-chorus-mcp
-
-``GatewayManager._spawn_once`` built the daemon's env by prepending exactly ONE
-hand-picked directory (``~/.local/bin``), so a gateway launched from the desktop
-app handed gatewayd a PATH without the dir holding that tool. Every such wrapper
-then failed its exec, the backend exited 127 before writing a byte of protocol,
-and the only thing the session saw was "backend gone" -- no mention of PATH, of
-the wrapper, or of the tool it could not find.
-
-Three properties are pinned:
-
-* the daemon's PATH is built by :func:`kiro_crew.env.augmented_path` -- the same
-  helper the kiro-cli spawn path uses -- so the launcher dirs cannot drift apart
-  between the two spawn sites,
-* that build runs OFF the event loop, because on a cold cache it globs every
-  version-manager root for Node bin dirs, and
-* the mechanism itself: a bare-name wrapper really does exit 127 under the old
-  one-directory PATH and really does start under the fixed one. Without this last
-  test the first is just an assertion about a string.
+Pinned: the daemon's PATH comes from :func:`kiro_crew.env.augmented_path`, the same
+helper the kiro-cli spawn uses; it is built OFF the event loop (a cold cache globs every
+version-manager root); and a real bare-name wrapper exits 127 without the dir and starts
+with it.
 """
 
 from __future__ import annotations
@@ -58,11 +34,8 @@ from kiro_crew.mcp_gateway.pool import BackendPool, PoolKey
 def _same_dir(a: str, b: str) -> bool:
     """Compare two PATH entries as DIRECTORIES, not as strings.
 
-    ``_EXTRA_PATH_DIRS`` spells its entries with forward slashes
-    (``"{home}/.toolbox/bin"``), so on Windows the built value mixes separators
-    while a test rebuilding the same directory with ``pathlib`` gets all
-    backslashes. The strings differ; the directory does not. ``normpath``
-    settles the separators, ``normcase`` the case-insensitivity.
+    ``_EXTRA_PATH_DIRS`` uses forward slashes, so on Windows the built value mixes
+    separators; ``normpath`` and ``normcase`` settle separators and case.
     """
     return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
@@ -159,7 +132,7 @@ async def _captured_backend_env(
     return dict(spawn.await_args.kwargs["env"])
 
 
-# ------------------------------------------------- the daemon's PATH is augmented
+# the daemon's PATH is augmented
 
 
 def test_the_daemon_inherits_the_augmented_launcher_path(monkeypatch, tmp_path) -> None:
@@ -208,15 +181,9 @@ def test_a_contributed_dir_that_duplicates_a_guess_leads_and_appears_once(
 ) -> None:
     """Membership alone would not catch a contributed dir landing dead last.
 
-    The fixture is a built-in guess that an operator ALSO names. It must appear
-    exactly once, at the front, and be dropped from its position inside the
-    built-in block; the rest of ``augmented_path`` keeps its relative order.
-
-    The fixture is read back out of ``augmented_path``'s own output rather than
-    rebuilt here, so it is byte-identical to the entry it has to collapse with.
-    Rebuilding it would make this test depend on which separator style the
-    module happens to spell its guesses with -- a different concern, and the
-    one ``_same_dir`` handles.
+    A built-in guess an operator ALSO names appears once, at the front; the rest of
+    ``augmented_path`` keeps its order. The fixture is read from ``augmented_path``'s own
+    output so it is byte-identical, whatever separator style the module uses.
     """
     monkeypatch.setattr(env_mod, "_config_path_dirs", ())
     monkeypatch.setattr(env_mod, "_registered_path_dirs", ())
@@ -352,19 +319,9 @@ async def test_emitted_declared_path_is_forwarded_verbatim_and_only_gains_dirs(
 ) -> None:
     """An ``emit_env``-expanded declaration is the backend PATH's verbatim prefix.
 
-    The agent config stores a declared ``env.PATH`` as the complete value
-    ``emit_env`` renders under the process that rebuilds it: the spec's pins,
-    then that process's augmented PATH. The rewriter forwards that stored value
-    into the sidecar, so what gatewayd receives has no readable authored
-    boundary. gatewayd therefore keeps the whole stored value first, byte for
-    byte, and only APPENDS the directories it does not carry: the contributed
-    ``mcp.extra_path_dirs`` ahead of the daemon-only inherited entries.
-
-    Consequence pinned here: every command name that resolves inside the stored
-    value resolves to the same binary the declaration alone selects, and a name
-    that resolves nowhere in it gains the operator's directory instead of
-    failing. The emit runs under one PATH and the spawn under a smaller one, as
-    a CLI-rendered config and a daemon spawn do.
+    The stored value has no readable authored boundary, so gatewayd keeps it first, byte
+    for byte, and only APPENDS ``mcp.extra_path_dirs`` then daemon-only inherited entries.
+    The emit runs under a larger PATH than the spawn, as a CLI config and a daemon do.
     """
     cli_path = os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])
     daemon_path = os.pathsep.join(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
@@ -457,11 +414,8 @@ async def test_no_declared_path_leaves_the_inherited_path_unchanged(monkeypatch,
 def test_a_bare_name_wrapper_exits_127_without_the_launcher_dir(tmp_path) -> None:
     """Reproduce the failure and its fix with a real wrapper and a real exec.
 
-    ``tool_dir`` stands in for the launcher tool's own bin dir and ``wrapper``
-    for the one-line script that exec's it by bare name. Under a PATH missing
-    ``tool_dir`` the exec fails and the process exits 127 -- exactly the code
-    the daemon reported as "backend gone". Adding the directory is the whole
-    difference.
+    ``wrapper`` exec's the tool in ``tool_dir`` by bare name; without that dir on PATH it
+    exits 127, the code the daemon reports as "backend gone".
     """
     tool_dir = tmp_path / "toolbox-bin"
     tool_dir.mkdir()

@@ -238,7 +238,7 @@ class TestThePageDrawsItself:
     def test_it_rerenders_when_the_host_refills(self, script: str) -> None:
         """The order of the host's first fill against this script is not the page's to
         assume, so it renders on load and again on every push."""
-        assert "addEventListener('message'" in script.replace('"', "'")
+        assert "addEventListener('kirocrew-dashboard'" in script.replace('"', "'")
 
 
 class TestTheColumnVocabulary:

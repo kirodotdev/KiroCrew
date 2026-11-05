@@ -28,6 +28,7 @@ import pathlib
 import pytest
 from chat_test_helpers import _make_state
 
+from kiro_crew.dashboard import mcp_oauth_provenance
 from kiro_crew.dashboard.chat_persistence import (
     _attach_variants,
     _build_history_prefix,
@@ -421,6 +422,11 @@ def test_oauth_url_corpus_survives_the_emit_path(monkeypatch) -> None:
     from oauth_url_corpus import LEGIT_OAUTH_URLS
 
     assert LEGIT_OAUTH_URLS, "precondition: the corpus is non-empty"
+    # Each URL is one the live child sent, as every banner the user can act on
+    # is: a read shows the link only for a URL `_emit_mcp_oauth_request`
+    # recorded (test_mcp_oauth_provenance.py pins the other side).
+    for _, url in LEGIT_OAUTH_URLS:
+        mcp_oauth_provenance.record_emitted("live-child", url)
     blanked = []
     for provider, url in LEGIT_OAUTH_URLS:
         out = _prepare_messages(
@@ -482,19 +488,24 @@ def test_a_legitimate_url_from_a_dead_child_is_withdrawn() -> None:
 
 
 def test_oauth_url_gate_still_blocks_a_tampered_url() -> None:
-    """Dropping the exfil heuristic must not open the two gates that matter."""
+    """Dropping the exfil heuristic must not open the two gates that matter.
+
+    Both URLs are recorded as sent by the child, so the shape gates themselves
+    are measured rather than the provenance check that runs before them.
+    """
     from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
 
+    scheme_url = "javascript:alert(document.cookie)"
+    cred_url = f"https://ex.com/cb?tok={SECRET}"
+    for url in (scheme_url, cred_url):
+        mcp_oauth_provenance.record_emitted("live-child", url)
+
     # 1. Non-http(s) scheme: must never reach an <a href>.
-    out = _redact_meta_for_role(
-        "mcp_oauth", {"oauth_url": "javascript:alert(document.cookie)"}
-    )
+    out = _redact_meta_for_role("mcp_oauth", {"oauth_url": scheme_url, "child": "live-child"})
     assert out["oauth_url"] == "", "javascript: URL survived the scheme gate"
 
     # 2. An embedded real credential still blanks it.
-    out = _redact_meta_for_role(
-        "mcp_oauth", {"oauth_url": f"https://ex.com/cb?tok={SECRET}"}
-    )
+    out = _redact_meta_for_role("mcp_oauth", {"oauth_url": cred_url, "child": "live-child"})
     assert out["oauth_url"] == "", "credential-bearing URL survived the cred gate"
 
 
@@ -521,13 +532,15 @@ def test_oauth_completion_preserves_a_legitimate_url() -> None:
         "&redirect_uri=http%3A%2F%2Flocalhost%3A5476%2Fcallback&response_type=code"
         "&scope=openid%20email%20profile&state=Ab3dEf6hIj9lMn2pQr5tUv8xYz1cD4fG"
     )
+    # The banner a live child sent, as `_emit_mcp_oauth_request` records it.
+    mcp_oauth_provenance.record_emitted("live-child", legit)
     slot = _ChatSlot("chat-1-oauthlegit")
     slot.append(
         "mcp_oauth",
         "authorize please",
         "msg",
         broadcast=False,
-        meta={"server_name": "acme", "oauth_url": legit},
+        meta={"server_name": "acme", "oauth_url": legit, "child": "live-child"},
     )
 
     sent: list[dict] = []

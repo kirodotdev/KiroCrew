@@ -130,23 +130,92 @@ def metadata_value(slot: Any) -> dict[str, Any] | None:
 
 
 def public_attribution(
-    value: SessionAttribution, trigger: SessionTrigger | None = None
+    value: SessionAttribution,
+    trigger: SessionTrigger | None = None,
+    *,
+    owner_fallback: bool = True,
 ) -> dict[str, Any]:
     """The browser-facing attribution: the creator without issuer or subject.
 
     ``trigger`` is present only for a session a schedule, a webhook or the Crew
     started (:mod:`kiro_crew.shared_crew.trigger`); such a session names its
     trigger and never a person.
+
+    A legacy session (no stored attribution) was made before sharing existed,
+    so by construction by the owner: its public creator is the owner's
+    principal, labelled with this machine's name, and ``availability`` stays
+    ``legacy_missing``. This is display only. Storage is never rewritten and a
+    legacy session never gains a stored creator. A legacy session that names a
+    trigger keeps the trigger and no person.
+
+    ``owner_fallback=False`` keeps a legacy value Unattributed: a live slot
+    nobody stamped yet, and a session a messaging channel started, are not
+    known to be the owner's (:func:`_owner_fallback_for_slot`,
+    :func:`_owner_fallback_for_meta`).
     """
+    creator = value.creator
+    if (
+        owner_fallback
+        and value.availability is AttributionAvailability.LEGACY_MISSING
+        and trigger is None
+    ):
+        from kiro_crew.shared_crew.owner import owner_principal
+
+        creator = owner_principal()
     body: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "availability": value.availability.value,
-        "creator": value.creator.to_public_dict(),
+        "creator": creator.to_public_dict(),
         "created_at": value.created_at,
     }
     if trigger is not None and not is_person(value.creator):
         body["trigger"] = trigger.to_public_dict()
     return body
+
+
+def _is_channel_key(key: object) -> bool:
+    """Whether *key* has any recognized channel-session shape.
+
+    Accepts live ``<namespace>:...`` keys, persisted ``<namespace>_...`` stems,
+    and pre-migration bare Slack ``<seconds>.<fraction>`` stems.
+    """
+    from kiro_crew.messaging.link import is_channel_session_key, is_legacy_slack_key
+
+    return isinstance(key, str) and (is_channel_session_key(key) or is_legacy_slack_key(key))
+
+
+def _owner_fallback_for_slot(slot: Any, value: SessionAttribution | None) -> bool:
+    """Whether a legacy slot reads as the owner's.
+
+    Only a slot whose attribution was read back from a metadata line written
+    before attribution existed. Not a live slot nobody stamped (``value`` is
+    ``None``), and not a channel-origin slot: the ``channel_origin`` flag, a
+    channel session key, or a ``linked_session_key`` that is one (a cron or
+    workflow binding is not a channel).
+    """
+    if value is None:
+        return False
+    return not (
+        getattr(slot, "channel_origin", False) is True
+        or _is_channel_key(getattr(slot, "key", ""))
+        or _is_channel_key(getattr(slot, "linked_session_key", ""))
+    )
+
+
+def _owner_fallback_for_meta(meta: Mapping[str, Any] | None, key: str) -> bool:
+    """Whether a persisted legacy session reads as the owner's.
+
+    Not when its key is a channel session key, nor when its metadata records
+    channel provenance (``channel_origin``, or a ``linked_session_key`` that is
+    a channel session key).
+    """
+    if _is_channel_key(key):
+        return False
+    if isinstance(meta, Mapping):
+        return not (
+            meta.get("channel_origin") is True or _is_channel_key(meta.get("linked_session_key"))
+        )
+    return True
 
 
 def public_attribution_of_slot(slot: Any) -> dict[str, Any]:
@@ -156,18 +225,27 @@ def public_attribution_of_slot(slot: Any) -> dict[str, Any]:
         created_by=str(getattr(slot, "_created_by", "") or ""),
         origin=str(getattr(slot, "_origin", "") or ""),
     )
-    return public_attribution(value if value is not None else SessionAttribution.legacy(), trigger)
+    return public_attribution(
+        value if value is not None else SessionAttribution.legacy(),
+        trigger,
+        owner_fallback=_owner_fallback_for_slot(slot, value),
+    )
 
 
 def public_attribution_from_meta(
     meta: Mapping[str, Any] | None, *, key: str = ""
 ) -> dict[str, Any]:
     """The public attribution of a persisted session's metadata line (and its *key*)."""
+    fallback = _owner_fallback_for_meta(meta, key)
     if not isinstance(meta, Mapping):
-        return public_attribution(SessionAttribution.legacy(), trigger_of(key=key))
+        return public_attribution(
+            SessionAttribution.legacy(), trigger_of(key=key), owner_fallback=fallback
+        )
     created_by = meta.get("created_by")
     trigger = trigger_of(key=key, created_by=created_by if isinstance(created_by, str) else "")
-    return public_attribution(SessionAttribution.from_metadata(meta), trigger)
+    return public_attribution(
+        SessionAttribution.from_metadata(meta), trigger, owner_fallback=fallback
+    )
 
 
 def trigger_of_public(raw: object) -> Mapping[str, Any] | None:
@@ -277,17 +355,6 @@ def _label(text: str) -> str:
     return " ".join(kept.split())[:_SENDER_LABEL_MAX]
 
 
-def _owner_ids(owner_id: str) -> frozenset[str]:
-    """Every principal id this machine's owner writes under, local token or tailnet."""
-    import kiro_crew.shared_crew.access_set as access_set
-    from kiro_crew.shared_crew.crew_mode import LOCAL_BOOTSTRAP_SUBJECTS
-    from kiro_crew.shared_crew.identity import local_operator_principal
-
-    subjects = set(LOCAL_BOOTSTRAP_SUBJECTS) | ({owner_id} if owner_id else set())
-    ids = {local_operator_principal(s).id for s in subjects}
-    return frozenset(ids | access_set.principal_ids_for(access_set.owner_login(), frozenset()))
-
-
 def sender_line(slot: Any, row: Any, *, owner_id: str = "") -> str:
     """The line put before a user row's text in the agent's prompt, or ``""``.
 
@@ -301,7 +368,9 @@ def sender_line(slot: Any, row: Any, *, owner_id: str = "") -> str:
     author = message_author(row.get("meta"))
     if not is_person(author):
         return ""
-    owners = _owner_ids(owner_id)
+    from kiro_crew.shared_crew.owner import owner_principal_ids
+
+    owners = owner_principal_ids(owner_id)
     people = {
         "owner" if p.id in owners else p.id
         for m in getattr(slot, "messages", None) or ()

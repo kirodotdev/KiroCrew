@@ -1,0 +1,158 @@
+/**
+ * Issue Radar's `resolveFolderId` goes through the shared `ensureChatFolder` helper
+ * over the host `api`, and keeps the contract it had: the repo folder is reused wherever it exists in the tree, created by
+ * name on a miss, a rejected folder read surfaces as the hook's error UNTOUCHED
+ * (no slot is created), and a create that answers without an id is an error rather
+ * than a slot filed under `undefined`.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { act, renderHook, waitFor } from '@testing-library/react'
+
+const { dispatch, apiMock, sendTurn, saveInvestigation, getInvestigation } = vi.hoisted(() => ({
+  dispatch: vi.fn(),
+  apiMock: {
+    chatFolders: vi.fn(),
+    createChatFolder: vi.fn(),
+    chatSlotDetail: vi.fn(),
+  },
+  sendTurn: vi.fn(),
+  saveInvestigation: vi.fn(),
+  getInvestigation: vi.fn(),
+}))
+
+vi.mock('../../store', () => ({ useAppDispatch: () => dispatch }))
+vi.mock('../../store/chatSlice', () => ({
+  createSlot: (arg: unknown) => ({ type: 'createSlot', arg }),
+  switchSlot: (arg: unknown) => ({ type: 'switchSlot', arg }),
+  deleteSlot: (arg: unknown) => ({ type: 'deleteSlot', arg }),
+  requestSlotFolderOpen: (arg: unknown) => ({ type: 'requestSlotFolderOpen', arg }),
+}))
+vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }))
+vi.mock('../../api/client', () => ({ api: apiMock }))
+vi.mock('../../chat-core/transport/sendTurn', () => ({ sendTurn }))
+vi.mock('./api', () => ({ issueRadarApi: { saveInvestigation, getInvestigation } }))
+
+import { useAgentSession as useIssueRadarSession } from './lib/agentSession'
+
+const createdSlotArgs = () =>
+  dispatch.mock.calls
+    .map(c => c[0] as { type: string; arg?: { folder_id?: string } })
+    .filter(a => a.type === 'createSlot')
+    .map(a => a.arg)
+
+// The create answers with the slot's own row. By default the session lands in
+// the folder it asked for; `answeredFolder` stands in for a create that filed it
+// somewhere else, or left it unfiled (`''`).
+let answeredFolder: string | undefined
+
+function happyPath() {
+  answeredFolder = undefined
+  dispatch.mockImplementation((action: { type: string; arg?: { folder_id?: string } }) => ({
+    unwrap: () => (action.type === 'createSlot'
+      ? Promise.resolve({ key: 'slot-1', folder_id: answeredFolder ?? action.arg?.folder_id ?? '' })
+      : Promise.resolve(undefined)),
+  }))
+  sendTurn.mockResolvedValue({ status: 'dispatched', body: {} })
+  apiMock.createChatFolder.mockImplementation(async (name: string) => ({ id: 'made', name, parent_id: '' }))
+}
+
+const openIssueRadar = async () => {
+  const { result } = renderHook(() => useIssueRadarSession())
+  let record: Awaited<ReturnType<typeof result.current.openSession>> | undefined
+  await act(async () => {
+    record = await result.current.openSession({
+      repoRef: { host: 'github.com', owner: 'acme', repo: 'demo-repo' } as never,
+      number: 1,
+      title: '#1 · thing',
+      prompt: 'seed',
+      existing: null,
+    })
+  })
+  return { record, result }
+}
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  happyPath()
+  getInvestigation.mockResolvedValue({ investigation: null })
+  saveInvestigation.mockResolvedValue({ investigation: { slot_key: 'slot-1' } })
+})
+
+describe.each([
+  ['Issue Radar', 'Issue Radar - demo-repo', openIssueRadar],
+] as const)('%s resolveFolderId', (_label, folderName, open) => {
+  it('reuses the existing top-level repo folder', async () => {
+    apiMock.chatFolders.mockResolvedValue([{ id: 'f1', name: folderName, parent_id: '' }])
+    const { record } = await open()
+    expect(record).not.toBeNull()
+    expect(apiMock.createChatFolder).not.toHaveBeenCalled()
+    expect(createdSlotArgs()[0]?.folder_id).toBe('f1')
+  })
+
+  it('opens the repo folder path after switching to the session, while it is in view', async () => {
+    // The repo folder can be collapsed, and /chat would then open on a session
+    // with no visible row. Asked after the switch, guarded on the live view.
+    apiMock.chatFolders.mockResolvedValue([{ id: 'f1', name: folderName, parent_id: '' }])
+    await open()
+    const types = dispatch.mock.calls.map(c => (c[0] as { type: string }).type)
+    const asked = dispatch.mock.calls.map(c => c[0]).find(a => (a as { type: string }).type === 'requestSlotFolderOpen')
+    expect(asked).toEqual({ type: 'requestSlotFolderOpen', arg: { key: 'slot-1', folder_id: 'f1', onlyIfActive: true } })
+    expect(types.lastIndexOf('switchSlot')).toBeLessThan(types.indexOf('requestSlotFolderOpen'))
+  })
+
+  it('opens no folder when the create answers the session unfiled', async () => {
+    // The requested folder still exists, but the session sits at the top level:
+    // opening the requested folder would expand a folder that does not hold it.
+    apiMock.chatFolders.mockResolvedValue([{ id: 'f1', name: folderName, parent_id: '' }])
+    answeredFolder = ''
+    const { record } = await open()
+    expect(record).not.toBeNull()
+    expect(createdSlotArgs()[0]?.folder_id).toBe('f1')
+    const types = dispatch.mock.calls.map(c => (c[0] as { type: string }).type)
+    expect(types).toContain('switchSlot')
+    expect(types).not.toContain('requestSlotFolderOpen')
+  })
+
+  it('opens the folder the create answered, not the one it asked for', async () => {
+    apiMock.chatFolders.mockResolvedValue([{ id: 'f1', name: folderName, parent_id: '' }])
+    answeredFolder = 'elsewhere'
+    await open()
+    const asked = dispatch.mock.calls.map(c => c[0]).find(a => (a as { type: string }).type === 'requestSlotFolderOpen')
+    expect(asked).toEqual({ type: 'requestSlotFolderOpen', arg: { key: 'slot-1', folder_id: 'elsewhere', onlyIfActive: true } })
+  })
+
+  it('keeps finding the repo folder after the reader nests it under another one', async () => {
+    apiMock.chatFolders.mockResolvedValue([{ id: 'moved', name: folderName, parent_id: 'archive' }])
+    const { record } = await open()
+    expect(record).not.toBeNull()
+    expect(apiMock.createChatFolder).not.toHaveBeenCalled()
+    expect(createdSlotArgs()[0]?.folder_id).toBe('moved')
+  })
+
+  it('creates the repo folder by name on a miss and files the slot into it', async () => {
+    apiMock.chatFolders.mockResolvedValue([{ id: 'other', name: 'Something else', parent_id: '' }])
+    const { record } = await open()
+    expect(record).not.toBeNull()
+    expect(apiMock.createChatFolder).toHaveBeenCalledTimes(1)
+    expect(apiMock.createChatFolder.mock.calls[0][0]).toBe(folderName)
+    expect(createdSlotArgs()[0]?.folder_id).toBe('made')
+  })
+
+  it('surfaces a rejected folder read as the hook error, untouched, and creates no slot', async () => {
+    const boom = new Error('HTTP 503: folders unavailable')
+    apiMock.chatFolders.mockRejectedValue(boom)
+    const { record, result } = await open()
+    expect(record).toBeNull()
+    await waitFor(() => expect(result.current.error).toBe(boom))
+    expect(createdSlotArgs()).toEqual([])
+  })
+
+  it('treats a create that answers without an id as a failure rather than filing under undefined', async () => {
+    apiMock.chatFolders.mockResolvedValue([])
+    apiMock.createChatFolder.mockResolvedValue({})
+    const { record, result } = await open()
+    expect(record).toBeNull()
+    await waitFor(() => expect(result.current.error).toBeInstanceOf(Error))
+    expect(createdSlotArgs()).toEqual([])
+  })
+})

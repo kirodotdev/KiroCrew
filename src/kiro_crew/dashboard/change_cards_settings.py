@@ -370,6 +370,24 @@ def _key_withheld(key: str, setting_id: str = "") -> bool:
     return _value_withheld({"id": "", "configKey": key.replace("_", ".")})
 
 
+def _schema_sensitive(key: str) -> bool:
+    """True when the config schema marks *key*, or a field holding it, sensitive.
+
+    The key-name test above only catches names that look like a credential. A
+    field the schema marks sensitive (``telemetry.otlp_endpoint``, the
+    ``telemetry.otlp_endpoints`` list) can hold one under any name, so it is
+    withheld too. A key the schema does not describe answers False.
+    """
+    from kiro_crew.config.schema import JSON_SCHEMA
+    from kiro_crew.config.validation import _is_sensitive_path
+
+    try:
+        return bool(_is_sensitive_path(JSON_SCHEMA, key))
+    except Exception:  # an unreadable schema node must withhold, not echo
+        logger.debug("sensitive-path lookup failed for %s", key, exc_info=True)
+        return True
+
+
 def _scrub(value: Any) -> Any:
     """*value* with every credential-like nested key reduced to ``{set: bool}``
     and every string run through the credential redactor."""
@@ -459,7 +477,7 @@ def non_default_settings() -> list[dict[str, Any]]:
         if entry is not None:
             row["setting_id"] = entry["id"]
             row["label"] = str(entry.get("label") or "")
-        if _key_withheld(key, row.get("setting_id", "")):
+        if _key_withheld(key, row.get("setting_id", "")) or _schema_sensitive(key):
             row["current"] = {"set": current not in (None, "", [], {})}
             row["default"] = {"set": default not in (None, "", [], {})}
         else:

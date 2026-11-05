@@ -400,9 +400,53 @@ def _slots_ws_frame(
     it through here would widen an app's payload, so it is a third shape by
     design, not a duplicate awaiting cleanup.
     """
-    frame = {
+    frame: dict[str, Any] = {
         "type": "slots",
         "data": slots,
+        **_slots_ws_envelope(
+            yolo=yolo,
+            channel_trusted=channel_trusted,
+            gitlab_hosts_gen=gitlab_hosts_gen,
+            folders=folders,
+            folders_gen=folders_gen,
+            governance_gen=governance_gen,
+            tags_gen=tags_gen,
+            slots_partial=slots_partial,
+            slots_held_keys=slots_held_keys,
+            slots_hold_channels=slots_hold_channels,
+        ),
+    }
+    # Same offender diagnostic as the coalesced broadcast: the
+    # dashboard-user frame serializes the ENRICHED projection, so a value that
+    # only enrichment adds raises here and nowhere else. Diagnosis only — the
+    # exception propagates unchanged. A clean-slots note ("no offending entry
+    # found") is itself evidence: the offender is in the envelope extras.
+    try:
+        return json.dumps(frame)
+    except (TypeError, ValueError) as exc:
+        exc.add_note(_slots_serialization_note(slots, path="ws-frame"))
+        raise
+
+
+def _slots_ws_envelope(
+    *,
+    yolo: bool,
+    channel_trusted: bool,
+    gitlab_hosts_gen: object,
+    folders: object,
+    folders_gen: object,
+    governance_gen: object,
+    tags_gen: object = None,
+    slots_partial: bool = False,
+    slots_held_keys: object = (),
+    slots_hold_channels: bool = False,
+) -> dict[str, Any]:
+    """The fields a ``slots`` WS frame carries beside ``type`` and ``data``, in frame order.
+
+    Shared by :func:`_slots_ws_frame` and the ``slots_diff`` sender, which ships
+    the same fields as a delta and so must name exactly the same ones.
+    """
+    frame: dict[str, Any] = {
         "yolo": yolo,
         "channelTrusted": channel_trusted,
         "gitlabHostsGeneration": gitlab_hosts_gen,
@@ -426,16 +470,7 @@ def _slots_ws_frame(
         frame["slotsHeldKeys"] = slots_held_keys
     if slots_hold_channels:
         frame["slotsHoldChannels"] = True
-    # Same offender diagnostic as the coalesced broadcast: the
-    # dashboard-user frame serializes the ENRICHED projection, so a value that
-    # only enrichment adds raises here and nowhere else. Diagnosis only — the
-    # exception propagates unchanged. A clean-slots note ("no offending entry
-    # found") is itself evidence: the offender is in the envelope extras.
-    try:
-        return json.dumps(frame)
-    except (TypeError, ValueError) as exc:
-        exc.add_note(_slots_serialization_note(slots, path="ws-frame"))
-        raise
+    return frame
 
 
 def _link_label(channel_type: str) -> str:
@@ -606,17 +641,16 @@ def _slot_links(
 ) -> tuple[list[dict[str, Any]], bool, str, str]:
     """Build the redacted channel-neutral link projection for one slot."""
     # circular import: chat imports state at module scope.
-    from kiro_crew.dashboard.chat_utils import (
-        effective_session_key,
-        mirror_is_paused,
-        slack_mirror_is_paused,
-    )
+    # Module import (not from-import) avoids the _handle_fromlist __path__
+    # probe on the facade, which cost one __getattr__ per slot.
+    import kiro_crew.dashboard.chat_utils as _cu
 
-    session_key = effective_session_key(slot)
+    session_key = _cu.effective_session_key(slot)
     # Resolved once per slot rather than per row: all three are storage reads,
     # and a session holds at most one Slack thread, one born-in conversation
     # and one mirror binding.
-    slack_paused = slack_mirror_is_paused(self, session_key)
+    mirror_is_paused = _cu.mirror_is_paused
+    slack_paused = _cu.slack_mirror_is_paused(self, session_key)
     mirror_paused = mirror_is_paused(self, session_key)
     origin_paused = mirror_is_paused(self, session_key, origin=True)
     mirror: ChannelLink | None = None
@@ -896,6 +930,8 @@ def serialize_slots(
     # After the parents, which the worker walk reads: every row says whether it is a
     # Crew Mode root, and each session a root dispatched names that root, so the
     # person's own list can leave workers out and the side panel can list them.
+    # The same pass stamps ``mate_root`` / ``mate_dispatched_by`` on each session a
+    # mate thread dispatched (inert: no list or client reads them yet).
     from kiro_crew import crew_mode
 
     try:
@@ -904,16 +940,54 @@ def serialize_slots(
         )
     except Exception:  # pragma: no cover - a stamp fault must cost the stamp only
         logger.warning("Crew Mode rows not stamped", exc_info=True)
+    try:
+        _attach_crew_work(self, out)
+    except Exception:  # pragma: no cover - a summary fault must cost the summary only
+        logger.warning("Crew Mode work summaries not attached", exc_info=True)
     return out
 
 
+def _attach_crew_work(self: DashboardState, rows: list[dict]) -> None:
+    """Put each Crew Mode root's open-work summary on its row (``crew_work``).
+
+    Each live root's board is followed (its ``work`` fold kept current, and primed
+    once when nothing is held yet), so a restart does not leave its row on the old
+    reading until its ledger next moves; a root that left the frame is released.
+    The summary reads the held items against this frame's live slots. No I/O.
+    """
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard import crew_work
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.session_ledger_layout import ledger_key
+
+    roots: list[str] = []
+    for row in rows:
+        key = row.get("key")
+        if not isinstance(key, str) or not row.get(crew_mode.ROOT_FIELD):
+            continue
+        slot = self._slots.get(key)
+        if slot is None:
+            continue
+        roots.append(key)
+        # The ledger spelling of the session key first: the identity the board's
+        # entries are recorded under, and the one primed (``chat-7`` for a dashboard
+        # slot, the channel key for a channel one). The raw key is followed too.
+        session_key = effective_session_key(slot)
+        crew_work.follow(key, (ledger_key(session_key), session_key, key))
+        summary = crew_work.summary_for_state(key, self)
+        if summary is not None:
+            row[crew_work.CREW_WORK_FIELD] = summary
+    crew_work.retain(roots)
+
+
 def serialize_slot_views(
-    self: DashboardState, *, owner: bool
+    self: DashboardState, *, owner: bool, user: bool = True
 ) -> tuple[list[dict], list[dict], list[dict] | None]:
     """One serialization pass, three audience views of the slot list.
 
     Returns ``(bare, dashboard_user, owner)``; ``owner`` is ``None`` when
-    ``owner`` is False (no owner socket to build it for).
+    ``owner`` is False (no owner socket to build it for), and ``dashboard_user``
+    is empty when ``user`` is False (nobody reads that view this pass).
 
     The three views the broadcast ships differ ONLY in each slot's
     ``source_links`` field -- the audience gates are read nowhere else in the
@@ -937,7 +1011,7 @@ def serialize_slot_views(
     bare = self.serialize_slots()
     return (
         bare,
-        self._reproject_slots(bare, dashboard_user=True),
+        self._reproject_slots(bare, dashboard_user=True) if user else [],
         self._reproject_slots(bare, include_check_status=True) if owner else None,
     )
 

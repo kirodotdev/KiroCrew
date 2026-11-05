@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import type { SetURLSearchParams } from 'react-router-dom'
 
+import { BROWSER_HANDBACK_CHAT_EVENT } from '../../../api/client/browserLive'
 import type { ChatLaunchOptions } from '../../../app-sdk'
+import { chatLaunchOpensDraft } from '../../../app-sdk/chatLaunch'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import { i18nT } from '../../../i18n/t'
 import type { AppDispatch } from '../../../store'
@@ -29,6 +31,9 @@ import { uniqueNotificationTs } from './notificationTs'
 
 interface PendingInputIntakeOptions {
   pendingInput: string | null
+  pendingInputSend: boolean
+  /** The page's socket state, for `pendingInputSend` (see below). */
+  connected: boolean
   activeSlot: string | null
   embedded: boolean | undefined
   searchParams: URLSearchParams
@@ -46,6 +51,8 @@ interface PendingInputIntakeOptions {
 /** The Redux `pendingInput` hand-off and the `?prefill=` fallback URL. */
 export function usePendingInputIntake({
   pendingInput,
+  pendingInputSend,
+  connected,
   activeSlot,
   embedded,
   searchParams,
@@ -63,7 +70,11 @@ export function usePendingInputIntake({
   useEffect(() => {
     if (pendingInput) {
       dispatch(setPendingInput(null))
-      const shouldAutoSend = embedded ? false : searchParams.get('autoSend') === '1'
+      // A staged send is honoured only while connected, when it goes out at
+      // once. Disconnected, it is seeded instead: a send left waiting for the
+      // socket could fire after the person has moved on, and a second one would
+      // replace it.
+      const shouldAutoSend = embedded ? false : (pendingInputSend && connected) || searchParams.get('autoSend') === '1'
       const wantNew = embedded ? false : searchParams.get('newSession') === '1'
       if (!embedded && (searchParams.get('prefill') || shouldAutoSend)) setSearchParams({}, { replace: true })
       if (shouldAutoSend) {
@@ -90,7 +101,7 @@ export function usePendingInputIntake({
         raisePrefillHint()
       }
     }
-  }, [pendingInput, activeSlot, dispatch, searchParams, setSearchParams, saveDraftsDebounced, embedded, raisePrefillHint, setInput,
+  }, [pendingInput, pendingInputSend, connected, activeSlot, dispatch, searchParams, setSearchParams, saveDraftsDebounced, embedded, raisePrefillHint, setInput,
     autoSendRef, newSessionRef, setAutoSendTick, drafts])
 
   // Consume ?prefill= — the no-main-window fallback path for navigation
@@ -433,7 +444,10 @@ export function useAppLaunchIntake({
   useEffect(() => {
     if (embedded || !connected) return
     const launchWindow = window as Window & {
-      __mc_chat_launch?: { ts?: number; agent?: string; message?: string; slotKey?: string; autoSend?: boolean }
+      __mc_chat_launch?: {
+        ts?: number; agent?: string; message?: string; slotKey?: string; autoSend?: boolean
+        memoryMode?: unknown; sessionFolder?: unknown
+      }
     }
     const intent = appSlotLaunch ?? launchWindow.__mc_chat_launch
     if (!intent) return
@@ -443,7 +457,7 @@ export function useAppLaunchIntake({
         return
       }
       // The controller owns existing-slot activation and fresh-draft creation.
-      if (intent.slotKey || intent.autoSend === false) return
+      if (intent.slotKey || chatLaunchOpensDraft(intent)) return
       delete launchWindow.__mc_chat_launch
     } else {
       if (slotLoading) return
@@ -508,6 +522,19 @@ export function useAutoSendIntake({
     appLaunchSendRef.current = null
     send(txt, appLaunch?.slotKey, undefined, !!appLaunch)
   }, [send, connected, autoSendTick, autoSendRef, appLaunchSendRef])
+
+  // A browser hand-back note no parked agent op was waiting for:
+  // the person typed it on the card's hand-back bar and pressed Enter, so it is
+  // their message, sent to the chat the card belongs to.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ slotKey?: unknown; text?: unknown }>).detail
+      if (typeof detail?.text !== 'string' || !detail.text.trim()) return
+      void send(detail.text, typeof detail.slotKey === 'string' && detail.slotKey ? detail.slotKey : undefined)
+    }
+    window.addEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
+    return () => window.removeEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
+  }, [send])
 
   // Widget interactivity: when a mcwidget iframe fires an action, PRE-FILL the
  // composer instead of auto-submitting. Auto-submitting would be a

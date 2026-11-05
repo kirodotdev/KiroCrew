@@ -29,7 +29,7 @@ a conductor would only add overhead.
 
 To start one, open a session on the **`kirocrew-conductor`** agent (see
 [Agents](agents.md) for the per-session, per-thread and per-cron selectors), which
-is what a Crew Mode chat runs on, and give it the goal. Its operating procedure ships as the `goal-conductor` skill.
+is what an Ultra Mode chat runs on, and give it the goal. Its operating procedure ships as the `goal-conductor` skill.
 `kirocrew-ledger-conductor` is a deprecated alias of the same spec, kept for one
 release so an existing session or cron that names the old string keeps resolving.
 
@@ -84,8 +84,11 @@ wherever a conductor runs, rather than discovering the refusal from a worker tha
 cannot report.
 
 **The acceptance condition is named before dispatch, not after.** It is one of
-four kinds: `pr_checks` (a pull request's checks are all green), `pr_merged` (a
-pull request has merged), `file` (a path exists), or `human_approval` (you accept it — legitimate for a design review,
+five kinds: `pr_checks` (a pull request's checks are all green), `pr_merged` (a
+pull request has merged), `edition_check` (a check an installed edition
+provides through `kirocrew acceptance-check`, for work that lands where the
+evaluator cannot read it itself), `file` (a path exists), or `human_approval`
+(you accept it — legitimate for a design review,
 and never machine-evaluated). There is deliberately no "run this command" kind,
 so "the tests pass" is expressed as `pr_checks` on the pull request that carries
 the work, and CI's verdict is the one that counts.
@@ -221,7 +224,13 @@ at the cap still reads.
 
 An item can carry a `steer` event: the time, actor `person`, and the person's own
 text, redacted and cut to 500 characters. It records that the person typed into
-the crew member (the worker session) that holds the item, from a Crew Mode chat.
+the crew member (the worker session) that holds the item, from an Ultra Mode chat.
+It is also written, with fixed text and nothing from the tool call, when the
+person answers a tool approval in that crew member's chat while the item's last
+report is `blocked` or `question` with reason `approval` and nobody has answered
+it yet (`work_ledger_worker.record_approval_answered`). One is written per such
+report, so the Board, the sidebar count and goal-board stop showing the item as
+needing you once the approval it asked for is answered.
 `work_ledger_read` shows it in the item's events. A steer moves no field: status,
 acceptance and verdict stay where they were, and acceptance stays the evaluator's.
 A person's steer outranks the conductor's decision. The ledger write
@@ -245,7 +254,8 @@ condition, and records the answer with `work_ledger_record` as a `verdict`:
   finished lands here, because a draft is the author's own "not ready" and a
   readiness gate on the draft flag never resolves — so a `pr_checks` item is
   opened non-draft, or marked ready before the worker reports. A condition that
-  names a command to run lands here too.
+  names a command to run lands here too, and so does an `edition_check` whose
+  check says a person must decide.
 - `error` — a broken condition or environment, including a bar still set to `TBD`.
 
 So the strongest true thing a worker can say is that it believes the bar is met.
@@ -272,9 +282,9 @@ The total is advisory. Each goal is expected to create at most `item_cap` items,
 closed ones and every round's re-plans included; the default is 20 and a `goal`
 write sets it (`item_cap`, 1 to 256). Nothing is refused past it. The read
 returns `goal_items_used` and `cap_exceeded` on the `conductor` block, compact
-reads included; the conductor puts `items used: N of <item_cap>` in every round
-report and, when `cap_exceeded` is true, tells the user the goal has spent past
-its line. Only a goal write with `new_goal=true` (a goal the user replaced)
+reads included. The conductor keeps the count out of its round reports and
+tells the user once, the first report after `cap_exceeded` turns true, that the
+goal has spent past its line. Only a goal write with `new_goal=true` (a goal the user replaced)
 starts a new count; rewording the goal, moving the round or changing a cap
 keeps it. A board that never records a goal, such as a pipeline or security
 conductor's queue, has neither goal cap. Two rounds in a row with nothing
@@ -358,7 +368,9 @@ built with; running it is a second, explicit invocation.
 
 Flags: `--purge` (irreversible), `--older-than-days N` (default 30) and
 `--purge-unreadable`, which also removes records the sweep could not parse —
-they are listed but kept without it.
+they are listed but kept without it. `--purge-unreadable` only works with
+`--purge`; alone it is refused. A purge exits 1 when any delete failed, after
+finishing the rest and naming each store it could not delete.
 
 The sweep is conservative by design. A conductor holding an open item is never a
 candidate at any age, neither is one with no items at all, and each delete is

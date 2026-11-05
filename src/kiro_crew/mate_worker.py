@@ -8,7 +8,9 @@ additively: its prompt after the base's, servers and skills the base lacks (a
 base server always wins), and the ``allowedTools`` and ``tools`` selectors for
 those servers. Its restrictions (``excludedTools``, ``disabledTools``, MCP-page
 switch-offs, :func:`globally_disabled_refs`) narrow whoever declared them;
-``model``, ``permissions`` and ``hooks`` are ignored. The merged spec is governed
+its ``hooks``, ``permissions`` and ``toolsSettings`` are layered on exactly
+(:mod:`kiro_crew.mate_spec_policy`); ``model`` is ignored. Nothing from the file
+reaches the conductor. The merged spec is governed
 and the projection re-applies the ceiling, so an addition never lifts the worker
 above POLICY ∩ PROFILE. Stateless.
 """
@@ -50,9 +52,12 @@ MISSING_CAPABILITY_PREFIX = "MISSING CAPABILITY:"
 
 #: The worker's own principles, appended to its source-defined prompt
 #: (``service_agents._install_mate_worker_agent``). Its crewmate is the one that
-#: can ask the user for a tool, so a gap goes back to it, named.
-MATE_WORKER_PROMPT = crewmate_prompts.fill(
-    "worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX
+#: can ask the user for a tool, so a gap goes back to it, named. The coding rules
+#: after them are the same text ``kirocrew-worker`` carries.
+MATE_WORKER_PROMPT = (
+    crewmate_prompts.fill("worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX)
+    + "\n\n"
+    + crewmate_prompts.text("worker.coding_rules")
 )
 
 #: The sub-agent tools a crewmate's conductor does not mount. Its hand-off is a
@@ -399,6 +404,11 @@ def worker_additions(base: dict[str, Any], mate_spec: dict[str, Any]) -> dict[st
     # well. Only the NAME is carried: the base's entry keeps its transport, and the
     # merge mutes it. (A server the file adds keeps its own ``disabled`` above.)
     additions["disabledServers"] = disabled_base_servers(base, mate_spec)
+    # The file's hooks, permission rules and tool settings, kept whole: the
+    # merge layers them on exactly or refuses (``mate_spec_policy.layer_policy``).
+    from kiro_crew.mate_spec_policy import policy_of
+
+    additions.update(policy_of(mate_spec))
     return additions
 
 
@@ -486,6 +496,11 @@ def merge_worker_spec(base: dict[str, Any], additions: dict[str, Any]) -> dict[s
             if isinstance(approve, list) and tool in approve:
                 entry["autoApprove"] = [t for t in approve if t != tool]
     spec["allowedTools"] = allowed
+    from kiro_crew.mate_spec_policy import POLICY_KEYS, layer_policy
+
+    # Raises ``SpecPolicyUncarried`` (a ``WorkerKitUnreadable``) for a field that
+    # cannot land exactly, so the worker is refused rather than run looser.
+    layer_policy(spec, {k: additions[k] for k in POLICY_KEYS if k in additions}, worker=True)
     # The ceiling applies to the MERGED spec, not to the file alone: a grant the
     # file carries for a server it adds is withheld here exactly as it would be
     # on any other spec Crew writes.
@@ -566,7 +581,11 @@ def _with_global_tool_offs(base: dict[str, Any], additions: dict[str, Any]) -> d
 
 
 def resolve_worker_spec(
-    base: dict[str, Any], member_id: str | None, *, refuse_tool_limits: bool = False
+    base: dict[str, Any],
+    member_id: str | None,
+    *,
+    refuse_tool_limits: bool = False,
+    refuse_spec_policy: bool = False,
 ) -> dict[str, Any]:
     """The worker spec a session of *member_id*'s worker runs on.
 
@@ -576,6 +595,9 @@ def resolve_worker_spec(
     :class:`WorkerKitUnreadable` (fail closed). With *refuse_tool_limits* (a host
     that cannot honour single-tool limits), a file that sets any refuses with
     ``capability_tool_limits_unsupported``, judged on the same read the merge uses.
+    With *refuse_spec_policy* (a host that applies none of ``hooks``, ``permissions``
+    and ``toolsSettings``), a file that sets any refuses with
+    :class:`~kiro_crew.mate_spec_policy.SpecPolicyUncarried` naming them.
     """
     from kiro_crew import mate_approval_revocations as revocations
 
@@ -586,7 +608,7 @@ def resolve_worker_spec(
         claimed = _claimed_file(member_id)
         if claimed:
             raise WorkerKitUnreadable(
-                f"crewmate {member_id!r}: its own file {claimed!r} is missing or shadowed "
+                f"Bot {member_id!r}: its own file {claimed!r} is missing or shadowed "
                 f"by a user-level agent, so its worker would run without its limits"
             )
         return revocations.strip(
@@ -610,19 +632,25 @@ def resolve_worker_spec(
             mate_spec["prompt"] = ""
     except agent_specs.AgentSpecUnreadable as exc:
         logger.warning(
-            "crewmate %r: its worker file %r is unreadable; refusing the worker",
+            "Bot %r: its worker file %r is unreadable; refusing the worker",
             member_id,
             name,
             exc_info=True,
         )
         raise WorkerKitUnreadable(
-            f"crewmate {member_id!r}: its worker file {name!r} cannot be read, so its "
-            f"worker would run without the crewmate's own limits; fix or re-save the file"
+            f"Bot {member_id!r}: its worker file {name!r} cannot be read, so its "
+            f"worker would run without the Bot's own limits; fix or re-save the file"
         ) from exc
     if refuse_tool_limits and tool_limits_of(mate_spec):
         from kiro_crew.session_capabilities import CapabilityStartupError
 
         raise CapabilityStartupError("capability_tool_limits_unsupported")
+    if refuse_spec_policy:
+        from kiro_crew.mate_spec_policy import policy_of, uncarried
+
+        carried = policy_of(mate_spec)
+        if carried:
+            raise uncarried(sorted(carried), "this backend does not apply them; run the Bot on kas")
     additions = worker_additions(base, mate_spec)
     # An approval the owner took away in Approvals stays away, base-granted or not.
     return revocations.strip(
@@ -673,7 +701,7 @@ def _claimed_crewmate_file(member_id: str, config: Any = None) -> str:
     try:
         return claimed if crewmate_file_on_record(claimed) else ""
     except MateConfigError:
-        logger.warning("crewmate owner record unreadable; %r stays refused", claimed)
+        logger.warning("Bot owner record unreadable; %r stays refused", claimed)
         return claimed
 
 
@@ -684,15 +712,16 @@ def _revoked_or_refuse(member_id: str, file_id: str) -> list[str]:
         return revocations.revoked(file_id)
     except revocations.RevocationsUnreadable as exc:
         raise WorkerKitUnreadable(
-            f"crewmate {member_id!r}: the approvals its owner revoked cannot be read "
+            f"Bot {member_id!r}: the approvals its owner revoked cannot be read "
             f"(revoked-approvals.json), so its worker would run them again; fix the file"
         ) from exc
 
 
 def mate_service_scope_spec(agent: str, session_key: str) -> tuple[dict | None, Path] | None:
     """``(spec or None when unreadable, path)`` the crewmate conductor's or worker's
-    skill scope reads, else ``None``: their specs live in the crewmate folder, which
-    the roster does not list. A worker's is its session's merged spec."""
+    skill scope and Crew-fired spec hooks read, else ``None``: their specs live in
+    the crewmate folder, which the roster does not list. A worker's is its session's
+    merged spec; the conductor's is the stock spec."""
     from kiro_crew.agent_sdk import agent_specs
     from kiro_crew.config import paths as paths_mod
 
@@ -792,7 +821,11 @@ def note_worker_session(session_key: str, execution: Any) -> bool:
 
 
 def worker_session_spec(
-    literal_base: dict[str, Any], session_key: str, *, refuse_tool_limits: bool = False
+    literal_base: dict[str, Any],
+    session_key: str,
+    *,
+    refuse_tool_limits: bool = False,
+    refuse_spec_policy: bool = False,
 ) -> dict[str, Any]:
     """The spec a crewmate's worker session on *session_key* runs: base plus its kit.
 
@@ -816,16 +849,21 @@ def worker_session_spec(
         )
         raise WorkerKitUnreadable(
             f"worker session {session_key}: its execution record cannot be read, so "
-            f"its crewmate (and that crewmate's limits) is unknown"
+            f"its Bot (and that Bot's limits) is unknown"
         ) from exc
     if execution is not None:
         member_id = execution.member_id
     if not member_id:
         raise WorkerKitUnreadable(
-            f"worker session {session_key}: it names no crewmate, so whose limits apply is unknown"
+            f"worker session {session_key}: it names no Bot, so whose limits apply is unknown"
         )
-    if refuse_tool_limits:
-        return resolve_worker_spec(literal_base, member_id, refuse_tool_limits=True)
+    if refuse_tool_limits or refuse_spec_policy:
+        return resolve_worker_spec(
+            literal_base,
+            member_id,
+            refuse_tool_limits=refuse_tool_limits,
+            refuse_spec_policy=refuse_spec_policy,
+        )
     return resolve_worker_spec(literal_base, member_id)
 
 
@@ -869,7 +907,7 @@ def worker_kit_backend_refusal(backend: str) -> str | None:
         return None
     able = ", ".join(sorted(backend_to_stored(b) for b in ACP_BACKENDS_MATE_WORKER_KIT))
     return (
-        f"a crewmate's worker runs on its crewmate's backend "
+        f"a Bot's worker runs on its Bot's backend "
         f"({backend_to_stored(backend)}), which cannot carry the worker's own tools, "
         f"servers and switched-off tools for one session; set agent.member_acp_backend "
         f"to {able}"

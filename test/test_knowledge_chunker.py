@@ -188,3 +188,37 @@ def test_space_separated_text_chunks_as_under_the_word_estimate(name, monkeypatc
     assert got == HeadingAwareChunker().chunk(text)
     assert got_md == HeadingAwareChunker().chunk_markdown("# T\n\n" + text)
     assert len(got) > 1
+
+
+# A ``#`` line inside a fenced code block is a shell or Python comment, not a
+# heading: it must not cut the fence open and title the code after itself.
+_PARA = " ".join(["word"] * 60)
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~", "````"])
+def test_a_hash_line_inside_a_code_fence_is_not_a_heading(fence):
+    text = (
+        "# Setup\n\n"
+        + "\n\n".join([_PARA] * 12)
+        + f"\n\n{fence}bash\n# install deps\npip install -e .\n{fence}\n\nAfter the fence.\n"
+    )
+    chunks = HeadingAwareChunker().chunk_markdown(text)
+    assert {c["section_title"] for c in chunks} == {"Setup"}
+    fenced = [c for c in chunks if "# install deps" in c["content"]]
+    assert len(fenced) == 1 and f"{fence}bash" in fenced[0]["content"]
+
+
+def test_a_fence_closes_only_on_its_own_character_and_length():
+    # A ``~~~`` or a shorter ``` line inside a ```` fence is fence content.
+    text = (
+        f"# Real\n\n{_PARA}\n\n````md\n```\n~~~\n# not a heading\n````\n\n" f"# After\n\n{_PARA}\n"
+    )
+    chunks = HeadingAwareChunker(target_size=100).chunk_markdown(text)
+    assert [c["section_title"] for c in chunks] == ["Real", "After"]
+
+
+def test_a_heading_after_a_closed_fence_still_splits():
+    text = f"# One\n\n{_PARA}\n\n```\n# code\n```\n\n# Two\n\n{_PARA}\n"
+    chunks = HeadingAwareChunker(target_size=100).chunk_markdown(text)
+    assert [c["section_title"] for c in chunks] == ["One", "Two"]
+    assert chunks[1]["line_start"] == 9

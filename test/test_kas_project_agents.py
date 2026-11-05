@@ -125,7 +125,8 @@ async def test_a_shadowing_project_spec_changes_nothing_about_the_user_agent(lay
     entry = await _project("shared", checkout)
 
     assert entry["prompt"] == "user prompt"
-    assert entry["tools"] == ["@kept"]
+    # The user-level spec's grant, plus Crew's default servers it gets as a custom agent.
+    assert entry["tools"] == ["@kept", "@kirocrew-core", "@kirocrew-cron"]
     wire = json.dumps(entry.get("mcpServers"))
     assert "/usr/bin/kept-server" in wire
     assert "/usr/bin/muted-server" in wire
@@ -167,7 +168,10 @@ async def test_with_no_project_spec_the_user_level_agent_is_projected(layout):
     entry = await _project("solo", checkout)
 
     assert entry["prompt"] == "user prompt"
-    assert entry["tools"] == expand_kiro_cli_tool_names(["fs_read"])
+    # A user-level custom agent also gets Crew's default servers.
+    assert entry["tools"] == expand_kiro_cli_tool_names(
+        ["fs_read", "@kirocrew-core", "@kirocrew-cron"]
+    )
 
 
 @pytest.mark.asyncio
@@ -184,6 +188,33 @@ async def test_a_project_prompt_may_not_name_a_file_outside_the_checkout(layout,
 async def test_a_relative_project_prompt_may_not_escape_the_checkout(layout):
     _user, checkout, project = layout
     _write(project, "proj", {"name": "proj", "prompt": "file://../../../outside.md"})
+
+    with pytest.raises(AcpRuntimeError, match="escapes the agent directory"):
+        await _project("proj", checkout)
+
+
+def test_a_project_prompt_is_handed_on_as_the_checked_target(layout, tmp_path):
+    # The read must not resolve the checkout's ref a second time: a link
+    # repointed after the containment check would be followed.
+    _user, checkout, project = layout
+    (project / "real.md").write_text("inside", encoding="utf-8")
+    (project / "p.md").symlink_to(project / "real.md")
+    _write(project, "proj", {"name": "proj", "prompt": "file://./p.md"})
+
+    spec, _anchor = resolve_projected_spec(tmp_path / "home" / "agents", "proj", checkout)
+
+    assert spec["prompt"] == "file://" + (project / "real.md").resolve().as_posix()
+
+
+@pytest.mark.asyncio
+async def test_a_project_prompt_symlinked_out_of_the_checkout_is_refused(layout, tmp_path):
+    # A trusted user-level spec may climb with `..`; a checkout's may not, and a
+    # link inside the checkout is judged by where it points.
+    _user, checkout, project = layout
+    outside = tmp_path / "notes.md"
+    outside.write_text("the user's own notes", encoding="utf-8")
+    (project / "p.md").symlink_to(outside)
+    _write(project, "proj", {"name": "proj", "prompt": "file://./p.md"})
 
     with pytest.raises(AcpRuntimeError, match="escapes the agent directory"):
         await _project("proj", checkout)

@@ -62,7 +62,7 @@ def record_activity(
     * ``"chat"`` — the human picked this member for the session.
     * ``"select_crew"`` — the orchestrator judged this member fits the task.
     * ``"spawn"`` — the member ran a delegated ``spawn_run(crew=...)``.
-    * ``"auto-improvement"`` — the auto-improvement runner ran the member.
+    * an app's id — that app's own runner ran the member, and passes its id.
 
     A ``select_crew`` entry records the routing *decision*, not an execution:
     binding a crew does not oblige the model to delegate to it. That is the

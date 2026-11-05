@@ -341,6 +341,7 @@ class TestTeamIdInjection:
         c._web.conversations_info = AsyncMock()
         await c.ensure_channel_team("C1")
         c._web.conversations_info.assert_not_awaited()
+        assert c._channel_team == {"C1": "TKNOWN"}
 
     @pytest.mark.asyncio
     async def test_a_failed_lookup_is_retried_once_per_process_not_per_message(self) -> None:
@@ -466,11 +467,15 @@ class TestTeamIdInjection:
         before conversations_info."""
         c = self._client()
         c._web.api_call = AsyncMock(return_value={"ts": "1"})
-        c._web.conversations_info = AsyncMock()
+        # A lookup, if one ran, would answer a different team and overwrite the cache.
+        c._web.conversations_info = AsyncMock(
+            return_value=self._info_resp({"id": "C1", "context_team_id": "TOTHER"})
+        )
         c.record_channel_team("C1", "TCHANNEL_A")
 
         await c.start_stream("C1", "thread1")
 
+        assert c._channel_team == {"C1": "TCHANNEL_A"}
         c._web.conversations_info.assert_not_awaited()
         assert c._web.api_call.await_args.kwargs["json"]["team_id"] == "TCHANNEL_A"
 
@@ -486,6 +491,9 @@ class TestTeamIdInjection:
         await c.start_stream("C1", "thread1")
         await c.start_stream("C1", "thread2")
 
+        # The miss is remembered on the client, not cached as a team.
+        assert c._channel_team_unresolvable == {"C1"}
+        assert c._channel_team == {}
         assert c._web.conversations_info.await_count == 1
 
     @pytest.mark.asyncio
@@ -786,8 +794,10 @@ class TestHandleReviewApprove:
 
     @pytest.mark.asyncio
     async def test_no_orch_returns(self) -> None:
+        _review_drafts_set("C1|ts1|abc", "text", REQUESTER_ID)
         with patch("kiro_crew.slack.interactions._orch", None):
             await _handle_review_approve(_make_payload(), _make_action())
+        assert _review_drafts_get("C1|ts1|abc") == ("text", REQUESTER_ID)
 
 
 class TestHandleReviewCancel:
@@ -814,8 +824,10 @@ class TestHandleReviewCancel:
 
     @pytest.mark.asyncio
     async def test_no_orch_returns(self) -> None:
+        _review_drafts_set("C1|ts1|abc", "text", REQUESTER_ID)
         with patch("kiro_crew.slack.interactions._orch", None):
             await _handle_review_cancel(_make_payload(), _make_action())
+        assert _review_drafts_get("C1|ts1|abc") == ("text", REQUESTER_ID)
 
 
 class TestHandleReviewEdit:
@@ -916,7 +928,8 @@ class TestHandleReviewEditSubmit:
                     "bind": {"type": "surface", "id": "host"},
                     "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         _review_drafts_set("C1|ts1|abc", "original", REQUESTER_ID)
         payload = _make_payload(
@@ -934,6 +947,7 @@ class TestHandleReviewEditSubmit:
             await _handle_review_edit_submit(payload)
             # Gate dropped it before posting — nothing posted to the denied channel.
             mock_orch.slack.post_message.assert_not_awaited()
+            assert _review_drafts_get("C1|ts1|abc") == ("original", REQUESTER_ID)
         finally:
             gp.reset_store()
 
@@ -1010,6 +1024,7 @@ class TestHandleReviewReviseSubmit:
             await _handle_review_revise_submit(payload)
             await asyncio.gather(*background_tasks)
             mock_hm.assert_awaited_once()
+        assert _review_drafts_get("C1|ts1|abc") == ("", "")
 
     @pytest.mark.asyncio
     async def test_stranger_submit_denied_draft_preserved(

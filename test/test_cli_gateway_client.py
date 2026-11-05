@@ -402,9 +402,8 @@ class TestResolveClientPortRunMarker:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of this class calls monkeypatch.undo()
-    def _no_env(self, monkeypatch):
-        monkeypatch.delenv("KIROCREW_PORT", raising=False)
+    def _no_env(self, _floor_monkeypatch):
+        _floor_monkeypatch.delenv("KIROCREW_PORT", raising=False)
 
     def _cfg(self, url):
         mock_cfg = MagicMock()

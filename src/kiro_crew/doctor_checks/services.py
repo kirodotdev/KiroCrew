@@ -194,6 +194,14 @@ def _chat_delegate_target(kiro: str) -> str | None:
     both return ``None`` so the row stays silent rather than guessing. A
     ``kiro-cli`` launcher with no chat binary anywhere returns ``""``: that
     launcher fails every ``chat``/``acp`` start, so the caller reports it broken.
+
+    From 3.0.0 (:func:`kiro_cli.standalone_kiro_cli`) ``kiro-cli`` is the chat
+    binary itself and ships no ``kiro-cli-chat``, so it is probed as itself and
+    the launcher's ``~/.local/bin`` and ``PATH`` lookup is skipped: a
+    ``kiro-cli-chat`` left there by an older install is never exec'd. A relay
+    entry beside it is still probed by the caller. A ``kiro-cli`` whose
+    ``--version`` cannot be read has no known version and takes the launcher
+    path, so a broken install still reports broken.
     """
     if sys.platform == "win32" or not kiro:
         return None
@@ -205,6 +213,10 @@ def _chat_delegate_target(kiro: str) -> str | None:
     launcher_dir = os.path.dirname(kiro)
     if sys.platform == "darwin" and launcher_dir.endswith(".app/Contents/MacOS"):
         return os.path.join(launcher_dir, "kiro-cli-chat")
+    from kiro_crew.kiro_cli import kiro_cli_version_at, standalone_kiro_cli
+
+    if standalone_kiro_cli(kiro_cli_version_at(kiro)):
+        return kiro
     local_chat = os.path.join(os.path.expanduser("~"), ".local", "bin", "kiro-cli-chat")
     if os.path.lexists(local_chat):
         return local_chat

@@ -21,15 +21,10 @@ from kiro_crew.testing.wait import await_until
 
 @pytest.mark.asyncio
 async def test_oversize_stdout_frame_is_dropped_not_fatal():
-    """A single JSON-RPC line over the stdout buffer must cost ONE frame, not
-    the whole runtime.
+    """A JSON-RPC line over the stdout buffer costs one frame, not the runtime.
 
-    Marking the runtime dead on overrun would poison every multiplexed
-    session's queue and fail every pending future, surfacing as
-    "process exited / chat failure" mid-turn after one huge tool result.
-
-    Driven through a REAL StreamReader so this asserts asyncio's actual
-    behaviour, not a mock's.
+    A dead runtime would fail every multiplexed session. Driven through a real
+    StreamReader to pin asyncio's actual behaviour.
     """
     rt, _, proc = _make_runtime()
     reader = asyncio.StreamReader(limit=256)
@@ -87,6 +82,7 @@ async def test_an_oversize_host_request_never_fails_one_of_ours():
     rt, _, proc = _make_runtime()
     reader = asyncio.StreamReader(limit=256)
     proc.stdout = reader
+    q = _register(rt, "sA")
     future: asyncio.Future = asyncio.get_running_loop().create_future()
     rt._pending_requests[3] = future
     task = await _start_reader(rt)
@@ -96,9 +92,12 @@ async def test_an_oversize_host_request_never_fails_one_of_ours():
             + b"P" * 2048
             + b'"}\n'
         )
-        # flake-ok: pre-existing 200 ms window before a has-not-happened assertion, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.2)
+        # The reader handles frames in order. A valid frame sent after the oversize
+        # one reaches its session queue only once the oversize frame has been handled,
+        # so waiting for it is the positive signal that the window has passed.
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await _next(q["sA"])
+        assert msg.params["sessionId"] == "sA"
         assert not future.done()
         assert 3 in rt._pending_requests
     finally:
@@ -189,13 +188,9 @@ def test_the_oversize_frame_id_is_read_only_from_a_reply_envelope():
 
 @pytest.mark.asyncio
 async def test_unterminated_oversize_stdout_recovers_at_next_frame():
-    """The shape actually observed in the field: an oversize line whose newline
-    has NOT arrived yet, so the reader drains prefix after prefix before the
-    stream is back in sync. It must ride through every step and route the next
-    real frame.
+    """An oversize line whose newline has not arrived yet still recovers.
 
-    Asserts the outcome (recovery), not the step count: how many buffer-fulls
-    the reader sees depends on how the feeds interleave with its task.
+    Asserts recovery, not the step count, which depends on feed interleaving.
     """
     rt, _, proc = _make_runtime()
     reader = asyncio.StreamReader(limit=256)
@@ -219,13 +214,8 @@ async def test_unterminated_oversize_stdout_recovers_at_next_frame():
 async def test_oversize_frame_split_mid_multibyte_does_not_kill_demux():
     """The drained remainder must never reach json.loads.
 
-    The drain must not consume only the buffered prefix and let the recovered
-    tail through as a line, because that tail is
-    a byte-slice cut at an arbitrary offset, so an oversize frame carrying
-    multibyte UTF-8 (CJK, emoji — ordinary in tool output) splits a character;
-    `json.loads` then raises UnicodeDecodeError, which is NOT a
-    json.JSONDecodeError, so it escaped the non-JSON guard into the loop's crash
-    handler and killed EVERY multiplexed session.
+    The tail is cut at an arbitrary byte, so it can split a UTF-8 character, and
+    UnicodeDecodeError is not a json.JSONDecodeError: it would kill every session.
     """
     rt, _, proc = _make_runtime()
     reader = asyncio.StreamReader(limit=256)
@@ -260,11 +250,8 @@ async def test_oversize_frame_split_mid_multibyte_does_not_kill_demux():
 async def test_many_terminated_oversize_frames_never_exhaust_the_budget():
     """A run of oversize-but-properly-terminated frames must stay survivable.
 
-    The guard counts bytes-without-a-boundary, not oversize *frames*: counting
-    frames would let a replay of N newline-terminated >limit frames walk
-    straight into runtime death even though every one recovers a frame
-    boundary. The budget is scoped to a single drain call, each of which
-    provably ends on a boundary.
+    The budget counts bytes without a boundary, per drain call, not oversize frames,
+    so many terminated frames never add up to runtime death.
     """
     rt, _, proc = _make_runtime()
     reader = asyncio.StreamReader(limit=256)

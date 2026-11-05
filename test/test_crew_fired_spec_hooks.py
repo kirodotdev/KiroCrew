@@ -32,6 +32,8 @@ from kiro_crew.agent_sdk.backends import (
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.hooks import (
+    HOOK_EVENT_AGENT_SPAWN,
+    HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_STOP,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
@@ -152,7 +154,7 @@ _PROMPT_AND_STOP_HOOKS = {
 _RUN_NOWHERE = "does not run an agent's hooks"
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX])
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_PI])
 def test_a_new_session_where_nothing_runs_spec_hooks_names_their_events(
     backend, agents_dir, notices
 ):
@@ -163,7 +165,7 @@ def test_a_new_session_where_nothing_runs_spec_hooks_names_their_events(
     assert "a1 has hooks on userPromptSubmit, stop." in notices[0]
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX])
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI])
 def test_the_run_nowhere_notice_needs_a_new_session_and_a_spec_with_hooks(
     backend, agents_dir, notices
 ):
@@ -176,7 +178,7 @@ def test_the_run_nowhere_notice_needs_a_new_session_and_a_spec_with_hooks(
 
 @pytest.mark.parametrize(
     "backend",
-    [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI],
+    [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE],
 )
 def test_no_run_nowhere_notice_where_spec_hooks_run_or_nothing_is_ruled(
     backend, agents_dir, notices
@@ -186,9 +188,24 @@ def test_no_run_nowhere_notice_where_spec_hooks_run_or_nothing_is_ruled(
     assert not any(_RUN_NOWHERE in text for text in notices)
 
 
+def test_pi_spec_hooks_count_as_run_nowhere_until_crew_fires_them(monkeypatch):
+    """pi is handed no spec and Crew does not fire its hooks, so they run nowhere."""
+    assert spec_hooks.spec_hooks_run_nowhere(_client(ACP_BACKEND_PI)) is True
+    # The ruling follows the Crew-fires set: once pi joins it, the notice goes.
+    import kiro_crew.agent_sdk.backends as backends_mod
+    from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
+
+    monkeypatch.setattr(
+        backends_mod,
+        "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS",
+        backends_mod.ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS | {ACP_BACKEND_PI},
+    )
+    assert "hooks" not in ability_for(ACP_BACKEND_PI).withheld
+
+
 def test_an_unreadable_spec_renders_no_run_nowhere_notice(agents_dir, notices):
     (agents_dir / "a1.json").write_text("{not json", encoding="utf-8")
-    assert _prepare(_client(ACP_BACKEND_CLAUDE), "a1", is_new=True) == ([], False, None)
+    assert _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True) == ([], False, None)
     assert notices == []
 
 
@@ -266,10 +283,68 @@ def test_an_oversized_or_unsafe_matcher_drops_the_hook_and_retains_nothing():
     assert [(h.command, h.matcher) for h in hooks] == [("z", "exec*")]
 
 
+def test_an_object_form_command_past_4096_characters_still_runs():
+    # kiro-cli runs an object-form hook of this length, so KAS must too.
+    command = "echo " + "x" * 6000
+    hooks = spec_hooks.spec_script_hooks("a1", {"hooks": {"agentSpawn": [{"command": command}]}})
+    assert [h.command for h in hooks] == [command]
+
+
+def test_the_command_bound_is_the_shell_gate_scan_ceiling():
+    from kiro_crew.security.paths import MAX_SCANNABLE_COMMAND_CHARS
+
+    assert spec_hooks._MAX_COMMAND_LEN == MAX_SCANNABLE_COMMAND_CHARS
+
+
+def test_a_command_past_the_bound_is_dropped_with_its_length_and_the_fix(monkeypatch, caplog):
+    import kiro_crew.agent as agent_mod
+
+    audited: list = []
+    monkeypatch.setattr(
+        agent_mod, "_sel_hook_rejected", lambda event, value, reason: audited.append(reason)
+    )
+    command = "x" * (spec_hooks._MAX_COMMAND_LEN + 1)
+    with caplog.at_level("WARNING", logger=spec_hooks.logger.name):
+        hooks = spec_hooks.spec_script_hooks(
+            "a1", {"hooks": {"agentSpawn": [{"command": command}]}}
+        )
+    assert hooks == []
+    assert len(audited) == 1
+    for text in (audited[0], caplog.text):
+        assert f"{len(command)} characters" in text
+        assert f"{spec_hooks._MAX_COMMAND_LEN} limit" in text
+        assert "script file" in text
+        assert "no usable command" not in text
+
+
 def test_conversion_stops_at_the_hook_cap():
     entries = [{"command": f"c{i}"} for i in range(500)]
     hooks = spec_hooks.spec_script_hooks("a1", {"hooks": {"stop": entries}})
     assert len(hooks) == spec_hooks._MAX_SPEC_HOOKS
+
+
+def test_spec_array_over_the_cap_drops_the_remainder_and_audits(monkeypatch):
+    # A spec ``hooks`` ARRAY of 21 runnable command documents: _from_documents (no
+    # cap_overflow passed) keeps main's break, so _convert sees more than the cap
+    # and audits "more than 20 spec hooks, ignoring the remainder" -- the user-file
+    # side-count must not have changed this spec path.
+    import kiro_crew.agent as agent_mod
+
+    reasons: list = []
+    monkeypatch.setattr(agent_mod, "_sel_hook_rejected", lambda *a, **k: reasons.append(a[-1]))
+    docs = [
+        {
+            "name": f"h{n}",
+            "trigger": "UserPromptSubmit",
+            "action": {"type": "command", "command": f"echo {n}"},
+        }
+        for n in range(spec_hooks._MAX_SPEC_HOOKS + 1)  # 21
+    ]
+    hooks = spec_hooks.spec_script_hooks("a1", {"hooks": docs})
+    assert len(hooks) == spec_hooks._MAX_SPEC_HOOKS  # the 21st is dropped
+    assert any(
+        f"more than {spec_hooks._MAX_SPEC_HOOKS} spec hooks" in r for r in reasons
+    ), "the spec-array overflow must still audit as on main"
 
 
 def test_extra_hooks_fire_but_are_never_persisted(tmp_path, monkeypatch):
@@ -329,10 +404,77 @@ def _session_id_probe(tmp_path: Path, out_name: str) -> str:
         "out = sys.argv[1]\n"
         "with open(out, 'w', encoding='utf-8') as f:\n"
         "    json.dump({'env': os.environ.get('KIRO_SESSION_ID'),"
-        " 'stdin': event.get('acp_session_id', '<absent>')}, f)\n",
+        " 'stdin': event.get('acp_session_id', '<absent>'),"
+        " 'stdin_session_id': event.get('session_id', '<absent>'),"
+        " 'secret': os.environ.get('KC_TEST_HOOK_SECRET'),"
+        " 'spawned': os.environ.get('KIROCREW_SPAWNED')}, f)\n",
         encoding="utf-8",
     )
     return f'"{sys.executable}" "{script}" "{tmp_path / out_name}"'
+
+
+_ALL_SPEC_HOOK_EVENTS = (
+    HOOK_EVENT_AGENT_SPAWN,
+    HOOK_EVENT_USER_PROMPT_SUBMIT,
+    HOOK_EVENT_PRE_TOOL_USE,
+    HOOK_EVENT_POST_TOOL_USE,
+    HOOK_EVENT_STOP,
+)
+
+
+def _fire_one(tmp_path, event, sid):
+    spec = ScriptHook(id="spec:a1:x", event=event, command=_session_id_probe(tmp_path, "x"))
+    tool = event in (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE)
+    asyncio.run(
+        ScriptHookStore(tmp_path).fire(
+            event,
+            "ctx",
+            tool_name="shell" if tool else "",
+            tool_input={} if tool else None,
+            session_key="dashboard:1",
+            extra_hooks=[spec],
+            acp_session_id=sid,
+        )
+    )
+    return json.loads((tmp_path / "x").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("event", _ALL_SPEC_HOOK_EVENTS)
+def test_every_spec_hook_event_gets_the_session_id_as_kiro_cli_names_it(
+    tmp_path, monkeypatch, event
+):
+    """KIRO_SESSION_ID in env and ``session_id`` on stdin, kiro-cli's names, on every event.
+
+    The gateway's other env is still not forwarded (an ambient secret does not
+    reach the hook). KIROCREW_SPAWNED is the sandbox spawn's own marker, set on
+    the hook even when the gateway's env has none, as kiro-cli's hooks inherit it.
+    """
+    _passthrough_sandbox(monkeypatch)
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    monkeypatch.setenv("KIRO_SESSION_ID", "ambient_bogus")
+    monkeypatch.setenv("KC_TEST_HOOK_SECRET", "s3cret")
+    monkeypatch.delenv("KIROCREW_SPAWNED", raising=False)
+    seen = _fire_one(tmp_path, event, "sess_abc")
+    assert seen == {
+        "env": "sess_abc",
+        "stdin": "sess_abc",
+        "stdin_session_id": "sess_abc",
+        "secret": None,
+        "spawned": "1",
+    }
+
+
+@pytest.mark.parametrize("event", _ALL_SPEC_HOOK_EVENTS)
+@pytest.mark.parametrize("sid", [None, ""])
+def test_no_session_id_means_no_key_and_no_env_on_every_event(tmp_path, monkeypatch, event, sid):
+    """No id: both stdin keys absent, KIRO_SESSION_ID unset, the ambient one not leaked."""
+    _passthrough_sandbox(monkeypatch)
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    monkeypatch.setenv("KIRO_SESSION_ID", "ambient_bogus")
+    seen = _fire_one(tmp_path, event, sid)
+    assert seen["env"] is None
+    assert seen["stdin"] == "<absent>"
+    assert seen["stdin_session_id"] == "<absent>"
 
 
 def test_a_spec_hook_gets_the_acp_session_id_and_a_stored_hook_does_not(tmp_path, monkeypatch):
@@ -360,8 +502,16 @@ def test_a_spec_hook_gets_the_acp_session_id_and_a_stored_hook_does_not(tmp_path
     )
     spec_seen = json.loads((tmp_path / "x").read_text(encoding="utf-8"))
     stored_seen = json.loads((tmp_path / "s").read_text(encoding="utf-8"))
-    assert spec_seen == {"env": "sess_abc", "stdin": "sess_abc"}
-    assert stored_seen == {"env": None, "stdin": "<absent>"}
+    assert (spec_seen["env"], spec_seen["stdin"], spec_seen["stdin_session_id"]) == (
+        "sess_abc",
+        "sess_abc",
+        "sess_abc",
+    )
+    assert (stored_seen["env"], stored_seen["stdin"], stored_seen["stdin_session_id"]) == (
+        None,
+        "<absent>",
+        "<absent>",
+    )
 
 
 def test_an_unknown_acp_session_id_leaves_kiro_session_id_unset(tmp_path, monkeypatch):
@@ -379,7 +529,7 @@ def test_an_unknown_acp_session_id_leaves_kiro_session_id_unset(tmp_path, monkey
         )
     )
     seen = json.loads((tmp_path / "x").read_text(encoding="utf-8"))
-    assert seen == {"env": None, "stdin": "<absent>"}
+    assert (seen["env"], seen["stdin"], seen["stdin_session_id"]) == (None, "<absent>", "<absent>")
 
 
 @pytest.mark.parametrize(("sid", "expected"), [("sess_abc", "sess_abc"), ("", None)])
@@ -580,3 +730,132 @@ async def test_an_in_turn_switch_that_leaves_the_session_stale_stops_the_turn(
     # Refused BEFORE the switch is recorded: the slot keeps its agent.
     assert recorded == []
     assert slot.agent == "helper"
+
+
+# --- `file://` steering nothing loads on a mirrored harness ----------------------
+
+_UNREAD_STEERING = "does not load them"
+_MIRRORED = [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE]
+
+
+@pytest.mark.parametrize("backend", _MIRRORED)
+def test_a_mirrored_new_session_names_the_custom_agents_unread_steering(
+    backend, agents_dir, notices
+):
+    _write_spec(
+        agents_dir,
+        "a1",
+        resources=["skill://~/s/**/SKILL.md", "file://.kiro/steering/**/*.md"],
+    )
+    _prepare(_client(backend), "a1", is_new=True)
+    steering = [t for t in notices if _UNREAD_STEERING in t]
+    assert len(steering) == 1
+    assert "a1 lists steering files in resources (file://.kiro/steering/**/*.md)" in steering[0]
+    assert "skill://" not in steering[0]
+
+
+@pytest.mark.parametrize("backend", _MIRRORED)
+def test_the_unread_steering_notice_needs_a_new_session_and_a_file_entry(
+    backend, agents_dir, notices
+):
+    _write_spec(agents_dir, "a1", resources=["file://x.md"])
+    _write_spec(agents_dir, "skills_only", resources=["skill://~/s/**/SKILL.md"])
+    _prepare(_client(backend), "a1", is_new=False)
+    _prepare(_client(backend), "skills_only", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_PI])
+def test_no_unread_steering_notice_where_resources_are_read_or_nothing_is_ruled(
+    backend, agents_dir, notices
+):
+    _write_spec(agents_dir, "a1", resources=["file://x.md"])
+    _prepare(_client(backend), "a1", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+def test_the_default_agent_gets_no_unread_steering_notice(agents_dir, notices):
+    _write_spec(agents_dir, "kirocrew", resources=["file://.kiro/steering/**/*.md"])
+    _prepare(_client(ACP_BACKEND_CODEX), "kirocrew", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+def test_the_unread_steering_notice_counts_entries_past_three(agents_dir, notices):
+    _write_spec(agents_dir, "a1", resources=[f"file://s{i}.md" for i in range(5)])
+    _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True)
+    assert "(file://s0.md, file://s1.md, file://s2.md and 2 more)" in notices[0]
+
+
+def test_an_unreadable_spec_renders_no_unread_steering_notice(agents_dir, notices):
+    (agents_dir / "a1.json").write_text("{not json", encoding="utf-8")
+    _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE])
+def test_the_resources_ruling_says_no_reader_not_injected_steering(backend):
+    from kiro_crew.agent_sdk.backend_mcp_ability import OFF_CARD_CONCERNS
+    from kiro_crew.providers.mirrors import mirror_for
+    from kiro_crew.providers.mirrors.base import Concern
+
+    reason = mirror_for(backend).rulings()[Concern.RESOURCES].reason
+    assert reason.startswith("no-reader:")
+    assert "file:// steering is not loaded from this field" in reason
+    for text in (reason, OFF_CARD_CONCERNS["RESOURCES"]):
+        assert "steering files are injected as context text" not in text
+        # Folder steering and member essentials can still carry the same file.
+        assert "reaches nothing" not in text
+
+
+def test_the_unread_steering_notice_names_the_field_not_a_loss(agents_dir, notices):
+    """The row must not say the file has no effect: other routes may carry it."""
+    _write_spec(agents_dir, "a1", resources=["file://.kiro/steering/review.md"])
+    _prepare(_client(ACP_BACKEND_OPENCODE), "a1", is_new=True)
+    (row,) = [t for t in notices if _UNREAD_STEERING in t]
+    assert "from that field" in row
+    assert "can still reach the model through folder steering" in row
+    assert "no effect" not in row
+    assert "only if" not in row
+
+
+def test_the_spec_fields_doc_no_longer_calls_the_resources_reasons_wrong():
+    """Footnote 6 names the reason each mirror gives ``resources``."""
+    from pathlib import Path
+
+    import kiro_crew
+
+    doc = (Path(kiro_crew.__file__).parent / "docs" / "agent-spec-fields.md").read_text(
+        encoding="utf-8"
+    )
+    assert "reason the\n   code does not support" not in doc
+    assert "issues/12215" not in doc
+    assert "the shared `no-reader`\n   reason (`RESOURCES_NO_READER`)" in doc
+
+
+def test_the_spec_fields_doc_gives_goose_its_withheld_ruling():
+    """Footnote 6 matches goose's real ``resources`` disposition."""
+    from pathlib import Path
+
+    import kiro_crew
+    from kiro_crew.providers.mirrors import mirror_for
+    from kiro_crew.providers.mirrors.base import Concern, Disposition
+
+    assert mirror_for(ACP_BACKEND_GOOSE).rulings()[Concern.RESOURCES].disposition == (
+        Disposition.WITHHELD
+    )
+    doc = (Path(kiro_crew.__file__).parent / "docs" / "agent-spec-fields.md").read_text(
+        encoding="utf-8"
+    )
+    assert "`goose` rules it `withheld` too" in doc
+    assert "`goose` rules it `no-channel`" not in doc
+
+
+def test_the_unread_steering_notice_redacts_an_entry_before_cutting_it(agents_dir, notices):
+    """A cut at 120 characters must not split a credential so it escapes redaction."""
+    secret = "Zq7xLw9pRt3vNk2sQ8"
+    head = "file://https://alice:"
+    entry = head + "a" * (120 - len(head) - len(secret)) + secret + "@example.com/x.md"
+    _write_spec(agents_dir, "a1", resources=[entry])
+    _prepare(_client(ACP_BACKEND_OPENCODE), "a1", is_new=True)
+    (row,) = [t for t in notices if _UNREAD_STEERING in t]
+    assert secret not in row

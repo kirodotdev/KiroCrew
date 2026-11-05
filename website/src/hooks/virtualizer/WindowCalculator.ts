@@ -120,6 +120,48 @@ export function getIndexAtOffset(
   return itemCount - 1
 }
 
+/** A mounted row's box as the DOM lays it out, in list content coordinates
+ *  (the same origin as the offset tree: the top of row 0). */
+export interface LiveRowBox {
+  index: number
+  top: number
+  bottom: number
+}
+
+/**
+ * The index at list content offset `y` when the mounted rows are laid out at
+ * heights the offset tree does not hold.
+ *
+ * The scroll offset is a DOM coordinate: the top spacer (priced from the
+ * tree), then the mounted rows at their LIVE heights, then the bottom spacer.
+ * While the tree cannot take the live heights (a width transition refuses the
+ * old width's cache those measurements), mapping a DOM offset through the tree
+ * alone lands on whatever row the tree prices there, not the row the DOM shows.
+ * A narrow column re-wraps the mounted rows thousands of px taller, so that
+ * row can be dozens of rows away, outside the window, and the recompute
+ * unmounts the reader's row.
+ *
+ * So `y` resolves against the live boxes where they are, and against the tree
+ * elsewhere, shifted by how far the live boxes have moved the tree's origin on
+ * that side. `rows` is sorted by index; an empty list is the tree alone.
+ */
+export function indexAtWithLiveRows(
+  y: number,
+  rows: readonly LiveRowBox[],
+  indexAt: (offset: number) => number,
+  offsetOf: (index: number) => number,
+): number {
+  if (rows.length === 0) return indexAt(y)
+  const first = rows[0]
+  const last = rows[rows.length - 1]
+  if (y < first.top) return indexAt(y - (first.top - offsetOf(first.index)))
+  if (y >= last.bottom) return indexAt(y - (last.bottom - offsetOf(last.index + 1)))
+  for (const row of rows) {
+    if (y < row.bottom) return row.index
+  }
+  return last.index
+}
+
 /**
  * Compute a window centered on `targetIndex` for jump navigation.
  *

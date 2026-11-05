@@ -68,6 +68,10 @@ class NativeSkillProjection:
     #: vanished view fails closed). Never consumed; it describes a fixed launch
     #: fact, not a one-shot exemption. Empty until a spawn claims the projection.
     advertised_launch_name: str = ""
+    #: The resolver's own refusal for a name with no view because several specs
+    #: declare it (unpinned, or a broken pin). :meth:`agent` raises from it, so the
+    #: start's error keeps the claimant list the dashboard's file chooser reads.
+    refusals: dict[str, ValueError] = field(default_factory=dict, repr=False, compare=False)
     _lease_finalizer: Any = field(default=None, repr=False, compare=False)
     # Aliases an EARLIER projection of this process published, alias -> agent. The
     # host may still hold them (every alias it loaded at spawn, say), so inbound
@@ -133,7 +137,9 @@ class NativeSkillProjection:
             name = source
         if name not in self.aliases:
             if name in self.errors:
-                raise ValueError(f"Agent {name!r}: {self.errors[name]}")
+                raise ValueError(f"Agent {name!r}: {self.errors[name]}") from self.refusals.get(
+                    name
+                )
             raise ValueError(f"Agent {name!r} has no prepared skill discovery view")
         return self.aliases[name]
 
@@ -272,8 +278,17 @@ class NativeSkillProjection:
         with _ACTIVE_PROJECTIONS_LOCK:
             _ACTIVE_PROJECTIONS.pop(id(self), None)
         if finalizer is not None and finalizer.alive:
-            # Runs ``_end_projection`` once, now, and detaches it from GC.
-            finalizer()
+            # Cancel the GC finalizer and run its end ONCE, now, directly. detach()
+            # returns the (obj, func, args, kwargs) it was armed with, so we call
+            # the SAME ``_end_projection`` the finalizer held -- no import of it
+            # here (that would be a back-edge to ``alias_reclaim``). ``from_release``
+            # tells it this is the explicit, known-safe call site, so off the loop
+            # it may run the end inline; a finalizer fired by GC/refcount omits the
+            # flag and is never run inline. See :func:`_end_projection`.
+            detached = finalizer.detach()
+            if detached is not None:
+                _obj, func, args, _kwargs = detached
+                func(*args, from_release=True)
 
 
 _ACTIVE_PROJECTIONS: weakref.WeakValueDictionary[int, NativeSkillProjection] = (

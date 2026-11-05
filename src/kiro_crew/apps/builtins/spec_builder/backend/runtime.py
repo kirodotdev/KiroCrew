@@ -407,6 +407,7 @@ def _dispatch_turn(
     message_meta: dict[str, str] | None = None,
     append_user: bool = True,
     directive_user_origin: bool = False,
+    message_is_typed: bool = True,
     on_consumed: Callable[[bool], None] | None = None,
     on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
 ) -> asyncio.Task[Any] | None:
@@ -460,6 +461,7 @@ def _dispatch_turn(
         slot,
         message,
         _directive_user_origin=directive_user_origin,
+        _message_is_typed=message_is_typed,
         _on_consumed=on_consumed,
         _on_irreversibly_consumed=on_irreversibly_consumed,
     )

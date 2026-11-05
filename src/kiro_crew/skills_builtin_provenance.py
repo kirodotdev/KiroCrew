@@ -730,10 +730,10 @@ def deployed_cron_script_sources() -> list[CronScriptSource]:
     included, precisely because a release that changes only a script leaves
     ``SKILL.md`` byte-identical, so a manifest-only comparison reports "up to
     date" while the install keeps running superseded code. The second hop --
-    installed skill asset into ``<config_dir>/crons/`` -- is a hand-run ``cp``
-    documented in the owning skill, and nothing has ever compared its two sides.
-    The same silent staleness the first hop was taught to catch is therefore
-    unobserved one step later.
+    installed skill asset into ``<config_dir>/crons/`` -- is a copy made by hand
+    (no built-in skill documents one), so nothing at copy time compares its two
+    sides, and the same silent staleness the first hop was taught to catch would
+    go unobserved one step later. This function is that comparison.
 
     Scope is deliberately narrow. A deployed script with NO installed skill asset
     of that name is ABSENT from the result rather than reported: cron script

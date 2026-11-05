@@ -76,6 +76,7 @@ __all__ = [
     "resolve_pin_spelling_on",
     "resolve_usable_model",
     "run_kiro_native_commands",
+    "settings_default_model",
     "drain_skill_view_aliases",
     "skill_view_alias_census",
     "skill_view_sidecar_dirs",
@@ -112,6 +113,18 @@ def finish_suspended_spawn(process: object, pid: int, *, label: str) -> bool:
     except AcpError:
         return False
     return True
+
+
+def provider_data_text(error: object) -> str:
+    """The provider-field text of a raw ACP error frame, for the dependency adapter.
+
+    Thin delegation to :func:`kiro_crew.acp.structured_error_data.provider_data_text`:
+    a frame whose ``data`` is a structured object reads its provider sentence from
+    ``message``, so the adapter's ``data``-scoped verdict matches the client's.
+    """
+    from kiro_crew.acp.structured_error_data import provider_data_text as _impl
+
+    return _impl(error)
 
 
 def provider_error_client() -> object | None:
@@ -187,6 +200,7 @@ def build_acp_provider(
     acp_backend: str = "",
     effort_per_model: dict[str, str] | None = None,
     unbound_effort: str = "",
+    inherited_effort: str = "",
     effort_defaults: object = None,
     tool_search: bool | None = None,
     tool_search_min_pct: object = None,
@@ -242,6 +256,7 @@ def build_acp_provider(
         acp_backend=acp_backend,
         effort_per_model=effort_per_model,
         unbound_effort=unbound_effort,
+        inherited_effort=inherited_effort,
         effort_defaults=effort_defaults,
         tool_search=tool_search,
         tool_search_min_pct=tool_search_min_pct,
@@ -828,6 +843,41 @@ def self_served_wrong_version(backend: str) -> str:
     return ""
 
 
+def strands_wrong_version() -> str:
+    """The Strands CLI release installed when it is not the verified one, else ``""``.
+
+    Read from the install's own manifest, never by running it. Blocking.
+    """
+    from kiro_crew.acp.client import _resolve_self_served_bin
+    from kiro_crew.acp.harness.strands import strands_installed_version
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_STRANDS, STRANDS_VERIFIED_VERSION
+
+    binary, _searched_path = _resolve_self_served_bin(ACP_BACKEND_STRANDS)
+    version = strands_installed_version(binary) if binary else ""
+    return version if version and version != STRANDS_VERIFIED_VERSION else ""
+
+
+def strands_python_env_missing() -> tuple[str, str]:
+    """``(component, command)`` when the Strands project's Python environment is absent.
+
+    ``("", "")`` when it is ready. File reads only. The project directory is created
+    on the way, owner-only, which is also what the first spawn would do. Blocking.
+    """
+    from kiro_crew.acp.harness.strands import (
+        strands_project_dir,
+        strands_python_env_issue,
+        strands_python_setup_command,
+    )
+
+    try:
+        project_dir = strands_project_dir()
+    except Exception as exc:  # noqa: BLE001 -- the probe reports, it never raises
+        return f"Strands project directory ({exc})", ""
+    if not strands_python_env_issue(project_dir):
+        return "", ""
+    return "Strands Python environment", strands_python_setup_command(project_dir)
+
+
 def pi_components_resolve() -> tuple[bool, bool]:
     """``(adapter, pi_cli)`` -- the pi backend's two halves, separately.
 
@@ -1156,3 +1206,26 @@ def skill_view_sidecar_dirs() -> tuple[str, str]:
     )
 
     return (str(_projection_metadata_dir()), str(_projection_lease_dir()))
+
+
+def settings_default_model(agent_config: Any, backend: str) -> str:
+    """The model a launch-model harness's own settings name, or ``""`` for ``auto``.
+
+    Such a harness advertises no model list, so this is what its picker offers beside
+    ``auto``: for Strands, ``agent.strands_provider`` + ``agent.strands_model`` as the
+    ``provider/model`` id its launch would pass. A setting the launch would refuse
+    offers nothing here; the session start names it. Never a kiro-cli id.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_STRANDS
+
+    if backend == ACP_BACKEND_STRANDS:
+        from kiro_crew.acp.harness.strands import strands_configured_model
+
+        try:
+            return strands_configured_model(
+                str(getattr(agent_config, "strands_provider", "") or ""),
+                str(getattr(agent_config, "strands_model", "") or ""),
+            )
+        except ValueError:
+            return ""
+    return ""

@@ -60,3 +60,7 @@ export function syncedAgoLabel(unit: 'now' | 'm' | 'h' | 'd', n: number): string
 export function mermaidErrorLabel(): string {
   return i18nT('apps.mdNotebook.preview.mermaidError')
 }
+
+export function detailsSummaryFallbackLabel(): string {
+  return i18nT('apps.mdNotebook.preview.detailsSummaryFallback')
+}

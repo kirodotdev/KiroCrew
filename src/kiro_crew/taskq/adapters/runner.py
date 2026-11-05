@@ -1044,8 +1044,9 @@ class RunnerAdmission:
             return False
         # Re-admission goes through capacity like any other start.
         await handle.reacquire_slot()
-        if rec.state == QUEUED or rec.state in CLAIMABLE:
-            # Parked in retry_wait / queued: take it back under a new claim.
+        if rec.state in CLAIMABLE:
+            # Claimable again (retry_wait, queued or recovering): take it back under a
+            # new claim.
             handle.release_slot()
             fresh = await self.admit(handle.task_id, kind=handle.kind, lane=handle.lane)
             handle.generation = fresh.generation

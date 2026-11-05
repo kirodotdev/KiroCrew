@@ -23,6 +23,27 @@ from kiro_crew import platform_compat
 from kiro_crew.config.loader import ConfigReadError, read_config_for_update
 
 
+def _config_path_names(func: ast.AST, is_config_path_call) -> set[str]:
+    """Local names bound to a config-path call inside *func*, for the writer ratchets.
+
+    Both spellings bind a name: ``path = config_path()`` (``ast.Assign``) and
+    ``path: Path = config_path()`` (``ast.AnnAssign``); a scan that reads only the
+    first misses a writer whose path binding carries an annotation.
+    """
+    names: set[str] = set()
+    for node in ast.walk(func):
+        if isinstance(node, ast.Assign) and is_config_path_call(node.value):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and node.value is not None
+            and is_config_path_call(node.value)
+            and isinstance(node.target, ast.Name)
+        ):
+            names.add(node.target.id)
+    return names
+
+
 class _OwnerRequest(dict):
     """The dashboard owner's request claims, for the owner-gated ``POST /api/update/auto``.
 
@@ -469,7 +490,10 @@ class TestWriteConfigAtomically:
             raise AssertionError("write_config_atomically must not spawn a subprocess")
 
         monkeypatch.setattr(subprocess, "run", _fail)
-        write_config_atomically(tmp_path / "config.json", {"auto_update": True})
+        path = tmp_path / "config.json"
+        write_config_atomically(path, {"auto_update": True})
+
+        assert json.loads(path.read_text(encoding="utf-8")) == {"auto_update": True}
 
     @pytest.mark.skipif(
         platform_compat.IS_POSIX,
@@ -832,13 +856,7 @@ class TestEveryConfigWriterIsLocked:
                 n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             ]
             for func in funcs:
-                config_names: set[str] = set()
-                for node in ast.walk(func):
-                    if not isinstance(node, ast.Assign) or not _is_config_path_call(node.value):
-                        continue
-                    for tgt in node.targets:
-                        if isinstance(tgt, ast.Name):
-                            config_names.add(tgt.id)
+                config_names = _config_path_names(func, _is_config_path_call)
                 for node in ast.walk(func):
                     if not isinstance(node, ast.Call):
                         continue
@@ -882,6 +900,10 @@ class TestEveryConfigWriterIsLocked:
             "def inline():\n"
             "    write_config_atomically(config_local_path(), {})\n"
             "\n"
+            "def annotated():\n"
+            "    path: Path = config_path()\n"
+            "    write_config_atomically(path, {})\n"
+            "\n"
             "def innocent(path):\n"
             "    write_config_atomically(path, {})\n"
         )
@@ -897,13 +919,7 @@ class TestEveryConfigWriterIsLocked:
         for func in [
             n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]:
-            config_names = {
-                tgt.id
-                for node in ast.walk(func)
-                if isinstance(node, ast.Assign) and _is_config_path_call(node.value)
-                for tgt in node.targets
-                if isinstance(tgt, ast.Name)
-            }
+            config_names = _config_path_names(func, _is_config_path_call)
             for node in ast.walk(func):
                 if not isinstance(node, ast.Call) or not node.args:
                     continue
@@ -916,7 +932,7 @@ class TestEveryConfigWriterIsLocked:
                 ):
                     flagged.add(func.name)
 
-        assert flagged == {"handler", "inline"}, (
+        assert flagged == {"handler", "inline", "annotated"}, (
             "the ratchet's matcher does not see the shape it exists to forbid "
             f"(flagged: {sorted(flagged)}). ``innocent`` writes a CALLER-SUPPLIED "
             "path -- the agent-spec write in agents.py is that shape -- and must "
@@ -1025,13 +1041,7 @@ class TestTheAtomicJsonWriteConfigFamilyIsRatcheted:
             for func in [
                 n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             ]:
-                config_names = {
-                    t.id
-                    for n in ast.walk(func)
-                    if isinstance(n, ast.Assign) and cls._is_config_path_call(n.value)
-                    for t in n.targets
-                    if isinstance(t, ast.Name)
-                }
+                config_names = _config_path_names(func, cls._is_config_path_call)
                 for node in ast.walk(func):
                     if not isinstance(node, ast.Call):
                         continue
@@ -1075,6 +1085,12 @@ class TestTheAtomicJsonWriteConfigFamilyIsRatcheted:
         """
         assert "messaging.py:api_imessage_config_save" not in self._offenders()
 
+    def test_the_computer_use_limits_writer_is_on_the_locked_path(self):
+        """``_write_limits`` writes through ``update_config_locked``. Pinned through
+        the same scan, which reads annotated bindings, so a return to
+        ``_atomic_json_write`` with ``path: Path = config_path()`` fails here."""
+        assert "computer_use.py:_write_limits" not in self._offenders()
+
     def test_the_matcher_sees_both_spellings_and_spares_a_caller_supplied_path(self):
         """The scan is not vacuous: exercise the shapes a regression would take.
 
@@ -1096,6 +1112,14 @@ class TestTheAtomicJsonWriteConfigFamilyIsRatcheted:
             "def partialed():\n"
             "    functools.partial(_atomic_json_write, config_path(), {})\n"
             "\n"
+            "def annotated():\n"
+            "    path: Path = config_path()\n"
+            "    _atomic_json_write(path, {})\n"
+            "\n"
+            "def declared_only():\n"
+            "    path: Path\n"
+            "    _atomic_json_write(path, {})\n"
+            "\n"
             "def innocent(path):\n"
             "    _atomic_json_write(path, {})\n"
             "\n"
@@ -1109,13 +1133,7 @@ class TestTheAtomicJsonWriteConfigFamilyIsRatcheted:
         for func in [
             n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]:
-            config_names = {
-                t.id
-                for n in ast.walk(func)
-                if isinstance(n, ast.Assign) and self._is_config_path_call(n.value)
-                for t in n.targets
-                if isinstance(t, ast.Name)
-            }
+            config_names = _config_path_names(func, self._is_config_path_call)
             for node in ast.walk(func):
                 if not isinstance(node, ast.Call):
                     continue
@@ -1127,7 +1145,7 @@ class TestTheAtomicJsonWriteConfigFamilyIsRatcheted:
                 ):
                     flagged.add(func.name)
 
-        assert flagged == {"direct", "offloaded", "partialed"}, (
+        assert flagged == {"direct", "offloaded", "partialed", "annotated"}, (
             "the matcher does not see the shape it exists to forbid "
             f"(flagged: {sorted(flagged)}). ``innocent`` writes a CALLER-SUPPLIED "
             "path and ``unrelated`` writes a different file; neither may be "

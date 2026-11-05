@@ -516,11 +516,23 @@ its own once the cache refreshes with a list that carries it.
   editor shows a stored pin the harness serves as one of its own rows AS that row,
   rather than listing one model twice, and labels a pin no row carries as running
   as that id, or as not offered by the harness.
+- Clearing a slot's effort to Default goes live where it can: `clear_effort`
+  pushes a kiro-family workspace default, or writes the harness's own clear value
+  (`effort_config_option_clear_value`; claude's `default`) when the session
+  advertised it and no crew/role/chat level is inherited (the factory's
+  `inherited_effort`). Otherwise, or when that write is refused, it returns False and
+  the dashboard resets the session so a cold start runs the inherited level or none.
+  The dashboard's clear passes `every_model=True`, so a live clear also drops the
+  levels stored for models the session ran before, as the reset would.
 - The chat composer reads `GET /api/chat/slots/{slot}/selection-capabilities` for
   the active ACP session's backend, effort support, and ordered effort levels. A
   missing session answers `known: false`. Where the level rides the model
   (kiro-cli, claude), it resolves the slot's or crew's effective model so an
   inheriting crew thread still has its effort control before its first turn.
+  An `auto` or empty model on a harness whose unpinned session serves a
+  pseudo-model (`ACP_BACKENDS_DEFAULT_PSEUDO_MODEL`, claude) answers `null`
+  instead: the live session's own effort option decides once it reports
+  (see claude-code-provider.md, "Effort on the `default` pseudo-model").
   The cold answer refreshes every two seconds for its first five reads, then every
   30 seconds, and a model or agent switch invalidates it immediately. Where the
   harness carries a session option (goose, pi) or a model pair (codex), a live
@@ -540,6 +552,9 @@ its own once the cache refreshes with a list that carries it.
   (`selectionCapabilitiesFailed` in `website/src/lib/effort.ts`): only a real
   fault (any error other than that 404, such as a 403 or transport failure) shows
   the "could not verify effort options" notice and hides the effort control.
+  The crew window's read of a peer slot follows the same rule. Every one of these
+  reads retries with `retryThroughRestart` (`website/src/api/queryClient.ts`), so a
+  gateway restart or a dropped link is re-read (1s, 2s, 4s) before the notice shows.
   Model and effort are ONE
   composer control (`docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md`):
   the model chip names the level in force, and the model picker embeds the effort

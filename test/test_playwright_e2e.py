@@ -55,9 +55,10 @@ _WEBSITE = "website"
 #
 # RAISE this when you add specs. Only LOWER it with a written reason in the
 # commit body: a drop means specs stopped running.
-# The offline browser floor adds ten member memory scenarios to the base floor, and
-# one that opens the link `dashboard_preview` hands a crewmate.
-MIN_EXECUTED_SPECS = 244
+# The offline browser floor adds ten member memory scenarios to the base floor,
+# one that opens the link `dashboard_preview` hands a crewmate, and seven
+# resize sequences across the phone breakpoint (chat-form-switch-anchor.spec.ts).
+MIN_EXECUTED_SPECS = 251
 
 # Skips are silent passes. A spec should seed its preconditions rather than skip
 # when they are absent, so the intended steady state is zero. Specs excluded by
@@ -264,7 +265,7 @@ def _node_major(node_bin: str) -> int | None:
     """Return the major version of ``node_bin``, or None if it can't run."""
     try:
         out = subprocess.check_output(
-            [node_bin, "--version"], text=True, stderr=subprocess.DEVNULL
+            [node_bin, "--version"], text=True, encoding="utf-8", stderr=subprocess.DEVNULL
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         return None

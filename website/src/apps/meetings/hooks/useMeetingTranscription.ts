@@ -186,6 +186,12 @@ export function useMeetingTranscription({
   const dispatchBlockedRef = useRef(false)
   /** True from entering `start()` until the socket is live (or it gave up). */
   const startingRef = useRef(false)
+  /**
+   * Bumped by every `cleanup()`. A `start()` remembers the value it began under,
+   * so after awaiting the microphone it can tell that a stop or an unmount tore
+   * the session down while the permission prompt was open.
+   */
+  const teardownRef = useRef(0)
 
   // Keep callback refs fresh so the long-lived socket handlers always invoke the
   // latest caller-supplied callbacks, not the ones captured at start().
@@ -267,6 +273,7 @@ export function useMeetingTranscription({
   }, [])
 
   const cleanup = useCallback(() => {
+    teardownRef.current += 1
     clearWatchdog()
     try { wsRef.current?.close() } catch { /* already closing */ }
     wsRef.current = null
@@ -308,17 +315,28 @@ export function useMeetingTranscription({
     startingRef.current = true
     stoppingRef.current = false
     finalsRef.current = []
+    const teardown = teardownRef.current
 
     let stream: MediaStream
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } catch (e) {
+      // A stop or unmount during the prompt already reset the session; a denial
+      // answered after that is not this session's error to report.
+      if (teardownRef.current !== teardown) return
       // This surface reports its own generic 'microphone' error rather than
       // routing through humanizeMicError, so hand a DENIAL to the shell here or
       // the desktop app has no route to System Settings (macOS never re-prompts).
       reportIfMicDenied(e)
       onErrorRef.current?.('microphone')
       startingRef.current = false
+      return
+    }
+    // Stopped or unmounted while the permission prompt was open: cleanup() ran
+    // before this stream existed, so release it here and open no socket. The
+    // starting flag is left alone, since a newer start() may own it by now.
+    if (teardownRef.current !== teardown) {
+      try { stream.getTracks().forEach(t => t.stop()) } catch { /* ignore */ }
       return
     }
     streamRef.current = stream
@@ -545,5 +563,10 @@ export function useMeetingTranscription({
     }, CLOSE_GRACE_MS)
   }, [cleanup, clearWatchdog])
 
-  return { active, connecting, halted, start, stop, supported: transcriptionSupported }
+  // Read at call time, not a render value: a start() awaiting the permission
+  // prompt has published neither `active` nor `connecting` yet, and a caller
+  // leaving the open state must still be able to see it and stop it.
+  const isStarting = useCallback(() => startingRef.current, [])
+
+  return { active, connecting, halted, isStarting, start, stop, supported: transcriptionSupported }
 }

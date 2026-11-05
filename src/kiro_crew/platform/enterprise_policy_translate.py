@@ -5,8 +5,8 @@ when?}]``, already resolved for the ``CREW`` client surface. Kiro Crew governs o
 capabilities in :data:`MANAGED`; every other capability belongs to another client and
 is ignored.
 
-Per managed capability the rules reduce to one Crew ruleset, because a Crew ruleset has
-one mode (allow-list or deny-list):
+Per managed capability with a resource the rules reduce to one Crew ruleset, because a
+Crew ruleset has one mode (allow-list or deny-list):
 
 * ``deny``/``ask`` with neither ``match`` nor ``exclude``: nothing is allowed (``allow []``);
 * ``deny``/``ask`` with ``exclude E``: only ``E`` is allowed (several excludes intersect);
@@ -21,22 +21,62 @@ glob, or a denied glob beside an allowed glob, has no one-mode form. The transla
 widen or narrow the set, so the fetch fails. Entries compare as Crew's identifier
 matcher compares them: stripped and case-folded. ``ask`` reads as ``deny``. A managed
 capability no rule restricts is left out of the document.
+
+A ruleset row may carry a floor: entries its Crew scope never forbids
+(``approval_modes`` keeps ``normal``, ``trust`` and ``trust_reads``). They are added to
+the allowed set, because the scope refuses an allow-list that leaves one out.
+
+An on/off capability (one with no resource) reduces to ``{"enabled": bool}``
+instead, by :func:`switch`:
+
+* any ``deny``/``ask``: ``enabled: false``;
+* an ``allow`` and no deny: ``enabled: true``;
+* no rule: unnamed, so the enterprise baseline holds (Crew's default for an open
+  control such as ``cron``);
+* a rule with ``match``, ``exclude`` or ``when``: ``enabled: false``. The policy language
+  refuses ``match`` and ``exclude`` on an on/off capability, and the grant shape the control
+  plane sends for one is not confirmed yet, so a shape this module does not know turns the
+  capability off rather than guess. Leaving it unnamed would keep an open control on.
 """
 
 from __future__ import annotations
 
 import fnmatch
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import yaml  # type: ignore[import-untyped]
 
 from kiro_crew.platform.governance import MODE_ALLOW
+from kiro_crew.platform.governance_parts.catalog import SCOPE_CATALOG
 
-#: Each capability Kiro Crew governs from enterprise management, and the path of its
-#: ruleset in a Crew policy document.
-MANAGED: Mapping[str, Tuple[str, ...]] = MappingProxyType(
-    {"messaging_channel": ("channels", "members")}
+#: A ruleset row: the rules reduce to one allow-list (:func:`ruleset`).
+RULESET = "ruleset"
+#: An on/off row: the rules reduce to ``{"enabled": bool}`` (:func:`switch`).
+SWITCH = "switch"
+
+
+@dataclass(frozen=True)
+class Managed:
+    """Where a policy capability lands in a Crew policy document, and in which form."""
+
+    path: Tuple[str, ...]
+    kind: str = RULESET
+    #: Entries the Crew scope never forbids, added to a translated allow-list.
+    floor: Tuple[str, ...] = ()
+
+
+#: Each capability Kiro Crew governs from enterprise management, and where it lands.
+MANAGED: Mapping[str, Managed] = MappingProxyType(
+    {
+        "messaging_channel": Managed(("channels", "members")),
+        "messaging": Managed(("capabilities", "messaging"), SWITCH),
+        "cron": Managed(("capabilities", "cron"), SWITCH),
+        "permission_mode": Managed(
+            ("approval_modes",), floor=SCOPE_CATALOG["approval_modes"].always_permitted
+        ),
+    }
 )
 
 #: How often the running gateway re-reads the policy: five minutes, the Kiro agent's
@@ -169,6 +209,51 @@ def ruleset(rules: List[Mapping[str, Any]], capability: str) -> Optional[Dict[st
     return None
 
 
+def switch(rules: List[Mapping[str, Any]], capability: str) -> Optional[Dict[str, bool]]:
+    """The ``{"enabled": ...}`` control for on/off *capability*, or ``None`` to keep
+    the baseline."""
+    granted = denied = unknown = False
+    for rule in rules:
+        if rule.get("capability") != capability:
+            continue
+        effect = rule.get("effect")
+        if effect not in _EFFECTS:
+            raise TranslationError(f"{capability}: unknown effect {str(effect)[:40]!r}")
+        if any(rule.get(key) is not None for key in ("match", "exclude", "when")):
+            unknown = True
+        elif effect == "allow":
+            granted = True
+        else:
+            denied = True
+    if unknown or denied:
+        # A shape this module does not know turns the capability off, as an
+        # unconditional deny does. Leaving it unnamed is not safe: an unnamed
+        # open control (``capabilities.cron``, RFC D3) keeps
+        # Crew's default, so a policy that restricts it would widen it instead.
+        return {"enabled": False}
+    if granted:
+        return {"enabled": True}
+    return None
+
+
+def _with_floor(rs: Dict[str, Any], floor: Tuple[str, ...]) -> Dict[str, Any]:
+    allowed = {_key(p): p for p in rs["allow"]}
+    for entry in floor:
+        allowed.setdefault(_key(entry), entry)
+    return {"mode": MODE_ALLOW, "allow": sorted(allowed.values())}
+
+
+def _control(
+    rules: List[Mapping[str, Any]], capability: str, row: Managed
+) -> Optional[Dict[str, Any]]:
+    if row.kind == SWITCH:
+        return switch(rules, capability)
+    rs = ruleset(rules, capability)
+    if rs is not None and row.floor:
+        rs = _with_floor(rs, row.floor)
+    return rs
+
+
 def neutral_document() -> Dict[str, Any]:
     """A document that governs nothing beyond what the build itself locks."""
     return {
@@ -183,12 +268,12 @@ def translate(policy: str) -> Dict[str, Any]:
     """Translate a Trust V2 *policy* into a Crew policy document, or raise."""
     rules = _rules(policy)
     doc = neutral_document()
-    for capability, path in MANAGED.items():
-        rs = ruleset(rules, capability)
-        if rs is None:
+    for capability, row in MANAGED.items():
+        control = _control(rules, capability, row)
+        if control is None:
             continue
         node = doc
-        for key in path[:-1]:
+        for key in row.path[:-1]:
             node = node.setdefault(key, {})
-        node[path[-1]] = rs
+        node[row.path[-1]] = control
     return doc

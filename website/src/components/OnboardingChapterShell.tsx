@@ -108,10 +108,16 @@ export function ShellAside({ copy, compact = false }: { copy: ShellAsideCopy; co
 // pinning to the bottom of the scrim.
 export const SECTION_CLASS =
   'flex min-h-[calc(100svh-248px)] min-w-0 flex-1 flex-col bg-card sm:min-h-0'
+//
+// Safe-area insets: below `sm` the panel fills the scrim edge to edge, so the
+// PANEL pads its top and sides (`pt-safe px-safe`, dropped with `sm:pt-0 sm:px-0`) and its card
+// background still runs under the insets; each footer pads the bottom one. From
+// `sm` up the panel is a card inside the scrim, and the scrim's own gutter
+// (`sm:p-safe-or-6`) keeps that card clear of every edge.
 export const SCRIM_CLASS =
-  'fixed inset-0 z-[120] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-xs p-0 text-text sm:items-center sm:justify-center sm:p-6'
+  'fixed inset-0 z-[120] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-xs p-0 text-text sm:items-center sm:justify-center sm:p-safe-or-6'
 export const PANEL_CLASS =
-  'relative flex min-h-svh w-full flex-col overflow-clip bg-card shadow-xl sm:h-[calc(100vh-48px)] sm:max-h-[760px] sm:min-h-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border'
+  'relative flex min-h-svh w-full flex-col overflow-clip bg-card shadow-xl pt-safe px-safe sm:h-[calc(100vh-48px)] sm:max-h-[760px] sm:min-h-0 sm:pt-0 sm:px-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border'
 
 // The pinned-footer behaviour every consumer of the stacked shell needs: on a
 // narrow viewport the SCRIM scrolls, so the actions stick to its bottom (the

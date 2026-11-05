@@ -384,3 +384,49 @@ class TestABackgroundSweepLeavesAListeningMemberAlone:
             "these acquire sites are in functions no control here drives, so nothing checks "
             f"that a clear still works against the session they hold: {strays}"
         )
+
+
+class TestTheDiscardOrderingTheClearReadsBack:
+    """Pins the order `api_channel_clear_context` relies on when a teardown outruns its deadline.
+
+    After a timeout the handler cancels the teardown and decides cleared-or-refused by reading
+    `has_session` and the stored resume SID. That answer is true only while the discard pops
+    the session and clears the SID BEFORE it awaits `provider.shutdown()`: a reorder would make
+    the handler report a refusal for a conversation already gone, or a clear for one that
+    still resumes. Driven against the real `SessionManager` so a reorder there fails here.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_session_and_its_sid_are_gone_before_the_shutdown_runs(self):
+        from kiro_crew.session_map import canonical_key
+
+        mgr = SessionManager(
+            KiroCrewConfig(), provider_factory=_provider_factory(active_turn=False)
+        )
+        key = "channel:ch-ops:archivist"
+        provider, _, _ = await mgr.get_or_create(key)
+        mgr.release(key)
+        mgr._session_map.set(key, "pre-clear-sid")
+        seen: dict[str, object] = {}
+
+        async def _observe_at_shutdown():
+            seen["registered"] = mgr.has_session(key)
+            # The raw entry: `SessionMap.get` also needs `<sid>.json` on disk, so it answers
+            # None for this synthetic SID whether or not the clear ran.
+            seen["sid"] = (mgr._session_map._data.get(canonical_key(key)) or {}).get("sid")
+
+        provider.shutdown = MagicMock(side_effect=_observe_at_shutdown)
+
+        assert await mgr.discard_conversation(
+            key, skip_if_busy=True, refuse_only_on_active_turn=True
+        )
+
+        assert seen, "precondition: the shutdown never ran, so nothing was observed"
+        assert seen["registered"] is False, (
+            "the session was still registered while the shutdown ran, so a clear cancelled "
+            "there reports a refusal for a conversation the discard then destroys"
+        )
+        assert not seen["sid"], (
+            f"the resume SID survived into the shutdown ({seen['sid']!r}), so a clear "
+            "cancelled there reads it as kept"
+        )

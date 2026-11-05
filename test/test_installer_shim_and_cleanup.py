@@ -396,6 +396,9 @@ def test_first_run_is_best_effort(tmp_path, monkeypatch):
     # Must not propagate — gateway startup cannot be broken by setup failures.
     agent.run_first_run_setup()
 
+    # A failed purge leaves no marker, so the next start tries it again.
+    assert not marker.exists()
+
 
 # --------------------------------------------------------------------------
 # Default-on builtin backfill — runs ONCE, and must reach EXISTING installs
@@ -706,6 +709,18 @@ def test_clean_stale_malformed_json_untouched(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
     assert mcp_cleanup.clean_stale_managed_mcp() == []
     assert p.read_text(encoding="utf-8") == "{ not valid json "  # left untouched
+
+
+def test_clean_stale_non_utf8_json_untouched(tmp_path, monkeypatch):
+    # The global mcp.json is shared with other tools; bytes that are not UTF-8
+    # read like bad JSON: nothing is removed and the file is left as it was.
+    p = tmp_path / "mcp.json"
+    raw = b'{"mcpServers": {"kirocrew-core": {"command": "caf\xe9"}}}'
+    p.write_bytes(raw)
+    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
+
+    assert mcp_cleanup.clean_stale_managed_mcp() == []
+    assert p.read_bytes() == raw
 
 
 def test_clean_stale_non_object_json_untouched(tmp_path, monkeypatch):

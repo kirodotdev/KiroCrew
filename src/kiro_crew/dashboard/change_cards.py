@@ -1080,6 +1080,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _registry_by_config_key,
         _registry_entry,
         _row_hits,
+        _schema_sensitive,
         _scrub,
         _stem,
         _stems,

@@ -333,14 +333,29 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                     {"ok": True, "reasoning_effort": effort, "deferred": True, **normalized}
                 )
             # change_effort handles both backends and persists the per-model
-            # override + overlay. "" clears the override → fall back to model
-            # default (kiro: /effort with model default; claude: leave as-is).
+            # override + overlay. "" clears the slot's level → fall back to the
+            # model default (kiro: /effort with the workspace default; claude: the
+            # adapter's ``default`` live), else False asks for the reset below.
             try:
                 if effort:
                     _updated_live = await provider.change_effort(effort)
                 else:
-                    _updated_live = await provider.clear_effort()
+                    _updated_live = await provider.clear_effort(every_model=True)
             except Exception as exc:
+                if provider.switches_by_relaunch is True:
+                    # The relaunch refused the level and put the prior one back.
+                    # Committing it, or resetting to cold-start on it, would only
+                    # fail the same way on every later message.
+                    logger.warning(
+                        "change_effort(%s) refused for slot %s: %s: %s",
+                        effort,
+                        name,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return web.json_response(
+                        {"error": str(exc), "code": "effort_refused"}, status=400
+                    )
                 logger.warning(
                     "change_effort(%s) failed for slot %s: %s: %s — falling back to reset",
                     effort,

@@ -228,7 +228,7 @@ def source_path(cwd: str) -> str:
     try:
         return _source_of(real) or cwd
     except Exception:  # noqa: BLE001 - no sandbox, no git: the path matches as itself
-        logger.debug("crewmate worktree source of %s unknown", cwd, exc_info=True)
+        logger.debug("Bot worktree source of %s unknown", cwd, exc_info=True)
         return cwd
 
 
@@ -352,7 +352,7 @@ def _create(wt, repo: str, dest: str, branch: str, workspace_dir: str, slug: str
     if proc.returncode != 0 or not os.path.exists(os.path.join(dest, ".git")):
         _unwind_add(wt, repo, dest, branch, made, claimed=claimed, base_sha=base_sha)
         raise WorktreeRefused(wt._git_error(proc) if proc.returncode else "worktree add failed")
-    logger.info("crewmate worktree %s on %s from %s", dest, branch, repo)
+    logger.info("Bot worktree %s on %s from %s", dest, branch, repo)
 
 
 def _make_dest(workspace_dir: str, slug: str, dest: str) -> tuple[int, int]:
@@ -370,7 +370,7 @@ def _make_dest(workspace_dir: str, slug: str, dest: str) -> tuple[int, int]:
     name = os.path.basename(dest)
     try:
         with open_pinned_descendant_dir(
-            workspace, (WORKTREES_DIR, _name(slug)), what="crewmate worktree folder", create=True
+            workspace, (WORKTREES_DIR, _name(slug)), what="Bot worktree folder", create=True
         ) as dir_fd:
             if dir_fd is None:  # Windows: the walk lstat-refused every link
                 os.mkdir(dest)
@@ -404,12 +404,12 @@ def _unwind_add(
     try:
         pinned_fs.remove_tree_pinned(
             os.path.realpath(dest),
-            what="half-made crewmate worktree",
+            what="half-made Bot worktree",
             approve=_approve,
             refusal=OSError,
         )
     except OSError:
-        logger.warning("crewmate worktree %s left in place after a failed add", dest, exc_info=True)
+        logger.warning("Bot worktree %s left in place after a failed add", dest, exc_info=True)
     wt._cleanup_partial(repo, dest, branch, claimed=claimed, created=False, base_sha=base_sha)
 
 
@@ -455,7 +455,7 @@ def remove_crewmate_worktrees(workspace_dir: str, slug: str) -> tuple[list[str],
                 or not trees
                 or (wt._norm_path(dest) not in trees)
             ):
-                logger.warning("crewmate worktree %s kept: not a registered worktree", dest)
+                logger.warning("Bot worktree %s kept: not a registered worktree", dest)
                 kept.append(dest)
                 continue
             why = ""
@@ -464,40 +464,43 @@ def remove_crewmate_worktrees(workspace_dir: str, slug: str) -> tuple[list[str],
             elif ignored := _ignored_files(wt, dest):
                 why = f"ignored files ({ignored})"
             if why:
-                logger.warning("crewmate worktree %s kept: %s", dest, why)
+                logger.warning("Bot worktree %s kept: %s", dest, why)
                 kept.append(dest)
                 continue
             proc = wt._run_git(["worktree", "remove", dest], repo)
         except Exception:  # noqa: BLE001 - no sandbox, no git: keep it
-            logger.warning("crewmate worktree %s could not be removed", dest, exc_info=True)
+            logger.warning("Bot worktree %s could not be removed", dest, exc_info=True)
             kept.append(dest)
             continue
         if proc.returncode == 0:
             removed.append(dest)
         else:
-            logger.warning("crewmate worktree %s kept: %s", dest, wt._git_error(proc))
+            logger.warning("Bot worktree %s kept: %s", dest, wt._git_error(proc))
             kept.append(dest)
     with contextlib.suppress(OSError):
         os.rmdir(root)  # only once empty; rmdir never follows a link
     return removed, kept
 
 
-def remove_for_member(name: str, config) -> None:
+def remove_for_member(name: str, config) -> tuple[list[str], list[str]] | None:
     """Remove the worktrees of crewmate *name* (its record read from *config*). Best-effort.
 
     Called when the crewmate is deleted; never raises, so it cannot block that.
+    Returns ``(removed, kept)`` as :func:`remove_crewmate_worktrees` does, or
+    ``None`` when the worktrees could not be looked at at all.
     """
     from kiro_crew.config import loader
     from kiro_crew.members import member_slug
 
     record = getattr(config, "agents", {}).get(name)
     if record is None:
-        return
+        return [], []
     try:
         workspace = str(loader.workspace_dir_for(getattr(record, "workspace", "") or None))
-        _removed, kept = remove_crewmate_worktrees(workspace, member_slug(name, config))
+        removed, kept = remove_crewmate_worktrees(workspace, member_slug(name, config))
     except Exception:  # noqa: BLE001 - never blocks the crewmate's removal
         logger.warning("worktrees of %s were not removed", name, exc_info=True)
-        return
+        return None
     if kept:
         logger.warning("kept %d worktree(s) of %s: %s", len(kept), name, kept)
+    return removed, kept

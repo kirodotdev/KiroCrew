@@ -1,11 +1,9 @@
 """Shared fixtures and fakes for the cron reaper suites.
 
-``test_cron_reaper.py`` and the four files split from it (``test_cron_reaper_failed_kill.py``,
-``_kill_set.py``, ``_ending_fence.py`` and ``_process_identity.py``) use these by name:
-the autouse pin of the kill seam (every platform kill primitive refuses unless a
-test patches it), the session, client and handle fakes, and the reap fixtures the kill
-path tests share. ``test_cron_cancel.py`` and ``test_cron_run_claim.py`` import the
-kill-seam names from ``test_cron_reaper``, which binds them from here.
+Used by ``test_cron_reaper.py`` and its ``_failed_kill``, ``_kill_set``, ``_ending_fence``
+and ``_process_identity`` siblings. The autouse kill-seam pin makes every platform kill
+primitive refuse unless a test patches it. ``test_cron_cancel.py`` and
+``test_cron_run_claim.py`` import the kill-seam names via ``test_cron_reaper``.
 """
 
 from __future__ import annotations
@@ -55,16 +53,10 @@ async def _refuse_unpinned_signal_async(*args: Any, **kwargs: Any) -> Any:
 def _kill_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     """The kill path is POSIX-shaped here unless a test pins ``IS_WINDOWS`` itself, and no primitive signals for real.
 
-    ``kill_verified_process`` reads ``platform_compat.IS_WINDOWS`` at call time:
-    on POSIX the live root's captured group is signalled through
-    ``kill_process_group`` (which the POSIX-shaped tests here patch to land or
-    raise), on Windows through ``kill_process_tree_pinned``, which a fabricated
-    pid can never pin -- so an unpinned test read differently on a Windows runner
-    than on Linux. A test of the Windows shape sets ``IS_WINDOWS`` True in its
-    own body, after this fixture, and wins. The other platform reads these tests
-    make (the pid liveness, the start id, the group capture, the group probe) are
-    stubbed per test; every kill primitive is pinned to a refusal here so a
-    seam a test forgot to patch cannot reach the host (see ``_KILL_PRIMITIVES``).
+    ``kill_verified_process`` reads ``platform_compat.IS_WINDOWS`` at call time, and on
+    Windows a fabricated pid can never pin, so unpinned tests differ by runner. Windows
+    tests set it True in their body. Each kill primitive refuses (``_KILL_PRIMITIVES``)
+    so a seam a test forgot to patch cannot reach the host.
     """
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
     for name in _KILL_PRIMITIVES:
@@ -134,11 +126,8 @@ def _handle_of(svc: CronService, session_key: str) -> ProcessHandle:
 def _torn_down_by_the_run(svc: CronService, session_key: str) -> MagicMock:
     """Move the session under ``session_key`` from the live map into the torn-down table.
 
-    The shape of a run whose OWN teardown reset ran first: the session is out of
-    the live map (the pop happens under the registry lock, before the awaits that
-    can hang), and the session manager retains it -- with the process handle read
-    at the pop, as the real table does -- for exactly the life of that teardown,
-    where ``_session_process_handles`` reads it on a live-map miss.
+    Models a run whose own teardown reset ran first: popped from the live map, then
+    retained with its handle, where ``_session_process_handles`` reads it on a miss.
     """
     session = svc._sessions._sessions.pop(session_key)
     _retain_torn_down(svc, session_key, session)
@@ -148,11 +137,8 @@ def _torn_down_by_the_run(svc: CronService, session_key: str) -> MagicMock:
 def _retain_torn_down(svc: CronService, session_key: str, *sessions: Any) -> None:
     """Have the manager double's ``tearing_down`` answer *sessions* under ``session_key``, in order.
 
-    Each entry is the real :class:`TornDown` record -- the session and the handle
-    read off it NOW, at the moment the table would have captured it -- so a test
-    that clears the session's pid afterwards models exactly the hung teardown
-    whose own awaits cleared it. Captured under :func:`_root_reads_back`, as the
-    pop would have read it with the leader alive and leading its own group.
+    Each entry is a real :class:`TornDown` with its handle read now, under
+    :func:`_root_reads_back`; clearing the pid afterwards models a hung teardown.
     """
     with _root_reads_back():
         entries = [TornDown(session, process_handle_of(session)) for session in sessions]
@@ -190,17 +176,9 @@ def _isolated_leader() -> Iterator[None]:
 def _root_reads_back(start_id: str = _START_ID) -> Iterator[None]:
     """The root's start id reads back as ``start_id``, the platform reports the pid alive, it leads its own group, its group probe is empty.
 
-    All four reads are pinned: ``process_survived`` asks the platform for
-    liveness after the identity check (Windows reads a creation time back for an
-    exited child whose handle is still held) and asks a gone leader's group
-    before calling it gone, and an unpinned ``pid_exists`` / ``pgroup_exists`` on
-    a made-up pid answers whatever the host happens to run -- not the same on
-    every runner. ``os.getpgid`` answers the pid itself (:func:`_isolated_leader`),
-    so the snapshot captures the isolated group a ``start_new_session`` root leads
-    (``ProcessHandle.pgid == pid``): the kill then addresses THAT captured id
-    through ``kill_process_group``, which the test pins, and never a group
-    resolved from the pid at signal time. Restored on exit, so a test wanting no
-    captured group patches ``os.getpgid`` itself inside the block.
+    Unpinned ``pid_exists`` / ``pgroup_exists`` on a made-up pid answer whatever the
+    host runs. ``os.getpgid`` returns the pid (:func:`_isolated_leader`), so the kill
+    targets that captured group. To capture no group, patch ``os.getpgid`` in the block.
     """
     with (
         patch("kiro_crew.platform_compat.get_process_start_id", return_value=start_id),

@@ -47,12 +47,11 @@ class TestTheWorkerBudgetIsMemoryBounded:
     #: covered by ``test_xdist_host_budget.py::test_per_worker_reservation_is_platform_aware``.
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module undoes the shared monkeypatch
-    def _pin_per_worker_reservation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _pin_per_worker_reservation(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
         import xdist_budget as budget
 
-        monkeypatch.setattr(budget, "_gib_per_worker", lambda: budget._GIB_PER_WORKER)
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(budget, "_gib_per_worker", lambda: budget._GIB_PER_WORKER)
+        _floor_monkeypatch.setattr(
             budget, "_gib_per_worker_available", lambda: budget._GIB_PER_WORKER_AVAILABLE
         )
 

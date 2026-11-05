@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.manager import app_data_dir
-from kiro_crew.atomic_write import read_json_or
+from kiro_crew.atomic_write import read_json_or, replace_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,7 @@ def write_json_atomic(path: Path, payload: Any) -> None:
             json.dump(payload, handle, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

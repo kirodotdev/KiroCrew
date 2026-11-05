@@ -730,8 +730,8 @@ def read_config_toggles() -> Optional[dict[str, int]]:
 
     A key whose field cannot be resolved is omitted rather than reported as 0 —
     a renamed config field must read as a missing series, never as a switch
-    someone turned off. ``test_every_declared_toggle_resolves`` is what keeps
-    that from being a silent hole.
+    someone turned off. ``test_every_declared_toggle_resolves_against_a_real_config``
+    is what keeps that from being a silent hole.
     """
     from kiro_crew.config.loader import KiroCrewConfig
 
@@ -894,7 +894,7 @@ def register_inventory_gauges(meter: "Meter") -> None:
             GAUGE_MEMBERS,
             callbacks=[_observations(PROBE_MEMBERS, read_members)],
             unit="1",
-            description="Crewmates the person created on this install",
+            description="Bots the person created on this install",
         )
         meter.create_observable_gauge(
             GAUGE_PROBE_FAILURES,

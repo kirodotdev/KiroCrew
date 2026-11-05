@@ -90,9 +90,8 @@ class TestResumePrefetchWiring:
     """chat_runner's allow_resume path: flag pass-through and the TTL arm."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _no_debounce(self, monkeypatch):
-        monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+    def _no_debounce(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
 
     @pytest.mark.asyncio
     async def test_allow_resume_passes_speculative_resume(self):
@@ -199,9 +198,8 @@ class TestToolSearchReplayPrefetchGate:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _no_debounce(self, monkeypatch):
-        monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+    def _no_debounce(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
 
     @pytest.mark.asyncio
     async def test_replayed_resume_spawns_nothing(self, caplog):

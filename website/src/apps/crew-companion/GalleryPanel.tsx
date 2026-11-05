@@ -13,7 +13,8 @@
  * - Listens to gallery:active-changed and gallery:packs-changed broadcasts
  */
 import { ChevronDown, MoreHorizontal, Plus, X } from 'lucide-react'
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
 import type { PackMeta } from '../../lib/appearancePacks/types'
 import { REQUIRED_STATES, STATUS_STATES, RANDOM_STATES, LEGACY_STATES, ALL_MOODS } from '../../lib/appearancePacks/types'
 import { toDataUri } from './animationResolver'
@@ -209,6 +210,27 @@ const S = {
     cursor: 'pointer',
     transition: 'border-color 150ms, box-shadow 150ms',
     boxShadow: isActive ? '0 0 12px var(--accent-glow)' : 'none',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: 8,
+  }),
+  // The card's "use this pack" button: it fills the card and takes over the
+  // card's padding and column layout, so the card looks and clicks as before.
+  // Its radius is the card's inner radius, so the keyboard focus ring follows
+  // the card's rounded corners instead of drawing a square inside them.
+  // It grows to the card's full height too: a card stretched to a taller
+  // neighbour's row height still applies its pack from its bottom strip.
+  cardSelect: (isActive: boolean, isSelected: boolean) => ({
+    width: '100%',
+    flexGrow: 1,
+    padding: isActive || isSelected ? 11 : 12,
+    border: 'none',
+    borderRadius: PANEL_RADIUS.card - (isActive || isSelected ? 2 : 1),
+    background: 'none',
+    color: 'inherit',
+    font: 'inherit',
+    cursor: 'pointer',
     display: 'flex',
     flexDirection: 'column' as const,
     alignItems: 'center',
@@ -549,10 +571,42 @@ function PackCard({ pack, isActive, isSelected, onClick, onManage, thumbnailCont
   colorMap?: ColorMap | null
 }) {
   return (
-    <div role="button" tabIndex={0} aria-pressed={isActive} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }} style={{ ...S.card(isActive, isSelected), position: 'relative' }} onClick={onClick} title={isActive ? undefined : i18nT('apps.crewCompanion.gallery.useNamed', { name: pack.name })}>
+    // A plain card holding two sibling buttons: "use this pack", which fills the
+    // card and carries its padding and layout, and Manage, drawn over its corner.
+    // Manage used to sit inside a role="button" card whose key handler took its
+    // Enter/Space and opened nothing.
+    <div style={{ ...S.card(isActive, isSelected), padding: 0, position: 'relative' }}>
+      <button
+        type="button"
+        aria-pressed={isActive}
+        onClick={onClick}
+        title={isActive ? undefined : i18nT('apps.crewCompanion.gallery.useNamed', { name: pack.name })}
+        style={S.cardSelect(isActive, isSelected)}
+      >
+        {pack.id === DEFAULT_PACK ? (
+          // Built-in ghost: bundled art, drawn like the live companion (see above).
+          <BuiltinThumbnail size={80} colorMap={colorMap} />
+        ) : thumbnailContent ? (
+          // Custom packs bake their own eyes in and are never recoloured through the
+          // built-in colour map, so no eye overlay or colour map here.
+          <AnimThumbnail content={thumbnailContent} format={entryFormat(pack)} size={80} spriteConfig={spriteConfig} />
+        ) : (
+          // A pack whose idle art could not be read: a neutral, empty thumbnail box —
+          // never an emoji stand-in.
+          <span style={{ ...S.thumbnail, display: 'block' }} />
+        )}
+        <span style={S.cardName}>{pack.name}</span>
+        <span style={S.cardAuthor}>{pack.author}</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, minHeight: 20 }}>
+          {isActive
+            ? <span style={S.activeBadge}>{i18nT('apps.crewCompanion.gallery.active')}</span>
+            : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{i18nT('apps.crewCompanion.gallery.tapToUse')}</span>}
+        </span>
+      </button>
       {onManage && (
         <button
-          onClick={(e) => { e.stopPropagation(); onManage() }}
+          type="button"
+          onClick={onManage}
           title={i18nT('apps.crewCompanion.gallery.manage')}
           aria-label={i18nT('apps.crewCompanion.gallery.manage')}
           style={{
@@ -562,25 +616,6 @@ function PackCard({ pack, isActive, isSelected, onClick, onManage, thumbnailCont
           }}
         ><MoreHorizontal size={13} className="lucide-inline" aria-hidden="true" /></button>
       )}
-      {pack.id === DEFAULT_PACK ? (
-        // Built-in ghost: bundled art, drawn like the live companion (see above).
-        <BuiltinThumbnail size={80} colorMap={colorMap} />
-      ) : thumbnailContent ? (
-        // Custom packs bake their own eyes in and are never recoloured through the
-        // built-in colour map, so no eye overlay or colour map here.
-        <AnimThumbnail content={thumbnailContent} format={entryFormat(pack)} size={80} spriteConfig={spriteConfig} />
-      ) : (
-        // A pack whose idle art could not be read: a neutral, empty thumbnail box —
-        // never an emoji stand-in.
-        <div style={S.thumbnail} />
-      )}
-      <div style={S.cardName}>{pack.name}</div>
-      <div style={S.cardAuthor}>{pack.author}</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, minHeight: 20 }}>
-        {isActive
-          ? <span style={S.activeBadge}>{i18nT('apps.crewCompanion.gallery.active')}</span>
-          : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{i18nT('apps.crewCompanion.gallery.tapToUse')}</span>}
-      </div>
     </div>
   )
 }
@@ -599,6 +634,16 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
   onBrowse: () => void
 }) {
   const ime = useImeGuard()
+  const titleId = useId()
+  // Tab stays inside; Escape is handled just below. The trap records the opener
+  // to give focus back to, then seats focus on the first control (Close); the
+  // next effect moves it on to the input the user types into. That input has no
+  // autoFocus: autoFocus runs before the trap's effect, which would record the
+  // input itself as the opener and drop focus on <body> when the dialog closes.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
+  useEffect(() => { inputRef.current?.focus({ preventScroll: true }) }, [])
   // Esc closes, like any dialog
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -609,9 +654,9 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
   return (
     <div role="presentation" style={S.detailOverlay} onClick={onClose}>
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- stopPropagation prevents backdrop dismiss when clicking inside modal */}
-      <div role="dialog" aria-modal="true" style={S.modal} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} style={S.modal} onClick={(e) => e.stopPropagation()}>
         <div style={S.modalHeader}>
-          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{i18nT('apps.crewCompanion.gallery.importPet')}</span>
+          <span id={titleId} style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{i18nT('apps.crewCompanion.gallery.importPet')}</span>
           <button onClick={onClose} aria-label={i18nT('apps.crewCompanion.gallery.close')}
             style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 15, padding: 0 }}>
             <X className="lucide-inline" aria-hidden="true" />
@@ -652,12 +697,12 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
           </div>
 
           <input
+            ref={inputRef}
             value={input}
             onChange={(e) => onInput(e.target.value)}
             {...ime.bindEnter({ onEnter: () => { if (resolved) onConfirm() } })}
             placeholder={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
             aria-label={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
-            autoFocus
             disabled={importing}
             style={{
               width: '100%', boxSizing: 'border-box', background: 'var(--cc-input-bg)',
@@ -724,6 +769,11 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
   const { meta, animations } = detail
   const sc = detail.sprite
   const [showColorCustomizer, setShowColorCustomizer] = useState(false)
+  const titleId = useId()
+  // Focus in on open, Tab stays inside. Escape keeps closing the whole gallery
+  // window (its own listener), so the trap does not claim it.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
   const isDefaultKiro = meta.id === DEFAULT_PACK
   const thumbColorMap = isDefaultKiro ? colorMap : null
 
@@ -771,11 +821,11 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
   return (
     <div role="presentation" style={S.detailOverlay} onClick={onClose}>
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- stopPropagation prevents backdrop dismiss when clicking inside modal */}
-      <div role="dialog" aria-modal="true" style={S.detailPanel} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} style={S.detailPanel} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={S.detailHeader}>
           <div style={{ flex: 1 }}>
-            <div style={S.detailTitle}>{meta.name}</div>
+            <div id={titleId} style={S.detailTitle}>{meta.name}</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
               {meta.author} · {entryFormat(meta).toUpperCase()}
             </div>

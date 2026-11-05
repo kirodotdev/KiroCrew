@@ -143,18 +143,11 @@ def _flush_album(self: TelegramClient, group_id: str) -> None:
             _ALBUM_MAX_MEMBERS,
             dropped,
         )
-    # Derived from the HEAD rather than enumerated field by field. An album is
-    # the head message with more photos and a joined caption, so the only things
-    # the merge decides are those two — everything else is the head's identity
-    # and has to survive verbatim. Enumerating meant a field added to
-    # TelegramInbound was silently dropped here: `reply_to_user_id` went missing
-    # that way, and a reply-to-the-bot album in a mention-mode forum Topic was
-    # then discarded by the activation gate with no trace. `replace` carries a
-    # new field by construction, so the class cannot recur.
-    # `mentions` and `has_entities` join that short list because both describe
-    # the TEXT, which the merge does decide: a mention in a non-head member's
-    # caption is in the joined text, so keeping only the head's would let
-    # mention-only activation drop an album that addressed the bot.
+    # `replace` on the HEAD, not a field-by-field copy, so a field added to
+    # TelegramInbound survives by construction (without `reply_to_user_id` the
+    # activation gate discards reply albums). The merge decides only the
+    # photos and the joined TEXT, which `mentions` and `has_entities` describe:
+    # a mention in a non-head caption must still activate a mention-only chat.
     merged = replace(
         head,
         text=text,
@@ -173,19 +166,11 @@ def _flush_album(self: TelegramClient, group_id: str) -> None:
 def _flush_all_albums(self: TelegramClient) -> None:
     """Best-effort flush of every buffered album, used on shutdown.
 
-    **Not a delivery guarantee.** Shutdown runs the channel teardown and
-    ``SessionManager.close_all()`` concurrently in one ``cleanup_tasks``
-    gather, and ``close_all`` sets ``_closing``, after which ``begin_turn``
-    raises ``SessionClosingError``. So a handler spawned here may lose the
-    race and be refused.
-
-    Kept anyway because it is free and sometimes wins, and because the
-    residual is not a new failure mode: a plain single message that arrives
-    just before shutdown is refused by that same ``_closing`` gate today.
-    Buffering an album widens that pre-existing window by at most
-    ``_ALBUM_WINDOW_S``; it does not introduce a class of loss that was not
-    already there. Draining the buffer here also keeps a closed client from
-    holding album state.
+    **Not a delivery guarantee.** Teardown runs concurrently with
+    ``SessionManager.close_all()``, whose ``_closing`` flag makes ``begin_turn``
+    raise ``SessionClosingError``, so a handler spawned here may be refused. The
+    same gate refuses a single message arriving at shutdown; buffering only
+    widens that window by ``_ALBUM_WINDOW_S``. Draining also frees album state.
     """
     for group_id in list(self._albums):
         self._flush_album(group_id)

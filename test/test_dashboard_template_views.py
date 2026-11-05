@@ -1,30 +1,10 @@
 """The ``timeline`` and ``org-chart`` built-ins, checked as the pair they are.
 
-One module for two templates because their risks are shared: both read the same fold,
-both key a row on the same ``spender`` alias, both decide a worker's SITUATION with the
-same rule, and both would be wrong in the same way if that rule lost a distinction. A
-pair of modules asserting the same invariant twice drifts; this one cannot.
-
-Fold paths first, for the reason every module in this family states: the manifest format
-validates a path's SPELLING and never its target, so a plausible path that resolves to
-nothing ships and renders a blank cell forever with every gate green.
-
-Then the four things that would be wrong SILENTLY -- a page that still looks right in
-review:
-
-1. **The situation rule.** Four readings of an open task that must not share a word:
-   blocked or question needs a PERSON, a recent report means a worker is producing, an
-   old report means idle, and NO report is an absence rather than a long silence. Fold
-   them together and the page reads as a calm board while a worker is stuck.
-2. **One bill per session.** The fold repeats a worker session's spend on each of its
-   task rows, so a row or card that ADDS them multiplies one bill by the tasks it
-   served. The number still looks like a number.
-3. **The window and the absences.** A timeline computes every bar's position against a
-   window; a wrong one draws nothing while every gate is green. And a task with no
-   start stamp must be listed rather than dropped, or the page's own row count lies.
-4. **No session key on the page.** The fold aliases a worker's session key on purpose,
-   because this document is embedded in a page any dashboard caller can read. A page
-   that reached for the key would undo that at the last step.
+Both read the same fold and share the situation rule, so one module checks them. Fold
+paths come first because the manifest checks a path's spelling, never its target. Then
+the silent failures: the four situations (needs a person, producing, idle, no report),
+one bill per session (the fold repeats spend on each task row), the timeline window and
+tasks with no start stamp, and no session key on a page any dashboard caller can read.
 """
 
 from __future__ import annotations
@@ -298,11 +278,8 @@ def test_a_sessions_spend_is_taken_once_and_never_summed(
 ) -> None:
     """MUTATION-SENSITIVE: the row's credits are not a sum over its task rows.
 
-    The fold repeats one worker session's spend on EVERY task row it served, so adding
-    those rows multiplies one bill by the number of tasks. It still prints as a
-    plausible number, which is why this is asserted on the source rather than left to
-    a reviewer to notice. The fixture has a session on two tasks, so the wrong code
-    doubles a real figure.
+    The fold repeats a session's spend on every task row it served; the fixture has a
+    session on two tasks, so a sum doubles a real figure.
     """
     _, page = pages[tid]
     assert "row.credits +=" not in page, f"{tid} accumulates a session's credits"
@@ -353,7 +330,7 @@ def test_an_empty_board_and_an_undrawable_one_say_different_things(
     """Both end in no bars and they are not the same fact: one means there is no crew,
     the other means the crew's work carries no usable stamps."""
     _, page = pages["timeline"]
-    assert "No board has reached this mate" in page
+    assert "No board has reached this Bot" in page
     assert "No task carries a start stamp" in page
 
 
@@ -472,11 +449,8 @@ def test_no_page_reaches_for_a_session_key_or_a_slot(
 ) -> None:
     """MUTATION-SENSITIVE: neither page reads a field that would BE a session key.
 
-    ``worker_session_key`` is the fold's internal name for it and ``slot`` is a
-    conductor's own. The rendered fold carries neither on a task row, so a page naming
-    one is reaching past the alias -- which is the one direction this boundary fails
-    in, since the field would simply resolve to nothing today and quietly start
-    carrying a key if the fold's render ever changed.
+    ``worker_session_key`` and ``slot`` resolve to nothing on a task row today, so a
+    page naming one would quietly start carrying a key if the fold's render changed.
     """
     _, page = pages[tid]
     manifest, _ = pages[tid]
@@ -739,11 +713,8 @@ def test_fold_collapse_syncs_hidden_with_accessibility_tree(
 ) -> None:
     """MUTATION-SENSITIVE: collapsed workers are removed from the AT after the transition.
 
-    grid-template-rows: 0fr clips content visually but does not remove it from the
-    accessibility tree. A screen reader would still announce the workers even when
-    aria-expanded='false' unless hidden or inert is set after the grid row closes.
-    Two mechanisms cover this: transitionend (animated) and a synchronous path for
-    prefers-reduced-motion.
+    grid-template-rows: 0fr hides content only visually, so hidden or inert is set on
+    transitionend, or synchronously under prefers-reduced-motion.
     """
     _, page = pages["org-chart"]
     make_fn = re.search(r"function foldControl\([^)]*\) \{(.*?)\n    \}", page, re.S)
@@ -827,11 +798,8 @@ def test_sub_lead_fold_button_count_includes_its_board_row(
 ) -> None:
     """MUTATION-SENSITIVE: the sub-lead 'Show N' adds 1 for the ITS BOARD chip.
 
-    The sub-lead group's .oc-kids-body contains an ITS BOARD chip row plus the
-    sub-lead's workers. countVisibleRows(kid.sub, subKey) counts only the workers;
-    the sub-lead label must add 1 for the ITS BOARD chip so N matches what the
-    user sees open up (the count used at the lead level already includes this +1
-    via the `count++` line that runs before the recursion).
+    countVisibleRows(kid.sub, subKey) counts only the workers, but the group also opens
+    an ITS BOARD chip row. The lead level gets its +1 from `count++` before the recursion.
     """
     _, page = pages["org-chart"]
     kid = re.search(r"function drawKid\(kid, into, now[^)]*\) \{(.*?)\n    \}", page, re.S)
@@ -854,10 +822,7 @@ def test_an_empty_board_counts_its_nothing_dispatched_row(
 ) -> None:
     """MUTATION-SENSITIVE: a board with no task counts as one row.
 
-    drawKids draws a "nothing dispatched" line for a board with no task, so that line
-    is what opens when the group opens. Counted as zero, a folded empty lead reads
-    "Show 0" and then reveals a row, and every empty sub-lead below a lead makes that
-    lead's count one too low. The behaviour is driven in
+    drawKids draws a "nothing dispatched" line there. The behaviour is driven in
     ``website/src/test/orgChartFoldPage.test.ts``; this pins the two halves together.
     """
     _, page = pages["org-chart"]
@@ -880,11 +845,9 @@ def test_the_rail_stops_at_the_last_elbow_at_both_widths(
 ) -> None:
     """MUTATION-SENSITIVE: the last child's mask lands on the rail, and nothing clips it.
 
-    The mask is a 1px strip in the card colour at ``left: -(padding-left + 1)`` from the
-    last child, which is the rail's own column just outside .oc-kids-body's padding box.
-    An ``overflow`` clip on .oc-kids-body cuts it off there, and a narrower padding kept
-    with the wide offset puts it beside the rail. Either way the rail runs past the last
-    elbow. The outer .oc-kids is the box that clips the closing row.
+    The 1px mask sits at ``left: -(padding-left + 1)``, just outside .oc-kids-body's
+    padding box, so an ``overflow`` clip there or a narrower padding lets the rail run
+    past the last elbow. The outer .oc-kids clips the closing row.
     """
     _, page = pages["org-chart"]
     css = page[: page.index("</style>")]

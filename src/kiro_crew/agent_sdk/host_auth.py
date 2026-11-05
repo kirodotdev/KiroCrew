@@ -73,6 +73,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.kiro_cli_bundle import KIRO_CLI_LOGIN_COMMAND, spawn_login_command
@@ -404,17 +405,15 @@ _KIRO_SIGNED_OUT = (
     f"kiro-cli is not logged in. Run `{KIRO_CLI_LOGIN_COMMAND}` in your terminal, then "
     "start a new chat."
 )
-# KAS can run under either auth owner -- Crew's own vault (the dashboard's Kiro
-# sign-in card) or kiro-cli's store -- and the formatter cannot see which one a
-# process had, so its messages name both remedies. Plain prose (no backticks, no
-# "--") in the remedy: the panel renders it as text.
-_KAS_REMEDY = (
-    f"Sign in from Settings → Agent Harness → Kiro sign-in, or run {KIRO_CLI_LOGIN_COMMAND} "
-    "in your terminal if kiro-cli owns the sign-in, then start a new chat."
-)
+# Choosing KAS means Kiro Crew's own sign-in: the Kiro sign-in card is the remedy
+# on every KAS route. A spawn takes Crew's sign-in through kiro-cli's relay or on
+# Crew's own engine, whichever runs here (``acp/kas_route.py``), so the remedy never
+# sends the user to kiro-cli. :func:`sign_in_remedy` and :func:`signed_out_message`
+# name the route of the running engine in front of it once a spawn has chosen one.
+# Plain prose (no backticks, no "--") in the remedy: the panel renders it as text.
+_KAS_REMEDY = "Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat."
 _KAS_SIGNED_OUT = (
-    "Not signed in to Kiro. Sign in again from Settings → Agent Harness → Kiro sign-in, "
-    f"or run `{KIRO_CLI_LOGIN_COMMAND}` in your terminal if kiro-cli owns the sign-in, "
+    "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, "
     "then start a new chat."
 )
 
@@ -453,8 +452,9 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # account's credentials. In the Crew-owned spawn a recycle on kiro-cli
         # logout is harmless -- the replacement re-probes the vault and comes back
         # Crew-owned -- so the answer stays conservative rather than becoming
-        # spawn-dependent. Its messages name BOTH sign-ins because the formatter
-        # cannot tell which owner a given process had.
+        # spawn-dependent. Its messages name the Kiro sign-in alone: where kiro-cli
+        # cannot run a session, the spawn moves onto Crew's own engine
+        # (``acp/kas_route.py``), so Crew's sign-in is the remedy on every route.
         credential_leaves=(),
         home_override_env_vars=(),
         adapter_own_leaves=(),
@@ -462,6 +462,42 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         signed_out_message=_KAS_SIGNED_OUT,
         host_logout_retires_children=True,
         entitlement_source=ENTITLEMENT_HOST_IDENTITY_STORE,
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_STRANDS,
+        # The Strands CLI stores no credential of its own: its config keeps provider
+        # settings and strips every key name (``normalizeStoredProviderEnvironment``
+        # deletes the ``PROVIDER_CREDENTIAL_KEYS``). A key reaches it from the process
+        # environment, which Crew fills from its own vault (``agent.strands_env``). The
+        # sandbox masks ``~/.aws``, so Bedrock needs a mapped Bedrock API key too.
+        credential_leaves=(),
+        home_override_env_vars=(),
+        # Nothing spared: the routing is ``VERIFIED_GATE_EXTENSION`` (enforced), so the
+        # mask denies the child the whole floor. The vault keys never enter a launch
+        # environment: they reach the gate module through a one-time owner-only file
+        # (``acp/harness/strands_keys.py``), which it loads into its own runtime
+        # environment, removes, and withholds from every shell and code child the
+        # agent runs; the worker then goes non-dumpable -- proved per spawn by its
+        # load marker (agent-host-contract.md, "No provider key is in any launch
+        # environment").
+        adapter_own_leaves=(),
+        sign_in_remedy=(
+            "The Strands harness reaches its model with the provider settings Kiro Crew "
+            "holds for it. Save a key under Settings → Secrets and map it in "
+            "agent.strands_env under the name the provider reads (ANTHROPIC_API_KEY, "
+            "OPENAI_API_KEY, GEMINI_API_KEY, ...). For Bedrock, map "
+            "AWS_BEARER_TOKEN_BEDROCK and AWS_REGION: the harness runs sandboxed "
+            "without ~/.aws or the host's AWS environment."
+        ),
+        signed_out_message=(
+            "The Strands harness has no model credential. Save a key under Settings > "
+            "Secrets and map it in `agent.strands_env` (for example "
+            "`ANTHROPIC_API_KEY: secret://my-anthropic-key`; for Bedrock, "
+            "`AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION`), then start a new chat."
+        ),
+        # Its credential is not the host's: a kiro-cli logout cannot bear on it.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_HOST_VAULT,
     ),
     AgentAuthDeclaration(
         backend=ACP_BACKEND_CODEX,
@@ -924,6 +960,37 @@ def _with_spawn_login_command(
     return text.replace(KIRO_CLI_LOGIN_COMMAND, command)
 
 
+def _with_kas_route(backend: str, text: str, *, quoted: bool) -> str:
+    """*text*, led by the route the running KAS engine took, for a KAS message.
+
+    The route is the one the last KAS spawn in this process recorded
+    (``acp.kas_route.last_spawn_route``), so the message names the engine that
+    answered, and nothing is said before any spawn chose one. A plain read of a
+    module slot: no file or network IO, so a message raised on the event loop
+    stays cheap.
+    """
+    route = None
+    if backend == ACP_BACKEND_KAS:
+        # Read from ``sys.modules``, never imported here: importing it would load
+        # the whole ACP package into callers that only want a string, and a
+        # process that never loaded it has spawned no KAS engine to name.
+        import sys
+
+        kas_route = sys.modules.get("kiro_crew.acp.kas_route")
+        route = kas_route.last_spawn_route() if kas_route is not None else None
+        if route is not None and route.reason == "kiro_cli_launcher":  # REASON_KIRO_CLI_LAUNCHER
+            # A relay pinned to kiro-cli's launcher: only kiro-cli's own sign-in
+            # starts it, so that is the remedy. *quoted* is the message form; the
+            # panel renders the remedy as plain text.
+            command = f"`{KIRO_CLI_LOGIN_COMMAND}`" if quoted else KIRO_CLI_LOGIN_COMMAND
+            if route.crew_auth:
+                # Crew's vault answers the engine too: either sign-in can be the
+                # one that failed, so both remedies are named.
+                return f"{route.describe()}. Run {command} in your terminal, or: {text}"
+            return f"{route.describe()}. Run {command} in your terminal, then start a new chat."
+    return text if route is None else f"{route.describe()}. {text}"
+
+
 def sign_in_remedy(
     backend: str,
     environ: Optional[Mapping[str, str]] = None,
@@ -937,8 +1004,28 @@ def sign_in_remedy(
     """
     declaration = declaration_for(backend)
     return _with_spawn_login_command(
-        declaration, declaration.sign_in_remedy, environ, platform_name
+        declaration,
+        _with_kas_route(backend, declaration.sign_in_remedy, quoted=False),
+        environ,
+        platform_name,
     )
+
+
+def bedrock_auth_remedy(backend: str) -> str:
+    """The Bedrock auth-failure text for a harness whose remedy is not the host's AWS
+    sign-in, or ``""`` for the shared one.
+
+    Strands runs under the enforced sandbox, whose mask hides ``~/.aws``, so the
+    host's AWS profiles never reach it: the remedy is the vault mapping, named.
+    """
+    if backend == ACP_BACKEND_STRANDS:
+        return (
+            "Bedrock authentication failed. Strands runs sandboxed and cannot read ~/.aws "
+            "profiles: store a Bedrock API key in the vault and map it with "
+            'agent.strands_env ({"AWS_BEARER_TOKEN_BEDROCK": "secret://<name>", '
+            '"AWS_REGION": "secret://<name>"}), then start a new chat.'
+        )
+    return ""
 
 
 def signed_out_message(
@@ -955,7 +1042,10 @@ def signed_out_message(
     """
     declaration = declaration_for(backend)
     return _with_spawn_login_command(
-        declaration, declaration.signed_out_message, environ, platform_name
+        declaration,
+        _with_kas_route(backend, declaration.signed_out_message, quoted=True),
+        environ,
+        platform_name,
     )
 
 

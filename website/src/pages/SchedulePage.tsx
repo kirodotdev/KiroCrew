@@ -1,6 +1,7 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
 import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X } from 'lucide-react'
@@ -57,9 +58,9 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuidePredicate, useGuideSelection } from '../guide/guidePredicates'
 import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
-import { compareText, fmtDateTimeNumeric, fmtTime } from '../i18n/format'
+import { compareText, fmtDateTimeNumeric, fmtRelative, fmtTime } from '../i18n/format'
 import { formatCadence } from '../utils/scheduleCadence'
-import { browserTimeZone, isValidTimeZone } from '../utils/tz'
+import { browserTimeZone, isValidTimeZone, jobZoneCaption } from '../utils/tz'
 import { guideConfirm, guidePick, guidePickControl } from '../uiLocations/targetRegistry'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 
@@ -172,17 +173,10 @@ const fmtAgo = (ts?: number) => {
 
 const fmtIn = (ts?: number | null) => {
   if (ts == null) return '—'
-  const s = Math.floor(ts - Date.now() / 1000)
-  if (s <= 0) return i18nT('pages.schedulePage.now')
-  // `in <1m` deliberately stays English for now: as a NEW catalog value it is
-  // rejected by check-source-strings' `leading-connector` rule, which cannot
-  // separate a lowercase standalone label from a real sentence fragment (its
-  // own comment names `in progress` as the same known limit). The `${}` branches
-  // below need a key plus `{{vars}}`, which is Phase 6.
-  if (s < 60) return 'in <1m'
-  if (s < 3600) return `in ${Math.floor(s / 60)}m`
-  if (s < 86400) { const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return `in ${h}h ${m}m` }
-  const d = Math.floor(s / 86400); const h = Math.floor((s % 86400) / 3600); return `in ${d}d ${h}h`
+  if (ts - Date.now() / 1000 <= 0) return i18nT('pages.schedulePage.now')
+  // The locale words the future offset (`in 5m`, `in 5 m`, `5分钟后`) in the
+  // largest unit that fits.
+  return fmtRelative(ts * 1000, { numeric: 'always' })
 }
 
 /**
@@ -276,7 +270,13 @@ export function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder:
           <Btn danger onClick={() => { setConfirming(false); onDelete() }}>
             {i18nT('pages.schedulePage.cronFolders.delete_folder_named', { name: folder.name })}
           </Btn>
-          <Btn onClick={() => setConfirming(false)}>
+          {/* Cancel unmounts the row and itself with it, which would drop
+              focus to the page: hand it back to the trigger, as the rename
+              editor does, a frame later so the row has gone. */}
+          <Btn onClick={() => {
+            setConfirming(false)
+            requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }))
+          }}>
             {i18nT('pages.schedulePage.cancel')}
           </Btn>
         </div>
@@ -430,6 +430,12 @@ export default function SchedulePage() {
   const folderNameIme = useImeGuard()
   const batchConfirmIme = useImeGuard()
   const [folderModalError, setFolderModalError] = useState<string | null>(null)
+  // One create at a time: a quick second Enter or click would otherwise POST
+  // the same name twice. The ref blocks the repeat in the same tick; the state
+  // disables Create and Cancel, labels Create "Creating…", and holds the dialog
+  // open until the POST settles.
+  const folderCreateInFlight = useRef(false)
+  const [folderCreating, setFolderCreating] = useState(false)
   const toggleFolderCollapse = useCallback((folderId: string) => {
     setCollapsedFolders(prev => {
       const next = new Set(prev)
@@ -510,7 +516,9 @@ export default function SchedulePage() {
   }, [])
   const handleFolderModalSubmit = useCallback(async () => {
     const name = folderModalName.trim()
-    if (!name) return
+    if (!name || folderCreateInFlight.current) return
+    folderCreateInFlight.current = true
+    setFolderCreating(true)
     try {
       setFolderModalError(null)
       const res = await api.createCronFolder(name) as { id: string }
@@ -519,6 +527,9 @@ export default function SchedulePage() {
     } catch (e) {
       // Keep modal OPEN so user can correct the name — show inline error
       setFolderModalError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed'))
+    } finally {
+      folderCreateInFlight.current = false
+      setFolderCreating(false)
     }
   }, [folderModalName, refreshFolders])
   const handleMoveJob = useCallback(async (jobId: string, folderId: string) => {
@@ -866,7 +877,7 @@ export default function SchedulePage() {
               )}
               {selectedIds.size > 0 && (
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-[13px] text-muted whitespace-nowrap">{selectedIds.size} {i18nT('pages.schedulePage.selected')}</span>
+                  <span className="text-[13px] text-muted whitespace-nowrap">{i18nT('pages.schedulePage.n_selected', { count: selectedIds.size })}</span>
                   <Btn onClick={clearSelection}>{i18nT('pages.schedulePage.clear')}</Btn>
                   <CronJobMoveMenu
                     folders={cronFolders}
@@ -894,8 +905,8 @@ export default function SchedulePage() {
                     }}
                     onNewFolder={handleNewFolder}
                   />
-                  <Btn danger onClick={openBatchConfirm} title={`Delete ${selectedIds.size} selected job(s)`}>
-                    <span className="flex items-center gap-1.5"><Trash2 size={14} /> {i18nT('pages.schedulePage.delete')} {selectedIds.size} {i18nT('pages.schedulePage.selected')}</span>
+                  <Btn danger onClick={openBatchConfirm} title={i18nT('pages.schedulePage.delete_n_selected_jobs', { count: selectedIds.size })}>
+                    <span className="flex items-center gap-1.5"><Trash2 size={14} /> {i18nT('pages.schedulePage.delete_n_selected', { count: selectedIds.size })}</span>
                   </Btn>
                 </div>
               )}
@@ -1144,7 +1155,7 @@ export default function SchedulePage() {
                     the page -- it was spending the column's pixels to fit fewer
                     characters. `fmtCron`'s raw-expression fallback stays legible
                     without it. */}
-                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</TableCell>
+                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{jobZoneCaption(j)}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
                 <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${j.last_error || ''}`}>{i18nT('pages.schedulePage.partial')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
                 <TableCell className="text-muted">
@@ -1289,7 +1300,7 @@ export default function SchedulePage() {
 
       <Dialog
         open={!!folderModal}
-        onOpenChange={next => { if (!next) setFolderModal(prev => { prev?.resolve?.(undefined); return null }) }}
+        onOpenChange={next => { if (!next && !folderCreating) setFolderModal(prev => { prev?.resolve?.(undefined); return null }) }}
       >
         <DialogContent maxWidth={360}>
           <DialogHeader>
@@ -1315,9 +1326,9 @@ export default function SchedulePage() {
             <ErrorNotice className="mt-3" message={folderModalError} testId="schedule-folder-create-error" />
           </DialogBody>
           <DialogFooter>
-            <Btn onClick={() => { setFolderModal(prev => { prev?.resolve?.(undefined); return null }) }}>{i18nT('pages.schedulePage.cancel')}</Btn>
-            <SendBtn onClick={handleFolderModalSubmit} disabled={!folderModalName.trim()}>
-              {i18nT('pages.schedulePage.cronFolders.create')}
+            <Btn onClick={() => { setFolderModal(prev => { prev?.resolve?.(undefined); return null }) }} disabled={folderCreating}>{i18nT('pages.schedulePage.cancel')}</Btn>
+            <SendBtn onClick={handleFolderModalSubmit} disabled={!folderModalName.trim() || folderCreating}>
+              {folderCreating ? i18nT('pages.schedulePage.cronFolders.creating') : i18nT('pages.schedulePage.cronFolders.create')}
             </SendBtn>
           </DialogFooter>
         </DialogContent>
@@ -1334,11 +1345,11 @@ export default function SchedulePage() {
           <DialogHeader>
             <Trash2 size={16} className="text-danger shrink-0" aria-hidden="true" />
             <DialogTitle>
-              {i18nT('pages.schedulePage.delete')} {i18nT('pages.schedulePage.scheduled_job', { count: selectedIds.size })}?
+              {i18nT('pages.schedulePage.delete_n_scheduled_jobs_title', { count: selectedIds.size })}
             </DialogTitle>
           </DialogHeader>
           <DialogBody>
-            <DialogDescription className="mb-3">{i18nT('pages.schedulePage.this_permanently_removes_the_selected_job', { count: selectedIds.size })} {i18nT('pages.schedulePage.and_their_run_history_this_action_cannot_be_undo')}</DialogDescription>
+            <DialogDescription className="mb-3">{i18nT('pages.schedulePage.bulk_delete_removes_jobs_and_history', { count: selectedIds.size })}</DialogDescription>
             <div className="max-h-[168px] overflow-y-auto rounded-md border border-border bg-bg divide-y divide-border/60 mb-4">
               {selectedJobs.map(jb => (
                 <div key={jb.id} className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
@@ -1354,14 +1365,16 @@ export default function SchedulePage() {
                   a zh-CN user typed the displayed 删除 and bulk delete stayed
                   disabled. Keep it untranslated.
 
-                  The key is `type_verb_to_confirm`, NOT the `type` used by the
-                  table header above: English "Type" is both a noun (the column)
-                  and an imperative verb (this instruction), and no single
-                  translation serves both. Sharing one key made es/pt render the
-                  NOUN here ("Tipo delete para confirmar"), turning the
-                  instruction into a fragment. A key whose name states the part
-                  of speech is what keeps a translator from having to guess. */}
-              {i18nT('pages.schedulePage.type_verb_to_confirm')} <code className="text-text font-semibold">{BULK_DELETE_TOKEN}</code> {i18nT('pages.schedulePage.to_confirm')}
+                  The sentence is ONE key with a `<token/>` slot, so each
+                  language places the token where its word order needs it
+                  (ja/ko put the verb after it). It is not the `type` key used
+                  by the table header above: English "Type" is both a noun (the
+                  column) and an imperative verb (this instruction), and sharing
+                  one key made es/pt render the NOUN here. */}
+              <Trans
+                i18nKey="pages.schedulePage.type_token_to_confirm"
+                components={{ token: <code className="text-text font-semibold">{BULK_DELETE_TOKEN}</code> }}
+              />
             </label>
             <input
               id="batch-delete-confirm"
@@ -1752,8 +1765,8 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           <div className="flex items-center justify-between">
             <SegmentedControl
               segments={[
-                { key: 'details' as const, label: 'Details' },
-                { key: 'logs' as const, label: 'Logs' },
+                { key: 'details' as const, label: i18nT('pages.schedulePage.details_tab') },
+                { key: 'logs' as const, label: i18nT('pages.schedulePage.logs_tab') },
               ]}
               value={detailTab}
               onChange={setDetailTab}
@@ -1830,7 +1843,10 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             {job && !job.last_error && job.last_result && (
               <div className="flex flex-col gap-1.5">
                 <div className="text-[12px] text-muted font-medium">{i18nT('pages.schedulePage.last_output')}</div>
-                <pre className="text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 max-h-[200px] overflow-y-auto bg-bg-elevated border-border text-text">{job.last_result}</pre>
+                {/* Same viewport-relative cap as the Last Error notice above
+                    (#21061): a fixed 200px left most of a long output behind
+                    the inner scrollbar. */}
+                <pre data-testid="schedule-job-last-output" className="text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 shrink-0 max-h-[min(45vh,420px)] overflow-y-auto bg-bg-elevated border-border text-text">{job.last_result}</pre>
               </div>
             )}
             {job?.last_run_ts && (

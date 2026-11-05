@@ -32,6 +32,7 @@ import {
   type GraphNode, type NodeState, type FrontierItem,
 } from '../lib/deps'
 import { i18nT } from '../../../i18n/t'
+import { fmtNumber } from '../../../i18n/format'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { splitOnPlaceholder } from '../../../lib/splitOnPlaceholder'
 import { sliceCodePoints } from '../../../components/CommentOverlay'
@@ -623,7 +624,10 @@ function FocusTree({ root, nodes, liveEdges, reduceMotion, onReRoot, onOpen }: {
       <svg
         role="img"
         aria-label={i18nT('apps.issueRadar.views.graphView.aria_tree', {
-          kind: SIGIL(rootNode), number: root, nodes: model.ids.size, edges: model.edges.length,
+          kind: SIGIL(rootNode), number: root,
+          count: model.ids.size,
+          nodes: fmtNumber(model.ids.size),
+          edges: i18nT('apps.issueRadar.views.graphView.live_edges', { count: model.edges.length, n: fmtNumber(model.edges.length) }),
         })}
         viewBox={`0 0 ${totalW} ${totalH}`}
         preserveAspectRatio="xMidYMid meet"
@@ -634,7 +638,10 @@ function FocusTree({ root, nodes, liveEdges, reduceMotion, onReRoot, onOpen }: {
         {/* Header line: tree of IS-<n>: X nodes · Y live edges. */}
         <text x={16} y={26} fill="var(--muted-strong)" fontSize={11} letterSpacing=".1em">
           {i18nT('apps.issueRadar.views.graphView.tree_stat', {
-            kind: SIGIL(rootNode), number: root, nodes: model.ids.size, edges: model.edges.length,
+            kind: SIGIL(rootNode), number: root,
+            count: model.ids.size,
+            nodes: fmtNumber(model.ids.size),
+            edges: i18nT('apps.issueRadar.views.graphView.live_edges', { count: model.edges.length, n: fmtNumber(model.edges.length) }),
           })}
         </text>
 

@@ -221,7 +221,7 @@ async def fork_session(
             await refuse_foreign_home_filing(state, slot_history_key(caller_slot), folder_id)
         except MateHomeLockedError:
             raise SessionControlError(
-                "this folder belongs to a mate", status=403, code="mate_home_locked"
+                "this folder belongs to a Bot", status=403, code="mate_home_locked"
             ) from None
 
     # Re-gate adjacent to the allocation, as `create_session` does: every input
@@ -254,13 +254,13 @@ async def fork_session(
         raise SessionControlError(
             f"slot cap reached ({MAX_LIVE_SLOTS})",
             code="slot_cap_reached",
-            status=429,
+            status=409,
         )
     if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
         raise SessionControlError(
             f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
             code="creator_slot_cap_reached",
-            status=429,
+            status=409,
         )
 
     audit_caller = f"session:{caller_key}"
@@ -343,13 +343,13 @@ async def fork_session(
         # same synchronous gate-then-act window `create_session` holds.
         if state.live_slot_count() >= MAX_LIVE_SLOTS:
             raise SessionControlError(
-                f"slot cap reached ({MAX_LIVE_SLOTS})", code="slot_cap_reached", status=429
+                f"slot cap reached ({MAX_LIVE_SLOTS})", code="slot_cap_reached", status=409
             )
         if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
             raise SessionControlError(
                 f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
                 code="creator_slot_cap_reached",
-                status=429,
+                status=409,
             )
 
     in_crew_tree = False
@@ -373,8 +373,9 @@ async def fork_session(
         child._lineage_minted = True
         from kiro_crew.dashboard.approval_posture import trust_carries
 
-        # A card-scoped trust ("Trust this crew member") covers the caller's own
-        # tools only, so a fork does not inherit it (``trust_carries``).
+        # A card-scoped trust ("Trust this crew member") covers the caller and the
+        # subagents it spawns, not a fork, so a fork does not inherit it
+        # (``trust_carries``).
         posture["trust"] = trust_carries(live_caller)
         posture["trust_reads"] = bool(getattr(live_caller, "_trust_reads", False))
         child._trust = posture["trust"]

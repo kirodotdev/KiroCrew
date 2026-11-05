@@ -211,8 +211,9 @@ class TestLiveScopeNarrowing:
             patch.object(mod, "get_app_manifest") as gm,
             patch.object(mod, "_schedule_declared_refresh"),
         ):
-            mod.effective_allowed_events("mochi-pet", self._snapshot())
+            eff = mod.effective_allowed_events("mochi-pet", self._snapshot())
             gm.assert_not_called()
+        assert eff == self._snapshot(), "a cold cache falls back to the connect snapshot"
 
     def test_refresh_is_coalesced(self):
         from kiro_crew.dashboard import ws_event_scope as mod
@@ -222,6 +223,7 @@ class TestLiveScopeNarrowing:
             for _ in range(20):
                 mod._schedule_declared_refresh("mochi-pet")
         assert loop.run_in_executor.call_count == 1
+        assert mod._declared_refreshing == {"mochi-pet"}
 
     def test_disabled_app_declares_nothing_even_with_manifest_intact(self):
         """`disable_app` flips `enabled` and leaves `app.json` alone.
@@ -258,7 +260,7 @@ class TestLiveScopeNarrowing:
             patch.object(mod, "is_app_enabled", return_value=False),
             patch.object(mod, "get_app_manifest") as gm,
         ):
-            mod._read_declared_events("mochi-pet")
+            assert mod._read_declared_events("mochi-pet") == (False, frozenset())
             gm.assert_not_called()
 
     def test_missing_manifest_reads_as_no_declarations_but_not_revoked(self):
@@ -990,6 +992,7 @@ class TestExposeToCacheNeverBlocksTheLoop:
             for _ in range(25):
                 mod._schedule_expose_to_refresh("other-app")
         assert loop.run_in_executor.call_count == 1
+        assert mod._exposeto_refreshing == {"other-app"}
 
     def test_no_running_loop_falls_back_to_sync_load(self):
         """Off the loop (tests, CLI) blocking is fine -- and refusing to load

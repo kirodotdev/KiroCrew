@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew.crew_log import crew_log_path, emit, resolve
 
@@ -68,7 +69,7 @@ def _open_session() -> None:
     )
 
 
-# --- doubles ---------------------------------------------------------------
+# doubles
 
 
 class _Provider:
@@ -107,13 +108,9 @@ def test_a_namespaced_key_resolves_through_the_live_registry():
 def test_a_session_that_never_had_an_acp_session_resolves_to_unknown():
     """Unknown is an answer, and the emitter's no-op turns it into "do not write".
 
-    A crew log that omits a fact is behind. One that files a fact under the wrong
-    session is wrong, and no reader can tell.
-
-    Asserted against the literal empty string rather than ``resolve.UNKNOWN``: the
-    contract the emitter relies on is that this value is FALSY, since its own guard
-    is ``not session_id``. Comparing to the constant would hold no matter what the
-    constant became.
+    A fact filed under the wrong session is worse than a missing one. Compared to the
+    literal empty string, not ``resolve.UNKNOWN``, because the emitter's guard is
+    ``not session_id`` and needs the value FALSY.
     """
     assert resolve.unit_for_session_key(_Sessions({}), "dashboard:chat-7") == ""
 
@@ -155,7 +152,7 @@ def test_a_registry_that_raises_answers_unknown_rather_than_propagating():
     assert resolve.unit_for_session_key(_Angry(), "dashboard:chat-7") == resolve.UNKNOWN
 
 
-# --- approvals -------------------------------------------------------------
+# approvals
 
 
 def test_an_approval_is_requested_before_it_is_decided():
@@ -164,7 +161,7 @@ def test_an_approval_is_requested_before_it_is_decided():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_approval_requested(SESSION, 1, approval_id="r1", tool="shell", reason="rm -rf build")
     emit.on_approval_decided(SESSION, 1, approval_id="r1", decision="approved")
-    assert emit.flush()
+    assert_drained()
     kinds = [e["type"] for e in _body()]
     assert kinds.index("approval/requested") < kinds.index("approval/decided")
 
@@ -182,7 +179,7 @@ def test_a_host_decline_names_the_host_and_its_cause_and_a_human_one_names_neith
         SESSION, 1, approval_id="r1", decision="rejected", by="host", cause="approval_timeout"
     )
     emit.on_approval_decided(SESSION, 1, approval_id="r2", decision="approved")
-    assert emit.flush()
+    assert_drained()
     host, human = _of("approval/decided")
     assert host["by"] == "host" and host["cause"] == "approval_timeout"
     assert host["decision"] == "rejected", "the cause must not displace the decision"
@@ -200,7 +197,7 @@ def test_an_approval_whose_tool_the_frame_did_not_name_omits_the_field():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_approval_requested(SESSION, 1, approval_id="r1", tool="", reason="")
     emit.on_approval_requested(SESSION, 1, approval_id="r2", tool="shell", reason="ls")
-    assert emit.flush()
+    assert_drained()
     unnamed, named = _of("approval/requested")
     assert "tool" not in unnamed and "reason" not in unnamed
     assert unnamed["approval_id"] == "r1", "the request is still recorded"
@@ -212,7 +209,7 @@ def test_a_long_approval_reason_is_clipped_rather_than_losing_the_entry():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_approval_requested(SESSION, 1, approval_id="r1", tool="shell", reason="x" * 5000)
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("approval/requested")
     assert len(data["reason"]) == emit._MAX_SHORT_TEXT
     assert data["reason"].endswith("\u2026"), "a clipped value must say it was cut"
@@ -228,12 +225,12 @@ def test_an_approval_reason_is_redacted_at_the_emitter_not_trusted_from_the_site
         tool="shell",
         reason="curl -H 'Authorization: Bearer sk-live-ABCDEF1234567890abcdef'",
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("approval/requested")
     assert "sk-live-ABCDEF1234567890abcdef" not in data["reason"]
 
 
-# --- plan ------------------------------------------------------------------
+# plan
 
 
 def test_a_plan_records_only_the_two_states_the_stream_carries():
@@ -248,7 +245,7 @@ def test_a_plan_records_only_the_two_states_the_stream_carries():
             {"id": "b", "text": "write the test", "completed": False},
         ],
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("plan/updated")
     assert [row["state"] for row in data["items"]] == ["done", "open"]
     assert {row["state"] for row in data["items"]} <= {"done", "open"}
@@ -259,23 +256,18 @@ def test_no_task_list_writes_nothing_but_an_empty_one_records_a_cleared_plan():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_plan_updated(SESSION, 1, items=None)
-    assert emit.flush()
+    assert_drained()
     assert _of("plan/updated") == []
     emit.on_plan_updated(SESSION, 1, items=[])
-    assert emit.flush()
+    assert_drained()
     assert _of("plan/updated") == [{"turn": 1, "items": []}]
 
 
 def test_the_two_unconditionally_called_emitters_do_no_work_with_the_flag_off(monkeypatch):
     """The runner calls these two on every plan change and every approval prompt.
 
-    Both do real work before `_write` gets its own chance to no-op -- a redaction
-    per task and a serialize probe per admitted row -- so relying on that guard
-    alone spends event-loop time on a feature that is off by default. The subagent
-    and background emitters need no guard of their own: their callers already check.
-
-    Asserted by making the work itself fail if it runs, which is what keeps this
-    from passing for the wrong reason once the bodies change.
+    Both redact and serialize before `_write` can no-op, so they need their own flag
+    guard. The work is patched to fail if it runs, so the test cannot pass by accident.
     """
     monkeypatch.setenv(emit.CREW_LOG_ENV, "0")
     assert not emit.enabled()
@@ -292,12 +284,8 @@ def test_the_two_unconditionally_called_emitters_do_no_work_with_the_flag_off(mo
 def test_a_plan_of_emoji_is_bounded_by_bytes_and_still_lands():
     """Character bounds do not bound bytes, and a refused entry is a lost fact.
 
-    ``_clip`` bounds each text in characters while the store serializes with
-    ``ensure_ascii`` -- six bytes for a BMP character, twelve for a surrogate pair.
-    A dozen separately-legal rows of emoji therefore serialize past the 64 KiB entry
-    ceiling, where the append is REFUSED and the whole update disappears. Eleven
-    rows of 500 emoji is enough to cross it, so this is the shape a real todo list
-    reaches, not a synthetic extreme.
+    ``_clip`` bounds characters, but ``ensure_ascii`` writes twelve bytes per surrogate
+    pair, so eleven rows of 500 emoji pass the 64 KiB entry ceiling and are refused.
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
@@ -306,7 +294,7 @@ def test_a_plan_of_emoji_is_bounded_by_bytes_and_still_lands():
         1,
         items=[{"id": str(n), "text": "\U0001f600" * 500, "completed": False} for n in range(40)],
     )
-    assert emit.flush()
+    assert_drained()
     written = _of("plan/updated")
     assert written, "the entry must land rather than be refused whole"
     (data,) = written
@@ -327,7 +315,7 @@ def test_one_oversize_plan_row_does_not_suppress_the_whole_entry():
     emit.on_plan_updated(
         SESSION, 1, items=[{"id": "a", "text": "\U0001f600" * 500, "completed": True}]
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("plan/updated")
     assert len(data["items"]) == 1
     assert data["items"][0]["state"] == "done"
@@ -341,7 +329,7 @@ def test_a_runaway_plan_is_clipped_and_still_reports_its_real_size():
         1,
         items=[{"id": str(n), "text": f"t{n}", "completed": False} for n in range(500)],
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("plan/updated")
     assert len(data["items"]) == emit._MAX_PLAN_ITEMS
     assert data["total"] == 500
@@ -351,12 +339,12 @@ def test_a_plan_entry_is_ignorable_because_nothing_later_depends_on_reading_it()
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_plan_updated(SESSION, 1, items=[{"id": "a", "text": "t", "completed": False}])
-    assert emit.flush()
+    assert_drained()
     (entry,) = [e for e in _body() if e["type"] == "plan/updated"]
     assert entry.get("ignorable") is True
 
 
-# --- background ------------------------------------------------------------
+# background
 
 
 class _Usage:
@@ -381,7 +369,7 @@ def test_a_background_call_records_the_dimensions_that_were_billed_and_omits_the
         output_tokens=12,
         duration_ms=430,
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("background/completed")
     assert data["tokens"] == {"input": 900, "output": 12}
     assert "credits" not in data, "an unbilled dimension must be absent, not zero"
@@ -394,7 +382,7 @@ def test_a_background_call_names_no_turn():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
     emit.on_background_completed(SESSION, kind="summary", model="m", credits=0.4)
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("background/completed")
     assert "turn" not in data
     assert data["credits"] == pytest.approx(0.4)
@@ -434,7 +422,7 @@ def test_a_background_owner_is_resolved_before_the_call_not_after_it():
     _record_background_crew_log(
         owner, "title", _Usage(credits=1.0), model="m", provider="acp", elapsed_ms=1
     )
-    assert emit.flush()
+    assert_drained()
     assert _entries(SESSION), "the spend stayed with the session that incurred it"
     assert _of("background/completed")[0]["kind"] == "title"
     assert _entries("successor-sid") == [], "and did not follow the successor"
@@ -443,13 +431,8 @@ def test_a_background_owner_is_resolved_before_the_call_not_after_it():
 def test_both_background_helpers_pin_the_owner_before_their_first_await():
     """Resolving after a suspension point names the successor, not the incurrer.
 
-    The test above proves the resolver answers "now"; this one proves the call sites
-    ask at the right now. Both helpers begin by acquiring a background session, and
-    that acquisition suspends -- it can take the runtime lock and start a runtime --
-    so an owner resolved after it can already belong to a slot that was reset while
-    the acquisition waited. Asserted on the source rather than by racing an event
-    loop, because the property is an ORDER in the function body and a future edit
-    that moves the resolve back down would restore the bug silently.
+    Acquiring a background session suspends, and the slot may be reset meanwhile.
+    Checked on the source because the property is an ORDER in the function body.
     """
     import ast
     import importlib
@@ -499,14 +482,14 @@ def test_a_named_background_call_lands_in_the_owner_s_log():
         provider="acp",
         elapsed_ms=77,
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("background/completed")
     assert data["kind"] == "memory_consolidation"
     assert data["credits"] == pytest.approx(2.5)
     assert data["tokens"] == {"input": 40}
 
 
-# --- children --------------------------------------------------------------
+# children
 
 
 def test_a_child_is_spawned_then_closed_and_the_spawn_carries_its_scope():
@@ -521,7 +504,7 @@ def test_a_child_is_spawned_then_closed_and_the_spawn_carries_its_scope():
         scope={"memory": False, "lessons": True, "project": True},
     )
     emit.on_subagent_completed(SESSION, agent_id="ab12", duration_ms=9100)
-    assert emit.flush()
+    assert_drained()
     kinds = [e["type"] for e in _body()]
     assert kinds.index("subagent/spawned") < kinds.index("subagent/completed")
     (spawned,) = _of("subagent/spawned")
@@ -532,16 +515,13 @@ def test_a_child_is_spawned_then_closed_and_the_spawn_carries_its_scope():
 def test_a_spawn_carries_no_ref_because_the_child_has_no_log_to_cite():
     """The schema describes one; no subagent path opens a crew log to point at.
 
-    A ``ref`` written now would cite a file that does not exist, which a reader
-    cannot distinguish from one that was deleted. Checked in BOTH places a citation
-    could appear -- the envelope's own field and the entry's data -- because only
-    the envelope form is a real reference and a `ref` key smuggled into data would
-    read like one to anything scanning the line.
+    A ``ref`` now would cite a missing file that looks deleted. Checked in both the
+    envelope field and the entry's data, since a `ref` key in data reads like one.
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_subagent_spawned(SESSION, 1, agent_id="ab12", agent="kirocrew")
-    assert emit.flush()
+    assert_drained()
     (entry,) = [e for e in _body() if e["type"] == "subagent/spawned"]
     assert "ref" not in entry
     assert "ref" not in entry["data"]
@@ -557,7 +537,7 @@ def test_a_spawn_with_no_asking_turn_omits_the_field_rather_than_writing_zero():
     """
     _open_session()
     emit.on_subagent_spawned(SESSION, 0, agent_id="ab12", agent="kirocrew")
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("subagent/spawned")
     assert "turn" not in data
     assert data["agent_id"] == "ab12", "the child is still recorded"
@@ -567,7 +547,7 @@ def test_a_completed_child_reports_no_tokens_and_no_credits():
     """Nothing in the subagent runtime measures either; zeros would be a claim."""
     _open_session()
     emit.on_subagent_completed(SESSION, agent_id="ab12", duration_ms=5)
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("subagent/completed")
     assert "tokens" not in data and "credits" not in data
 
@@ -581,7 +561,7 @@ def test_a_stopped_child_is_not_recorded_as_a_completion():
     _open_session()
     emit.on_subagent_failed(SESSION, agent_id="ab12", reason="", outcome="stopped", duration_ms=12)
     emit.on_subagent_failed(SESSION, agent_id="cd34", reason="provider refused", outcome="failed")
-    assert emit.flush()
+    assert_drained()
     assert _of("subagent/completed") == []
     stopped, failed = _of("subagent/failed")
     assert stopped["outcome"] == "stopped" and "reason" not in stopped
@@ -603,12 +583,9 @@ def test_a_child_s_origin_is_pinned_once_so_a_queued_member_keeps_the_asking_tur
 def test_a_replayed_queued_child_is_repinned_with_an_unobserved_turn(monkeypatch):
     """A restart empties the origin map, and the durable queue replays the row.
 
-    Skipping the pin on a ``from_queue`` pass costs nothing in the process that
-    ACCEPTED the child, because the pin refuses to move. In a process that replayed
-    the row there is no pin to keep, so skipping it drops that child's spawn, steer
-    and terminal entries with nothing left to report the gap. The turn stays
-    unobserved: the one that asked is gone with the process that held it, and the
-    writers omit an unobserved ordinal rather than naming a turn that never ran.
+    Without a re-pin on the ``from_queue`` pass the child's spawn, steer and terminal
+    entries are dropped. The turn stays unobserved: the asking turn died with its
+    process, and writers omit an unobserved ordinal.
     """
     from types import SimpleNamespace
 
@@ -685,7 +662,7 @@ def test_a_child_of_a_rerun_turn_names_the_attempt_that_asked(monkeypatch):
     stub = SimpleNamespace(_manager=SimpleNamespace(_sessions=None))
     _open_session()
     emit.on_turn_started(SESSION, 4, "user", attempt=2)
-    assert emit.flush()
+    assert_drained()
     assert emit.asking_turn(SESSION) == (4, 2)
 
     info = SimpleNamespace(
@@ -700,7 +677,7 @@ def test_a_child_of_a_rerun_turn_names_the_attempt_that_asked(monkeypatch):
     )
     _GateMixin._record_crew_log_dispatch(stub, info, from_queue=False)
     _GateMixin._record_crew_log_spawn_started(stub, info)
-    assert emit.flush()
+    assert_drained()
     (spawned,) = _of("subagent/spawned")
     assert (spawned["turn"], spawned["attempt"]) == (4, 2)
 
@@ -818,7 +795,7 @@ def test_a_spawn_whose_attempt_was_not_observed_omits_it():
     _open_session()
     emit.on_subagent_spawned(SESSION, 4, agent_id="ab12")
     emit.on_subagent_spawned(SESSION, 0, agent_id="cd34", attempt=3)
-    assert emit.flush()
+    assert_drained()
     first, second = _of("subagent/spawned")
     assert "attempt" not in first
     assert "attempt" not in second and "turn" not in second, "no attempt without a turn"
@@ -828,12 +805,9 @@ def test_a_spawn_whose_attempt_was_not_observed_omits_it():
 async def test_a_claim_the_store_cannot_take_is_pinned_before_the_row_is_left_queued(monkeypatch):
     """The asking turn is readable on THIS pass and on no later one.
 
-    A store too busy to take the row leaves the caller a queued handle and lets the
-    pump retry after the admit wait. That retry re-enters under ``from_queue``,
-    where the turn that asked cannot be read -- so a pass that returns
-    without pinning hands the retry an empty map, and the child's spawn entry
-    carries no turn even though the process knew it all along. Pinning here is what
-    the retry then keeps, because the pin refuses to move.
+    A busy store leaves the row queued, and the pump's retry runs under ``from_queue``
+    where the asking turn cannot be read. Pinning first gives the retry the turn,
+    since the pin refuses to move.
     """
     from unittest.mock import AsyncMock, MagicMock
 
@@ -915,7 +889,7 @@ async def test_a_run_whose_memory_binding_cannot_be_persisted_records_no_spawn(m
     try:
         mgr._log_spawned(failed)
         assert failed.error.startswith("memory_unavailable:"), failed.error
-        assert emit.flush()
+        assert_drained()
         assert _of("subagent/spawned") == [], "a run that never started has no opener"
 
         # The prerequisite met: the same call does write it.
@@ -923,7 +897,7 @@ async def test_a_run_whose_memory_binding_cannot_be_persisted_records_no_spawn(m
         started = SubagentInfo(id="folder-ok-1", task="t", agent="", parent_session_key="web-1")
         emit.remember_child_origin(started.id, SESSION, 4)
         mgr._log_spawned(started)
-        assert emit.flush()
+        assert_drained()
         assert [e["agent_id"] for e in _of("subagent/spawned")] == ["folder-ok-1"]
     finally:
         await mgr.cancel_all()
@@ -948,7 +922,7 @@ def test_a_plan_id_is_redacted_like_every_other_field_the_agent_authored(monkeyp
             {"id": "task-7", "text": "keep going", "completed": True},
         ],
     )
-    assert emit.flush()
+    assert_drained()
     (plan,) = _of("plan/updated")
     leaked, ordinary = plan["items"]
     assert "ghp_" not in leaked["id"] and "REDACTED" in leaked["id"], leaked
@@ -958,21 +932,15 @@ def test_a_plan_id_is_redacted_like_every_other_field_the_agent_authored(monkeyp
 def test_a_child_whose_closer_is_not_yet_handed_over_is_not_reported_gone():
     """The gap the two reads alone cannot cover, and what covers it.
 
-    The normal completion path flips ``done`` in the run loop, which drops the
-    child from the manager's running set, and hands the closer over later from the
-    report task. In between, the child is absent from the running set AND the
-    session owes nothing -- so liveness and debt, in either order, both say gone,
-    and a repair reading there synthesises an ``unknown`` that then stands beside
-    the real outcome in a file nothing rewrites.
-
-    The child's own origin pin is what closes it: opened when the spawn is
-    recorded, released only once the closer reaches the writer, so it is held
-    across exactly that gap.
+    Between ``done`` dropping the child from the running set and the report task
+    handing the closer over, liveness and debt both say gone. The child's origin pin,
+    released only once the closer reaches the writer, covers that gap.
     """
     _open_session()
     emit.remember_child_origin("ab12", SESSION, 3)
     assert emit.open_child_origin("ab12") == (SESSION, 3)
-    assert emit.flush(timeout=20.0), "the session must owe nothing, or debt would mask the pin"
+    # The session must owe nothing, or debt would mask the pin.
+    assert_drained()
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(emit, "_child_liveness", lambda _agent_id: False)
@@ -986,12 +954,9 @@ def test_a_child_whose_closer_is_not_yet_handed_over_is_not_reported_gone():
 def test_a_repair_is_not_blocked_by_its_own_job_being_the_one_in_flight(monkeypatch):
     """The repair runs INSIDE a claimed batch, so it must not read itself as debt.
 
-    A resume submits its open-and-repair work through the same writer, which claims
-    a session's entries before running them. Counting the job that is asking would
-    make every child look live on exactly the path the repair exists for, so the
-    dangling opener a torn-down writer left behind would never be closed. Submitted
-    from an event loop, so the job runs from the writer's claimed batch rather than
-    inline.
+    Counting the asking job would make every child look live, so a dangling opener
+    would never close. Submitted from an event loop so the job runs from the writer's
+    claimed batch rather than inline.
     """
     _open_session()
     monkeypatch.setattr(emit, "_child_liveness", lambda _agent_id: False)
@@ -1005,28 +970,22 @@ def test_a_repair_is_not_blocked_by_its_own_job_being_the_one_in_flight(monkeypa
         emit._submit(_ask_from_inside_the_batch, "repair asking", SESSION)
 
     asyncio.run(_submit())
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     assert answers == [True], "the asking job was counted as debt against itself"
 
 
 def test_a_terminal_is_recorded_before_the_child_leaves_the_running_set():
     """The repair's probe runs on the writer's own thread, not the caller's.
 
-    Flipping ``done`` first leaves an instant where the manager has stopped listing
-    the child and the writer is owed nothing for it. A resume repair reading exactly
-    there synthesises an ``unknown`` outcome that the real terminal then contradicts,
-    in a file nothing rewrites. Handing the entry over first means one of the two
-    always refuses.
-
-    Pinned on the source order because the invariant IS an order between two
-    statements, and the thread that would observe the gap is the writer's: a test on
-    this thread cannot schedule itself into it, so it would pass either way.
+    Flipping ``done`` first opens an instant where a repair writes ``unknown`` before
+    the real terminal. Checked on source order because only the writer's thread could
+    observe the gap; a test on this thread would pass either way.
     """
     import inspect
 
     from kiro_crew.subagent_manager.terminal import TerminalCoordinator
 
-    body = inspect.getsource(TerminalCoordinator._report_terminal_impl)
+    body = inspect.getsource(TerminalCoordinator._finish)
     record = body.index("self._record_crew_log_terminal(info)")
     flip = body.index("info.done = True")
     assert record < flip, (
@@ -1039,11 +998,9 @@ def test_a_terminal_is_recorded_before_the_child_leaves_the_running_set():
 def test_the_closer_is_handed_over_before_its_child_s_origin_pin_is_released():
     """The pin must outlive the handover, or it leaves the gap it exists to cover.
 
-    Releasing first restores the hole exactly: for the instant between the release
-    and the entry reaching the writer, the child is not running, holds no pin and
-    owes nothing, so a repair reading there closes it as ``unknown``. The release
-    therefore happens after the emit, and reporting stays one-shot without the pop
-    because every route to it is gated on ``_claim_finalize``.
+    Releasing first lets a repair close the child as ``unknown`` before the entry
+    reaches the writer. Reporting stays one-shot because every route is gated on
+    ``_claim_finalize``.
     """
     from kiro_crew.subagent_manager.terminal import TerminalCoordinator
 
@@ -1066,18 +1023,16 @@ def test_the_closer_is_handed_over_before_its_child_s_origin_pin_is_released():
         TerminalCoordinator._record_crew_log_terminal(SimpleNamespace(), info)
     assert held == [True], "the pin was released before the closer was handed over"
     assert emit.child_origin("ab12")[0] == "", "the pin was not released afterwards"
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     assert [d["agent_id"] for d in _of("subagent/completed")] == ["ab12"]
 
 
 def test_a_turn_still_pending_at_the_terminal_is_billed_in_the_closer():
     """The closer carries the settled cost, the same figure the tombstone gets.
 
-    A terminal reached while the last turn's usage is still pending (a cancel
-    landing in the event consumer, a path that skips the run loop) settles it in
-    the report. Settled after the closer, ``subagent/completed`` under-reports the
-    child while the tombstone and the WS frame, built later from the same record,
-    carry the full figure.
+    A terminal reached with usage still pending (e.g. a cancel in the event consumer)
+    settles it in the report; settling after the closer would under-report
+    ``subagent/completed``.
     """
     from unittest.mock import MagicMock
 
@@ -1114,6 +1069,7 @@ def test_a_turn_still_pending_at_the_terminal_is_billed_in_the_closer():
     coordinator._record_crew_log_terminal = lambda i: TerminalCoordinator._record_crew_log_terminal(
         coordinator, i
     )
+    coordinator._finish = lambda i: TerminalCoordinator._finish(coordinator, i)
 
     asyncio.run(
         TerminalCoordinator._report_terminal_impl(
@@ -1125,7 +1081,7 @@ def test_a_turn_still_pending_at_the_terminal_is_billed_in_the_closer():
         )
     )
     assert info.credits == pytest.approx(1.5)
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("subagent/completed")
     assert data["credits"] == pytest.approx(
         1.5
@@ -1135,11 +1091,8 @@ def test_a_turn_still_pending_at_the_terminal_is_billed_in_the_closer():
 def test_a_plan_the_line_cannot_hold_records_a_prefix_not_a_subsequence():
     """``items`` is read as the FRONT of the plan, so a gap in it is a lie.
 
-    Rows are admitted one at a time against the line's byte ceiling. Skipping only
-    the row that does not fit would let a shorter row behind it in, and a reader
-    diffing consecutive entries would see the plan reorder and a task vanish. The
-    first row the line cannot hold therefore closes admission, while ``total`` keeps
-    counting what the plan really had.
+    The first row that does not fit the byte ceiling closes admission; skipping only
+    it would let a shorter later row in. ``total`` still counts the whole plan.
     """
     _open_session()
     # `text` is clipped in CHARACTERS while the line is refused in BYTES, so rows
@@ -1149,7 +1102,7 @@ def test_a_plan_the_line_cannot_hold_records_a_prefix_not_a_subsequence():
     items = [{"id": f"w{n}", "text": wide, "completed": False} for n in range(12)]
     items.append({"id": "tail", "text": "short enough to fit alone", "completed": False})
     emit.on_plan_updated(SESSION, 3, items=items)
-    assert emit.flush()
+    assert_drained()
     (plan,) = _of("plan/updated")
     ids = [row["id"] for row in plan["items"]]
     assert ids, "no row was admitted at all, so this proves nothing about the order"
@@ -1223,7 +1176,7 @@ def test_an_unrecorded_dispatch_produces_no_closer():
     sid, _turn = emit.forget_child_origin("never-seen")
     assert sid == ""
     emit.on_subagent_completed(sid, agent_id="never-seen", duration_ms=5)
-    assert emit.flush()
+    assert_drained()
     assert _of("subagent/completed") == []
 
 

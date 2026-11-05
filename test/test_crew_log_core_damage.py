@@ -23,7 +23,7 @@ from kiro_crew.crew_log import CrewLog, store
 _isolated_home = crew_log_core_helpers._isolated_home
 
 
-# --- damage tolerance -----------------------------------------------------
+# damage tolerance
 
 
 def test_a_torn_last_line_is_truncated_on_open():
@@ -71,6 +71,23 @@ def _append_stuck_in_fsync(monkeypatch, crew):
     return fail, appender
 
 
+def _signal_on_lock_entry(monkeypatch, reached):
+    """Set *reached* when a reader enters the crew log's advisory lock, before it blocks.
+
+    A spy that still takes the real lock: it only reports the entry, so a negative
+    window that follows waits on the reader being at the lock, not on a clock.
+    """
+    from kiro_crew.crew_log import store_paths
+
+    real_lock = store_paths.file_lock
+
+    def _spy(fd, exclusive=True):
+        reached.set()
+        return real_lock(fd, exclusive=exclusive)
+
+    monkeypatch.setattr(store_paths, "file_lock", _spy)
+
+
 def _read_in_thread(read):
     """Run *read* on a thread; return (finished event, result box)."""
     done, box = threading.Event(), {}
@@ -94,8 +111,10 @@ def test_an_open_does_not_see_an_append_whose_fsync_has_not_returned(monkeypatch
     path = lg.crew_log_path(lg.KIND_CREW, CREW)
     assert path.read_bytes().count(b'"seq":2') == 1  # the in-flight line is on disk
 
+    reached = threading.Event()
+    _signal_on_lock_entry(monkeypatch, reached)
     done, box = _read_in_thread(lambda: CrewLog.open(lg.KIND_CREW, CREW).last_seq)
-    # flake-ok: pre-existing 300 ms absence window while the stuck append holds the lock; moved verbatim, tracked for a de-flake pass
+    assert reached.wait(5), "the open never reached the crew log lock"
     assert not done.wait(0.3), "the open read the tail while the append held the lock"
     fail.set()
     appender.join(5)
@@ -112,8 +131,10 @@ def test_a_held_handle_does_not_read_an_append_whose_fsync_has_not_returned(monk
     held = CrewLog.open(lg.KIND_CREW, CREW)
     fail, appender = _append_stuck_in_fsync(monkeypatch, crew)
 
+    reached = threading.Event()
+    _signal_on_lock_entry(monkeypatch, reached)
     done, box = _read_in_thread(lambda: [entry.seq for entry in held.iter_from(1)])
-    # flake-ok: pre-existing 300 ms absence window while the stuck append holds the lock; moved verbatim, tracked for a de-flake pass
+    assert reached.wait(5), "the read never reached the crew log lock"
     assert not done.wait(0.3), "the read walked the file while the append held the lock"
     fail.set()
     appender.join(5)
@@ -122,7 +143,7 @@ def test_a_held_handle_does_not_read_an_append_whose_fsync_has_not_returned(monk
     assert box["value"] == [1]
 
 
-def test_a_torn_tail_still_waits_for_the_lock_before_truncating():
+def test_a_torn_tail_still_waits_for_the_lock_before_truncating(monkeypatch):
     # A torn tail may be an append in flight, so its open takes the lock and
     # reads again: the holder finishing the line means nothing is dropped.
     crew = _crew()
@@ -142,8 +163,14 @@ def test_a_torn_tail_still_waits_for_the_lock_before_truncating():
     holder = threading.Thread(target=_finish_under_lock, daemon=True)
     holder.start()
     assert taken.wait(5)
-    # flake-ok: pre-existing 200 ms timed release of the lock holder; moved verbatim, tracked for a de-flake pass
-    threading.Timer(0.2, release.set).start()
+    reached = threading.Event()
+    _signal_on_lock_entry(monkeypatch, reached)
+
+    def _release_once_reached() -> None:
+        if reached.wait(5):
+            release.set()
+
+    threading.Thread(target=_release_once_reached, daemon=True).start()
 
     CrewLog.open(lg.KIND_CREW, CREW)
     holder.join(5)
@@ -415,7 +442,7 @@ def test_a_log_of_one_kind_cannot_be_opened_as_the_other():
     assert _code(exc) == lg.CODE_BAD_HEADER
 
 
-# --- large files: the bounded tail read -----------------------------------
+# large files: the bounded tail read
 
 
 def test_seq_comes_off_a_bounded_window_on_a_file_past_that_window():
@@ -444,7 +471,7 @@ def test_seq_falls_back_to_a_full_scan_when_the_window_holds_nothing_valid():
     assert [entry.seq for entry in reopened.iter_from()] == [1, 2]
 
 
-# --- interrupted-tail closers ---------------------------------------------
+# interrupted-tail closers
 
 
 def _interrupted_session() -> CrewLog:

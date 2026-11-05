@@ -644,20 +644,6 @@ def test_observed_channel_history_outside_the_home_keeps_the_umask_default(
     assert {_mode(f) for f in files} == {0o644}
 
 
-def test_a_meeting_transcript_is_owner_only_in_the_home_and_plain_outside(
-    home: Path, tmp_path: Path
-) -> None:
-    from kiro_crew.apps.builtins.meetings.backend import store
-
-    inside = home / "apps" / "meetings" / "data"
-    store.append_transcript("m1", "inside", "speech", inside)
-    store.append_transcript("m1", "outside", "speech", tmp_path / "shared")
-
-    assert _mode(store.transcript_path("m1", inside)) == 0o600
-    assert _readable_by_others(home / "apps") == []
-    assert _mode(store.transcript_path("m1", tmp_path / "shared")) == 0o644
-
-
 def test_session_workspace_results_are_owner_only(home: Path) -> None:
     from kiro_crew import session_workspace as sw
 
@@ -692,25 +678,6 @@ def test_heartbeat_queue_and_its_lock_are_owner_only(home: Path) -> None:
     assert _mode(target) == 0o600
     assert _mode(heartbeat_lock_path(target)) == 0o600
     assert _mode(target.parent) == 0o700
-
-
-def test_auto_improvement_run_archive_is_owner_only(home: Path) -> None:
-    """Through the root the supervisor passes (``store.results_dir()``), not a tmp dir."""
-    from kiro_crew.apps.builtins.auto_improvement.backend import store
-    from kiro_crew.apps.builtins.auto_improvement.spine.archive import Archive
-
-    root = store.results_dir()
-    assert home in root.parents
-    archive = Archive(root)
-    archive.write_meta({"run": 1})
-    archive.save_candidate(cand_id="c1", diff="--- a\n+++ b\n", detail={"k": "v"})
-    archive.append_row({"status": "kept"})
-    archive.write_drift(1, {"note": "x"})
-
-    assert _readable_by_others(home / "apps") == []
-    assert _mode(root / "results.tsv") == 0o600
-    assert _mode(root / "candidates.jsonl") == 0o600
-    assert _mode(root / "candidates" / "c1.diff") == 0o600
 
 
 def test_a_crewmate_dashboard_instance_is_owner_only(
@@ -837,6 +804,43 @@ def test_the_inbound_spool_directory_and_its_lock_are_owner_only(home: Path) -> 
     )
 
     assert _mode(home / "inbound-spool") == 0o700
+    assert _readable_by_others(home) == []
+
+
+def test_the_app_backend_lifecycle_lock_and_its_directory_are_owner_only(home: Path) -> None:
+    from kiro_crew.apps.backend_runtime.tracking import app_backend_lifecycle_flock
+
+    with app_backend_lifecycle_flock("demo-app"):
+        pass
+
+    assert _mode(home / "app_backend_locks") == 0o700
+    assert _mode(home / "app_backend_locks" / "demo-app.lock") == 0o600
+    assert _readable_by_others(home) == []
+
+
+def test_the_dependency_ledger_lock_is_owner_only(home: Path) -> None:
+    from kiro_crew.apps import dependency_ledger
+
+    with dependency_ledger._locked_ledger():
+        pass
+
+    assert _mode(home / "dependency-ledger.lock") == 0o600
+    assert _readable_by_others(home) == []
+
+
+def test_a_remote_work_ledger_record_and_every_parent_it_creates_are_owner_only(
+    home: Path,
+) -> None:
+    """``mkdir(parents=True, mode=0o700)`` left each new parent at ``0755``."""
+    from kiro_crew.work_ledger_remote import RemoteState, remote_state_path, write_remote_state
+
+    write_remote_state("chat-1-board", "it_0123abcd", RemoteState())
+
+    path = remote_state_path("chat-1-board", "it_0123abcd")
+    assert _mode(path) == 0o600
+    created = [p for p in path.parents if home in p.parents]
+    assert len(created) >= 2
+    assert {str(p): _mode(p) for p in created} == {str(p): 0o700 for p in created}
     assert _readable_by_others(home) == []
 
 
@@ -1234,7 +1238,6 @@ def test_a_store_must_be_a_relative_path_with_a_pattern_only_last(store: str) ->
 
 def test_the_store_list_matches_the_stores_constants() -> None:
     from kiro_crew import heartbeat, members, memory, session_workspace
-    from kiro_crew.apps.builtins.meetings.backend.constants import APP_NAME as MEETINGS
     from kiro_crew.config.sections import WorkspaceConfig
     from kiro_crew.crew_log.store import _ROOT_LEAF as CREW_LOG
     from kiro_crew.dashboard.state import _NOTIFICATIONS_FILE
@@ -1253,7 +1256,6 @@ def test_the_store_list_matches_the_stores_constants() -> None:
         f"{workspace}/{memory.MEMORY_DIR_NAME}",
         f"{workspace}/{memory.INDEX_DB_FILE}*",
         f"{workspace}/{heartbeat.HEARTBEAT_FILE}",
-        f"apps/{MEETINGS}/data",
     } <= stores
     assert len(stores) == len(oof.STARTUP_SWEEP_STORES)
     assert oof._store_groups(oof.STARTUP_SWEEP_STORES)  # every entry is a valid store path

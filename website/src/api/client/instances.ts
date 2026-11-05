@@ -179,16 +179,20 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
         disconnected: string
         was_connected: boolean
       }>,
-    restartInstance: (id: string) =>
-      post('/api/instances/' + encodeURIComponent(id) + '/restart').then(j) as Promise<{
+    /** Restart the crew once it reports no in-flight work (refused 409 `busy`
+     *  otherwise); `force` restarts it at once and stops whatever is running. */
+    restartInstance: (id: string, opts?: { force?: boolean }) =>
+      post('/api/instances/' + encodeURIComponent(id) + '/restart', opts?.force ? { force: true } : undefined).then(j) as Promise<{
         ok: boolean
         message: string
       }>,
-    /** Start the crew's own `kirocrew update` (then a restart) as a background
-     *  job. Sends no body: the remote command is a fixed literal. A chained or
-     *  headless crew, and a crew already updating, are refused 409. */
-    updateRemoteInstance: (id: string) =>
-      post('/api/instances/' + encodeURIComponent(id) + '/update').then(j) as Promise<{
+    /** Start the crew's own `kirocrew update` (then a restart once its
+     *  in-flight work is done) as a background job. The remote command is a
+     *  fixed literal. `force` ("Restart now", after a job stopped short of its
+     *  restart) skips the update and restarts without waiting. A
+     *  chained or headless crew, and a crew already updating, are refused 409. */
+    updateRemoteInstance: (id: string, opts?: { force?: boolean }) =>
+      post('/api/instances/' + encodeURIComponent(id) + '/update', opts?.force ? { force: true } : undefined).then(j) as Promise<{
         ok: boolean
         job: RemoteUpdateJob
       }>,

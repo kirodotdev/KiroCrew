@@ -35,30 +35,21 @@ from kiro_crew.apps.manager import (
     uninstall_app,
 )
 
-# ---------------------------------------------------------------------------
 # App-name admission contract
-# ---------------------------------------------------------------------------
 
 
 class TestUnportableAppName:
     """``nul`` must be refused by EVERY door, not just the manifest one.
 
-    These are behavior-level rather than one test per gate: the defect was not
-    that a single check was wrong, it was that three doors carried three
-    different name checks and a name refused at one was admitted at another.
-    Asserting the outcome at each entry point is what actually pins the shared
-    contract — a future fourth door that grows its own check fails here.
+    Asserted at each entry point, so a door that grows its own name check fails here.
     """
 
     def test_install_refuses_it_before_anything_lands_on_disk(self, tmp_path, app_home):
         """Windows cannot create apps/nul/, so install must refuse rather than
         half-create an app that can never start.
 
-        The source directory is deliberately NOT named ``nul``: a POSIX host can
-        author that tree and hand it to a Windows host, which is the case the
-        contract exists for, and the destination name comes from the manifest
-        anyway. Naming the source dir ``nul`` would also make the test itself
-        unrunnable on Windows.
+        The source dir is not named ``nul`` (the destination name comes from the manifest),
+        so the test also runs on Windows.
         """
         src = tmp_path / "source" / "nul-src"
         src.mkdir(parents=True)
@@ -108,9 +99,7 @@ class TestUnportableAppName:
         assert (app_home / "apps" / "null-app").is_dir()
 
 
-# ---------------------------------------------------------------------------
 # Validation
-# ---------------------------------------------------------------------------
 
 
 class TestValidation:
@@ -139,11 +128,8 @@ class TestValidation:
     def test_installed_app_may_not_declare_ui_overlays(self, tmp_path):
         """An overlay must name a component compiled into the dashboard bundle.
 
-        There is no per-overlay ``entryPoint`` the way ``ui.pages`` has one, so an
-        installed app cannot supply the component its declaration points at. Accepting
-        the manifest here would install an app whose overlay can only fail later as a
-        browser console warning -- the one channel an app author never reads. The
-        refusal belongs at install, which is the channel they do read.
+        Overlays have no ``entryPoint``, so an unknown one would fail only as a browser
+        console warning; install is where the author sees the refusal.
         """
         src = _make_app_source(tmp_path)
         raw = json.loads((src / APP_MANIFEST_FILENAME).read_text())
@@ -162,9 +148,7 @@ class TestValidation:
         assert _validate_source_path(src) == []
 
 
-# ---------------------------------------------------------------------------
 # Install
-# ---------------------------------------------------------------------------
 
 
 class TestInstall:
@@ -209,6 +193,8 @@ class TestInstall:
         r2 = install_app(src)
         assert not r2.ok
         assert "already installed" in r2.error
+        # It points at the in-place update rather than only at uninstall.
+        assert f"kirocrew app update {r1.name}" in r2.error
 
     def test_install_with_agents_and_skills(self, tmp_path, app_home):
         src = _make_app_source(
@@ -391,17 +377,10 @@ class TestInstall:
     def test_a_pre_existing_data_link_at_a_recordless_app_dir_is_refused_before_the_transaction(
         self, tmp_path, app_home
     ):
-        """The THIRD ask of the same predicate. An app directory already standing at
-        the destination with no `installed.json` (a prior default uninstall's
-        leftover, or an orphaned partial copy) whose `data` is a link to a directory
-        elsewhere: the move-aside skips what is not an owned directory, so the orphan
-        cleanup would `rmtree` the app directory and unlink the link, the post-copy
-        ask would see only the source's `data`, and the install would return
-        `ok=True` with a fresh empty `data/` -- the pre-existing entry gone with no
-        refusal, no log line and no error, where `update_app` and `uninstall_app`
-        refuse the identical shape before mutating. Refused here, before anything
-        moves: the link still stands and still resolves, the directory it names is
-        intact, no record and no temp copy appear."""
+        """An orphan app dir whose `data` is a link is refused before anything moves.
+
+        Otherwise orphan cleanup would unlink it and install would return `ok=True` with an
+        empty `data/`; `update_app` and `uninstall_app` refuse the same shape."""
         from kiro_crew.apps.manager import app_dir
 
         elsewhere = tmp_path / "elsewhere"
@@ -471,9 +450,7 @@ class TestInstall:
         assert not (dest.parent / ".test-app-data-tmp").exists()
 
 
-# ---------------------------------------------------------------------------
 # Uninstall
-# ---------------------------------------------------------------------------
 
 
 class TestUninstall:
@@ -748,11 +725,8 @@ class TestUninstall:
     ):
         """Uninstall pins the data directory, and that walk refuses any link it meets.
 
-        Reached through a linked ancestor - a home that is itself a symlink -
-        the pin refuses before the quarantine starts and the uninstall fails
-        with the app still installed. The caller has to hand the walk a path
-        whose ancestors are already canonical, while leaving the app's own name
-        and ``data`` literal so a link at either is still refused.
+        So the caller canonicalizes the ancestors (a symlinked home) but leaves the app's
+        name and ``data`` literal, where a link is still refused.
         """
         import os as _os
 
@@ -1101,9 +1075,7 @@ class TestUninstall:
         assert "test-app" in success_events[0]["resources"]
 
 
-# ---------------------------------------------------------------------------
 # App admission gate
-# ---------------------------------------------------------------------------
 
 
 class TestAppAdmission:
@@ -1353,9 +1325,7 @@ class TestAppAdmission:
         assert _signature_valid(m, policy) is False
 
 
-# ---------------------------------------------------------------------------
 # Enable / Disable
-# ---------------------------------------------------------------------------
 
 
 class TestEnableDisable:
@@ -1402,9 +1372,7 @@ class TestEnableDisable:
         assert not result.ok
 
 
-# ---------------------------------------------------------------------------
 # Listing
-# ---------------------------------------------------------------------------
 
 
 class TestListing:

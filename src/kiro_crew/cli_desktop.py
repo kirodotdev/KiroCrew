@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 from kiro_crew import cli_help, platform_compat
+from kiro_crew.cli_arg_types import positive_int
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.instances import tunnel_keeper
 from kiro_crew.perf_sampler import gate_refusal_message, profiling_enabled
@@ -342,7 +343,7 @@ def register_desktop_parser(sub: argparse._SubParsersAction) -> None:
     )
     metrics.add_argument("--json", action="store_true", help="Emit the raw artifact as JSON")
     metrics.add_argument(
-        "--top", type=int, default=5, help="How many processes to list (default: 5)"
+        "--top", type=positive_int, default=5, help="How many processes to list (default: 5)"
     )
 
     tunnel = desktop_sub.add_parser(

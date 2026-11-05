@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -209,6 +210,19 @@ class TestDmOwner:
         state.slack_client.post_message.assert_awaited_once_with("D1", "REDACTED")
 
 
+_SERVER_LOGGER = "kiro_crew.dashboard.server"
+_SKIPPED_FOR_TARGETS = "Owner notice skipped: %d channel targets, none positively the owner"
+
+
+def _skip_lines(caplog) -> list[str]:
+    """The owner-notice skip lines the dashboard server logged."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == _SERVER_LOGGER and r.getMessage().startswith("Owner notice skipped:")
+    ]
+
+
 def _channel_transport(*, available: bool = True, proactive: bool = True) -> MagicMock:
     """A transport double answering the reachability questions `_dm_owner` asks."""
     transport = MagicMock()
@@ -296,7 +310,7 @@ class TestOwnerNoticeReachesNonSlackChannels:
 
         working.send_message.assert_awaited_once()
 
-    def test_two_channels_with_different_single_identities_are_two_people(self) -> None:
+    def test_two_channels_with_different_single_identities_are_two_people(self, caplog) -> None:
         """A per-channel "exactly one target" rule misses this, and it is the real case.
 
         Teams allow-listing alice and Discord allow-listing bob is two humans, each with a
@@ -312,12 +326,14 @@ class TestOwnerNoticeReachesNonSlackChannels:
         )
         state.channel_transports = {"teams": teams, "discord": discord}
 
-        asyncio.run(_dm_owner(state, "hi"))
+        with caplog.at_level(logging.DEBUG, logger=_SERVER_LOGGER):
+            asyncio.run(_dm_owner(state, "hi"))
 
+        assert _skip_lines(caplog) == [_SKIPPED_FOR_TARGETS % 2]
         teams.send_message.assert_not_awaited()
         discord.send_message.assert_not_awaited()
 
-    def test_a_channel_with_several_configured_targets_is_not_guessed_at(self) -> None:
+    def test_a_channel_with_several_configured_targets_is_not_guessed_at(self, caplog) -> None:
         """This notice is the OPERATOR's security state, and an allow-list is not an owner.
 
         A Teams allow-list routinely holds several people; sending to the first reachable
@@ -335,11 +351,13 @@ class TestOwnerNoticeReachesNonSlackChannels:
         )
         state.channel_transports = {"teams": transport}
 
-        asyncio.run(_dm_owner(state, "hi"))
+        with caplog.at_level(logging.DEBUG, logger=_SERVER_LOGGER):
+            asyncio.run(_dm_owner(state, "hi"))
 
+        assert _skip_lines(caplog) == [_SKIPPED_FOR_TARGETS % 2]
         transport.send_message.assert_not_awaited()
 
-    def test_a_second_target_that_is_unreachable_still_blocks_the_guess(self) -> None:
+    def test_a_second_target_that_is_unreachable_still_blocks_the_guess(self, caplog) -> None:
         """Counted over ALL configured targets: one learned route out of three is a guess."""
         state = _slack_state(slack_client=None)
         transport = _channel_transport()
@@ -351,8 +369,10 @@ class TestOwnerNoticeReachesNonSlackChannels:
         )
         state.channel_transports = {"teams": transport}
 
-        asyncio.run(_dm_owner(state, "hi"))
+        with caplog.at_level(logging.DEBUG, logger=_SERVER_LOGGER):
+            asyncio.run(_dm_owner(state, "hi"))
 
+        assert _skip_lines(caplog) == [_SKIPPED_FOR_TARGETS % 2]
         transport.send_message.assert_not_awaited()
 
     def test_the_channel_leg_gets_the_REDACTED_text(self) -> None:

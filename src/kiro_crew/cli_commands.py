@@ -747,6 +747,7 @@ __all__ = sorted(
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.cli_commands_agent import (  # noqa: F401
+        _LEFTOVER_FAILED,
         _agent_list_label,
         _agent_list_model,
         _agent_model_or_exit,
@@ -754,6 +755,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _handle_agent,
         _kiro_agent_or_exit,
         _memory_store_or_exit,
+        _remove_deleted_agent_leftovers,
     )
     from kiro_crew.cli_commands_app import (  # noqa: F401
         _SESSION_APPROVAL_CONSENT_REQUIRED,
@@ -762,12 +764,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _app_declares_backend,
         _apply_through_gateway,
         _cleanup_app_crons_from_scheduler,
+        _deregister_or_report,
         _handle_app,
         _handle_app_import,
         _install_app_through_gateway,
         _print_file_only_app_result,
         _print_pointer_cleanup,
         _refuse_session_approval_from_cli,
+        _refuse_unsafe_app_name,
         _register_app_crons_to_scheduler,
         _run_app_action_through_gateway,
         _run_app_mcp_server,
@@ -781,6 +785,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_add_fail,
         _cron_dispatch,
         _cron_preview,
+        _cron_update_not_found,
         _format_schedule,
     )
     from kiro_crew.cli_commands_eval import (  # noqa: F401
@@ -836,6 +841,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _handle_secrets_authorize,
         _publish_secret_request_policy,
         _spawn_precreates_policy_directory,
+        _windows_authorize_unavailable,
     )
     from kiro_crew.cli_commands_security import (  # noqa: F401
         _TIME_SELECTOR_RE,
@@ -851,9 +857,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _WS_DIR_OUTSIDE_HOME,
         _cli_validated_workspace_dst,
         _CliConflict,
+        _dir_identity,
         _handle_workspace,
         _locked_config_write,
         _ws_dir_composed,
         _ws_dir_error,
+        _ws_dir_in_use,
         _ws_dir_resolves_inside_home,
     )

@@ -155,6 +155,7 @@ class TestSwallowedOverflowStillRecycles:
         mgr = await _manager("claude")
         first = mgr._sessions[BACKGROUND_KEY].provider
         await mgr.recycle_background()
+        assert mgr._sessions[BACKGROUND_KEY].provider is first
         first.shutdown.assert_not_awaited()
         await mgr.close_all()
 

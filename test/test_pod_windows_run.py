@@ -424,6 +424,11 @@ def test_sidecar_unlink_failure_retains_receipt_until_retry_and_next_start(
     def scheduler(*args):
         state.events.append(args[0])
         if args[0] == "/Query":
+            # Bare `/Query` (no /TN) reports service reachability, which holds
+            # throughout this scenario; the per-task `/Query /TN` reports task
+            # presence. `task_absent` needs both, so they must not be conflated.
+            if len(args) == 1:
+                return subprocess.CompletedProcess([], 0, "", "")
             return subprocess.CompletedProcess([], int(not scheduler_state["exists"]), "", "")
         if args[0] == "/Delete":
             existed = scheduler_state["exists"]

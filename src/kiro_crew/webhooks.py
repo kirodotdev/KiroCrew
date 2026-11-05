@@ -48,6 +48,7 @@ from typing import Any, Iterator
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import config_dir
+from kiro_crew.user_json import loads_user_json
 from kiro_crew.validation import sanitize_string
 from kiro_crew.webhook_sources import SOURCE_AGENT, source_refusal
 
@@ -285,7 +286,7 @@ def registered_context_count(path: Path | None = None) -> tuple[int, bool]:
     """
     target = path if path is not None else context_registrations_path()
     try:
-        raw = json.loads(read_bytes_with_retry(target).decode("utf-8"))
+        raw = loads_user_json(read_bytes_with_retry(target).decode("utf-8"))
     except FileNotFoundError:
         return 0, True
     except (ValueError, OSError):
@@ -383,7 +384,7 @@ def _read_json(path: Path, default: Any) -> Any:
     to inspect or restore, at the cost of erroring the surface until they do.
     """
     try:
-        return json.loads(read_bytes_with_retry(path).decode("utf-8"))
+        return loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
     except FileNotFoundError:
         return default
     except (ValueError, OSError) as exc:

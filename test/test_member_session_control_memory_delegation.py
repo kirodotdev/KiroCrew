@@ -354,12 +354,195 @@ class TestPrivateStoreCallerIsolation:
         result = asyncio.run(sc.create_session(state, caller_session_key=key, agent="radar"))
         assert state.get_slot(result["target"]) is not None
 
+    def _fork_onto(self, state, parent, child_name):
+        """Bind *child_name* the way a fork does, from *parent*'s recorded identity."""
+        from kiro_crew.dashboard import chat_fork
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        source = (
+            effective_session_key(parent),
+            parent.agent,
+            parent.memory_store,
+            "persistent",
+            "",
+        )
+        inherited = chat_fork._fork_execution_context(*source)
+        child = state.get_or_create_slot(child_name)
+        key = effective_session_key(child)
+        assert key == slot_history_key(child)
+        chat_fork._bind_fork_execution(source, key, inherited)
+        child.agent = parent.agent
+        child.memory_store = inherited.store.legacy_name
+        return child, key
+
+    def test_a_fork_of_a_member_tab_dispatches_its_own_store_worker(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # A fork copies its identity from the source's record, so it may carry
+        # only the vouch the gateway already holds for that source. A fork that
+        # published unvouched could never dispatch: its `chat-` key names no
+        # member, it has no durable copy for a restart to re-vouch from, and a
+        # conversation with messages cannot be re-pinned from the agent picker.
+        # The carried vouch must survive a second generation too.
+        from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
+        from kiro_crew.execution_context import read_vouched_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        parent = state.get_or_create_slot("chat-40-1789000000")
+        store = _pin_private_agent_assignment(
+            slot_history_key(parent), "radar", cfg, conversation_log=state.conversation_log
+        )
+        parent.agent = "radar"
+        parent.memory_store = store
+
+        child, child_key = self._fork_onto(state, parent, "chat-41-1789000001")
+        vouched = read_vouched_session_execution(child_key)
+        assert vouched is not None and vouched.store.store_id == store
+        result = asyncio.run(sc.create_session(state, caller_session_key=child_key, agent="radar"))
+        assert state.get_slot(result["target"]) is not None
+
+        _grandchild, grandchild_key = self._fork_onto(state, child, "chat-42-1789000002")
+        result = asyncio.run(
+            sc.create_session(state, caller_session_key=grandchild_key, agent="radar")
+        )
+        assert state.get_slot(result["target"]) is not None
+
+    def test_a_fork_after_a_restart_carries_the_sources_durable_vouch(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # A restart empties the in-memory vouches before the source's next
+        # admission re-establishes its own. The durable copy written when the
+        # gateway vouched the source is the gateway's word in that window, so a
+        # fork made then still carries it.
+        from kiro_crew import execution_context
+        from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        parent = state.get_or_create_slot("chat-43-1789000000")
+        parent.memory_store = _pin_private_agent_assignment(
+            slot_history_key(parent), "radar", cfg, conversation_log=state.conversation_log
+        )
+        parent.agent = "radar"
+        execution_context._VOUCHED_EXECUTIONS.clear()
+
+        _child, child_key = self._fork_onto(state, parent, "chat-44-1789000001")
+        result = asyncio.run(sc.create_session(state, caller_session_key=child_key, agent="radar"))
+        assert state.get_slot(result["target"]) is not None
+
+    @pytest.mark.parametrize("source", ["never-vouched", "record-moved-to-peer"])
+    def test_a_fork_carries_no_vouch_the_gateway_did_not_give_its_source(
+        self, tmp_path, monkeypatch, _fresh_create_budget, source
+    ):
+        # The deny direction of the pair above. A source the gateway never
+        # vouched has nothing to carry, and a source that rewrote its own record
+        # to a peer's store copies that store into the fork while the gateway's
+        # word still names its own, so neither fork may open a worker.
+        from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
+        from kiro_crew.execution_context import (
+            bind_session_execution,
+            read_session_execution,
+            read_vouched_session_execution,
+            resolve_member_execution,
+        )
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        parent = state.get_or_create_slot("chat-45-1789000000")
+        parent_key = slot_history_key(parent)
+        if source == "never-vouched":
+            member = "radar"
+            bind_session_execution(parent_key, resolve_member_execution(cfg, member))
+        else:
+            _pin_private_agent_assignment(
+                parent_key, "radar", cfg, conversation_log=state.conversation_log
+            )
+            member = "peer"
+            bind_session_execution(
+                parent_key,
+                resolve_member_execution(cfg, member),
+                replace_existing=True,
+                expected=read_session_execution(parent_key),
+            )
+        parent.agent = member
+        parent.memory_store = resolve_member_execution(cfg, member).store.legacy_name
+
+        _child, child_key = self._fork_onto(state, parent, "chat-46-1789000001")
+        assert read_vouched_session_execution(child_key) is None
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(sc.create_session(state, caller_session_key=child_key, agent=member))
+        assert error.value.code == "memory_delegation_denied"
+
+    def _seed_member_tab(self, state, cfg, name, member, monkeypatch):
+        """A member tab the owner pinned, with a settled transcript an agent can fork."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard import chat_fork
+        from kiro_crew.dashboard.chat_persistence import (
+            _pin_private_agent_assignment,
+            _save_slot_to_history,
+        )
+
+        monkeypatch.setattr(chat_fork, "sel", lambda: MagicMock())
+        monkeypatch.setattr(sc, "sel", lambda: MagicMock())
+        slot = state.get_or_create_slot(name)
+        slot.memory_store = _pin_private_agent_assignment(
+            slot_history_key(slot), member, cfg, conversation_log=state.conversation_log
+        )
+        slot.agent = member
+        for i in range(2):
+            slot.append("user", f"question {i}", "msg msg-u")
+            slot.append("assistant", f"answer {i}", "msg msg-a")
+        slot.drain()
+        _save_slot_to_history(state, slot, closed=False)
+        slot._resumed_count = len(slot.messages)
+        slot._disk_window_len = len(slot.messages)
+        slot._dirty = False
+        return slot
+
+    def test_an_agent_fork_of_its_own_member_tab_dispatches_its_own_store_worker(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # `session_fork` reaches the same binder as the owner's Fork button, so a
+        # member forking its own vouched conversation hands the child that vouch.
+        from kiro_crew.execution_context import read_vouched_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        parent = self._seed_member_tab(state, cfg, "chat-47-1789000000", "radar", monkeypatch)
+
+        forked = asyncio.run(sc.fork_session(state, caller_session_key=slot_history_key(parent)))
+        child_key = slot_history_key(state.get_slot(forked["target"]))
+        vouched = read_vouched_session_execution(child_key)
+        assert vouched is not None and vouched.store.store_id == parent.memory_store
+        result = asyncio.run(sc.create_session(state, caller_session_key=child_key, agent="radar"))
+        assert state.get_slot(result["target"]) is not None
+
+    def test_a_fenced_peer_member_cannot_fork_another_members_tab(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The deny direction. A fenced peer naming another member's conversation as
+        # the source is refused at `authorize_target`, before any child exists, so
+        # it never gets a session carrying that member's vouch.
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        source = self._seed_member_tab(state, cfg, "chat-48-1789000000", "radar", monkeypatch)
+        peer = self._seed_member_tab(state, cfg, "chat-49-1789000000", "peer", monkeypatch)
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.fork_session(
+                    state,
+                    caller_session_key=slot_history_key(peer),
+                    source=slot_history_key(source),
+                    caller_fenced=True,
+                )
+            )
+        assert error.value.code == "target_not_found"
+        assert state.creator_slot_count(peer.key) == 0
+
     def test_a_restart_self_heals_own_store_dispatch_at_the_next_gate_admission(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
         # A restart empties the vouched map in process memory while the durable
         # record survives, so a rehydrated member session's own-store dispatch
-        # would otherwise stay refused until its OWNER re-selected the agent. The
+        # would otherwise stay refused for the life of the chat. The
         # trust source that closes that gap: a vouch registered at the session's
         # next GATE-VERIFIED admission, keyed on the verified session key, not on
         # anything the record asserts. The member DM caller's key IS
@@ -476,11 +659,10 @@ class TestPrivateStoreCallerIsolation:
     def test_a_fresh_bind_restores_the_own_store_admission_after_a_restart(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
-        # A member re-selecting the agent binds through the durable path, which
-        # vouches again, and the same dispatch is admitted. Kept alongside the
-        # gate-verified self-heal above: both restore the capability after a
-        # restart, one automatically at the next admission and one on an explicit
-        # owner re-select, and neither removes it outright.
+        # A vouching bind, the one a new member chat gets when it is created,
+        # restores the same dispatch. Kept alongside the gate-verified self-heal
+        # above: both restore the capability after a restart, and neither removes
+        # it outright.
         from kiro_crew import execution_context
         from kiro_crew.execution_context import bind_session_execution
 

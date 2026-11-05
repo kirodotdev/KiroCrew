@@ -38,6 +38,15 @@ export function crewRootOf(row: { crew_root?: string | null } | null | undefined
   return (row?.crew_root && crewModeEnabled()) ? row.crew_root : ''
 }
 
+/** The crewmate (mate) thread `row` was dispatched from, directly or through
+ *  another session: the server's `mate_root` stamp, `''` off every mate tree.
+ *  Not read through the Crew Mode flag: a mate's sessions are no Crew Mode crew,
+ *  and their approvals and questions must reach the mate chat either way
+ *  (docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md). */
+export function mateRootOf(row: { mate_root?: string | null } | null | undefined): string {
+  return row?.mate_root || ''
+}
+
 /** The conductor Crew Mode runs while the gateway has not said otherwise. */
 export const DEFAULT_CREW_MODE_AGENT = 'kirocrew-conductor'
 

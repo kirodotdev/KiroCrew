@@ -63,33 +63,15 @@ _HANDSHAKE_TIMEOUT_SECS = 3.0
 
 
 # --- Reconnect budget -------------------------------------------------------
-# What the stub spends trying to re-attach after a live gateway connection dies
-# mid-session. The daemon is supervised and respawns itself with its own
-# exponential backoff, so one connect attempt would lose the race against an
-# ordinary restart.
+# How long the stub retries re-attaching after a live gateway connection dies.
+# Giving up is IRREVERSIBLE: kiro-cli never re-mounts a closed server, so the
+# session loses these tools for good. Waiting is recoverable: stdin requests
+# are held for ``_QUEUED_GRACE_SECS`` and then failed with a retryable
+# ``-32603`` (see :func:`_drain_while_disconnected`), so no single call waits
+# longer than a live bridge would allow.
 #
-# The two outcomes are NOT symmetric, and the budget is sized by that asymmetry:
-#
-# * Giving up is IRREVERSIBLE for the session. The terminal exit closes stdout,
-#   kiro-cli logs ``Transport to MCP server ... is closed`` and never re-mounts
-#   a closed server, so every later call to these tools hangs or fails for the
-#   rest of a chat session that may live for hours. The only recovery is a new
-#   session -- the user has to notice and act.
-# * Waiting is RECOVERABLE. While the stub retries, the stdio transport to
-#   kiro-cli stays open and newly arriving requests are buffered (see
-#   ``StubSession.next_line``) for ``_QUEUED_GRACE_SECS``, long enough that an
-#   ordinary restart serves them for real; past that each one is failed with the
-#   same retryable ``-32603`` a call already in flight gets, so the SESSION
-#   keeps waiting while no individual CALL waits longer than the live bridge
-#   would have let it (see :func:`_drain_while_disconnected`). Under overload the
-#   system queues and waits -- it trades time for capacity -- rather than dying.
-#
-# So the budget has to outlast not one supervisor respawn but a short CRASH LOOP
-# of them: a supervisor that kills and respawns gatewayd ten times inside half an
-# hour leaves the endpoint absent for around ten minutes, and a budget of one
-# minute takes the terminal exit there, so every long-lived session loses
-# kirocrew-core for the rest of its life. One kill->respawn cycle, by the
-# supervisor's own constants:
+# So the budget must outlast a short crash loop of supervisor respawns, not
+# just one. One kill->respawn cycle, by the supervisor's own constants:
 #
 #   detection   ``manager._LIVENESS_PING_INTERVAL_SECS`` (30)
 #               x ``manager._LIVENESS_MAX_CONSECUTIVE_FAILURES`` (3)  =  90s
@@ -99,30 +81,15 @@ _HANDSHAKE_TIMEOUT_SECS = 3.0
 #                                                                        ----
 #                                                                        180s
 #
-# Three such cycles is 540s; the budget is rounded up to 600s. The manager
-# values are MIRRORED here by name rather than imported: ``manager`` pulls in
-# ``config.paths``, ``sandbox`` and ``code_fingerprint``, which is far more than
-# the stub's cold-start import budget allows. ``TOTAL_SHUTDOWN_BUDGET_SECS``
-# lives in a stdlib-only leaf and IS imported. ``test_stub_reconnect_budget.py``
-# pins the mirrors to the manager's real values so they cannot drift silently.
+# Three cycles is 540s, rounded up to 600s. The manager values are MIRRORED by
+# name, not imported: ``manager`` is too heavy for the stub's cold-start import
+# budget. ``test_stub_reconnect_budget.py`` pins the mirrors to the real values.
+# Past ten minutes the honest signal is that the tools are gone.
 #
-# The budget is still finite: a gateway that is gone for good must eventually
-# reach the terminal exit rather than leave the session parked on a socket
-# nobody will bind again. It is also not a cover for every conceivable recovery:
-# a respawn that keeps failing backs off to 60s per retry with no attempt cap, so
-# a pathological gateway can still outlast this. The trade is deliberate -- past
-# ten minutes the honest signal to a waiting session is that its tools are gone,
-# not more silence.
-#
-# The deadline bounds when new ATTEMPTS stop, not the exit itself: an attempt
-# already under way when it passes runs to its own end, so the exit can trail the
-# budget by up to the handshake (``_HANDSHAKE_TIMEOUT_SECS``) plus the replay
-# (``_REPLAY_INIT_TIMEOUT_SECS``) plus one backoff step
-# (``_RECONNECT_BACKOFF_MAX_SECS``) -- about 43s today; the queue-aware
-# pre-flight in between is clipped to the budget still remaining, so it adds
-# nothing of its own. That is deliberate: abandoning a handshake that is
-# mid-replay would throw away the most likely successful attempt in exchange for
-# meeting a number exactly.
+# The deadline stops new ATTEMPTS; one already under way runs to its end, so
+# the exit can trail the budget by the handshake plus the replay plus one
+# backoff step (``_HANDSHAKE_TIMEOUT_SECS``, ``_REPLAY_INIT_TIMEOUT_SECS``,
+# ``_RECONNECT_BACKOFF_MAX_SECS``), rather than abandon a likely success.
 _SUPERVISOR_LIVENESS_PING_INTERVAL_SECS = 30.0  # manager._LIVENESS_PING_INTERVAL_SECS
 _SUPERVISOR_LIVENESS_MAX_FAILURES = 3  # manager._LIVENESS_MAX_CONSECUTIVE_FAILURES
 _SUPERVISOR_RESPAWN_BACKOFF_MAX_SECS = 60.0  # manager._RESPAWN_BACKOFF_MAX_SECS
@@ -726,43 +693,24 @@ async def _drain_while_disconnected(
 ) -> None:
     """Answer requests that arrive while the bridge is down, once grace expires.
 
-    Runs CONCURRENTLY with :func:`_reconnect` and is the only consumer of
-    kiro-cli's stream for that window, because ``run_bridge`` -- and with it the
-    ``stdin_pump`` that normally reads the session queue -- has already returned.
-    Without this, a request issued in that window sits in the queue unread for as
-    long as the reconnect runs: not forwarded, not failed, and indistinguishable
-    from a hang. That is the whole defect; the in-flight half is already answered
-    by ``_split_abandoned_ids`` + :func:`_emit_error_frames` before the reconnect
-    starts.
+    Runs CONCURRENTLY with :func:`_reconnect` as the only reader of kiro-cli's
+    stream, because ``run_bridge`` and its ``stdin_pump`` have returned; without
+    it a request in that window would hang unread.
 
-    Each frame is HELD first and failed only if ``grace_secs`` passes with the
-    bridge still down, so the common case -- an ordinary restart that re-attaches
-    in a few seconds -- forwards the call and answers it for real. Nothing is
-    forwarded from here: held frames go back to the session
-    (:meth:`StubSession.push_front`) and the next bridge sends them in order.
-    A frame that WAS failed is dropped instead, because forwarding an id after
-    answering it would let the new daemon answer it a second time.
+    Each frame is HELD and failed only if ``grace_secs`` passes with the bridge
+    still down. Held frames go back via :meth:`StubSession.push_front` so the
+    next bridge sends them in order; a failed frame is dropped, since forwarding
+    an answered id would let the new daemon answer it twice. Notifications,
+    unparseable lines and ``initialize`` are only ever held.
 
-    Three kinds of frame are never failed, only held: a notification (no id to
-    answer), an unparseable line (it is forwarded verbatim, as ``stdin_pump``
-    does), and ``initialize`` (the replay answers it for real). ``grace_secs`` is
-    a parameter purely so a test need not wait the real window.
+    Holding is bounded by ``_STDIN_QUEUE_MAXSIZE``, ``_HELD_TOTAL_BYTES`` and
+    ``_HELD_FRAME_BYTES`` (see :func:`_no_room_to_hold`). At a bound a request
+    is failed at once and an id-less frame is dropped and logged.
 
-    Holding is bounded in BOTH dimensions -- ``_STDIN_QUEUE_MAXSIZE`` frames and
-    ``_HELD_TOTAL_BYTES`` of them, with ``_HELD_FRAME_BYTES`` per frame -- because
-    either bound alone leaves a hole (see :func:`_no_room_to_hold`). At a bound the
-    frame is not held, and what happens then depends on whether it can be
-    answered: a request is failed immediately, and a frame with no id is dropped
-    and logged. Holding is only the courtesy that lets a quick reattach serve a
-    call for real, so it is what yields under pressure -- never the answer.
-
-    The ending is COOPERATIVE -- the caller sets ``stop`` and waits -- and that is
-    load-bearing rather than tidy. This loop removes a frame from ``held`` when it
-    answers it, so a cancellation landing inside the answering ``await`` would
-    leave that frame neither forwarded nor reliably answered: a silent hang, the
-    one outcome this function exists to remove. A stop is only ever observed
-    BETWEEN iterations, so an answer in flight always completes. Everything still
-    held is handed back in the ``finally``.
+    The ending is COOPERATIVE (the caller sets ``stop``): a cancellation inside
+    the answering ``await`` would leave a frame neither forwarded nor answered.
+    ``stop`` is observed only between iterations; the ``finally`` hands back
+    whatever is still held.
     """
     # (line, id-to-fail-or-None, deadline). One ordered list rather than a queue
     # plus a timer set, so removing an expired request cannot reorder the frames

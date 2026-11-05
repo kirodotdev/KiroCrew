@@ -97,7 +97,9 @@ class TestBootRefusesAnUnverifiableOsHome:
     ) -> None:
         """The other half of the contract -- without this the refusal above
         passes vacuously if boot started refusing everything."""
-        # flake-ok: boot runs the real child probe only where PATH has kiro-cli -- moved verbatim
+        # The last gate in ``boot`` spawns a real kiro-cli child when the pod's PATH holds
+        # one. The stub returns at once, so the exit code depends on the OS home alone.
+        monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", lambda _env: None)
         code, seen, c = self._boot(tmp_path, monkeypatch)
 
         assert code == 0, code

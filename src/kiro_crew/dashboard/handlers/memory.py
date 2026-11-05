@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from aiohttp import web
 
 from kiro_crew import _facade_mirror, memory_schema
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -23,6 +24,11 @@ from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers.memory_graph import _build_memory_graph
 from kiro_crew.dashboard.handlers.memory_services import _get_vector_store_async, _sel
+from kiro_crew.dashboard.memory_request_bounds import (
+    bounded_promote_min_count,
+    bounded_promote_min_sim,
+    bounded_semantic_confidence,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import (
     make_sync_embed_fn,
@@ -55,6 +61,12 @@ from ._shared import (
 from .cron import _recognize_session
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.memory")
+
+# PUT /api/memory/settings bounds; the Memory tab's inputs use the same ones.
+_HISTORY_IDLE_HOURS_MIN = 0.5
+_HISTORY_IDLE_HOURS_MAX = 24.0
+_HISTORY_MAX_DAYS_MIN = 7
+_HISTORY_MAX_DAYS_MAX = 365
 
 
 def memory_recall_deadline(
@@ -580,22 +592,43 @@ async def api_memory_settings(request: web.Request) -> web.Response:
         # Validated BEFORE the transaction: none of it reads the config, and a
         # 400 should not have taken the lock or occupied a worker.
         updates: dict[str, Any] = {}
+        # Out-of-range values are clamped, never refused: the Memory tab's inputs
+        # carry these same bounds and clamp before sending, so both sides store
+        # and show one value. The upper clamp also keeps a non-finite float
+        # (`"inf"`) out of config.json.
         if "history_idle_hours" in body:
             try:
-                updates["history_idle_hours"] = max(0.5, float(body["history_idle_hours"]))
+                idle = float(body["history_idle_hours"])
+            except OverflowError:
+                # An integer too large for a float (`10**400`) is still a number
+                # past a bound: clamp it like `"inf"` rather than 500.
+                idle = (
+                    _HISTORY_IDLE_HOURS_MAX
+                    if body["history_idle_hours"] > 0
+                    else _HISTORY_IDLE_HOURS_MIN
+                )
             except (ValueError, TypeError):
                 return web.json_response(
                     {"error": "history_idle_hours must be numeric"}, status=400
                 )
+            updates["history_idle_hours"] = min(
+                _HISTORY_IDLE_HOURS_MAX, max(_HISTORY_IDLE_HOURS_MIN, idle)
+            )
         if "history_max_days" in body:
             try:
-                updates["history_max_days"] = max(7, body_int(body["history_max_days"]))
+                updates["history_max_days"] = min(
+                    _HISTORY_MAX_DAYS_MAX,
+                    max(_HISTORY_MAX_DAYS_MIN, body_int(body["history_max_days"])),
+                )
             except (ValueError, TypeError):
                 return web.json_response(
                     {"error": "history_max_days must be an integer"}, status=400
                 )
         if "migrated" in body:
-            updates["migrated"] = bool(body["migrated"])
+            # A spelled "false"/"0"/"no"/"off" means False; any other value
+            # keeps the truthiness it has always been saved with.
+            raw_migrated = body["migrated"]
+            updates["migrated"] = _coerce_bool(raw_migrated, bool(raw_migrated))
 
         def _apply(data: dict) -> dict | None:
             # Nothing recognised in the body: skip the write rather than reach
@@ -704,11 +737,7 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     key = body.get("key", "")
     value = body.get("value")
-    confidence = (
-        float(body.get("confidence", 1.0))
-        if isinstance(body.get("confidence"), (int, float))
-        else 1.0
-    )
+    confidence = bounded_semantic_confidence(body.get("confidence"))
     source = body.get("source", "user_explicit")
     if not key or value is None:
         return web.json_response({"error": "key and value required"}, status=400)
@@ -1427,9 +1456,11 @@ async def api_memory_promote(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # The promotion tombstones every row it folds, so a threshold that would
+    # fold rows nobody asked to fold is bounded rather than run as sent.
     try:
-        min_count = body_int(body.get("min_count", 5))
-        min_sim = float(body.get("min_sim", 0.75))
+        min_count = bounded_promote_min_count(body_int(body.get("min_count", 5)))
+        min_sim = bounded_promote_min_sim(float(body.get("min_sim", 0.75)))
     # OverflowError: float() of a JSON integer beyond float range raises it.
     except (ValueError, TypeError, OverflowError):
         return web.json_response({"error": "min_count/min_sim must be numeric"}, status=400)
@@ -1496,6 +1527,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew._sqlite_compat import (  # noqa: F401
+        is_cjk_char,
+    )
     from kiro_crew.apps.registry import (  # noqa: F401
         minimal_env,
     )

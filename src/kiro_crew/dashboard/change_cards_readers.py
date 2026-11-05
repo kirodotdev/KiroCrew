@@ -149,8 +149,9 @@ def next_run_at(cron_expr: str, timezone: str | None) -> float | None:
 def one_shot_context(at: str, timezone: str) -> dict[str, Any]:
     """Resolve a one-shot card's local ``at`` to the instant ``POST /api/crons`` takes.
 
-    The zone is the card's own ``timezone``, or the CONFIGURED one when the card
-    names none -- the same default ``parse_time_string`` reads a wall clock in,
+    The zone is the card's own ``timezone`` (``local`` read as the host's zone
+    now), or the default one when the card names none -- the same zone
+    ``parse_time_string`` reads a wall clock in,
     so the card and the route agree on the instant. A time already gone is
     refused here, before a card is shown, exactly as the route would refuse it
     (``at_in_past``). ``once`` and ``run_at_local`` are display facts the card
@@ -163,11 +164,13 @@ def one_shot_context(at: str, timezone: str) -> dict[str, Any]:
         _wall_clock_resolution_error,
         get_local_tz,
         is_valid_timezone,
+        resolve_timezone_name,
     )
 
     tz = timezone or get_local_tz()[0]
     if not is_valid_timezone(tz):
         raise catalog.CardCatalogError("invalid_timezone", f"unknown timezone '{tz[:64]}'")
+    tz = resolve_timezone_name(tz) or "UTC"
     zone = ZoneInfo(tz)
     local = datetime.fromisoformat(at).replace(tzinfo=zone)
     skipped = _wall_clock_resolution_error(local, zone, tz)
@@ -603,7 +606,7 @@ def _page_offer_context(member: str, before: dict[str, Any]) -> dict[str, Any]:
         rec = member_goals.read_goals(slug, member)
     except member_goals.GoalsUnreadable:
         raise catalog.CardCatalogError(
-            "goals_unreadable", "this crewmate's goal record cannot be read"
+            "goals_unreadable", "this Bot's goal record cannot be read"
         ) from None
     if not goal_reminder.knows_its_page(rec):
         raise catalog.CardCatalogError(
@@ -613,7 +616,7 @@ def _page_offer_context(member: str, before: dict[str, Any]) -> dict[str, Any]:
     if target is None or not target.get("replaces"):
         raise catalog.CardCatalogError(
             "not_on_a_template",
-            "this offer is for a crewmate on a template page; with nothing on your tab, "
+            "this offer is for a Bot on a template page; with nothing on your tab, "
             "write your page directly, and with a page of your own, you already have one",
         )
     goals = rec.get("goals") or []
@@ -647,7 +650,7 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
         rec = member_goals.read_goals(slug, member)
     except member_goals.GoalsUnreadable:
         raise catalog.CardCatalogError(
-            "goals_unreadable", "this mate's goal record cannot be read"
+            "goals_unreadable", "this Bot's goal record cannot be read"
         ) from None
     out: dict[str, Any] = {
         "exists": True,
@@ -925,7 +928,11 @@ def _capability_state(app: Any, params: dict[str, Any]) -> dict[str, Any]:
         raise catalog.CardCatalogError(exc.code, f"capabilities unavailable: {exc.code}") from None
     touched = {(op.get("section"), op.get("id")) for op in params["draft"]["operations"]}
     rows = [
-        {k: row.get(k) for k in ("section", "id", "state", "value", "present")}
+        {
+            **{k: row.get(k) for k in ("section", "id", "state", "value", "present")},
+            # A crewmate's listed skill has no exact Undo (``capability_inverse``).
+            **({"listed": True} if row.get("listed") else {}),
+        }
         for row in view.get("rows") or []
         if (row.get("section"), row.get("id")) in touched
     ]
@@ -1195,6 +1202,16 @@ async def read_context(
         target = await asyncio.to_thread(resolve_setting, p)
         check_target_params(target, p)
         return {}
+    if kind in (
+        catalog.KIND_SCHEDULE_CREATE,
+        catalog.KIND_SCHEDULE_UPDATE,
+        catalog.KIND_CREWMATE_CREATE,
+    ):
+        # A wall clock below is read in the host's zone for "local" or no zone:
+        # have that zone read before a one-shot becomes an instant.
+        from kiro_crew.host_timezone import ensure_host_timezone
+
+        await ensure_host_timezone()
     if kind == catalog.KIND_SCHEDULE_CREATE and "at" in p:
         return one_shot_context(p["at"], p.get("timezone") or "")
     if kind in (
@@ -1212,7 +1229,11 @@ async def read_context(
         expr = source.get("cron_expr")
         if not expr:
             return {}
-        from kiro_crew.cron_service.schedule import get_local_tz, is_valid_timezone
+        from kiro_crew.cron_service.schedule import (
+            get_local_tz,
+            is_valid_timezone,
+            resolve_timezone_name,
+        )
 
         tz = source.get("timezone") or ""
         if tz and not is_valid_timezone(tz):
@@ -1220,9 +1241,11 @@ async def read_context(
         when = next_run_at(expr, tz)
         if when is None:
             raise catalog.CardCatalogError("invalid_cron", "that cron expression never runs")
-        # No zone on the card: the scheduler runs it in the configured one, so
-        # that is the zone the card names and the next run is shown in.
-        return {"next_run_at": when, "timezone": tz or get_local_tz()[0]}
+        # The IANA zone the scheduler runs it in now: a card with no zone takes
+        # the default one, and "local" is the host's. The browser formats the
+        # next run in this zone, and it cannot read "local".
+        zone = (resolve_timezone_name(tz) or "UTC") if tz else get_local_tz()[0]
+        return {"next_run_at": when, "timezone": zone}
     if kind == catalog.KIND_CREWMATE_CAPABILITIES:
         from kiro_crew.agent_capabilities import CapabilityError
 
@@ -1286,11 +1309,16 @@ async def read_context(
             server_tools,
         )
 
+        mount_only = bool(p.get("mount_only"))
         return {
-            "reach": await asyncio.to_thread(addition_reach_view, state, p["template"]),
+            "reach": await asyncio.to_thread(
+                addition_reach_view, state, p["template"], mount_only=mount_only
+            ),
             "live": live_apply(state),
             "tools": await asyncio.to_thread(server_tools, p["server"]),
-            "grants": await asyncio.to_thread(existing_grants, p["template"], p["server"]),
+            "grants": await asyncio.to_thread(
+                existing_grants, p["template"], p["server"], mount_only=mount_only
+            ),
         }
     if kind == catalog.KIND_MCP_INSTALL:
         return {"detail": await _mcp_detail(p)}

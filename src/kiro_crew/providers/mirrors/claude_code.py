@@ -28,6 +28,8 @@ from typing import Any, Mapping
 from kiro_crew.acp.session_mcp import session_mcp_projection
 from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
 from kiro_crew.providers.mirrors.base import (
+    RESOURCES_NO_READER,
+    TOOLS_SETTINGS_GATE_CHANNEL,
     AgentConfigMirror,
     Concern,
     Disposition,
@@ -123,18 +125,33 @@ class ClaudeCodeMirror(AgentConfigMirror):
             ),
             Concern.RESOURCES: Ruling(
                 _D.WITHHELD,
-                "same as PROMPT — steering files are injected as context text, not "
-                "projected into a backend's config",
+                RESOURCES_NO_READER,
             ),
             Concern.HOOKS: Ruling(
                 _D.NO_CHANNEL,
-                "the spec's `hooks` block is executed by the harness, and Claude "
-                "Code runs hooks natively — but nothing writes them today, so a "
-                "user's per-agent hooks reach kiro-cli and no other backend. Crew's "
-                "OWN hooks (hooks.py, fired on ACP tool events) are unaffected and "
-                "work on every backend; this gap is only the spec block",
+                "the harness is handed no spec, so Crew's turn loop fires the "
+                "spec's postToolUse, userPromptSubmit, agentSpawn and stop hooks "
+                "(agent_sdk/spec_hooks.py, ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS); "
+                "a Bash call is named execute_bash for their matchers. preToolUse is "
+                "the gap: Claude Code approves some calls without a permission "
+                "request, so a Crew-fired gating hook would be skipped on those, and "
+                "a new session whose spec has one gets a notice. Crew's OWN hooks "
+                "(hooks.py, fired on ACP tool events) are unaffected",
                 channel="settings.local.json `hooks`, the file Crew already creates "
                 "for this backend under create-or-decline",
+            ),
+            Concern.TOOLS_SETTINGS: Ruling(
+                _D.NO_CHANNEL,
+                "kiro-cli's per-tool settings (shell denyByDefault and allowedCommands, the "
+                "write allowlist, deniedPaths, web_fetch.blocked) have no field on "
+                "claude-agent-acp's session/new and no settings.local.json key Crew writes, and "
+                "Crew feeds this session's permission requests no spec allowlist, so the field "
+                "is applied nowhere. Its subagent.availableAgents is the exception: Crew's spawn "
+                "gate reads it from the parent's spec on every backend "
+                "(subagent_parts/agent_policy.py), so no notice names it. A new chat session "
+                "whose spec sets it gets one notice naming what of it goes unapplied "
+                "(dashboard/chat_turn/turn_spec_hooks.py)",
+                channel=TOOLS_SETTINGS_GATE_CHANNEL,
             ),
         }
 

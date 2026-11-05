@@ -20,17 +20,12 @@ const SHELL_HANDLES = [
   "app-menu:items",
   "browser:annotate",
   "browser:close",
-  "browser:control",
-  "browser:get-control",
   "browser:get-state",
   "browser:navigate",
   "browser:open",
-  "browser:set-agent-act",
   "browser:set-bounds",
-  "browser:set-control-owner",
   "browser:set-inactive",
   "browser:set-overlay",
-  "browser:track-session",
   "close-action:get",
   "close-action:set",
   "crash-reports:get",
@@ -43,6 +38,7 @@ const SHELL_HANDLES = [
   "first-run:can-use-remote-crew",
   "first-run:use-remote-crew",
   "global-hotkey:get",
+  "image:copy-at",
   "local-gateway:get",
   "local-gateway:set",
   "pane:clear-http-cache",
@@ -287,6 +283,27 @@ function harness({
       },
     },
     webContents: { getAllWebContents: () => [liveContents, destroyedContents] },
+    clipboard: {
+      formats: [],
+      clears: 0,
+      text: "",
+      writes: [],
+      availableFormats() { return this.formats; },
+      clear() { this.clears += 1; this.formats = []; this.text = ""; },
+      readText() { return this.text; },
+      readHTML() { return ""; },
+      readRTF() { return ""; },
+      readImage() {
+        const raster = ["image/png", "image/jpeg", "image/tiff", "image/bmp"];
+        const has = this.formats.some((f) => raster.includes(f));
+        return { isEmpty: () => !has };
+      },
+      write(data) {
+        this.writes.push(data);
+        this.text = data.text || "";
+        this.formats = [...(data.text ? ["text/plain"] : []), ...(data.image ? ["image/png"] : [])];
+      },
+    },
   };
 
   const recordWindow = (name, result = { from: name }) => (...args) => {
@@ -407,6 +424,7 @@ function harness({
       secretReads.push(gatewayUrl);
       return gatewayUrl === backendUrl ? internalSecret : "";
     },
+    clipboardImageTimeoutMs: 20,
   });
 
   return {
@@ -503,13 +521,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 44);
+  assert.equal(h.handlers.size + h.listeners.size, 40);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 45);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 41);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -592,11 +610,6 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
     ["browser:set-inactive", "setInactive", ["panel", false]],
     ["browser:close", "close", ["panel"]],
     ["browser:get-state", "getState", ["panel"]],
-    ["browser:track-session", "trackSession", ["panel", true]],
-    ["browser:set-agent-act", "setAgentAct", ["panel", false]],
-    ["browser:set-control-owner", "setControlOwner", ["panel", "agent"]],
-    ["browser:get-control", "getControl", ["panel"]],
-    ["browser:control", "control", ["panel", "click", { x: 4 }]],
     ["browser:annotate", "annotate", ["panel", "poll", {}]],
   ];
   for (const [channel, owner, args] of browserCases) {
@@ -620,6 +633,105 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
     accelerator: "",
     default: "Test+Shift+K",
   });
+});
+
+test("image:copy-at copies at the zoomed point and reports whether an image landed", async () => {
+  const h = harness();
+  h.registrar.registerShell();
+  const copies = [];
+  const clipboard = h.electron.clipboard;
+  const mainFrame = { url: "http://localhost:5476/chat" };
+  const sender = {
+    mainFrame,
+    getZoomFactor: () => 1.5,
+    copyImageAt: (x, y) => {
+      copies.push([x, y]);
+      clipboard.formats = ["image/png"];
+    },
+  };
+  const copyAt = h.handlers.get("image:copy-at");
+
+  assert.equal(await copyAt({ sender, senderFrame: mainFrame }, 101, 40.4), true);
+  assert.deepEqual(copies, [[152, 61]]);
+
+  clipboard.formats = ["text/plain"];
+  assert.equal(await copyAt({ sender, senderFrame: { url: "http://localhost:5476/pane" } }, 10, 10), false);
+  for (const [x, y] of [[NaN, 1], [1, Infinity], [-1, 5], ["10", 10]]) {
+    assert.equal(await copyAt({ sender, senderFrame: mainFrame }, x, y), false);
+  }
+  assert.deepEqual(copies, [[152, 61]], "subframe and malformed points copy nothing");
+
+  const silent = { mainFrame, copyImageAt: () => {} };
+  assert.equal(await copyAt({ sender: silent, senderFrame: mainFrame }, 5, 5), false,
+    "a copy that leaves no image on the clipboard reports failure");
+  const throwing = { mainFrame, copyImageAt: () => { throw new Error("destroyed"); } };
+  assert.equal(await copyAt({ sender: throwing, senderFrame: mainFrame }, 5, 5), false);
+
+  clipboard.formats = ["image/png"];
+  assert.equal(await copyAt({ sender: silent, senderFrame: mainFrame }, 999999, 999999), false,
+    "an image already on the clipboard does not answer an off-image copy");
+  assert.deepEqual(clipboard.formats, ["image/png"], "a failed copy puts the previous image back");
+  assert.equal(await copyAt({ sender, senderFrame: mainFrame }, 10, 10), true);
+  assert.equal(await copyAt({ sender, senderFrame: mainFrame }, 10, 10), true,
+    "copying the image already on the clipboard again reports success");
+  assert.equal(clipboard.clears, 6, "every accepted point clears the clipboard before copying");
+
+  clipboard.writes = [];
+  clipboard.text = "the user's copied text";
+  clipboard.formats = ["text/plain"];
+  assert.equal(await copyAt({ sender: silent, senderFrame: mainFrame }, 5, 5), false);
+  assert.equal(clipboard.text, "the user's copied text", "a failed copy puts the previous text back");
+  assert.equal(await copyAt({ sender: throwing, senderFrame: mainFrame }, 5, 5), false);
+  assert.equal(clipboard.text, "the user's copied text", "a throwing copy puts the previous text back");
+  assert.equal(await copyAt({ sender, senderFrame: mainFrame }, 10, 10), true);
+  assert.equal(clipboard.writes.length, 2, "a successful copy restores nothing");
+
+  clipboard.text = "text A";
+  clipboard.formats = ["text/plain"];
+  const concurrentText = {
+    mainFrame,
+    copyImageAt: () => {
+      setTimeout(() => {
+        clipboard.text = "text B";
+        clipboard.formats = ["text/plain"];
+      }, 0);
+    },
+  };
+  assert.equal(await copyAt({ sender: concurrentText, senderFrame: mainFrame }, 5, 5), false);
+  assert.equal(clipboard.text, "text B", "a failed copy keeps text copied during its poll");
+
+  clipboard.text = "text A";
+  clipboard.formats = ["text/plain"];
+  const writesThenThrows = {
+    mainFrame,
+    copyImageAt: () => {
+      clipboard.text = "text B";
+      clipboard.formats = ["text/plain"];
+      throw new Error("destroyed");
+    },
+  };
+  assert.equal(await copyAt({ sender: writesThenThrows, senderFrame: mainFrame }, 5, 5), false);
+  assert.equal(clipboard.text, "text B", "a throwing copy keeps newer clipboard contents");
+
+  const clearsBefore = clipboard.clears;
+  clipboard.formats = ["text/uri-list"];
+  assert.equal(await copyAt({ sender: silent, senderFrame: mainFrame }, 5, 5), false);
+  assert.deepEqual(clipboard.formats, ["text/uri-list"], "a failed copy keeps copied files");
+  assert.equal(await copyAt({ sender: throwing, senderFrame: mainFrame }, 5, 5), false);
+  assert.deepEqual(clipboard.formats, ["text/uri-list"], "a throwing copy keeps copied files");
+  clipboard.formats = ["image/png", "application/x-app-data"];
+  assert.equal(await copyAt({ sender: silent, senderFrame: mainFrame }, 999999, 999999), false,
+    "an image beside app-specific data does not answer an off-image copy");
+  assert.deepEqual(clipboard.formats, ["image/png", "application/x-app-data"]);
+  assert.equal(await copyAt({ sender, senderFrame: mainFrame }, 10, 10), true,
+    "a copy that replaces app-specific data reports success");
+  clipboard.formats = ["image/svg+xml"];
+  assert.equal(await copyAt({ sender: silent, senderFrame: mainFrame }, 5, 5), false);
+  assert.deepEqual(clipboard.formats, ["image/svg+xml"],
+    "a failed copy keeps an image readImage() cannot capture");
+  assert.equal(await copyAt({ sender, senderFrame: mainFrame }, 10, 10), true,
+    "a copy that replaces a non-raster image reports success");
+  assert.equal(clipboard.clears, clearsBefore, "a clipboard with unrestorable formats is never cleared");
 });
 
 // A completed scan, shaped like collectCrashReports' return value. Only
@@ -1524,12 +1636,23 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   await h.listeners.get("update:notify-policy-governed")(evForeign, true);
   assert.equal(deps.isPolicyGoverned(), false, "foreign origin must not set governance");
 
-  // Destroying the source window must clear governance even without an explicit false.
+  // Destroying the source window drops it from the governing set without an
+  // explicit false. Whether that CLEARS governance is platform-dependent: macOS
+  // keeps the app alive after its last window closes (Cmd+W is not Cmd+Q), so
+  // the handler deliberately holds governance until a reopened window re-reports
+  // it, leaving the feed lane stood down rather than racing the policy provider
+  // for the same install. Every other platform exits with its last window, so
+  // clearing there cannot strand the flag.
+  //
+  // The handler reads process.platform and electron.BrowserWindow itself, and
+  // this harness opens no window, so darwin always takes the hold branch here.
+  const holdsGovernanceWithNoWindowOpen = process.platform === "darwin";
   const ev2 = makeEvent();
   await h.listeners.get("update:notify-policy-governed")(ev2, true);
   assert.equal(deps.isPolicyGoverned(), true, "governance set before destroy");
   ev2._destroy();
-  assert.equal(deps.isPolicyGoverned(), false, "destroyed source window must clear governance");
+  assert.equal(deps.isPolicyGoverned(), holdsGovernanceWithNoWindowOpen,
+    "a destroyed source window clears governance unless macOS has no window left");
 
   // Multi-window: closing one window must NOT clear governance while another window
   // is still governed. This is the bug where `governanceSourceId` was a single id.
@@ -1542,7 +1665,8 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   assert.equal(deps.isPolicyGoverned(), true,
     "closing one window must not clear governance while another remains governed");
   evA._destroy(); // close the first window too
-  assert.equal(deps.isPolicyGoverned(), false, "governance clears when all windows close");
+  assert.equal(deps.isPolicyGoverned(), holdsGovernanceWithNoWindowOpen,
+    "governance clears when all windows close, except on macOS where the app outlives them");
 
   // Remote-gateway gate: a harness that simulates a non-kirocrew port owner
   // (SSH tunnel holding the primary port) must reject governance via gate 3.

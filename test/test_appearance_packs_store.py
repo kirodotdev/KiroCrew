@@ -81,6 +81,19 @@ class TestListing:
         assert "stray" not in [p["id"] for p in store.list_packs()]
 
 
+class TestAManifestSavedWithABomIsRead:
+    """A hand-edited manifest saved by an editor that writes a UTF-8 BOM."""
+
+    def test_the_pack_is_listed_and_its_detail_reads(self, tmp_path):
+        d = _write_pack(tmp_path, "bom")
+        manifest = d / "manifest.json"
+        manifest.write_bytes(b"\xef\xbb\xbf" + manifest.read_bytes())
+        s = AppearanceStore(tmp_path)
+        s.load()
+        assert "bom" in [p["id"] for p in s.list_packs()]
+        assert s.pack_detail("bom") is not None
+
+
 class TestDetail:
     def test_animation_content_is_inlined(self, tmp_path, store):
         _write_pack(tmp_path, "cat")

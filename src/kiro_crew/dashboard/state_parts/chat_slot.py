@@ -120,6 +120,7 @@ class _ChatSlot:
         "_member_approval_seeded",
         "_trusted_patterns",
         "_trusted_pattern_deadlines",
+        "_deny_waivers",
         "_titled",
         "_title_origin",
         "_title_epoch",
@@ -151,6 +152,7 @@ class _ChatSlot:
         "_todo_rebuild_expected",
         "_mcp_report",
         "_mcp_report_session_id",
+        "_mcp_banner_shown",
         "_on_message",
         "_on_row",
         "_on_card_event",
@@ -313,6 +315,7 @@ class _ChatSlot:
         "_acp_client",
         "_last_turn_awaiting_permission",
         "_last_turn_children_announced",
+        "_crew_dispatch_notice_turn_gen",
         "_steer_segment_cut",
         "_owed_segment_cut",
         "_native_subagent_tracker",
@@ -432,6 +435,7 @@ class _ChatSlot:
     _revived_by: str
     _mcp_report: dict[str, Any] | None
     _mcp_report_session_id: str
+    _mcp_banner_shown: dict[str, tuple[str, int, str]]
     _pending_reset_history_key: str | None
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool
@@ -494,6 +498,7 @@ class _ChatSlot:
     _member_approval_seeded: bool
     _trusted_patterns: set[str]
     _trusted_pattern_deadlines: dict[str, GrantDeadline]
+    _deny_waivers: set[str]
     _hook_continuation_depth: int
     _on_message: object | None
     _on_row: object | None
@@ -549,6 +554,12 @@ class _ChatSlot:
     _acp_client: None
     _last_turn_awaiting_permission: bool
     _last_turn_children_announced: bool
+    #: The ``_turn_generation`` a Crew Mode dispatch notice was last written for
+    #: (``crew_dispatch_notice``). One notice per person turn: the first
+    #: successful ``session_create`` of a turn stamps this, and the rest of that
+    #: turn's dispatches see the generation already stamped and write nothing.
+    #: ``-1`` means none written yet; in-memory only, so a restart starts fresh.
+    _crew_dispatch_notice_turn_gen: int
     _question_pending: dict[str, dict]
 
     # Initialised by state_parts/slot_ladder.py.
@@ -679,7 +690,7 @@ class _ChatSlot:
         self.agent = agent
         _slot_session.init_session_fields(self)
         self.model = model
-        # "" = default chat; app workers may carry their own mode (design-critique)
+        # "" = default chat; app workers may carry their own mode (apps/seams.py)
         self.mode = mode
         self.workspace = workspace
         _slot_turns.init_turns_fields(self)
@@ -999,6 +1010,7 @@ class _ChatSlot:
         state: DashboardState,
         *,
         extra_meta: dict[str, Any] | None = None,
+        relay_meta: dict[str, Any] | None = None,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -1038,6 +1050,12 @@ class _ChatSlot:
             # win a collision: a caller's extra fields are descriptive, and the
             # drain's authorization input must not be replaceable from here.
             _meta: dict[str, Any] = dict(extra_meta or {})
+            # The gateway-set cross-session sender (``meta.relay``) rides the queue
+            # entry so the drain unions it onto the row it later appends — the one
+            # path a queued peer send reaches the transcript. Descriptive, applied
+            # before the containment update so an authorization key still wins.
+            if relay_meta:
+                _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
             self.queue_append(prompt, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
@@ -1054,7 +1072,11 @@ class _ChatSlot:
             # transcript rewrites.
             start_queue_persist(state, self)
             return False
-        self.append("user", prompt, "msg msg-u")
+        # The run arm has no queue entry, so a cross-session sender stamp is
+        # applied directly to the user row it appends (``extra_meta`` is queue-only).
+        self.append(
+            "user", prompt, "msg msg-u", meta={"relay": dict(relay_meta)} if relay_meta else None
+        )
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
         self.task = task
         state._background_tasks.add(task)

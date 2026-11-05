@@ -270,6 +270,8 @@ def test_qr_handler_swallows_observer_error(monkeypatch, tmp_path):
 
     c.on_qr = boom
     asyncio.run(c._client.qr_callback(None, b"c1"))  # must not raise
+    assert c.latest_qr == ["c1"]
+    assert c.state == STATE_PAIRING
     asyncio.run(c.disconnect())
 
 
@@ -345,6 +347,8 @@ def test_message_handler_noop_without_callback(monkeypatch, tmp_path):
     c = _connect(monkeypatch, tmp_path)
     c.on_message = None
     asyncio.run(c._client.handlers[MessageEv](None, "evt"))  # no-op
+    # The handler task is tracked while it runs and released on the early return.
+    assert c._handler_tasks == set()
     asyncio.run(c.disconnect())
 
 
@@ -386,6 +390,52 @@ def test_disconnect_swallows_stop_error():
     c._client = Fake()
     asyncio.run(c.disconnect())  # must not raise
     assert c._client is None
+
+
+def _loop_probing_session_exists(monkeypatch, *, result: bool) -> list[bool]:
+    """Replace ``session_exists`` with a spy that records, per call, whether an
+    event loop is running in the calling thread: true only when the coroutine
+    called it inline instead of handing it to a worker thread."""
+    on_loop: list[bool] = []
+
+    def spy(self) -> bool:
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return result
+
+    monkeypatch.setattr(WhatsAppClient, "session_exists", spy)
+    return on_loop
+
+
+def test_connect_checks_for_a_session_off_the_event_loop(monkeypatch, tmp_path):
+    """The session probe is an ``exists()`` plus a ``stat()`` on the store, and
+    the one gateway loop also carries every other channel and the liveness
+    heartbeat, so it runs on a worker thread like the rest of ``connect``'s
+    filesystem work."""
+    on_loop = _loop_probing_session_exists(monkeypatch, result=False)
+    c = _connect(monkeypatch, tmp_path)
+    assert on_loop == [False], "the session probe must run on a worker thread"
+    # Still snapshotted before the client is built: no session -> pairing.
+    assert c.state == STATE_PAIRING
+
+
+def test_disconnect_checks_for_a_session_off_the_event_loop(monkeypatch):
+    on_loop = _loop_probing_session_exists(monkeypatch, result=True)
+    c = WhatsAppClient("/tmp/none.db")
+
+    class Fake:
+        async def stop(self):
+            pass
+
+    c._client = Fake()
+    c._set_state(STATE_CONNECTED)
+    asyncio.run(c.disconnect())
+    assert on_loop == [False], "the session probe must run on a worker thread"
+    # A session on disk after a live connection dropped reads as an error.
+    assert c.state == STATE_ERROR
 
 
 def test_logout_without_a_live_client_raises():
@@ -448,6 +498,8 @@ def test_load_identity_swallows_errors():
 
     c._client = Fake()
     asyncio.run(c._load_identity())  # must not raise
+    assert c.me.jid == ""
+    assert c.push_name == ""
 
 
 # ── outbound: send_text ─────────────────────────────────────────────────────

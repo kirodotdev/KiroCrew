@@ -1,12 +1,8 @@
 """``kiro_crew.agent`` composes its split-out spec code onto one namespace.
 
-The spec-file writes, the fresh-spec build, the launcher, the spec upgrades and lookups,
-the shared-home guard, the rebuild with its ceiling projection, and most prompt and grant
-text moved out of ``agent.py`` into the ``kiro_crew.agent_parts`` owners.
-:func:`kiro_crew._facade_compose.compose` runs every function they define on
-``kiro_crew.agent``'s module globals. The facade's own contract
-(``test/test_agent_refactor_facade.py``) passes unchanged because of that; these tests pin
-what the composition itself promises:
+:func:`kiro_crew._facade_compose.compose` runs every function the ``kiro_crew.agent_parts``
+owners define on ``kiro_crew.agent``'s module globals, which is why the facade contract
+(``test/test_agent_refactor_facade.py``) holds. These tests pin what the composition promises:
 
 * every owner function runs on the facade's globals, names the facade as its module, and is
   the object the facade binds, except the two functions wrapped where they are defined,
@@ -53,6 +49,13 @@ from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_agent_parts")
+
+SHARED_FACADE_CHECKS = (
+    "the_sweep_reports_a_global_the_namespace_does_not_bind",
+    "the_package_init_defines_nothing",
+    "an_owner_imports_the_facade_only_for_type_checking_and_no_project_module",
+)
+
 
 FACADE = agent.__name__
 PACKAGE = agent_parts.__name__
@@ -117,12 +120,13 @@ _BASE_IMPORTS = frozenset("""
     is_markdown_spec is_registered_agent_name is_sensitive_path isolated_agents_dir
     iter_agent_spec_files Iterator json kiro_agents_dir kiro_hooks Literal loads_user_json
     logging managed_mcp mcp_aliases mcp_search_path mcp_sources mkdirs_owner_only ModuleType
-    MutableMapping os OWNED_KIRO_AGENT_FILES Path platform_compat project_agent_files
+    MutableMapping os OWNED_KIRO_AGENT_FILES Path platform_compat PlatformCompositionError
+    project_agent_files
     project_agent_name project_agent_names read_json_or redact redact_log replace_with_retry
     REQUIRED_KIRO_AGENT_FILES resolved_command_casing safe_context_call
     safe_read_file_bytes_nolink SecurityEvent sel service_agents shared_kiro_agents_writable
-    shutil skill_resources SKILL_URI_PREFIX spec_path_key stat sys tempfile threading time
-    timezone TYPE_CHECKING uuid worker_agent write_text_owner_only
+    shared_template_view shutil skill_resources SKILL_URI_PREFIX spec_path_key stat sys tempfile
+    threading time timezone TYPE_CHECKING uuid worker_agent write_text_owner_only
     """.split())
 
 #: The names the facade's composition glue imports.
@@ -237,15 +241,6 @@ def test_the_managed_server_table_holds_the_composed_spec_gate() -> None:
     gate = agent._MANAGED_MCP_SERVERS["kirocrew-computer"]["spec_gate"]
     assert gate is agent._computer_use_spec_gate
     assert gate.__globals__ is vars(agent)
-
-
-def test_the_sweep_reports_a_global_the_namespace_does_not_bind() -> None:
-    module_code = compile(
-        "def f():\n    def g():\n        return absent\n    return present, g\n", "probe", "exec"
-    )
-    code = next(c for c in module_code.co_consts if isinstance(c, types.CodeType))
-    probe = types.FunctionType(code, {"__name__": "probe", "present": 1})
-    assert _unbound_globals(probe) == ["absent"]
 
 
 def test_every_global_an_owner_function_reads_is_bound_on_the_facade() -> None:
@@ -526,15 +521,6 @@ def test_the_owner_import_check_sees_every_spelling(source: str, flagged: bool) 
     assert bool(_bad_owner_imports(ast.parse(source))) is flagged
 
 
-def test_an_owner_imports_the_facade_only_for_type_checking_and_no_project_module() -> None:
-    bad = {
-        stem: found
-        for stem, path in _owner_paths().items()
-        if (found := _bad_owner_imports(_tree(path)))
-    }
-    assert bad == {}
-
-
 def _module_values(tree: ast.Module) -> list[str]:
     """Names a module binds at its top level other than by an import or a ``def``."""
     found = []
@@ -583,12 +569,6 @@ def test_every_module_level_value_an_owner_defines_is_the_object_the_facade_bind
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip().splitlines()[-1] == "[]"
     assert sum(len(names) for names in values.values()) >= 40
-
-
-def test_the_package_init_defines_nothing() -> None:
-    init = _PARTS_DIR / "__init__.py"
-    assert _facade_mirror._defined_names(_tree(init)) == set()
-    assert [n for n in _tree(init).body if not isinstance(n, ast.Expr)] == []
 
 
 def _imports_an_owner(source: str) -> bool:

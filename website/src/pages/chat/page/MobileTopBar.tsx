@@ -1,8 +1,9 @@
 import { Suspense, lazy, type ComponentProps, type Dispatch, type MutableRefObject, type ReactNode, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
-import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, VenetianMask } from 'lucide-react'
+import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, Rows2, VenetianMask } from 'lucide-react'
 
 import { generateSlotTitle } from '../../../hooks/slotTitleGeneration'
+import type { SplitDir } from '../../../hooks/useSessionGrid'
 import { ConcurrencyCutDot, ConcurrencyCutLiveRegion, ConcurrencyCutMenuItem } from '../../../components/ConcurrencyCutChip'
 import ErrorBoundary from '../../../components/ErrorBoundary'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../../components/ErrorNotice'
@@ -16,6 +17,9 @@ import type { ChatSlot } from '../../../types'
 import { errMessage } from '../../../utils/thunkError'
 import { ChatHeaderMenu } from '../ChatHeaderMenu'
 import SessionTitleControl from '../SessionTitleControl'
+import MilestonesIndicator from '../../../components/milestones/MilestonesIndicator'
+import MilestonesMenuItem from '../../../components/milestones/MilestonesMenuItem'
+import { useExplorePreview } from '../../../hooks/usePreviewFlag'
 
 // Lazy for the same reason App.tsx lazy-loads the pill: the update chunk is
 // off the app-core budget, and the phone menu needs it only while an update exists.
@@ -48,7 +52,7 @@ interface MobileTopBarProps {
   toggleAct: () => void
   splitAnchorForActive: string | null
   activeIsSplitAnchor: boolean
-  enterSplit: (anchor: string | null) => void
+  enterSplit: (anchor: string | null, dir?: SplitDir) => void
   /** The session menu's "New chat here" item (ChatPage builds it from the current folder). */
   mobileNewSessionItem: ComponentProps<typeof ChatHeaderMenu>['newSessionHere']
   dispatch: AppDispatch
@@ -89,6 +93,7 @@ export default function MobileTopBar({
   mobileNewSessionItem,
   dispatch,
 }: MobileTopBarProps) {
+  const explore = useExplorePreview()
   return (
     <>
     {/* Phone: this page's share of the shell's single top bar. Leading cell:
@@ -176,6 +181,9 @@ export default function MobileTopBar({
         title row shows as icons: pop-out (or focus the popped-out window),
         the activity panel, and split view. Nothing here is a hard swap: the
         menu opens with DropdownMenu's own animation. */}
+    {/* No session open, so no overflow menu: the trailing cell holds only the
+        bell, and the milestones indicator is the second control. */}
+    {explore && topbarTrailSlot && !activeSlot && !embedMode && createPortal(<MilestonesIndicator compact />, topbarTrailSlot)}
     {topbarTrailSlot && activeSlot && !embedMode && createPortal(
       <>
       {/* The inline title row, which carries the concurrency-cut chip, is not
@@ -220,6 +228,7 @@ export default function MobileTopBar({
           {/* The concurrency cut, after an update and ahead of the window
               actions: renders nothing while no cut is in force. */}
           <ConcurrencyCutMenuItem Item={DropdownMenuItem} />
+          {explore && <MilestonesMenuItem Item={DropdownMenuItem} />}
           {activePoppedOut ? (
             <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => focusActivePopout(activeSlot)}>
               <span className="flex items-center gap-2"><ExternalLink size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.focus_popped_out_window')}</span></span>
@@ -239,9 +248,18 @@ export default function MobileTopBar({
               <span className="flex items-center gap-2"><Columns2 size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.return_to_split_view')}</span></span>
             </DropdownMenuItem>
           ) : (
+            <>
             <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => enterSplit(activeSlot)}>
               <span className="flex items-center gap-2"><Columns2 size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.enter_split_view')}</span></span>
             </DropdownMenuItem>
+            {/* Only from the single-session view: in an open grid the seed is spent,
+                so this row would do nothing; the panes carry their own Split down. */}
+            {!splitMode && (
+              <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => enterSplit(activeSlot, 'down')}>
+                <span className="flex items-center gap-2"><Rows2 size={14} className="shrink-0 text-muted" /><span>{i18nT('components.chatPane.split_down')}</span></span>
+              </DropdownMenuItem>
+            )}
+            </>
           ))}
         </DropdownMenuContent>
       </DropdownMenu>

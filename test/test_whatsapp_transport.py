@@ -182,6 +182,21 @@ class TestGauntlet:
         )
         assert harness.dispatched == []
 
+    async def test_replayed_history_in_neonize_milliseconds_is_dropped(self, harness):
+        # neonize sends MessageInfo.Timestamp as UnixMilli; connected_at is seconds.
+        harness.client.connected_at = 1_000_000_000.0
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, timestamp=999_000_000_000.0)
+        )
+        assert harness.dispatched == []
+
+    async def test_recent_message_in_neonize_milliseconds_passes(self, harness):
+        harness.client.connected_at = 1_000_000_000.0
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, timestamp=999_999_970_000.0)
+        )
+        assert len(harness.dispatched) == 1
+
     async def test_recent_message_within_grace_passes(self, harness):
         harness.client.connected_at = 1_000_000.0
         await harness.transport.receive(
@@ -264,6 +279,34 @@ class TestGroups:
             event(chat=GROUP, sender=FRIEND, is_group=True, quoted_stanza=ids[0])
         )
         assert len(h.dispatched) == 1
+
+    @staticmethod
+    def _captioned(field: str, *, mentions=(), stanza: str = "", participant: str = "") -> Msg:
+        """A media message whose caption carries the mention or quote."""
+        ctx = SimpleNamespace(mentionedJID=list(mentions), participant=participant, stanzaID=stanza)
+        media = {f: None for f in ("imageMessage", "videoMessage", "documentMessage")}
+        media[field] = Msg(caption="look", mimetype="x/y", fileLength=1, contextInfo=ctx)
+        return Msg(conversation="", extendedTextMessage=None, **media)
+
+    async def test_a_mention_on_a_video_caption_dispatches(self):
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
+        ev = event(chat=GROUP, sender=FRIEND, is_group=True)
+        ev.Message = self._captioned("videoMessage", mentions=[OWN_JID])
+        await h.transport.receive(ev)
+        assert len(h.dispatched) == 1
+        assert h.dispatched[0].is_mention
+
+    @pytest.mark.parametrize("field", ["imageMessage", "videoMessage", "documentMessage"])
+    async def test_a_caption_mention_or_quote_is_addressed(self, field):
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
+        ids = await h.transport._send_tracked(GROUP, "agent said this")
+        t = h.transport
+        assert t._is_addressed(self._captioned(field, mentions=[OWN_JID]), GROUP, False)
+        assert t._is_addressed(self._captioned(field, mentions=[OWN_LID]), GROUP, False)
+        assert t._is_addressed(self._captioned(field, stanza=ids[0]), GROUP, False)
+        assert t._is_addressed(self._captioned(field, participant=OWN_JID), GROUP, False)
+        assert not t._is_addressed(self._captioned(field), GROUP, False)
+        assert not t._is_addressed(self._captioned(field, mentions=[FRIEND]), GROUP, False)
 
     async def test_rules_mode_unprompted_dispatches_with_verdict(self):
         h = Harness(

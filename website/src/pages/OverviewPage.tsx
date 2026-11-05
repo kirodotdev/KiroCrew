@@ -22,7 +22,8 @@ import { providerUsageQuery } from '../api/providerUsageQuery'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
-import { fmtDuration } from '../i18n/format'
+import { compactPluralCount, fmtCompact, fmtDuration } from '../i18n/format'
+import { formatCost } from '../utils/formatCost'
 
 // The record editor and recovery tools are needed only inside this drill-in.
 // Keep them out of the dashboard shell's initial bundle.
@@ -41,11 +42,21 @@ const MemoryTab = lazy(() => import('./overview/MemoryTab'))
 const DRILL_VIEWS = ['memory', 'usage', 'wakatime'] as const
 type DrillView = (typeof DRILL_VIEWS)[number]
 
-function fmtNum(n: number | undefined | null): string {
-  if (n == null) return '—'
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return String(n)
+/** A Today-line count: `amount` is the locale's compact number, and `count`, the
+ *  quantity it shows, picks the plural form that agrees with it. */
+function todayCount(n: number | undefined | null): { count: number; amount: string } {
+  return { count: compactPluralCount(n ?? 0), amount: fmtCompact(n ?? Number.NaN) }
+}
+
+/** The Today line: sessions and messages, then tokens and cost when known. */
+function todayLine(sessions: number | undefined, messages: number | undefined, tokens: number | null | undefined, cost: number | null | undefined): string {
+  const parts = [
+    i18nT('pages.overviewPage.today_sessions', todayCount(sessions)),
+    i18nT('pages.overviewPage.today_messages', todayCount(messages)),
+  ]
+  if (tokens != null) parts.push(i18nT('pages.overviewPage.today_tokens', todayCount(tokens)))
+  if (cost != null) parts.push(formatCost(cost))
+  return i18nT('pages.overviewPage.today_line', { summary: parts.join(' · ') })
 }
 
 /** Back link + drill-in content, mirroring the Channels back affordance. */
@@ -94,9 +105,7 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
             <div data-testid="overview-usage-refreshing" className="skeleton h-4 rounded max-w-[320px]" />
           ) : (
             <div className="text-[13px] text-muted">
-              {i18nT('pages.overviewPage.today')} {fmtNum(today?.sessions)} {i18nT('pages.overviewPage.sessions')} {fmtNum(today?.messages)} {i18nT('pages.overviewPage.messages')}
-              {data.tokens?.total != null && <> · {fmtNum(data.tokens.total)} {i18nT('pages.overviewPage.tokens')}</>}
-              {data.costUsd != null && <> · ${data.costUsd.toFixed(2)}</>}
+              {todayLine(today?.sessions, today?.messages, data.tokens?.total, data.costUsd)}
             </div>
           )}
           {b?.plan && (

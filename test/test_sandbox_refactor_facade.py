@@ -164,7 +164,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.sandbox_tiers": tuple("""
         _resolved_kiro_agents_targets _PACKAGED_INSTALL_DIR_NAMES install_root_targets_for
         _install_root_targets_with _install_root_targets_cached _resolved_install_root_targets
-        _bundled_kas_targets_cached
+        _bundled_kas_targets_cached _bundled_kiro_cli_targets_cached _bundled_root_spellings
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
         crew_home_visible_spellings carveout_chain_has_planted_link
         enterprise_policy_cache_view _caller_mask_contains _POLICY_CACHE_META_LEAF
@@ -213,6 +213,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _migrate_md_notebook_legacy_state _member_records_move
         _AUTH_STORE_PUBLISHED_KEY_LEAF _AUTH_STORE_LEGACY_TEMP_PREFIX
         _reconcile_auth_store_staging_links _sweep_legacy_auth_store_temps
+        _LEGACY_AUTH_SWEEP_CLEAN
         _sweep_one_md_notebook_state_dir _materialize_md_notebook_mask_targets
         """.split()),
     "kiro_crew.sandbox_workspace": tuple("""
@@ -248,7 +249,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         kiro_internal_sandbox_enabled kiro_internal_sandbox_switch SANDBOX_LAYER_CREW
         SANDBOX_LAYER_HARNESS wrapped_by_crew_sandbox sandbox_init_remediation
         delegated_workspace_exposes_sealed_target _spawns_kiro_cli
-        _delegate_to_kiro_internal_sandbox _command_log_label
+        _delegate_to_kiro_internal_sandbox _command_log_label _first_json_value
+        _kiro_settings_concat_warned
         """.split()),
     "kiro_crew.sandbox_probe": tuple("""
         _CLONE_NEWUSER _CLONE_NEWNS _PROBE_MS_REC _PROBE_MS_PRIVATE _TRANSIENT_PROBE_ERRNOS

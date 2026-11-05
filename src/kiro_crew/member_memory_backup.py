@@ -15,6 +15,7 @@ import shutil
 import stat
 import tempfile
 import zipfile
+import zlib
 from contextlib import ExitStack, closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ from uuid import uuid4
 from kiro_crew import memory_stores, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
+from kiro_crew.owner_only_files import owner_only_opener
 
 logger = logging.getLogger(__name__)
 
@@ -592,7 +594,7 @@ def stage_restore(backup: Path, db_path: Path) -> Path:
     name, owner = _identity(db_path, allow_missing=True)
     out = backup_directory(db_path)
     platform_compat.make_owner_only_dir(out)
-    with (out / ".restore.lock").open("a+b") as lock:
+    with open(out / ".restore.lock", "a+b", opener=owner_only_opener) as lock:
         with platform_compat.file_lock(lock.fileno(), required=True, wait=False):
             if (out / PENDING).exists():
                 raise ValueError("A member restore is already pending gateway restart")
@@ -640,7 +642,15 @@ def stage_restore(backup: Path, db_path: Path) -> Path:
                                     dest.write(chunk)
                             if digest.hexdigest() != checksum:
                                 raise ValueError("Snapshot file checksum does not match")
-                except (zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
+                except (
+                    zipfile.BadZipFile,
+                    KeyError,
+                    json.JSONDecodeError,
+                    # A damaged compressed entry fails while it is read, not opened.
+                    zlib.error,
+                    EOFError,
+                    NotImplementedError,
+                ) as exc:
                     raise ValueError("Member snapshot is invalid") from exc
                 _check_snapshot_database(stage / "memory.db", manifest, name, owner)
                 if _is_legacy(manifest):
@@ -779,7 +789,7 @@ def cancel_pending_restore(db_path: Path) -> bool:
     out = backup_directory(db_path)
     if not (out / PENDING).exists():
         return False
-    with (out / ".restore.lock").open("a+b") as lock:
+    with open(out / ".restore.lock", "a+b", opener=owner_only_opener) as lock:
         with platform_compat.file_lock(lock.fileno(), required=True, wait=False):
             try:
                 out, journal = _pending_journal(db_path, validate_owner=False)
@@ -820,7 +830,7 @@ def apply_pending_restore(db_path: Path) -> str | None:
     pending = out / PENDING
     if not pending.exists():
         return None
-    with (out / ".restore.lock").open("a+b") as lock:
+    with open(out / ".restore.lock", "a+b", opener=owner_only_opener) as lock:
         with (
             platform_compat.file_lock(lock.fileno(), required=True, wait=False),
             _restore_store_admission(db_path),

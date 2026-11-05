@@ -42,10 +42,9 @@ def _make_app_token_mode_app(state) -> web.Application:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim; no test of the family calls monkeypatch.undo()
-def _hermetic_home(tmp_path, monkeypatch):
+def _hermetic_home(tmp_path, _floor_monkeypatch):
     """Redirect KIROCREW_HOME so SEL writes never touch the developer's home."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
 
 
 @pytest.fixture(autouse=True)

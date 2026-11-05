@@ -60,6 +60,7 @@ from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_EMPTY,
     _CONSOLIDATION_MAX_HEAD_SLICES,
     _CONSOLIDATION_REFUSED,
+    _CONSOLIDATION_STALE,
     AttemptedSpan,
     _consolidation_chunk,
     _consolidation_head_content,
@@ -601,7 +602,11 @@ async def _consolidate(
             keys.append(
                 '"history_entry": A concise paragraph (2-5 sentences) summarizing '
                 "what happened. Use local time [YYYY-MM-DD HH:MM]. Focus on "
-                "decisions, outcomes, facts. Use user's real name if known."
+                "decisions, outcomes, facts. Use user's real name if known. "
+                "If nothing worth remembering happened (no decision, outcome or "
+                'fact), return an empty string "" and never a placeholder such as '
+                '"No substantive conversation occurred". A scheduled or automated '
+                "run that did real work still gets an entry."
             )
 
         # Structured memory extraction (when vector store is available).
@@ -688,23 +693,14 @@ async def _consolidate(
                 MODE_ENFORCE,
                 MODE_OFF,
                 configured_kind_routing_mode,
+                kind_rules_for,
             )
 
             routing_mode = configured_kind_routing_mode()
             # Under off (the default) the prompt is today's, word for word.
             kind_field = '"kind": "fact" | "event" | "state", ' if routing_mode != MODE_OFF else ""
-            kind_rules = (
-                "Tag every item with kind. Ask two questions: Will this still be true in a month? "
-                "Can this be looked up somewhere else? "
-                'kind "fact" = still true in a month and not looked up elsewhere '
-                "(a decision, a root cause, how something works). "
-                'kind "event" = something that happened, worth a dated record. '
-                'kind "state" = the current status of a PR, issue, CI run, branch, round or SHA, '
-                "which GitHub, git or the work ledger already holds. "
-                "pref.* and user.* items are always facts. "
-                if routing_mode != MODE_OFF
-                else ""
-            )
+            # Shadow trials candidate rules; enforce asks only the adopted ones.
+            kind_rules = kind_rules_for(routing_mode)
             # Only under enforce: in shadow the keys the model writes must stay
             # what they are today, or the shadow log would not measure today.
             key_naming = (
@@ -921,7 +917,7 @@ async def _consolidate(
                 "Discarding consolidation result for %s: conversation changed during extraction",
                 key,
             )
-            return _CONSOLIDATION_REFUSED
+            return _CONSOLIDATION_STALE
 
         if member_memory:
             stage = "member memory"
@@ -1009,7 +1005,11 @@ async def _consolidate(
 
             await _run_in_memory_background_pool(_apply_member_consolidation)
 
-        if not member_memory and (entry := result.get("history_entry")):
+        # An empty or blank entry is the model's answer that nothing in the span
+        # is worth a dated history line: write nothing, as the member store's
+        # ``apply_consolidation`` does. The marker still advances.
+        entry = result.get("history_entry")
+        if not member_memory and isinstance(entry, str) and entry.strip():
             stage = "history entry"
 
             # Offloaded to a worker thread: append_history takes a blocking
@@ -1037,8 +1037,11 @@ async def _consolidate(
         # if the embedding endpoint is slow/hung (heartbeats, Slack, dashboard).
         if vector_store and not member_memory:
             stage = "structured memory"
+            from kiro_crew.consolidation_write_offload import write_structured_memory
+
             await _run_in_memory_background_pool(
-                self._write_structured_memory,
+                write_structured_memory,
+                self,
                 result,
                 key,
                 vector_store,
@@ -1125,8 +1128,11 @@ async def _consolidate(
             and (raw_lessons := result.get("lessons"))
         ):
             stage = "lessons"
+            from kiro_crew.consolidation_write_offload import save_lessons
+
             await _run_in_memory_background_pool(
-                self._save_lessons,
+                save_lessons,
+                self,
                 raw_lessons,
                 vector_store,
                 lessons_store,

@@ -134,7 +134,8 @@ class TestChainFields:
                     ],
                     "last_active_id": "b",
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         loaded = InstancesRegistry(path=path).get("b")
         assert loaded is not None

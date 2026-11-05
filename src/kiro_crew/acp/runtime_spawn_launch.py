@@ -24,7 +24,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_mcp_secret_server``.
 
 Instance fields read: ``_acp_backend``, ``_extra_env``, ``_launch_agent``, ``_member_context``,
-``_model``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
+``_model``, ``_native_skill_projection_enabled``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
 ``_work_dir``.
 """
 
@@ -67,7 +67,6 @@ from kiro_crew.agent_sdk.tool_search import (
     spec_grants_tool_search,
     with_client_meta_settings,
 )
-from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.constants import (
     INITIALIZE_TIMEOUT_SECS,
@@ -228,8 +227,6 @@ def _launch_tools() -> LaunchTools:
         augmented_path=augmented_path,
         scrub_agent_subprocess_env=scrub_agent_subprocess_env,
         apply_pod_home_remap=_apply_pod_home_remap,
-        browser_session_env=browser_session_env,
-        browser_socket_env=browser_socket_env,
         inject_xdist_auto_cap=inject_xdist_auto_cap,
         bind_voice_safe_agent_workspace_async=bind_voice_safe_agent_workspace_async,
         create_subprocess_limited=create_subprocess_limited,
@@ -409,6 +406,30 @@ async def _initialize_handshake(
         ) from exc
 
 
+async def _refuse_over_ceiling_launch(self: AcpRuntime, launch_name: str | None) -> None:
+    """Refuse a kiro-cli spawn whose agent would carry grants the ceiling denies.
+
+    kiro-cli honours the grants of the spec it is handed before Crew's gate, and Crew
+    never rewrites a crew-bound spec it does not own. *launch_name* is the name the
+    spawn hands kiro-cli: a skill view, a Crew-owned copy the projection wrote with
+    the ceiling applied (``agent.govern_shared_template_view``), or, with no view, the
+    authored name, whose every claimant is checked. Judged after the projection,
+    because the plan is built before it and cannot know the name.
+    """
+    from kiro_crew import agent as agent_mod
+
+    try:
+        await asyncio.to_thread(
+            agent_mod.require_shared_template_within_ceiling,
+            self._agent,
+            ACP_BACKEND_KIRO,
+            launch_name=launch_name,
+            work_dir=getattr(self, "_work_dir", None),
+        )
+    except agent_mod.SharedTemplateOverCeiling as exc:
+        raise AcpRuntimeError(str(exc)) from exc
+
+
 async def _spawn_admitted(self: AcpRuntime) -> None:
     """Spawn and initialize after the caller has acquired cold-start admission."""
     if self._process is not None:
@@ -460,7 +481,10 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # on the identity; kiro-cli is handed the launch copy instead.
             argv = list(argv)
             argv[argv.index("--agent") + 1] = self._launch_agent
-        if self.acp_backend == ACP_BACKEND_KIRO:
+        # ``getattr``: a runtime built without ``__init__`` (test doubles) projects.
+        if self.acp_backend == ACP_BACKEND_KIRO and getattr(
+            self, "_native_skill_projection_enabled", True
+        ):
             from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
             async with self._skill_projection_lock():
@@ -578,6 +602,10 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                                     )
     except _KiroExecutableTrustError as exc:
         raise AcpRuntimeError(str(exc)) from exc
+    if self.acp_backend == ACP_BACKEND_KIRO:
+        await self._refuse_over_ceiling_launch(
+            argv[argv.index("--agent") + 1] if "--agent" in argv[:-1] else None
+        )
     # Who confines this process, decided from the plan because the route is the
     # plan's: KAS's relay runs kiro-cli and its internal sandbox, its bundle runs
     # Node and does not. Every reader below takes this one answer.
@@ -1209,14 +1237,9 @@ def _known_server_tool_names(server: str) -> list[str] | None:
     sandboxed probe fills. ``None`` when the cache has no list -- the caller
     then leaves that server to KAS's own deferral.
     """
-    from kiro_crew.mcp_discovery import _get_cached
+    from kiro_crew.acp.kas_permissions import cached_mcp_tool_names
 
-    try:
-        _status, tools, *_rest = _get_cached(server)
-    except Exception:
-        logger.debug("no tool list for MCP server %s at handshake", server, exc_info=True)
-        return None
-    return list(tools) if tools else None
+    return cached_mcp_tool_names(server)
 
 
 async def _with_mcp_sign_in_storage(runtime: AcpRuntime, base: dict[str, Any]) -> dict[str, Any]:

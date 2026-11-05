@@ -163,6 +163,8 @@ _CAP_REASONS = {
 _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # Pre-existing capped sites -- the bounded read's live consumers.
     "chat_pins.py::api_chat_pins_create": ("<default>", _BOUNDED_BY_DEFAULT),
+    # Every milestones POST body is an id, an action and a surface name.
+    "milestones_api.py::_body": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # A checklist tick is one task id and one boolean, so the shared default
     # ceiling is far above any legitimate body.
     "chat_todo.py::api_chat_slot_todo": ("<default>", _BOUNDED_BY_DEFAULT),
@@ -181,6 +183,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
+    # A control click is one short closed name, so 256 bytes is far above any
+    # legitimate body.
+    "handlers/telemetry_ui_control.py::api_ui_control_clicked": (
+        "_MAX_BODY_BYTES",
+        _BOUNDED_BY_DEFAULT,
+    ),
     "messaging_api/agent_push.py::api_notification_agent_push": (
         "<default>",
         _BOUNDED_BY_DEFAULT,
@@ -199,6 +207,16 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     ),
     "handlers/messaging.py::api_teams_activity": (
         "TEAMS_MAX_ACTIVITY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
+    # The live card's control posts (visibility, ack, claim, release, one input
+    # event, reopen, close): small fixed-shape bodies, so the route keeps a 4 KiB
+    # cap of its own, well under the shared default.
+    "handlers/browser_live.py::_run": ("_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
+    # A quick-ask answer: an id, an action and at most a few values of 1 KiB each,
+    # so the route caps the body at 8 KiB, well under the shared default.
+    "handlers/browser_ask.py::api_browser_ask_answer": (
+        "qa.ANSWER_BODY_MAX",
         _BOUNDED_EXPLICIT,
     ),
     # Both mediated-secret routes (the capability claim and the request) admit through
@@ -367,7 +385,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/prompt_queue.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/prompt_queue.py::api_chat_slot_queue_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_steer_retract": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_api/slot_lifecycle.py::api_chat_slot_reset_conversation": (
+    "chat_api/slot_repair.py::api_chat_slot_reset_conversation": (
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
     ),
@@ -440,6 +458,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/cron_runs.py::api_cron_ack": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_lessons.py::api_lessons_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_lessons.py::api_lessons_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/agent_spec_pins.py::api_agent_spec_pin_write": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_board.py::api_cron_folders_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_board.py::api_cron_folders_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # handlers/workflows.py: workflow bodies carry a script source or a

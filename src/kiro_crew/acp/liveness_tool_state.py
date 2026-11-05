@@ -160,53 +160,32 @@ class ToolCallState:
 class InFlightToolTracker:
     """The in-flight tool hand-off rule, shared by the two agent loops.
 
-    Both :class:`~kiro_crew.acp.session_handle.AcpSessionHandle` (the main
-    agent's watchdog) and ``SubagentInfo`` (the sub-agent reaper) have to answer
-    the same question — *which tool call is the one a stall verdict should be
-    read against right now* — and each would otherwise answer it with its own
-    copy of the rule. Two copies drift: one keyed the judged call to a single
-    slot that any result emptied, the other tracked calls by toolCallId. One
-    implementation keeps both honest.
+    :class:`~kiro_crew.acp.session_handle.AcpSessionHandle` (main-agent
+    watchdog) and ``SubagentInfo`` (sub-agent reaper) both need *which tool
+    call a stall verdict is read against*; one implementation keeps them from
+    drifting.
 
-    The rule, in one place:
+    * **dispatch** stores a call by id and makes it the judged call. A call with
+      no id is judged but not stored: storing it under ``""`` would let the next
+      id-less dispatch overwrite a live entry.
+    * **a terminal result** drops its call; if it was judged, the NEWEST
+      remaining dispatch (insertion order) becomes judged, else none. Progress
+      frames change nothing.
+    * **prompt start** clears everything.
 
-    * **dispatch** stores a call by its id and makes it the judged call. A call
-      with no id (a backend that omits one) still becomes the judged call but is
-      not stored — a terminal frame for it can only be matched by id, so storing
-      it under ``""`` would let the next id-less dispatch overwrite a live entry.
-    * **a terminal result** for a stored call drops it; when it was the judged
-      call, the judged call moves to the NEWEST remaining dispatch (insertion
-      order is dispatch order), or clears when none remain. A non-terminal
-      (progress) frame changes nothing — the call is still running.
-    * **prompt start** clears everything: a new turn judges nothing until it
-      dispatches.
+    Every operation returns whether the JUDGED call changed. When it does the
+    caller must retire its liveness oracle
+    (``AcpSessionHandle._retire_liveness_state`` / ``SubagentInfo``'s
+    ``_stall_oracle.fresh()`` + ``_stall_gen`` bump) so a walk against the old
+    command cannot write into the new one's baseline. The retirement stays with
+    each caller because that machinery differs.
 
-    Every operation returns whether the JUDGED call changed, because that is the
-    signal both callers act on: the liveness oracle's evidence baseline is keyed
-    to the judged command, so when the judged call changes the caller must retire
-    the oracle (``AcpSessionHandle._retire_liveness_state`` /
-    ``SubagentInfo``'s ``_stall_oracle.fresh()`` + ``_stall_gen`` bump) so a walk
-    still running against the previous command cannot write into the next one's
-    baseline. The retirement itself stays with each caller — one swaps a bound
-    oracle and releases a consult future, the other bumps a generation counter —
-    because that machinery is not shared; only the hand-off decision is.
-
-    The sub-agent uses this in its degenerate single-call shape: a native child's
-    tool call is judged on arrival (so a stall is attributed to the child's own
-    command) but its result frame never reaches the sub-agent's loop, so the
-    stored entry is simply overwritten by the next dispatch rather than popped by
-    a terminal — exactly what a single live slot does. Storing by id costs it
-    nothing (its runtime emits at most one in-flight call at a time) and keeps the
-    one rule honest for the main agent's genuinely-parallel calls.
-
-    ``acp.client`` keeps its own plain ``set`` of call ids for the tool-stall
-    timer and does NOT use this: that set only answers "is any call still open",
-    never "which call is judged", so this tracker would be apparatus it has no
-    buyer for.
-
-    The ``aux`` payload travels beside each :class:`ToolCallState` untouched: the
-    main agent carries the shell call's pre-dispatch interactive classification
-    there, and the sub-agent carries ``None``. The tracker never reads it.
+    The sub-agent's native child results never reach its loop, so its entry is
+    overwritten by the next dispatch, the same as a single live slot.
+    ``acp.client`` keeps its own ``set`` of call ids (it only asks "is any call
+    open") and does not use this. ``aux`` travels beside each
+    :class:`ToolCallState` unread (the main agent's pre-dispatch interactive
+    classification, or ``None``).
     """
 
     __slots__ = ("_calls", "_current_id", "_evicted_count", "_idless", "_max_calls")

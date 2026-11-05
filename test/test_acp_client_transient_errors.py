@@ -289,8 +289,42 @@ class TestIsTransientRawError:
         exc = ei.value
         assert exc.transient is True
         assert acp_error_is_transient(exc) is True
-        # The raw provider text is replaced by the actionable 5xx wording.
-        assert "transient error (HTTP 5xx)" in str(exc)
+        # The raw provider text is replaced by the connection card: a dispatch
+        # failure is the network path dropping, not a provider 5xx answer.
+        assert "Could not reach the model backend" in str(exc)
+        assert "HTTP 5xx" not in str(exc)
+        assert exc.connection_failure is True
+
+    def test_dispatch_failure_card_matches_the_connection_verdict(self):
+        from kiro_crew.acp.transport_errors import _format_acp_error, classify_provider_error
+
+        # The card and the classifier read the same frame: a connector failure
+        # carrying a request_id gets the connection card, keeps the request_id,
+        # and is never told to switch models.
+        for connector in ("dispatch failure", "DispatchFailure", "dispatch_failure"):
+            data = (
+                "Encountered an error in the response stream: "
+                f"{connector} (request_id: 908f5c86-7a02-44a3-a852-9aa64aa90779)"
+            )
+            err = {"code": -32603, "message": "Internal error", "data": data}
+            card = _format_acp_error(err)
+            assert classify_provider_error(f"{data} Internal error", data=data).kind == "connection"
+            assert card.startswith("Could not reach the model backend"), (connector, card)
+            assert "HTTP 5xx" not in card
+            assert "switch to a different model" not in card
+            assert card.endswith("(request_id: 908f5c86-7a02-44a3-a852-9aa64aa90779)")
+
+    def test_provider_5xx_answer_keeps_the_5xx_card(self):
+        from kiro_crew.acp.transport_errors import _format_acp_error
+
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "InternalServerError: please try again (request_id: abc-123)",
+        }
+        assert _format_acp_error(err).startswith(
+            "The model backend hit a transient error (HTTP 5xx)"
+        )
 
     def test_raise_acp_error_carries_transient_flag_and_formatted_message(self):
         import pytest
@@ -491,3 +525,78 @@ class TestIsTransientRawError:
 
         assert AcpError("plain").transient is None
         assert AcpError("flagged", transient=True).transient is True
+
+
+# claude-agent-acp forwards Anthropic's overload answer in a -32603 envelope whose
+# message carries Claude Code's "API Error:" prefix: first the raw 529 body, then,
+# once Claude Code's own retries are spent, its summary sentence.
+_CLAUDE_529_BODY = (
+    'Internal error: API Error: 529 {"type":"error","error":'
+    '{"type":"overloaded_error","message":"Overloaded"}}'
+)
+_CLAUDE_529_REPEATED = "Internal error: API Error: Repeated 529 Overloaded errors"
+
+
+class TestClaudeOverloadedIsTransient:
+    """A claude 529 is the same momentary capacity blip a kiro 529 is, so it
+    takes the 5xx verdict, kind and card on both harnesses."""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            pytest.param(_CLAUDE_529_BODY, id="api_error_529_body"),
+            pytest.param(_CLAUDE_529_REPEATED, id="repeated_529_overloaded"),
+        ],
+    )
+    def test_the_overload_frame_is_a_retryable_5xx(self, message):
+        from kiro_crew.acp.client import (
+            AcpError,
+            _format_acp_error,
+            _is_transient_raw_error,
+            _raise_acp_error,
+        )
+        from kiro_crew.acp.transport_errors import (
+            PROVIDER_ERROR_HTTP_5XX,
+            classify_provider_error,
+        )
+
+        frame = {"code": -32603, "message": message, "data": {"errorKind": "unknown"}}
+        assert _is_transient_raw_error(frame) is True
+        verdict = classify_provider_error(message)
+        assert verdict.kind == PROVIDER_ERROR_HTTP_5XX
+        assert verdict.retryable is True
+        assert "transient error (HTTP 5xx)" in _format_acp_error(frame)
+        with pytest.raises(AcpError) as raised:
+            _raise_acp_error(frame)
+        assert raised.value.transient is True
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # A bare number is not a status code: the prefix is what makes it one.
+            pytest.param("max_tokens 529 exceeded", id="bare_529_prose"),
+            pytest.param("Internal error: API Error: 400 Input is too long.", id="input_too_long"),
+            pytest.param("Internal error: API Error: 501 Not Implemented", id="api_error_501"),
+            # Prose about an overloaded method is not the provider's overload answer.
+            pytest.param("No overload matches; the method is overloaded", id="overloaded_prose"),
+        ],
+    )
+    def test_the_neighbours_stay_terminal(self, message):
+        from kiro_crew.acp.client import _is_transient_raw_error
+        from kiro_crew.acp.transport_errors import classify_provider_error
+
+        frame = {"code": -32603, "message": message, "data": {"errorKind": "unknown"}}
+        assert _is_transient_raw_error(frame) is False
+        assert classify_provider_error(message).retryable is False
+
+    def test_the_adapter_size_verdict_outranks_the_new_prefix(self):
+        """The retry verdict reads the adapter's overflow ahead of the 5xx family,
+        so a 5xx status after the same prefix cannot spend the ladder on it."""
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        frame = {
+            "code": -32603,
+            "message": "Internal error: API Error: 529 Prompt is too long",
+            "data": {"errorKind": "unknown"},
+        }
+        assert _is_transient_raw_error(frame) is False

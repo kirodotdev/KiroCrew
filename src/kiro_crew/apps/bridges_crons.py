@@ -720,7 +720,11 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
     existing_jobs = {j.name: j for j in sdk.list_jobs()}
 
     # circular import: mcp_cron → security → ... → hooks_integration → bridges
-    from kiro_crew.mcp_cron import _vet_script_file, _vet_shell_command
+    from kiro_crew.mcp_cron import (
+        _command_cron_platform_refusal,
+        _vet_script_file,
+        _vet_shell_command,
+    )
 
     newly_registered: list[str] = []
     resynced: list[str] = []
@@ -738,7 +742,7 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
         script = d.get("script") or ""
         # Security vetting: same checks as the MCP cron_add path
         if command:
-            err = _vet_shell_command(command)
+            err = _vet_shell_command(command) or _command_cron_platform_refusal()
             if err:
                 logger.warning("App %s: cron %r command rejected: %s", app_name, name, err)
                 sel().log_api_access(

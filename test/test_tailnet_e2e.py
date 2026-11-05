@@ -331,7 +331,7 @@ class TestAgainstARealDaemon:
 
     def test_a_resolved_name_agrees_with_the_daemons_own_suffix(self) -> None:
         raw = subprocess.run(  # noqa: S603 - vetted path from the product's own allowlist
-            [str(_REAL_CLI), "status", "--json"], capture_output=True, text=True, timeout=10
+            [str(_REAL_CLI), "status", "--json"], capture_output=True, text=True, encoding="utf-8", timeout=10
         )
         if raw.returncode != 0:
             pytest.skip("daemon not answering; nothing to compare against")

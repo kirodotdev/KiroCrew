@@ -5,7 +5,8 @@ import Clickable from '../../components/Clickable'
 import { EmptyState } from '../../components/ui'
 import { fileExplorerApi } from './api'
 import { basename } from './utils'
-import { useDebouncedValue } from './hooks'
+import { relativeToRoot } from '../../utils/pathBasename'
+import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import type { SearchResult } from './types'
 
 import { i18nT } from '../../i18n/t'
@@ -13,11 +14,6 @@ interface SearchPanelProps {
   rootPath: string
   onClose: () => void
   onJump: (r: SearchResult) => void
-}
-
-function shortenPath(p: string, root: string) {
-  if (root && p.startsWith(root)) return p.slice(root.length).replace(/^\//, '')
-  return p
 }
 
 export default function SearchPanel({ rootPath, onClose, onJump }: SearchPanelProps) {
@@ -83,7 +79,7 @@ export default function SearchPanel({ rootPath, onClose, onJump }: SearchPanelPr
               >
                 <div className="mc-fe-search-file">
                   <FileText size={11} style={{ marginRight: 4, opacity: 0.6 }} />
-                  {shortenPath(r.file, rootPath)}
+                  {relativeToRoot(r.file, rootPath)}
                   <span style={{ color: 'var(--muted)', marginLeft: 6 }}>:{r.line}</span>
                 </div>
                 <div className="mc-fe-search-preview">{r.preview}</div>

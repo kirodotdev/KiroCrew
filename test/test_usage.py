@@ -853,9 +853,6 @@ class TestParseTokenHistory:
         assert result["total_input"] == 9
 
 
-# ── _persist_token_record ────────────────────────────────────────────────
-
-
 class TestPersistTokenRecord:
     def test_writes_token_record(self, tmp_path, monkeypatch):
         shard_dir = _patch_shard_layout(monkeypatch, tmp_path)

@@ -471,20 +471,22 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
     const id = setInterval(() => setRecentTick(t => t + 1), recentTickIntervalMs(recentWindowMs))
     return () => clearInterval(id)
   }, [recentFilterActive, recentWindowMs])
-  // Wider than the payload's `s.running`: a live workflow run or an active goal
-  // loop counts as in progress, so neither drops out of the filter or its count.
+  // Wider than the payload's `s.running`: a live workflow, an active loop, or a started
+  // sub-agent not blocked on approval counts, matching the row's "N agents running".
   const runningSet = useMemo<Set<string>>(() => {
     const out = new Set<string>()
     for (const s of localSlots) {
       // Set membership over selector-produced keys is own-property by
       // construction (Object.keys), so no safeKey guard is needed here.
       const automationRunning = automationRunningSet.has(s.key)
+      const subagentsWorking = (subagentStartedCounts[s.key] || 0) - (subagentApprovalCounts[s.key] || 0) > 0
       if (s.running
         || workflowActiveSet.has(normalizeRunSessionKey(s.key))
-        || automationRunning) out.add(s.key)
+        || automationRunning
+        || subagentsWorking) out.add(s.key)
     }
     return out
-  }, [localSlots, workflowActiveSet, automationRunningSet])
+  }, [localSlots, workflowActiveSet, automationRunningSet, subagentStartedCounts, subagentApprovalCounts])
   // A running turn is recent BY DEFINITION: the ordering key stops advancing
   // mid-turn, so a long turn would age out while it is the busiest row on screen.
   const recentSet = useMemo<Set<string>>(() => {
@@ -515,6 +517,8 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
   // tick. See the helper's docstring for the known accepted batched-update
   // edge case.
   const prevUnreadCount = useRef<number | null>(null)
+  const otherFiltersOn = useMemo(() => [...activeFilters].some(key => key !== 'unread'), [activeFilters])
+  const prevOtherFiltersOn = useRef<boolean | null>(null)
   useEffect(() => {
     // Guard the ENTIRE body on slotsLoaded: without this, the unconditional
     // `prevUnreadCount.current = unreadSlots.length` assignment below would
@@ -536,10 +540,13 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
       current: unreadSlots.length,
       slotsLoaded,
       showUnreadOnly: activeFiltersRef.current.has('unread'),
+      otherFiltersOn,
+      prevOtherFiltersOn: prevOtherFiltersOn.current,
     })
     if (action === 'disable') disableFilter('unread')
     prevUnreadCount.current = unreadSlots.length
-  }, [unreadSlots.length, slotsLoaded, disableFilter, filtersPaused])
+    prevOtherFiltersOn.current = otherFiltersOn
+  }, [unreadSlots.length, slotsLoaded, disableFilter, filtersPaused, otherFiltersOn])
   return {
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,

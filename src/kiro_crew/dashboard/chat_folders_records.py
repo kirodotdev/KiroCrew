@@ -17,6 +17,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_folder_order import next_folder_order
 from kiro_crew.dashboard.chat_folders_icons import _is_single_emoji, _is_valid_folder_color
 from kiro_crew.dashboard.chat_folders_paths import (
     _folder_project_overlap_denied,
@@ -457,8 +458,9 @@ class FolderCapError(FolderCreateError):
 
     Split from :class:`FolderCreateError` for the same reason
     :class:`FolderOwnershipError` is: the folder API answers it differently
-    (429, a retryable capacity refusal, not a plain 400), so a caller must be
-    able to tell it apart without string-matching the message.
+    (409, a capacity refusal that clears only when a folder is deleted, so a
+    retry cannot help; not a plain 400), and a caller must be able to tell it
+    apart without string-matching the message.
     """
 
     def __init__(self) -> None:
@@ -478,7 +480,7 @@ class FolderMateHomeLockedError(FolderOwnershipError):
 
     def __init__(self) -> None:
         FolderCreateError.__init__(
-            self, "this folder belongs to a mate and is managed for you", "mate_home_locked"
+            self, "this folder belongs to a Bot and is managed for you", "mate_home_locked"
         )
 
 
@@ -513,83 +515,39 @@ async def create_folder_record(
 ) -> dict[str, Any]:
     """Validate one folder and append it to the store under the folders lock.
 
-    The single create path. Callers that build folders for the user — the folder
-    API below, project scaffolding — go through here, so none of them can end up
-    with weaker path validation, a dangling ``parent_id``, weaker app-ownership
-    isolation, or an unserialized store write than the others get. What stays
-    with the caller is what differs between them: the response shape, the audit
-    entry, and when to push a slots update (once per folder for a single create,
-    once for a whole scaffold).
+    The single create path, so every caller gets the same path validation,
+    ``parent_id`` check, app-ownership isolation and serialized store write.
+    The caller keeps the response shape, the audit entry and the slots push.
 
-    ``request_app`` is the calling app's identity (empty when a person is
-    calling): it is stamped as ``owner_app`` and gates nesting under folders
-    other apps own. Never taken from a request body — a caller that could name
-    its own owner could name someone else's (see ``_folder_owner_app``).
+    ``request_app`` is the calling app's identity (empty for a person), stamped
+    as ``owner_app``. Never take it from a request body: a caller that could
+    name its own owner could name someone else's (see ``_folder_owner_app``).
 
-    ``tags`` is a shape-checked list of tag ids the caller wants copied onto
-    every new chat filed into this folder (the folder API validates the request
-    shape and answers 400 ``tags_invalid`` itself). The AUTHORITATIVE vocabulary
-    intersection still runs here, under ``tags_write_lock``, at the point of
-    application — the invariant every tag consumer follows (see
-    api_chat_slot_tags / the channel filing): a tag deletion committing between
-    the caller's shape check and this write must not be persisted onto the new
-    folder, and the strip pass a deletion runs cannot see a folder that is not
-    yet in the store. Included in the folder dict only when the intersection is
-    non-empty — the same optional-key shape as ``color``, so a tagless folder
-    keeps the record it has on disk today.
-
-    ``icon`` is an optional explicit emoji for the folder glyph, validated
-    grapheme-exact like every stored icon and included in the folder dict only
-    when non-empty — the same optional-key shape as ``color``. An absent icon
-    never triggers generation: creation leaves the folder on the default
-    glyph, and the only path that spawns the generator is an explicit
-    ``regenerate_icon`` request against an existing folder.
+    ``tags`` is shape-checked by the caller; the vocabulary intersection runs
+    here under ``tags_write_lock``, so a tag deleted between the check and this
+    write is not persisted (the deletion's strip pass cannot see this folder
+    yet). ``tags`` and ``icon`` are stored only when non-empty, like ``color``;
+    an absent icon never triggers generation.
 
     Returns:
         The created folder, exactly as it was appended to the store.
 
-    ``unique_project_dir`` makes "one folder per directory" atomic: the check
-    runs inside the locked append, so two concurrent creators of the same
-    ``project_dir`` cannot both observe it absent and both persist a folder —
-    the loser is refused with code ``folder_project_dir_exists`` and can read
-    the winner's folder after the fact. Off by default because the folder API
-    has always allowed a person to point two folders at one directory by hand;
-    only a caller whose own contract is "additive, skip what exists" (the
-    scaffold) opts in.
+    ``unique_project_dir`` and ``refuse_duplicate_name`` run their check inside
+    the locked append, so two racing creators cannot both persist. Names compare
+    trimmed and case-folded, as the MCP path walk does; a name collision with a
+    folder the caller's own principal owns returns that folder with
+    ``"reused": True``. Both are off by default because a person may hold two
+    folders on one directory or with one name.
 
-    ``require_resolved_project_dir`` refuses a ``project_dir`` whose validation
-    resolves to a different path than the caller named (code
-    ``folder_project_dir_moved``). A caller that sets it is asserting its input
-    is already canonical — the scaffold passes paths its scan just resolved and
-    walked, so a resolution that lands elsewhere means a path component was
-    swapped (typically for a symlink) between the scan and this create, and
-    persisting the resolved target would bind the folder to a directory the
-    scan never confirmed. Off by default because the folder API proper accepts
-    ``~`` and symlinked paths from a person by design; resolution moving those
-    is the feature, not an attack.
+    ``require_resolved_project_dir`` refuses a ``project_dir`` that resolves
+    elsewhere than named (``folder_project_dir_moved``): for the scaffold, a moved
+    resolution means a component was swapped (often for a symlink) after its scan.
 
-    ``refuse_duplicate_name`` makes "one folder of this name per parent" atomic
-    the same way: the sibling test runs inside the locked append, against EVERY
-    sibling whoever owns it, and a collision raises
-    :class:`FolderNameExistsError`. Names compare trimmed and case-folded, the
-    rule the MCP path walk matches segments by. Off by default because the
-    sidebar lets a person hold two folders of one name; the folder API turns it
-    on for agent callers, whose mkdir -p would otherwise fork a duplicate when
-    two walks race or when the caller cannot see the existing folder. When the
-    one colliding sibling already belongs to the caller's own principal, it is
-    returned instead (with ``"reused": True`` on the returned copy), so a lost
-    race resolves to the winner's folder in the same request.
-
-    ``home_slot`` is the caller's own session (see :func:`caller_home_slot`).
-    A non-person principal may nest directly under the folder that session is
-    filed in, even when the person owns that folder. The slot's ``folder_id``
-    is read under the lock, where the parent is decided.
-
-    ``created_by_session`` is the agent session this create is attributed to
-    (see :func:`agent_creator_key`); it is stored as :data:`CREATED_BY_SESSION`
-    on a NEW folder only, never on a reused one. ``claim_parent_for_person`` is
-    set when the person is creating: nesting into a folder claims that parent,
-    so its mark is removed under the same lock as the append.
+    ``home_slot`` (see :func:`caller_home_slot`) lets a non-person principal nest
+    under the folder its own session is filed in; its ``folder_id`` is read under
+    the lock. ``created_by_session`` is stored as :data:`CREATED_BY_SESSION` on a
+    NEW folder only. ``claim_parent_for_person`` removes the parent's mark under
+    the same lock as the append.
 
     Raises:
         FolderCreateError: if the folder was refused (unusable name, missing
@@ -654,7 +612,7 @@ async def create_folder_record(
     folder: dict[str, Any] = {
         "id": uuid.uuid4().hex[:12],
         "name": name,
-        "order": len(state._folders),
+        "order": next_folder_order(state._folders),
         "collapsed": False,
         "hidden": False,
         "parent_id": parent_id,
@@ -737,7 +695,7 @@ async def create_folder_record(
                 return False, "reused"
             if twins:
                 return False, "name_exists"
-        folder["order"] = len(folders)  # recount under the lock
+        folder["order"] = next_folder_order(folders)  # recount under the lock
         if claim_parent_for_person and parent is not None:
             parent.pop(CREATED_BY_SESSION, None)
         folders.append(folder)

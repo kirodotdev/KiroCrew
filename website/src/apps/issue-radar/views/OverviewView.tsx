@@ -146,8 +146,10 @@ export default function OverviewView() {
         <button
           onClick={refresh}
           disabled={refreshing}
-          aria-label={i18nT('apps.issueRadar.views.overviewView.refresh_issues')}
-          title={i18nT('apps.issueRadar.views.overviewView.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
+          // Disabled while a refresh runs, so the name carries the reason: a
+          // disabled "Refresh issues" reads as unavailable, not busy.
+          aria-label={refreshing ? i18nT('apps.issueRadar.views.overviewView.refreshing_issues') : i18nT('apps.issueRadar.views.overviewView.refresh_issues')}
+          title={refreshing ? i18nT('apps.issueRadar.views.overviewView.refreshing_issues') : i18nT('apps.issueRadar.views.overviewView.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
           className="flex-shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-40 cursor-pointer"
         >
           <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />

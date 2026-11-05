@@ -76,6 +76,20 @@ class TestCronMessageDenialAndWiring:
         assert job.fire_time_denied is False
 
     @pytest.mark.asyncio
+    async def test_a_silent_goal_checkin_skip_is_the_runs_result(self):
+        """A skip reaches the run's history summary even when the job is silent."""
+        from kiro_crew.dashboard import goal_reminder
+
+        orch = _make_orchestrator()
+        job = _job(managed_by=goal_reminder.managed_key("ava", "heartbeat"), silent=True)
+        skip = "skipped: the mate is busy"
+        with patch.object(goal_reminder, "fire", AsyncMock(return_value=skip)):
+            async with _cron_cb(orch, gate_reason="") as cb:
+                assert await cb(job) == skip
+        assert job.result_produced is True
+        assert job.last_result == skip
+
+    @pytest.mark.asyncio
     async def test_reaper_not_started_without_sessions(self):
         """Arming the scheduler without a session manager skips the reaper."""
         orch = _make_orchestrator(no_crons=False)

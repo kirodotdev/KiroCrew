@@ -215,13 +215,12 @@ _UNITS: dict[str, str] = {}
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse crew-log isolation of test_issue_radar_crew_runtime.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _isolated_crew_log(monkeypatch):
+def _isolated_crew_log(_floor_monkeypatch):
     """Crew log on, in this test's own data home, and no warm state carried over.
 
     FUNCTION-scoped: the data home is the rootdir conftest's per-test
     ``KIROCREW_HOME`` pin, so the crew log a test writes lands in a directory that
-    test alone owns, and ``KIROCREW_CREW_LOG`` is set through ``monkeypatch`` so it
+    test alone owns, and ``KIROCREW_CREW_LOG`` is set through ``_floor_monkeypatch`` so it
     is gone the moment the test is. A module-scoped ``patch.dict`` here set both
     keys for the whole worker between tests: every other suite the worker ran
     after this file's first test saw a crew log switched on that none of them
@@ -231,7 +230,7 @@ def _isolated_crew_log(monkeypatch):
     """
     from kiro_crew.crew_log import emit as crew_log_emit
 
-    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    _floor_monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
     crew_log_emit.reset_caches()
     crew_log_projection.forget_slot_folds()
     _UNITS.clear()

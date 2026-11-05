@@ -12,21 +12,28 @@ from __future__ import annotations
 import json
 import logging
 import os
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.history import ConversationLog
 from kiro_crew.shared_crew import (
     access,
     audit,
     crew_mode,
+    lifecycle,
     people,
+    routes_identity,
     trigger,
 )
 from kiro_crew.shared_crew.admission import AcceptedWork, OperationKind, OperationState
 from kiro_crew.shared_crew.attribution import public_attribution_from_meta, trigger_of_public
 from kiro_crew.shared_crew.contracts import (
+    ACTOR_REQUEST_KEY,
     ActionOutcome,
     ActionType,
     ActorContext,
@@ -40,12 +47,13 @@ from kiro_crew.shared_crew.contracts import (
 from kiro_crew.shared_crew.identity import local_operator_principal, tailnet_principal
 from kiro_crew.shared_crew.session_query import query_sessions
 
+pytestmark = pytest.mark.usefixtures("host_isolation")
+
 ALICE = tailnet_principal("alice@example.com", "a", Provenance.TAILSCALE_SERVE)
 OPERATOR = local_operator_principal("local-app")
 NO_PATHS: dict[str, dict[str, str]] = {
     "tailscale": {"state": "unavailable", "reason": "not_configured"},
     "kiro_login": {"state": "unavailable", "reason": "not_in_this_build"},
-    "systems_manager": {"state": "unavailable", "reason": "not_in_this_build"},
 }
 TAILNET_ON = {**NO_PATHS, "tailscale": {"state": "available", "reason": ""}}
 
@@ -103,13 +111,49 @@ class TestModes:
         assert personal["mode"] == "personal"
         assert personal["console"] == {"state": "not_offered", "url": ""}
         assert personal["crew_id"] == "g1"
-        assert personal["systems_manager_attribution"] == "unavailable"
         assert personal["workload_identity_ref"] == "unavailable"
         invalid = crew_mode.mode_view(
             OPERATOR, [], setup_paths=NO_PATHS, crew_id="g1", network_identity_unreadable=True
         )
         assert invalid["mode"] == "invalid"
         assert invalid["team_config"]["reason"] == "network_identity_config_unreadable"
+
+
+# ── the gate refuses shared access while the team setup is invalid ──
+
+
+def _gate_app(principal: Principal) -> web.Application:
+    @web.middleware
+    async def publish(request: web.Request, handler: Any) -> web.StreamResponse:
+        request[ACTOR_REQUEST_KEY] = ActorContext(
+            principal=principal, request_id="r", transport=Transport.HTTP
+        )
+        return await handler(request)
+
+    async def ok(_r: web.Request) -> web.Response:
+        return web.json_response({"ok": True})
+
+    app = web.Application(middlewares=[publish, lifecycle.team_config_middleware])
+    app.router.add_get("/api/sessions", ok)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_invalid_team_setup_refuses_a_tailnet_person_but_not_the_local_operator():
+    access.note_tailnet(enabled=True, host="h", identity_config_unreadable=True)
+    async with TestClient(TestServer(_gate_app(ALICE))) as client:
+        resp = await client.get("/api/sessions")
+        assert resp.status == 403
+        assert await resp.json() == {
+            "error": "team_config_invalid",
+            "code": "team_config_invalid",
+            "reason": "network_identity_config_unreadable",
+        }
+    async with TestClient(TestServer(_gate_app(OPERATOR))) as client:
+        assert (await client.get("/api/sessions")).status == 200
+    access.note_tailnet(enabled=True, host="h")
+    async with TestClient(TestServer(_gate_app(ALICE))) as client:
+        assert (await client.get("/api/sessions")).status == 200
 
 
 # ── triggers ──
@@ -173,10 +217,22 @@ class TestTriggers:
 
 
 def _write(
-    base, key: str, *, creator: Principal | None, mtime: float, extra: dict | None = None
+    base,
+    key: str,
+    *,
+    creator: Principal | None,
+    mtime: float,
+    extra: dict | None = None,
+    unattributed: bool = False,
 ) -> None:
     meta: dict[str, Any] = {"_type": "metadata", "title": key}
-    if creator is not None:
+    if unattributed:
+        meta["attribution"] = SessionAttribution(
+            creator=Principal.unknown(),
+            availability=AttributionAvailability.UNATTRIBUTED,
+            created_at=mtime,
+        ).to_dict()
+    elif creator is not None:
         meta["attribution"] = SessionAttribution(
             creator=creator, availability=AttributionAvailability.RECORDED, created_at=mtime
         ).to_dict()
@@ -196,7 +252,7 @@ def catalog(tmp_path):
     for i in range(3):
         _write(base, f"dashboard_a{i}", creator=ALICE, mtime=1000.0 + i)
     for i in range(4):
-        _write(base, f"dashboard_l{i}", creator=None, mtime=2000.0 + i)
+        _write(base, f"dashboard_l{i}", creator=None, mtime=2000.0 + i, unattributed=True)
     _write(base, "dashboard_c0", creator=None, mtime=3000.0, extra={"created_by": "cron:abc12345"})
     _write(base, "cron_def67890", creator=None, mtime=3001.0)
     return ConversationLog(base)
@@ -248,6 +304,55 @@ def test_filters_change_visibility_only(catalog):
 
 
 # ── the mode route ──
+
+
+async def _mode_client(log, principal: Principal, *, app_name: str = "") -> TestClient:
+    @web.middleware
+    async def fake_auth(request: web.Request, handler: Any) -> web.StreamResponse:
+        request["is_dashboard_user"] = not app_name
+        if app_name:
+            request["app"] = app_name
+        request[ACTOR_REQUEST_KEY] = ActorContext(
+            principal=principal, request_id="r", transport=Transport.HTTP
+        )
+        return await handler(request)
+
+    app = web.Application(middlewares=[fake_auth])
+    app["state"] = SimpleNamespace(conversation_log=log)
+    routes_identity.register(app)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    return client
+
+
+@pytest.mark.asyncio
+async def test_mode_route_reports_personal_then_network_once_someone_else_creates(tmp_path):
+    base = tmp_path / "s"
+    base.mkdir()
+    log = ConversationLog(base)
+    client = await _mode_client(log, OPERATOR)
+    try:
+        body = await (await client.get(routes_identity.MODE_PATH)).json()
+        assert body["mode"] == "personal" and body["crew_id"]
+        assert body["team_config"]["state"] == "not_configured"
+        _write(base, "dashboard_a0", creator=ALICE, mtime=1.0)
+        # A distinct directory mtime, so the session listing memo cannot serve the
+        # empty listing it built in the same clock tick.
+        stamp = base.stat().st_mtime + 5
+        os.utime(base, (stamp, stamp))
+        body = await (await client.get(routes_identity.MODE_PATH)).json()
+        assert body["mode"] == "network"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mode_route_refuses_an_app(tmp_path):
+    client = await _mode_client(ConversationLog(tmp_path), Principal.system("app:x"), app_name="x")
+    try:
+        assert (await client.get(routes_identity.MODE_PATH)).status == 403
+    finally:
+        await client.close()
 
 
 # ── audit ──

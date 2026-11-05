@@ -492,7 +492,7 @@ def write_settings(
 ) -> dict[str, Any]:
     """Merge *patch* into the repo's protocol settings. Returns the stored doc."""
     lock_path = crews_dir(owner, repo, root) / "settings.lock"
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_settings(owner, repo, root)
@@ -632,7 +632,7 @@ def create_crew(
         raise CrewStoreError("a crew needs a name")
 
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True), _mint_lock(root):
             if name in taken_names(owner, repo, root):
@@ -726,7 +726,7 @@ def _mint_lock(root: Path | None) -> Iterator[None]:
     that order, so the two cannot deadlock.
     """
     lock_path = _app_root(root) / "crew-id-mint.lock"
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
@@ -776,7 +776,7 @@ def update_crew(
     those crews. See ``_records_lock_path``.
     """
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_crew(owner, repo, crew_id, root)
@@ -853,7 +853,7 @@ def set_crew_model_held(
     a patch field, so a request body cannot set it.
     """
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             if hold_releases(crew_id) != seen_releases:
@@ -899,7 +899,7 @@ def retire_crew(owner: str, repo: str, crew_id: str, root: Path | None = None) -
     its work log all survive."""
     record = update_crew(owner, repo, crew_id, {"enabled": False}, root)
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_crew(owner, repo, crew_id, root) or record

@@ -14,7 +14,7 @@
  * of them is fixed by picking a folder.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const mockApi = vi.hoisted(() => ({
@@ -592,6 +592,27 @@ describe('SteeringTab', () => {
     await waitFor(() => expect(screen.getByTestId('md')).toHaveTextContent('# Personal body'))
   })
 
+  it('names the disabled refresh for the read in flight, then restores it', async () => {
+    // A disabled "Refresh steering files" reads as unavailable; while the refetch
+    // runs its name says it is busy instead.
+    renderTab()
+    const idle = await screen.findByRole('button', { name: 'Refresh steering files' })
+    await waitFor(() => expect(idle).toBeEnabled())
+
+    let release: (v: typeof FILES) => void = () => {}
+    mockApi.steeringFiles.mockReturnValue(new Promise(resolve => { release = resolve }))
+    fireEvent.click(idle)
+
+    const busy = await screen.findByRole('button', { name: 'Refreshing steering files…' })
+    expect(busy).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Refresh steering files' })).toBeNull()
+
+    await act(async () => { release(FILES) })
+
+    const back = await screen.findByRole('button', { name: 'Refresh steering files' })
+    await waitFor(() => expect(back).toBeEnabled())
+  })
+
   it('shows an empty state naming both search roots when nothing is found', async () => {
     mockApi.steeringFiles.mockResolvedValue({ files: [], roots: FILES.roots, project: '~/proj' })
     renderTab()
@@ -621,6 +642,29 @@ describe('SteeringTab', () => {
     confirmSpy.mockReturnValue(true)
     fireEvent.click(screen.getByText('Delete'))
     await waitFor(() => expect(mockApi.deleteSteering).toHaveBeenCalledWith('user/personal.md', undefined, 'pk-listed'))
+    confirmSpy.mockRestore()
+  })
+
+  it('a file opened and edited while a delete is in flight keeps its editor when the delete lands', async () => {
+    mockApi.steeringFile.mockImplementation(async (key: string) => key === 'workspace/api.md'
+      ? { key, content: '# API\nbody', path: '~/proj/.kiro/steering/api.md', source: 'workspace' }
+      : { key, content: '# Personal\nbody', path: '~/.kiro/steering/personal.md', source: 'user' })
+    let land!: (v: { ok: boolean }) => void
+    mockApi.deleteSteering.mockImplementation(() => new Promise(resolve => { land = resolve }))
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderTab()
+    await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Delete'))
+    await waitFor(() => expect(mockApi.deleteSteering).toHaveBeenCalledWith('user/personal.md', undefined, 'pk-listed'))
+
+    fireEvent.click(screen.getByText('api.md'))
+    await waitFor(() => expect(screen.getByText('Edit')).toBeEnabled())
+    fireEvent.click(screen.getByText('Edit'))
+    const editor = await screen.findByLabelText('Edit api.md') as HTMLTextAreaElement
+    fireEvent.change(editor, { target: { value: '# API\nchanged' } })
+
+    await act(async () => { land({ ok: true }) })
+    expect((screen.getByLabelText('Edit api.md') as HTMLTextAreaElement).value).toBe('# API\nchanged')
     confirmSpy.mockRestore()
   })
 

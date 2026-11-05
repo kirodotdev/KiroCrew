@@ -1,20 +1,11 @@
 """A subagent parked on an unanswered spawn approval must say so.
 
-A default install has no YOLO override, no ``auto_approve_subagent_spawn``
-and no session trust, so every ``spawn_run`` is gated behind the interactive
-approval callback. While that prompt is unanswered the run is registered in
-``_agents`` and counted by ``count``, so it is reported exactly like an agent
-that is actually executing:
-
-  * ``subagents`` (status API) counts it, ``subagents_spawned`` does not
-  * no child ACP process exists
-
-These tests pin the log line and the ``awaiting_approval`` field that make the
-parked run distinguishable from a running one on every reader of ``/api/spawn``:
-the two HTTP shapes, the CLI's ``spawn list`` and blocking poll, and MCP
-``spawn_list``, including the unowned CLI spawn that reaches no chat tab. The
-reap message lives in ``subagent_manager/terminal.py`` and the chat-tab cue in
-the frontend (from the WS ``approval`` event), so neither is covered here.
+With no YOLO override, ``auto_approve_subagent_spawn`` or session trust, every ``spawn_run``
+waits on the approval callback, registered in ``_agents`` and counted like a running agent
+with no child process. These pin the log line and the ``awaiting_approval`` field on every
+reader of ``/api/spawn`` (both HTTP shapes, the CLI's ``spawn list`` and poll, MCP
+``spawn_list``, the unowned CLI spawn). The reap message (``subagent_manager/terminal.py``)
+and the chat-tab cue (frontend) are covered elsewhere.
 """
 
 from __future__ import annotations
@@ -148,16 +139,9 @@ class TestSpawnParkedOnApprovalIsObservable:
     async def test_parked_run_is_marked_awaiting_approval(self) -> None:
         """``_awaiting_approval`` is set while the spawn prompt is unanswered.
 
-        This is a PRECONDITION pin, not new behaviour: the spawn gate sets the
-        flag for the reaper's terminal message. The wire predicate reads that
-        same flag, and every payload test below feeds the predicate a hand-built
-        ``SubagentInfo`` — so if the gate stopped setting it, those tests would
-        still pass while the field went dark in production. Nothing else covers
-        the seam, because the reaper's own tests assert on the reap message
-        rather than on the flag.
-
-        The other assertions record the reported state itself: a run that is
-        counted like an executing one while owning no process and no turn.
+        A precondition pin: the payload tests below feed the predicate a hand-built
+        ``SubagentInfo``, so without this the field could go dark in production while they
+        pass. The rest records a run counted as executing with no process and no turn.
         """
         async with _parked() as (mgr, info, approval):
             assert approval.calls, "the interactive spawn prompt must have been raised"
@@ -241,13 +225,9 @@ class TestParkedRunIsVisibleOnBothReadPaths:
     def test_mid_run_tool_approval_is_not_reported_as_the_spawn_gate(self) -> None:
         """The flag is shared; the wire read must not be.
 
-        ``run.py`` sets ``_awaiting_approval`` at three in-run TOOL-approval
-        sites, and ``_exec_started`` is stamped once when execution begins (in
-        ``_run_inner_impl``). Reading the flag bare would render a run at turn 5
-        waiting on a tool prompt as "waiting for spawn approval" and tell a
-        still-polling caller to approve it "to start this run" that already
-        started. ``_exec_started is None`` is what separates the two — the same
-        pair ``terminal.py`` uses to pick the reap message.
+        ``run.py`` also sets ``_awaiting_approval`` at in-run tool-approval sites, so the
+        wire read pairs it with ``_exec_started is None``, as ``terminal.py`` does for the
+        reap message.
         """
         assert self._payload_flag(awaiting=True, exec_started=1.0) is False
 

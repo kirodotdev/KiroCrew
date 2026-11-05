@@ -5,13 +5,15 @@ import { apiErrorCode, isSlotCapError } from '../api/apiError'
 import { store, useAppDispatch } from '../store'
 import type { MuteFlag } from '../store/dashboardSlice'
 import { captureForkOrigin, deleteSlot, forkMayOpen, forkOpenSettled, forkOpenStarted, listForkedSlot, requestSlotFolderOpen, switchSlot } from '../store/chatSlice'
-import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
+import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, confirmOrphanUnread, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
 import { slotLastTsOf } from '../store/slotLastTs'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { askAppConfirm } from '../lib/appConfirm'
+import { forgetClosedSessionRef, rememberClosedSession, trackClosedSessionClose } from '../lib/recentlyClosedSessions'
 import { i18nT } from '../i18n/t'
 import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
@@ -279,8 +281,9 @@ export function useSessionActions(mode?: string, opts?: {
     // are shared guidance that is already a cause plus a next step: a gateway
     // sign-in denial carries the shared sign-in text (the stale-owner wording
     // for a stale-owner denial, the no-longer-valid sign-in wording otherwise), the
-    // slot-cap 429 carries the shared slot-cap guidance, and an access-proxy
-    // challenge names the proxy and its own remedy. Each follows the subject
+    // slot-cap refusal (409, or 429 from an older gateway) carries the shared
+    // slot-cap guidance, and an access-proxy challenge names the proxy and its
+    // own remedy. Each follows the subject
     // unchanged, so the alert reads the same remedy every other surface shows
     // for that denial, and no retry sentence is added that cannot succeed
     // before the user acts. The slot_not_found 404 is matched on the
@@ -459,6 +462,7 @@ export function useSessionActions(mode?: string, opts?: {
   const toggleRead = useCallback((slotKey: string) => {
     const isUnread = store.getState().dashboard.unreadSlots.includes(slotKey)
     dispatch(isUnread ? markSlotRead(slotKey) : markSlotUnread(slotKey))
+    if (isUnread) void dispatch(confirmOrphanUnread(slotKey))
     // Read direction relays to other windows (a deliberate "I've seen this"),
     // watermarked at the slot's newest known message ts. The unread direction
     // stays window-local — markSlotUnread's string form records the manual
@@ -495,10 +499,21 @@ export function useSessionActions(mode?: string, opts?: {
   // The sidebar row ✕ and every session menu close land here. A busy session
   // always asks, on the same rule as Cmd+W (`closeBusyReasons`); an idle one
   // keeps the user's `confirmCloseSession` setting. The prompt names which of
-  // the two made it ask (`closeConfirmPrompt`).
+  // the two made it ask (`closeConfirmPrompt`). The question is the in-app
+  // dialog, never the browser's native confirm(): in the desktop app that one
+  // can leave the window unable to take input once it closes.
   const close = useCallback((slotKey: string) => {
-    const prompt = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
-    if (prompt === null || confirm(prompt)) dispatch(deleteSlot(slotKey))
+    const ask = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
+    const closeSlot = () => {
+      // Recorded as the close is dispatched, not on `fulfilled` (which trails
+      // the peer session's transcript load); a refused close drops the record.
+      const ref = rememberClosedSession(store.getState().dashboard.slots.find(s => s.key === slotKey))
+      const close = dispatch(deleteSlot(slotKey))
+      trackClosedSessionClose(ref, close.then(action => deleteSlot.fulfilled.match(action)))
+      void close.then(action => { if (deleteSlot.rejected.match(action)) forgetClosedSessionRef(ref) })
+    }
+    if (ask === null) { closeSlot(); return }
+    void askAppConfirm(ask).then(ok => { if (ok) closeSlot() })
   }, [dispatch])
 
   return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }

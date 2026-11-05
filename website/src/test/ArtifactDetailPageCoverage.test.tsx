@@ -317,7 +317,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     })
     evt.preventDefault() // Pierre's capture handler already claimed it.
     expect(evt.defaultPrevented).toBe(true)
-    document.dispatchEvent(evt)
+    act(() => { document.dispatchEvent(evt) })
     await waitFor(() =>
       expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, {
         content: '# keyboard',
@@ -387,8 +387,12 @@ describe('ArtifactDetailPage — mutation paths', () => {
     await waitFor(() =>
       expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, { snapshot: true }),
     )
+    // The snapshot holds `saving` (and so disables the Version select) until its three refetches land.
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /Version/i })).toBeEnabled())
     vi.mocked(api).updateArtifact = vi.fn().mockRejectedValue(new Error('snapshot refused'))
-    await chooseMore('Snapshot')
+    // The rejected mock settles in microtasks, so the click that starts the handler owns those updates.
+    const snapshotItem = await findMoreItem('Snapshot')
+    await act(async () => { fireEvent.click(snapshotItem) })
     await waitFor(() => expect(screen.getByText('snapshot refused')).toBeInTheDocument())
   })
 
@@ -717,7 +721,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
   it('opens More from the keyboard and moves focus into the menu', async () => {
     await mount(mkArtifact())
     const trigger = moreButton()
-    trigger.focus()
+    act(() => { trigger.focus() })
     fireEvent.keyDown(trigger, { key: 'Enter' })
     const menu = await screen.findByRole('menu')
     expect(trigger).toHaveAttribute('aria-expanded', 'true')

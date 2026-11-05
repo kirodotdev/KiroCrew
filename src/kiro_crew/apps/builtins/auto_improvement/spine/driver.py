@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import importlib as _importlib
 import logging
+import math
 import os
 import subprocess  # noqa: F401
 import sys
@@ -1409,6 +1410,21 @@ class Driver:
 # ── CLI entry point (mirrors autoloop.py --dry-run / loop.py --self-test) ────
 
 
+def _finite_float(raw: str) -> float:
+    """argparse type for a budget cap: any finite float, refusing NaN and infinity.
+
+    The run loop stops on ``used > cap``. Every comparison with NaN is False and
+    nothing exceeds infinity, so a non-finite cap would never stop the run.
+    """
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid float value: {raw!r}") from None
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(f"must be a finite number, got {raw!r}")
+    return value
+
+
 def _build_logger() -> logging.Logger:
     log = logging.getLogger("auto_improvement.driver")
     if not log.handlers:
@@ -1428,16 +1444,21 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true", help="exercise the full pipeline with a stub profile"
     )
     ap.add_argument("--max-cycles", type=int, default=1000)
-    ap.add_argument("--max-hours", type=float, default=10.0)
-    ap.add_argument("--max-cost", type=float, default=50.0, help="USD budget ceiling (hard stop)")
+    ap.add_argument("--max-hours", type=_finite_float, default=10.0)
+    ap.add_argument(
+        "--max-cost", type=_finite_float, default=50.0, help="USD budget ceiling (hard stop)"
+    )
     ap.add_argument("--quiesce", type=int, default=3, help="stop after N cycles with no keep")
     ap.add_argument("--clone", type=Path, help="path to the push-disabled target clone")
     ap.add_argument("--branch", default="auto_improvement/trunk-base")
     ap.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("/tmp/auto_improvement_run"),
-        help="where the archive/ledger/pr_queue live",
+        default=None,
+        help=(
+            "where the archive/ledger/pr_queue live; a --dry-run without it uses a"
+            " throwaway directory inside its own temporary run root"
+        ),
     )
     args = ap.parse_args(argv if argv is not None else sys.argv[1:])
 

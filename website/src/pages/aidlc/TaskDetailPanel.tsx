@@ -28,7 +28,10 @@ function fmtTime(ts?: number) {
 
 function fmtDuration(start?: number, end?: number): string {
   if (!start) return '—';
-  const secs = Math.floor(((end || Date.now() / 1000) - start));
+  // start is stamped by the gateway's clock; a running task has no end, so a
+  // gateway running ahead of the browser's clock would otherwise render a
+  // negative duration.
+  const secs = Math.max(0, Math.floor(((end || Date.now() / 1000) - start)));
   if (secs < 60) return fmtUnit(secs, 'second', { maximumFractionDigits: 0 });
   const m = Math.floor(secs / 60), s = secs % 60;
   return m < 60

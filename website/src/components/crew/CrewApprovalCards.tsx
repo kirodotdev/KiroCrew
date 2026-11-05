@@ -11,6 +11,7 @@ import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { useCrewWorkerSummary, crewWorkersQueryKey } from '../../pages/chat/command-center/CrewWorkerList'
 import type { ChatSlot, PendingApproval } from '../../types'
 import { approvalTitle } from '../../pages/chat/command-center/model'
+import { mateRootOf } from '../../lib/crewMode'
 
 /** One request's identity: its worker, origin, request id and delivery
  *  (`request_mid` for a native request, `request_instance` for a coordinator
@@ -18,6 +19,14 @@ import { approvalTitle } from '../../pages/chat/command-center/model'
  *  request: it gets its own card (fresh state) and its own place in the stack. */
 const requestKey = (worker: string, approval: PendingApproval): string =>
   [worker, approval.origin || '', approval.request_id, approval.request_mid || '', approval.request_instance || ''].join('\u0000')
+
+/** Which tree a root's workers are read from: a Crew Mode conductor's
+ *  (`crew_root`), or a crewmate thread's (`mate_root`). */
+export type ApprovalTree = 'crew' | 'mate'
+
+/** The root *slot* belongs to in *tree*, '' when it belongs to none. */
+const rootIn = (slot: ChatSlot, tree: ApprovalTree): string =>
+  (tree === 'mate' ? mateRootOf(slot) : slot.crew_root) || ''
 
 /** When this tab first saw each pending request, so the stack is oldest first. */
 const firstSeen = new Map<string, number>()
@@ -40,11 +49,12 @@ export function crewApprovalRequests(
   root: string,
   tasks: ReadonlyMap<string, string>,
   now: number = Date.now(),
+  tree: ApprovalTree = 'crew',
 ): CrewApprovalRequest[] {
   const out: CrewApprovalRequest[] = []
   for (const slot of slots) {
     const info = slot.pending_approval_info
-    if (slot.crew_root !== root || !slot.pending_approval || !info?.request_id) continue
+    if (!root || rootIn(slot, tree) !== root || !slot.pending_approval || !info?.request_id) continue
     const id = requestKey(slot.key, info)
     if (!firstSeen.has(id)) firstSeen.set(id, now)
     out.push({ worker: slot.key, title: sessionDisplayTitle(slot), task: tasks.get(slot.key) ?? '', approval: info })
@@ -68,18 +78,25 @@ export function crewApprovalRequests(
 /** `compact` (Ultra Mode Needs your input): each request is one short row --
  *  who and the call in plain words, Approve / Reject, a small Trust link -- with the
  *  full tool input behind a collapsed Details disclosure. Same data, same route. */
-export default function CrewApprovalCards({ root, compact = false }: { root: string; compact?: boolean }) {
+/** `tree="mate"` (a crewmate's chat on the Mates page): the same stack for the
+ *  sessions the mate thread dispatched, read by their `mate_root` stamp, decided
+ *  through the same owner-only route, which answers a mate thread as a root. */
+export default function CrewApprovalCards({ root, compact = false, tree = 'crew' }: { root: string; compact?: boolean; tree?: ApprovalTree }) {
   const slots = useAppSelector(s => s.dashboard.slots)
   // The last list read, kept through a failed re-read: each card keeps its task
   // line, and the notice below says the newest read did not land.
   const { lastWorkers, failed } = useCrewWorkerSummary(root)
   const tasks = new Map((lastWorkers ?? []).map(w => [w.key, w.summary ?? ''] as const))
-  const requests = crewApprovalRequests(slots, root, tasks)
+  const requests = crewApprovalRequests(slots, root, tasks, Date.now(), tree)
   if (requests.length === 0) return null
   return (
     <section
-      aria-label={i18nT('components.crewMode.approvals_label', { n: requests.length })}
-      className={compact ? 'space-y-1.5' : 'mx-2 mb-2 space-y-2 max-h-[45vh] overflow-y-auto'}
+      aria-label={tree === 'mate'
+        ? i18nT('components.mateWorkers.approvals_label', { n: requests.length })
+        : i18nT('components.crewMode.approvals_label', { n: requests.length })}
+      // The mate tree's stack sits in its chat's shared prompt area, which owns
+      // the height budget and the scroll (ChatPane).
+      className={compact ? 'space-y-1.5' : tree === 'mate' ? 'mb-2 space-y-2' : 'mx-2 mb-2 space-y-2 max-h-[45vh] overflow-y-auto'}
       data-testid="crew-approval-cards"
       data-compact={compact ? 'true' : undefined}
     >
@@ -88,12 +105,24 @@ export default function CrewApprovalCards({ root, compact = false }: { root: str
           tool input, so the person can decide. Nothing to lose on hand-off: the
           requests are on the server and the draft is saved per chat. */}
       {failed && <ErrorNotice variant="inline" message={i18nT('commandCenter.workers_error')} askAgent testId="crew-approval-workers-error" />}
-      {requests.map(r => <CrewApprovalCard key={requestKey(r.worker, r.approval)} root={root} request={r} compact={compact} />)}
+      {requests.map(r => <CrewApprovalCard key={requestKey(r.worker, r.approval)} root={root} request={r} compact={compact} tree={tree} />)}
     </section>
   )
 }
 
-function CrewApprovalCard({ root, request, compact = false }: { root: string; request: CrewApprovalRequest; compact?: boolean }) {
+/** A crewmate thread's stack, mounted only while one of its sessions waits on an
+ *  approval: the stack reads the mate's worker list for each card's task line,
+ *  and a mate chat with nothing pending has no reason to poll it. */
+export function MateApprovalCards({ root }: { root: string }) {
+  const waiting = useAppSelector(s => s.dashboard.slots.some(slot =>
+    !!root && mateRootOf(slot) === root && !!slot.pending_approval && !!slot.pending_approval_info?.request_id))
+  return waiting ? <CrewApprovalCards root={root} tree="mate" /> : null
+}
+
+function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { root: string; request: CrewApprovalRequest; compact?: boolean; tree?: ApprovalTree }) {
+  // What Trust grants, worded for who it trusts: a crew member, or a session a
+  // crewmate opened.
+  const trustHint = tree === 'mate' ? i18nT('components.mateWorkers.trust_hint') : i18nT('components.crewMode.approval_trust_hint')
   const queryClient = useQueryClient()
   const [done, setDone] = useState(false)
   const locked = useRef(false)
@@ -153,7 +182,7 @@ function CrewApprovalCard({ root, request, compact = false }: { root: string; re
           </details>
           {approval.trust_grantable === '1' && (
             <button type="button" className="shrink-0 hover:underline underline-offset-2 hover:text-text disabled:opacity-40" disabled={busy}
-              title={i18nT('components.crewMode.approval_trust_hint')} onClick={() => decide('trust')}>{i18nT('components.crewMode.ultra_trust')}</button>
+              title={trustHint} onClick={() => decide('trust')}>{i18nT('components.crewMode.ultra_trust')}</button>
           )}
         </div>
         {/* The same failure surface and wording as the full card below. */}
@@ -224,9 +253,9 @@ function CrewApprovalCard({ root, request, compact = false }: { root: string; re
       {approval.trust_grantable === '1' && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1" data-testid="crew-approval-trust-row">
           <Btn className="min-h-11" disabled={mutation.isPending || gone} onClick={() => decide('trust')} aria-describedby={trustHintId}>
-            {i18nT('components.crewMode.approval_trust')}
+            {tree === 'mate' ? i18nT('components.mateWorkers.trust') : i18nT('components.crewMode.approval_trust')}
           </Btn>
-          <p id={trustHintId} className="text-[11px] text-muted min-w-0 flex-1 basis-40">{i18nT('components.crewMode.approval_trust_hint')}</p>
+          <p id={trustHintId} className="text-[11px] text-muted min-w-0 flex-1 basis-40">{trustHint}</p>
         </div>
       )}
     </article>

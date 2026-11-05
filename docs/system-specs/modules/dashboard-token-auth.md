@@ -52,7 +52,7 @@ surfaces, and `X-Session-Key: dashboard:ui` stays correlation metadata.
 |---|---|
 | Proactive rotation before the access cookie expires, and the cold-start `GET /api/auth/me` → `POST /api/auth/refresh` recovery | `website/src/hooks/useRefreshScheduler.ts`, mounted by `DashboardBootstrap` outside the prerequisite gate |
 | The one in-flight `POST /api/auth/refresh` that every trigger shares | `website/src/api/refreshOnce.ts` |
-| The `X-Session-Key` default, the request helpers and the `j`/`jNullable`/`jInstancesDisabled` parsers (the last one reads `/api/instances` and does not journal the expected 403 a disabled instances control plane answers); the warm-path silent refresh on a 403 `X-Auth-Required`; the embedded-pane hand-off; the re-auth banner with its in-place `GET /api/auth/me?token=` exchange; the 401 `stale_session_reauth` prompt; and the sign-in instruction shown in place of the gateway's own refusal reason | `website/src/api/client.ts` |
+| The `X-Session-Key` default, the request helpers and the `j`/`jNullable`/`jInstancesDisabled`/`jCrewBoard`/`jSlotEnvironment`/`jSharedCrewPreview` parsers (the last four read one route each and do not journal its expected denial: `/api/instances`' 403 from a disabled control plane, `/api/crew-board`'s 404 `no_ledger`, and the 403 `owner_only` that the slot-environment read and the Shared Crew preview read answer a caller that is not the dashboard owner, which their readers do not retry); the warm-path silent refresh on a 403 `X-Auth-Required`; the embedded-pane hand-off; the re-auth banner with its in-place `GET /api/auth/me?token=` exchange; the 401 `stale_session_reauth` prompt; and the sign-in instruction shown in place of the gateway's own refusal reason | `website/src/api/client.ts` |
 | The `api` object's endpoint methods, grouped by domain under `website/src/api/client/`, each module built on the transport above rather than its own; the mobile sign-in mint `POST /api/auth/mobile-link` is `mobileLoginLink` in `website/src/api/client/remoteAccess.ts`. Four methods stay defined in `client.ts`: three that other docs or the i18n gate pin there, and `wakatimeExportDownload`, which reads a sibling through `api` at call time | the domain endpoint modules |
 | The words for an interposed proxy's sign-in page, and the generic error text other failures render with | `website/src/api/edgeAuthChallenge.ts` and `website/src/api/apiError.ts` |
 
@@ -356,7 +356,7 @@ The `local_only` parameter is accepted for backward compatibility but does not c
 
 Request flow:
 1. Internal-path handling is separate: a loopback caller with a valid `X-Internal-Secret` is admitted, a mixed internal path can validate a cookie, and a strict internal path denies non-loopback callers; ordinary loopback requests continue to the token gate (`token_auth_middleware`; `test_loopback_requires_token`). A mixed internal path's cookie branch, on loopback and off it, sets `auth_from_query_token` from the credential `_extract_and_validate_token` validated, as the main path does: true for a `?token=` link, false for the session cookie, including a cookie adopted after a failed link.
-2. Bypass named non-secret routes: prefix routes `/assets/`, `/static/`, `/fonts/`, `/vendor/`, `/artifact-app/`, `/sandbox-doc/`, and `/browser-view/`; exact routes `/logo.png`, `/favicon.ico`, `/manifest.json`, `/sw.js`, `/pcm-worklet.js`, `/api/token/local`, `/api/shutdown`, `/api/logout`, `/api/theme/boot`, `/api/health`, `/api/live`, `/api/ready`, and `/browser-view` (the bare form, which the trailing-slash prefix misses — bypassed so the relay's uniform 404 answers instead of the middleware's distinguishable 403); anchored icon files; and method-scoped routes `GET`/`HEAD /apps/<name>/ui/*`, `POST /api/hooks/agent`, `POST /api/messaging/teams`, `POST /api/apps/<name>/token`, `POST /api/auth/refresh`, `POST /api/auth/logout`, and `POST /api/update/revalidate` (`UPDATE_REVALIDATE_PATH`: the CLI's post-update badge revalidate, which self-authenticates over loopback with `X-Local-Secret`, re-checked in `api_update_revalidate`) (`_BYPASS_PREFIXES`, `_BYPASS_EXACT`, `_BYPASS_EXACT_METHODS`, and `token_auth_middleware()`). `/browser-view/` is unlike every other bypass on this list: it is the one route that **proxies foreign content** (the Playwright CLI browser view) rather than serving gateway-owned assets. It carries its own authentication — a per-instance capability token embedded in the path, minted by the view supervisor and disclosed only through the cookie-authed, owner-gated `/api/browser/view` payload, constant-time-compared before any per-request ownership probe runs — and every tokenless or wrong-token request answers a uniform 404. The full model (post-connect ownership re-proof, CSP sandbox stamp, SEL audit of every allow/deny) is specified in `dashboard/handlers/browser_view_relay.py` and the [browser module spec](browser.md).
+2. Bypass named non-secret routes: prefix routes `/assets/`, `/static/`, `/fonts/`, `/vendor/`, `/artifact-app/`, and `/sandbox-doc/`; exact routes `/logo.png`, `/favicon.ico`, `/manifest.json`, `/sw.js`, `/pcm-worklet.js`, `/api/token/local`, `/api/shutdown`, `/api/logout`, `/api/theme/boot`, `/api/health`, `/api/live`, and `/api/ready`; anchored icon files; and method-scoped routes `GET`/`HEAD /apps/<name>/ui/*`, `POST /api/hooks/agent`, `POST /api/messaging/teams`, `POST /api/apps/<name>/token`, `POST /api/auth/refresh`, `POST /api/auth/logout`, and `POST /api/update/revalidate` (`UPDATE_REVALIDATE_PATH`: the CLI's post-update badge revalidate, which self-authenticates over loopback with `X-Local-Secret`, re-checked in `api_update_revalidate`) (`_BYPASS_PREFIXES`, `_BYPASS_EXACT`, `_BYPASS_EXACT_METHODS`, and `token_auth_middleware()`). Every bypass on this list serves gateway-owned assets or a self-authenticating control route; none proxies foreign content. The `/browser-view` relay that once did (the retired CLI browser view, with its own path-token auth) was deleted with that view, and `test_browser_view_relay_paths_no_longer_bypass_auth` pins that its paths are gated like any other now ([browser module spec](browser.md)).
 
    `/api/token/local` carries its own gate: loopback (or a same-principal unix
    peer), then `X-Local-Secret`, then the local-owner process check. Each
@@ -385,6 +385,49 @@ Request flow:
 7. Log to SEL
 8. Publish the Shared Crew actor (`shared_crew.identity.publish_actor`) under `request[ACTOR_REQUEST_KEY]`, after every decision above and before the handler, on each path that admits a request: the internal-secret grant, both mixed-internal cookie branches and the main path. It is attribution only. It runs only for an admitted request, never raises (a failure publishes the Unknown principal), and its daemon lookup for a directly connected tailnet peer (`tailnet.resolve_direct_peer`) is not consulted by the pin or the allowlist, so it can neither admit nor refuse anything. Bypassed routes publish no actor and read as Unknown. Derivation rules are in [shared-crew.md](shared-crew.md) section 2.
 9. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
+
+#### Direct tailnet listener: daemon identity instead of a token
+
+A request whose LOCAL socket address is one of this machine's tailnet addresses
+arrived on the direct tailnet listener (`tailnet_direct.DirectGate.owns`; the
+listener exists only while `dashboard.shared_crew.tailnet_direct` is on (it is off by
+default) and Tailscale runs). `token_auth_middleware(tailnet_direct=...)` decides
+it before step 1, and no other request is affected: loopback, the unix socket and
+`tailscale serve` run the steps above unchanged.
+
+1. The TCP peer must be a tailnet address other than this machine's own (a local
+   process dialling its own tailnet address is refused `self_connection`), with no
+   forwarding header, and the
+   daemon's `whois` of that peer `ip:port` must name a node and a user with a
+   stable id. A `Tailscale-User-*` header is never read. Any failure is a 403
+   (`code: tailnet_direct_refused` with a `reason`); there is no fallback.
+2. Tailscale decides who reaches this machine, so every untagged person `whois`
+   names is admitted while Shared Crew's set is installed (`shared_crew.access_set`,
+   published through `tailnet_live_allowlist`); Crew approves nobody itself. A
+   tagged node needs a `tag:<name>` entry carried over from the one-time migration
+   seed of `dashboard.tailscale.allowed_logins`. With no set installed, an
+   unreadable config allowlist admits nobody.
+3. Strict internal paths and `X-Internal-Secret` are refused on this listener.
+4. An app token (`?token=` claiming an app) runs the token flow so its scope holds.
+   Any other token or cookie is ignored. The owner is the owner's dashboard subject
+   (`owner_id`, else `local-app`) with `auth_owner_whois`, so owner-gated routes
+   answer it (`dashboard.tailnet_owner`); `DELETE
+   /api/shared-crew/tailscale/credential` and `DELETE /api/sessions` from it also
+   need `X-Kirocrew-Confirm: irreversible`, else 428 `confirm_required`. Anyone
+   else is the dashboard user `tailnet:uid:<id>`, which never matches the owner
+   subject, so owner-gated routes refuse it. Either way `auth_tailnet_direct` is
+   set, `auth_token` is empty, no cookie is minted, the Shared Crew actor is the
+   verified person, and `_caller_bounds` lends this listener no lifetime, so
+   nobody on it can mint a bearer link.
+5. `whois` is cached per `ip:port` (30 s, failures 2 s, bounded), asked again on
+   every WebSocket upgrade, and repeated on an open WebSocket every 60 s; a
+   failure or a different node key closes it.
+
+The CSRF origin check still applies: the listener's own origins
+(`http://<magicdns-name>:<port>` and `http://<tailnet-ip>:<port>`) join
+`allowed_origins` after the listener binds, so the `Host` barrier and `Origin`
+check accept exactly those. Rules and platform status are in
+[shared-crew.md](shared-crew.md) section 2.
 
 #### Link re-exchange is deliberately allowed (the link is not single-use)
 
@@ -473,8 +516,8 @@ three exclusions:
 
 - `SPA_FALLBACK_EXCLUDED_PREFIXES`: `/api/`, `/v1/` (OpenAI-compat data API),
   the static mounts (`/assets/`, `/static/`, `/sprites/`, `/vendor/`, `/fonts/`,
-  `/app-assets/`, `/artifact-app/`, `/sandbox-doc/`), `/feature-videos/` and
-  `/browser-view`. `/apps/` is deliberately not in the tuple.
+  `/app-assets/`, `/artifact-app/`, `/sandbox-doc/`) and `/feature-videos/`.
+  `/apps/` is deliberately not in the tuple.
 - `_APPS_SPA_EXCLUDED_RE` for `/apps/`: only `/apps/<name>/api/…`,
   `/apps/<name>/art/…` and `/apps/<name>/ui/…` have server handlers. Every
   other `/apps/` path (bare `/apps/<name>`, `/apps/detail/<name>`,
@@ -949,7 +992,7 @@ check:
 |---|---|---|
 | Local-only | `relay_local_only` | the strict internal API paths, and any request presenting `X-Internal-Secret`, `X-Local-Secret` or `X-App-Secret` |
 | Instances | `instances_disabled` | `/api/instances` and everything under it, for everyone remote. The code the instances gate already answers when the feature is off, which the dashboard reads as "no instances here" |
-| Local token and secret routes | `relay_local_credential` | `/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`, `/api/auth/refresh`, `/api/apps/<name>/token`, `/api/apps/register`, `/api/apps/dev-fleet/pod-token` and `/apps/dev-fleet/api/pod/token` (a Dev Fleet pod's dashboard token), `/api/webhooks/tokens` and under it (a webhook bearer and signing secret that invoke an agent on their own), `/api/logout`, `/api/update/revalidate`, `/api/secrets` and under it |
+| Local token and secret routes | `relay_local_credential` | `/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`, `/api/auth/refresh`, `/api/apps/<name>/token`, `/api/apps/register`, each path a shipped built-in app declares as a `relay_credential_paths` host grant (`apps.builtin_host_grants`; today Dev Fleet's `/api/apps/dev-fleet/pod-token` and `/apps/dev-fleet/api/pod/token`, a pod's dashboard token), `/api/webhooks/tokens` and under it (a webhook bearer and signing secret that invoke an agent on their own), `/api/logout`, `/api/update/revalidate`, `/api/secrets` and under it |
 | Shutdown | `relay_shutdown_refused` | `/api/shutdown` |
 | Apps for teammates | `relay_apps_teammate` | for a teammate only: `/apps/*` (each app's UI and backend proxy), `/api/apps` with everything under it (app management and every route an app registers in-process), `/api/publish-providers` and `/api/app-store/refresh` |
 | Non-canonical path | `relay_path_noncanonical` | a path with a `%` left after decoding, an empty segment or a dot segment, checked before any route: a later hop could read it as another path (the app proxy re-encodes what it captured, so `%2574` reaches an app's backend as `t`) |
@@ -1081,7 +1124,7 @@ already names where to sign in.
 
 1. Persistent HMAC secret (`token_signing.key`, owner-restricted) — signed access and refresh cookies survive a process restart; `token_secret` supplies an ephemeral fallback only when the key cannot be persisted. A persisted key that exists but is shorter than 32 bytes is never accepted and is not repaired in place: the gateway boot preflight (`slack.gateway.signing_key_preflight`, backed by `token_secret.signing_key_health` and, for the bytes actually loaded, `token_secret.load_boot_secret`) refuses to start, logs CRITICAL and prints manual repair steps (stop the gateway and any restore, check the length, delete the file by hand, restart), and `kirocrew doctor` reports the same state, so a truncated key is a loud operator action instead of an ephemeral secret that logs every session out at each restart (#13221).
 2. Dual expiry: link click expiry plus configured cookie-session expiry, enforced by `validate_token()`
-3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity` and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Resolution failure is fail-closed on identity and fail-open on availability for new ordinary sessions: they degrade to the address pin. A `require_peer` QR link instead fails closed, enrolls one verified allowed peer on its main exchange path, and carries that HMAC-signed original `peer_key` through access cookies, refresh rotation/grace replay, and child mints. A session pinned to a tailnet identity is denied (`tailnet identity unverified`) while the daemon cannot answer and denied on signed-key mismatch after restart — never satisfiable by an unverified proxied request or whichever allowed node presents a stolen cookie first. Transient daemon failures are cached briefly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture).
+3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity`, the kernel proved the loopback client socket belongs to `tailscaled` (`tailnet_proxy_proof.loopback_client_is_daemon`: on Linux the `/proc/net/tcp{,6}` owner uid of the client end is root's and a `tailscaled` runs as root; every other platform proves nothing), and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Without the Shared Crew preview an unresolved peer falls through to the token+IP path (fail-closed on identity, fail-open on availability, `rfc-tailnet-dashboard-access`). Under the preview (`KIROCREW_SHARED_CREW_PREVIEW=1`) the allowlist fails closed when no peer resolves (`tailnet.forwarded_peer_refusal`): a forwarded tailnet request (loopback peer, a tailnet address in `X-Forwarded-For`) is admitted only when the daemon's `whois` of its single forwarded address names an allowlisted login and no `Tailscale-User-Login` header disagrees; a chain, an address the daemon cannot name, a disagreeing header or a login off the list is refused (`tailnet identity unverified` or `tailnet login not allowed`). A loopback client the kernel does not prove is the daemon (every platform but Linux, a same-user daemon, a proof that raised) is such a case: its forwarded address can only refuse the request or admit it as Unknown with the address pin, never name a person, so a local token holder cannot name a tailnet person (`test_shared_crew_identity_spoof.py`, `test_shared_crew_allowlist_fail_closed.py`). A request with no forwarding header is never refused here. A `require_peer` QR link instead fails closed, enrolls one verified allowed peer on its main exchange path, and carries that HMAC-signed original `peer_key` through access cookies, refresh rotation/grace replay, and child mints. A session pinned to a tailnet identity is denied (`tailnet identity unverified`) while the daemon cannot answer and denied on signed-key mismatch after restart — never satisfiable by an unverified proxied request or whichever allowed node presents a stolen cookie first. Transient daemon failures are cached briefly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture).
 4. Link re-exchange is allowed during the signed link window; each query-param use mints a distinct session cookie (`test_link_token_still_reusable_via_query_param_after_exchange`; `test_url_token_exchanged_for_distinct_session_cookie`)
 5. Dashboard link sent via DM only — never posted in channels
 6. Ordinary loopback routes require token authentication (`token_auth.token_auth_middleware()`; `test_loopback_requires_token`); internal routes have separate secret and mixed-cookie branches

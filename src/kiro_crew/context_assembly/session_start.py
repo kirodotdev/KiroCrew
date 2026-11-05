@@ -120,6 +120,7 @@ def build_session_context(
     steering_dirs: tuple[str, ...] = (),
     _v2_essentials: str | None = None,
     member_dispatch_mounted: bool | None = None,
+    served_model: str = "",
 ) -> str:
     """Build context for a new session (memory + skills + history).
 
@@ -154,6 +155,12 @@ def build_session_context(
     duplicate what kiro already loaded; the CC backend (claude-agent-acp)
     does NOT read agent ``resources`` and still needs the explicit load.
     Everything else stays at CC/ACP parity.
+
+    *served_model* is the model id the live session reports serving, passed only
+    for a harness whose own system prompt names no model
+    (:func:`kiro_crew.agent_sdk.served_model_identity.crew_states_served_model`);
+    it becomes the ``[ACTIVE MODEL]`` block, in a minimal start too. Empty adds
+    nothing.
 
     *context_groups* selects which switchable groups are injected (see
     ``SWITCHABLE_CONTEXT_GROUPS``). ``None`` — every caller except a
@@ -226,6 +233,8 @@ def build_session_context(
         # A minimal run still calls Kiro Crew's tools, so it gets the same
         # spelling rule; nothing at all on a harness that needs none.
         parts.append(_tool_names.tool_names_block(provider_type))
+        # A cron run can be asked which model it is too; nothing when no id came.
+        parts.append(_sections.active_model_block(served_model))
         logger.debug(
             "Minimal session context: agent=%s, %d chars",
             agent_label,
@@ -317,6 +326,13 @@ def build_session_context(
     if tool_names:
         append_required(tool_names)
 
+    # The model serving the session, on a harness whose own prompt names none.
+    # Required, not budgeted: it is the one grounded answer to "which model are
+    # you?", and without it the model answers from training priors.
+    active_model = _sections.active_model_block(served_model)
+    if active_model:
+        append_required(active_model)
+
     # Crew-member operating mode — injected only for a member's pinned DM
     # session (mode carries the slot's mode; "member" slots are born only
     # through the members thread route), and only where the member backend
@@ -349,7 +365,12 @@ def build_session_context(
     if mode == _member_mode and ctx._member_dispatch_held(
         member_dispatch_mounted, _cfg, crewmate_for_session(_cfg, session_key)
     ):
-        append_required(_member.operating_mode_block(agent_label))
+        from kiro_crew.member_mate_tools import binding_has_ledger_tools
+
+        _crewmate = _cfg.agents.get(crewmate_for_session(_cfg, session_key))
+        append_required(
+            _member.operating_mode_block(agent_label, ledger=binding_has_ledger_tools(_crewmate))
+        )
 
     # Legacy member-DM identity. Private V2 has already derived its owner
     # from the memory binding and reserved its separate envelope. Four
@@ -427,24 +448,16 @@ def build_session_context(
     lazy_skills = bool(getattr(_cfg.skills, "lazy_load", False))
     max_context_chars = caps.max_context
 
-    # Steering files from agent config resources.
-    # kiro-cli loads an agent's ``resources`` natively when spawned with
-    # ``--agent`` (see acp/client_start.py ``_spawn``) — the same mechanism that
-    # lets us skip this for custom agents above. The CC backend
-    # (claude-agent-acp) does NOT read agent ``resources``, so only it needs
-    # the explicit load. Injecting on the ACP/kiro backend would duplicate
-    # what kiro-cli already loaded.
-    if (
-        not essentials
-        and not is_custom
-        and is_cc
-        and ctx._group_included(context_groups, ctx.CONTEXT_GROUP_PROJECT)
-    ):
-        steering_ctx = ctx._load_steering_resources()
-        if steering_ctx:
-            append_required(
-                "[Steering resources]\n" + steering_ctx + "\n[End of steering resources]\n\n"
-            )
+    # Steering files from agent config resources: the Claude Code backend
+    # only, since kiro-cli loads an agent's ``resources`` natively. The gate
+    # is shared with post-compaction re-injection.
+    steering_ctx = _inclusion.steering_resources_part(
+        agent=agent, is_cc=is_cc, essentials=essentials, context_groups=context_groups
+    )
+    if steering_ctx:
+        append_required(
+            "[Steering resources]\n" + steering_ctx + "\n[End of steering resources]\n\n"
+        )
     # Folder-inherited steering is NOT appended here. Its frame is in
     # ``_STRUCTURAL_MARKER_RES`` (a forged copy in a channel message or a
     # steering body must not read as operator-selected folder rules), and

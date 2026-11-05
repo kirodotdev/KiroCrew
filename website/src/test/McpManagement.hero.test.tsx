@@ -132,6 +132,25 @@ describe('the hero numbers', () => {
     expect(screen.getByRole('alert').textContent).toContain(M('footprint_failed'))
   })
 
+  it('treats a non-owner 403 on the footprint as a permanent refusal: owner-only notice, no retry, no polling', async () => {
+    // A non-owner session on the MCP Servers sub-tab: the owner-only footprint
+    // read answers 403 (not authRequired). Each refusal is a gateway audit row,
+    // so the panel must ask once. It is still a rejected request, so it uses the
+    // shared error notice, but names the owner-only reason.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
+    const read = vi.spyOn(api, 'mcpGatewayFootprint').mockRejectedValue(new ApiError(403, 'owner_only'))
+
+    mount()
+    await findSharing()
+    await waitFor(() => expect(read).toHaveBeenCalled())
+    await footprintSettled()
+    expect(screen.queryByText(M('using_now'))).toBeNull()
+    expect(screen.getByRole('alert').textContent).toContain(M('footprint_owner_only'))
+    expect(screen.queryByText(M('footprint_failed'))).toBeNull()
+    expect(read).toHaveBeenCalledTimes(1)
+  })
+
   it('says the server list failed while Advanced is still closed', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
     vi.spyOn(api, 'mcpGatewayServers').mockRejectedValue(new Error('down'))

@@ -1,10 +1,10 @@
 """Validation for the persisted ``session_environments`` config section.
 
 Shared by the loader and the dashboard write gate so they cannot drift:
-Coder, Sprites and boxd profiles, never credentials (a Sprites profile names
-the vault secret holding its token, never the token). ``validate_*`` raises
-naming the field; ``load_*`` twins drop only the invalid parts. No
-config-package imports.
+Coder, Sprites, boxd and Kiro Cloud Sessions profiles, never credentials (a
+Sprites profile names the vault secret holding its token, never the token).
+``validate_*`` raises naming the field; ``load_*`` twins drop only the invalid
+parts. No config-package imports.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ SECTION_OPTIONAL_KEYS: tuple[str, ...] = (
     "default_profile",
     "sprites_profiles",
     "boxd_profiles",
+    "kiro_cloud_profiles",
     "stop_on_shutdown",
 )
 #: Days an archived session's stopped workspace is kept before it is deleted. Fixed,
@@ -60,6 +61,8 @@ PROVIDERS: tuple[tuple[str, str, str], ...] = (
     ("coder", "profiles", "Coder"),
     ("sprites", "sprites_profiles", "Sprites"),
     ("boxd", "boxd_profiles", "boxd"),
+    # No VM of Kiro Crew's own and no registry: KAS creates the sandbox.
+    ("kiro_cloud", "kiro_cloud_profiles", "Kiro Cloud Sessions"),
 )
 PROVIDER_IDS: tuple[str, ...] = tuple(p[0] for p in PROVIDERS)
 #: Each VM provider's session registry, relative to the data home. Kept here, not
@@ -113,6 +116,7 @@ def check_profile_ids_unique(raw: object) -> None:
             "profiles": coder,
             "sprites_profiles": load_sprites_profiles(raw),
             "boxd_profiles": load_boxd_profiles(raw),
+            "kiro_cloud_profiles": load_kiro_cloud_profiles(raw),
         }
     )
 
@@ -264,11 +268,14 @@ def validate_session_environments(value: object) -> dict[str, Any]:
         result["sprites_profiles"] = validate_sprites_profiles(value["sprites_profiles"])
     if "boxd_profiles" in value:
         result["boxd_profiles"] = validate_boxd_profiles(value["boxd_profiles"])
+    if "kiro_cloud_profiles" in value:
+        result["kiro_cloud_profiles"] = validate_kiro_cloud_profiles(value["kiro_cloud_profiles"])
     _refuse_shared_ids(result)
     if "default_profile" in value:
         # Shape only. Which profile it names is judged on the merged section at
-        # write time: a save that omits sprites_profiles or boxd_profiles keeps
-        # the saved list, so its default may name a profile only that list holds.
+        # write time: a save that omits sprites_profiles, boxd_profiles or
+        # kiro_cloud_profiles keeps the saved list, so its default may name a
+        # profile only that list holds.
         result["default_profile"] = validate_default_profile(value["default_profile"])
     if "stop_on_shutdown" in value:
         result["stop_on_shutdown"] = validate_stop_on_shutdown(value["stop_on_shutdown"])
@@ -452,3 +459,79 @@ def validate_boxd_profiles(value: object) -> list[dict[str, Any]]:
 
 def load_boxd_profiles(raw: object) -> list[dict[str, Any]]:
     return _load_list(raw, "boxd_profiles", validate_boxd_profile)
+
+
+KIRO_CLOUD_PROFILE_KEYS: tuple[str, ...] = ("id", "name", "repositories")
+#: Most repositories one Kiro Cloud session opens.
+KIRO_CLOUD_REPOSITORIES_MAX = 10
+#: Characters a repository owner or name part may hold.
+_REPO_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+#: Characters the first part (the owner, or a bare name) may start with.
+_REPO_FIRST_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+#: Longest repository owner or name part.
+_REPO_PART_MAX = 100
+
+
+def parse_repository(value: object) -> tuple[str | None, str]:
+    """``(owner, name)`` for ``name`` or ``owner/name``, the forms kiro-cli's ``--repo`` takes.
+
+    ``owner`` is None for a bare name. The value is stripped first. Each part is
+    1 to 100 characters from ``_REPO_CHARS``, never ``.`` or ``..``, and the
+    first part starts with a letter or digit. Raises :class:`ValueError` for
+    anything else, a non-string included.
+    """
+    if not isinstance(value, str):
+        raise ValueError("a repository is a string")
+    parts = value.strip().split("/", 1)
+    for part in parts:
+        if not 1 <= len(part) <= _REPO_PART_MAX or not set(part) <= _REPO_CHARS:
+            raise ValueError("a repository part is 1 to 100 allowed characters")
+        if part in (".", ".."):
+            raise ValueError("a repository part is not a path step")
+    if parts[0][0] not in _REPO_FIRST_CHARS:
+        raise ValueError("a repository starts with a letter or digit")
+    if len(parts) == 1:
+        return None, parts[0]
+    return parts[0], parts[1]
+
+
+def validate_kiro_cloud_profile(value: object, index: int = 0) -> dict[str, Any]:
+    """Validate a saved Kiro Cloud Sessions profile. No KAS call, no credential.
+
+    The gateway's own Kiro sign-in authenticates. A profile names only the
+    repositories the cloud sandbox opens; an empty list opens an empty workspace.
+    """
+    where = f"kiro_cloud_profiles[{index}]"
+    raw = _exact_keys(value, where, KIRO_CLOUD_PROFILE_KEYS)
+    common = validate_profile(
+        {"id": raw["id"], "name": raw["name"], "template": "kiro-cloud", "workdir": "/"},
+        index,
+        where=where,
+    )
+    repositories = raw["repositories"]
+    if not isinstance(repositories, list) or len(repositories) > KIRO_CLOUD_REPOSITORIES_MAX:
+        raise SessionEnvironmentsError(
+            f"{where}.repositories must be a list of at most {KIRO_CLOUD_REPOSITORIES_MAX} entries"
+        )
+    repos: list[str] = []
+    for repo in repositories:
+        try:
+            owner, name = parse_repository(repo)
+        except ValueError:
+            raise SessionEnvironmentsError(
+                f"{where}.repositories entries must be a repository name or owner/name"
+            ) from None
+        canonical = name if owner is None else f"{owner}/{name}"
+        if canonical not in repos:
+            repos.append(canonical)
+    return {"id": common["id"], "name": common["name"], "repositories": repos}
+
+
+def validate_kiro_cloud_profiles(value: object) -> list[dict[str, Any]]:
+    """Strict atomic list validation for the Kiro Cloud configuration editor."""
+    return _validate_list(value, "kiro_cloud_profiles", validate_kiro_cloud_profile)
+
+
+def load_kiro_cloud_profiles(raw: object) -> list[dict[str, Any]]:
+    """Lenient load: keep each valid saved entry; drop invalid or duplicate ones."""
+    return _load_list(raw, "kiro_cloud_profiles", validate_kiro_cloud_profile)

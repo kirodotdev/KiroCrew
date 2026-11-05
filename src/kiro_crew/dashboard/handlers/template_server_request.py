@@ -101,7 +101,7 @@ def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]
         return (
             "",
             "crewmate_caller",
-            "a crewmate asks for its worker's servers with request_capabilities",
+            "a Bot asks for its worker's servers with request_capabilities",
         )
     try:
         execution = read_session_execution(slot_history_key(slot))
@@ -119,7 +119,7 @@ def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]
         return (
             "",
             "crewmate_caller",
-            "a crewmate asks for its worker's servers with request_capabilities",
+            "a Bot asks for its worker's servers with request_capabilities",
         )
     return template, "", ""
 
@@ -158,7 +158,7 @@ async def _caller_backend(state: Any, sk: str) -> str:
 # ── reach: which templates, sessions and members one addition reaches ──
 
 
-def addition_reach_view(state: Any, template: str) -> dict[str, Any]:
+def addition_reach_view(state: Any, template: str, *, mount_only: bool = False) -> dict[str, Any]:
     """The templates, open sessions and crew members an addition to *template* reaches.
 
     Templates come from :func:`template_mcp_additions.addition_reach`; each open
@@ -169,7 +169,7 @@ def addition_reach_view(state: Any, template: str) -> dict[str, Any]:
     from kiro_crew.execution_context import read_session_execution
     from kiro_crew.template_mcp_additions import addition_reach
 
-    templates = list(addition_reach(template))
+    templates = list(addition_reach(template, mount_only=mount_only))
     wanted = set(templates)
     sessions: list[str] = []
     for slot in list(getattr(state, "_slots", {}).values()):
@@ -201,7 +201,7 @@ def addition_reach_view(state: Any, template: str) -> dict[str, Any]:
     }
 
 
-def existing_grants(template: str, server: str) -> list[str]:
+def existing_grants(template: str, server: str, *, mount_only: bool = False) -> list[str]:
     """``allowedTools`` entries for *server* on every template the addition reaches. Blocking.
 
     The card adds no approval, but a grant the owner wrote earlier on ANY template
@@ -215,7 +215,7 @@ def existing_grants(template: str, server: str) -> list[str]:
 
     ref = f"@{server}"
     out: list[str] = []
-    for name in addition_reach(template) or (template,):
+    for name in addition_reach(template, mount_only=mount_only) or (template,):
         try:
             candidates = _agent_detail_candidates(name)
         except Exception:  # noqa: BLE001 - display only
@@ -273,6 +273,20 @@ def template_declares(template: str, server: str) -> bool:
     return False
 
 
+# ── the default agent and the worker: a mount-only card ──
+
+#: Templates whose servers are the MCP page's: the default agent carries every
+#: server installed there, and the worker mirrors the default spec. A request from
+#: one of them raises a MOUNT-ONLY card: the server joins the default agent and the
+#: worker, and no ``allowedTools`` grant is written, so its calls still ask.
+MCP_PAGE_TEMPLATES = _additions.DEFAULT_TEMPLATES
+
+#: The template a mount-only request records under. The worker is the default
+#: spec on disk plus the work-ledger keys, so one record on the default reaches
+#: both.
+MOUNT_ONLY_TEMPLATE = _additions.DEFAULT_TEMPLATE
+
+
 # ── agent half ──
 
 
@@ -299,7 +313,12 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
     if not template:
         _audit(sk, OP_REQUEST_SERVER, "denied", code)
         return _deny(403 if code == "crewmate_caller" else 409, code, message)
-    support = additions.addition_support(template, await _caller_backend(state, sk))
+    mount_only = template in MCP_PAGE_TEMPLATES
+    if mount_only:
+        template = MOUNT_ONLY_TEMPLATE
+    support = additions.addition_support(
+        template, await _caller_backend(state, sk), mount_only=mount_only
+    )
     if not support.supported:
         _audit(sk, OP_REQUEST_SERVER, "denied", "unsupported")
         return _deny(409, "unsupported", support.reason)
@@ -330,7 +349,13 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
         slot_key,
         sk,
         kind=KIND_TEMPLATE_MCP_SERVER,
-        params={"template": template, "server": name, "entry": entry, "origin": origin},
+        params={
+            "template": template,
+            "server": name,
+            "entry": entry,
+            "origin": origin,
+            "mount_only": mount_only,
+        },
         reason=body.get("reason"),
     )
 
@@ -367,10 +392,15 @@ def _rebuild_specs() -> bool:
     so either counts as not written, and so does a rebuild that raised.
     """
     from kiro_crew.agent import rebuild_agent_config_reporting
+    from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
+    from kiro_crew.platform import PlatformCompositionError
 
     held: list[bool] = []
     try:
         _path, wrote = rebuild_agent_config_reporting(_held_out=held)
+    except PlatformCompositionError:
+        logger.error(COMPOSITION_REFUSED_LOG, "a template MCP addition", exc_info=True)
+        return False
     except Exception:  # noqa: BLE001 - reported to the card as not applied
         logger.warning("agent rebuild after a template MCP addition failed", exc_info=True)
         return False
@@ -380,18 +410,60 @@ def _rebuild_specs() -> bool:
 def _spec_carries(template: str) -> bool:
     """Whether *template*'s sessions read an addition from a spec the rebuild writes.
 
-    Only an installer-merged template (a conductor, alias resolved) does. Every
+    An installer-merged template (a conductor, alias resolved) does, and so does the
+    default agent, whose mount-only additions the rebuild merges. Every
     other covered template reads the record itself at spawn
     (``template_mcp_additions.merge_at_spawn``), so a rebuild that is declined (the
     shared-home guard on a non-default data home) leaves nothing stale for it.
     """
     canonical = _additions._TEMPLATE_ALIASES.get(template, template)
-    return canonical in _additions.INSTALLER_MERGED_TEMPLATES
+    # The default agent's mount-only additions are merged into ``kirocrew.json`` by
+    # the rebuild (and mirrored into the worker), so a declined rebuild leaves them
+    # stale exactly as it leaves a conductor's.
+    return (
+        canonical in _additions.INSTALLER_MERGED_TEMPLATES
+        or canonical == _additions.DEFAULT_TEMPLATE
+    )
 
 
-def _rebuild_required(template: str) -> bool:
-    """Rebuild the specs; whether that failed in a way that leaves *template* stale. Blocking."""
+def _default_spec_mounts(server: str) -> bool:
+    """Whether the default agent's spec on disk holds *server* as a card addition. Blocking.
+
+    Only an entry carrying ``MERGED_MARK`` counts: one the MCP page owns stays after
+    an Undo by design, and is not this card's.
+    """
+    from kiro_crew.dashboard.handlers.agents import _agent_detail_candidates
+
+    try:
+        candidates = _agent_detail_candidates(_additions.DEFAULT_TEMPLATE)
+    except Exception:  # noqa: BLE001 - unreadable reads as the change not landing
+        return False
+    for _path, spec in candidates:
+        servers = spec.get("mcpServers") if isinstance(spec, dict) else None
+        entry = servers.get(server) if isinstance(servers, dict) else None
+        if isinstance(entry, dict) and entry.get(_additions.MERGED_MARK) is True:
+            return True
+    return False
+
+
+def _rebuild_required(template: str, server: str, *, present: bool) -> bool:
+    """Rebuild the specs; whether that failed in a way that leaves *template* stale. Blocking.
+
+    For the default agent the answer is read from ``kirocrew.json`` itself: does
+    it now hold *server* as a card addition exactly when the record says it should
+    (*present*)?
+    The rebuild's own success flag also covers specs that do not carry this
+    addition (a held conductor spec, another installer that raised after the
+    default spec was committed), and a rollback on top of a committed default
+    spec would restore the record after the rebuild already pruned that server's
+    per-tool grants. Reading the outcome means a rollback runs only when the
+    default spec did not change, so nothing was pruned. It also refuses an Apply
+    whose server the rebuild could not resolve, instead of reporting it applied.
+    """
     wrote = _rebuild_specs()
+    canonical = _additions._TEMPLATE_ALIASES.get(template, template)
+    if canonical == _additions.DEFAULT_TEMPLATE:
+        return _default_spec_mounts(server) is not present
     return not wrote and _spec_carries(template)
 
 
@@ -446,8 +518,14 @@ async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return _deny(400, "invalid_json", "invalid JSON body")
-    if not isinstance(body, dict) or set(body) != {"server", "entry"}:
-        return _deny(400, "invalid_body", "body is {server, entry}")
+    if not isinstance(body, dict) or set(body) not in (
+        {"server", "entry"},
+        {"server", "entry", "mount_only"},
+    ):
+        return _deny(400, "invalid_body", "body is {server, entry[, mount_only]}")
+    mount_only = body.get("mount_only", False)
+    if not isinstance(mount_only, bool):
+        return _deny(400, "invalid_body", "'mount_only' must be a boolean")
     template = request.match_info["name"]
     try:
         added = await asyncio.to_thread(
@@ -461,6 +539,7 @@ async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
             # server after this card's own check, and replacing that approval would
             # let this card's rollback or Undo delete it.
             only_if_absent=True,
+            mount_only=mount_only,
         )
     except additions.AdditionError as exc:
         return _deny(400, "addition_refused", str(exc))
@@ -473,7 +552,9 @@ async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
             "already_added",
             "another card added this server to this agent first; nothing changed",
         )
-    if await asyncio.to_thread(_rebuild_required, template):
+    if await asyncio.to_thread(
+        functools.partial(_rebuild_required, template, body["server"], present=True)
+    ):
         # Put the record back: a recorded addition no spec carries would read as
         # applied while no session can reach it.
         try:
@@ -533,7 +614,9 @@ async def api_template_mcp_addition_remove(request: web.Request) -> web.Response
             "not_found",
             "that server is not added to this agent by this card any more",
         )
-    if await asyncio.to_thread(_rebuild_required, template):
+    if await asyncio.to_thread(
+        functools.partial(_rebuild_required, template, server, present=False)
+    ):
         # The spec still mounts the server, so the Undo did not happen: put the
         # record back as it was, and the card keeps its Undo for a retry.
         if prior is not None:
@@ -550,6 +633,7 @@ async def api_template_mcp_addition_remove(request: web.Request) -> web.Response
                         card_id=prior.card_id,
                         approved_at=prior.approved_at,
                         only_if_absent=True,
+                        mount_only=prior.mount_only,
                     )
                 )
             except (additions.AdditionError, OSError, ValueError):

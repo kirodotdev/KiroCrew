@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 
 vi.mock('mermaid', () => ({
   default: {
@@ -133,7 +133,10 @@ describe('MermaidBlock source view and copy', () => {
   it('copies the diagram SOURCE, never the rendered SVG', async () => {
     const toggle = await renderDiagram()
     fireEvent.click(toggle)
-    fireEvent.click(screen.getByTestId('mermaid-copy-source'))
+    const copy = screen.getByTestId('mermaid-copy-source')
+    fireEvent.click(copy)
+    // The write resolves after the click; wait for its confirmation before asserting.
+    await waitFor(() => expect(copy.getAttribute('aria-label')).toMatch(/copied/i))
     expect(vi.mocked(copyCode)).toHaveBeenCalledTimes(1)
     const handed = vi.mocked(copyCode).mock.calls[0][0]
     expect(handed).toContain(SOURCE)
@@ -195,13 +198,15 @@ describe('MermaidBlock source view and copy', () => {
     vi.useFakeTimers()
     try {
       vi.mocked(copyCode).mockResolvedValue(false)
-      render(<MarkdownRenderer content={MERMAID_MD} />)
-      const toggle = await vi.waitFor(() => screen.getByTestId('mermaid-source-toggle'))
+      // The mermaid render resolves inside the act that mounts the block.
+      await act(async () => { render(<MarkdownRenderer content={MERMAID_MD} />) })
+      const toggle = screen.getByTestId('mermaid-source-toggle')
       fireEvent.click(toggle)
-      fireEvent.click(screen.getByTestId('mermaid-copy-source'))
-      await vi.waitFor(() => screen.getByTestId('mermaid-copy-error'))
+      // The failed write resolves inside the act that carries the click.
+      await act(async () => { fireEvent.click(screen.getByTestId('mermaid-copy-source')) })
+      expect(screen.getByTestId('mermaid-copy-error')).toBeTruthy()
       // Well past the 1500ms the confirmation uses.
-      await vi.advanceTimersByTimeAsync(5000)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
       expect(screen.queryByTestId('mermaid-copy-error')).toBeTruthy()
     } finally {
       vi.useRealTimers()
@@ -222,6 +227,7 @@ describe('MermaidBlock source view and copy', () => {
     const copy = screen.getByTestId('mermaid-copy-source')
     expect(rowButtons(copy).length).toBe(1)
     fireEvent.click(copy)
+    await waitFor(() => expect(copy.getAttribute('aria-label')).toMatch(/copied/i))
     expect(vi.mocked(copyCode).mock.calls[0][0]).toContain(SOURCE)
   })
 

@@ -23,22 +23,65 @@ from slack_events_coverage_helpers import _isolated_home_fixture  # noqa: F401
 from slack_events_coverage_helpers import _mock_sel_fixture  # noqa: F401
 from slack_events_coverage_helpers import _capture_respond, _drain, _event, _make_orch
 
+from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.config.loader import ACTIVATION_OBSERVE, KiroCrewConfig
 from kiro_crew.slack import events as ev
 
 
+@pytest.fixture(name="_real_sel")
+def _real_sel_fixture(_mock_sel, tmp_path, monkeypatch):
+    """Back the in-memory SEL fake with a real synchronous log under tmp_path.
+
+    The fake keeps recording, and every write also lands as a row the test reads back.
+    """
+    from kiro_crew import sel as sel_mod
+
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    (tmp_path / "sel").mkdir()
+    log = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+    # Leave the process singleton unset so no other caller is handed this log.
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    _mock_sel.log_api_access.side_effect = log.log_api_access
+    _mock_sel.log_tool_invocation.side_effect = log.log_tool_invocation
+    return log
+
+
+def _audit_rows(log, operation: str) -> list[tuple[str, str, str]]:
+    """``(caller, outcome, error)`` of every *operation* row, oldest first."""
+    rows = [r for r in reversed(log.recent()) if r["operation"] == operation]
+    return [(r["caller_identity"], r["outcome"], r["error"]) for r in rows]
+
+
+def _history_orch(**kw) -> MagicMock:
+    """An orchestrator whose channel history is a real buffer the fake also records."""
+    orch = _make_orch(**kw)
+    orch.real_history = ChannelHistory()
+    orch.channel_history = MagicMock(wraps=orch.real_history)
+    return orch
+
+
+def _history_texts(orch: MagicMock, channel: str = "D1") -> list[str]:
+    return [e.text for e in orch.real_history._channels.get(channel, ())]
+
+
 class TestRouteMessageStopCommand:
     @pytest.mark.asyncio
-    async def test_unauthorized_stop_denied(self, _mock_sel):
+    async def test_unauthorized_stop_denied(self, _mock_sel, _real_sel):
         orch = _make_orch()
         with patch("kiro_crew.slack.events.is_allowed_user", side_effect=[True, False]):
             with patch("kiro_crew.slack.events.is_owner", return_value=False):
                 await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         orch.slack.post_message.assert_awaited_with("D1", "⛔ Not authorized.", "100.0")
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "unauthorized sender"
+        assert _audit_rows(_real_sel, "slack.stop_command") == [
+            ("U_OWNER", "denied", "unauthorized sender")
+        ]
+        assert _audit_rows(_real_sel, "!stop") == []
 
     @pytest.mark.asyncio
-    async def test_no_session_manager_reports_nothing_running(self, _mock_sel):
+    async def test_no_session_manager_reports_nothing_running(self, _mock_sel, _real_sel):
         orch = _make_orch()
         orch.sessions = None
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
@@ -46,6 +89,7 @@ class TestRouteMessageStopCommand:
                 await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
         assert _mock_sel.log_tool_invocation.call_args.kwargs["outcome"] == "no_session"
+        assert _audit_rows(_real_sel, "!stop") == [("100.0", "no_session", "")]
 
     @pytest.mark.asyncio
     async def test_active_session_stopped_and_callbacks_post(self, _mock_sel):
@@ -71,7 +115,7 @@ class TestRouteMessageStopCommand:
         assert _mock_sel.log_tool_invocation.call_args.kwargs["outcome"] == "soft"
 
     @pytest.mark.asyncio
-    async def test_idle_stop_dismisses_stale_ephemeral(self):
+    async def test_idle_stop_dismisses_stale_ephemeral(self, _real_sel):
         orch = _make_orch()
         orch.sessions.has_session = MagicMock(return_value=True)
         orch.sessions.stop_turn = AsyncMock(return_value="idle")
@@ -79,6 +123,7 @@ class TestRouteMessageStopCommand:
             with patch("kiro_crew.slack.events.is_owner", return_value=True):
                 await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
+        assert _audit_rows(_real_sel, "!stop") == [("100.0", "idle", "")]
 
     @pytest.mark.asyncio
     async def test_bang_restart_delegates_to_restart_handler(self):
@@ -107,6 +152,8 @@ class TestRouteMessageQueueing:
                 await ev._route_message(orch, _event(), ev.SeenCache())
         hm.assert_not_called()
         orch.slack.add_reaction.assert_awaited_once_with("D1", "100.0", "hourglass_flowing_sand")
+        # The session accepted it, so nothing waits in the orchestrator-level queue.
+        assert orch._pending_queue == {}
 
     @pytest.mark.asyncio
     async def test_busy_session_without_session_object_uses_pending_queue(self):
@@ -163,7 +210,7 @@ class TestRouteMessageAttachments:
         timing: it returns True only if the event loop made progress WHILE it ran, which
         is impossible unless the call was moved to a thread.
         """
-        orch = _make_orch()
+        orch = _history_orch()
         files = [{"mimetype": "audio/webm", "url_private": "https://x.invalid/a.webm"}]
         loop_ran = threading.Event()
 
@@ -204,6 +251,8 @@ class TestRouteMessageAttachments:
                                     await ticker
         assert hm.await_args is not None, "the message never routed"
         assert "[Voice memo transcription]" in hm.await_args[0][3]
+        (recorded,) = _history_texts(orch)
+        assert recorded.startswith("[Voice memo transcription]\nspoken\n[End of transcription]")
 
     @pytest.mark.asyncio
     async def test_voice_transcript_is_prefixed(self):
@@ -257,6 +306,32 @@ class TestRouteMessageAttachments:
         assert "file body" in body
         # The temp image is unlinked by the done-callback once the turn finishes.
         assert not img.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_fence_opened_on_the_mention_line_ends_before_the_image(self, tmp_path):
+        # The fence is judged on the text the agent receives, past the mention,
+        # so an attached file's delimiter line cannot close it after the path.
+        orch = _make_orch()
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG")
+        files = [{"mimetype": "image/png", "url_private": "https://x.invalid/a.png"}]
+        text = "<@UBOT> ```python\nprint(1)"
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.stt_available", return_value=False):
+                with patch(
+                    "kiro_crew.slack.events.process_slack_files",
+                    new_callable=AsyncMock,
+                    return_value=([str(img)], ["[File: n.md]\n```\nx\n```\n[End of file]"]),
+                ):
+                    with patch(
+                        "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
+                    ) as hm:
+                        await ev._route_message(
+                            orch, _event(text=text, files=files), ev.SeenCache(), is_mention=True
+                        )
+                        await _drain(orch)
+        body = hm.await_args[0][3]
+        assert body.startswith(f"```python\nprint(1)\n```\n{img}\n\n[File: n.md]")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("use_transport", [False, True])
@@ -458,8 +533,8 @@ class TestRouteMessageNativeDrain:
 
 class TestRouteMessageEnterpriseAndObserve:
     @pytest.mark.asyncio
-    async def test_enterprise_origin_mismatch_rejects(self, _mock_sel):
-        orch = _make_orch()
+    async def test_enterprise_origin_mismatch_rejects(self, _mock_sel, _real_sel):
+        orch = _history_orch()
         ctx = MagicMock()
         ctx.return_value.slack_gate.check_message_origin.return_value = False
         with patch("kiro_crew.slack.events.current_context", ctx):
@@ -467,20 +542,29 @@ class TestRouteMessageEnterpriseAndObserve:
                 await ev._route_message(orch, _event(), ev.SeenCache())
         hm.assert_not_called()
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "enterprise_origin_mismatch"
+        assert _audit_rows(_real_sel, "slack.message") == [
+            ("U_OWNER", "denied", "enterprise_origin_mismatch")
+        ]
+        assert _history_texts(orch) == []
 
     @pytest.mark.asyncio
-    async def test_observe_records_history_then_drops_plain_message(self, _mock_sel):
-        orch = _make_orch(dm_activation=ACTIVATION_OBSERVE)
+    async def test_observe_records_history_then_drops_plain_message(self, _mock_sel, _real_sel):
+        orch = _history_orch(dm_activation=ACTIVATION_OBSERVE)
+        seen = ev.SeenCache()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
-                await ev._route_message(orch, _event(), ev.SeenCache())
+                await ev._route_message(orch, _event(), seen)
         hm.assert_not_called()
         orch.channel_history.push.assert_called_once()
         assert "activation=observe" in _mock_sel.log_api_access.call_args.kwargs["error"]
+        assert _history_texts(orch) == ["hello"]
+        assert "activation=observe" in _audit_rows(_real_sel, "slack.message")[-1][2]
+        # Dropped before the dedup, so a later mention of the same ts still runs.
+        assert seen.check("100.0") is False
 
     @pytest.mark.asyncio
     async def test_observe_processes_mention(self):
-        orch = _make_orch(dm_activation=ACTIVATION_OBSERVE)
+        orch = _history_orch(dm_activation=ACTIVATION_OBSERVE)
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(
@@ -490,18 +574,22 @@ class TestRouteMessageEnterpriseAndObserve:
         hm.assert_awaited_once()
         # Observe mode pushed history up-front, so the post-activation push is skipped.
         assert orch.channel_history.push.call_count == 1
+        assert _history_texts(orch) == ["<@BOT1> hi"]
 
     @pytest.mark.asyncio
     async def test_observe_follows_active_thread(self):
         orch = _make_orch(dm_activation=ACTIVATION_OBSERVE)
         orch.sessions.has_session = MagicMock(return_value=True)
+        seen = ev.SeenCache()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
-                await ev._route_message(orch, _event(thread_ts="99.0"), ev.SeenCache())
+                await ev._route_message(orch, _event(thread_ts="99.0"), seen)
                 await _drain(orch)
         orch.sessions.has_session.assert_any_call("99.0")
         hm.assert_awaited_once()
         assert hm.await_args[0][3] == "hello"
+        # Followed past the activation gate, so the dedup cache now holds its ts.
+        assert seen.check("100.0") is True
 
     @pytest.mark.asyncio
     async def test_observe_skips_history_for_unauthorized_sender(self):

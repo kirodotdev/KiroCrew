@@ -21,10 +21,20 @@ from kiro_crew.messaging.display_safety import (
     slack_mrkdwn_reading,
     strip_ansi,
 )
+from kiro_crew.messaging.markup import flatten_mermaid_body
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
+from kiro_crew.messaging.tables import _MAX_INDENT as _TABLE_MAX_INDENT
+from kiro_crew.messaging.tables import _cells as _table_cells
+from kiro_crew.messaging.tables import (
+    _code_spans,
+    _fence_delimiter,
+    _is_row_candidate,
+    _table_run_end,
+)
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security.exfil import redact_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials
+from kiro_crew.slack.break_point import last_break
 
 logger = logging.getLogger(__name__)
 
@@ -921,12 +931,11 @@ def to_slack_mrkdwn(text: str, *, keep_tables: bool = False, in_code: bool = Fal
 
     if len(text) > SLACK_MAX_TEXT:
         # rfind returns -1 (no newline in window) or the last newline's index —
-        # NOT a bool. `rfind(...) or SLACK_MAX_TEXT` mishandles both: -1 is
-        # truthy so text[:-1] keeps ~39000 chars (Slack then rejects the
-        # message), and a newline at index 0 falls through to the cap. Use the
-        # explicit -1 check already used by split_message().
+        # NOT a bool, so it is compared, never used as one. A line break less
+        # than a quarter in (including none, -1) would keep almost nothing of
+        # the text, so the cut falls back to the cap.
         cut = text[:SLACK_MAX_TEXT].rfind("\n")
-        if cut <= 0:
+        if cut < SLACK_MAX_TEXT // 4:
             cut = SLACK_MAX_TEXT
         text = f"{text[:cut]}\n\n_…truncated ({len(text)} chars total)_"
 
@@ -979,22 +988,71 @@ _HR_RE = re.compile(r"^[\s]*([-*_])\1{2,}\s*$")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 
 
+#: Stands in for one inline code span while the emphasis passes run.
+_CODE_TOKEN_RE = re.compile(r"\x00(\d+)\x00")
+
+
+def _hide_inline_code(line: str) -> tuple[str, list[str]]:
+    """Swap each inline code span in *line* for a ``\\x00<n>\\x00`` token.
+
+    Spans are found by :func:`kiro_crew.messaging.tables._code_spans`, the
+    CommonMark backtick pairing the table renderer uses. A line that already
+    holds a NUL is returned as-is, so input text can never pose as a token.
+    """
+    if "\x00" in line or "`" not in line:
+        return line, []
+    spans: list[str] = []
+    out: list[str] = []
+    pos = 0
+    for start, end in _code_spans(line):
+        out.append(line[pos:start])
+        out.append(f"\x00{len(spans)}\x00")
+        spans.append(line[start:end])
+        pos = end
+    out.append(line[pos:])
+    return "".join(out), spans
+
+
+def _restore_inline_code(line: str, spans: list[str]) -> str:
+    """Put back the code spans :func:`_hide_inline_code` took out."""
+    if not spans:
+        return line
+    return _CODE_TOKEN_RE.sub(lambda m: spans[int(m.group(1))], line)
+
+
 def _convert_inline(line: str) -> str:
     """Convert a single non-code line from markdown to Slack mrkdwn."""
-    # Headings → bold
+    # Headings → bold. The heading text runs the same inline passes as any
+    # other line, so a link in it stays a link; its own ``**`` markers are
+    # dropped, since the whole heading is already bold and Slack does not
+    # nest bold.
     m = _HEADING_RE.match(line)
     if m:
-        return f"*{m.group(2).strip()}*"
+        return f"*{_convert_inline_markup(m.group(2).strip(), bold='')}*"
 
     # Horizontal rule → unicode line
     if _HR_RE.match(line):
         return "─" * 30
 
+    return _convert_inline_markup(line, bold="*")
+
+
+def _convert_inline_markup(line: str, *, bold: str) -> str:
+    """Bold, strike and link passes of :func:`_convert_inline`.
+
+    ``bold`` replaces each markdown ``**`` marker.
+    """
+    # Inline code is shown as written, so its markers sit out the emphasis
+    # passes: ``**kwargs`` and ``a~~b~~c`` inside backticks keep both chars.
+    line, spans = _hide_inline_code(line)
+
     # **bold** → *bold*
-    line = line.replace("**", "*")
+    line = line.replace("**", bold)
 
     # ~~strike~~ → ~strike~
     line = _STRIKE_RE.sub(r"~\1~", line)
+
+    line = _restore_inline_code(line, spans)
 
     # [text](url) → <url|text>
     line = _LINK_RE.sub(r"<\2|\1>", line)
@@ -1002,49 +1060,97 @@ def _convert_inline(line: str) -> str:
     return line
 
 
-# Markdown table: line starting with | and containing at least one more |
-_TABLE_ROW_RE = re.compile(r"^\s*\|(.+\|)\s*$")
-# Separator row: only |, -, :, spaces
-_TABLE_SEP_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
+def _table_bullets(headers: list[str], data_rows: list[list[str]]) -> list[str]:
+    """One ``•`` line per data row, each cell labelled by its column header.
+
+    An empty row keeps its place as ``• —``. A table whose every row is
+    empty returns ``[]``, so the caller keeps the authored table instead.
+    """
+    bullets: list[str] = []
+    any_cell = False
+    for row in data_rows:
+        parts: list[str] = []
+        for i, cell in enumerate(row):
+            if not cell:
+                continue
+            if i < len(headers):
+                parts.append(f"*{headers[i]}:* {cell}")
+            else:
+                parts.append(cell)
+        any_cell = any_cell or bool(parts)
+        bullets.append("• " + (" | ".join(parts) if parts else "—"))
+    return bullets if any_cell else []
+
+
+def _starts_with_pipe(line: str) -> bool:
+    return line.lstrip(" \t").startswith("|")
+
+
+def _slack_table_end(lines: list[str], start: int) -> int | None:
+    """Exclusive end of the table whose header is ``lines[start]``, or None.
+
+    Every row starts with ``|``, as Slack tables always have here. The header
+    and separator are checked by :func:`kiro_crew.messaging.tables._table_run_end`
+    on just those two lines; body rows run while lines start with ``|``.
+    """
+    if not _starts_with_pipe(lines[start]) or _table_run_end(lines[start : start + 2], 0) is None:
+        return None
+    end = start + 2
+    while end < len(lines) and _starts_with_pipe(lines[end]) and _is_row_candidate(lines[end]):
+        end += 1
+    return end
 
 
 def _convert_tables(text: str) -> str:
-    """Convert markdown tables to vertical list format for mobile readability."""
+    """Convert markdown tables to vertical list format for mobile readability.
+
+    Only a real GFM table is converted: a header row, a separator row right
+    under it, and matching cell counts, the grammar
+    :mod:`kiro_crew.messaging.tables` validates. Anything else keeps every
+    byte, so a lone ``| a | b |`` line stays in the reply. Fenced code
+    (backtick or tilde, in a list or not) is opaque, as it is to
+    :func:`kiro_crew.messaging.tables.render_tables`. Cells are split by the
+    same module, so ``\\|`` and a pipe inside inline code stay cell text.
+    """
     lines = text.split("\n")
     result: list[str] = []
-    headers: list[str] = []
-    data_rows: list[list[str]] = []
-
-    def _flush_table() -> None:
-        if not headers or not data_rows:
-            return
-        for row in data_rows:
-            parts: list[str] = []
-            for i, cell in enumerate(row):
-                if not cell:
-                    continue
-                if i < len(headers):
-                    parts.append(f"*{headers[i]}:* {cell}")
-                else:
-                    parts.append(cell)
-            result.append("• " + " | ".join(parts))
-        headers.clear()
-        data_rows.clear()
-
-    for line in lines:
-        if _TABLE_ROW_RE.match(line):
-            if _TABLE_SEP_RE.match(line):
-                continue
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            if not headers:
-                headers.extend(cells)
-            else:
-                data_rows.append(cells)
-        else:
-            _flush_table()
+    # Fence state follows render_tables: run length and char of the open
+    # fence (0 = closed) and the indent window its closer must sit in.
+    fence_run = 0
+    fence_char = ""
+    fence_min_indent = 0
+    fence_max_indent = _TABLE_MAX_INDENT
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        run_len, char, rest, close_min, close_max = _fence_delimiter(
+            line,
+            min_indent=fence_min_indent if fence_run else 0,
+            max_indent=fence_max_indent if fence_run else _TABLE_MAX_INDENT,
+            allow_list_container=not fence_run,
+        )
+        if fence_run:
             result.append(line)
-
-    _flush_table()
+            if char == fence_char and run_len >= fence_run and not rest.strip():
+                fence_run, fence_char = 0, ""
+                fence_min_indent, fence_max_indent = 0, _TABLE_MAX_INDENT
+            index += 1
+            continue
+        if run_len and not (char == "`" and "`" in rest):
+            fence_run, fence_char = run_len, char
+            fence_min_indent, fence_max_indent = close_min, close_max
+            result.append(line)
+            index += 1
+            continue
+        end = _slack_table_end(lines, index)
+        if end is None:
+            result.append(line)
+            index += 1
+            continue
+        run = lines[index:end]
+        bullets = _table_bullets(_table_cells(run[0]), [_table_cells(r) for r in run[2:]])
+        result.extend(bullets if bullets else run)
+        index = end
     return "\n".join(result)
 
 
@@ -1053,72 +1159,26 @@ def _convert_tables(text: str) -> str:
 # ``[ \t]*`` rather than ``\s*`` before the newline: ``\s`` matches the newline too, so
 # an unclosed block of blank lines backtracked polynomially. The body is stripped.
 _MERMAID_BLOCK_RE = re.compile(r"```mermaid[ \t]*\n(.*?)```", re.DOTALL)
-# graph/flowchart edges: A[label] -->|text| B[label]  or  A --> B
-_GRAPH_EDGE_RE = re.compile(
-    r"(\w+)(?:\[([^\]]*)\]|\{([^}]*)\}|(?:\([^)]*\)))?"
-    r"\s*(-->|---|-\.->|==>)(?:\|([^|]*)\|)?\s*"
-    r"(\w+)(?:\[([^\]]*)\]|\{([^}]*)\}|(?:\([^)]*\)))?"
-)
-# sequence: Actor->>Actor: message
-_SEQ_RE = re.compile(r"(\S+?)\s*(->>|-->>|->|-->)\s*(\S+?):\s*(.+)")
 
 
 def _convert_mermaid(text: str) -> str:
-    """Replace ```mermaid blocks with readable text diagrams."""
+    """Replace ```mermaid blocks with readable text diagrams.
+
+    The diagram reading is :func:`kiro_crew.messaging.markup.flatten_mermaid_body`,
+    the one every channel shares. A graph or sequence diagram it cannot read
+    stays as its bare source; any other diagram type becomes a plain code block.
+    """
 
     def _replace(m: re.Match) -> str:  # type: ignore[type-arg]
         body = m.group(1).strip()
         first = body.split("\n", 1)[0].strip().lower()
 
-        if first.startswith(("graph ", "flowchart ")):
-            return _mermaid_graph(body)
-        if first.startswith("sequencediagram"):
-            return _mermaid_sequence(body)
+        if first.startswith(("graph ", "flowchart ", "sequencediagram")):
+            return flatten_mermaid_body(body) or body
         # Unknown diagram type — show as plain code block
         return f"```\n{body}\n```"
 
     return _MERMAID_BLOCK_RE.sub(_replace, text)
-
-
-def _mermaid_graph(body: str) -> str:
-    """Convert graph/flowchart to text arrows."""
-    labels: dict[str, str] = {}
-    edges: list[str] = []
-    for line in body.split("\n")[1:]:  # skip "graph TD" line
-        m = _GRAPH_EDGE_RE.search(line.strip())
-        if not m:
-            continue
-        src, sl1, sl2, _, edge_label, dst, dl1, dl2 = m.groups()
-        if sl1 or sl2:
-            labels[src] = sl1 or sl2
-        if dl1 or dl2:
-            labels[dst] = dl1 or dl2
-        src_name = labels.get(src, src)
-        dst_name = labels.get(dst, dst)
-        arrow = f" ({edge_label.strip()}) " if edge_label else " "
-        edges.append(f"  {src_name} →{arrow}{dst_name}")
-    return "\n".join(edges) if edges else body
-
-
-def _mermaid_sequence(body: str) -> str:
-    """Convert sequenceDiagram to text arrows."""
-    lines: list[str] = []
-    for line in body.split("\n")[1:]:  # skip "sequenceDiagram"
-        m = _SEQ_RE.match(line.strip())
-        if not m:
-            continue
-        src, arrow_type, dst, msg = m.groups()
-        # Mermaid arrows read left-to-right (src → dst), so the glyph must point
-        # toward dst. ">>" is a solid arrowhead; "--" marks a dashed (reply) line.
-        # Keep the four arrow types visually distinct and rightward so dashed
-        # replies and dashed-open arrows don't render identically or point back
-        # at the source.
-        if "--" in arrow_type:
-            arrow = "⇒" if ">>" in arrow_type else "⤳"  # dashed reply vs dashed open
-        else:
-            arrow = "→" if ">>" in arrow_type else "⇢"  # solid reply vs solid open
-        lines.append(f"  {src} {arrow} {dst}: {msg.strip()}")
-    return "\n".join(lines) if lines else body
 
 
 # Slack message character limit (API rejects above ~4000)
@@ -1154,7 +1214,9 @@ def strip_thinking_tags(text: str, *, strip_whitespace: bool = True) -> tuple[st
 def split_message(text: str, limit: int = SLACK_MSG_LIMIT) -> list[str]:
     """Split text into chunks that fit within Slack's message limit.
 
-    Splits on newline boundaries when possible to avoid breaking mid-line.
+    Splits at the line break :func:`~kiro_crew.slack.break_point.last_break`
+    picks (at least a quarter into the chunk, or one before a line that fits one
+    post whole); with none that counts, it cuts where the limit falls.
     """
     if len(text) <= limit:
         return [text]
@@ -1170,10 +1232,13 @@ def split_message(text: str, limit: int = SLACK_MSG_LIMIT) -> list[str]:
         # loop would spin forever. Keep at least one character of progress per
         # iteration so the function always terminates regardless of `limit`.
         chunk_limit = max(1, limit - len(CONTINUATION))
-        # Try to split at last newline within limit
-        cut = text.rfind("\n", 0, chunk_limit)
+        cut = last_break(text, chunk_limit, ("\n",))
         if cut <= 0:
-            cut = chunk_limit
+            # The last post carries no CONTINUATION, so a remainder up to
+            # ``limit`` still goes out whole after an early line break.
+            early = text.rfind("\n", 0, chunk_limit)
+            fits = early > 0 and len(text[early:].lstrip("\n")) <= limit
+            cut = early if fits else chunk_limit
         remainder = text[cut:].lstrip("\n")
         if remainder:
             parts.append(text[:cut] + CONTINUATION)
@@ -1268,8 +1333,9 @@ def _truncated(text: str, limit: int, total: int | None = None) -> list[str]:
     """
     if len(text) <= limit:
         return [text]
+    # A line break less than a quarter in would keep almost nothing of the text.
     cut = text[:limit].rfind("\n")
-    if cut <= 0:
+    if cut < limit // 4 or cut <= 0:
         cut = limit
     notice = f"\n\n_…truncated ({len(text) if total is None else total} chars total)_"
     # Charge the notice against the ceiling so the result really fits.

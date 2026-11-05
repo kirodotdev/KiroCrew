@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from local_asyncio_helpers import asyncio_with_sleep
 
 from conftest import requires_git
 from kiro_crew.taskrunner import Step, TaskRun
@@ -56,8 +57,7 @@ class TestTaskRunGitFields:
 @requires_git
 class TestGitCoord:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- class-scoped autouse fixture moved verbatim; no test in its class calls monkeypatch.undo()
-    def _passthrough_sandbox(self, monkeypatch):
+    def _passthrough_sandbox(self, _floor_monkeypatch):
         """TestGitCoord spawns REAL git via ``git_coord._git`` →
         ``sandboxed_spawn_argv`` → ``wrap_argv``, which raises when no OS-level
         sandbox backend is available. These tests exercise git coordination, not
@@ -66,7 +66,7 @@ class TestGitCoord:
 
         from kiro_crew import git_coord
 
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             git_coord,
             "sandboxed_spawn_argv",
             lambda argv, *a, **k: (list(argv), dict(_os.environ), None),
@@ -1108,7 +1108,6 @@ class TestGitCoord:
         assert sha != ""
         assert len(run.commit_hashes) == 1
 
-        # Revert
         await git_coord.revert_step(run)
         assert len(run.commit_hashes) == 0
         assert not (Path(run.work_dir) / "new.py").exists()
@@ -1272,8 +1271,7 @@ class TestGitCoord:
         from kiro_crew import git_coord
 
         monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", True)
-        # flake-ok: pre-existing rebind of the stdlib asyncio.sleep through git_coord.asyncio for one test, undone at teardown, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(git_coord.asyncio, "sleep", AsyncMock())  # no real delay
+        monkeypatch.setattr(git_coord, "asyncio", asyncio_with_sleep(AsyncMock()))  # no real delay
 
         calls = {"n": 0}
 
@@ -1317,8 +1315,7 @@ class TestGitCoord:
         from kiro_crew import git_coord
 
         monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", True)
-        # flake-ok: pre-existing rebind of the stdlib asyncio.sleep through git_coord.asyncio for one test, undone at teardown, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(git_coord.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(git_coord, "asyncio", asyncio_with_sleep(AsyncMock()))
 
         calls = {"n": 0}
 
@@ -1362,8 +1359,7 @@ class TestGitCoord:
         # POSIX: a reset failure is a genuine fault — no retry window.
         monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", False)
         sleep_mock = AsyncMock()
-        # flake-ok: pre-existing rebind of the stdlib asyncio.sleep through git_coord.asyncio for one test, undone at teardown, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(git_coord.asyncio, "sleep", sleep_mock)
+        monkeypatch.setattr(git_coord, "asyncio", asyncio_with_sleep(sleep_mock))
 
         calls = {"n": 0}
 

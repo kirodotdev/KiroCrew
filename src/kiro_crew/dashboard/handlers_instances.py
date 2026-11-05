@@ -71,6 +71,7 @@ from kiro_crew.dashboard.session_transfer import (
 from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS  # noqa: F401
 from kiro_crew.history import SEARCH_MIN_CHARS
+from kiro_crew.history_search import search_coverage
 from kiro_crew.instances.constants import (  # noqa: F401
     PEER_SLOTS_REPLY_MAX_BYTES,
     PROXY_PATH_MAX_DECODE_PASSES,
@@ -92,6 +93,7 @@ from kiro_crew.instances.registry import (  # noqa: F401
     is_headless_provisioner,
     validate_ttl,
 )
+from kiro_crew.instances.remote_update import RESTART_REFUSAL_CODES, read_force_flag
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError, TunnelState  # noqa: F401
 from kiro_crew.instances.validation import UnsupportedConnectionMethodError
 from kiro_crew.instances.warm_set import resolve_warm_set_cap
@@ -943,13 +945,28 @@ async def api_instances_disconnect(request: web.Request) -> web.Response:
     return web.json_response({"disconnected": instance_id, "was_connected": existed})
 
 
+async def _force_flag(request: web.Request) -> bool | None:
+    """The optional ``{"force": bool}`` body of restart and update, or ``None`` if malformed."""
+    if not request.can_read_body:
+        return False
+    try:
+        return read_force_flag(await request.json())
+    except ValueError:
+        return None
+
+
 async def api_instances_restart(request: web.Request) -> web.Response:
-    """POST /api/instances/{id}/restart — restart the remote gateway over SSH."""
+    """POST /api/instances/{id}/restart — restart the remote gateway over SSH, once idle.
+
+    A busy or too-old crew is refused 409 (``busy``, ``peer_cannot_wait``); ``force`` skips it."""
     denied = _guard(request, "restart")
     if denied is not None:
         return denied
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
+    force = await _force_flag(request)
+    if force is None:
+        return web.json_response({"error": "invalid body", "code": "invalid_body"}, status=400)
     if await asyncio.to_thread(_registry(state).get, instance_id) is None:
         _audit("restart", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found"}, status=404)
@@ -957,11 +974,25 @@ async def api_instances_restart(request: web.Request) -> web.Response:
     if mgr is None:
         _audit("restart", "denied", request_id=instance_id, error="manager unavailable")
         return _manager_unavailable_response()
-    result = await mgr.restart_remote(instance_id)
+    result = await mgr.restart_remote(instance_id, force=force)
     if result.get("ok"):
         _audit("restart", "success", request_id=instance_id)
         return web.json_response(result)
     _audit("restart", "failure", request_id=instance_id, error=result.get("message", ""))
+    code = result.get("code")
+    if code in RESTART_REFUSAL_CODES:
+        message = result.get("message", "")
+        return web.json_response(
+            {
+                "ok": False,
+                "code": code,
+                "error": message,
+                "message": message,
+                "turns": result.get("turns", 0),
+                "background": result.get("background", 0),
+            },
+            status=409,
+        )
     return web.json_response(result, status=502)
 
 
@@ -996,9 +1027,11 @@ async def api_instances_update_remote(request: web.Request) -> web.Response:
     Starts a background job that runs the fixed literal ``kirocrew update`` on
     the remote, over the same transport runner and refusals as
     ``/restart`` (a chained or headless crew is refused before anything runs),
-    then ``kirocrew restart`` when the update succeeds. The remote's own update
-    policy, install layout and updater decide what the update does. The request
-    carries no body and nothing in it reaches the remote command. Answers
+    then a restart once the remote reports no in-flight work, when the update
+    succeeds. The remote's own update policy, install layout and updater decide
+    what the update does. The optional body ``{"force": true}`` ("Restart now")
+    skips the update and restarts without waiting. It only picks between fixed
+    literals. Answers
     ``202 {ok, job}`` at once; poll ``GET`` on the same path for progress.
     One click starts one job: a second POST while one runs is refused 409.
     """
@@ -1010,6 +1043,9 @@ async def api_instances_update_remote(request: web.Request) -> web.Response:
         return denied
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
+    force = await _force_flag(request)
+    if force is None:
+        return web.json_response({"error": "invalid body", "code": "invalid_body"}, status=400)
     if await asyncio.to_thread(_registry(state).get, instance_id) is None:
         _audit("update_remote", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
@@ -1017,7 +1053,7 @@ async def api_instances_update_remote(request: web.Request) -> web.Response:
     if mgr is None:
         _audit("update_remote", "denied", request_id=instance_id, error="manager unavailable")
         return _manager_unavailable_response()
-    result = await mgr.start_remote_update(instance_id)
+    result = await mgr.start_remote_update(instance_id, force=force)
     if result.get("ok"):
         _audit("update_remote", "success", request_id=instance_id)
         return web.json_response(result, status=202)
@@ -1200,6 +1236,11 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
                 if isinstance(value, str) and value:
                     row[field] = redact(value)
             redacted_local.append(row)
+        # Local rows only: a peer row is rebuilt by ``_clean`` from an allowlist
+        # without ``open``, so another gateway's tabs never rank as open here.
+        from kiro_crew.dashboard.handlers.sessions import _mark_open_sessions
+
+        _mark_open_sessions(redacted_local, state)
         sources.append(redacted_local)
     for iid, result in zip(connected, results[1:]):
         if isinstance(result, BaseException):
@@ -1234,7 +1275,14 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
         if len(merged) >= limit:
             break
     _audit("search_sessions", "success", request_id=f"{len(connected)} peers")
-    return web.json_response({"sessions": merged, "unreachable": unreachable})
+    body: dict[str, object] = {"sessions": merged, "unreachable": unreachable}
+    # THIS machine's scan window, as /api/sessions/search reports it, marked
+    # ``local`` so the page says the count is this machine's; a peer's own window
+    # is its own and is not carried here.
+    coverage = search_coverage(local_rows)
+    if coverage is not None:
+        body["scan"] = {"searched": coverage[0], "total": coverage[1], "scope": "local"}
+    return web.json_response(body)
 
 
 async def api_instances_send_session(request: web.Request) -> web.Response:

@@ -31,8 +31,8 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
   /** The close-menu's "Close" item: shares the batch path with the other menu
    *  items so a last-copy/unsaved file is still confirmed. */
   onClose: () => void
-  /** The chip's × (and middle-click): closes this one tab directly, exactly as
-   *  on main — the single-× control's behaviour is unchanged by this feature. */
+  /** The chip's × (and middle-click): closes this one tab, asking first
+   *  through the tab's own panel guard when it has one (`closeTabFromChip`). */
   onCloseDirect: () => void
   closeOthersDisabled: boolean
   closeRightDisabled: boolean
@@ -163,7 +163,7 @@ function TabChip({ chipId, tab, active, onSelect, onClose, closable = true, pinn
         <div className="flex items-center gap-0.5 shrink-0">
           <button
             onClick={(e) => { e.stopPropagation(); onClose() }}
-            className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70 [@media(hover:none)]:opacity-70'}`}
+            className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70 [@media(hover:none)]:opacity-70 group-focus-within:opacity-70'}`}
             title={i18nT('pages.chat.sidePanel.close_tab')}
             aria-label={i18nT('pages.chat.sidePanel.close_tab')}
           >

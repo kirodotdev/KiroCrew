@@ -287,6 +287,20 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
         )
+    from kiro_crew.config.sections_session import STAR_ORDER_MAX
+
+    if "star_order" in body and (
+        isinstance(body["star_order"], bool)
+        or not isinstance(body["star_order"], int)
+        or not 0 <= body["star_order"] <= STAR_ORDER_MAX
+    ):
+        return web.json_response(
+            {
+                "error": f"star_order must be an integer from 0 to {STAR_ORDER_MAX}",
+                "code": "invalid_star_order",
+            },
+            status=400,
+        )
     if "dynamic_capabilities" in body and not isinstance(body["dynamic_capabilities"], bool):
         return web.json_response(
             {
@@ -295,6 +309,15 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Strictly strings, like display_name: the loader reads each as a string and
+    # turns any other type into the default, but only on the NEXT load, so a
+    # stored int or list would sit in the live record until then.
+    for _text_field in ("workspace", "description", "triggers", "source"):
+        if _text_field in body and not isinstance(body[_text_field], str):
+            return web.json_response(
+                {"error": f"{_text_field} must be a string", "code": f"invalid_{_text_field}"},
+                status=400,
+            )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
         if memory_store_reason:
@@ -442,12 +465,12 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             except CapabilityError as exc:
                 return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         prior_memory_store = agent.memory_store
-        # A binding is immutable in both directions -- a private store is never
-        # shared or rebound, and a live V1 binding is kept until the owner opts in
-        # -- with one exception: a V1 binding whose name no resolver composes
-        # (``unusable_legacy_binding``) may move to the global store. Nothing is
-        # protected on it: the name resolves no directory, so the member cannot
-        # run a turn on it, and the same name is what refused every repair.
+        # A binding is immutable in both directions: a private store is never
+        # shared or rebound, and a live V1 binding is kept until the owner opts
+        # in. Every changed value is refused, the global store included, and so
+        # is a V1 binding whose name no resolver composes
+        # (``unusable_legacy_binding``). The CLI's ``agent update`` refuses the
+        # same way.
         if "memory_store" in body and body["memory_store"] != prior_memory_store:
             return web.json_response(
                 {
@@ -471,6 +494,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             "display_name": agent.display_name,
         }
         changed: list[str] = []
+        warnings: list[str] = []
         if "kiro_agent" in body:
             try:
                 owner = await asyncio.to_thread(
@@ -495,8 +519,27 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 )
             agent.kiro_agent = body["kiro_agent"]
             changed.append("kiro_agent")
-        if "workspace" in body:
-            agent.workspace = body["workspace"]
+        # Empty or whitespace keeps the current binding: "" is the create-only
+        # "a workspace of its own" sentinel and is never stored.
+        if "workspace" in body and body["workspace"].strip():
+            from kiro_crew.member_workspace import DEFAULT_WORKSPACE
+
+            _ws = body["workspace"]
+            # Saved as before, but a new name missing from ``workspaces`` falls
+            # back to another workspace's directory (which one depends on the
+            # reader), silently sharing it, so the caller is told. ``default``
+            # always resolves.
+            if (
+                _ws != agent.workspace
+                and _ws not in cfg.workspaces
+                and _ws not in (DEFAULT_WORKSPACE, cfg.default_workspace)
+            ):
+                logger.warning("crew %r bound to unconfigured workspace %r", name, _ws)
+                warnings.append(
+                    f"workspace '{_ws}' is not configured; "
+                    "the crew shares a fallback workspace directory"
+                )
+            agent.workspace = _ws
             changed.append("workspace")
         if "model" in body:
             # "auto"/"" both mean inherit; store the single "" spelling so the
@@ -683,6 +726,15 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above, before any mutation.
             agent.starred = body["starred"]
             changed.append("starred")
+        if "star_order" in body:
+            agent.star_order = body["star_order"]
+            changed.append("star_order")
+        if not agent.starred and agent.star_order:
+            # An unstarred crew holds no dock position, so starring it again
+            # puts it at the bottom instead of back in its old slot.
+            agent.star_order = 0
+            if "star_order" not in changed:
+                changed.append("star_order")
         effort_inputs_after = _effort_inputs(agent)
         # Avatar rollback applies only to ordinary failure: cancellation may
         # arrive after the drained worker published the new avatar pin. Store
@@ -773,7 +825,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     web.json_response(
                         {
                             "error": (
-                                f"{shown} has more than one chat open. Close the mate's "
+                                f"{shown} has more than one chat open. Close the Bot's "
                                 "other chat, then change the agent harness."
                             ),
                             "code": "crewmate_harness_busy",
@@ -840,7 +892,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     denied=lambda _session_key: None,
                     busy=lambda session_key: _busy(slot, session_key),
                     notice=(
-                        "Session reloaded so this mate runs on its new agent harness. "
+                        "Session reloaded so this Bot runs on its new agent harness. "
                         "The conversation is kept."
                     ),
                     after_reset_in_lock=_after_teardown,
@@ -964,5 +1016,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"{name} ({','.join(changed)})",
     )
-    result = {"ok": True, "name": name, "memory_store": agent.memory_store}
+    result: dict = {"ok": True, "name": name, "memory_store": agent.memory_store}
+    if warnings:
+        result["warnings"] = warnings
     return web.json_response(result)

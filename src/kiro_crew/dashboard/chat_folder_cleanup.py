@@ -64,7 +64,8 @@ logger = logging.getLogger(__name__)
 
 #: Folder fields that mean the person configured the folder on purpose. A row
 #: carrying any of them is kept even when it is empty: deleting it would throw
-#: the setting away along with the row.
+#: the setting away along with the row. ``pinned`` is one: a folder the person
+#: pinned is a folder they asked to keep seeing.
 _KEEP_FIELDS = (
     "project_dir",
     "default_agent",
@@ -73,6 +74,7 @@ _KEEP_FIELDS = (
     "tags",
     "color",
     "icon",
+    "pinned",
 )
 
 
@@ -432,7 +434,7 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
         # these reads and the delete. A channel settings save commits its
         # ``session_folder`` before it takes that lock to adopt the folder, and
         # a job save that names a folder checks and persists it while holding
-        # the lock (``_hold_folder_for_job``), so each either finished first --
+        # the lock (``_persist_holding_folder``), so each either finished first --
         # and is seen here -- or runs after and finds the folder gone.
         referents["jobs"], referents["names"] = await _referents()
 

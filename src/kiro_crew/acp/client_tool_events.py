@@ -13,7 +13,7 @@ Instance fields written: ``_jsonl_pos``, ``_stale_eligible``, ``_tool_call_diff_
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_dispatched``.
 
-Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``,
+Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``, ``_batch_window``,
 ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``,
 ``_observed_tool_calls``, ``_permission_mode``, ``_sel_settled_tool_calls``,
 ``_session_id``, ``_session_key``, ``_tool_call_harness_tool_name``,
@@ -27,6 +27,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     _dumps_degraded,
     _measure_tool_output,
@@ -34,6 +35,7 @@ from kiro_crew.acp._dispatch import (
     derive_edit_diff,
     extract_tool_purpose,
     harness_tool_name,
+    is_rendered_edit_diff,
     log_unrenderable_content,
     make_unified_diff,
     redact_text,
@@ -50,6 +52,7 @@ from kiro_crew.acp.harness.copilot import (
     TOOL_CALL_CACHE_MAX_KEY_CHARS,
     note_copilot_identity_record,
 )
+from kiro_crew.acp.native_child_stamp import parent_tool_use
 from kiro_crew.acp.types import (
     ACP_BACKEND_DEEPSEEK,
     CC_PERMISSION_MODE_AUTO,
@@ -423,6 +426,22 @@ def _track_tool_call(self: AcpClient, msg: JsonRpcMessage) -> None:
         logger.debug("ACP tool_call: %s (%s)", title, kind)
 
 
+def _is_native_child_frame(client: AcpClient, params: object, update: dict) -> bool:
+    """Whether a frame belongs to a native sub-agent rather than this session's
+    own turn: on another session, or stamped with the Agent call it serves
+    (:func:`native_child_stamp.parent_tool_use`, the reader
+    ``client_native_children`` uses). Only a session that declared ``subagents``
+    is sent that form."""
+    declared = getattr(client, "_native_children_declared", None)
+    if declared is None or not declared():
+        return False
+    session_id = params.get("sessionId") if isinstance(params, dict) else None
+    own = getattr(client, "_session_id", "") or ""
+    if isinstance(session_id, str) and session_id and own and session_id != own:
+        return True
+    return bool(parent_tool_use(update))
+
+
 def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None:
     params = msg.params or {}
     update = params.get("update", {})
@@ -440,10 +459,20 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             None,
         )
         purpose = extract_tool_purpose(raw_input)
-        logger.debug(
-            "ACP tool_call raw: %s",
-            {k: v for k, v in update.items() if k != "sessionUpdate"},
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            # The frame carries the tool's raw arguments, which can hold a password
+            # or a signed URL the log filter's narrow patterns do not know, so the
+            # line goes through the same redactor as the displayed input.
+            logger.debug(
+                "ACP tool_call raw: %s",
+                redact_text(
+                    json.dumps(
+                        {k: v for k, v in update.items() if k != "sessionUpdate"},
+                        default=str,
+                        ensure_ascii=False,
+                    )
+                ),
+            )
         # Build initial tool input string from raw params
         tool_call_id = update.get("toolCallId", "")
         # Start the round-trip clock here rather than at the yield: this is
@@ -496,6 +525,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                         input_str = diff_str
                         found_diff = True
                     break
+        _derived_redacted = False
         # Fallback when no diff content block was found: derive from the
         # edit args (strReplace pair, create/insert content). Gated on
         # the EDIT kind — "content"-shaped args exist on non-edit tools.
@@ -505,6 +535,9 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         ):
             diff_str = derive_edit_diff(raw_input)
             if diff_str:
+                # derive_edit_diff redacts each side before diffing, so the comparison
+                # below cannot see a cut it made; the params it came from can.
+                _derived_redacted = redact_text(input_str) != input_str
                 input_str = diff_str
         # Redact sensitive content before caching/displaying
         input_redacted = False
@@ -512,7 +545,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             from kiro_crew.security import redact
 
             safe_input = redact(input_str)
-            input_redacted = safe_input != input_str
+            input_redacted = safe_input != input_str or _derived_redacted
             input_str = safe_input
         if tool_call_id and input_str:
             self._tool_call_inputs[tool_call_id] = input_str
@@ -618,7 +651,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         # Trusted identity from adapter-authored markers (NOT the
         # LLM-authored title), shared with the dispatch builder so both
         # event paths carry the same classifier verdict.
-        return AcpEvent(
+        tool_event = AcpEvent(
             kind=EVENT_TOOL_CALL,
             title=title,
             # The backend's OWN title, before select_tool_title swaps in a
@@ -642,6 +675,12 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             mcp_identity_trusted=event_mcp_trusted,
             diff_path=_diff_path,
         )
+        # getattr: a client built without ``__init__`` keeps no window. A native
+        # sub-agent's call is not in this turn's parallel batch: the parent's open
+        # Agent call would hold that batch for the child's whole run.
+        if not _is_native_child_frame(self, params, update):
+            batch_guard.note_dispatched(getattr(self, "_batch_window", None), tool_event)
+        return tool_event
     return None
 
 
@@ -747,6 +786,8 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
         status=update.get("status"),
         scope=getattr(self, "_session_id", "") or "",
     )
+    if update.get("status") in TERMINAL_TOOL_STATUSES:
+        batch_guard.note_settled(getattr(self, "_batch_window", None), tool_use_id)
 
     output_parts: list[str] = []
 
@@ -814,7 +855,7 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
     # matches: with a connection URI whose "@" lands on byte 8000, the head
     # slice keeps "://user:password" and drops the "@" the prefilter needs,
     # so the password reaches the dashboard in clear text. Same ordering as
-    # `_dispatch._build_tool_result_event` and as `_compaction_detail` below.
+    # `_dispatch._build_tool_result_event`.
     _redacted = redact_text(final_joined)
     tool_output_digest, tool_output_bytes = _measure_tool_output(_redacted)
     final_output = _redacted[:8000]
@@ -882,6 +923,7 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
     # Edit-style diff content blocks: prefer the rendered unified diff over
     # the raw input dict (mirrors `_extract_tool_event`).
     _diff_path = ""
+    found_diff = False
     content_blocks = update.get("content", [])
     if isinstance(content_blocks, list):
         for cb in content_blocks:
@@ -895,13 +937,29 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
                 diff_str = _make_unified_diff(old, new, path)
                 if diff_str:
                     input_str = diff_str
+                    found_diff = True
                 break
+    _derived_redacted = False
+    # The edit-args fallback of `_extract_tool_event`; a kind-less update of a
+    # call that already shows a diff is an edit (mirrors
+    # _dispatch._build_tool_refinement_event).
+    if not found_diff and (
+        kind == "edit"
+        or is_rendered_edit_diff(self._tool_call_inputs.get(tool_use_id))
+        or (isinstance(raw_input, dict) and raw_input.get("command") == "strReplace")
+    ):
+        diff_str = derive_edit_diff(raw_input)
+        if diff_str:
+            # derive_edit_diff redacts each side before diffing, so the comparison
+            # below cannot see a cut it made; the params it came from can.
+            _derived_redacted = redact_text(input_str) != input_str
+            input_str = diff_str
     input_redacted = False
     if input_str:
         from kiro_crew.security import redact
 
         safe_input = redact(input_str)
-        input_redacted = safe_input != input_str
+        input_redacted = safe_input != input_str or _derived_redacted
         input_str = safe_input
         self._tool_call_inputs[tool_use_id] = input_str
         self._tool_call_input_redacted[tool_use_id] = input_redacted
@@ -947,7 +1005,7 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
         from kiro_crew.security import redact
 
         purpose = redact(purpose)
-    return AcpEvent(
+    refinement = AcpEvent(
         kind=EVENT_TOOL_CALL_UPDATE,
         title=title_str,
         wire_title=title if isinstance(title, str) else "",
@@ -960,11 +1018,18 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
         is_shell=is_shell,
         diff_path=_diff_path,
     )
+    # The refined input may be the first to carry the shell command, so the
+    # batch window classifies the call again (``acp.batch_guard``).
+    if is_shell and not _is_native_child_frame(self, params, update):
+        batch_guard.note_refined(getattr(self, "_batch_window", None), refinement)
+    return refinement
 
 
 async def _read_new_tool_results(self: AcpClient) -> list[AcpEvent]:
     results = await asyncio.to_thread(self._read_new_tool_results_sync)
     if results:
+        for event in results:
+            batch_guard.note_settled(getattr(self, "_batch_window", None), event.tool_call_id or "")
         self._active_tool_calls.difference_update(event.tool_call_id or "" for event in results)
         self._tool_dispatched = self._active_tool_calls.possibly_open
         self._stale_eligible = not self._active_tool_calls.possibly_open

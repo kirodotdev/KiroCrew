@@ -183,17 +183,9 @@ def _neuter_kill_side_effects(monkeypatch, proc):
     """Keep kill() away from the host: never signal the fake PID (4242 could be
     a real process), never touch the PID-tracking files.
 
-    The Windows drain stand-in awaits ``process.wait()`` because the real
-    ``terminate_windows_asyncio_tree`` does, and that await is what populates
-    ``returncode``. A stand-in returning without it hands the Windows branch a
-    process whose status is unreadable, so every assertion about the post-reap
-    exit status would read the unreaped placeholder on that platform alone --
-    the double disagreeing with the code rather than the code being wrong.
-
-    That await carries the real one's BOUND as well, off the same constant: a
-    child that never exits makes the real drain raise rather than wait forever,
-    so a stand-in awaiting without the bound turns a test whose child never
-    exits into a hang instead of a failure.
+    The Windows stand-in awaits ``process.wait()`` like the real
+    ``terminate_windows_asyncio_tree``, since that populates ``returncode``, and with the
+    same bound so a child that never exits fails instead of hanging.
     """
     import kiro_crew.acp.runtime as rt_mod
 
@@ -629,13 +621,9 @@ async def test_no_amendment_when_the_status_was_already_known(caplog, monkeypatc
 
 @pytest.mark.asyncio
 async def test_kill_keeps_the_label_when_no_status_ever_arrives(caplog, monkeypatch):
-    """Both waits can time out (a child wedged in uninterruptible sleep), and
-    the status is then still unknown. ``<not reaped>`` must stay: nothing may
-    claim a code that was never observed.
+    """When both waits time out, ``<not reaped>`` stays: no unobserved code is claimed.
 
-    The two waits are the POSIX ladder's, so the platform is forced to it: on
-    Windows that ladder never runs, and this child is exactly the one whose
-    drain raises instead of returning -- a different contract, pinned by
+    Forced to the POSIX ladder; Windows is pinned by
     ``test_an_unconfirmed_windows_drain_leaves_the_placeholder``."""
     import logging
 
@@ -721,11 +709,8 @@ async def test_reader_crash_on_a_running_child_does_not_print_returncode_none(ca
 async def test_exit_reason_does_not_promote_the_last_stderr_line_to_a_cause():
     """A child's last word is not why it died.
 
-    ``Error: failed to create sandbox dir`` describes no death -- it is whatever
-    the child happened to flush last -- so the reason stays the exit status and
-    the line is kept at debug. Pasting such a line as the cause is what puts
-    ``HTTP 404 Not Found`` on the card of a death that was in fact an ordinary
-    SIGTERM teardown.
+    The reason stays the exit status and the line goes to debug; otherwise an ordinary
+    SIGTERM could show ``HTTP 404 Not Found`` as its cause.
     """
     rt, reader, proc = _make_runtime()
     proc.returncode = 1

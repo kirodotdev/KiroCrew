@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -159,6 +160,7 @@ def test_exec_in_pod_execs_the_pods_binary_with_the_pod_env(tmp_path, monkeypatc
         seen.update(path=path, argv=argv, env=env)
         raise SystemExit(0)  # stand in for "process replaced"
 
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
     monkeypatch.setattr(rt.os, "execve", _fake_execve)
 
     with pytest.raises(SystemExit):
@@ -168,6 +170,92 @@ def test_exec_in_pod_execs_the_pods_binary_with_the_pod_env(tmp_path, monkeypatc
     assert seen["path"] == expected
     assert seen["argv"] == [expected, "cron", "list"]
     assert seen["env"]["KIROCREW_HOME"] == str(cfg.home_dir("wt-feature"))  # type: ignore[index]
+
+
+class _FakeChild:
+    """A Popen stand-in whose wait() raises each queued exception, then returns *rc*."""
+
+    def __init__(self, rc: int, interrupts: int = 0) -> None:
+        self.rc = rc
+        self.interrupts = interrupts
+        self.waits = 0
+
+    def wait(self) -> int:
+        self.waits += 1
+        if self.interrupts:
+            self.interrupts -= 1
+            raise KeyboardInterrupt
+        return self.rc
+
+
+def _windows_exec(tmp_path, monkeypatch, child: object):
+    """Run exec_in_pod as on Windows with Popen stubbed; return (rc, spawn record)."""
+    cfg = _pod_cfg(tmp_path)
+    checkout = _provisioned_checkout(tmp_path)
+    monkeypatch.setattr(rt, "read_env_file", lambda c, n: {"CHECKOUT": str(checkout)})
+    monkeypatch.setattr(rt, "IS_WINDOWS", True)
+    monkeypatch.setattr(rt.os, "execve", lambda *a: pytest.fail("execve must not run on Windows"))
+    events: list[str] = []
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(rt.os, "chdir", lambda p: events.append(f"chdir:{p}"))
+
+    def _popen(args, env):
+        events.append("spawn")
+        seen.update(args=args, env=env)
+        if isinstance(child, BaseException):
+            raise child
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    rc = rt.exec_in_pod(cfg, "wt-feature", ["cron", "list"])
+    seen.update(events=events, cfg=cfg, checkout=checkout)
+    return rc, seen
+
+
+@pytest.mark.parametrize("code", [7, 0])
+def test_exec_in_pod_on_windows_returns_the_commands_exit_code(tmp_path, monkeypatch, code):
+    """Windows has no exec, so the pod's command runs as a child and its own exit
+    code becomes `pod exec`'s, instead of 0 or a crash from CPython's emulation."""
+    rc, seen = _windows_exec(tmp_path, monkeypatch, _FakeChild(code))
+
+    assert rc == code
+    expected = str(prov.venv_bin(seen["checkout"]))  # type: ignore[arg-type]
+    assert seen["args"] == [expected, "cron", "list"]
+    cfg = seen["cfg"]
+    assert seen["env"]["KIROCREW_HOME"] == str(cfg.home_dir("wt-feature"))  # type: ignore[index,union-attr]
+    # The child starts after the process entered the pod workspace, so it runs there.
+    workspace = cfg.home_dir("wt-feature") / "workspace"  # type: ignore[union-attr]
+    assert seen["events"] == [f"chdir:{workspace}", "spawn"]
+
+
+def test_exec_in_pod_on_windows_keeps_waiting_through_ctrl_c(tmp_path, monkeypatch):
+    """Ctrl+C reaches the child as well; the parent must not exit and leave a
+    running `chat` holding the console."""
+    child = _FakeChild(3, interrupts=2)
+    rc, _ = _windows_exec(tmp_path, monkeypatch, child)
+
+    assert rc == 3
+    assert child.waits == 3
+
+
+def test_exec_in_pod_on_windows_reports_a_spawn_failure(tmp_path, monkeypatch, capsys):
+    rc, _ = _windows_exec(tmp_path, monkeypatch, FileNotFoundError("no such file"))
+
+    assert rc == 70
+    assert "FATAL: could not run" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the stub binary is a POSIX shell script")
+def test_exec_in_pod_child_path_returns_a_real_childs_code(tmp_path, monkeypatch):
+    """The Windows branch end to end with a real process: a pod binary that exits 7."""
+    cfg = _pod_cfg(tmp_path)
+    checkout = _provisioned_checkout(tmp_path)
+    prov.venv_bin(checkout).write_text("#!/bin/sh\nexit 7\n")
+    monkeypatch.setattr(rt, "read_env_file", lambda c, n: {"CHECKOUT": str(checkout)})
+    monkeypatch.setattr(rt, "IS_WINDOWS", True)
+    monkeypatch.chdir(tmp_path)
+
+    assert rt.exec_in_pod(cfg, "wt-feature", ["status"]) == 7
 
 
 # --------------------------------------------------------------------------- #
@@ -247,11 +335,27 @@ def test_a_leading_flag_or_empty_argv_is_refused(argv):
         rt.require_pod_safe_verb(list(argv), "wt-feature")
 
 
-def test_the_refusal_names_a_pod_native_equivalent_where_one_exists():
+def test_the_refusal_names_a_pod_native_equivalent_where_one_exists(monkeypatch):
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
+    with pytest.raises(rt.PodError) as exc:
+        rt.require_pod_safe_verb(["stop"], "wt-feature")
+    assert "kirocrew pod down wt-feature" in str(exc.value)
+
+
+def test_the_restart_refusal_names_the_restart_that_keeps_the_home(monkeypatch):
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
     with pytest.raises(rt.PodError) as exc:
         rt.require_pod_safe_verb(["restart"], "wt-feature")
-    assert "kirocrew pod down wt-feature" in str(exc.value)
-    assert "pod up wt-feature" in str(exc.value)
+    assert "kirocrew pod restart wt-feature" in str(exc.value)
+    assert "pod down" not in str(exc.value)
+
+
+def test_the_restart_refusal_keeps_down_and_up_on_windows(monkeypatch):
+    # Windows refuses `pod restart`, so the hint must not name it there.
+    monkeypatch.setattr(rt, "IS_WINDOWS", True)
+    with pytest.raises(rt.PodError) as exc:
+        rt.require_pod_safe_verb(["restart"], "wt-feature")
+    assert "kirocrew pod down wt-feature && kirocrew pod up wt-feature" in str(exc.value)
 
 
 def test_the_refusal_lists_the_allowed_verbs_otherwise():
@@ -321,6 +425,7 @@ def test_an_allowed_exec_is_audited_as_allowed(tmp_path, monkeypatch):
         "_audit",
         lambda op, outcome, resources="", error="": seen.append((op, outcome)),
     )
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
     monkeypatch.setattr(rt.os, "execve", lambda *a: (_ for _ in ()).throw(SystemExit(0)))
 
     with pytest.raises(SystemExit):
@@ -424,6 +529,7 @@ def test_exec_in_pod_runs_inside_the_pod_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(rt, "read_env_file", lambda c, n: {"CHECKOUT": str(checkout)})
     seen: dict[str, object] = {}
     monkeypatch.setattr(rt.os, "chdir", lambda p: seen.update(cwd=str(p)))
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
     monkeypatch.setattr(rt.os, "execve", lambda *a: (_ for _ in ()).throw(SystemExit(0)))
 
     with pytest.raises(SystemExit):

@@ -292,11 +292,19 @@ class TestAgentCommand:
     @pytest.mark.parametrize(
         ("command", "expected"),
         [
-            pytest.param("!agent", "Current agent", id="test_bare_agent_reports_current"),
-            pytest.param("!agent a b", "Usage:", id="test_too_many_args_shows_usage"),
+            pytest.param(
+                "!agent", "Current agent", id="agent_reply-test_bare_agent_reports_current"
+            ),
+            pytest.param("!agent a b", "Usage:", id="agent_reply-test_too_many_args_shows_usage"),
+            pytest.param(
+                "!ta", "No thread agent set.", id="thread_agent_reply-test_bare_ta_without_override"
+            ),
+            pytest.param(
+                "!ta nope", "Unknown agent", id="thread_agent_reply-test_unknown_thread_agent"
+            ),
         ],
     )
-    async def test_agent_reply(self, slack, sessions, owner, agents_dir, command, expected):
+    async def test_agent_command_reply(self, slack, sessions, owner, agents_dir, command, expected):
         await _slash(command, slack, sessions)
         assert expected in _texts(slack)
 
@@ -334,18 +342,6 @@ class TestAgentCommand:
 
 
 class TestThreadAgentCommand:
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("command", "expected"),
-        [
-            pytest.param("!ta", "No thread agent set.", id="test_bare_ta_without_override"),
-            pytest.param("!ta nope", "Unknown agent", id="test_unknown_thread_agent"),
-        ],
-    )
-    async def test_thread_agent_reply(self, slack, sessions, owner, agents_dir, command, expected):
-        await _slash(command, slack, sessions)
-        assert expected in _texts(slack)
-
     @pytest.mark.asyncio
     async def test_bare_ta_with_override(self, slack, sessions, owner, agents_dir):
         h._thread_agents["t1"] = "demo"
@@ -426,19 +422,32 @@ class TestMiscSlashCommands:
         ("command", "expected"),
         [
             pytest.param(
-                "!dashboard 5furlongs", "Usage:", id="test_dashboard_rejects_bad_duration"
+                "!dashboard 5furlongs",
+                "Usage:",
+                id="misc_command_reply-test_dashboard_rejects_bad_duration",
             ),
             pytest.param(
                 "!link-to-dashboard",
                 "Dashboard not available.",
-                id="test_link_to_dashboard_without_dashboard",
+                id="misc_command_reply-test_link_to_dashboard_without_dashboard",
             ),
             pytest.param(
-                "!title", "Usage: `!title <text>`", id="test_title_without_text_shows_usage"
+                "!title",
+                "Usage: `!title <text>`",
+                id="misc_command_reply-test_title_without_text_shows_usage",
+            ),
+            pytest.param("!channel", "activation", id="channel_reply-test_status"),
+            pytest.param(
+                "!channel sometimes", "Invalid mode", id="channel_reply-test_invalid_mode"
+            ),
+            pytest.param(
+                "!channel agent",
+                "Usage: `!channel agent",
+                id="channel_reply-test_agent_subcommand_needs_argument",
             ),
         ],
     )
-    async def test_misc_command_reply(self, slack, sessions, owner, command, expected):
+    async def test_command_reply(self, slack, sessions, owner, command, expected):
         await _slash(command, slack, sessions)
         assert expected in _texts(slack)
 
@@ -530,23 +539,6 @@ class TestChannelCommand:
     async def test_non_owner_denied(self, slack, sessions, owner):
         await _slash("!channel always", slack, sessions, user="UZZZ")
         assert "Only the bot owner" in _texts(slack)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("command", "expected"),
-        [
-            pytest.param("!channel", "activation", id="test_status"),
-            pytest.param("!channel sometimes", "Invalid mode", id="test_invalid_mode"),
-            pytest.param(
-                "!channel agent",
-                "Usage: `!channel agent",
-                id="test_agent_subcommand_needs_argument",
-            ),
-        ],
-    )
-    async def test_channel_reply(self, slack, sessions, owner, command, expected):
-        await _slash(command, slack, sessions)
-        assert expected in _texts(slack)
 
     @pytest.mark.asyncio
     async def test_valid_mode_persists(self, slack, sessions, owner):

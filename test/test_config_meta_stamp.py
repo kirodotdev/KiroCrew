@@ -150,6 +150,27 @@ class TestCliConfigSetKeepsMeta:
         assert "Not a config object" in capsys.readouterr().err
         assert json.loads((config_dir / "config.json").read_text(encoding="utf-8")) == existing
 
+    def test_set_from_file_refuses_a_payload_that_is_not_utf8(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Bytes that do not decode are refused like bad JSON, not a traceback."""
+        config_dir = tmp_path / "crew"
+        config_dir.mkdir()
+        existing = {"meta": _OLD_STAMP, **_REAL_SETTINGS}
+        (config_dir / "config.json").write_text(json.dumps(existing), encoding="utf-8")
+        source = tmp_path / "incoming.json"
+        source.write_bytes(b'\xff\xfe{"timezone": "UTC"}')
+
+        args = argparse.Namespace(
+            config_action="set", key=None, value=None, file=str(source), local=False
+        )
+        with pytest.raises(SystemExit) as exc:
+            _run_config_cmd(args, config_dir)
+
+        assert exc.value.code == 1
+        assert "Invalid JSON" in capsys.readouterr().err
+        assert json.loads((config_dir / "config.json").read_text(encoding="utf-8")) == existing
+
 
 class TestConfigSaveKeepsMeta:
     def test_save_stamps_the_current_build(self, tmp_path: Path) -> None:

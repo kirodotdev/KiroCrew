@@ -45,9 +45,16 @@ GET_ROUTES = [
 ]
 
 
+class _NoIndexRegistry:
+    """Stand-in for FileIndexRegistry whose ensure() always falls back to walk."""
+
+    async def ensure(self, root):
+        return None
+
+
 class _State:
     owner_id = ""
-    file_indexes: dict = {}
+    file_indexes = _NoIndexRegistry()
 
 
 @web.middleware

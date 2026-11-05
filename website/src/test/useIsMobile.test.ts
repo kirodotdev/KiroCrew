@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 
 let listener: (() => void) | null = null
@@ -99,6 +99,59 @@ describe('useIsMobile', () => {
       document.dispatchEvent(new Event('visibilitychange'))
     })
     expect(result.current).toBe(true)
+  })
+
+  describe('form-change continuity', () => {
+    let updates: Array<() => void>
+    beforeEach(() => {
+      updates = []
+      // This file's matchMedia answers every query with the breakpoint list, so
+      // the reduced-motion query would read the breakpoint. Answer it apart.
+      vi.mocked(window.matchMedia).mockImplementation(((q: string) =>
+        (q.includes('prefers-reduced-motion') ? { matches: false } : mql)) as unknown as typeof window.matchMedia)
+      ;(document as unknown as { startViewTransition: unknown }).startViewTransition = vi.fn((update: () => void) => {
+        updates.push(update)
+        return { finished: new Promise(() => {}) }
+      })
+    })
+    afterEach(() => {
+      vi.mocked(window.matchMedia).mockImplementation((() => mql) as unknown as typeof window.matchMedia)
+      delete (document as unknown as { startViewTransition?: unknown }).startViewTransition
+      delete document.documentElement.dataset.layoutMorph
+      delete document.documentElement.dataset.layoutMorphEdge
+    })
+
+    it('wraps a resize that crosses the breakpoint in a view transition, flipping every consumer inside it', () => {
+      currentMatches = false
+      const a = renderHook(() => useIsMobile())
+      const b = renderHook(() => useIsMobile())
+      expect(document.startViewTransition).not.toHaveBeenCalled() // not on first load
+
+      act(() => { currentMatches = true; window.dispatchEvent(new Event('resize')) })
+      expect(document.startViewTransition).toHaveBeenCalledTimes(1)
+      // Until the transition's callback runs, every consumer still draws the old
+      // form, even one that re-renders for its own reasons in between.
+      a.rerender(); b.rerender()
+      expect([a.result.current, b.result.current]).toEqual([false, false])
+      act(() => { updates[0]() })
+      expect([a.result.current, b.result.current]).toEqual([true, true])
+    })
+
+    it('does not start one for a resize that stays on the same side of the breakpoint', () => {
+      currentMatches = false
+      renderHook(() => useIsMobile())
+      act(() => { window.dispatchEvent(new Event('resize')) })
+      act(() => { listener?.() })
+      expect(document.startViewTransition).not.toHaveBeenCalled()
+    })
+
+    it('does not start one for a change it only notices when the page comes back', () => {
+      currentMatches = false
+      const { result } = renderHook(() => useIsMobile())
+      act(() => { currentMatches = true; window.dispatchEvent(new Event('pageshow')) })
+      expect(document.startViewTransition).not.toHaveBeenCalled()
+      expect(result.current).toBe(true)
+    })
   })
 
   it('negative control: an unsubscribed event does not refresh the value', () => {

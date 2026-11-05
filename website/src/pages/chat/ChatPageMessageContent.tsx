@@ -23,6 +23,7 @@ import {
   resolveDirSegment,
   resolveFileSegment,
   restoreUnreferencedImages,
+  splitLeadingImageBlock,
 } from '../../utils/fileTokens'
 import { findTokenRanges, recollapsePastes, type PasteBlock } from '../../utils/pasteTokens'
 import { stripKnowledgeEnvelope } from '../../utils/knowledgeEnvelope'
@@ -192,16 +193,21 @@ function renderUserContentInner(opts: UserContentRenderOpts) {
   // the main thread and freezes the tab. Re-collapse deterministically from the
   // blocks that travel with the message so the chip is restored regardless of
   // external state. See recollapsePastes.
-  let text = content
-  let ranges = findTokenRanges(text, pastes)
-  if (!ranges.length) {
+  //
+  let collapsedText = content
+  if (!findTokenRanges(content, pastes).length) {
     const collapsed = recollapsePastes(content, pastes)
-    if (collapsed !== content) {
-      text = collapsed
-      ranges = findTokenRanges(text, pastes)
-    }
+    if (collapsed !== content) collapsedText = collapsed
   }
-  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment({ ...opts, content: text, keyBase: 'seg', dirMap: dirMentionMap })}</>
+  // The producer's leading image block (`[imgMd, body].join('\n\n')`) comes
+  // off next: the inline segments below are plain spans, so an image line
+  // left in them would show as raw `![image](…)` text (#22401). It is drawn
+  // through MarkdownRenderer ahead of the chip flow instead. The split runs
+  // AFTER the re-collapse, so a paste whose own text opens with an image
+  // line is still matched whole and stays a chip.
+  const { images, body: text } = splitLeadingImageBlock(collapsedText)
+  const ranges = findTokenRanges(text, pastes)
+  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment({ ...opts, content: collapsedText, keyBase: 'seg', dirMap: dirMentionMap })}</>
 
   // Paste chips are inline by nature, so to keep them flowing with the
   // surrounding text (e.g. "hey [chip] thanks"), render each text segment
@@ -210,6 +216,9 @@ function renderUserContentInner(opts: UserContentRenderOpts) {
   // blocks, headings) inside a message that also contains a paste will
   // render as literal text. That's a rare combination for user messages.
   const out: React.ReactNode[] = []
+  if (images) {
+    out.push(<MarkdownRenderer key="msg-images" content={images} softBreaks compactImages />)
+  }
   let lastIdx = 0
   ranges.forEach((r, i) => {
     // Consume one newline on each side of the token so the chip (inline) and
@@ -307,11 +316,12 @@ function DirChip({ label, fullPath, onOpen }: { label: string; fullPath: string;
       title={fullPath}
       aria-label={i18nT('pages.chatPage.open_folder', { path: fullPath })}
       onClick={e => {
-        // Shift+click copies the path on a remote session. Route through the
-        // shared helper, not bare `api.revealPath`: the transport call is
-        // side-effect-free, so the helper is what writes the clipboard (and,
-        // locally, drives the file manager). A bare call would silently copy
-        // nothing and break the chip's hover promise.
+        // Shift+click reveals. Route through the shared helper, not bare
+        // `api.revealPath`: the transport call is side-effect-free, so the
+        // helper is what writes the clipboard when the gateway host could not
+        // open a file manager (a remote session, a headless host), and
+        // it says so in the notice beside the chip rather than copying
+        // silently.
         if (e && 'shiftKey' in e && e.shiftKey) { void revealOrOpen(fullPath, 'reveal', reveal); return }
         onOpen(fullPath)
       }}
@@ -332,7 +342,7 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
   const parsedFiles = parseFiles(content, meta)
   const dirKeys = dirMap ? [...dirMap.keys()].filter(k => tokenPresent(content, k)).slice(0, 20) : []
   if (!parsedFiles.length && !dirKeys.length) {
-    return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{content}</span>
+    return <span key={keyBase} data-message-body="" style={{ whiteSpace: 'pre-wrap' }}>{content}</span>
   }
   // Inline-flow variant (adjacent to a paste chip): keep everything inline.
   // Non-image attachments referenced in the text render as inline chips; any
@@ -342,7 +352,7 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
   // level. Pass the ORIGINAL ordered list so token indices line up.
   const { display, mentionMap, cardPaths, labels } = resolveFileSegment(content, parsedFiles)
   if (!mentionMap.size && !cardPaths.length && !dirKeys.length) {
-    return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
+    return <span key={keyBase} data-message-body="" style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
   }
 
   // Folder tokens join the same split as file mentions. A dir key always ends
@@ -356,7 +366,7 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
     ? display.split(mentionSplitRe(tokPattern))
     : [display]
   return (
-    <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>
+    <span key={keyBase} data-message-body="" style={{ whiteSpace: 'pre-wrap' }}>
       {parts.map((part, i) => {
         const hit = mentionPart(part, key => mentionMap.has(key) || !!dirMap?.has(key))
         const tok = hit?.key
@@ -491,7 +501,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // inline-widget seam; a folder-referencing prompt with block markdown is
   // the uncommon combination.
   if (!parsedFiles.length && !dirKeys.length) {
-    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} />
+    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} />
   }
 
   // Pass the ORIGINAL ordered list (images included) so [attached_file N] token
@@ -524,7 +534,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // then the cards.
   if (!mentionMap.size && !dirKeys.length) {
     const caption = display.trim()
-    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
+    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
   }
 
   // Inline-mention path: the caption keeps files inline, so render it as a
@@ -538,9 +548,13 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // so classification below is unambiguous.
   const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys].sort((a, b) => b.length - a.length)
   const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  const parts = display.split(mentionSplitRe(tokPattern))
+  // The producer's leading image block would show as raw `![image](…)` text
+  // in the plain-span flow below, so it is drawn as markdown first (#22401).
+  const { images, body: caption } = splitLeadingImageBlock(display)
+  const parts = caption.split(mentionSplitRe(tokPattern))
+  const imageBlock = images ? <MarkdownRenderer key={`${keyBase}-images`} content={images} softBreaks compactImages /> : null
   const body = (
-    <span key={`${keyBase}-body`} style={{ whiteSpace: 'pre-wrap' }}>
+    <span key={`${keyBase}-body`} data-message-body="" style={{ whiteSpace: 'pre-wrap' }}>
       {parts.map((part, i) => {
         const hit = mentionPart(part, key => mentionMap.has(key) || !!dirMap?.has(key))
         const tok = hit?.key
@@ -556,5 +570,5 @@ function renderFileSegment(opts: FileSegmentOpts) {
       })}
     </span>
   )
-  return <>{body}{cards}</>
+  return <>{imageBlock}{body}{cards}</>
 }

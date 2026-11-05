@@ -59,6 +59,7 @@ def _register_config_watch(
 
             await asyncio.to_thread(rebuild_agent_config)
         except Exception:
+            # PlatformCompositionError too: boot enforces composition; the previous spec stays.
             logger.warning("Agent config rebuild after provider switch failed", exc_info=True)
         # reload_provider_factory() is ONLY for a provider switch: it clears every
         # session and shuts the providers down, which is correct here and wrong
@@ -120,6 +121,7 @@ def _register_config_watch(
             await asyncio.to_thread(rebuild_agent_config)
             logger.info("agent.role_models.background changed -- background agent specs rebuilt")
         except Exception:
+            # PlatformCompositionError too: boot enforces composition; the previous spec stays.
             logger.warning("background-model rebuild failed", exc_info=True)
 
     default_model_failure_notified = False
@@ -194,6 +196,7 @@ def _register_config_watch(
                     logger.debug("default-model recovery notification failed", exc_info=True)
             logger.info("agent.model changed -- kirocrew agent spec rebuilt")
         except Exception:
+            # PlatformCompositionError too: boot enforces composition; the previous spec stays.
             logger.warning("default-model rebuild failed", exc_info=True)
             # The config write is already durable, but the generated spec is
             # still the one new sessions actually consume. Surface that split
@@ -236,7 +239,24 @@ def _register_config_watch(
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
+    async def _apply_browser_settings(change: ConfigChange) -> None:
+        # Settings -> Browser and the side panel's Preview tab read these keys
+        # through the dashboard's `kirocrewConfig` query, which only a `refresh`
+        # frame invalidates. A write from this dashboard already invalidates its
+        # own cache; a write from the CLI, another window or `$EDITOR` (the
+        # origin list edited in config.json while a Preview tab is open) reaches
+        # the gateway only through this watcher, so the frame is pushed here.
+        if not change.touched("dashboard.browser_local_origins", "browser"):
+            return
+        state.push_refresh("config")
+
     subs = [
+        live.subscribe(
+            "dashboard.browser_local_origins",
+            "browser",
+            callback=_apply_browser_settings,
+            name="browser.settings",
+        ),
         live.subscribe("agent.provider", callback=_apply_provider, name="agent.provider"),
         live.subscribe(
             "agent.role_models.background",

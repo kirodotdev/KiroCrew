@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { CrewEyebrow, CrewGhostBadge, CrewModeComposerChip, CrewStatusDot, CrewWorkerStack } from './CrewModeMarks'
 
+const reducedMotion = vi.hoisted(() => ({ value: false }))
+vi.mock('../../hooks/useReducedMotion', () => ({ useReducedMotion: () => reducedMotion.value }))
+
 describe('CrewModeMarks', () => {
   it('draws the ghost badge on the crew gradient at the size asked', () => {
     render(<CrewGhostBadge size={20} />)
@@ -17,6 +20,25 @@ describe('CrewModeMarks', () => {
     expect(eyebrow.className).toContain('crew-eyebrow-text')
     expect(eyebrow.className).toContain('tracking-[1px]')
     expect(eyebrow.textContent).toBe('Ultra Mode')
+    // Idle by default: the gradient sits still.
+    expect(eyebrow).toHaveAttribute('data-flowing', 'false')
+  })
+
+  it('the eyebrow flows only while active, and stops when the work ends', () => {
+    const { rerender } = render(<CrewEyebrow active />)
+    expect(screen.getByTestId('crew-eyebrow')).toHaveAttribute('data-flowing', 'true')
+    rerender(<CrewEyebrow active={false} />)
+    expect(screen.getByTestId('crew-eyebrow')).toHaveAttribute('data-flowing', 'false')
+  })
+
+  it('the eyebrow never flows under reduced motion, even while active', () => {
+    reducedMotion.value = true
+    try {
+      render(<CrewEyebrow active />)
+      expect(screen.getByTestId('crew-eyebrow')).toHaveAttribute('data-flowing', 'false')
+    } finally {
+      reducedMotion.value = false
+    }
   })
 
   it('the status dot names the state in its tone, as text or for screen readers only', () => {

@@ -1,11 +1,7 @@
 """Unit tests for the sandboxed ``kirocrew-secrets`` MCP forwarder.
 
-The forwarder holds NO vault access: it POSTs non-secret request intent to the
-host ``/api/mediated-secret-request`` endpoint over loopback and returns only
-the sanitized response. These tests exercise the schema, session-key
-resolution, the per-call member-proof forwarding, the happy path, and every
-refusal branch — all with the network + config seams mocked, so no real
-loopback or vault is touched.
+The forwarder holds NO vault access: it POSTs non-secret intent to the host
+``/api/mediated-secret-request`` over loopback. Network and config seams are mocked.
 """
 
 from __future__ import annotations
@@ -19,24 +15,17 @@ import pytest
 
 from kiro_crew import mcp_secrets
 from kiro_crew.mcp_caller import SOURCE_ENV, SOURCE_PROTECTED, SOURCE_TOKEN, OwnIdentity
+from kiro_crew.validation import ValidationError
 
 
 @pytest.fixture(autouse=True)
 def _force_unix_platform(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the non-Windows path for the whole module.
 
-    ``_call_tool_inner`` returns an explicit unsupported-platform refusal on
-    Windows BEFORE touching the forwarder, so on a Windows CI runner every test
-    that exercises the header-count guard, session-key resolution, the loopback
-    forwarder, ``verify_peer``, or a specific error message would otherwise get
-    the platform refusal instead of the behavior it asserts. Pinning IS_WINDOWS
-    False makes those tests exercise the real mediation path on any runner OS.
-    The dedicated ``test_windows_returns_explicit_unsupported_platform_result``
-    sets IS_WINDOWS True itself, and that later monkeypatch wins.
+    On Windows ``_call_tool_inner`` refuses before the forwarder, so every test here
+    would see that refusal. The Windows test sets IS_WINDOWS True itself.
 
-    Patches through ``_floor_monkeypatch`` (the independent fixture-only stack),
-    never the shared ``monkeypatch``: a test that calls ``monkeypatch.undo()``
-    mid-body must not also drop this module-wide platform pin.
+    Uses ``_floor_monkeypatch`` so a test calling ``monkeypatch.undo()`` keeps the pin.
     """
     _floor_monkeypatch.setattr(mcp_secrets.platform_compat, "IS_WINDOWS", False)
 
@@ -107,7 +96,7 @@ def test_validate_args_accepts_a_well_formed_call() -> None:
 
 
 def test_validate_args_rejects_a_bad_method() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         mcp_secrets._validate_args(
             "call_api_with_secret",
             {"secret_name": "K", "method": "TRACE", "url": "https://api.example.com"},
@@ -149,15 +138,10 @@ def test_oversized_collections_are_refused_before_dispatch(monkeypatch: pytest.M
 def test_windows_returns_explicit_unsupported_platform_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On a platform without AF_UNIX (Windows) the tool must fail closed with an
-    EXPLICIT unsupported-platform message BEFORE any transport, not the generic
-    'could not be completed' the broad handler would return once
-    unix_socket_urlopen raised a bare OSError. The mediated transport is
-    credential-safe only via the AF_UNIX + SO_PEERCRED channel, which Windows
-    lacks, so refusing here is the documented supported behavior.
+    """Without AF_UNIX the tool fails closed with an explicit platform message.
 
-    Mutation guard: removing the `hasattr(socket, "AF_UNIX")` guard makes the
-    call fall through to the transport and this message assertion fails.
+    The transport is credential-safe only over AF_UNIX + SO_PEERCRED, so it refuses
+    before any transport rather than with the generic 'could not be completed'.
     """
     dispatched: list[Any] = []
 
@@ -449,18 +433,10 @@ def test_forwards_the_signed_session_token_on_the_pooled_path(
 
 
 def test_refuses_a_rebound_dashboard_socket_before_sending(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The forwarder passes a verify_peer that authenticates the answering peer
-    as the SPECIFIC gateway the run-marker records — its pid AND a matching
-    start-token — not merely as some ancestor. The untrusted ACP harness is this
-    process's parent (an ancestor), so an ancestor check would admit a harness
-    that rebound the socket; the published-pid check refuses it. A pid mismatch, a
-    recycled pid (start-token mismatch), an absent record, and an unreadable peer
-    all raise before any bytes go out — closing the socket-rebind capture path.
+    """verify_peer requires the run-marker's pid AND start-token, not any ancestor.
 
-    The record check is the shared ``cli_server_peer`` proof the other
-    secret-bearing CLI sends use, driven here through its real body: only the
-    kernel facts it reads (the peer pid, the run record, the live start token)
-    are patched, so a copy that drifted from it would not pass."""
+    The untrusted ACP harness is an ancestor, so an ancestor check would admit it after
+    a socket rebind. Only the kernel facts ``cli_server_peer`` reads are patched."""
     from kiro_crew import cli_server, cli_server_peer
 
     monkeypatch.setattr(mcp_secrets, "_resolve_session_key", lambda: "member:alice")
@@ -587,13 +563,10 @@ def test_generic_failure_returns_a_safe_message(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_an_auto_approved_call_mints_no_capability_so_dispatch_refuses() -> None:
-    """An auto-approved (allowedTools) call never reaches ``approve_tool``,
-    which is the ONLY site that mints a mediated-request capability. So no grant
-    is minted for its tool_call_id, the capability claim finds no match, and the
-    egress is refused at dispatch for lack of a capability — WITHOUT any
-    install-time allowedTools scrub or mount-withhold. This is the invariant that
-    makes those (removed) belt-and-suspenders redundant: the capability gate, not
-    the mount shape, is what stops an auto-approved credential egress.
+    """An auto-approved call never reaches ``approve_tool``, so no capability exists.
+
+    ``approve_tool`` is the only minting site, so dispatch refuses the egress; the
+    capability gate, not the mount shape, stops it.
     """
     from kiro_crew import mediated_request_capability as cap
 

@@ -11,7 +11,8 @@ Instance fields written: ``_native_skill_projection``, ``_skill_projection_gener
 ``_skill_projection_issued``, ``_skill_projection_lock_obj``,
 ``_skill_projection_unadopted``, ``_switched_models``.
 
-Instance fields read: ``_acp_backend``, ``_agent``, ``_launch_agent``, ``_spawn_skill_projection``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_launch_agent``, ``_refuse_over_ceiling_mode``,
+``_spawn_skill_projection``,
 ``_wire_mode_id``, ``_work_dir``.
 """
 
@@ -212,56 +213,27 @@ async def _verify_spawn_agent_active(
 ) -> None:
     """Fail closed when the agent the ``--agent`` flag selected never loaded.
 
-    Guard (A2) — the spawn-flag half of Guard (A) in :meth:`create_session`.
-    ``set_mode`` only ever activates an EXPLICIT override (or, on KAS, the
-    injected default), so on kiro-cli the agent chosen by ``--agent`` — the
-    agent of every ordinary session — reaches no availability check at all.
-    It needs one, because that spec can fail to load silently: kiro-cli
-    validates ``~/.kiro/agents/<agent>.json`` with ``deny_unknown_fields``
-    and, on ANY unknown field, rejects the spec wholesale and runs its own
-    default agent instead. :func:`kiro_crew.agent.migrate_agent_specs` exists
-    to strip the two keys already known to trip it; nothing validates the
-    rest, and a spec written by another tool (or by a product this install
-    superseded) can carry more.
+    Guard (A2), the spawn-flag half of Guard (A) in :meth:`create_session`.
+    ``set_mode`` only activates an explicit override (or KAS's injected default),
+    so the ``--agent`` agent of an ordinary kiro-cli session gets no other check.
+    kiro-cli validates ``~/.kiro/agents/<agent>.json`` with
+    ``deny_unknown_fields`` and on ANY unknown field silently runs its own
+    default agent (:func:`kiro_crew.agent.migrate_agent_specs` strips only the
+    two known keys). Nothing downstream notices: the session would run without
+    Kiro Crew's control plane, so every Kiro Crew tool (``learn_add`` among
+    them) answers "does not exist". Skipped when an override is requested.
 
-    Nothing downstream notices the substitution. The ``set_mode`` response is
-    never read back, ``currentModeId`` is never re-compared, and
-    :mod:`kiro_crew.acp.mcp_session_report` only LOGS — its own docstring
-    forbids reading a missing report as "not mounted". The session then runs
-    with NONE of Kiro Crew's control plane, while the global provider
-    ``mcp.json`` that Kiro Crew pins off only on specs IT writes stays
-    merged. So third-party MCP servers declared there keep working and every
-    Kiro Crew tool the injected prompt names — ``learn_add`` among them —
-    answers "does not exist", which the agent reports to the user as its
-    memory being unavailable.
+    ``currentModeId`` is PROOF both ways: a loaded spec is the current mode and
+    listed in ``availableModes``; a refused one is absent and ``currentModeId``
+    names the backend default. A non-empty ``currentModeId`` naming another
+    agent fails closed even without an advertised list. The compatibility
+    escape applies only when no current mode is named (older kiro-cli, the
+    offline fake backend).
 
-    Skipped when an override is requested: Guard (A) checks the agent
-    ``set_mode`` will activate.
-
-    ``currentModeId`` is read as PROOF, in both directions. A live probe of
-    this backend settles what it means: a spec that loads is reported as the
-    current mode AND listed in ``availableModes``, while a spec the backend
-    refuses is absent from the list and ``currentModeId`` names the backend's
-    own default instead. So a non-empty ``currentModeId`` naming something
-    OTHER than the spawn agent is positive evidence of the substitution, and
-    fails closed even when no advertised list came back. Treating a
-    current-mode mismatch as an extra ADMIT is the hole this avoids: a
-    ``currentModeId``-only response naming a substituted agent would otherwise
-    sail through the compatibility escape.
-
-    That escape is therefore narrow. It applies only when the response names
-    NO current mode, where the advertised list is the sole signal and its
-    absence is no evidence of a substitution -- so older kiro-cli and the
-    offline fake backend behave exactly as before.
-
-    Asked of the harness, which answers yes only for a host whose argv
-    actually carries ``--agent``. Never phrased as an inequality: a negative
-    test would silently capture every host added later (harness-parity H5),
-    and a host that activates its agent by ``set_mode`` already has that
-    response as proof -- on KAS the agent travels over the wire as an injected
-    custom agent and Guard (A) covers it. Asked of the host rather than of
-    "the KAS projection came back None" so the same call serves
-    :meth:`load_session`, which never builds that projection.
+    Asked of the harness (``verifies_agent_activation``), never as an
+    inequality, so hosts added later are not silently captured
+    (harness-parity H5). Asking the host also lets :meth:`load_session`, which
+    builds no KAS projection, use the same call.
     """
     if override or not self._agent:
         return
@@ -488,6 +460,32 @@ def _refuse_if_view_superseded(
     )
 
 
+async def _refuse_over_ceiling_mode(
+    self: AcpRuntime, session_id: str, mode_agent: str, launch_name: str | None
+) -> None:
+    """End *session_id* and refuse when activating *mode_agent* would run denied grants.
+
+    *launch_name* is the name ``set_mode`` sends: a skill view, which is checked
+    itself, or ``None``/the authored name, whose claimants are checked
+    (``fork_refresh.require_shared_template_within_ceiling``).
+    """
+    from kiro_crew import agent as agent_mod
+
+    try:
+        await asyncio.to_thread(
+            agent_mod.require_shared_template_within_ceiling,
+            mode_agent,
+            # A runtime that names no backend is kiro-cli's (``ACP_BACKEND_KIRO``
+            # is ""), so the check runs: the fail-closed answer.
+            getattr(self, "_acp_backend", ""),
+            launch_name=launch_name,
+            work_dir=getattr(self, "_work_dir", None),
+        )
+    except agent_mod.SharedTemplateOverCeiling as exc:
+        await self.terminate_session(session_id)
+        raise AcpRuntimeError(str(exc)) from exc
+
+
 async def _activate_mode_bracketed(
     self: AcpRuntime,
     session_id: str,
@@ -557,20 +555,11 @@ async def _activate_mode_bracketed(
         # The host reads *mode_agent*'s spec from disk here and honours its own
         # grants before Crew's gate, and Crew never rewrites a crew-bound spec it
         # does not own: the same over-ceiling refusal the spawn runs, for the agent
-        # this line activates rather than the one the process was spawned as.
-        from kiro_crew import agent as agent_mod
-
-        try:
-            await asyncio.to_thread(
-                agent_mod.require_shared_template_within_ceiling,
-                mode_agent,
-                # A runtime that names no backend is kiro-cli's (``ACP_BACKEND_KIRO``
-                # is ""), so the check runs: the fail-closed answer.
-                getattr(self, "_acp_backend", ""),
-            )
-        except agent_mod.SharedTemplateOverCeiling as exc:
-            await self.terminate_session(session_id)
-            raise AcpRuntimeError(str(exc)) from exc
+        # this line activates rather than the one the process was spawned as. With
+        # a projection the name sent is a skill view, prepared below, and it is
+        # that view which is checked, before each send.
+        if getattr(self, "_native_skill_projection", None) is None:
+            await self._refuse_over_ceiling_mode(session_id, mode_agent, None)
     try:
         projection_now: Any = None
         used_generation = 0
@@ -727,6 +716,8 @@ async def _activate_mode_bracketed(
                     missed = None
             if sent_alias is not None:
                 self._refuse_if_view_unverified(mode_agent, used_generation)
+                if not wire_registered:
+                    await self._refuse_over_ceiling_mode(session_id, mode_agent, sent_alias)
             try:
                 await self._send_and_await(METHOD_SET_MODE, wire, timeout=budget, **untranslated)
             except AcpModeNotFound as exc:

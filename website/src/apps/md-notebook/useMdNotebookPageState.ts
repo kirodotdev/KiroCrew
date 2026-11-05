@@ -120,7 +120,8 @@ export function useMdNotebookPageState() {
   const [showConnect, setShowConnect] = useState(false)
   const [vaultSelOpen, setVaultSelOpen] = useState(false)
   const [sortOpen, setSortOpen] = useState(false)
-  const [fileConflict, setFileConflict] = useState<{ mtime: number; disk: string } | null>(null)
+  const [fileConflict, setFileConflict] =
+    useState<{ mtime: number; disk: string; contentHash?: string } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [auth, setAuth] = useState({ hasPat: false, hasGhAuth: false })
   // Pinned note paths for the ACTIVE vault, and the row (if any) being renamed
@@ -443,6 +444,9 @@ export function useMdNotebookPageState() {
   const pathRef = useRef<string | null>(null)
   const vaultRef = useRef(activeVaultId)
   const mtimeRef = useRef<number | null>(null)
+  // The open note's `contentHash`: sent as `baseHash`, it catches an external
+  // write that kept the mtime, which `mtimeRef` alone lets through.
+  const hashRef = useRef<string | null>(null)
   const dirtyRef = useRef(false)
   const revRef = useRef(0)
   // Monotonic id for note-open reads: a slower earlier read (note A) must not
@@ -566,7 +570,9 @@ export function useMdNotebookPageState() {
         // `removeNote`'s flush ordering cannot quietly turn this into a recreate.
         if (targetsSameNote(deletingRef.current, vault, path)) return
         if (vault && path && dirtyRef.current) {
-          await notesApi.saveNote(vault, path, pendingContent, mtimeRef.current ?? undefined)
+          await notesApi.saveNote(
+            vault, path, pendingContent, mtimeRef.current ?? undefined, hashRef.current ?? undefined,
+          )
         }
       }
       if (activeWrites.length) {
@@ -744,8 +750,10 @@ export function useMdNotebookPageState() {
             saving.path,
             sent,
             mtimeRef.current ?? undefined,
+            hashRef.current ?? undefined,
           )
           mtimeRef.current = res.mtime
+          hashRef.current = res.contentHash ?? null
           if (contentRef.current === sent) {
             setDirty(false)
             dirtyRef.current = false
@@ -757,7 +765,7 @@ export function useMdNotebookPageState() {
           if (!targetsSameNote(saving, vaultRef.current, pathRef.current)) return
         }
       } catch (e) {
-        const body = (e as { body?: { code?: string; mtime?: number; disk?: string } }).body
+        const body = (e as { body?: { code?: string; mtime?: number; disk?: string; contentHash?: string } }).body
         if (body?.code === 'ESTALE') {
           // The note changed on disk since it was opened. Surface both versions
           // rather than clobbering either — but ONLY while that note is still
@@ -766,7 +774,7 @@ export function useMdNotebookPageState() {
           // banner then would offer "Keep my version" for a note the user just
           // deleted — accepting it would put the file back.
           if (!targetsSameNote(saving, vaultRef.current, pathRef.current)) return
-          setFileConflict({ mtime: body.mtime ?? 0, disk: body.disk ?? '' })
+          setFileConflict({ mtime: body.mtime ?? 0, disk: body.disk ?? '', contentHash: body.contentHash })
         } else {
           setError(e instanceof Error ? e.message : String(e))
         }
@@ -830,6 +838,7 @@ export function useMdNotebookPageState() {
       setContent(doc.content)
       contentRef.current = doc.content
       mtimeRef.current = doc.mtime
+      hashRef.current = doc.contentHash ?? null
       setBacklinks(doc.backlinks ?? [])
       setDirty(false)
       setEditBlock(null)
@@ -1571,7 +1580,7 @@ export function useMdNotebookPageState() {
     autoSyncMins, autoCommit, syncShortcut, fullWidth, recordingShortcutRef, setAutoSyncPref,
     setAutoSyncMinsPref, toggleFullWidth, columnMaxWidth, headerControls, headerBandWidth,
     headerControlsRef, headerBandRef, titleClearance, stackTitle, setSyncShortcutPref,
-    setAutoCommitPref, trashMsg, setTrashMsg, openTrash, lastSyncByVault, contentRef, mtimeRef,
+    setAutoCommitPref, trashMsg, setTrashMsg, openTrash, lastSyncByVault, contentRef, mtimeRef, hashRef,
     dirtyRef, staleBackend, settingsError, flushSave, openNote, edit, markDirty, startBlockEdit,
     cancelBlockEdit, commitBlockEdit, splitBlockEdit, toggleCheckbox, switchVault, newNote,
     isPinned, tree, moveNote, renameNote, removeNote, forgetVault, savePat, setVaultKnowledge,

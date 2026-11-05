@@ -359,6 +359,53 @@ class TestTheBarrierPollClassifiesEveryOutcome:
         assert "in_progress" in proc.stdout
 
 
+def _sleep_recorder(tmp_path: Path) -> tuple[Path, Path]:
+    """An ``AWAIT_FG_SLEEP`` that returns at once and logs each requested wait."""
+    log = tmp_path / "naps"
+    log.write_text("", encoding="utf-8")
+    rec = tmp_path / "record-nap"
+    rec.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$1\" >> {log}\n", encoding="utf-8")
+    rec.chmod(0o755)
+    return rec, log
+
+
+@needs_bash
+class TestThePollInterval:
+    def test_a_pending_run_is_polled_every_30s_and_a_missing_one_every_10s(
+        self, tmp_path: Path
+    ) -> None:
+        # The listed-but-pending wait is the one that sets the barrier's REST
+        # volume; the start-up race keeps its short wait.
+        rec, log = _sleep_recorder(tmp_path)
+        h = _Harness(
+            tmp_path,
+            [
+                _page(),
+                _page(_run(16, "in_progress", None)),
+                _page(_run(16, "in_progress", None)),
+                _page(_run(16, "completed", "success")),
+            ],
+            tick=1,
+        )
+        proc = h.run(extra_env={"AWAIT_FG_SLEEP": str(rec)})
+        assert proc.returncode == 0, proc.stdout
+        assert log.read_text(encoding="utf-8").split() == ["10", "30", "30"]
+
+    def test_the_last_pending_wait_never_oversleeps_the_total_budget(self, tmp_path: Path) -> None:
+        # The clock advances 25s per poll, so after the poll at 700s only 20s of
+        # the 720s budget is left: the wait shrinks to 20 instead of 30, and the
+        # next poll is the one that fails closed at the budget.
+        rec, log = _sleep_recorder(tmp_path)
+        h = _Harness(tmp_path, [_page(_run(17, "in_progress", None))], tick=25)
+        proc = h.run(total_budget=720, extra_env={"AWAIT_FG_SLEEP": str(rec)})
+        assert proc.returncode == 1, proc.stdout
+        assert "still 'in_progress' after 725s" in proc.stdout
+        naps = log.read_text(encoding="utf-8").split()
+        assert naps[-1] == "20"
+        assert set(naps[:-1]) == {"30"}
+        assert len(naps) == 28
+
+
 # A run whose status lags its jobs: every job is done and green, the run still
 # reads in_progress. The fake clock starts well after the jobs finished.
 _LONG_DONE = "2026-10-27T13:32:33Z"
@@ -844,6 +891,7 @@ class TestTheProductionDefaultsAreIntact:
         text = _SCRIPT.read_text(encoding="utf-8")
         assert 'APPEAR_BUDGET="${APPEAR_BUDGET:-180}"' in text
         assert 'TOTAL_BUDGET="${TOTAL_BUDGET:-720}"' in text
+        assert "POLL_INTERVAL=30\n" in text
 
     def test_the_clock_and_sleep_default_to_the_real_tools(self) -> None:
         text = _SCRIPT.read_text(encoding="utf-8")

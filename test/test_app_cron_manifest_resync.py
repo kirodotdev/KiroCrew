@@ -1,26 +1,15 @@
 """A changed ``app.json`` cron entry reaches a job that is already registered.
 
-``register_app_crons_with_service`` was add-if-absent: a job whose name was already
-in the scheduler was skipped, so an author's change to a cron field (``timeout``,
-``message``, ``timezone``, ...) reached a fresh install and never a machine that
-already had the app, short of a disable/enable cycle that deletes and recreates
-the job.
-
-The fix stamps each app job with the digest of the manifest entry it was built
-from (``CronJob.app_manifest_digest``) and makes registration compare it:
+Each app job carries the digest of its manifest entry (``CronJob.app_manifest_digest``):
 
 * digest equal     -- the job is left exactly as it is, hand edits included;
 * digest different -- the manifest's fields are re-applied and the stamp renewed,
   while the job's pause state is kept;
-* no digest        -- a job from before the stamp existed counts as changed once.
+* no digest        -- the job counts as changed once.
 
 Fields ``CronService.update_job`` cannot change (``command``, ``script``,
-``agent_sequence``, ``env``) are never applied this way: the change is logged and
-audited and waits for a disable/enable of the app, while the job keeps its id,
-its pause state and every setting the manifest does not own. Every scenario here
-runs against a real
-``CronService`` on an isolated home, so the stamp is exercised through the store
-it is persisted in, not through a mock of it.
+``agent_sequence``, ``env``) are logged and audited and wait for a disable/enable.
+Everything runs on a real ``CronService`` on an isolated home.
 """
 
 from __future__ import annotations
@@ -42,6 +31,9 @@ from kiro_crew.apps.bridges import (
 )
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.cron import CronService
+
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 APP = "resync-app"
 SHORT = "digest"
@@ -344,11 +336,8 @@ class TestUnchangedManifestLeavesTheJobAlone:
 class TestCreateOnlyFieldsWaitForAReenable:
     """``command``/``script``/``agent_sequence``/``env`` have no update path.
 
-    The job is never removed and recreated for them: a remove-then-add would
-    lose the job when the create gate refuses the replacement, and would reset
-    every setting the manifest does not own (delivery channel, model, a secret
-    grant). The change is logged and audited instead, the other changed fields
-    land, and the job keeps its id and pause state.
+    A remove-then-add would lose the job if the create gate refuses the replacement and
+    reset settings the manifest does not own (channel, model, a secret grant).
     """
 
     def test_a_changed_command_is_not_applied_and_the_job_survives(self, home, caplog):

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
 import re
 import tempfile
@@ -45,6 +46,7 @@ from dataclasses import dataclass, field
 from kiro_crew import transcribe
 from kiro_crew.doc_parser import extract_text, is_parseable_document
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
+from kiro_crew.messaging.split import close_open_fence
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -75,6 +77,14 @@ _AUDIO_PREFIXES = ("audio/",)
 _VIDEO_PREFIXES = ("video/",)
 
 _SAFE_SUFFIX_RE = re.compile(r"[^a-zA-Z0-9]")
+#: Longest extension a temp file is given. A real one is a few characters; the
+#: bound keeps a hostile or mistaken hint from making the temp path too long to
+#: create.
+_SUFFIX_MAX = 16
+#: Mimetypes whose stdlib extension a downstream reader rejects: Python maps
+#: ``audio/ogg`` to ``.oga``, which AWS Transcribe refuses, so it is ``.ogg`` as
+#: the Telegram and WhatsApp adapters already pin it.
+_PINNED_MIME_SUFFIX = {"audio/ogg": ".ogg"}
 
 #: Platform-supplied attachment kinds are echoed back to the sender, so they are
 #: reduced to a word first. Brackets and dashes are what a rejection line is
@@ -172,8 +182,25 @@ def safe_suffix(hint: str, default: str = "bin") -> str:
     Strips everything non-alphanumeric so an attachment name can never steer the
     destination path (``../``, absolute paths, NUL bytes).
     """
-    clean = _SAFE_SUFFIX_RE.sub("", hint or "")
+    clean = _SAFE_SUFFIX_RE.sub("", hint or "")[:_SUFFIX_MAX]
     return "." + (clean or default)
+
+
+def attachment_suffix(name: str, mimetype: str = "") -> str:
+    """The temp-file extension for an attachment called *name*.
+
+    The name's own extension when it has one (``report.pdf``), else the one the
+    mimetype implies (``video/mp4`` -> ``.mp4``), else ``.bin``. A name with no
+    dot, or one that only starts with a dot (``.env``), carries no extension, so
+    its whole text is never taken for one.
+    """
+    stem, dot, ext = (name or "").rpartition(".")
+    own = _SAFE_SUFFIX_RE.sub("", ext) if dot and stem else ""
+    if own and len(own) <= _SUFFIX_MAX:
+        return "." + own
+    base = (mimetype or "").split(";", 1)[0].strip().lower()
+    implied = _PINNED_MIME_SUFFIX.get(base) or (mimetypes.guess_extension(base) if base else None)
+    return safe_suffix(implied or "")
 
 
 def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = ()) -> str:
@@ -186,8 +213,10 @@ def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = (
     VIDEO here and a "video is not supported" note lands beside the transcript.
     The knowledge belongs to the channel, so the channel supplies it rather than
     this module accumulating per-channel special cases.
+
+    Parameters after ``;`` are dropped first (see :func:`base_mimetype`).
     """
-    mt = (mimetype or "").lower()
+    mt = base_mimetype(mimetype)
     if mt in IMAGE_MIMETYPES:
         return IMAGE
     if any(mt.startswith(p) for p in (*audio_mimetypes, *_AUDIO_PREFIXES)):
@@ -199,6 +228,16 @@ def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = (
     if is_parseable_document(mimetype=mt, filename=name):
         return DOCUMENT
     return OTHER
+
+
+def base_mimetype(mimetype: str) -> str:
+    """*mimetype* lowercased with any ``;`` parameters dropped.
+
+    Discord sends a JSON file as ``application/json; charset=utf-8``: the type is
+    the part before the parameters. :func:`classify` and the document parser read
+    this same value, so a type the classifier admits is one the parser can match.
+    """
+    return (mimetype or "").split(";", 1)[0].strip().lower()
 
 
 def sniff_image_mime(path: str) -> str | None:
@@ -376,7 +415,13 @@ async def ingest_attachments(
 
             try:
                 dest = await _fetch(
-                    download, att.url, safe_suffix(att.suffix_hint or att.name.rsplit(".", 1)[-1])
+                    download,
+                    att.url,
+                    (
+                        safe_suffix(att.suffix_hint)
+                        if att.suffix_hint
+                        else attachment_suffix(att.name, att.mimetype)
+                    ),
                 )
             except ValueError as exc:
                 # A ValueError is the downloader's OWN refusal, and its message is
@@ -509,7 +554,7 @@ async def ingest_attachments(
                     # free to recover from a wedged kernel resource. Parking a slow
                     # document parse there would undermine that isolation.
                     raw = await asyncio.to_thread(
-                        extract_text, dest, mimetype=att.mimetype, filename=att.name
+                        extract_text, dest, mimetype=base_mimetype(att.mimetype), filename=att.name
                     )
                     if not raw:
                         out.rejections.append(
@@ -656,13 +701,31 @@ async def transcribe_audio_attachments(result: IngestResult, source: str) -> Ing
     return result
 
 
+def image_location_note(path: str) -> str:
+    """Tell the agent where an inlined image is saved.
+
+    ``build_prompt_blocks`` replaces an inlined image's path with
+    ``[image: <name>]``, so the model sees the picture but not where the file
+    is, and its file tools cannot open the original. This note names the folder
+    and the file SEPARATELY: a whole path ending in an image suffix would be
+    rewritten to the marker again, while a folder alone matches no image path.
+    Every messaging channel adds it; the dashboard keeps its prompt unchanged.
+    """
+    folder, name = os.path.split(path)
+    return (
+        f"[Image {name} is saved in the folder {folder}{os.sep} until this turn ends; "
+        "join the two to open the original file]"
+    )
+
+
 def append_attachment_context(text: str, result: IngestResult) -> str:
     """Append prompt-ready attachment material to the user's message text.
 
     Image and opaque-file paths are appended as bare lines. The ACP encoder
     inlines recognized image paths as image content blocks; every other path remains
     text for agent file tools. Text, metadata and rejection blocks follow, separated
-    by blank lines for prompt readability.
+    by blank lines for prompt readability. Each image also gets an
+    :func:`image_location_note`, because the encoder hides its path.
 
     Channel-neutral: every transport that ingests attachments uses this same
     layout, so the model sees a consistent attachment presentation regardless
@@ -671,9 +734,12 @@ def append_attachment_context(text: str, result: IngestResult) -> str:
     paths = [*result.image_paths, *result.file_paths]
     if paths:
         paths_text = "\n".join(paths)
-        text = f"{text}\n{paths_text}" if text else paths_text
+        # A fence the user left open ends before the paths, so a delimiter in
+        # an attached file's body cannot close it after them and make them code.
+        text = f"{close_open_fence(text)}\n{paths_text}" if text else paths_text
 
-    blocks = [*result.text_blocks, *result.rejections]
+    locations = [image_location_note(p) for p in result.image_paths]
+    blocks = [*result.text_blocks, *locations, *result.rejections]
     if blocks:
         blocks_text = "\n\n".join(blocks)
         text = f"{text}\n\n{blocks_text}" if text else blocks_text

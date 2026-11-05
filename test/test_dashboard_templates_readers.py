@@ -1,12 +1,9 @@
 """The dashboard-template readers: what a page binds and what a contract names.
 
-The parity check in ``test_dashboard_templates.py`` (invariant 1, and the registry and
-scaffold gates that reuse it) compares the output of two readers, ``html_fields`` for the
-page and ``contract_keys`` for the contract, so a reader that counts the wrong set lets
-that check pass over a cell that renders blank. These tests pin both: the bindings the
-page reader must find, the placements it refuses rather than misreads, and which contract
-shapes the contract reader accepts (flat leaves and their ``Unsaid`` unions) or refuses
-(optional keys, nesting, lists, no keys at all).
+The parity check in ``test_dashboard_templates.py`` (invariant 1) compares ``html_fields``
+with ``contract_keys``, so a reader that counts the wrong set lets a blank cell pass. These
+tests pin which bindings and placements the page reader reads or refuses, and which
+contract shapes the contract reader accepts or refuses.
 """
 
 from __future__ import annotations
@@ -33,11 +30,8 @@ from kiro_crew.dashboard_templates import Unsaid
 from kiro_crew.dashboard_templates.parity import ExtractionRefused, contract_keys, html_fields
 
 
-# Declared at MODULE level, not inside the cases that use them.
-# ``typing.get_type_hints`` resolves an annotation against the defining module's
-# globals, and a TypedDict defined inside a function has its own names nowhere in
-# them -- so a nested probe class raises ``NameError`` and the case fails for a reason
-# that has nothing to do with the rule it is testing.
+# Declared at MODULE level: ``typing.get_type_hints`` resolves against module globals,
+# so a TypedDict nested in a function would raise ``NameError``.
 class _Inner(TypedDict):
     n: int
 
@@ -66,9 +60,7 @@ class _OptionalListCard(TypedDict):
     rows: list[str] | Unsaid
 
 
-# ---------------------------------------------------------------------------
 # reading the page
-# ---------------------------------------------------------------------------
 
 
 class TestThePageReader:
@@ -104,10 +96,8 @@ class TestThePageReader:
     def test_a_binding_on_the_root_or_the_body_itself_is_refused(self, root: str) -> None:
         """The binder asks the body for its DESCENDANTS, which excludes both of them.
 
-        `body.querySelectorAll` never matches the body, and never matches the root above
-        it, so a binding there is parsed, kept, and never visited. This is the placement a
-        list of skipped kinds cannot catch: neither element is a kind of element, it is
-        the thing being queried.
+        `body.querySelectorAll` never matches the body or the root above it, and a list
+        of skipped tags cannot catch this.
         """
         page = (
             f"<html><{root} data-dashboard-field='open'>"
@@ -119,9 +109,8 @@ class TestThePageReader:
     def test_markup_after_the_body_closes_is_still_read(self) -> None:
         """The parser reparents it into the body, so the binder does reach it.
 
-        Refusing on stack position -- "the body is not currently open" -- would look like
-        a tighter rule and would reject a page the browser binds perfectly well. Only the
-        head is genuinely outside the binder's reach, and that has its own case.
+        Refusing on stack position would reject a page the browser binds. Only the head is
+        outside the binder's reach.
         """
         assert html_fields(
             "<html><body><p data-dashboard-field='lede'></p></body>"
@@ -144,13 +133,10 @@ class TestThePageReader:
         ) == {"lede", "open"}
 
     def test_a_binding_in_the_head_is_refused(self) -> None:
-        """The binder queries the body, so a binding parked in the head is never visited
-        and no visible element was ever placed for that value.
+        """The binder queries the body, so a binding parked in the head is never visited.
 
-        The element has to be one html really keeps in the head. A ``<span>`` written
-        between ``<head>`` and ``</head>`` does not stay there -- the tree builder closes
-        the head at it and reparents it into the body, where the binder finds it -- so
-        that page is bindable and refusing it would be wrong.
+        The element must be one html really keeps in the head: a ``<span>`` there is
+        reparented into the body, where the binder finds it.
         """
         with pytest.raises(ExtractionRefused, match="queries the body"):
             html_fields(
@@ -166,14 +152,10 @@ class TestThePageReader:
         ) == {"lede", "open"}
 
     def test_where_the_head_ends_is_a_content_question_not_a_nesting_one(self) -> None:
-        """Why the head is NOT read off the open-element stack, even though every end tag is
-        now required.
+        """Why the head is NOT read off the open-element stack.
 
-        html reparents content the head may not hold into the body, so this page is well
-        formed by every rule in this reader and the browser still puts the `<span>` in the
-        body and binds it. A stack read would find `head` open and refuse it. So the head
-        ends at the first element html does not permit there, which is where a browser's
-        tree builder ends it.
+        html reparents content the head may not hold into the body, so the head ends at
+        the first element html does not permit there, as a browser's tree builder does.
         """
         assert html_fields(
             "<html><head><title>x</title>"
@@ -213,10 +195,8 @@ class TestThePageReader:
     def test_a_binding_nested_inside_another_binding_is_refused(self) -> None:
         """Filling the outer element replaces its children, detaching the inner one.
 
-        The binder walks matches in document order and assigns ``textContent``. The outer
-        element is reached first, and that assignment removes the inner bound element from
-        the document -- so the inner value is still written, to a node nothing renders.
-        Counted, the equality gate passes on a contract with a field that never appears.
+        The binder assigns ``textContent`` in document order, so the inner value is written
+        to a node nothing renders.
         """
         with pytest.raises(ExtractionRefused, match="detached node"):
             html_fields(
@@ -234,13 +214,10 @@ class TestThePageReader:
         ],
     )
     def test_real_nesting_is_refused_on_explicitly_closed_markup(self, page: str) -> None:
-        """The property the open-element stack exists for, and the one the subtraction keeps.
+        """The property the open-element stack exists for: which element a binding sits in.
 
-        Requiring explicit end tags removed the need to model where html closes an element
-        for the author. It did not remove the need to know which element a binding sits
-        inside: a `span` inside a bound `p`, a bound `div` inside a bound `div`, a cell of a
-        nested table inside the outer cell. The binder assigns `textContent` in document
-        order, so the outer assignment detaches the inner element before the loop reaches it.
+        With explicit end tags the reader still tracks nesting, because the outer
+        `textContent` assignment detaches the inner bound element.
         """
         with pytest.raises(ExtractionRefused, match="detached node"):
             html_fields(f"<html><body>{page}</body></html>")
@@ -263,13 +240,11 @@ class TestThePageReader:
         ) == {"lede", "open"}
 
     def test_self_closing_syntax_on_a_normal_element_is_refused(self) -> None:
-        """Html does NOT honour ``<span/>``: the element stays open, and a reader that
-        closed it there would read the next binding as a sibling of one the browser sees it
-        nested inside.
+        """Html does NOT honour ``<span/>``: the element stays open, so the next binding
+        is nested inside it.
 
-        The slash reaches a different parser callback, which is why it needs its own case.
-        It is refused rather than interpreted, by the same rule as any other element left
-        open -- the author writes the end tag.
+        The slash reaches a different parser callback, hence its own case; it is refused
+        like any element left open.
         """
         with pytest.raises(ExtractionRefused, match="innermost open element|still open"):
             html_fields(
@@ -280,10 +255,8 @@ class TestThePageReader:
     def test_an_end_tag_matching_no_open_element_is_refused(self) -> None:
         """A stray `</div>` inside a bound `<p>`.
 
-        A browser discards it and keeps the `p` open, so the binding after it really is
-        nested. An earlier reader reproduced that, which meant its nesting answer depended
-        on its own repair being right. Refusing the markup makes the answer depend on
-        nothing: the author deletes one end tag or writes the matching one.
+        A browser discards it and keeps the `p` open, so the next binding is nested.
+        Refusing the markup keeps the nesting answer from depending on a repair model.
         """
         with pytest.raises(ExtractionRefused, match="innermost open element"):
             html_fields(
@@ -304,10 +277,8 @@ class TestThePageReader:
     def test_a_binding_anywhere_inside_svg_is_refused(self, tag: str) -> None:
         """Whether svg paints a string is not a property of the element holding it.
 
-        ``<text>`` paints; the same ``<text>`` under a definitions container paints
-        nothing. So no set of tag names answers the question, and the reader refuses the
-        whole foreign subtree instead of deciding per element. Reached and fillable are
-        different properties, and this is the gap a reachability check alone still leaves.
+        ``<text>`` paints, but not under a definitions container, so the reader refuses
+        the whole foreign subtree instead of deciding per element.
         """
         with pytest.raises(ExtractionRefused, match="inside svg"):
             html_fields(
@@ -332,13 +303,9 @@ class TestThePageReader:
     def test_a_binding_on_a_tag_the_sanitizer_cannot_keep_is_refused(self, tag: str) -> None:
         """A custom element or a misspelling is REMOVED, not just left unpainted.
 
-        The host calls DOMPurify with only `ADD_TAGS: ['style']`, so its default allow-list
-        applies and a name outside it goes, taking the binding with it -- the cell does not
-        render blank, it disappears, and the equality gate stays green over a field that is
-        absent from the page entirely.
-
-        An allow-list is the only shape that answers this, because what is being detected is
-        exactly a name nobody listed.
+        The host calls DOMPurify with only `ADD_TAGS: ['style']`, so a name outside its
+        default allow-list is removed with its binding. Only an allow-list can detect a
+        name nobody listed.
         """
         with pytest.raises(ExtractionRefused, match="not an html element"):
             html_fields(
@@ -350,10 +317,8 @@ class TestThePageReader:
     def test_a_binding_on_an_obsolete_element_is_refused(self, tag: str) -> None:
         """Refused on this package's own ground, not on a guess about the sanitizer.
 
-        A dashboard renders a fact and an obsolete element is not how this product renders
-        one. Saying it that way is what makes the set answerable: the other ground --
-        "DOMPurify drops it" -- needs the allow-list this reader already records as unreadable
-        from here, and guessing at it refuses pages that render.
+        An obsolete element is not how this product renders a fact. "DOMPurify drops it"
+        would need the allow-list, which is unreadable from here.
         """
         with pytest.raises(ExtractionRefused, match="marks obsolete"):
             html_fields(
@@ -364,11 +329,8 @@ class TestThePageReader:
     def test_plaintext_is_refused_however_the_parser_tokenizes_it(self) -> None:
         """`plaintext` is the one member of the obsolete set whose refusal is not fixed here.
 
-        Whether `html.parser` treats what follows it as text -- its own end tag included, so
-        the page ends with it open -- or reports that end tag, differs by platform: this case
-        is answered by the structural rule on one and by the obsolete rule on another. Both
-        are refusals and this package has an opinion about neither tokenization, so the
-        assertion is that the binding is refused, not which sentence says so.
+        Whether `html.parser` reports its end tag differs by platform, so either the
+        structural or the obsolete rule refuses it; the assertion accepts both.
         """
         with pytest.raises(ExtractionRefused, match="still open|marks obsolete"):
             html_fields(
@@ -390,7 +352,7 @@ class TestThePageReader:
         """Obsolete-but-parsed elements belong in the known set; a DROPPED one does not.
 
         `keygen` is gone from html and from every browser, so a binding on one is a binding
-        on nothing -- and listing it made this reader call that page bindable.
+        on nothing.
         """
         assert "keygen" not in parity._KNOWN_HTML
         with pytest.raises(ExtractionRefused, match="not an html element"):
@@ -464,15 +426,9 @@ class TestThePageReader:
     ) -> None:
         """One rule covering every way the source and the browser's tree come apart.
 
-        The alternative is to model html: which end tags an author may omit, the scope
-        variant each end tag is resolved in, which formatting elements a misnested end tag
-        crosses. That accepts more pages, and it makes the reader's nesting answer depend on
-        its own repair being right -- a scope set slightly wrong reads a child as a sibling
-        and says so in a precise sentence.
-
-        This reader runs while someone here is writing the page, and the only thing it has to
-        answer is where a binding lands. So it asks for markup it can follow: the rule cannot
-        be wrong about scope, and the author's remedy is one end tag on the line named.
+        Modelling html's omitted end tags and scope rules would make the nesting answer
+        depend on that model being right. Requiring explicit closes cannot be wrong about
+        scope, and the author's fix is one end tag on the line named.
         """
         with pytest.raises(ExtractionRefused, match=expected):
             html_fields(f"<html><body>{page}</body></html>")
@@ -518,10 +474,8 @@ class TestThePageReader:
         """The spec calls this content FALLBACK: it is painted only where the element
         itself cannot be used, so a browser that supports the element shows none of it.
 
-        The binder matches on the attribute alone and fills it regardless, which makes the
-        binding reachable and invisible at once -- the same pair `title` and svg already
-        cost this reader. The set is read from the module so a sixth element cannot join it
-        uncovered.
+        The binder fills it anyway, so the binding is reachable and invisible. The set is
+        read from the module so a new element cannot join it uncovered.
         """
         with pytest.raises(ExtractionRefused, match="FALLBACK content"):
             html_fields(
@@ -541,20 +495,14 @@ class TestThePageReader:
     def test_a_binding_on_an_element_that_renders_no_text_is_refused(self, tag: str) -> None:
         """Asked wherever the element sits, not only inside the head.
 
-        `<body><title data-dashboard-field="open">` is matched by the binder -- it selects
-        on the attribute alone -- and the browser's default sheet hides `title`, so the
-        value is written and nothing appears. Every element html permits in the head
-        renders none of its text content anywhere, which is why one set answers both
-        questions.
+        The binder matches `<body><title data-dashboard-field="open">`, but the default
+        sheet hides `title`. No element html permits in the head renders its text anywhere.
 
-        Several of these are already refused by an earlier rule -- `base`, `link` and
-        `meta` hold no text at all, `style` is stepped over by the binder -- so the
-        assertion is that the binding is refused, not which sentence says so. The set is
-        read from the module rather than retyped, so a tenth element cannot be added to it
-        without this case covering it.
+        Some (`base`, `link`, `meta`, `style`) hit an earlier rule, so the match accepts any
+        refusal. The set is read from the module so a new element cannot go uncovered.
         """
-        # A void element among these (`base`, `link`, `meta`) is written WITHOUT an end tag:
-        # html has none for it, and this reader now says so before it judges the binding.
+        # Void elements (`base`, `link`, `meta`) are written WITHOUT an end tag: html has
+        # none, and this reader refuses one before it judges the binding.
         closing = "" if tag in parity._VOID_TAGS else f"</{tag}>"
         with pytest.raises(ExtractionRefused, match="the host will never fill"):
             html_fields(
@@ -595,15 +543,9 @@ class TestThePageReader:
     ) -> None:
         """Why this file reads the host rather than listing what it believes.
 
-        A hand-kept mirror of another file's set has one failure mode and it is silent:
-        the set grows on that side and every gate here still passes. Nothing in this
-        package can see that, so each omission has to be found by a person reading both
-        files, and finding one leaves the next equally invisible.
-
-        So the comparison itself is the gate. Every attribute the binder's own sweep
-        removes must be claimed by exactly one reader here -- outbound for the ones that
-        fetch, dropped for the ones whose text the host's scan cannot audit. An entry added
-        on that side fails here, by name, instead of reaching a reviewer.
+        A hand-kept mirror goes silently stale when the host's set grows. Every attribute
+        the binder removes must be claimed by a reader here (outbound for ones that fetch,
+        dropped for text the host cannot audit), so a new one fails by name.
         """
         source = self._BINDER.read_text(encoding="utf-8")
         removed = set(re.findall(r"attr\.localName === '([a-zA-Z-]+)'", source))
@@ -624,13 +566,8 @@ class TestThePageReader:
     def test_the_control_tags_split_into_host_stripped_and_locally_refused(self) -> None:
         """Which control tags the HOST removes, and which this package refuses alone.
 
-        Saying the host strips all of them reads as one rule and is two. Three of them --
-        `label`, `fieldset`, `option` -- survive sanitizing, so a reader who believed the
-        single claim would expect the host to protect a page this package rejects, and a
-        reader checking the claim would find it false and trust the rest less.
-
-        Both halves are read out of the binder's own forbid list, so a tag moving between
-        them fails here instead of leaving a comment quietly wrong.
+        `label`, `fieldset` and `option` survive sanitizing. Both halves are read out of
+        the binder's own forbid list, so a tag moving between them fails here.
         """
         source = self._BINDER.read_text(encoding="utf-8")
         listed = re.search(r"FORBID_TAGS: \[([^\]]*)\]", source)
@@ -646,10 +583,8 @@ class TestThePageReader:
     def test_the_refused_placements_are_the_ones_the_browser_really_skips(self) -> None:
         """The list cannot be maintained by memory, so it is checked against the binder.
 
-        The cost of a rule like this is that it silently stops matching the host. So the
-        host's own source is read: the binder must still query the body rather than the
-        document, and must still skip every tag named here before reading a field. A
-        change on their side fails here instead of rendering a blank cell.
+        The binder must still query the body, not the document, and still skip every tag
+        named here before reading a field.
         """
         source = self._BINDER.read_text(encoding="utf-8")
         assert f"body.querySelectorAll('[{parity._BINDING}]')" in source, (
@@ -721,9 +656,7 @@ class TestThePageReader:
         assert html_fields(seeded) == {"lede", "open"}
 
 
-# ---------------------------------------------------------------------------
 # reading the contract
-# ---------------------------------------------------------------------------
 
 
 class TestTheContractReader:
@@ -736,16 +669,11 @@ class TestTheContractReader:
     ) -> None:
         """An optional key is a field the html binds that the provider may leave out.
 
-        The cell then renders blank while the equality gate stays green over the names --
-        the exact failure this package exists to prevent, reached through the gate itself.
         `Unsaid` is what a missing value is for, and it keeps the key required.
 
-        Written to a real module compiled with `from __future__ import annotations`, the
-        way every contract in this tree is, because that is what decides the answer: under
-        it a `TypedDict` sees its annotations as strings, so `total=False` still reaches
-        `__optional_keys__` while `NotRequired` does NOT and the key reads as required. A
-        contract defined inline in this test file resolves differently and would have let
-        the `NotRequired` half pass while the shipped spelling leaked.
+        Written to a real module with `from __future__ import annotations`, as every
+        contract here is: then `NotRequired` is a string and does NOT reach
+        `__optional_keys__`, which an inline contract would hide.
         """
         module = tmp_path / "leaky_contract.py"
         declaration = (
@@ -809,10 +737,8 @@ class TestTheContractReader:
     def test_every_container_spelling_is_refused_not_just_the_four(self, annotation: Any) -> None:
         """The reason this gate names what IS flat rather than what is not.
 
-        Refusing a list of shapes accepts every shape nobody listed, and a container can
-        be spelled many ways whose origin is none of `dict`, `list`, `set` or `tuple` --
-        `Mapping`, `Sequence`, `frozenset`, `deque`. Each would have reached the page as
-        one text field it cannot render.
+        A denylist of shapes misses `Mapping`, `Sequence`, `frozenset` or `deque`, whose
+        origin is none of `dict`, `list`, `set` or `tuple`.
         """
         card = TypedDict("card", {"contract_version": str, "captured_at": str, "x": annotation})
         with pytest.raises(ExtractionRefused, match="flat text"):
@@ -837,22 +763,18 @@ class TestTheContractReader:
     def test_a_leaf_the_single_exit_cannot_render_is_refused(self, annotation: Any) -> None:
         """``card_data`` stringifies, and says what that means: an ``int`` or a ``str``.
 
-        Each of these reaches the page as something no template should state. ``None``
-        arrives as the word "None", which is invariant 3 broken in its worst form -- a gap
-        rendering as text that reads like data. ``bool`` arrives as a Python literal.
-        ``float`` is a ratio, and a count states its denominator instead.
+        ``None`` would render as the word "None" (a gap that reads like data, breaking
+        invariant 3), ``bool`` as a Python literal, and ``float`` is a ratio where a count
+        should state its denominator.
         """
         card = TypedDict("card", {"contract_version": str, "captured_at": str, "x": annotation})
         with pytest.raises(ExtractionRefused, match="flat text"):
             contract_keys(card)
 
     def test_a_nested_value_hidden_inside_a_union_is_refused(self) -> None:
-        """The hole the outer-annotation-only check left, and the common way in.
+        """Nesting usually arrives by being made optional, so the check looks inside unions.
 
-        Nesting usually arrives by being made optional. A check that looks only at the
-        outermost annotation sees a union -- neither a TypedDict nor a list -- and lets
-        the nested shape through, so the gate reports one flat key for a value the page
-        can never render.
+        Only the outer annotation would read as a union, neither a TypedDict nor a list.
         """
         with pytest.raises(ExtractionRefused, match="flat text"):
             contract_keys(_OptionalNestedCard)

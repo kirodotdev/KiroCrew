@@ -58,6 +58,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_channel import api_changelog  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_releases  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_update_auto  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_channel import api_update_auto_pin  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_update_channel  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_update_revalidate  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import logger  # noqa: F401
@@ -172,6 +173,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.git_divergence import DivergenceUnreadable  # noqa: F401
     from kiro_crew.git_divergence import count_divergence  # noqa: F401
     from kiro_crew.platform import feed_trust  # noqa: F401
+    from kiro_crew.platform import release_apply  # noqa: F401
     from kiro_crew.platform.update_capability import AUTO_EFFECT_UNKNOWN  # noqa: F401
     from kiro_crew.platform.update_capability import CHECK_DEFERRED  # noqa: F401
     from kiro_crew.platform.update_capability import CHECK_FAILED  # noqa: F401
@@ -193,7 +195,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform.update_capability import auto_update_effect  # noqa: F401
     from kiro_crew.platform.update_capability import bundled_by_desktop_app  # noqa: F401
     from kiro_crew.platform.update_capability import derive_capability  # noqa: F401
-    from kiro_crew.platform.update_governance import fetch_and_pin_upstream  # noqa: F401
+    from kiro_crew.platform.update_fetch import fetch_and_pin_upstream  # noqa: F401
     from kiro_crew.platform.update_governance import git_command_env  # noqa: F401
     from kiro_crew.platform.update_governance import min_version  # noqa: F401
     from kiro_crew.platform.update_governance import repo_exec_config_reason  # noqa: F401

@@ -95,6 +95,7 @@ def _pr(number: int, merged: str) -> dict:
         "author": {"login": f"user{number % 7}", "is_bot": False},
         "mergedAt": merged,
         "url": f"https://github.com/o/r/pull/{number}",
+        "body": f"**Goal:** ship change {number}.",
     }
 
 
@@ -152,8 +153,13 @@ class Runner:
         )
 
     @property
-    def selected(self) -> list[dict]:
+    def classified(self) -> list[dict]:
         return json.loads((self.work / "prs.json").read_text())
+
+    @property
+    def selected(self) -> list[dict]:
+        """The selected PRs as fetched, without the `kind` the step adds."""
+        return [{k: v for k, v in p.items() if k != "kind"} for p in self.classified]
 
     @property
     def count(self) -> str:
@@ -223,12 +229,44 @@ def test_a_pr_on_a_split_point_is_reported_once(runner: Runner) -> None:
     assert len(numbers) == len(set(numbers)) == SEARCH_CAP + 1
 
 
-def test_output_fields_are_unchanged(runner: Runner) -> None:
-    """The narrative and template steps read these exact fields."""
+def test_output_fields_are_the_ones_the_body_steps_read(runner: Runner) -> None:
+    """The narrative and template steps read these exact fields; `kind` is
+    added here so both classify a PR the same way."""
     prs = _spread(3)
     runner.fetch(prs)
     assert runner.selected == _expected(prs)
-    assert set(runner.selected[0]) == {"number", "title", "author", "mergedAt", "url"}
+    assert set(runner.classified[0]) == {
+        "number",
+        "title",
+        "author",
+        "mergedAt",
+        "url",
+        "body",
+        "kind",
+    }
+
+
+@pytest.mark.parametrize(
+    ("title", "kind"),
+    [
+        ("feat(chat): a", "Features"),
+        ("fix: b", "Fixes"),
+        ("docs(rfc): c", "Docs"),
+        ("ci: d", "CI and chores"),
+        ("chore(release): e", "CI and chores"),
+        ("build: f", "CI and chores"),
+        ("test(ci): g", "CI and chores"),
+        ("refactor(apps): h", "Refactoring"),
+        ("perf: i", "Refactoring"),
+        ("revert: j", "Reverts"),
+        ("Bump foo from 1 to 2", "Other"),
+    ],
+)
+def test_each_pr_is_classified_by_its_title_prefix(runner: Runner, title: str, kind: str) -> None:
+    pr = {**_spread(1)[0], "title": title}
+    step = runner.fetch([pr])
+    assert step.returncode == 0, step.stderr
+    assert runner.classified[0]["kind"] == kind
 
 
 def test_an_unsplittable_slice_fails_instead_of_dropping_prs(runner: Runner) -> None:

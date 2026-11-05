@@ -355,11 +355,11 @@ def test_crewmate_cards_name_the_crewmate_the_way_the_user_knows_it():
     )
     before = {"exists": True, "fields": {"description": "old"}}
     preview = catalog.build_preview("crewmate.update", p, before, {"label": "Rock"})
-    assert preview["title"] == "Update mate “Rock”"
+    assert preview["title"] == "Update Bot “Rock”"
     assert preview["scope"]["members"] == ["Rock"]
     assert preview["apply"][0]["path"] == "/api/agents/scout"
     plain = catalog.build_preview("crewmate.update", p, before, {})
-    assert plain["title"] == "Update mate “scout”"
+    assert plain["title"] == "Update Bot “scout”"
     assert plain["scope"]["members"] == ["scout"]
 
 
@@ -504,6 +504,17 @@ def test_memory_descriptions_carry_names_only():
     assert text == "changed config chat.verbosity standard→ultra-brief"
 
 
+def test_memory_names_the_server_a_settings_connect_started():
+    # Settings → MCP posts an owner-configured server as ``{"server": ...}``, not
+    # ``{"slug": ...}``; the memory line must name it instead of reading "null".
+    text = catalog.describe_manual_change(
+        ("POST", "/api/connections/mint"), {}, {"server": "atlassian"}
+    )
+    assert text == "started connecting atlassian"
+    text = catalog.describe_manual_change(("POST", "/api/connections/mint"), {}, {"slug": "github"})
+    assert text == "started connecting github"
+
+
 def test_every_hooked_route_is_a_real_registered_route():
     sources = "\n".join(
         p.read_text(encoding="utf-8")
@@ -574,7 +585,7 @@ def test_a_failed_first_step_is_retryable_and_a_failed_later_step_is_partial():
     store.record_failure(rec, op="apply", index=1, status=500, body=None)
     assert rec["status"] == "partial"
     assert rec["result"]["summary"] == (
-        "Created mate “Scout”, but its goal or its schedule was not saved"
+        "Created Bot “Scout”, but its goal or its schedule was not saved"
     )
 
 

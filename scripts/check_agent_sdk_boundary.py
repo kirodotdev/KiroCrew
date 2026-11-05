@@ -41,7 +41,9 @@ Three source trees are exempt, because they ARE the boundary:
 
 `test/` is out of scope on purpose. A test that exercises the driver must import
 the driver's own dependencies, and gating that would make the boundary
-untestable.
+untestable. A built-in app's own test suite, under
+`src/kiro_crew/apps/builtins/<app>/tests/`, is test code for the same reason and
+is out of scope too; the app's runtime code beside it stays in scope.
 
 Matching is AST-based, so a multi-line import is judged as one statement and a
 `if TYPE_CHECKING:` import is still a violation -- a type-only dependency is
@@ -88,6 +90,7 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -109,6 +112,10 @@ EXEMPT_PREFIXES = (
     "src/kiro_crew/providers/",
 )
 
+# A built-in app's test suite lives inside its package rather than under test/,
+# and is test code all the same; see the module docstring.
+APP_TEST_TREE = re.compile(r"^src/kiro_crew/apps/builtins/[^/]+/tests/")
+
 DYNAMIC_IMPORTERS = ("import_module", "__import__")
 
 HEADER = """\
@@ -118,8 +125,9 @@ HEADER = """\
 # a consumer look migrated while still reading the backend's own types.
 #
 # The gate requires every OTHER file under src/ -- outside the exempt
-# agent_sdk/, acp/ and providers/ trees -- to be clean and none of these
-# counts to grow, so the list can shrink but never grow.
+# agent_sdk/, acp/ and providers/ trees and the built-in apps' tests/
+# suites -- to be clean and none of these counts to grow, so the list can
+# shrink but never grow.
 #
 # It is a floor, not a countdown to zero. Most of these consumers are expected
 # to keep reading ACP directly: ACP is the foundation the SDK is built on, not
@@ -161,6 +169,10 @@ def _load_scope():
 
 def _is_exempt(rel: str) -> bool:
     return any(rel.startswith(prefix) for prefix in EXEMPT_PREFIXES)
+
+
+def _is_app_test(rel: str) -> bool:
+    return APP_TEST_TREE.match(rel) is not None
 
 
 def _forbidden(dotted: str) -> bool:
@@ -438,7 +450,7 @@ def _scan(targets: tuple[str, ...]) -> dict[str, dict[int, str]]:
             continue
         for path in sorted(base.rglob("*.py")):
             rel = path.relative_to(ROOT).as_posix()
-            if _is_exempt(rel):
+            if _is_exempt(rel) or _is_app_test(rel):
                 continue
             try:
                 source = path.read_text(encoding="utf-8", errors="replace")
@@ -753,6 +765,15 @@ def _self_test() -> int:
         failures.append("the SDK driver tree is not exempt")
     if _is_exempt("src/kiro_crew/dashboard/chat_runner.py"):
         failures.append("a consumer tree is exempt")
+    if not _is_app_test("src/kiro_crew/apps/builtins/probe_app/tests/test_probe.py"):
+        failures.append("a built-in app's test suite is in scope")
+    for in_scope in (
+        "src/kiro_crew/apps/builtins/probe_app/backend/tests_helper.py",
+        "src/kiro_crew/apps/builtins/probe_app/backend/tests/runner.py",
+        "src/kiro_crew/dashboard/tests/probe.py",
+    ):
+        if _is_app_test(in_scope):
+            failures.append(f"runtime code is treated as an app test: {in_scope}")
 
     for line in failures:
         print(f"::error::{line}")

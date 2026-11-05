@@ -18,7 +18,13 @@ import logging
 from typing import Any, Callable
 
 from kiro_crew.agent_sdk.backends import Routing, routing_for
-from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, event_is_spawn_run, hook_gate_kwargs
+from kiro_crew.hooks import (
+    TOOL_AUTO_APPROVE,
+    TOOL_DENY,
+    event_is_spawn_run,
+    hook_gate_kwargs,
+    unattended_turn,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.messaging.dispatch")
@@ -93,7 +99,9 @@ class ToollessTurnUnavailable(RuntimeError):
     """
 
 
-def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callable[[Any], str]:
+def build_tool_gate(
+    ctx_builder: Any, *, session_key: str, agent: str, unattended: bool = False
+) -> Callable[[Any], str]:
     """PreToolUse security gate, channel-neutral (off ``ctx_builder.hooks``).
 
     Sensitive-path keystone + governance ceiling + deny-list. Returns ``"deny"``
@@ -107,15 +115,20 @@ def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callab
     of reading kiro-cli's generic "User denied tool execution" -- the same
     attribute-on-a-callable shape ``ApprovalDecider.last_deny_cause`` uses. A
     plain callable without the attribute is a deny with no reason, as before.
+
+    ``unattended`` marks the turn as one nobody is watching (a monitor wake):
+    each consultation runs under ``hooks.unattended_turn``, so a governance
+    evaluation that raises refuses the call instead of allowing it.
     """
 
     def _tool_gate(event: Any) -> str:
-        result = ctx_builder.hooks.on_tool_call(
-            getattr(event, "title", "") or "",
-            session_key=session_key,
-            agent=agent,
-            **hook_gate_kwargs(event),
-        )
+        with unattended_turn(unattended):
+            result = ctx_builder.hooks.on_tool_call(
+                getattr(event, "title", "") or "",
+                session_key=session_key,
+                agent=agent,
+                **hook_gate_kwargs(event),
+            )
         denied = result.action == TOOL_DENY
         reason = str(getattr(result, "reason", "") or "") if denied else ""
         _tool_gate.last_deny_reason = reason  # type: ignore[attr-defined]

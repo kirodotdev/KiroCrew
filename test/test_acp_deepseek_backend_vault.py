@@ -122,13 +122,9 @@ def test_a_provider_key_mapping_the_harness_would_not_honour_is_refused(
 ) -> None:
     """Every refusal names the env-var KEY and nothing about the secret.
 
-    Each of these fails SILENTLY if injected instead: a plaintext value puts a live
-    key in config.json, a non-identifier is not a reference the harness resolves, a
-    name outside the harness's child-scrub class is forwarded into the model's own
-    shell, a reserved or Crew-owned name collides with a variable Crew writes here,
-    and a name Crew's agent scrub strips is removed again on the shared tail. So each
-    is a refusal, and the message has to be specific enough that the operator knows
-    which rule they hit.
+    Each case would fail silently if injected (plaintext on disk, a name forwarded to
+    the model's shell, a collision with a Crew variable), so each refusal must name
+    the rule the operator hit.
     """
     from kiro_crew.acp import client as client_module
 
@@ -148,18 +144,10 @@ def test_a_provider_key_mapping_the_harness_would_not_honour_is_refused(
 def test_every_scrub_class_name_crew_writes_on_the_child_is_reserved() -> None:
     """Derived, so the reserved set cannot lag the spawn pipeline.
 
-    The provider-key injection lands on the child's ``env`` BEFORE the shared tail
-    writes Crew's own variables onto it, so any name Crew writes there that is also
-    inside the harness's scrub class is a name an operator mapping could collide
-    with -- and the later write wins, handing the harness's provider whatever Crew
-    put there. ``KIROCREW_SESSION_KEY`` and the signed stub token are exactly that
-    shape: both are session credentials, both contain ``KEY``/``TOKEN``, and both
-    are written by ``_apply_session_identity_env`` after the arm.
-
-    So the validator's reserved names are checked against a DERIVATION here: every
-    upper-case env-name literal in the functions that compose the child's
-    environment, filtered to the scrub class, must be refused by the validator.
-    A new Crew variable in that class fails this test until it is reserved.
+    The shared tail writes Crew's variables after the key injection and wins, so a
+    mapped name in the scrub class (e.g. ``KIROCREW_SESSION_KEY``) would hand the
+    provider a Crew credential. Every such env-name literal in the env builders
+    must be refused.
     """
     import re
 
@@ -175,8 +163,6 @@ def test_every_scrub_class_name_crew_writes_on_the_child_is_reserved() -> None:
         client_module._resolve_spawn_env,
         sandbox.scrub_agent_subprocess_env,
         agent_scratch.scratch_env,
-        client_module.browser_session_env,
-        client_module.browser_socket_env,
         client_module._apply_pod_home_remap,
         client_module.inject_xdist_auto_cap,
     )
@@ -208,12 +194,8 @@ def test_a_provider_key_mapping_the_harness_honours_is_accepted() -> None:
 def test_a_plaintext_value_never_reaches_disk_through_the_locked_write(tmp_path) -> None:
     """The publish floor: ``config set`` cannot persist a provider key in plaintext.
 
-    Without this floor a plaintext value typed into ``config set agent.deepseek_env``
-    lands in ``config.json`` and sits there until the next DeepSeek spawn refuses
-    it -- a live credential persisted in an agent-readable file, which is the
-    exposure the vault route exists to close. So the refusal sits at the moment of
-    publication: ``write_config_atomically`` refuses the document, the locked
-    read-modify-write propagates that, and the file on disk is exactly what it was.
+    ``write_config_atomically`` refuses the document, so a live key never sits in
+    the agent-readable ``config.json`` and the file stays as it was.
     """
     from kiro_crew.config.loader import ConfigWriteRefused, update_config_locked
 
@@ -243,14 +225,9 @@ def test_a_pre_existing_plaintext_value_does_not_refuse_an_unrelated_write(
 ) -> None:
     """The floor refuses what a write INTRODUCES, not what an older build already landed.
 
-    Every config writer lands on ``write_config_atomically`` -- the Slack allowlist,
-    the dashboard PUT and PATCH, ``config set``, ``save()`` -- and most of them have
-    no ``ConfigWriteRefused`` handler because they never touch this field. A
-    ``config.json`` hand-edited (or written by a build before the floor) with a
-    plaintext ``agent.deepseek_env`` value must not turn every one of those writes
-    into an unhandled exception: a write that leaves the mapping exactly as it
-    found it publishes, and the plaintext is named on the log so it is not silent.
-    The spawn-time validator still refuses the DeepSeek session that would use it.
+    Most writers have no ``ConfigWriteRefused`` handler, so a write that leaves an
+    existing plaintext mapping unchanged publishes and logs it; the spawn-time
+    validator still refuses the DeepSeek session.
     """
     import logging
 
@@ -319,10 +296,8 @@ def test_a_reference_passes_the_publish_floor_and_the_whole_document_save_is_gat
 ) -> None:
     """Both halves of the floor: a ``secret://`` value publishes; ``save()`` is gated.
 
-    The locked RMW is not the only writer that lands a config document --
-    :meth:`KiroCrewConfig.save` publishes in-memory state whole -- so the rule sits
-    in the one function both reach. A reference is what the mapping is FOR, so it
-    has to pass, or the floor would refuse the operator's correct configuration.
+    :meth:`KiroCrewConfig.save` also publishes whole documents, so the rule sits in
+    the one function both writers reach.
     """
     from kiro_crew.config.loader import ConfigWriteRefused, KiroCrewConfig, update_config_locked
 
@@ -378,13 +353,8 @@ def test_the_cli_file_import_reports_the_refusal_and_leaves_config_json_as_it_wa
 ) -> None:
     """``config set --file`` is the third writer behind the floor; it refuses the same way.
 
-    The whole-document import lands through the same locked write as the keyed
-    paths, so a file carrying a plaintext ``agent.deepseek_env`` value reaches
-    ``_refuse_unpublishable`` too. Without a handler on this branch the operator
-    gets a ``ConfigWriteRefused`` traceback instead of the one-line refusal the
-    keyed paths print -- and a traceback is where the file path and the exception
-    class leak while the actual instruction (map it as ``secret://``) is buried.
-    Nothing was written either way; this pins that the report is controlled.
+    It prints the one-line refusal (map it as ``secret://``), not a
+    ``ConfigWriteRefused`` traceback that buries the instruction.
     """
     import argparse
     from unittest.mock import patch
@@ -446,10 +416,8 @@ def test_the_child_scrub_class_is_read_from_the_harness_not_guessed() -> None:
     """The class is the harness's own ``SENSITIVE_ENV_PATTERN``, pinned as a constant.
 
     ``@deepseek-ai/dsh-subprocess`` drops every inherited variable matching
-    ``/KEY|PASSWORD|SECRET|TOKEN/i`` before spawning any child, on both of its spawn
-    paths. That pattern is the ENTIRE reason an env-fed key is safer here than a
-    spared file, so it is pinned rather than paraphrased: a Crew-side copy that
-    drifted wider would admit a name the harness forwards to the model's shell.
+    ``/KEY|PASSWORD|SECRET|TOKEN/i`` before spawning any child. That is why an
+    env-fed key is safe here, so a wider Crew-side copy would admit a leaked name.
     """
     from kiro_crew.acp import client as client_module
 
@@ -496,13 +464,8 @@ def test_a_missing_vault_secret_refuses_rather_than_starting_without_a_key() -> 
 def _dsh_vault_spawn(tmp_path, monkeypatch, *, mapping, secret=None):
     """Drive a REAL deepseek ``_spawn`` to the process factory and capture its env.
 
-    Everything between the arm and the factory is left real -- the vault read, the
-    validator, the env build -- because those are the subject. Only the collaborators
-    that would touch a live harness or a live process are replaced.
-
-    Returns ``(client, spawned, run)`` where *spawned* is a dict the factory fills
-    with the env OBJECT it was handed (not a copy), so the caller can assert both
-    what the child inherited and what the parent dropped afterwards.
+    The vault read, validator and env build stay real. Returns ``(client, spawned,
+    run)``; *spawned* holds the env object itself, not a copy, so later clears show.
     """
     import asyncio
 
@@ -575,7 +538,6 @@ def _dsh_vault_spawn(tmp_path, monkeypatch, *, mapping, secret=None):
     )
     monkeypatch.setattr(client_module, "finish_suspended_spawn", lambda *a, **k: True)
     monkeypatch.setattr(client_module, "_get_child_pids", lambda _pid: [])
-    monkeypatch.setattr(client_module, "browser_session_env", lambda _env: {})
     monkeypatch.setattr(client_module, "inject_xdist_auto_cap", lambda _env: None)
     monkeypatch.setattr(client_module.agent_scratch, "record_owner", lambda *a, **k: "recorded")
     monkeypatch.setattr("kiro_crew.session._track_pid", lambda *a, **k: None)
@@ -587,15 +549,9 @@ def _dsh_vault_spawn(tmp_path, monkeypatch, *, mapping, secret=None):
 def test_the_vault_key_reaches_the_child_and_leaves_the_parent(tmp_path, monkeypatch) -> None:
     """The whole route, end to end through ``_spawn``: vault -> child env -> cleared.
 
-    Three facts in one drive, because they are one mechanism. The key the operator
-    stored reaches the harness process under the name they mapped; the plaintext
-    never touches the gateway's own ``os.environ`` and is never kept on the client;
-    and the dict the resolver returned is emptied INSIDE the deepseek arm as soon as
-    its entries are on the child's env -- the contract
-    ``secret_uri.resolve_secret_uris`` states, honoured where this adapter's code
-    lives rather than on the shared post-spawn path (harness-parity H13). The
-    child's own env dict is a local of ``_spawn`` and dies with the frame, so there
-    is no later site for a clear to run at.
+    The key reaches the child under the mapped name, never touches ``os.environ`` or
+    the client, and the resolver's dict is emptied inside the deepseek arm, per
+    ``secret_uri.resolve_secret_uris`` (harness-parity H13).
     """
     client, spawned, asyncio_mod = _dsh_vault_spawn(
         tmp_path,

@@ -355,6 +355,24 @@ class TestProbeCoalescing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gitlab_probe.call_count, 2)
         self.assertEqual(gitlab_probe.call_args.kwargs, {"host": "gitlab.com"})
 
+    async def test_a_probe_left_by_a_torn_down_loop_is_not_awaited(self):
+        # A probe whose loop was torn down never runs _remember_probe: the same key
+        # must start a fresh probe on this loop instead of awaiting the dead one.
+        other = asyncio.new_event_loop()
+        try:
+            dead = other.create_future()
+        finally:
+            other.close()
+        routes._probe_inflight[("github", "github.com", "o", "r", "issue")] = dead
+        with mock.patch.object(gh, "probe_open_list", return_value=dict(READING)) as probe:
+            outcome = await asyncio.gather(
+                routes._poll_can_serve_cache(KEY, "issue", "open", SNAPSHOT),
+                return_exceptions=True,
+            )
+        self.assertEqual(outcome, [(True, READING)])
+        self.assertEqual(probe.call_count, 1)
+        self.assertEqual(routes._probe_inflight, {})
+
     async def test_remember_probe_ignores_cancelled_and_foreign_futures(self):
         loop = asyncio.get_running_loop()
         k = ("github", "github.com", "o", "r", "issue")

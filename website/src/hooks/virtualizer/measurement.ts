@@ -52,6 +52,13 @@ function measureBorderBox(el: HTMLElement): { height: number; top: number | null
   return { height: el.offsetHeight, top: null }
 }
 
+/** The height owner and announced version the committed spacers were rendered
+ *  from: what the DOM shows, which the tree can have moved past. */
+export interface PaintedHeights {
+  owner: HeightIndex
+  version: number
+}
+
 export interface HeightOwner {
   heightIndexRef: Ref<HeightIndex | null>
   heightIndex: HeightIndex
@@ -65,6 +72,8 @@ export interface HeightOwner {
   offsetAfter: number
   /** Persist pending measurements (the unmount teardown). */
   flushHeights: () => void
+  /** What the last commit's spacers were rendered from (see PaintedHeights). */
+  paintedHeightsRef: Ref<PaintedHeights | null>
 }
 
 export function useHeightOwner<T>(ctx: {
@@ -236,6 +245,15 @@ export function useHeightOwner<T>(ctx: {
     heightIndexRef.current?.flush()
   }, [])
 
+  // Advanced in this owner's layout effect, which runs before every later
+  // owner's effect in the same commit -- the scope reseed among them, which
+  // announces a reprice -- so it names what the DOM shows rather than what the
+  // tree has moved on to (see recomputeWindow's transient frame).
+  const paintedHeightsRef = useRef<PaintedHeights | null>(null)
+  useLayoutEffect(() => {
+    paintedHeightsRef.current = { owner: heightIndex, version: heightCommit }
+  })
+
   return {
     heightIndexRef,
     heightIndex,
@@ -246,6 +264,7 @@ export function useHeightOwner<T>(ctx: {
     offsetBefore,
     offsetAfter,
     flushHeights,
+    paintedHeightsRef,
   }
 }
 
@@ -391,18 +410,69 @@ export function useRowMeasurement<T>(ctx: {
   // along arithmetically (shiftRowTops), and the scroll event that write
   // raises re-reads everything a frame later.
   const liveTopRef = useRef<Map<Element, number>>(new Map())
+
+  // ---- Last seen height, per mounted node ----
+  // The height each row had in the SAME frame its last seen top was read, so
+  // the record names one layout. The live height above cannot stand in for it:
+  // it advances at every fire, while the top advances at scroll events, and
+  // a scroll event's rect read lays out whatever width the column has by then.
+  // Under a column that changes width over several frames (a sidebar animating
+  // out at the phone breakpoint) the top was read at one width and the live
+  // height at another: a row last seen 3,800px above the fold with its
+  // 116px-wide height of 5,700px reads as straddling the viewport, becomes the
+  // reader's row, and its keep-the-bottom rule moves the transcript by the
+  // whole difference. The reader's row and its own reprice are chosen from
+  // this record; the live height still classifies the fire.
+  const seenHeightRef = useRef<Map<Element, number>>(new Map())
+  // The scroller width the record above was last made at: by a scroll
+  // event's re-read or by a fire. A scroll event whose rect read lays out a
+  // DIFFERENT width (the column moved on since the last fire classified it)
+  // would record the re-wrapped frame, which the reader has not been held
+  // through yet: the next fire would see no displacement and pay none, and
+  // on WebKit, with no native anchoring, the whole re-wrap would reach the
+  // reader. So that read keeps the earlier record, and the fire for the new
+  // width measures the re-wrap from it.
+  //
+  // Except when the scroll is the reader's own gesture: opened by hardware
+  // input, and continued by every scroll event within the settle window of the
+  // one before (a fling's momentum arrives with no further input, so the input
+  // stamp alone lapses mid-gesture). Their travel moved the rows by an amount
+  // the frozen record cannot tell apart from the re-wrap, so the next fire
+  // would pay it back and undo their scroll. That read re-records the frame,
+  // as every scroll event does outside a transition: their position stands,
+  // and the re-wrap that landed in the same frame is left to the engine (as it
+  // is on any reader scroll). The follow policy's own scroll clock cannot be
+  // reused here: it is stamped by every scroll the hook did not write, the
+  // engine's anchoring included, and by this very event before this runs.
+  const recordWidthRef = useRef<number | null>(null)
+  /** The last scroll event that belonged to a reader gesture (see above). */
+  const gestureScrollAtRef = useRef(Number.NEGATIVE_INFINITY)
   /** The reader's row the last fire measured, and where its write puts it. */
-  const firedAnchorRef = useRef<{ node: Element; wantedTop: number } | null>(null)
+  // `holdsBottom`: the fire credited the row's own re-wrap as a straddler's,
+  // keeping its bottom where the reader saw it. Until the next frame is read
+  // afresh, later fires keep that same edge (see the anchor pass).
+  const firedAnchorRef = useRef<{ node: Element; wantedTop: number; holdsBottom: boolean } | null>(null)
+  const { lastScrollClientHRef, lastReaderScrollAtRef, lastHardInputAtRef } = ctx.follow
   const noteRowTops = useCallback((el: HTMLDivElement) => {
     if (typeof el.getBoundingClientRect !== 'function') return
+    const now = performance.now()
+    const readerGesture =
+      now - lastHardInputAtRef.current <= SCROLL_SETTLE_MS ||
+      now - gestureScrollAtRef.current <= SCROLL_SETTLE_MS
+    if (readerGesture) gestureScrollAtRef.current = now
+    if (recordWidthRef.current !== null && el.clientWidth !== recordWidthRef.current && !readerGesture) return
+    recordWidthRef.current = el.clientWidth
     const foldTop = el.getBoundingClientRect().top
     const tops = liveTopRef.current
+    const heights = seenHeightRef.current
     for (const node of elIndexRef.current.keys()) {
-      tops.set(node, node.getBoundingClientRect().top - foldTop)
+      const box = measureBorderBox(node as HTMLElement)
+      if (box.top !== null) tops.set(node, box.top - foldTop)
+      if (box.height > 0) heights.set(node, box.height)
     }
     // A whole frame read afresh: the reader's row is chosen anew next fire.
     firedAnchorRef.current = null
-  }, [elIndexRef])
+  }, [elIndexRef, lastHardInputAtRef])
   const shiftRowTops = useCallback((delta: number) => {
     const tops = liveTopRef.current
     for (const [node, top] of tops) tops.set(node, top - delta)
@@ -412,8 +482,6 @@ export function useRowMeasurement<T>(ctx: {
     const fired = firedAnchorRef.current
     if (fired && tops.has(fired.node)) tops.set(fired.node, fired.wantedTop)
   }, [])
-  const { lastScrollClientHRef, lastReaderScrollAtRef, lastHardInputAtRef } = ctx.follow
-
   /** Last observed scroller clientHeight, so a viewport resize has a direction. */
   const viewportHeightRef = useRef(0)
 
@@ -461,27 +529,34 @@ export function useRowMeasurement<T>(ctx: {
     // top by the straddling-row rules below, and after the loop its actual
     // displacement decides the write.
     const seenTops = liveTopRef.current
-    const seenHeights = liveHeightRef.current
-    let anchor: { node: Element; prevTop: number; prevHeight: number } | null = null
+    // The height from the frame its top was read in (see seenHeightRef); a
+    // node seeded at mount but not yet seen at a scroll falls back to its
+    // live height, which its seed recorded in that same frame.
+    const seenHeightOf = (node: Element) => seenHeightRef.current.get(node) ?? liveHeightRef.current.get(node)
+    let anchor: { node: Element; prevTop: number; prevHeight: number; holdsBottom: boolean } | null = null
     // Until the next scroll event re-reads the frame, a fire that already
     // wrote keeps its reader's row: after that write only ITS position on
     // record is exact (shiftRowTops), so choosing afresh could pick a row
     // whose carried position is off by the layout pushes it did not see.
     const fired = firedAnchorRef.current
     if (fired && seenTops.has(fired.node) && elIndexRef.current.has(fired.node)) {
-      const prevHeight = seenHeights.get(fired.node)
-      if (prevHeight !== undefined && prevHeight > 0) anchor = { node: fired.node, prevTop: seenTops.get(fired.node)!, prevHeight }
+      const prevHeight = seenHeightOf(fired.node)
+      if (prevHeight !== undefined && prevHeight > 0) {
+        anchor = { node: fired.node, prevTop: seenTops.get(fired.node)!, prevHeight, holdsBottom: fired.holdsBottom }
+      }
     }
     if (!anchor) {
       for (const [node, prevTop] of seenTops) {
-        const prevHeight = seenHeights.get(node)
+        const prevHeight = seenHeightOf(node)
         if (prevHeight === undefined || prevHeight <= 0) continue
         if (prevTop + prevHeight <= 0 || prevTop >= el.clientHeight) continue
-        if (!anchor || prevTop < anchor.prevTop) anchor = { node, prevTop, prevHeight }
+        if (!anchor || prevTop < anchor.prevTop) anchor = { node, prevTop, prevHeight, holdsBottom: false }
       }
     }
-    // The reader's row's own credited change, per the straddling rules.
+    // The reader's row's own credited change, per the straddling rules, and
+    // the height it was laid out at in this fire.
     let anchorOwnReprice = 0
+    let anchorNewHeight: number | undefined
     for (const entry of entries) {
       if (entry.target === el) {
         // Three cases, and the DIRECTION separates only the first from the other
@@ -596,13 +671,22 @@ export function useRowMeasurement<T>(ctx: {
           // applied to where it was LAST SEEN -- its post-layout rect already
           // carries this batch's displacement and any native adjustment.
           if (anchor && entry.target === anchor.node) {
+            anchorNewHeight = newH
             const inPlace = resizedInPlaceBelow(entry.target, foldTop)
             // An on-screen disclosure change is not compensated; a change noted
             // above the fold in the same row still is, by exactly its size.
             if (inPlace) aboveFoldReprice += inPlaceDeltaAbove(entry.target, foldTop)
             anchorOwnReprice = repriceAboveFoldDelta({
-              rowTop: foldTop + anchor.prevTop,
-              prevHeight: prevH,
+              // A straddler held by its bottom in an earlier fire of this
+              // transition stays held by it: that write can bring its top
+              // inside the fold (a shrink), and re-classified from there the
+              // row would be held by its top instead, moving the content
+              // below it -- what the reader was reading -- by the next
+              // re-wrap. So it is classified from just above the fold.
+              rowTop: foldTop + (anchor.holdsBottom ? Math.min(anchor.prevTop, -1) : anchor.prevTop),
+              // Against the height of the frame its top was seen in: the live
+              // height can be from a layout that top was never read at.
+              prevHeight: anchor.prevHeight,
               newHeight: newH,
               foldTop,
               // The streaming row (and the row in its post-stream settle grace)
@@ -673,8 +757,19 @@ export function useRowMeasurement<T>(ctx: {
       const nowTop = anchor.node.getBoundingClientRect().top - foldTop
       const wantedTop = anchor.prevTop - anchorOwnReprice
       aboveFoldReprice += nowTop - wantedTop
-      firedAnchorRef.current = { node: anchor.node, wantedTop }
+      firedAnchorRef.current = { node: anchor.node, wantedTop, holdsBottom: anchor.holdsBottom || anchorOwnReprice !== 0 }
+      // The reader's row is re-recorded from this frame, top and height
+      // together (see seenHeightRef): where it is now, at the height it has
+      // now. A write then carries it to `wantedTop` (shiftRowTops); a fire
+      // that writes nothing (the residual is under half a pixel, or follow or
+      // a slide anchor owns the position) leaves it where it is. Keeping the
+      // old top beside the new height read a straddler that re-wrapped
+      // without a write as displaced by its whole change on the next fire.
+      liveTopRef.current.set(anchor.node, nowTop)
+      if (anchorNewHeight !== undefined) seenHeightRef.current.set(anchor.node, anchorNewHeight)
     }
+    // This fire classified the layout at the scroller's current width.
+    recordWidthRef.current = el.clientWidth
     return { genuineResize, firstMount, viewportResized, tailRowResized, trailingChromeResized, streamingRowResized, aboveFoldReprice }
   }, [elIndexRef, itemsRef, measurementIndex, streamingIndexRef, graceIndexRef, trailingRef, lastScrollClientHRef, lastReaderScrollAtRef, lastHardInputAtRef])
 
@@ -706,6 +801,7 @@ export function useRowMeasurement<T>(ctx: {
           // node, and a re-keyed row is re-seeded below in this same commit.
           liveHeightRef.current.delete(oldEl)
           liveTopRef.current.delete(oldEl)
+          seenHeightRef.current.delete(oldEl)
           ro?.unobserve(oldEl)
         }
       }
@@ -732,6 +828,7 @@ export function useRowMeasurement<T>(ctx: {
           const sc = scrollerRef.current
           if (box.top !== null && sc && typeof sc.getBoundingClientRect === 'function') {
             liveTopRef.current.set(el, box.top - sc.getBoundingClientRect().top)
+            if (h > 0) seenHeightRef.current.set(el, h)
           }
           // Owner resolved at call time, not captured -- see the ResizeObserver
           // callback above for why a closed-over owner is a wrong-session write.

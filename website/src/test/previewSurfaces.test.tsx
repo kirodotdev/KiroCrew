@@ -343,6 +343,8 @@ describe('Settings > Developer > Feature Previews', () => {
   beforeEach(() => {
     vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
+    // The Shared Crew card draws only for the owner; a 404 leaves it out of the census.
+    vi.spyOn(api, 'sharedCrewPreview').mockResolvedValue(null)
     vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue({
       enabled: false, endpoint: '', configured_endpoint: 'https://api.typesafe.ai/v1/systemone', permits: false,
     })
@@ -488,7 +490,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    const INFO_TIP_COUNT = 1 // one per Feature Previews row carrying a `hint`
+    const INFO_TIP_COUNT = 9 // one per Feature Previews row carrying a `hint`
     const partition = () => {
       const all = ingressButtons()
       return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
@@ -501,7 +503,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // the hand-off on the read-failure notice after, so a bare expect reads whichever
     // moment it hit. A button this set does not name never converges, so it fails here.
     await waitFor(() => {
-      expect(decisionsButtons()).toEqual(['Ask the agent', 'Show'])
+      expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information', 'Show'])
     })
     await waitFor(() => {
       expect(kasButtons()).toEqual(['Ask the agent', 'Retry'])
@@ -513,7 +515,7 @@ describe('Settings > Developer > Feature Previews', () => {
     })
     expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: ['Open Webhooks'] })
     // And the card beside it still draws only its own two.
-    expect(decisionsButtons()).toEqual(['Ask the agent', 'Show'])
+    expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information', 'Show'])
   })
 
   it('renders the section header and the section-wide caveat once, above the cards', () => {

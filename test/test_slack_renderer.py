@@ -830,6 +830,23 @@ class TestStreamMachinery:
         assert _append_pieces("x" * 120, limit=50) == ["x" * 50, "x" * 50, "x" * 20]
         assert _append_pieces("") == []
 
+    def test_append_pieces_skip_a_break_too_early_in_the_piece(self):
+        from kiro_crew.slack.renderer import _append_pieces
+
+        assert _append_pieces("Hi\n" + "x" * 150, limit=100) == ["Hi\n" + "x" * 97, "x" * 53]
+        text = "Title\n" + "w" * 40 + " " + "z" * 80
+        assert _append_pieces(text, limit=100) == ["Title\n" + "w" * 40 + " ", "z" * 80]
+
+    def test_append_pieces_keep_a_break_a_quarter_in(self):
+        from kiro_crew.slack.renderer import _append_pieces
+
+        assert _append_pieces("a" * 30 + "\n" + "b" * 100, limit=100) == [
+            "a" * 30 + "\n",
+            "b" * 100,
+        ]
+        url = "https://example.com/" + "u" * 75
+        assert _append_pieces("Open:\n" + url + " tail", limit=100) == ["Open:\n", url + " tail"]
+
     def test_an_over_limit_reply_streams_whole_across_appends(self):
         """Slack caps one markdown_text append at 12,000 characters.
 

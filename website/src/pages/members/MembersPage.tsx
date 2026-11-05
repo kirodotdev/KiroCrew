@@ -535,15 +535,15 @@ export default function MembersPage() {
     layout, profileCard, drawers, rosterView, thread, navigate, location, queryClient, activeName, searchParams,
     setSearchParams, profile, setProfile, liveSlots, slotsLoaded, active, activeMemberName,
   })
-  const { schedAtStake, schedulesMountedRef, runInTerminalScope } = sidePanel
+  const { runInTerminalScope } = sidePanel
   // Desktop: a two-finger trackpad swipe moves the same side panel the phone
   // drag above does -- left reveals the Dashboard tab, right hides the panel.
   useMembersPageTrackpadSwipe({ layout, profileCard, sidePanel, drawers, active, createOpen, membersRootRef })
   const schedules = useMembersPageSchedules({
-    crewEditing, layout, rosterView, sidePanel, t, profile, activeSlug, activeMemberName,
+    crewEditing, layout, rosterView, t, profile, activeSlug, activeMemberName,
   })
   const {
-    schedDraftDirty, schedSaving, confirmSched, schedConfirmDialog, releaseSchedRetention, mayLeaveSchedules,
+    schedAtStake, schedulesMountedRef, schedDraftDirty, schedSaving, confirmSched, schedConfirmDialog, releaseSchedRetention, mayLeaveSchedules,
   } = schedules
   // ONE guard for exits that unmount Profile. The ref is what lets callbacks declared
   // in the owners (the header's panel reveal in MembersPageProfile.tsx, a roster

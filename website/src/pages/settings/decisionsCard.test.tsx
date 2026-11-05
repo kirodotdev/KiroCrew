@@ -217,7 +217,7 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
     })
-    expect(screen.getByText(/the built-in rule decides instead/i)).toBeInTheDocument()
+    expect(screen.getByTitle(/the built-in rule decides instead/i)).toBeInTheDocument()
   })
 
   it('holds the switch and says why while no decision model is chosen', async () => {
@@ -304,6 +304,7 @@ describe('Decisions (Jev) preview card', () => {
       expect.stringContaining('Which tool calls a compaction would keep'),
       expect.stringContaining('Which recalled memories reach the prompt'),
       expect.stringContaining('Quiet check-ins: wake or skip'),
+      expect.stringContaining('Browser steps: pick and check'),
     ])
     expect(screen.getByText(/what Jev decides while this is on/i)).toBeInTheDocument()
   })
@@ -437,8 +438,8 @@ describe('Decisions (Jev) preview card', () => {
 
     // End and Home are the ends of the PROJECTED list, whatever the gateway sent.
     fireEvent.keyDown(pointRow('Automatic skill choice'), { key: 'End' })
-    await waitFor(() => expect(panel()).toContain('nudge.wake'))
-    fireEvent.keyDown(pointRow('Quiet check-ins: wake or skip'), {
+    await waitFor(() => expect(panel()).toContain('browser.step'))
+    fireEvent.keyDown(pointRow('Browser steps: pick and check'), {
       key: 'Home',
     })
     await waitFor(() => expect(panel()).toContain('skills.select'))

@@ -243,12 +243,39 @@ def data_home() -> Path:
     return Path(env) if env else Path.home() / ".kiro" / "crew"
 
 
+#: Attempts at the final rename on Windows, and the pause between them. The
+#: script is stdlib-only, so this is a small inline twin of
+#: ``kiro_crew.atomic_write.replace_with_retry`` rather than an import of it.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BACKOFF_SECONDS = 0.05
+#: Only Windows refuses to replace a file another handle has open.
+_ON_WINDOWS = os.name == "nt"
+
+
+def _replace(tmp: str, path: Path) -> None:
+    """``os.replace``, retrying while another handle holds the file on Windows.
+
+    On Windows a rename onto a file that an indexer, an AV scan or a reader has
+    open fails with ``PermissionError`` for as long as that handle lives. On
+    POSIX the same error is genuine, so it is raised at once.
+    """
+    for _ in range(_REPLACE_ATTEMPTS - 1):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if not _ON_WINDOWS:
+                raise
+            time.sleep(_REPLACE_BACKOFF_SECONDS)
+    os.replace(tmp, path)
+
+
 def _atomic_write(path: Path, payload: str) -> None:
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(payload)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -530,6 +557,36 @@ def _load_state(path: Path) -> dict[str, Any]:
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+class StateUnreadable(Exception):
+    """The state file exists but cannot be read as a handled set."""
+
+
+def _load_state_strict(path: Path) -> dict[str, Any]:
+    """The state for a WRITE: ``{}`` when the file does not exist.
+
+    ``_load_state`` folds every failure into ``{}``, which is right for a read
+    whose worst case is one re-fired signal. A mark writes the map it read back
+    to disk, so the same fallback would replace every recorded disposition with
+    the one being added. Here a present file that cannot be read or is not JSON
+    raises instead, so the caller can refuse and leave the file as it is. Parsed
+    JSON of the wrong shape holds no handled set to lose, so it reads as ``{}``
+    as it does for the patrol, and the mark rewrites it as a valid set.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise StateUnreadable(f"{type(exc).__name__}: {exc.strerror or exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise StateUnreadable(f"not UTF-8: {exc.reason}") from exc
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        raise StateUnreadable(f"not valid JSON: {exc}") from exc
     return parsed if isinstance(parsed, dict) else {}
 
 

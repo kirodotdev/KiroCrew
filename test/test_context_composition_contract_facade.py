@@ -30,6 +30,7 @@ import sys
 import types
 from pathlib import Path
 
+import composition_contract_checks
 import pytest
 from context_composition_contract_helpers import (  # noqa: F401 -- the fixture is requested by name
     _Rig,
@@ -357,9 +358,7 @@ def _imported_module(node: ast.ImportFrom) -> str:
     return OWNER_PACKAGE + (f".{node.module}" if node.module else "")
 
 
-class TestSurface:
-    def test_the_package_holds_exactly_the_composed_modules(self) -> None:
-        assert set(_owner_sources()) == OWNER_MODULES
+class TestSurface(composition_contract_checks.ThePackageHoldsExactlyTheComposedModules):
 
     def test_every_name_the_facade_defined_still_resolves(self) -> None:
         assert [name for name in _FACADE_DEFINED if not hasattr(ctx, name)] == []
@@ -471,7 +470,7 @@ class TestSurface:
         assert (OWNER_DIR / "__init__.py").is_file()
 
 
-class TestEagerOwners:
+class TestEagerOwners(composition_contract_checks.ThePackageInitImportsNothing):
     def test_the_facade_imports_every_owner_when_it_loads(self) -> None:
         tree = ast.parse(FACADE_PATH.read_text(encoding="utf-8"))
         imported = {
@@ -517,10 +516,6 @@ class TestEagerOwners:
             ) from None
         loaded = json.loads(out.stdout.splitlines()[-1])
         assert loaded == sorted(f"{OWNER_PACKAGE}.{stem}" for stem in OWNER_MODULES), out.stderr
-
-    def test_the_package_init_imports_nothing(self) -> None:
-        tree = ast.parse((OWNER_DIR / "__init__.py").read_text(encoding="utf-8"))
-        assert [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))] == []
 
 
 #: Every spelling a test uses to reach the facade module.
@@ -672,7 +667,7 @@ def _bare_seam_loads(source: str, seams: set[str]) -> list[str]:
     return sorted(set(hits), key=lambda hit: (int(hit.split(":")[0]), hit))
 
 
-class TestPlacement:
+class TestPlacement(composition_contract_checks.NoOwnerAnchorsAPathOnItsOwnFile):
     """The rules that keep a patch on the facade effective once the code has moved."""
 
     def test_owners_import_no_kiro_crew_module_at_module_scope(self) -> None:
@@ -834,11 +829,6 @@ class TestPlacement:
             if "logger" in vars(_owner(stem)):
                 assert _owner(stem).logger is ctx.logger is logging.getLogger(FACADE_LOGGER)
 
-    def test_no_owner_anchors_a_path_on_its_own_file(self) -> None:
-        for stem, source in _owner_sources().items():
-            names = [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Name)]
-            assert not [n for n in names if n.id == "__file__"], stem
-
     def test_no_owner_defines_an_async_function(self) -> None:
         """Prompt assembly runs on a worker thread; the async store preparation
         that offloads its blocking reads stays on the facade."""
@@ -972,5 +962,9 @@ def _guidance(session_key: str) -> list[str]:
     from kiro_crew.context_assembly import turn
 
     return turn.interactive_guidance(
-        interactive=True, session_key=session_key, agent=None, minimal_context=False
+        interactive=True,
+        session_key=session_key,
+        agent=None,
+        minimal_context=False,
+        producer_is_user_facing=True,
     )

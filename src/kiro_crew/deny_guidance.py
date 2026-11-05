@@ -262,6 +262,10 @@ _RULE_CLASSES: dict[str, str] = {
 #: until first use. See :func:`_rule_class_index`.
 _rule_class_state: "dict[str, str] | None" = None
 
+#: ``{rule identity: rule id}`` over the same catalog, built alongside
+#: :data:`_rule_class_state` and cached under the same rule. See :func:`rule_id_for`.
+_rule_id_state: "dict[str, str] | None" = None
+
 
 def _rule_class_index() -> "Mapping[str, str]":
     """``{rule identity: deny class}``, built once from the effective catalog.
@@ -306,9 +310,19 @@ def _rule_class_index() -> "Mapping[str, str]":
     honoured rather than shadowed — the same reason
     :func:`resolve_credential_tool_hint` goes through ``platform_context``.
     """
-    global _rule_class_state
-    if _rule_class_state is not None:
-        return _rule_class_state
+    return _rule_indexes()[0]
+
+
+def _rule_indexes() -> "tuple[Mapping[str, str], Mapping[str, str]]":
+    """``({identity: deny class}, {identity: rule id})``, built and cached together.
+
+    One pass over one rule list, so the class a refusal is answered with and the id
+    it is labelled with can never come from two different readings of the catalog.
+    Caching follows :func:`_rule_class_index`: a failed edition lookup is not cached.
+    """
+    global _rule_class_state, _rule_id_state
+    if _rule_class_state is not None and _rule_id_state is not None:
+        return _rule_class_state, _rule_id_state
     rules = list(security.BUILTIN_DENIED_RULES)
     edition_resolved = True
     try:
@@ -317,19 +331,41 @@ def _rule_class_index() -> "Mapping[str, str]":
         edition_resolved = False
         logger.debug("edition denied rules unavailable; indexing built-ins only", exc_info=True)
     index: dict[str, str] = {}
+    ids: dict[str, str] = {}
     for rule in rules:
         deny_class = _RULE_CLASSES.get(rule.id) or _CATEGORY_CLASSES.get(rule.category, "")
         for identity in (rule.pattern, rule.id):
             index.setdefault(identity, deny_class)
+            ids.setdefault(identity, rule.id)
     if edition_resolved:
         _rule_class_state = index
-    return index
+        _rule_id_state = ids
+    return index, ids
 
 
 def reset_rule_class_index() -> None:
     """Drop the cached index so a re-composed edition is picked up. For tests."""
-    global _rule_class_state
+    global _rule_class_state, _rule_id_state
     _rule_class_state = None
+    _rule_id_state = None
+
+
+def rule_id_for(reason: str) -> "str | None":
+    """The id of the deny rule *reason* names, or ``None`` when it names none.
+
+    Read the same way :func:`_rule_class` reads a refusal: the identity is the rest
+    of the FIRST line after the deny prefix, and it may be either a rule's pattern
+    or its id. Only an identity that is a catalog rule (built-in or edition) yields
+    an id, so a generic refusal, or an operator's own pattern that no catalog row
+    carries, gets ``None`` and its text is shown unchanged.
+
+    Display only: the id labels a refusal that already happened, so a wrong or
+    missing answer costs a less helpful notice, never a decision.
+    """
+    head = (reason or "").split("\n", 1)[0].strip()
+    if not head.startswith(security.DENY_REASON_PREFIX):
+        return None
+    return _rule_indexes()[1].get(head[len(security.DENY_REASON_PREFIX) :].strip())
 
 
 def _rule_class(reason: str) -> "str | None":
@@ -597,52 +633,6 @@ def classify_deny(reason: str, subject: str = "") -> str:
     return ""
 
 
-#: Prose for a permission-row refusal whose command carries ``BatchMode``. The
-#: option name contains a permission verb once case is folded, so a protected
-#: system path elsewhere in the command completes the row. The refusal stands;
-#: this only names the spelling that does not trip it. Display text only: it is
-#: selected by the refused command and can never make anything allowed.
-SSH_BATCHMODE_REMEDIATION = (
-    "This command changes no permissions: the option name `BatchMode` contains the "
-    "letters of a permission verb once case is ignored, and a protected system path "
-    "later in the command completes a permission-change rule. Retrying the same "
-    "spelling meets the same rule. Replace `-o BatchMode=yes` with the options that "
-    "disable the same prompts: `-o StrictHostKeyChecking=yes -o "
-    "NumberOfPasswordPrompts=0 -o PasswordAuthentication=no -o "
-    "KbdInteractiveAuthentication=no`. For scp, `-B` also works."
-)
-
-#: Row-id prefixes of the path-scoped permission rows (spelled in halves so the
-#: literal verbs do not appear in this file's text).
-_PERMISSION_ROW_PREFIXES = ("local-destructive-ch" + "mod-", "local-destructive-ch" + "own-")
-#: The ``BatchMode`` option in either ssh spelling, with any value.
-_BATCHMODE_OPTION_RE = re.compile(r"-o\s*batchmode=\S*", re.IGNORECASE)
-
-
-def _is_batchmode_permission_match(reason: str, subject: str) -> bool:
-    """True if *reason* names a permission row that only ``BatchMode`` completed.
-
-    The row is re-read against *subject* with the ``BatchMode`` option removed. If
-    it still matches, the command holds a real permission change as well, so the
-    BatchMode prose (which says nothing changes permissions) would be false.
-    """
-    if "batchmode" not in (subject or "").lower():
-        return False
-    head = (reason or "").split("\n", 1)[0].strip()
-    if not head.startswith(security.DENY_REASON_PREFIX):
-        return False
-    identity = head[len(security.DENY_REASON_PREFIX) :].strip()
-    rows = [
-        rule
-        for rule in security.BUILTIN_DENIED_RULES
-        if rule.id.startswith(_PERMISSION_ROW_PREFIXES) and identity in (rule.pattern, rule.id)
-    ]
-    if not rows:
-        return False
-    without = _BATCHMODE_OPTION_RE.sub(" ", subject)
-    return not any(re.search(rule.pattern, without, re.IGNORECASE) for rule in rows)
-
-
 def remediation_for(reason: str, subject: str = "", *, credential_tool_hint: str = "") -> str:
     """Guidance for *reason*, with the host's credential-vendor hint folded in.
 
@@ -650,8 +640,6 @@ def remediation_for(reason: str, subject: str = "", *, credential_tool_hint: str
     a vending tool can actually resolve. Appending it to, say, a trust-root
     refusal would suggest a credential tool could reach the security ceiling.
     """
-    if _is_batchmode_permission_match(reason, subject):
-        return SSH_BATCHMODE_REMEDIATION
     deny_class = classify_deny(reason, subject)
     if not deny_class:
         return ""

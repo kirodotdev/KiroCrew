@@ -27,9 +27,15 @@ from kiro_crew.dashboard.handlers.mcp import (
     _offload_config_write,
     _set_kirocrew_entry,
 )
+from kiro_crew.discovery_featured import featured_entries
 from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
-from kiro_crew.mcp_providers.base import ProviderRegistry, ProviderUnavailableError
+from kiro_crew.mcp_providers.base import (
+    McpSearchResponse,
+    McpSearchResult,
+    ProviderRegistry,
+    ProviderUnavailableError,
+)
 from kiro_crew.mcp_providers.capability import CapabilityProvider
 from kiro_crew.mcp_providers.official import OfficialRegistryProvider
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -138,8 +144,32 @@ def _same_core_spec(a: dict, b: dict) -> bool:
     )
 
 
+def _featured_results(
+    admitted: list[str], provider: str | None, limit: int
+) -> list[McpSearchResult]:
+    """The bundled featured servers, shaped like search hits.
+
+    Only rows from an available provider are kept, so a discovery policy that
+    refuses a provider also hides its featured rows.
+    """
+    rows = [
+        McpSearchResult(
+            id=e["id"],
+            name=e["name"],
+            title=e.get("title", ""),
+            description=e.get("description", ""),
+            provider=e["provider"],
+            repo_url=e.get("repo_url", ""),
+            methods=e["methods"],
+        )
+        for e in featured_entries("mcp_servers")
+        if e["provider"] in admitted and (provider is None or e["provider"] == provider)
+    ]
+    return rows[:limit]
+
+
 async def search_registry(
-    query: str, *, provider: str | None = None, limit: int = 20
+    query: str, *, provider: str | None = None, limit: int = 20, featured: bool = False
 ) -> dict[str, Any]:
     """The registry search behind ``/api/mcp/discover``, as data.
 
@@ -147,15 +177,21 @@ async def search_registry(
     providers found, every provider-sourced field redacted
     (:func:`redact_external_text`) and badged ``installed`` against the servers
     this gateway already configures. A query shorter than :data:`_MIN_QUERY_LEN`
-    calls no provider. Also read by a crewmate's capability catalog
-    (``handlers.member_capability_catalog``), so the two answer alike.
+    calls no provider. With ``featured`` and an empty query it returns the
+    bundled featured servers instead, also without calling a provider. Also read
+    by a crewmate's capability catalog (``handlers.member_capability_catalog``),
+    so the two answer alike.
     """
     registry = await asyncio.to_thread(_get_registry)
     provider_names = [p.name for p in registry.available_providers]
-    if len(query) < _MIN_QUERY_LEN:
+    if featured and not query:
+        search_response = McpSearchResponse(
+            results=_featured_results(provider_names, provider, limit), provider_outcomes=[]
+        )
+    elif len(query) < _MIN_QUERY_LEN:
         return {"results": [], "providers": provider_names, "provider_outcomes": []}
-
-    search_response = await registry.search_with_outcomes(query, provider=provider, limit=limit)
+    else:
+        search_response = await registry.search_with_outcomes(query, provider=provider, limit=limit)
 
     # Cross-ref against KiroCrew's configured servers so the UI can badge
     # already-installed entries. list_servers() reads config files
@@ -199,13 +235,15 @@ async def search_registry(
 
 
 async def api_mcp_discover(request: web.Request) -> web.Response:
-    """GET /api/mcp/discover?q=<query>[&provider=<name>][&limit=N]
+    """GET /api/mcp/discover?q=<query>[&provider=<name>][&limit=N][&featured=1]
 
     Multi-provider MCP server search. A query shorter than 2 chars returns
     ``{"results": [], "providers": [...], "provider_outcomes": []}``
     WITHOUT calling any provider — the cheap availability probe the frontend
     gates its UI on. Completed searches add one ``provider_outcomes`` row per
     attempted provider while preserving the legacy ``providers`` name list.
+    An empty query with ``featured=1`` returns the bundled featured servers
+    (``discovery_featured``), again without calling a provider.
     """
     query = request.query.get("q", "").strip()
     provider_filter = request.query.get("provider", "").strip() or None
@@ -214,7 +252,10 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
     except ValueError:
         limit = 20
 
-    found = await search_registry(query, provider=provider_filter, limit=limit)
+    # ``featured=1`` with no query asks for the dialog's starting list;
+    # without the flag a short query stays the cheap availability probe.
+    featured = not query and request.query.get("featured") == "1"
+    found = await search_registry(query, provider=provider_filter, limit=limit, featured=featured)
     items, provider_outcomes = found["results"], found["provider_outcomes"]
     if len(query) < _MIN_QUERY_LEN:
         return web.json_response(found)

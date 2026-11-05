@@ -741,6 +741,15 @@ export default function SessionsTab({ planeStateRef }: Props) {
                                   // always a top-level created row.
                                   const name = creatorOf(r)
                                   if (name == null) {
+                                    // A closed creator is still named when the
+                                    // backend remembers its last-known title
+                                    // (`parent.title`, sent only for a creator
+                                    // with no live row); the generic label is the
+                                    // fallback for one it never saw live.
+                                    const closedTitle = r.parent?.title
+                                    if (typeof closedTitle === 'string' && closedTitle !== '') {
+                                      return i18nT('pages.sessionsTab.created_by_closed_named', { name: closedTitle })
+                                    }
                                     return i18nT('pages.sessionsTab.created_by_closed_unnamed')
                                   }
                                   return i18nT('pages.sessionsTab.created_by', { name })

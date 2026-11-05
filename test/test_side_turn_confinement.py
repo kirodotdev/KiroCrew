@@ -31,9 +31,11 @@ from side_helpers import (  # noqa: F401 -- the autouse fixture registers by imp
     _published_readonly_spec_fixture,
 )
 
+from kiro_crew import name_grant
 from kiro_crew.dashboard.handlers.side import _run_side_turn
-from kiro_crew.dashboard.side_prompts import SIDE_BOUNDARY_PROMPT
+from kiro_crew.dashboard.side_prompts import SIDE_BOUNDARY_PROMPT, SIDE_BOUNDARY_PROMPT_NO_SHELL
 from kiro_crew.dashboard.side_state import SideState
+from kiro_crew.name_grant_refusals import Refusal
 
 
 @pytest.mark.asyncio
@@ -364,6 +366,7 @@ async def test_side_turn_rebinds_a_retained_session_whose_binding_changed(
     state.sessions.release = MagicMock()
     stream_mock = AsyncMock(return_value=_SIDE_ANSWER)
     monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream_mock)
+    monkeypatch.setattr(name_grant, "environment_refusal", lambda: None)
 
     await _run_side_turn(state, parent, "run-rebind", _SIDE_QUESTION, is_first_turn=False)
 
@@ -773,6 +776,34 @@ async def test_side_turn_on_goose_runs_read_only_on_its_own_goose_home(
 
 
 @pytest.mark.asyncio
+async def test_side_turn_on_strands_runs_read_only_with_file_reads_alone(
+    tmp_path, monkeypatch, _published_readonly_spec
+):
+    """On Strands the confinement is the gate module plus a ``side_read_only``
+    session: nothing is derived, the turn streams READ_ONLY, and the prompt names
+    file reads alone, with no shell, search or web tool."""
+    from kiro_crew.acp_backends import ACP_BACKEND_STRANDS
+    from kiro_crew.dashboard.side_prompts import SIDE_BOUNDARY_PROMPT_FILE_READS
+    from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+    _configure_backend(monkeypatch, ACP_BACKEND_STRANDS)
+    state, parent, _events, created = _side_turn_fixture(tmp_path, "run-strands")
+    stream_mock = AsyncMock(return_value=_SIDE_ANSWER)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream_mock)
+
+    await _run_side_turn(state, parent, "run-strands", _SIDE_QUESTION, is_first_turn=True)
+
+    assert _published_readonly_spec == [], "Strands reads no kiro agent spec"
+    assert created[0]["side_read_only"] is True
+    assert not (created[0]["agent"] or "").endswith("--readonly")
+    assert stream_mock.await_args.kwargs["approval_policy"] is ToolApprovalPolicy.READ_ONLY
+    prompt = stream_mock.await_args.args[1]
+    assert SIDE_BOUNDARY_PROMPT_FILE_READS in prompt
+    assert "git status" not in prompt
+    assert parent._side.binding == (created[0]["agent"] or "", "", "strands_read_only")
+
+
+@pytest.mark.asyncio
 async def test_side_turn_on_claude_with_an_unverified_adapter_runs_no_tools(
     tmp_path, monkeypatch, _published_readonly_spec
 ):
@@ -874,3 +905,86 @@ async def test_side_tools_is_false_when_the_config_does_not_load(tmp_path, monke
             **_CLAUDE_ADAPTER_REMEDY,
             "config_unavailable": True,
         }
+
+
+def _side_parent(state, run_id: str):
+    parent = state.get_or_create_slot("parent")
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user(_SIDE_QUESTION)
+    parent._side.last_run_id = run_id
+    parent._side.is_complete = False
+    return parent
+
+
+def _arm_side_session(state, monkeypatch, *, is_new: bool = True) -> AsyncMock:
+    async def _fake_get_or_create(key, **kwargs):
+        return MagicMock(), is_new, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    stream_mock = AsyncMock(return_value=_SIDE_ANSWER)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream_mock)
+    return stream_mock
+
+
+@pytest.mark.asyncio
+async def test_a_kiro_side_turn_names_no_shell_where_every_program_name_is_refused(
+    tmp_path, monkeypatch
+):
+    """Where the environment refuses every program name (a PowerShell profile,
+    an inherited ``BASH_ENV``, an ambiguous ``PATH``) each shell read is declined
+    and side chat has no card to fall back to, so the boundary is the no-shell
+    one: it names neither the shell reads nor the shell fallback."""
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = _side_parent(state, "run-refused")
+    stream_mock = _arm_side_session(state, monkeypatch)
+    monkeypatch.setattr(
+        name_grant,
+        "environment_refusal",
+        lambda: Refusal(name_grant.AMBIGUOUS_ENV, "BASH_ENV is set in the inherited environment"),
+    )
+
+    await _run_side_turn(state, parent, "run-refused", _SIDE_QUESTION, is_first_turn=True)
+
+    message = stream_mock.await_args.args[1]
+    assert SIDE_BOUNDARY_PROMPT_NO_SHELL in message
+    assert SIDE_BOUNDARY_PROMPT not in message
+    assert "(cat, grep, ls) instead" not in message
+    assert "read-only shell commands" not in message
+
+
+@pytest.mark.asyncio
+async def test_a_kiro_side_turn_keeps_the_shell_boundary_where_names_can_be_vouched_for(
+    tmp_path, monkeypatch
+):
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = _side_parent(state, "run-vouched")
+    stream_mock = _arm_side_session(state, monkeypatch)
+    monkeypatch.setattr(name_grant, "environment_refusal", lambda: None)
+
+    await _run_side_turn(state, parent, "run-vouched", _SIDE_QUESTION, is_first_turn=True)
+
+    message = stream_mock.await_args.args[1]
+    assert SIDE_BOUNDARY_PROMPT in message
+    assert SIDE_BOUNDARY_PROMPT_NO_SHELL not in message
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_into_a_live_side_session_skips_the_environment_check(
+    tmp_path, monkeypatch
+):
+    """A live session already holds its boundary and gets the bare question, so
+    the turn does not stat the environment for a prompt it will not send."""
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = _side_parent(state, "run-follow-up")
+    stream_mock = _arm_side_session(state, monkeypatch, is_new=False)
+    checks: list[None] = []
+    monkeypatch.setattr(name_grant, "environment_refusal", lambda: checks.append(None))
+
+    await _run_side_turn(state, parent, "run-follow-up", _SIDE_QUESTION, is_first_turn=False)
+
+    assert stream_mock.await_args.args[1] == _SIDE_QUESTION
+    assert checks == []

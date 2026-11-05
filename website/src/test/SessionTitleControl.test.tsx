@@ -314,6 +314,8 @@ describe('SessionTitleControl', () => {
     act(() => { fireEvent.change(input, { target: { value: 'Typed by hand' } }) })
     act(() => { fireEvent.blur(input) })
     expect(screen.queryByRole('button', { name: /^Undo/ })).toBeNull()
+    // The confirmed rename is announced once renameSlot resolves.
+    await screen.findByText('Session renamed to Typed by hand')
   })
 
   it('the Undo baseline is the title on screen when the generated one lands, not the one at click time', async () => {
@@ -650,7 +652,8 @@ describe('SessionTitleControl', () => {
   // (e) Closing the editor never leaves focus on document.body.
   const nextFrame = () => act(async () => { await new Promise(requestAnimationFrame) })
   // A real, single Enter press: keydown commits (the input blurs), then the
-  // key is released.
+  // key is released. It returns nothing, so awaiting it waits for nothing: wait
+  // for what the commit changes (the status text, the store) with waitFor/findBy.
   const pressEnter = (input: HTMLElement) => {
     act(() => { fireEvent.keyDown(input, { key: 'Enter' }) })
     act(() => { fireEvent.blur(input) })
@@ -857,17 +860,17 @@ describe('SessionTitleControl', () => {
     renderControl()
     let input = openEditor()
     act(() => { fireEvent.change(input, { target: { value: 'Beta' } }) })
-    await pressEnter(input)
+    pressEnter(input)
     await waitFor(() => expect(status().textContent).toBe('Session renamed to Beta'))
     input = openEditorFor('Beta')
     act(() => { fireEvent.change(input, { target: { value: 'Gamma' } }) })
-    await pressEnter(input)
+    pressEnter(input)
     await waitFor(() => expect(status().textContent).toBe('Session renamed to Gamma'))
     let released: (v: unknown) => void = () => {}
     vi.mocked(api.renameSlot).mockReturnValueOnce(new Promise((r) => { released = r }))
     input = openEditorFor('Gamma')
     act(() => { fireEvent.change(input, { target: { value: 'Beta' } }) })
-    await pressEnter(input)
+    pressEnter(input)
     // Emptied while the write is in flight, so the confirmation is a change.
     await waitFor(() => expect(status().textContent).toBe(''))
     await act(async () => { released({}) })

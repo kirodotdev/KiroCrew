@@ -52,6 +52,13 @@ _MAX_FORWARD_STDOUT = 8192
 #: Read chunk for the stdout drain — small enough that a close notice written
 #: just before exit is observed promptly.
 _FORWARD_STDOUT_READ_CHUNK = 4096
+#: How long kill_port_forward waits for the forward's process group to empty
+#: after the SIGTERM it sends to members that outlived the wrapper, and after
+#: the SIGKILL that follows when they do not exit.
+_GROUP_TERM_GRACE_SECS = 2.0
+_GROUP_KILL_WAIT_SECS = 5.0
+#: Poll cadence of that wait.
+_GROUP_EMPTY_POLL_SECS = 0.05
 
 # Indirection so tests can patch out the poll sleep.
 _sleep = time.sleep
@@ -648,9 +655,30 @@ def open_port_forward(
         start_new_session=True,
         env=aws_spawn_env(argv[0]),
     )
+    # Read while the wrapper is un-reaped, so the id names its group and no one
+    # else's: kill_port_forward needs it after the wrapper exits, when
+    # ``os.getpgid`` of the reaped pid names nothing.
+    with contextlib.suppress(AttributeError):  # a Popen stand-in without a __dict__
+        proc.ssm_pgid = _spawned_group(proc)  # type: ignore[attr-defined]
     if capture_stdout:
         _start_stdout_drain(proc)
     return proc
+
+
+def _spawned_group(proc: subprocess.Popen) -> Optional[int]:
+    """The process group a just-spawned forward leads, or ``None``.
+
+    Kept only when the wrapper leads its own group (``pgid == pid``, which
+    ``start_new_session=True`` makes it), so the id names a group this forward
+    owns. POSIX only: Windows has no process groups and reaps the tree through
+    ``taskkill /T`` instead.
+    """
+    pid = getattr(proc, "pid", None)
+    if not platform_compat.IS_POSIX or type(pid) is not int or pid <= 1:
+        return None
+    # No poll() here: nothing has waited on the child yet, so even a wrapper
+    # that already exited is an un-reaped zombie whose pid still names it.
+    return pid if platform_compat.pgroup_of(pid) == pid else None
 
 
 def _start_stdout_drain(proc: subprocess.Popen) -> None:
@@ -713,11 +741,33 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
     function exists to prevent. Windows therefore gets its own tree kill via
     ``taskkill /T``, which walks the child chain the way a process group does on
     POSIX.
+
+    The wrapper's exit is not the forward's end: ``session-manager-plugin`` can
+    outlive it -- exiting on its own first, or dying on SIGTERM while the plugin
+    does not -- still in the group and still holding the port. ``os.getpgid`` of
+    the reaped wrapper names nothing, so on POSIX the group recorded at spawn
+    (``ssm_pgid``, see :func:`open_port_forward`) is what gets signalled, and
+    any member it still has after the wrapper is gone is sent SIGTERM, then
+    SIGKILL, each followed by a bounded wait for the group to empty. Only that
+    one group is signalled, so another forward's plugin is never touched.
     """
-    if proc is None or proc.poll() is not None:
+    if proc is None:
         return
+    pgid = _recorded_group(proc)
+    if proc.poll() is not None:
+        _reap_group_survivors(pgid, term_sent=False)
+        return
+    group_term_sent = False
 
     def _signal_group(sig: int) -> bool:
+        nonlocal group_term_sent
+        if pgid is not None:
+            try:
+                platform_compat.kill_process_group(pgid, sig)
+            except (OSError, ValueError):
+                return False
+            group_term_sent = group_term_sent or sig == platform_compat.SIGTERM
+            return True
         try:
             os.killpg(os.getpgid(proc.pid), sig)
             return True
@@ -789,6 +839,59 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
                 proc.kill()
         except Exception:
             pass
+        # Reap the killed wrapper: an un-reaped zombie stays a member of its
+        # group, so the survivor check below would read the group as populated.
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
+    _reap_group_survivors(pgid, term_sent=group_term_sent)
+
+
+def _recorded_group(proc: subprocess.Popen) -> Optional[int]:
+    """The group :func:`open_port_forward` recorded on *proc*, if it is usable.
+
+    A Popen-like object that did not come from :func:`open_port_forward` has no
+    record and gets ``None``, which leaves it the pid-resolved group signal.
+    """
+    pgid = getattr(proc, "ssm_pgid", None)
+    return pgid if type(pgid) is int and pgid > 1 else None
+
+
+def _wait_group_empty(pgid: int, timeout: float) -> bool:
+    """Poll until process group *pgid* has no member, for at most *timeout* s."""
+    deadline = time.monotonic() + timeout
+    while platform_compat.pgroup_exists(pgid):
+        if time.monotonic() >= deadline:
+            return False
+        _sleep(_GROUP_EMPTY_POLL_SECS)
+    return True
+
+
+def _reap_group_survivors(pgid: Optional[int], *, term_sent: bool) -> None:
+    """Signal what is left of the forward's recorded group once the wrapper is gone.
+
+    Reached after the wrapper has exited. A member still in the group is the
+    plugin (or its own child) holding the forwarded port, so the group gets
+    SIGTERM unless this teardown already sent it one, then SIGKILL, each followed
+    by a bounded wait for the group to empty. The id was read at spawn while the
+    wrapper was un-reaped, and a group id is not reused while any member lives,
+    so a non-empty group with this id is still this forward's.
+    """
+    if pgid is None or not platform_compat.pgroup_exists(pgid):
+        return
+    signals = [(platform_compat.SIGKILL, _GROUP_KILL_WAIT_SECS)]
+    if not term_sent:
+        signals.insert(0, (platform_compat.SIGTERM, _GROUP_TERM_GRACE_SECS))
+    for sig, wait_secs in signals:
+        try:
+            platform_compat.kill_process_group(pgid, sig)
+        except (OSError, ValueError):  # the group emptied, or a member is unsignalable
+            return
+        if _wait_group_empty(pgid, wait_secs):
+            return
+    logger.warning(
+        "session-manager-plugin group %d survived SIGKILL; its forwarded port may still be held",
+        pgid,
+    )
 
 
 def port_is_free(port: int, host: str = "127.0.0.1") -> bool:

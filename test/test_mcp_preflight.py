@@ -110,11 +110,8 @@ class TestSchemaTracksTheComparedSurface:
 class TestReportedVersionInvalidation:
     """The blind spot the launch fingerprint cannot see, and its no-flap rule.
 
-    A runtime-resolved launch (``npx some-server@latest``) keeps a byte-identical
-    command, env and interpreter fingerprint while the code behind it is replaced.
-    The version the server reports is the only signal that survives that, so it is
-    allowed to invalidate — but only when both sides know one, or a single failed
-    probe would discard a good measurement.
+    ``npx some-server@latest`` keeps an identical fingerprint while its code changes, so
+    the reported version may invalidate, but only when both sides know one.
     """
 
     def test_the_same_version_still_hits(self, tmp_path) -> None:
@@ -262,14 +259,9 @@ class TestCacheDegradesSafely:
 class _FakeProbe:
     """Stands in for ``probe_server``, answering per clientInfo name.
 
-    Mutates the passed server the way the real probe does, so the pre-flight is
-    exercised through the same interface it uses in production.
-
-    An answer is ``(status, capabilities)``, or ``(status, capabilities, extra)``
-    where *extra* sets the other facets a real probe fills in — ``tools``,
-    ``tool_annotations``, ``protocol_version``, ``server_info``. The two-element
-    form is kept because most cases only care about capabilities, and spelling
-    every field in every case would bury which one the test is about.
+    Mutates the passed server the way the real probe does. An answer is
+    ``(status, capabilities)`` or ``(status, capabilities, extra)``, where *extra* sets
+    ``tools``, ``tool_annotations``, ``protocol_version`` or ``server_info``.
     """
 
     def __init__(self, answers: dict[str, tuple[Any, ...]]) -> None:
@@ -464,15 +456,9 @@ class TestEvaluateOnlyWhatChanged:
     ) -> None:
         """A reported divergence is never frozen, and needs no expiry clock.
 
-        Two spawns that disagree cannot say WHY they disagree: an answer computed
-        from ``clientInfo`` and an answer that varies for the server's own reasons
-        both look like this. Storing the guess turned one unlucky sample into a
-        permanent mark, because a stored row is skipped by every later pass.
-
-        So a divergence joins the branch above: reported for this pass, re-derived
-        on the next one. The server keeps costing two spawns, which is the honest
-        price of a question we cannot answer once and for all -- and it is exactly
-        what makes the measure button able to clear a wrong row.
+        Two disagreeing spawns cannot say whether ``clientInfo`` caused it, and a stored
+        row is skipped by every later pass. So a divergence is re-derived each pass,
+        which lets the measure button clear a wrong row.
         """
         from kiro_crew.mcp_gateway import evaluate as ev
 
@@ -496,14 +482,9 @@ class TestEvaluateOnlyWhatChanged:
     ) -> None:
         """Not frozen must not mean not reported.
 
-        The dashboard builds its assessment rows from the verdict cache and from
-        nothing else -- both production callers of ``evaluate_new_servers`` discard
-        the returned dict. So a result withheld from the store is not merely
-        forgotten: the page calls the server UNMEASURED, about a server just
-        spawned twice, and the divergence note becomes unreachable in production.
-
-        Hence the split this test guards: the row is STORED so it can be shown, and
-        separately it never suppresses the next measurement.
+        The dashboard reads only the verdict cache (callers of ``evaluate_new_servers``
+        discard its return), so the row is stored to be shown, yet never suppresses the
+        next measurement.
         """
         from kiro_crew.mcp_gateway import evaluate as ev
         from kiro_crew.mcp_gateway.verdict_cache import load_cache
@@ -559,11 +540,8 @@ class TestEvaluateOnlyWhatChanged:
     ) -> None:
         """Absence from the inventory is not evidence that a verdict is dead.
 
-        The only caller gets its list from ``probe_all``, which excludes
-        consent-disabled rows by design — so deleting entries that are missing
-        from it would throw away the still-valid measurement of every disabled
-        server, two spawns each, and make it read as unknown again the moment it
-        is re-enabled.
+        ``probe_all`` excludes consent-disabled rows, so pruning missing entries would
+        drop every disabled server's still-valid measurement.
         """
         from kiro_crew.mcp_gateway import evaluate as ev
 
@@ -598,13 +576,9 @@ class TestEvaluateOnlyWhatChanged:
     def test_an_in_place_binary_upgrade_is_re_measured(self, tmp_path) -> None:
         """Same path, same args, new bytes — the measurement must not be reused.
 
-        Without a binary fingerprint the key hits and the pre-flight never re-runs,
-        so a binary that BECAME caller-sensitive would hand its first caller's
-        ``initialize`` result to every co-tenant. The hazard ledger only fires
-        after a session has already lost its tools.
-
-        Synchronous on purpose: ``identity_for`` refuses to run on the event
-        loop, and production reaches it through ``asyncio.to_thread``.
+        Otherwise a binary that became caller-sensitive would hand its first caller's
+        ``initialize`` result to every co-tenant. Synchronous because ``identity_for``
+        refuses to run on the event loop (production uses ``asyncio.to_thread``).
         """
         from kiro_crew.mcp_gateway.evaluate import identity_for
 
@@ -890,11 +864,8 @@ class TestHandshakeFacetsBeyondCapabilities:
     ) -> None:
         """Values inside ``serverInfo`` are projected away, and must be.
 
-        A build id or per-spawn nonce there is not caller sensitivity, and
-        comparing values would condemn such a server on every single probe. The
-        cost of this projection is that a server varying only its version STRING
-        per caller reads as agreeing — which the pool can survive, because the
-        replayed string is diagnostic rather than behavioural.
+        A build id or per-spawn nonce is not caller sensitivity. A version string that
+        varies per caller reads as agreeing, which is fine: it is only diagnostic.
         """
         patch_probe(
             {
@@ -922,14 +893,9 @@ class TestHandshakeFacetsBeyondCapabilities:
 class TestAnnotationsAreNeverPairedWithATool:
     """Annotations are compared unpaired, because alignment is not recoverable.
 
-    ``mcp_discovery`` builds ``tools`` and ``tool_annotations`` in two comprehensions
-    over the same list with INDEPENDENT predicates: a tool joins ``tools`` when its
-    name is truthy and joins ``tool_annotations`` when it carries an ``annotations``
-    dict. Neither list records which tool an entry came from, so equal LENGTHS do not
-    imply equal membership -- checking the lengths is as much a guess as pairing by
-    index. These tests pin the comparison to a name set plus an unordered multiset of
-    annotation shapes, which makes the alignment question unreachable rather than
-    answered.
+    ``mcp_discovery`` builds ``tools`` and ``tool_annotations`` with independent
+    predicates and neither records its source tool, so the comparison is a name set
+    plus an unordered multiset of annotation shapes.
     """
 
     def _srv(self, tools, anns):
@@ -950,14 +916,10 @@ class TestAnnotationsAreNeverPairedWithATool:
         assert pf._tool_surface(a) == pf._tool_surface(b)
 
     def test_equal_lengths_do_not_imply_alignment(self) -> None:
-        """The case that retired the length guard.
+        """Equal list lengths do not mean the entries describe the same tools.
 
-        A tool with an empty name is dropped from ``tools`` but its annotations are
-        kept, so these two lists are both length 1 and describe DIFFERENT tools. A
-        length check passes here and index pairing then attaches ``read``'s name to
-        the other tool's claim. Comparing unpaired, the two servers agree -- because
-        they did make the same claim -- instead of producing a verdict from a pairing
-        that was never real.
+        A tool with an empty name is dropped from ``tools`` but keeps its annotations,
+        so both lists have length 1 and describe different tools. Unpaired, they agree.
         """
         # As the prober would emit for [{"name": "read"}, {"name": "", "annotations": ...}]
         a = self._srv(["read"], [{"readOnlyHint": True}])
@@ -979,12 +941,8 @@ class TestAnnotationsAreNeverPairedWithATool:
     def test_a_changed_claim_is_caught_even_when_the_tool_is_unknown(self) -> None:
         """The signal a length guard would throw away.
 
-        The server told one caller ``readOnlyHint: true`` and the other ``false``.
-        Which tool it was about is unknowable, and does not matter: a pooled backend
-        replays the first answer, so the second session would receive a claim this
-        server would not have made to it. Dropping the facet here -- as a length
-        check did, since one list was shorter than the names -- discarded a real
-        divergence to avoid guessing at an attribution nothing reads.
+        The server told one caller ``readOnlyHint: true`` and the other ``false``. Which
+        tool is unknowable and does not matter: a pooled backend replays the first answer.
         """
         a = self._srv(["read", "write"], [{"readOnlyHint": True}])
         b = self._srv(["read", "write"], [{"readOnlyHint": False}])
@@ -1114,12 +1072,8 @@ class TestProgressArrivesDuringThePass:
 class TestMeasuredIsCountedApartFromAttempted:
     """A server the pre-flight could not reach was attempted, not measured.
 
-    The two counts are what separates "the pass ran" from "the pass produced
-    something". A pre-flight that could not run leaves no verdict on purpose -- the
-    failure belongs to the moment, not to the server -- so the row stays unmeasured
-    and the operator's button keeps offering it. Reporting one number for both let
-    a pass that measured nothing close by claiming it measured everything it tried,
-    beside a table that still showed every row as unmeasured.
+    A pre-flight that could not run leaves no verdict on purpose, so the row stays
+    unmeasured; one count for both would claim a pass measured what it only tried.
     """
 
     @pytest.mark.asyncio
@@ -1195,11 +1149,8 @@ class TestMeasuredIsCountedApartFromAttempted:
 class TestMalformedToolNames:
     """A server that cannot name its own tools must not take the pass down.
 
-    The prober copies a tool's ``name`` straight from ``tools/list`` and only drops
-    falsy values, so a non-string name survives into ``server.tools``. Ordering a
-    mixed list raises ``TypeError``; because the evaluator flushes only after every
-    measurement completes, that exception would discard the verdicts of every
-    server already measured in the same pass.
+    The prober drops only falsy names, so a non-string name reaches ``server.tools``
+    and sorting it raises ``TypeError`` before the pass flushes.
     """
 
     @pytest.mark.asyncio
@@ -1287,33 +1238,17 @@ class TestMalformedToolNames:
 class TestOneServerCannotEndThePass:
     """The pass survives a server whose payload breaks the projection.
 
-    Every facet the pre-flight compares is JSON the server chose, walked by code
-    that recurses. The varieties that can make that walk raise are not enumerable
-    from the consumer side, and the flush happens only after the whole loop, so
-    without a boundary at the measurement one bad server discards every verdict the
-    pass already paid two spawns each for.
+    The compared facets are server-chosen JSON walked recursively, and the flush runs
+    after the whole loop, so one bad server must not discard every earlier verdict.
     """
 
     @pytest.fixture
     def no_cyclic_gc_at_the_recursion_limit(self):
         """Keep the cyclic collector out of the frames next to the recursion limit.
 
-        The deep-payload test below drives the projection to ``RecursionError`` on
-        purpose, so its innermost frames have no headroom left. A gen0 sweep that
-        lands there -- the allocation counter decides where, not the test -- runs
-        the finalizers of whatever cyclic garbage the worker is carrying. A pending
-        Task leaked by an earlier test reports itself through ``logger.error`` on
-        ``__del__``; at that depth the report itself raises ``RecursionError``, the
-        interpreter hands the escaped exception to ``sys.unraisablehook``, and
-        pytest's hook overflows in the same place, which it surfaces as
-        ``RuntimeError: Failed to process unraisable exception`` against THIS test
-        (3 unrelated heads, Linux and Windows). Reproduced on demand by planting
-        such garbage at every projection depth: every run.
-
-        Collect once at depth zero, so the inherited garbage pays its finalizers
-        where there is stack for them, then hold the collector off for the walk.
-        Reference counting still frees the projection's own dicts; only cycles
-        wait, and they are collected at teardown.
+        A gen0 sweep at ``RecursionError`` depth runs finalizers of leaked garbage (a
+        pending Task logs on ``__del__``), which overflow and surface as ``RuntimeError:
+        Failed to process unraisable exception``. Collect once at depth zero, then hold off.
         """
         import gc
 
@@ -1331,7 +1266,7 @@ class TestOneServerCannotEndThePass:
     async def test_deep_annotations_do_not_discard_the_other_verdicts(
         self, tmp_path, monkeypatch, no_cyclic_gc_at_the_recursion_limit
     ) -> None:
-        """The exact trigger GPT named: nesting deep enough to exhaust the stack.
+        """Nesting deep enough to exhaust the stack.
 
         Built as a real payload rather than a synthetic ``raise`` so the test fails
         if the projection stops recursing OR if the boundary is removed.
@@ -1400,14 +1335,9 @@ class TestOneServerCannotEndThePass:
     ) -> None:
         """A disabled placeholder's config is the one nobody has exercised.
 
-        ``probe_all`` carries a disabled server as an unprobed placeholder, and
-        ``command`` is stored from the config JSON unvalidated, so a disabled row
-        can arrive here with a dict where a string belongs. Its identity hashes
-        that command, and identities were derived for EVERY row before the
-        disabled filter and outside the per-server boundary -- so one such row
-        raised ``AttributeError`` and Measure All measured nothing. The healthy
-        neighbour is measured and stored; the disabled row is neither spawned
-        nor given a verdict."""
+        Its ``command`` is unvalidated config JSON (here a dict), and hashing it for
+        the identity must not raise outside the per-server boundary. The healthy
+        neighbour is measured; the disabled row is neither spawned nor given a verdict."""
         import kiro_crew.mcp_gateway.evaluate as ev
 
         spawned: list[str] = []
@@ -1432,11 +1362,8 @@ class TestOneServerCannotEndThePass:
 class TestSupersededRowIsNotReadable:
     """A row for replaced code must not survive where the dashboard can read it.
 
-    ``get`` refusing to return a row is not enough on its own: the dashboard row
-    builder reads through ``get_by_name``, which checks neither identity nor
-    version. So a row left in place after the pre-flight fails to re-measure is
-        still rendered -- as evidence about code that does not exist, and in the
-    permissive direction.
+    The dashboard reads through ``get_by_name``, which checks neither identity nor
+    version, so a row left after a failed re-measure would still be rendered.
     """
 
     def _cache(self, tmp_path, reported_version: str):
@@ -1507,7 +1434,7 @@ class TestSupersededRowIsNotReadable:
     async def test_the_dashboard_reads_nothing_after_a_failed_remeasure(
         self, tmp_path, monkeypatch
     ) -> None:
-        """The whole chain GPT named, through the real evaluator.
+        """The whole chain, through the real evaluator.
 
         Upgraded server, version known on both sides, and the re-measure fails --
         so nothing is written back. The store must end up with no row for it.

@@ -12,6 +12,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
 import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 import ErrorNotice from '../../components/ErrorNotice'
+import InfoTip from '../../components/InfoTip'
 import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
 import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeDraft } from './SlackCodePanel'
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
@@ -32,7 +33,7 @@ type Draft = {
   session_folder: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions: boolean
-  /** Slack Code: the registered switches. */
+  /** Slack Code: the registered switches and the code-channel defaults. */
   code: SlackCodeDraft
 }
 
@@ -90,9 +91,12 @@ function connectionHint(config: SlackConfigData): string {
 }
 
 /** Editor for a list of plain string IDs (channels, enterprise orgs, user IDs, emails). */
-export function TagListEditor({ label, description, values, placeholder, onChange, validate, readOnly }: {
+export function TagListEditor({ label, description, hint, values, placeholder, onChange, validate, readOnly }: {
   label: string
   description?: string
+  /** An info tip beside the label, for prose that explains what the list IS;
+   *  the same split as the Settings row primitives' `hint`. */
+  hint?: string
   values: string[]
   placeholder: string
   onChange: (next: string[]) => void
@@ -113,7 +117,10 @@ export function TagListEditor({ label, description, values, placeholder, onChang
   }
   return (
     <div data-setting-label={label} className="flex flex-col gap-1.5 py-1.5">
-      <span className="text-[13px] font-semibold text-text">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <span className="text-[13px] font-semibold text-text">{label}</span>
+        {hint && <InfoTip text={hint} placement="top" />}
+      </div>
       {description && <div className="text-[12px] text-muted">{description}</div>}
       {values.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -423,7 +430,7 @@ export function SlackPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      {/* ── Slack Code: switches and the manifest update ──
+      {/* ── Slack Code: switches, code-channel defaults, manifest update ──
           Right below the tokens, above the rest of the configuration: turning
           a switch on is followed by updating the Slack app, and both happen
           in this one card, with the page's own save inside it. */}
@@ -450,7 +457,7 @@ export function SlackPanel() {
           />
           <TagListEditor
             label={i18nT('pages.settings.slackPanel.allowed_enterprise_orgs')}
-            description={i18nT('pages.settings.slackPanel.enterprise_grid_org_ids_to_allow_starts_with_e_o')}
+            description={i18nT('pages.settings.slackPanel.enterprise_grid_org_ids_to_allow_starts_with_e_o_summary')} hint={i18nT('pages.settings.slackPanel.enterprise_grid_org_ids_to_allow_starts_with_e_o')}
             values={draft.allowed_enterprise_ids}
             placeholder={i18nT('pages.settings.slackPanel.e0123abc456')}
             onChange={v => upd({ allowed_enterprise_ids: v })}
@@ -477,14 +484,14 @@ export function SlackPanel() {
           <div className="-mt-1 pb-1"><SchemaRestartBadge configKey="slack.command" /></div>
           <SettingsToggle
             label={i18nT('pages.settings.slackPanel.phase_reactions')}
-            description={i18nT('pages.settings.slackPanel.show_phase_aware_emoji_reactions_queued_thinking')}
+            hint={i18nT('pages.settings.slackPanel.show_phase_aware_emoji_reactions_queued_thinking')}
             checked={draft.reactions_enabled}
             onChange={v => upd({ reactions_enabled: v })}
             disabled={ro}
           />
           <SettingsToggle
             label={i18nT('pages.settings.slackPanel.show_thinking')}
-            description={i18nT('pages.settings.slackPanel.post_the_model_s_reasoning_as_a_thread_reply_dis')}
+            hint={i18nT('pages.settings.slackPanel.post_the_model_s_reasoning_as_a_thread_reply_dis')}
             checked={draft.show_thinking}
             onChange={v => upd({ show_thinking: v })}
             disabled={ro}
@@ -495,7 +502,8 @@ export function SlackPanel() {
           <div className="border-t border-border mt-4 pt-4">
             <SettingsToggle
               label={i18nT('pages.settings.slackPanel.auto_link_sessions')}
-              description={i18nT('pages.settings.slackPanel.auto_link_sessions_desc')}
+              description={i18nT('pages.settings.slackPanel.auto_link_sessions_desc_summary')}
+              hint={i18nT('pages.settings.slackPanel.auto_link_sessions_desc')}
               checked={draft.auto_link_sessions}
               onChange={v => upd({ auto_link_sessions: v })}
               disabled={ro}
@@ -507,7 +515,7 @@ export function SlackPanel() {
           <div className="border-t border-border mt-4 pt-4">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-              description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+              hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
               checked={draft.session_folder_on}
               onChange={v => upd({ session_folder_on: v })}
               disabled={ro}
@@ -516,7 +524,7 @@ export function SlackPanel() {
               <div className="mt-4">
                 <SettingsInput
                   label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
-                  description={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+                  hint={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
                   value={draft.session_folder}
                   onChange={v => upd({ session_folder: v })}
                   placeholder={CHANNEL_NAME}

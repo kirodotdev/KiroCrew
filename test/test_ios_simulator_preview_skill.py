@@ -213,7 +213,7 @@ class TestReviewFindings:
             encoding="utf-8",
         )
         p = subprocess.run(
-            [sys.executable, str(probe)], capture_output=True, text=True, timeout=60
+            [sys.executable, "-X", "utf8", str(probe)], capture_output=True, text=True, encoding="utf-8", timeout=60
         )
         assert p.returncode == 1
         assert "Traceback" not in p.stderr
@@ -272,9 +272,9 @@ class TestReviewFindings:
             "PATH": f"{shim_dir}:{os.environ.get('PATH', '')}",
         }
         p = subprocess.run(
-            [sys.executable, str(SKILL_DIR / "scripts" / "sim_mirror.py"),
+            [sys.executable, "-X", "utf8", str(SKILL_DIR / "scripts" / "sim_mirror.py"),
              "stop", "--device", udid],
-            capture_output=True, text=True, timeout=120, env=env,
+            capture_output=True, text=True, encoding="utf-8", timeout=120, env=env,
         )
         assert p.returncode == 0, p.stderr
         result = json.loads(p.stdout)["stopped"][0]
@@ -324,8 +324,8 @@ class TestReviewFindings:
             "PATH": f"{shim_dir}:{os.environ.get('PATH', '')}",
         }
         p = subprocess.run(
-            [sys.executable, str(SKILL_DIR / "scripts" / "sim_mirror.py"), "start"],
-            capture_output=True, text=True, timeout=120, env=env,
+            [sys.executable, "-X", "utf8", str(SKILL_DIR / "scripts" / "sim_mirror.py"), "start"],
+            capture_output=True, text=True, encoding="utf-8", timeout=120, env=env,
         )
         assert p.returncode == 1
         assert "Traceback" not in p.stderr, p.stderr
@@ -366,8 +366,8 @@ class TestReviewFindings:
 
         (tmp_path / "relhome").mkdir()
         p = subprocess.run(
-            [sys.executable, str(SKILL_DIR / "scripts" / "sim_mirror.py"), "status"],
-            capture_output=True, text=True, timeout=60, cwd=tmp_path,
+            [sys.executable, "-X", "utf8", str(SKILL_DIR / "scripts" / "sim_mirror.py"), "status"],
+            capture_output=True, text=True, encoding="utf-8", timeout=60, cwd=tmp_path,
             env={**os.environ, "KIROCREW_HOME": "relhome"},
         )
         assert p.returncode == 1
@@ -384,8 +384,8 @@ class TestReviewFindings:
         fake_home = tmp_path / "fakehome"
         (fake_home / "crewhome" / "workspace" / "sim-mirror").mkdir(parents=True)
         p = subprocess.run(
-            [sys.executable, str(SKILL_DIR / "scripts" / "sim_mirror.py"), "status"],
-            capture_output=True, text=True, timeout=60,
+            [sys.executable, "-X", "utf8", str(SKILL_DIR / "scripts" / "sim_mirror.py"), "status"],
+            capture_output=True, text=True, encoding="utf-8", timeout=60,
             env={**os.environ, "HOME": str(fake_home), "KIROCREW_HOME": "~/crewhome"},
         )
         assert p.returncode == 0, p.stderr
@@ -427,9 +427,9 @@ class TestReviewFindings:
             "PATH": f"{shim_dir}:{os.environ.get('PATH', '')}",
         }
         p = subprocess.run(
-            [sys.executable, str(SKILL_DIR / "scripts" / "sim_mirror.py"),
+            [sys.executable, "-X", "utf8", str(SKILL_DIR / "scripts" / "sim_mirror.py"),
              "start", "--device", udid],
-            capture_output=True, text=True, timeout=120, env=env,
+            capture_output=True, text=True, encoding="utf-8", timeout=120, env=env,
         )
         assert p.returncode == 1
         assert "Traceback" not in p.stderr, p.stderr

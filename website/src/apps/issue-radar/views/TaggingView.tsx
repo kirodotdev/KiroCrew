@@ -497,8 +497,8 @@ function TaggingDashboard() {
               }}
               disabled={generate.isPending || pending.length === 0 || noLabels}
               title={exhausted
-                ? `Re-analyse ${nextSlice} issue(s) that already have a proposal`
-                : `Analyse the next ${nextSlice} issue(s)`}
+                ? i18nT('apps.issueRadar.views.taggingView.reanalyse_issues', { count: nextSlice })
+                : i18nT('apps.issueRadar.views.taggingView.analyse_next_issues', { count: nextSlice })}
               className="inline-flex items-center gap-1.5 text-[13px] px-2.5 py-1 rounded-md border border-accent/40 text-accent hover:bg-accent-subtle disabled:opacity-40 cursor-pointer bg-transparent"
             >
               <Sparkles size={12} className={batchPending ? 'animate-pulse' : ''} />

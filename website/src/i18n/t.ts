@@ -38,10 +38,13 @@ import { i18next } from './index'
  * key itself only if English lacks it too.
  *
  * @param key   dotted catalog path, e.g. `pages.settings.displayPanel.view`
- * @param vars  interpolation values for `{{placeholders}}` in the string
+ * @param vars  interpolation values for `{{placeholders}}` in the string. Each
+ *              text value is displayed exactly as given and never reaches
+ *              i18next (see `translateWithLiterals` below).
  */
 export function i18nT(key: string, vars?: Record<string, unknown>): string {
-  if (vars !== undefined || !i18next.isInitialized) return i18next.t(key, vars ?? {}) as string
+  if (vars !== undefined) return translateWithLiterals(key, vars)
+  if (!i18next.isInitialized) return i18next.t(key, {}) as string
   if (watchedStore !== i18next.store) watchStore()
   if (cachedLanguage !== i18next.language) {
     plainCache.clear()
@@ -53,6 +56,51 @@ export function i18nT(key: string, vars?: Record<string, unknown>): string {
     plainCache.set(key, value)
   }
   return value
+}
+
+/* Interpolation values are displayed literally: i18next never sees them.
+ *
+ * A value is usually text the dashboard did not write: a tool-step title built
+ * from the agent's command, a question-card option, a reminder, a command-bar
+ * query. Handed to i18next, that text is still parsed. After interpolation
+ * i18next scans the whole result for its nesting marker, and on some releases
+ * that scan backtracks exponentially on an unclosed marker, freezing the tab.
+ * A `$t(...)` reference or a `{{...}}` placeholder in the value also stays
+ * verbatim only because of i18next defaults (`skipOnVariables`), not because
+ * anything here says so.
+ *
+ * So each value that could carry text is swapped for an opaque placeholder,
+ * the catalog string is translated around those placeholders, and the
+ * original values go back in with one plain string replacement. The value is
+ * never a key, never interpolated, never scanned. Numbers and booleans cannot
+ * spell i18next syntax and pass through, which keeps number interpolation
+ * unchanged. i18next's own options (`count` for plurals, `lng`, `context` and
+ * the rest) also pass through, because they steer the lookup rather than fill
+ * a placeholder. */
+const I18NEXT_OPTIONS = new Set([
+  'count', 'ordinal', 'context', 'lng', 'lngs', 'fallbackLng', 'ns', 'keyPrefix',
+  'defaultValue', 'returnObjects', 'returnDetails', 'joinArrays', 'postProcess',
+  'interpolation', 'replace', 'skipInterpolation', 'nsSeparator', 'keySeparator',
+])
+// NUL and SOH never occur in a catalog string, so a placeholder cannot collide
+// with copy, and the index keeps two values in one string apart.
+const LITERAL_SLOT = /\u0000(\d+)\u0001/g
+
+function translateWithLiterals(key: string, vars: Record<string, unknown>): string {
+  const literals: string[] = []
+  const opts: Record<string, unknown> = {}
+  for (const [name, value] of Object.entries(vars)) {
+    if (I18NEXT_OPTIONS.has(name) || value === null || value === undefined
+      || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+      opts[name] = value
+      continue
+    }
+    opts[name] = `\u0000${literals.length}\u0001`
+    literals.push(String(value))
+  }
+  const out = i18next.t(key, opts) as string
+  if (literals.length === 0 || typeof out !== 'string') return out
+  return out.replace(LITERAL_SLOT, (slot, index: string) => literals[Number(index)] ?? slot)
 }
 
 /* Results of calls WITHOUT `vars`, for the active language.

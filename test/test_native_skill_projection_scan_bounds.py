@@ -12,7 +12,6 @@ import gc
 import json
 import os
 import stat
-import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +36,38 @@ _end_projections_before_tmp_path_goes = (
 )
 cyclic_gc_quiesced = native_skill_projection_helpers.cyclic_gc_quiesced
 native_tree = native_skill_projection_helpers.native_tree
+
+
+class _ProjectionClock:
+    """The projection modules' own ``monotonic``, moved only by the test.
+
+    A test that counts the refusals one prune walk swallows needs the walk to
+    reach every candidate, but ``_PRUNE_MAX_SECONDS_PER_RUN`` is 0.4 s and a
+    slow runner spends it after two of three: the count reads one short. Under
+    this clock no time passes during the walk, so the budget is never spent and
+    stays 0.4 s. It starts above zero because the refusal throttle reads an
+    ``_UNLINK_WARNING_LAST`` of 0.0 as "never reported", and :meth:`advance`
+    moves the same clock past the throttle interval. Only the projection
+    modules read it; every other name falls through to the real ``time``.
+    """
+
+    def __init__(self, monkeypatch):
+        self.now = 1_000.0
+        real_time = projection.time
+        clock = self
+
+        class _Time:
+            @staticmethod
+            def monotonic():
+                return clock.now
+
+            def __getattr__(self, name):
+                return getattr(real_time, name)
+
+        monkeypatch.setattr(projection, "time", _Time())
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 # ── Residual bounds, second pass: unbounded lease traversal, keep-starved prune,
@@ -746,6 +777,7 @@ def test_a_refused_unlink_is_reported_once_per_interval_with_its_count(
     """
     _home, agents, _project = native_tree
     backlog = _seed_backlog(agents, 5)
+    clock = _ProjectionClock(monkeypatch)
     monkeypatch.setattr(projection, "_UNLINK_WARNING_LAST", 0.0)
     monkeypatch.setattr(projection, "_UNLINK_WARNING_SUPPRESSED", 0)
     monkeypatch.setattr(projection.platform_compat, "IS_WINDOWS", False)
@@ -771,11 +803,7 @@ def test_a_refused_unlink_is_reported_once_per_interval_with_its_count(
 
         # Past the interval the next refusal reports again, carrying the ones it
         # swallowed in between.
-        monkeypatch.setattr(
-            projection,
-            "_UNLINK_WARNING_LAST",
-            time.monotonic() - projection._UNLINK_WARNING_INTERVAL_SECS - 1,
-        )
+        clock.advance(projection._UNLINK_WARNING_INTERVAL_SECS + 1)
         projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
         warnings = [r for r in caplog.records if "cannot remove stale alias" in r.getMessage()]
         assert len(warnings) == 2
@@ -804,6 +832,7 @@ def test_a_refusal_that_is_not_a_permission_problem_is_worded_neutrally(
     """
     _home, agents, _project = native_tree
     backlog = _seed_backlog(agents, 2)
+    _ProjectionClock(monkeypatch)
     monkeypatch.setattr(projection, "_UNLINK_WARNING_LAST", 0.0)
     monkeypatch.setattr(projection, "_UNLINK_WARNING_SUPPRESSED", 0)
     monkeypatch.setattr(projection.platform_compat, "IS_WINDOWS", False)
@@ -865,6 +894,7 @@ def test_a_refused_lease_unlink_reports_through_the_same_throttle(native_tree, m
     """
     _home, agents, _project = native_tree
     backlog = _seed_backlog(agents, 3)
+    clock = _ProjectionClock(monkeypatch)
     monkeypatch.setattr(projection, "_UNLINK_WARNING_LAST", 0.0)
     monkeypatch.setattr(projection, "_UNLINK_WARNING_SUPPRESSED", 0)
     monkeypatch.setattr(projection.platform_compat, "IS_WINDOWS", False)
@@ -904,11 +934,7 @@ def test_a_refused_lease_unlink_reports_through_the_same_throttle(native_tree, m
         projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
         assert len([r for r in caplog.records if "cannot remove" in r.getMessage()]) == 1
         assert all(p.exists() for p in backlog)
-        monkeypatch.setattr(
-            projection,
-            "_UNLINK_WARNING_LAST",
-            time.monotonic() - projection._UNLINK_WARNING_INTERVAL_SECS - 1,
-        )
+        clock.advance(projection._UNLINK_WARNING_INTERVAL_SECS + 1)
         assert (
             projection._unlink_projection_lease_if_unchanged(
                 record, identity, what="stale lease record"
@@ -1079,7 +1105,9 @@ class TestSettingsReadRetry:
         assert len(calls) == 3
         assert slept == [2.0]
 
-    def test_a_read_that_stays_refused_still_raises(self, native_tree, monkeypatch):
+    def test_a_read_that_stays_refused_raises_and_preparation_falls_back(
+        self, native_tree, monkeypatch
+    ):
         home, agents, project = native_tree
         (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
         global_settings = home / "settings" / "cli.json"
@@ -1090,10 +1118,19 @@ class TestSettingsReadRetry:
         calls = self._flaky_reader(monkeypatch, refusals=10**6)
 
         with pytest.raises(ValueError, match="Cannot read Kiro settings"):
-            projection.prepare_native_skill_projection(project)
+            projection._settings(global_settings)
         # First attempt, immediate re-check, one pause, final attempt.
         assert len(calls) == 3
         assert slept == [2.0]
+
+        # The spawn takes the authored agent on the same exhausted retry
+        # instead of failing: no view, and the workspace overlay is not written.
+        calls.clear()
+        slept.clear()
+        assert projection.prepare_native_skill_projection(project) is None
+        assert len(calls) == 3
+        assert slept == [2.0]
+        assert not (project / ".kiro" / "settings" / "cli.json").exists()
 
     def test_a_missing_file_reads_empty_without_retry(self, tmp_path, monkeypatch):
         calls = self._flaky_reader(monkeypatch, refusals=10**6)
@@ -1228,6 +1265,7 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         _superseding_alias = runtime_module.AcpRuntime._superseding_alias
         _refuse_if_view_superseded = runtime_module.AcpRuntime._refuse_if_view_superseded
         _refuse_if_view_unverified = runtime_module.AcpRuntime._refuse_if_view_unverified
+        _refuse_over_ceiling_mode = runtime_module.AcpRuntime._refuse_over_ceiling_mode
         _note_unadopted_skill_projection = (
             runtime_module.AcpRuntime._note_unadopted_skill_projection
         )

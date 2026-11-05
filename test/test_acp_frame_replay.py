@@ -1,49 +1,20 @@
 """Replay recorded ACP frames and check what the dispatch layer makes of them.
 
-The Agent SDK boundary refactors (``docs/request-for-change/rfc-crew-agent-sdk-boundary.md``)
-move the frame-to-event translation behind a driver. Every one of them is
-supposed to be behaviour-preserving, and nothing here checked that: the dispatch
-parsers are covered by unit tests that each assert one field of one frame they
-construct inline, so a refactor that changes the SHAPE of a turn -- drops the
-refinement event a ``tool_call_update`` emits alongside its result, stops
-redacting a tool input, reorders two events -- passes every one of them.
+``test/fixtures/acp_frames/<backend>/*.jsonl`` holds real frame sequences, and
+``acp_frame_replay_harness`` feeds each through the real parsers; the whole event
+stream is compared to a committed snapshot, so a change to a turn's shape fails
+with an event diff (see ``docs/request-for-change/rfc-crew-agent-sdk-boundary.md``).
 
-This walks the other way round. ``test/fixtures/acp_frames/<backend>/*.jsonl``
-holds real frame sequences per backend, one JSON-RPC frame per line, and
-``acp_frame_replay_harness`` feeds each sequence through the same parsers the two
-reader loops call. This module compares the whole resulting event stream against
-a committed snapshot, so a refactor that changes what a backend's stream becomes
-fails here with a diff of the events rather than passing green.
+Read-only (AUTOSDE ``no-test-side-effects``): regenerate with
+``python3 scripts/update_acp_frame_snapshots.py`` in the commit that changes behaviour.
 
-**This module is read-only.** It never writes a snapshot, because a test must not
-create files in the repo that outlive the run (AUTOSDE ``no-test-side-effects``,
-whose own history is a file a test left at the repo root and shipped to main).
-Regenerating a snapshot is ``python3 scripts/update_acp_frame_snapshots.py``, and
-the rewrite belongs in the same commit as the behaviour change that caused it, so
-a reviewer sees the event diff.
+``replay_frames`` mirrors the reader loops' routing, so a change made inside
+``AcpRuntime._reader_loop`` or ``AcpClient`` is not caught; retarget the harness at
+the driver's entry point when the RFC's driver lands. ``HANDLED_ACTIONS`` catches
+a new action, not a changed mapping.
 
-**What this does NOT pin.** ``replay_frames`` mirrors the routing the reader
-loops perform -- which parser runs for which action, how the caches thread, and
-the order events come out -- rather than calling the loops themselves. The
-parsers it calls are the real ones, so a change inside a ``_dispatch`` parser
-fails here. A change that moves translation INTO ``AcpRuntime._reader_loop`` or
-``AcpClient`` and out of a parser does NOT, and event reordering done there is
-exactly the kind of change this corpus was built to catch. The mirror is the
-price of having a gate before the driver exists: when the RFC's driver lands, the
-harness should be retargeted at the driver's public entry point and the mirrored
-routing deleted, which turns this from pinning the parsers into pinning the
-boundary. ``HANDLED_ACTIONS`` catches a NEW action; it does not catch a changed
-mapping for an existing one.
-
-Two ratchets make it hold for backends added later:
-
-* Every id in ``ACP_BACKENDS_KNOWN`` must have a fixture directory. A new
-  provider that skips the corpus fails ``test_every_known_backend_has_fixtures``
-  -- it does not skip, because a skip is what let the section 5 MCP-projection
-  failure reach a public build twice.
-* Every action ``classify_notification`` can return must be handled by
-  ``replay_frames``. A new frame class routed in production but not there would
-  otherwise be silently invisible to the corpus.
+Ratchets: every id in ``ACP_BACKENDS_KNOWN`` needs a fixture directory (fails, never
+skips), and every action ``classify_notification`` returns must be handled.
 """
 
 from __future__ import annotations
@@ -86,16 +57,9 @@ _UPDATE_SCRIPT = "scripts/update_acp_frame_snapshots.py"
 #: A fixture is read by people, so it stays small enough to read.
 _MAX_FRAMES = 50
 
-#: Directories whose backend answers ``initialize`` without an ``agentInfo``
-#: object, so no agent version reaches the wire for the corpus to carry. Listed
-#: by name rather than inferred: an omission has to be a decision someone wrote
-#: down, or the version signal decays for every backend at once.
-#:
-#: ``kas``: KAS 0.63.3 answers with ``protocolVersion``, ``agentCapabilities``
-#: and ``authMethods`` only. Nothing consumes a KAS version --
-#: ``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD`` holds ``kiro`` alone, and
-#: ``agent_version_from_init`` reads a missing ``agentInfo`` as ``""`` rather
-#: than raising -- so the handshake is unaffected.
+#: Backends whose ``initialize`` carries no ``agentInfo``, listed by name so each
+#: omission is a written decision. ``kas`` (0.63.3): nothing consumes its version and
+#: ``agent_version_from_init`` reads a missing ``agentInfo`` as ``""``.
 _BACKENDS_WITHOUT_AGENT_VERSION = frozenset({"kas"})
 
 
@@ -172,15 +136,8 @@ def test_every_known_backend_has_fixtures() -> None:
 def test_every_backend_covers_the_required_frame_kinds() -> None:
     """Each backend's corpus must reach the frame classes a turn is made of.
 
-    Without this a directory holding one text chunk would satisfy the ratchet
-    above while locking almost nothing.
-
-    An initialize response is recognised by ``protocolVersion``, which the
-    handshake makes mandatory, and the agent version is a SECOND assertion over
-    the same frame. The two are separate because they are separately true:
-    ``agentInfo`` is optional in ACP, and one shipped backend omits it
-    (``_BACKENDS_WITHOUT_AGENT_VERSION``), so folding them together would force
-    that backend's corpus to claim a field its wire never carried.
+    The agent version is checked apart from ``protocolVersion`` because
+    ``agentInfo`` is optional in ACP (``_BACKENDS_WITHOUT_AGENT_VERSION``).
     """
     gaps: list[str] = []
     for directory in backend_dirs():
@@ -324,12 +281,8 @@ def test_a_live_header_names_the_agent_its_capture_answered_as() -> None:
 def test_replaying_the_whole_corpus_modifies_no_committed_file() -> None:
     """Replay must leave the corpus byte-identical on disk.
 
-    A pytest-time snapshot-update mode is exactly the shape AUTOSDE
-    ``no-test-side-effects`` forbids -- its own history is a file a test left at
-    the repo root and shipped to main. So the invariant is checked by OBSERVING
-    the corpus rather than by grepping this module for a write call: every
-    fixture and every snapshot is stat'd, the full replay runs, and nothing may
-    have moved.
+    AUTOSDE ``no-test-side-effects``: every file is stat'd before and after a full
+    replay, rather than grepping this module for a write call.
     """
     tracked = sorted(CORPUS.rglob("*"))
     before = {p: (p.stat().st_mtime_ns, p.stat().st_size) for p in tracked if p.is_file()}
@@ -388,12 +341,8 @@ def test_a_non_object_frame_is_a_fixture_error_not_a_crash(tmp_path, bad_line: s
 def test_the_snapshot_writer_never_records_telemetry(tmp_path) -> None:
     """Regenerating snapshots must not emit ``kirocrew.tool.call.duration``.
 
-    The parsers ``replay_frames`` drives are the production ones, and each
-    ``tool_call`` -> terminal ``tool_call_update`` pair records a duration
-    sample. pytest is safe because the root conftest pins ``KIROCREW_TELEMETRY=0``;
-    the writer runs outside pytest, so it pins the same var itself. Checked in a
-    fresh interpreter with the var UNSET and a config that says telemetry is on,
-    which is the host the finding described.
+    The real parsers record a duration per tool call; the writer runs outside the
+    conftest's ``KIROCREW_TELEMETRY=0``, so it is run fresh with the var unset.
     """
     env = {k: v for k, v in os.environ.items() if k != "KIROCREW_TELEMETRY"}
     env["KIROCREW_HOME"] = str(tmp_path)
@@ -424,32 +373,12 @@ def test_the_snapshot_writer_never_records_telemetry(tmp_path) -> None:
 def test_a_numeric_handshake_fixture_requires_a_protocol_version_row() -> None:
     """A harness whose OWN wire answers a numeric version must not be sent a date string.
 
-    ``_PROTOCOL_VERSION_BY_BACKEND`` is read with ``.get(backend, PROTOCOL_VERSION)``, so
-    an id with no row silently speaks kiro-cli's date-stamped dialect. That default is
-    right for the kiro family and wrong for every spec adapter, and what it produces is
-    not a crash: the harness may accept the handshake and negotiate, so the only evidence
-    is the version that went out.
+    ``_PROTOCOL_VERSION_BY_BACKEND`` defaults to kiro-cli's date-stamped dialect, which
+    goose 1.50.1 refuses with ``-32602 Invalid params``. Derived from each backend's
+    recorded ``initialize`` response, so a new harness fails here with no edit.
 
-    Derived from the CORPUS rather than from a list of ids, which is what makes this the
-    general form. Each backend's own ``initialize`` response is the authority on which
-    dialect it speaks, and those responses are already committed here as the thing this
-    module replays. So a fifth harness that records a numeric handshake and forgets the
-    row fails HERE with no edit to this test.
-
-    The kiro FAMILY is exempt, and the exemption is the one thing that has to be named
-    rather than derived. Those two ARE the date-stamped dialect -- the default this table
-    exists to override -- and they answer numerically because ACP's handshake NEGOTIATES:
-    a numeric response says which version the agent chose, not which version the client
-    must send. KAS is the live proof that the two can differ, since it is shipped and
-    selectable with no row. So membership of this pair is what a reader must check, and
-    adding an id to it is a claim that the harness accepts the date string.
-
-    That is also why a numeric response alone is not proof of a bug. For the harness this
-    ratchet was written for it happens to be: sent the date string, goose 1.50.1 refuses
-    ``initialize`` outright with ``-32602 Invalid params``, so the missing row was a
-    session that could not start rather than a cosmetic mismatch. A future harness might
-    negotiate instead, and the row is still right for it -- Crew should send what the
-    harness speaks.
+    The kiro family is exempt by name: ACP negotiates, so their numeric answer is the
+    version they chose, and adding an id there claims the harness takes the date string.
     """
     from kiro_crew.acp.client import _PROTOCOL_VERSION_BY_BACKEND
     from kiro_crew.acp.harness import harness_for
@@ -462,13 +391,8 @@ def test_a_numeric_handshake_fixture_requires_a_protocol_version_row() -> None:
     def _declares_a_numeric_dialect(backend: str) -> bool:
         """Whether the core that DRIVES *backend* would send a numeric version.
 
-        Two cores, two homes for the answer, and asking only one of them is how a
-        harness that declares its dialect correctly is read as missing it. A harness
-        on the shared runtime answers from its own ``protocol_version`` seam; a
-        per-session harness answers from the client core's table. A backend on the
-        runtime deliberately has NO client row -- a second copy on a core that never
-        performs its handshake is one nothing keeps honest -- so its absence there is
-        the intended state rather than the defect this ratchet hunts.
+        A shared-runtime harness answers from its ``protocol_version`` seam and has no
+        client row on purpose; a per-session harness answers from the client table.
         """
         if backend in ACP_BACKENDS_ACP_RUNTIME:
             declared = harness_for(backend).protocol_version

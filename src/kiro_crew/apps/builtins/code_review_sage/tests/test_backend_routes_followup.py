@@ -215,6 +215,20 @@ class TestFollowupRoutes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["folder_id"], second["folder_id"])
         self.assertEqual([f["name"] for f in state._folders], [self.mod.followup.FOLDER_NAME])
 
+    async def test_a_new_folder_sorts_after_every_survivor_of_a_delete(self):
+        """Two of four folders deleted leaves orders 2 and 3, so the store length
+        (2) would tie the first survivor instead of landing after both."""
+        state = _FakeState(
+            _FakeSessions(),
+            folders=[
+                {"id": "c", "name": "C", "order": 2, "parent_id": ""},
+                {"id": "d", "name": "D", "order": 3, "parent_id": ""},
+            ],
+        )
+        folder_id = await self.mod._ensure_followup_folder(state)
+        created = next(f for f in state._folders if f["id"] == folder_id)
+        self.assertEqual(created["order"], 4)
+
     async def test_a_disabled_app_answers_nothing(self):
         """Disabling an app withdraws its runtime, not just its UI — a request
         already in flight is the one no teardown hook can reach."""

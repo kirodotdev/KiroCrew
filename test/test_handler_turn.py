@@ -782,7 +782,8 @@ _SURFACE_ONLY_REEXPORTS = frozenset("""
     _get_agent_for_session _review_drafts_get _review_drafts_pop adopt_default_agent
     adopt_slack_config cancel_background_tasks enable_yolo_with_ttl get_orch_cfg
     handle_interaction is_open_channel is_slack_session_trusted is_tracked_channel
-    post_linked_approval refresh_phase_emojis resolve_linked_approval set_allowed_users
+    link_agent_mismatch post_linked_approval read_config_text read_link_record
+    refresh_phase_emojis resolve_linked_approval set_allowed_users
     set_dashboard_state set_open_channels set_orch_cfg set_owner_id set_tracking_channels
     set_yolo_mode
     """.split())
@@ -934,6 +935,7 @@ _OWNER_COROUTINES = (
     ("turn", "_replay_abandoned"),
     ("turn", "book_failure"),
     ("turn", "clear_working_indicators"),
+    ("turn", "fire_stop_hooks"),
     ("permission_ladder", "_screen_tool_call"),
     ("permission_ladder", "_answer_permission_request"),
     ("permission_ladder", "_reject_orphaned_tool"),

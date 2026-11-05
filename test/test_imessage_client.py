@@ -494,6 +494,9 @@ class TestOverflowResume:
         ]
         await peers[0].notify("watch.overflow", {"subscription": 1, "resume_after_rowid": 1})
         await _until(lambda: len(peers[0].params_for("watch.subscribe")) == 3)
+        # The retry's answer becomes the live watch.
+        await _until(lambda: imc._subscription is not None)
+        assert imc._subscription == 4
         await imc.close()
 
     @pytest.mark.asyncio
@@ -504,6 +507,8 @@ class TestOverflowResume:
         peers[0].replies["watch.subscribe"] = [{"subscription": 2}]
         await peers[0].notify("watch.overflow", {"subscription": 1})
         await _until(lambda: len(peers[0].params_for("watch.subscribe")) == 2)
+        await _until(lambda: imc._subscription is not None)
+        assert imc._subscription == 2
         await imc.close()
 
 

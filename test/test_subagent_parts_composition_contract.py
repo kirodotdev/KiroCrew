@@ -49,6 +49,11 @@ from kiro_crew import subagent_parts
 from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="subagent_parts_composition_contract")
+
+SHARED_FACADE_CHECKS = ("the_sweep_reports_a_global_the_namespace_does_not_bind",)
+
 _FACADE = subagent.__name__
 _SRC = Path(subagent.__file__).resolve().parents[1]
 _PARTS_DIR = Path(subagent_parts.__file__).resolve().parent
@@ -308,7 +313,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_scan_parent_spawn_allowlists",
             "function",
-            "(agents_dir: 'Path', parent_template: 'str', operation: 'str' = 'spawn_available_agents') -> '_ScopeAllowlists'",
+            "(agents_dir: 'Path', parent_template: 'str', operation: 'str' = 'spawn_available_agents', *, pins: 'Mapping[str, str] | None' = None) -> '_ScopeAllowlists'",
         ),
         (
             "parent_template_allowlists",
@@ -619,6 +624,8 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, agent_id: 'str', info: 'SubagentInfo', elapsed: 'float', *, reason: 'str' = '') -> 'None'",
     ),
     "_forget_pending_start": ("method", "(self, agent_id: 'str') -> 'None'"),
+    "_take_spawn_attempt": ("method", "(self, agent_id: 'str') -> 'Any'"),
+    "carry_spawn_attempt": ("method", "(self, agent_id: 'str', token: 'Any') -> 'None'"),
     "_forget_pressure_clock": ("method", "(self, agent_id: 'str') -> 'None'"),
     "_gate_exit_reset": ("method", "(self, info: 'SubagentInfo') -> 'Callable[..., None]'"),
     "_gate_wait_mark": ("method", "(self, info: 'SubagentInfo') -> 'Callable[..., None]'"),
@@ -953,7 +960,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "spawn": (
         "method",
-        "(self, task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', max_turns: 'int' = 0, model: 'str | None' = None, reasoning_effort: 'str' = '', allowed_tools: 'list[str] | None' = None, bare: 'bool' = False, cwd: 'str' = '', approval_mode: 'str | None' = None, silent: 'bool' = False, batch_id: 'str' = '', batch_total: 'int' = 0, keep: 'bool' = False, conversation_key: 'str' = '', app: 'str' = '', include_memory: 'bool' = True, include_lessons: 'bool' = True, include_project: 'bool' = True, memory_store: 'str' = '', _agent_prevalidated: 'bool' = False, _from_queue: 'bool' = False, _preassigned_id: 'str' = '', _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, _memory_mode: 'str | None' = None, _store_accepted: 'bool' = False, _stop_before_claim: 'bool' = False, _claimed: \"'tuple[int, bool, str] | None'\" = None, _window_hint: \"'bool | None'\" = None, _child_registration: 'bool' = True, *, crew: 'str' = '', target_member: 'str | None' = None, delegation: 'dict[str, str] | None' = None, backend: 'str | None' = None, label: 'str' = '', _execution_context: 'dict | None' = None, _parent_spawn_policy: \"'ParentSpawnPolicy | None'\" = None, _parent_project_dirs: \"'list[str] | None'\" = None, _agent_check: \"'AgentCheck | None'\" = None, _recovering_row: 'bool' = False, _stop_before_memory_read: 'bool' = False, _memory_reading: \"'tuple[float, str] | None'\" = None, _depth: 'int | None' = None) -> 'SubagentInfo | None'",
+        "(self, task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', max_turns: 'int' = 0, model: 'str | None' = None, reasoning_effort: 'str' = '', allowed_tools: 'list[str] | None' = None, bare: 'bool' = False, cwd: 'str' = '', approval_mode: 'str | None' = None, silent: 'bool' = False, batch_id: 'str' = '', batch_total: 'int' = 0, keep: 'bool' = False, conversation_key: 'str' = '', app: 'str' = '', include_memory: 'bool' = True, include_lessons: 'bool' = True, include_project: 'bool' = True, memory_store: 'str' = '', _agent_prevalidated: 'bool' = False, _from_queue: 'bool' = False, _preassigned_id: 'str' = '', _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, _memory_mode: 'str | None' = None, _store_accepted: 'bool' = False, _stop_before_claim: 'bool' = False, _claimed: \"'tuple[int, bool, str] | None'\" = None, _window_hint: \"'bool | None'\" = None, _child_registration: 'bool' = True, *, crew: 'str' = '', target_member: 'str | None' = None, delegation: 'dict[str, str] | None' = None, backend: 'str | None' = None, failover_from: 'str | None' = None, label: 'str' = '', _execution_context: 'dict | None' = None, _parent_spawn_policy: \"'ParentSpawnPolicy | None'\" = None, _parent_project_dirs: \"'list[str] | None'\" = None, _agent_check: \"'AgentCheck | None'\" = None, _recovering_row: 'bool' = False, _stop_before_memory_read: 'bool' = False, _memory_reading: \"'tuple[float, str] | None'\" = None, _depth: 'int | None' = None) -> 'SubagentInfo | None'",
     ),
     "spawn_async": (
         "async method",
@@ -961,6 +968,10 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "start_reaper": ("method", "(self) -> 'None'"),
     "steer_run": ("async method", "(self, agent_id: 'str', message: 'str') -> 'tuple[bool, str]'"),
+    "suppress_retired_delivery": (
+        "method",
+        "(self, info: 'SubagentInfo', members: 'Iterable[str]' = ()) -> 'bool'",
+    ),
     "task_memory_rows": ("method", "(self) -> 'list[dict[str, object]]'"),
     "update_completion_keep": ("method", "(self, mode: 'str', max_chars: 'int') -> 'None'"),
     "user_max_concurrent": ("property", ""),
@@ -984,15 +995,6 @@ def test_the_owners_define_functions_for_the_sweeps_to_check() -> None:
 def test_every_owner_function_runs_on_the_facade_globals() -> None:
     elsewhere = [label for label, fn in _owner_functions() if fn.__globals__ is not vars(subagent)]
     assert elsewhere == []
-
-
-def test_the_sweep_reports_a_global_the_namespace_does_not_bind() -> None:
-    module_code = compile(
-        "def f():\n    def g():\n        return absent\n    return present, g\n", "probe", "exec"
-    )
-    code = next(c for c in module_code.co_consts if isinstance(c, types.CodeType))
-    probe = types.FunctionType(code, {"__name__": "probe", "present": 1})
-    assert _unbound_globals(probe) == ["absent"]
 
 
 def test_every_global_an_owner_function_reads_is_bound_on_the_facade() -> None:

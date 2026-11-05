@@ -6,7 +6,7 @@ the session list follow it:
 * ``personal``: no team path is configured and nobody but the local operator has
   been seen. The list hides creator bylines and the All/Mine control, and People
   shows the setup guidance plus personal Remote Control;
-* ``network``: a network path (Tailscale, Systems Manager) is configured, or a
+* ``network``: a network path (Tailscale) is configured, or a
   person other than the local operator has been seen. People shows each
   network adapter read-only, pointing to where that network manages access, plus
   personal Remote Control;
@@ -33,6 +33,7 @@ from kiro_crew.shared_crew.access import tailnet_identity_config_unreadable
 from kiro_crew.shared_crew.codec import SCHEMA_VERSION
 from kiro_crew.shared_crew.contracts import CapabilityState, Principal, PrincipalKind, Provenance
 from kiro_crew.shared_crew.identity import PROVIDER_LOCAL, local_operator_principal
+from kiro_crew.shared_crew.owner import LOCAL_BOOTSTRAP_SUBJECTS
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +57,6 @@ _CONFIGURED_STATES = frozenset({CapabilityState.AVAILABLE.value, CapabilityState
 #: The ``workload_identity_ref`` the mode body and audit records carry: this
 #: build has no Crew workload identity.
 WORKLOAD_UNAVAILABLE = "unavailable"
-
-#: Token subjects of the gateway's machine-local bootstrap tokens, minted as
-#: ``owner_id or <subject>``: the one local operator when no owner is configured.
-LOCAL_BOOTSTRAP_SUBJECTS: tuple[str, ...] = ("local-app", "local-startup")
 
 
 @dataclass(frozen=True)
@@ -179,9 +176,7 @@ def mode_view(
     states whether the team configuration is refused. ``console`` is always
     ``not_offered`` and ``workload_identity_ref`` always ``unavailable`` in
     this build. ``adapters`` reports each network setup path as the gateway
-    sees it, and ``systems_manager_attribution`` is always ``unavailable``: a
-    Session Manager connection reaches the Crew as a local connection with no
-    verified person.
+    sees it.
     """
     mode, problem = resolve_mode(
         setup_paths,
@@ -200,7 +195,6 @@ def mode_view(
         "team_config": team,
         "console": {"state": "not_offered", "url": ""},
         "adapters": {k: dict(v) for k, v in setup_paths.items() if isinstance(v, Mapping)},
-        "systems_manager_attribution": CapabilityState.UNAVAILABLE.value,
         "workload_identity_ref": WORKLOAD_UNAVAILABLE,
     }
 
