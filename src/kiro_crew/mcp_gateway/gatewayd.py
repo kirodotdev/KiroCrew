@@ -164,6 +164,7 @@ from kiro_crew.mcp_gateway.daemon.connection import (  # noqa: F401
     _teardown_connection,
 )
 from kiro_crew.mcp_gateway.daemon.control import (  # noqa: F401
+    _RECYCLE_SERVER_NAME_MAX,
     _apply_abort,
     _apply_claim,
     _apply_owner_port,

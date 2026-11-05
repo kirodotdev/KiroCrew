@@ -75,6 +75,7 @@ Signs in and runs without kiro-cli: `kas` installs Kiro Crew's own engine bundle
 | `kirocrew usage` | Recent credit spend per day; `--by model\|agent\|channel\|session`, `--days N` / `--since YYYY-MM-DD`, `--json` |
 | `kirocrew trace show KEY` | Print one traced turn as a waterfall of its model calls, tool calls and sub-agents, read from the local span files (written while `telemetry.traces_enabled` is on); `KEY` is a turn id, session key or id, ACP session id or trace id |
 | `kirocrew gateway-pid` | Print the PID holding this home's gateway lock (JSON) |
+| `kirocrew mcp reload SERVER` | Reload one MCP server's running processes without a restart: idle ones stop now, busy ones finish first (`SERVER` is its `mcp.json` name or slash-free alias) |
 | `kirocrew open SESSION` | Open the desktop app on a session through a `kirocrew://` deep link (`SESSION` is the `?sid=` value in the dashboard URL); `--print` shows the URL and opens nothing |
 
 The token in a `--json-ready` line grants dashboard access for up to 20 hours, so

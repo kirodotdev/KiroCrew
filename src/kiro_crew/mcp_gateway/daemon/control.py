@@ -44,6 +44,7 @@ from kiro_crew.mcp_gateway.daemon.session_describe import describe_session_reply
 from kiro_crew.mcp_gateway.daemon.wire import _write_json_line
 from kiro_crew.mcp_gateway.pool import DRAIN_DEADLINE_SECS, BackendPool
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore
+from kiro_crew.mcp_utils import mcp_server_alias
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
@@ -638,9 +639,17 @@ async def _apply_recycle_server(frame: dict[str, Any], pool: BackendPool) -> dic
     ):
         facade._audit_recycle_server("", "denied", "missing or invalid server name")
         return {"type": "recycle-server-rejected", "reason": "missing or invalid 'server' name"}
-    result = await pool.drain_server(server)
+    # Pool keys carry either the mcp.json key or its slash-free alias
+    # (``npm:@playwright/mcp`` -> ``playwright-mcp``), so the operator may
+    # type either spelling and both are drained.
+    evicted = draining = private = 0
+    for name in dict.fromkeys((server, mcp_server_alias(server))):
+        drained = await pool.drain_server(name)
+        evicted += drained.evicted
+        draining += drained.draining
+        private += drained.private
     detail = (
-        f"evicted={result.evicted} draining={result.draining} private={result.private} "
+        f"evicted={evicted} draining={draining} private={private} "
         f"deadline={int(DRAIN_DEADLINE_SECS)}s"
     )
     logger.info("gatewayd: recycled MCP server %r on request (%s)", server, detail)
@@ -648,9 +657,9 @@ async def _apply_recycle_server(frame: dict[str, Any], pool: BackendPool) -> dic
     return {
         "type": "recycled",
         "server": server,
-        "evicted": result.evicted,
-        "draining": result.draining,
-        "private": result.private,
+        "evicted": evicted,
+        "draining": draining,
+        "private": private,
         "deadline_secs": DRAIN_DEADLINE_SECS,
     }
 
