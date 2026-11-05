@@ -1015,7 +1015,18 @@ export function useWebSocket() {
             // Buffered with the slot's chunks: the label and the text around
             // it land in the frame's one flush, in arrival order.
             if (data.slot && data.status) {
-              buffers.bufferStatusLabel(data.slot, { kind: 'thinking', label: data.status })
+              // The generic thinking status is the one label the server sends
+              // in a fixed English phrase; store it as the bare `thinking`
+              // phase so `toolStatusLabel` resolves the catalog key in the
+              // current UI language instead of painting the English text
+              // verbatim. Any other (genuinely distinct) server label still
+              // passes through unchanged.
+              const isGenericThinking =
+                data.status === i18nT('pages.chatSidebar.thinking', { lng: 'en' })
+              buffers.bufferStatusLabel(
+                data.slot,
+                isGenericThinking ? { kind: 'thinking' } : { kind: 'thinking', label: data.status },
+              )
             }
             break
           case 'chat_variant_switch':
