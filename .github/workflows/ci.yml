@@ -1311,17 +1311,22 @@ jobs:
           if [ "$REDUCED" = "true" ]; then
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
           fi
-          # Leaf-test scope: run the whole narrow set on every matrix job, NOT
-          # split across shards -- 14 files do not shard usefully, and the point
-          # is repeats. Each shard job is then an independent roll on its own
-          # runner, which is what a flake fix actually needs. Measured
-          # on this checkout: one pass over the narrow set is ~38s (910 tests)
-          # against ~29 minutes for the slowest full shard.
+          # Leaf-test scope: the CHANGED files repeat LEAF_REPEATx on every matrix
+          # job (each shard job is an independent roll on its own runner, which is
+          # what a flake fix needs). The corpus gates are sharded across the matrix
+          # exactly as the full-suite path -- each job runs 1/SHARD_COUNT of the
+          # gates once, because they are deterministic and repeating them buys
+          # nothing. Measured on this checkout: ~38s/job (910 tests) for changed
+          # files; gate shard timing to follow from the first green run.
           if [ "$LEAF" = "true" ]; then
-            # The corpus gates run ONCE: they are deterministic content assertions,
-            # so repeating them buys nothing and -- at ~3 minutes a pass over ~158
-            # files -- would dominate the run and undo the reduction. Only the
-            # CHANGED files repeat, because that is where a flake lives.
+            # The corpus gates are deterministic content assertions, so repeating
+            # them buys nothing. With ~814 gate files unsharded, every matrix job
+            # ran the whole set once (~44 min), causing mass timeouts on
+            # process-count tests (test_xdist_host_budget, test_session_transfer,
+            # etc.). The fix: shard the gates across the matrix exactly as the
+            # full-suite path does -- each job runs 1/SHARD_COUNT of the gates once,
+            # via the same ci_file_shards plugin. Only the CHANGED files still
+            # repeat LEAF_REPEATx on every job, because that is where a flake lives.
             GATES=()
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done <<< "$LEAF_GATES"
             CHANGED=()
@@ -1337,8 +1342,10 @@ jobs:
               exit 1
             fi
             if [ "${#GATES[@]}" -gt 0 ]; then
-              echo "::group::leaf corpus gates (${#GATES[@]} file(s), once)"
-              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required and not real_venv" ${GATES[@]+"${GATES[@]}"}
+              echo "::group::leaf corpus gates (${#GATES[@]} file(s), shard ${{ matrix.group }}/$SHARD_COUNT)"
+              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required and not real_venv" \
+                --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+                ${GATES[@]+"${GATES[@]}"}
               echo "::endgroup::"
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
