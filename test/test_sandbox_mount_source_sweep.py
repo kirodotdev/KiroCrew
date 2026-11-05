@@ -259,6 +259,90 @@ class TestMountSourceSweep:
         assert empty.exists()
         assert not plain.exists()
 
+    def test_over_age_dead_pid_dir_is_reclaimed_after_two_uncovered_sweeps(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The age backstop reaches the directory class, via a two-sweep latch.
+
+        A host whose constant /proc churn keeps the pin scan permanently
+        incomplete AND uncovered would otherwise strand every dead-pid
+        directory forever, and the runtime tmpfs refills to 100% of its
+        inodes. A dead-pid, over-age, unpinned dir under an unproven scan is
+        held on the FIRST sweep (one scan can miss a fork/exit holder) and
+        reclaimed only when a SECOND consecutive sweep sees it the same way.
+        A young dead-pid dir still fails closed.
+        """
+        latch = tmp_path / "latch"
+        _pin(monkeypatch, set(), complete=False, covered=False)
+        stale = _make_dir(tmp_path, f"kirocrew_sb_{_DEAD_PID}_aged01", populate=True, old=True)
+        empty_stale = _make_dir(tmp_path, f"kirocrew_sb_{_DEAD_PID}_aged02", old=True)
+        fresh = _make_dir(tmp_path, f"kirocrew_sb_{_DEAD_PID}_fresh1", populate=True)
+
+        # Sweep 1: records the latch, removes nothing.
+        first = _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)], latch_store=latch)
+        assert first == 0
+        assert stale.exists()
+        assert empty_stale.exists()
+
+        # Sweep 2: second confirmation -> reclaim the over-age pair.
+        second = _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)], latch_store=latch)
+        assert second == 2
+        assert not stale.exists()
+        assert not empty_stale.exists()
+        # A young dead-pid dir could still be a very recent sandbox's; held back.
+        assert (fresh / "known_hosts").exists()
+
+    def test_missed_live_child_on_first_sweep_keeps_dir_when_seen_on_second(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The two-sweep latch closes the fork/exit-holder race.
+
+        Sweep 1's scan misses a live child that holds the mount (it forked a
+        successor and exited inside the read window), so the dir is NOT removed
+        -- it is only latched. Sweep 2's scan reads the child and reports the
+        source pinned, which clears the latch and keeps the dir. A single
+        uncovered sweep can never delete a source a later sweep proves live.
+        """
+        latch = tmp_path / "latch"
+        name = f"kirocrew_sb_{_DEAD_PID}_child01"
+        live_dir = _make_dir(tmp_path, name, populate=True, old=True)
+
+        # Sweep 1: the live child is missed, so the scan returns no pin and is
+        # uncovered. The dir must be held (latched), never removed.
+        _pin(monkeypatch, set(), complete=False, covered=False)
+        first = _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)], latch_store=latch)
+        assert first == 0
+        assert (live_dir / "known_hosts").exists()
+
+        # Sweep 2: the child is read this time and its source shows pinned. The
+        # latch is cleared and the dir survives, even though it was latched.
+        _pin(monkeypatch, {name}, complete=False, covered=False)
+        second = _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)], latch_store=latch)
+        assert second == 0
+        assert (live_dir / "known_hosts").exists()
+
+        # And a THIRD sweep that again sees it unpinned must restart the latch
+        # (the pinned sweep dropped the name), so it is still not removed.
+        _pin(monkeypatch, set(), complete=False, covered=False)
+        third = _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)], latch_store=latch)
+        assert third == 0
+        assert (live_dir / "known_hosts").exists()
+
+    def test_over_age_dir_pinned_in_uncovered_scan_is_still_retained(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The pinned set wins over the age backstop: an entry a readable
+        namespace still binds must survive even past 24h, or rmdir S_DEADs a
+        live mount's root inode."""
+        pinned_name = f"kirocrew_sb_{_DEAD_PID}_pinned1"
+        pinned_dir = _make_dir(tmp_path, pinned_name, populate=True, old=True)
+        _pin(monkeypatch, {pinned_name}, complete=False, covered=False)
+
+        removed = _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)])
+
+        assert removed == 0
+        assert (pinned_dir / "known_hosts").exists()
+
     def test_dirs_are_reclaimed_once_every_own_uid_task_was_read(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
