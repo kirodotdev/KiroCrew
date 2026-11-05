@@ -1387,7 +1387,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           disabled={!dndRow || isRenaming}
         >
           {({ setNodeRef, listeners, isDragging }) => (
-        <ContextMenuStableTrigger content={rowContextMenuContent}>
+        <ContextMenuStableTrigger content={rowContextMenuContent} disabled={isDragging}>
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
           data-draggable={(!isRenaming && !foreignRow).toString()}
           className={`session-row focus-ring-accent-inset group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isCrewParent ? 'session-crew-parent' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
