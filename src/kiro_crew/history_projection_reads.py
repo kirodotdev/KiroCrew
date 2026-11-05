@@ -414,7 +414,7 @@ class TranscriptReadProjection:
         for p in segs:
             try:
                 lines = p.read_text(encoding="utf-8").splitlines()
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 _HISTORY_LOGGER.warning("rotated segment unreadable: %s", p.name, exc_info=True)
                 complete = False
                 continue
