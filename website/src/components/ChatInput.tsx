@@ -253,6 +253,7 @@ function ChatInput({
   mentionEditRange,
   onFileOpen,
   project: projectProp,
+  turnProject,
   sessionOnPeer = false,
   projectBranch,
   projectDetached,
@@ -483,8 +484,9 @@ function ChatInput({
       : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
   }, [projectProp, projectBranch, projectDetached])
   // A pick made while the composer is busy is staged: the chip names it at
-  // once, marks it pending, and the tooltip names the running reply's project.
-  const stagedProject = useStagedProject(projectProp, isRunning, slotId)
+  // once, marks it pending, and the tooltip names the running reply's project
+  // (the server's own reading once the turn has claimed its session).
+  const stagedProject = useStagedProject(projectProp, isRunning, slotId, turnProject)
   const midTurnProjectNote = stagedProject.midTurnNote
   const lockedProjectNote = [stagedProject.pendingNote, i18nT('components.chatInput.project_locked_while_subagents_run')].filter(Boolean).join('\n')
   const { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef } = useContextPopover()

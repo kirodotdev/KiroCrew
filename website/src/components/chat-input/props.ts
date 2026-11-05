@@ -408,6 +408,10 @@ export interface ChatInputProps {
    *  drop, no `!` shell). The context popover shows the reading only, without
    *  this machine's auto-compact slider. */
   sessionOnPeer?: boolean
+  /** The running reply's own project as the server reports it (the slot's
+   *  `turn_project`). Preferred over the composer's start-of-response
+   *  snapshot, which a reload would take from a mid-reply pick. */
+  turnProject?: string | null
   /** Checked-out branch of the active project (or short SHA when detached). */
   projectBranch?: string
   /** True when the project's HEAD is detached, so the label is a commit. */

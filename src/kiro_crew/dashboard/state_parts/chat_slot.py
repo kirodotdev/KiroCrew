@@ -99,6 +99,7 @@ class _ChatSlot:
         "_turn_generation",
         "_unstarted_generation",
         "_wake_starting_task",
+        "_turn_project_pin",
         "_chunk_seq",
         "event",
         "_pending",
@@ -479,6 +480,7 @@ class _ChatSlot:
     _turn_generation: int
     _unstarted_generation: int
     _wake_starting_task: asyncio.Task[Any] | None
+    _turn_project_pin: tuple[int, str] | None
     _chunk_seq: int
     event: asyncio.Event
     _pending: list[dict[str, str]]

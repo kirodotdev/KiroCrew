@@ -17,7 +17,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from chat_test_helpers import _make_state, drain_background_tasks
+from chat_test_helpers import _make_state, drain_background_tasks, run_as_slot_task
 
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard import chat_runner
@@ -39,6 +39,8 @@ def _turn_state(tmp_path, monkeypatch, slot_ref: dict, picked: str):
     provider = MagicMock()
 
     async def stream(*args, **kwargs):
+        # What a client reloading mid-reply reads: the summary's turn project.
+        slot_ref["summary"] = slot_ref["slot"].to_dict()["turn_project"]
         yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done.")
         yield LLMEvent(kind=EVENT_COMPLETE)
 
@@ -84,6 +86,45 @@ async def test_pick_after_registration_does_not_reach_the_running_prompt(tmp_pat
     assert state.context_builder.build_message.call_args.kwargs["project"] == str(start)
     opened.assert_called()
     assert opened.call_args.kwargs["cwd"] == str(start)
+
+
+@pytest.mark.asyncio
+async def test_summary_names_the_turn_project_after_a_mid_reply_pick(tmp_path, monkeypatch):
+    """A reload mid-reply reads the slot summary: ``project`` already names the
+    pick, so ``turn_project`` must name the directory the reply runs in."""
+    start = tmp_path / "start-of-turn"
+    picked = tmp_path / "picked-mid-turn"
+    start.mkdir()
+    picked.mkdir()
+    slot_ref: dict = {}
+    state = _turn_state(tmp_path, monkeypatch, slot_ref, str(picked))
+    slot = state.get_or_create_slot(SLOT_NAME)
+    slot.project = str(start)
+    slot_ref["slot"] = slot
+    assert slot.to_dict()["turn_project"] is None
+
+    slot.append("user", "Look at the repo.")
+    await run_as_slot_task(slot, chat_runner._run_chat(state, slot, "Look at the repo."))
+    await asyncio.wait_for(drain_background_tasks(state), 30)
+
+    assert slot_ref["summary"] == str(start)
+    # No turn runs once it ends, so the summary names none.
+    assert slot.project == str(picked)
+    assert slot.to_dict()["turn_project"] is None
+
+
+def test_turn_project_pin_from_another_generation_names_no_turn():
+    from kiro_crew.dashboard.slot_projection import _running_turn_project
+
+    slot = MagicMock()
+    slot.turn_running = True
+    slot._turn_generation = 4
+    slot._turn_project_pin = (3, "/old")
+    assert _running_turn_project(slot) is None
+    slot._turn_project_pin = (4, "/now")
+    assert _running_turn_project(slot) == "/now"
+    slot.turn_running = False
+    assert _running_turn_project(slot) is None
 
 
 @pytest.mark.asyncio
@@ -187,6 +228,7 @@ async def test_deferred_reset_turn_describes_the_reused_process_directory(tmp_pa
     reused.cwd = str(old)
 
     async def stream(*args, **kwargs):
+        slot_ref["summary"] = slot.to_dict()["turn_project"]
         yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done.")
         yield LLMEvent(kind=EVENT_COMPLETE)
 
@@ -196,7 +238,7 @@ async def test_deferred_reset_turn_describes_the_reused_process_directory(tmp_pa
     monkeypatch.setattr(chat_runner.crew_log_emit, "on_session_opened", opened)
 
     slot.append("user", "Carry on.")
-    await asyncio.wait_for(chat_runner._run_chat(state, slot, "Carry on."), 30)
+    await run_as_slot_task(slot, chat_runner._run_chat(state, slot, "Carry on."))
     await asyncio.wait_for(drain_background_tasks(state), 30)
 
     # The reset is still owed, and the turn described the reused process.
@@ -205,3 +247,5 @@ async def test_deferred_reset_turn_describes_the_reused_process_directory(tmp_pa
     assert state.context_builder.build_message.call_args.kwargs["project"] == str(old)
     opened.assert_called()
     assert opened.call_args.kwargs["cwd"] == str(old)
+    # The summary a reloading client reads names the reused process too.
+    assert slot_ref["summary"] == str(old)
