@@ -20,7 +20,7 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``,
 ``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``.
 
-Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``, ``_last_activity``, ``_liveness_oracle``,
+Instance fields read: ``_session_notices``, ``_agent_accepts_image``, ``_batch_window``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``, ``_last_activity``, ``_liveness_oracle``,
 ``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``,
 ``_session_id``, ``_session_key``, ``_steer_turn``, ``_turn_lock``.
 """
@@ -969,6 +969,8 @@ async def _dispatch_events(
 
     _prompt_events = self._prompt_loop(req_id, timeout)
     async for action, msg in _prompt_events:
+        for notice in self._session_notices.take_pending(self._session_id or ""):
+            yield notice
         if action != "update":
             logger.debug(
                 "ACP event: method=%s id=%s action=%s",
@@ -1120,6 +1122,9 @@ async def _dispatch_events(
                 yield _child_event
             if _child_consumed:
                 continue
+            session_notice = self._session_notices.accept(msg, self._session_id or "")
+            if session_notice is not None:
+                yield session_notice
             self._track_usage_update(msg)
             self._note_background_launch(msg)
             # pi's consumed notification for a steer is the gate extension's own

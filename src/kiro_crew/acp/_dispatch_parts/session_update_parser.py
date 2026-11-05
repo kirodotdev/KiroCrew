@@ -11,15 +11,20 @@ tool-result owner.
 
 from __future__ import annotations
 
+import logging
+from collections import deque
 from typing import Any
 
 from kiro_crew.acp._dispatch_parts.surfaced_text import (
+    _REQUEST_ID_REDACT_INPUT_CAP,
     _dumps_degraded,
     _redact,
     derive_edit_diff,
     extract_tool_purpose,
     is_rendered_edit_diff,
     make_unified_diff,
+    redact_backend_text,
+    redact_text,
     select_tool_title,
 )
 from kiro_crew.acp._dispatch_parts.tool_call_identity import classify_tool_call, harness_tool_name
@@ -33,19 +38,24 @@ from kiro_crew.acp._dispatch_parts.tool_result_events import (
     parse_todo_snapshot,
 )
 from kiro_crew.acp.types import (
+    EVENT_NOTICE,
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
     EVENT_TODO_UPDATE,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
+    METHOD_SESSION_UPDATE,
     UPDATE_AGENT_MESSAGE_CHUNK,
     UPDATE_AGENT_THOUGHT_CHUNK,
     UPDATE_TOOL_CALL,
     UPDATE_TOOL_CALL_UPDATE,
     AcpEvent,
+    JsonRpcMessage,
 )
 from kiro_crew.metrics.tool_calls import note_tool_call_started
 from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS
+
+logger = logging.getLogger("kiro_crew.acp._dispatch")
 
 # ── session/update parser ───────────────────────────────────────────────────
 #
@@ -544,6 +554,117 @@ def _build_tool_refinement_event(
     )
 
 
+NOTICE_STATE_MAX = 128
+NOTICE_TITLE_MAX = 256
+NOTICE_DESCRIPTION_MAX = 4096
+NOTICE_SEVERITY_MAX = 64
+
+
+def parse_notice(update: object) -> AcpEvent | None:
+    if not isinstance(update, dict) or update.get("sessionUpdate") != "notice":
+        return None
+    title = update.get("title")
+    severity = update.get("severity")
+    if not isinstance(title, str) or not isinstance(severity, str):
+        return None
+    description = update.get("description")
+    description = description if isinstance(description, str) else ""
+
+    def normalize(value: str, *, trim: bool = False) -> str:
+        if len(value) > _REQUEST_ID_REDACT_INPUT_CAP:
+            return redact_backend_text(value)
+        if trim:
+            value = value.strip()
+        # Control characters go FIRST. The credential scan cannot see a key the
+        # provider split with an ESC, so removing them afterwards rejoins the
+        # halves into a whole key the redactor never matched -- redaction has to
+        # run on the normalized text. Then redact, then bound: a cut taken before
+        # the scan can sever a secret into a fragment no pattern matches.
+        value = "".join(c for c in value if c in "\n\t" or c.isprintable())
+        return value
+
+    title = normalize(title, trim=True)
+    if not title:
+        return None
+    description = normalize(description)
+    safe_title = redact_backend_text(title)
+    # Each original field passed the length refusal, so this scan is bounded by
+    # twice that cap plus the separator. Keep the anchor until the join is scrubbed.
+    joined = redact_text(f"{title}\n{description}")
+    prefix = safe_title + "\n"
+    boundary = next(
+        (i for i, (left, right) in enumerate(zip(prefix, joined)) if left != right),
+        min(len(prefix), len(joined)),
+    )
+    # A cross-field match consumes the separator. Keep its replacement and the
+    # remaining description in the body, rather than truncating them with the title.
+    description = joined[boundary:]
+    return AcpEvent(
+        kind=EVENT_NOTICE,
+        title=safe_title[:NOTICE_TITLE_MAX],
+        text=description[:NOTICE_DESCRIPTION_MAX],
+        notice_severity=redact_backend_text(normalize(severity))[:NOTICE_SEVERITY_MAX],
+    )
+
+
+class SessionNoticeState:
+    """Bounded per-session between-turn staging queue.
+
+    Repeated warnings remain visible on later turns. The staging queue drops
+    its oldest notice when full; each drop is counted and logged when
+    ``take_pending`` drains the queue.
+    """
+
+    def __init__(self) -> None:
+        self.session_id = ""
+        self.pending: deque[AcpEvent] = deque(maxlen=NOTICE_STATE_MAX)
+        self.dropped = 0
+
+    def accept(
+        self, msg: JsonRpcMessage, session_id: str, *, stage: bool = False
+    ) -> AcpEvent | None:
+        params = msg.params if isinstance(msg.params, dict) else {}
+        if not session_id or params.get("sessionId") != session_id:
+            return None
+        if not msg.is_method(METHOD_SESSION_UPDATE) or msg.fanout_no_owner:
+            return None
+        if self.session_id != session_id:
+            self._reset(session_id)
+        event = parse_notice(params.get("update"))
+        if event is None:
+            return None
+        if stage:
+            if len(self.pending) == self.pending.maxlen:
+                self.dropped += 1
+            self.pending.append(event)
+        return event
+
+    def take_pending(self, session_id: str) -> list[AcpEvent]:
+        """Hand back the staged notices, oldest first, and forget them.
+
+        Not named ``drain``: that word is reserved under ``acp/`` for a stream
+        writer's drain, the one call the bounded-writer choke point in
+        ``transport_framing`` owns (``test_deny_bounded_write``).
+        """
+        if self.session_id != session_id:
+            self._reset(session_id)
+        events = list(self.pending)
+        self.pending.clear()
+        if self.dropped:
+            logger.warning(
+                "Provider notice backlog over %d: %d earlier notice(s) dropped",
+                NOTICE_STATE_MAX,
+                self.dropped,
+            )
+            self.dropped = 0
+        return events
+
+    def _reset(self, session_id: str) -> None:
+        self.session_id = session_id
+        self.pending.clear()
+        self.dropped = 0
+
+
 def parse_session_update(
     update: dict[str, Any],
     *,
@@ -582,6 +703,9 @@ def parse_session_update(
         return []
     kind = update.get("sessionUpdate")
     events: list[AcpEvent] = []
+    if kind == "notice":
+        notice = parse_notice(update)
+        return [notice] if notice is not None else []
     if kind in (UPDATE_AGENT_MESSAGE_CHUNK, UPDATE_AGENT_THOUGHT_CHUNK):
         text, is_thinking = parse_text_chunk(update)
         if text:

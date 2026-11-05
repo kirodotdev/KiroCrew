@@ -8,6 +8,7 @@ import pytest
 
 from conftest import host_abs
 from kiro_crew.messaging.display_safety import canonicalize_display
+from kiro_crew.messaging.renderer import _default_redactor
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.whatsapp.group_gate import SILENCE_SENTINEL
 from kiro_crew.whatsapp.turn_renderer import WhatsAppRenderer
@@ -90,6 +91,67 @@ async def settle(renderer) -> None:
     task = getattr(renderer, "_flush_task", None)
     if task is not None:
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["notice", "answer", "live_answer"])
+async def test_provider_notice_grades_both_delivery_directions(first):
+    r, transport, _ = make()
+    head = "Provider context: Authorization: Bear"
+    tail = "er opaque-notice-token and useful detail."
+    if first == "notice":
+        await r.on_notice(head)
+        r._buf = [tail]
+        await r.on_done()
+    else:
+        r._buf = [head]
+        if first == "live_answer":
+            await r._render_live()
+        else:
+            await r.on_done()
+        await r.on_notice(tail)
+    bodies = [shown(text) for _, text in transport.sent]
+    assert len(bodies) >= 2
+    joined = "".join(bodies)
+    assert _default_redactor(joined) == joined
+    assert "opaque-notice-token" not in joined
+    assert "REDACTED" in bodies[1]
+
+
+@pytest.mark.asyncio
+async def test_failed_provider_notice_keeps_the_delivered_predecessor():
+    r, transport, _ = make()
+    await r.on_notice("Authorization: Bear")
+    transport.fail = True
+    with pytest.raises(RuntimeError, match="wa send timeout"):
+        await r.on_notice("A notice that never lands")
+    assert r._sent_tail == "Authorization: Bear"
+    transport.fail = False
+    r._buf = ["er opaque-notice-token and useful detail."]
+    await r.on_done()
+    joined = "".join(shown(t) for _, t in transport.sent)
+    assert _default_redactor(joined) == joined
+    assert "opaque-notice-token" not in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edits_ok", [False, True])
+async def test_notice_below_live_answer_tracks_the_actual_next_predecessor(edits_ok):
+    r, transport, client = make(edits_ok=edits_ok)
+    r._buf = ["An ordinary streamed answer."]
+    await r._render_live()
+    await r.on_notice("Authorization: Bear")
+    r._buf = ["er opaque-notice-token and useful detail."]
+    await r.on_done()
+    if edits_ok:
+        assert client.edits[-1][1] == r._buf[0]
+        assert r._sent_tail == "Authorization: Bear"
+    else:
+        joined = "".join(shown(t) for _, t in transport.sent)
+        assert _default_redactor(joined) == joined
+        assert "opaque-notice-token" not in joined
+        assert "REDACTED" in transport.sent[-2][1]
+    assert r._note_below_live is None
 
 
 @pytest.mark.asyncio
@@ -665,3 +727,72 @@ class TestRedactionNotice:
         await r.on_text_chunk(f"Run: psql {self._SECRET_URI}")
         await r.on_done()  # must not raise
         assert any("[REDACTED: credential]" in c for _jid, c in transport.sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [SILENCE_SENTINEL, "", "A useful answer."])
+async def test_unprompted_notices_wait_for_the_suppression_decision(body):
+    renderer, transport, _ = make(unprompted=True)
+    await renderer.on_notice("First warning")
+    await renderer.on_notice("Second warning")
+    await renderer.on_text_chunk(body)
+    assert transport.sent == []
+    await renderer.on_done()
+    await renderer.close()
+    if body == "A useful answer.":
+        assert [text for _, text in transport.sent] == ["First warning", "Second warning", body]
+        assert not renderer.suppressed
+        assert renderer.delivered
+    else:
+        assert transport.sent == []
+        assert renderer.suppressed
+        assert not renderer.delivered
+    assert not renderer._pending_notices
+
+
+@pytest.mark.asyncio
+async def test_failed_buffered_notice_does_not_block_the_answer(caplog):
+    renderer, transport, _ = make(unprompted=True)
+    send = transport.send_message
+
+    async def fail_notice(jid, content):
+        if content == "Provider warning":
+            raise RuntimeError("notice send failed")
+        return await send(jid, content)
+
+    transport.send_message = fail_notice
+    await renderer.on_notice("Provider warning")
+    await renderer.on_text_chunk("A useful answer.")
+    await renderer.on_done()
+    assert [text for _, text in transport.sent] == ["A useful answer."]
+    assert renderer.delivered
+    assert "provider notice delivery failed" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [SILENCE_SENTINEL, "A useful answer."])
+async def test_unprompted_notice_overflow_is_bounded_and_logged_once(body, caplog):
+    from kiro_crew.acp._dispatch import NOTICE_STATE_MAX
+
+    renderer, transport, _ = make(unprompted=True)
+    for index in range(NOTICE_STATE_MAX + 5):
+        await renderer.on_notice(f"Warning {index}")
+    assert renderer._pending_notices.maxlen == NOTICE_STATE_MAX
+    assert len(renderer._pending_notices) == NOTICE_STATE_MAX
+    assert renderer._pending_notice_drops == 5
+    assert not caplog.records
+    await renderer.on_text_chunk(body)
+    await renderer.on_done()
+    await renderer.on_done()
+    await renderer.close()
+    assert not renderer._pending_notices
+    assert renderer._pending_notice_drops == 0
+    warnings = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
+    assert warnings == ["whatsapp: dropped 5 provider notices from the full queue"]
+    if body == SILENCE_SENTINEL:
+        assert transport.sent == []
+    else:
+        assert [text for _, text in transport.sent] == [
+            *(f"Warning {i}" for i in range(5, NOTICE_STATE_MAX + 5)),
+            body,
+        ]

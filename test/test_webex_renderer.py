@@ -727,3 +727,36 @@ class TestApprovalCardToolLabel:
         text, prompt = await self._card_and_prompt("mcp__server__fs_write")
         assert text == '"mcp__server__fs_write"'
         assert "`mcp__server__fs_write`" in prompt
+
+
+@pytest.mark.asyncio
+async def test_notice_seam_repairs_failed_placeholder_edit_fallback():
+    client = FakeClient(edit_ok=False)
+    renderer = _renderer(client)
+    await renderer.on_turn_start()
+    await renderer.on_notice("Authorization: Bearer")
+    await renderer.on_text_chunk("opaque-notice-fallback-token and following prose survives.")
+    await renderer.on_done()
+    assert "opaque-notice-fallback-token" not in str(client.sent)
+    assert "following prose survives" in str(client.sent)
+
+
+@pytest.mark.asyncio
+async def test_late_notice_repair_preserves_overflow_after_failed_edit():
+    from kiro_crew.messaging.renderer import repaired_after_a_sent_tail
+    from kiro_crew.webex.renderer import _redact_all
+
+    client = FakeClient(edit_ok=False)
+    renderer = _renderer(client)
+    await renderer.on_turn_start()
+    await renderer.on_notice("Authorization: Bear")
+    start = len(client.sent)
+    answer = "er a " + "x" * (WEBEX_MAX_TEXT - 5)
+    expected = repaired_after_a_sent_tail(
+        "Authorization: Bear", answer, _redact_all, across_message_space=True
+    )
+    await renderer.on_text_chunk(answer)
+    await renderer.on_done()
+    chunks = [text for _, text in client.sent[start:]]
+    assert all(len(text.encode("utf-8")) <= WEBEX_MAX_TEXT for text in chunks)
+    assert "".join(chunks) == expected

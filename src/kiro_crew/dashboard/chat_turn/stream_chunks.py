@@ -78,7 +78,7 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
             # A `card` row is a change card / guide offer the
             # tool group's own call put into the conversation, so
             # the scan reads past it like the tool rows around it.
-            elif m.get("role") not in ("tool", "permission", "chunk", "card"):
+            elif m.get("role") not in ("tool", "permission", "chunk", "card", "notice"):
                 break
         # The same inference for the log. A tool that produced no
         # output sent no result frame, so its call is still open here;
@@ -149,7 +149,12 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
     # would have granted can never apply. Every other pass still runs
     # per delta; the live wire goes through `_wsred`, which never
     # exempts; with the empty default prefix set nothing changes.
-    safe_chunk, _removed = _redact_delta(event.text)
+    seam_text = (
+        turn._provider_answer_prefix.feed(event.text)
+        if turn._provider_answer_prefix is not None
+        else event.text
+    )
+    safe_chunk, _removed = _redact_delta(seam_text)
     if event.message_id:
         slot.segment_message_id = event.message_id
     _accumulate_segment_raw(slot, event.text, safe_chunk, _removed)
@@ -188,7 +193,7 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
     # accumulates the full text for the authoritative final redaction.
     # The first output after a tool call or approval prompt also
     # settles the run held there (see _cut_segment).
-    wire = _wsred.feed(event.text)
+    wire = _wsred.feed(seam_text)
     if wire:
         wire = _settle_held(turn, wire, continued=True)
     if wire:

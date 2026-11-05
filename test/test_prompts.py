@@ -1214,6 +1214,7 @@ class TestPromptExpansionStaysOffTheEventLoop:
         reports that thread's id ran on the loop — and a chip append that reports
         anything else mutated a loop-owned ``asyncio.Event`` from a worker."""
         import kiro_crew.dashboard.chat_runner as cr
+        from kiro_crew.dashboard.state import _ChatSlot
 
         real = cr._resolve_prompt_mention
         resolve_threads: list[int] = []
@@ -1228,14 +1229,14 @@ class TestPromptExpansionStaysOffTheEventLoop:
             return expanded, status, "loaded a prompt"
 
         monkeypatch.setattr(cr, "_resolve_prompt_mention", _record)
-        s, sl = _ss()
+        s, sl = _State(), _ChatSlot("t")
         real_append = sl.append
 
-        def _record_append(role, text, cls, **kw):
+        def _record_append(self, role, text, cls, **kw):
             append_threads.append(threading.get_ident())
             real_append(role, text, cls, **kw)
 
-        monkeypatch.setattr(sl, "append", _record_append)
+        monkeypatch.setattr(_ChatSlot, "append", _record_append)
         asyncio.run(_run_chat(s, sl, "/prompts get nonexistent"))
 
         assert resolve_threads, "the expansion was never reached"

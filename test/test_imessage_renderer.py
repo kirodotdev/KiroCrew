@@ -513,3 +513,40 @@ class TestRedactionWarning:
         assert "suspicious URL" in warnings[0]
         assert "supply the secret" in warnings[0]
         assert "re-check" in warnings[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["Authorization: Bearer", "Authorization: Bear"])
+async def test_notice_tail_cannot_complete_a_credential_in_the_answer(prefix):
+    client = FakeClient()
+    renderer = _renderer(client)
+    token = "opaque-notice-token"
+    suffix = " " if prefix.endswith("Bearer") else "er "
+    await renderer.on_notice(prefix)
+    await renderer.on_text_chunk(suffix + token + " and useful detail.")
+    await renderer.on_done()
+    assert client.sent[0] == prefix
+    assert token not in "".join(client.sent)
+    assert "[REDACTED" in client.sent[1]
+    assert client.sent[1].endswith("and useful detail.")
+    assert renderer.text() == suffix.lstrip() + token + " and useful detail."
+
+
+@pytest.mark.asyncio
+async def test_failed_notice_preserves_the_last_delivered_tail():
+    client = FakeClient()
+    renderer = _renderer(client)
+    await renderer.on_notice("Authorization: Bearer")
+
+    async def fail(to, text):
+        raise RpcTransportError("bridge exited")
+
+    send = client.send
+    client.send = fail
+    with pytest.raises(RpcTransportError):
+        await renderer.on_notice("Undelivered notice")
+    client.send = send
+    await renderer.on_text_chunk("opaque-notice-token and useful detail.")
+    await renderer.on_done()
+    assert "opaque-notice-token" not in "".join(client.sent)
+    assert client.sent[1].endswith("and useful detail.")

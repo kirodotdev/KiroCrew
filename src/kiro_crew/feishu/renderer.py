@@ -23,10 +23,12 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.messaging.renderer import (
+    NoticeTail,
     Renderer,
     count_redaction_tags,
     redaction_notice,
     render_options_as_text,
+    repaired_after_a_sent_tail,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
 
@@ -58,6 +60,7 @@ class FeishuRenderer(Renderer):
         self._buf: list[str] = []
         self._tool: str = ""
         self._finalized = False
+        self._sent_tail = ""
 
     # -- Output event handlers ----------------------------------------------
 
@@ -99,6 +102,19 @@ class FeishuRenderer(Renderer):
         # Renderer contract.
         logger.debug("Feishu: prompt_choice ignored (no interactive buttons)")
 
+    async def on_notice(self, text: str) -> None:
+        text = self._seam_safe(text, notice=True)
+        if not await self._client.send_reply(self._message_id, text):
+            raise RuntimeError("Feishu refused provider notice delivery")
+        self._sent_tail = NoticeTail(text)
+
+    def _seam_safe(self, text: str, *, notice: bool = False) -> str:
+        safe = self.redact_for_target(text)
+        repaired = repaired_after_a_sent_tail(
+            self._sent_tail, safe, self.redact_for_target, across_message_space=notice
+        )
+        return repaired if repaired is not None else safe
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Threshold notices are surfaced post-turn by the dispatcher; a
         # mid-turn frame would corrupt the single-shot answer bubble.
@@ -110,11 +126,13 @@ class FeishuRenderer(Renderer):
         self._finalized = True
         ok = stop_reason != "error"
         content = self.text() or ("…" if ok else "⚠️ 出错了，请重试")
+        content = self._seam_safe(content)
         if not await self._client.send_reply(self._message_id, content):
             # A dropped reply must NOT be recorded as a delivered turn: the user
             # sees nothing while history and the session claim success. Raising
             # routes it through the driver's failure path instead.
             raise RuntimeError(f"Feishu reply was not delivered (message_id={self._message_id})")
+        self._sent_tail = content
         cred_count, url_count = count_redaction_tags(content)
         if cred_count or url_count:
             # The reply above carries a redaction placeholder, so a follow-up

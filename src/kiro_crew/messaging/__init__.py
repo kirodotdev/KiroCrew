@@ -30,6 +30,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.renderer import (
     COMPACTION,
     DONE,
+    NOTICE,
     OUTPUT_KINDS,
     PROMPT_CHOICE,
     STEER_CONSUMED,
@@ -63,6 +64,7 @@ __all__ = [
     "TOOL_CALL",
     "PROMPT_CHOICE",
     "COMPACTION",
+    "NOTICE",
     "DONE",
     "STEER_CONSUMED",
     # Layer 2 driver
