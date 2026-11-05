@@ -16624,6 +16624,7 @@
         "budget_sort_recent": "Kürzlich verwendet",
         "budget_sort_size": "Größte Datei",
         "budget_source_app": "App",
+        "budget_source_plugin": "Plugin",
         "budget_source_builtin": "Integriert",
         "budget_source_yours": "Eigener",
         "budget_subtitle": "Geschätzter Kontextaufwand pro Skill-Auslöser, nach höchstem Aufwand sortiert.",

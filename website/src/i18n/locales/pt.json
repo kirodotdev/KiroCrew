@@ -17042,6 +17042,7 @@
         "budget_sort_recent": "Usado recentemente",
         "budget_sort_size": "Maior arquivo",
         "budget_source_app": "App",
+        "budget_source_plugin": "Plugin",
         "budget_source_builtin": "Integrado",
         "budget_source_yours": "Seu",
         "budget_subtitle": "Custo de contexto estimado por gatilho de skill, ordenado do maior para o menor gasto.",

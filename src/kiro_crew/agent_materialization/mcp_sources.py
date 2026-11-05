@@ -17,7 +17,7 @@ import functools
 import itertools
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -42,8 +42,11 @@ from kiro_crew.mcp_cleanup import (
 from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference, secret_reference_keys
 from kiro_crew.mcp_provenance import (
     DERIVED_KEY,
+    MARKER_KEY,
+    POWER_KEY,
     WITHHELD_KEY,
     command_is_ours,
+    is_power_entry,
     is_withheld_mute,
     record_derived,
     recorded_source,
@@ -393,6 +396,56 @@ class ResolvedServers(NamedTuple):
         return {mcp_server_alias(_n) for _n in self.unresolved}
 
 
+#: Keys of a projected plugin server that only the plugin may set. A user's
+#: override stub in a shared file can change anything else.
+_PLUGIN_OWNED_KEYS = frozenset(
+    {
+        "command",
+        "args",
+        "env",
+        "cwd",
+        "url",
+        "headers",
+        "type",
+        "autoApprove",
+        POWER_KEY,
+        MARKER_KEY,
+        DERIVED_KEY,
+        WITHHELD_KEY,
+    }
+)
+
+
+def _declares_other_server(entry: object) -> bool:
+    """True when *entry* is a server of its own that the plugin loader did not make.
+
+    A dict with a ``command`` or ``url`` and no plugin marker. A transport-less
+    dict is a user's override stub, and anything that is not a dict at all (a
+    hand-edited ``7``) is malformed and owns nothing, so neither blocks a name.
+    """
+    return (
+        isinstance(entry, dict)
+        and not is_power_entry(entry)
+        and bool(entry.get("command") or entry.get("url"))
+    )
+
+
+def _without_stale_powers(servers: dict[str, Any], derived: Mapping[str, Any]) -> dict[str, Any]:
+    """*servers* without any installed-plugin entry this pass did not derive.
+
+    A dashboard edit to a plugin server (disabling one tool) copies its marked
+    spec into a source file. That copy must not outlive the loader: once the
+    opt-in is off or the plugin is gone, merging it back, or syncing its refs
+    from it, would launch the plugin anyway. Dropped from the map every later
+    phase reads, so neither the merge nor the ref sync sees it.
+    """
+    return {
+        name: spec
+        for name, spec in servers.items()
+        if not (is_power_entry(spec) and name not in derived)
+    }
+
+
 def merge_mcp_sources(config: dict) -> McpSources:
     """Merge the app, Kiro-global, provider-global and store MCP servers into *config*.
 
@@ -417,9 +470,11 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # Names a PREVIOUS rebuild left behind -- the only stale projections a changed
     # source reconciles. Seeded here so the app loop can retire what it claims.
     _stale = set(config.get("mcpServers", {}))
+    _app_keys: set[str] = set()
     for _app_srv, _app_spec in _collect_app_mcp_servers().items():
         if _app_srv not in managed_names:
             config.setdefault("mcpServers", {})[_app_srv] = _app_spec
+            _app_keys.add(_app_srv)
             # The manifest just spoke, so a same-named shared-file leftover must
             # not reconcile onto it -- this is how the app entry keeps outranking.
             _stale.discard(_app_srv)
@@ -432,7 +487,101 @@ def merge_mcp_sources(config: dict) -> McpSources:
             # @ref if it ever lands there.
             config.setdefault("tools", []).append(f"@{_app_srv}")
 
-    shared_mcp = user_json.load_mcp_servers(agent_mod._KIRO_MCP_JSON)
+    # Installed Agent Plugins (``~/.kiro/powers/installed``), keyed
+    # ``power-<slug>--<server>``. Off unless ``agent.load_installed_powers`` is set;
+    # the loader reads that gate itself and returns an empty map when it is off.
+    # Lazy import for the reason _collect_app_mcp_servers documents: kiro_crew.apps
+    # imports back into agent/security, so a module-level import would close a
+    # cycle. These specs carry NO autoApprove, so every call reaches the
+    # PreToolUse gate.
+    #
+    # Ownership is the entry's own ``x-kirocrew-power`` marker (see
+    # ``mcp_provenance.POWER_KEY``), never the name. A failed load projects
+    # nothing, so every marked entry is retired: a broken tree stops launching
+    # third-party code rather than keeping a stale copy alive.
+    try:
+        from kiro_crew.apps.installed_powers import installed_power_mcp_servers
+
+        _power_servers = installed_power_mcp_servers()
+    except Exception:  # noqa: BLE001 -- a broken powers tree must not stop the rebuild
+        _power_servers = {}
+    _servers_now = config.get("mcpServers", {})
+    # RETIRE first. A non-clean rebuild carries the previous pass's
+    # mcpServers/tools forward, and nothing else removes a projected entry: the
+    # locked app reconcile only removes app-owned keys. So a marked entry this
+    # pass does not re-derive (the opt-in is off, the plugin is gone, or the
+    # validator now refuses it) is removed with its ``tools`` ref. An unmarked
+    # entry is never retired, whatever its name, and neither is a key an app
+    # claimed in THIS pass.
+    _retired_powers = {
+        _name
+        for _name, _entry in _servers_now.items()
+        if is_power_entry(_entry) and _name not in _power_servers and _name not in _app_keys
+    }
+    for _name in _retired_powers:
+        del config["mcpServers"][_name]
+        _stale.discard(_name)
+    if _retired_powers and isinstance(config.get("tools"), list):
+        _retired_refs = {f"@{_name}" for _name in _retired_powers}
+        config["tools"] = [t for t in config["tools"] if t not in _retired_refs]
+    # Read now, before the power arm, so a plugin cannot claim a name the shared
+    # file declares.
+    shared_mcp = _without_stale_powers(
+        user_json.load_mcp_servers(agent_mod._KIRO_MCP_JSON), _power_servers
+    )
+    # Every other source is read here too, once, so the name check below sees
+    # all of them and the merges further down reuse the same maps.
+    _scope_globals = [
+        _without_stale_powers(user_json.load_mcp_servers(g), _power_servers)
+        for g in _extra_mcp_scope_globals()
+    ]
+    kirocrew_mcp = _without_stale_powers(
+        user_json.load_mcp_servers(agent_mod._user_dir() / "mcp.json"), _power_servers
+    )
+    _every_source = (shared_mcp, *_scope_globals, kirocrew_mcp)
+    _allowed = config.get("allowedTools")
+    _granted: list[Any] = _allowed if isinstance(_allowed, list) else []
+    for _pwr_srv, _pwr_spec in _power_servers.items():
+        if _pwr_srv in managed_names or _pwr_srv in _app_keys:
+            continue
+        _existing = config.get("mcpServers", {}).get(_pwr_srv)
+        # An entry under this name in ANY source is either another server (it
+        # has a transport of its own) or a dashboard override stub for this one
+        # (a tool toggle writes ``{"disabledTools": [...]}`` with no transport).
+        _shared = shared_mcp.get(_pwr_srv)
+        _other_server = any(_declares_other_server(src.get(_pwr_srv)) for src in _every_source)
+        # NEVER TAKE A NAME. A plugin picks its own key, so a key that an
+        # unmarked entry, a shared-file server or a standing grant already holds
+        # belongs to someone else. Mounting over it would hand the plugin that
+        # server's ``allowedTools`` grant, and its tools would skip the approval
+        # gate on authority given to a different server.
+        _taken = (
+            _declares_other_server(_existing)
+            or _other_server
+            or (
+                _existing is None
+                and any(
+                    isinstance(_g, str) and (_g == f"@{_pwr_srv}" or _g.startswith(f"@{_pwr_srv}/"))
+                    for _g in _granted
+                )
+            )
+        )
+        if _taken:
+            agent_mod.logger.warning(
+                "Installed power: %s is already used by another server; not mounted", _pwr_srv
+            )
+            continue
+        _spec = dict(_pwr_spec)
+        # Lay the user's override stub (``disabledTools``, ``disabled``, a
+        # ``timeout``) over the fresh projection. The shared loop below skips a
+        # name this pass already claimed, so this is the only place it applies.
+        # Never its transport, grant or ownership keys: those are the plugin's.
+        if isinstance(_shared, dict):
+            _spec.update({k: v for k, v in _shared.items() if k not in _PLUGIN_OWNED_KEYS})
+        config.setdefault("mcpServers", {})[_pwr_srv] = _spec
+        _stale.discard(_pwr_srv)
+        config.setdefault("tools", []).append(f"@{_pwr_srv}")
+
     for name, spec in shared_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             # Copy so config never aliases the source dict — a later update()
@@ -456,8 +605,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # wins) for the fallback-candidate lookup and shared-server tools sync below
     # (replaces the old single ``cc_shared_mcp``).
     extra_shared_mcp: dict[str, dict] = {}
-    for scope_global in _extra_mcp_scope_globals():
-        scope_shared_mcp = user_json.load_mcp_servers(scope_global)
+    for scope_shared_mcp in _scope_globals:
         for name, spec in scope_shared_mcp.items():
             if not isinstance(spec, dict):
                 continue
@@ -472,13 +620,15 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # Uses update() to merge into existing specs, preserving user-set fields
     # like autoApprove while letting kirocrew's command/args/env win.
     # Skip managed servers for the same reason as above.
-    kirocrew_mcp = user_json.load_mcp_servers(agent_mod._user_dir() / "mcp.json")
     for name, spec in kirocrew_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             mcps = config.setdefault("mcpServers", {})
             if name in mcps and isinstance(mcps[name], dict):
                 # mcps[name] is a private copy (globals were copied in above),
-                # so update() does not mutate any source dict.
+                # so update() does not mutate any source dict. A plugin's
+                # projection takes only the user's overrides, never its keys.
+                if is_power_entry(mcps[name]):
+                    spec = {k: v for k, v in spec.items() if k not in _PLUGIN_OWNED_KEYS}
                 mcps[name].update(spec)
             else:
                 mcps[name] = dict(spec)
@@ -1263,7 +1413,13 @@ def sync_shared_server_refs(
             # Matched on the server's own name, never its alias family: a
             # separately installed ``time-2`` is a different server, and its
             # page approval is not this record's to withhold.
-            if may_auto_approve and (name in mount_only or alias in mount_only):
+            # An installed Agent Plugin's server is mount-only too, wherever its
+            # copy came from. Editing it in the dashboard (disabling one tool)
+            # copies the marked spec into a shared source, and this arm would
+            # otherwise hand it the rebuild's whole-server grant: its other
+            # tools would then skip the approval gate on authority nobody gave.
+            _plugin_entry = is_power_entry(spec) or is_power_entry(valid_servers.get(alias))
+            if may_auto_approve and (name in mount_only or alias in mount_only or _plugin_entry):
                 if ref not in config.get("tools", []):
                     config.setdefault("tools", []).append(ref)
                     if ref not in _shared_added:

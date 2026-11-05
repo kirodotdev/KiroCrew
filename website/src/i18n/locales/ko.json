@@ -16206,6 +16206,7 @@
         "budget_sort_recent": "최근 사용순",
         "budget_sort_size": "파일 큰 순",
         "budget_source_app": "앱",
+        "budget_source_plugin": "플러그인",
         "budget_source_builtin": "기본 제공",
         "budget_source_yours": "직접 추가",
         "budget_subtitle": "스킬 트리거당 예상 컨텍스트 비용이며, 지출이 큰 순서로 정렬됩니다.",

@@ -193,8 +193,8 @@ def acp_server_element(name: str, spec: Any) -> dict[str, Any] | None:
     a ``command``. Skipping is the right outcome there: an element the adapter
     rejects fails the whole ``session/new``, taking every other server with it.
     """
-    if not isinstance(spec, dict):
-        return None
+    if not isinstance(spec, dict) or mcp_provenance.is_local_power_entry(spec):
+        return None  # a plugin's stdio server needs the ``cwd`` this element lacks
     url = spec.get("url")
     if isinstance(url, str) and url:
         # Only ``sse`` is distinguished; anything else (including a missing
@@ -1459,6 +1459,7 @@ _NATIVE_INERT_KEYS = frozenset(
     {
         mcp_provenance.MARKER_KEY,
         mcp_provenance.DERIVED_KEY,
+        mcp_provenance.POWER_KEY,
         SESSION_LABEL_MARKER,
         MERGED_MARK,
     }

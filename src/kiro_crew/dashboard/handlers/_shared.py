@@ -229,6 +229,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _edition_skill_roots,
         _leaf_is_contained,
         _path_at_or_under,
+        _power_skill_roots,
         _resolve_package_skill_path,
         _resolve_skill_root,
         _resolved_set,

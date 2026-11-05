@@ -17042,6 +17042,7 @@
         "budget_sort_recent": "Usato di recente",
         "budget_sort_size": "File più grande",
         "budget_source_app": "App",
+        "budget_source_plugin": "Plugin",
         "budget_source_builtin": "Integrato",
         "budget_source_yours": "Tuo",
         "budget_subtitle": "Costo di contesto stimato per attivazione della skill, ordinato per spesa più elevata.",

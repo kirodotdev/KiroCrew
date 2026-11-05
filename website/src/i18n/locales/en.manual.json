@@ -7683,6 +7683,7 @@
         "budget_sort_recent": "Recently used",
         "budget_sort_size": "Biggest file",
         "budget_source_app": "App",
+        "budget_source_plugin": "Plugin",
         "budget_source_builtin": "Built-in",
         "budget_source_yours": "Yours",
         "budget_subtitle": "Estimated context cost per skill trigger, sorted by highest spend.",

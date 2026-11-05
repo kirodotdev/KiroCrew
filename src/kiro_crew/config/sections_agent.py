@@ -565,6 +565,31 @@ class AgentConfig:
             "apps_trusted, which grants the same admission to ONE named app.",
         ),
     )
+    load_installed_powers: bool = field(
+        default=False,
+        metadata=_meta(
+            "Load installed Agent Plugins",
+            "When true, discover Agent Plugins installed under "
+            "~/.kiro/powers/installed/<name>/ (the portable Agent Plugins 1.0 "
+            "format: a schema-qualified plugin.json, an optional mcp.json, and a "
+            "skills/ directory) and load them into this agent the same way Kiro "
+            "IDE does, so a plugin installed once is available in Kiro Crew too. "
+            "Each plugin's valid mcp.json servers are projected into the agent "
+            "config namespaced power-<slug>--<server>, and its skills/ directory is "
+            "added to skill discovery. Every server is validated the same way an "
+            "imported plugin's is -- a mistyped field, a cleartext-remote url, a "
+            "userinfo-bearing url, or any ${VAR} the runtime would expand from the "
+            "operator's environment (beyond the two plugin variables PLUGIN_ROOT "
+            "and PLUGIN_DATA, which this loader expands itself) drops that one "
+            "entry with a logged reason and leaves the rest. Defaults to FALSE "
+            "because loading a plugin can launch its declared stdio command as a "
+            "local subprocess: turning this on runs third-party code the operator "
+            "installed into ~/.kiro/powers, the same trust decision as "
+            "apps_allow_third_party. Takes effect on the next agent-config "
+            "rebuild.",
+            restart=True,
+        ),
+    )
     apps_trusted: list[str] = field(
         default_factory=list,
         metadata=_meta(
