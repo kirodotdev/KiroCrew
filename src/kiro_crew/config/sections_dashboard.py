@@ -39,6 +39,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "crewmate_harness",
     "explore",
     "folder_conductor",
+    "kiro_cli_history",
     "layout_harness",
     "remote_crew_chat",
     "session_environments",

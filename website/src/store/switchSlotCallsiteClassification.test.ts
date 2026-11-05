@@ -46,6 +46,7 @@ const PINNED: Record<string, Counts> = {
   'src/components/ArtifactChatPanel.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot supplied programmatically' },
   'src/components/ChatInput.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'mic-owner status-row click announces' },
   'src/components/ImportSessionItem.tsx': { gesture: 1, announced: 1, keepTarget: 1, plain: 0, reason: 'on upload the just-imported slot is new, so a 404 is a create/fetch race (#6309); the shell notice\'s later Open is a click, so it announces and is a gesture' },
+  'src/components/KiroCliSessionPreview.tsx': { gesture: 1, announced: 1, keepTarget: 1, plain: 0, reason: 'opens the chat Continue in Crew just created, so a 404 is a create/fetch race; the folder notice\'s later Open is a click on a copy that may since be closed, so it announces and is a gesture' },
   'src/components/commandPalette/providers/recentsProvider.ts': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'palette recents row announces' },
   'src/components/notifications/NotificationDetailPanel.tsx': { gesture: 3, announced: 3, keepTarget: 0, plain: 0, reason: 'go-to-chat buttons announce; the two to-chat hand-offs open through openCreatedSlot' },
   'src/hooks/useKeyboardShortcuts.ts': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'keyboard session jump announces' },

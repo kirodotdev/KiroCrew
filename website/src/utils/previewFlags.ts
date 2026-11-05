@@ -17,8 +17,9 @@
  * synchronous; `usePreviewFlagServerSync` fills the cache from the server copy,
  * carries a cache-only ON up to the server once, and sends each toggle to the
  * server through the writer it registers with {@link setPreviewFlagPersister}.
- * The flag still has no server behavior of its own: the surface's API is the
- * same whichever way it is set.
+ * A flag has no server behavior of its own unless its doc comment below says
+ * otherwise ({@link PREVIEW_KIRO_CLI_HISTORY} is the one that does): the
+ * surface's API is the same whichever way it is set.
  *
  * Retiring a flag is the goal, not an afterthought: when the surface is
  * polished, delete its `previewFlag` from the registry entry and its card from
@@ -198,6 +199,22 @@ export const PREVIEW_CREW_MODE = `${PREVIEW_FLAG_PREFIX}crew-mode`
 export const PREVIEW_EXPLORE = `${PREVIEW_FLAG_PREFIX}explore`
 
 /**
+ * Kiro CLI sessions in History: the Older Sessions pane's Crew / Kiro CLI tabs,
+ * the list of kiro-cli sessions run in a terminal, their read-only preview and
+ * its Continue in Crew button.
+ *
+ * Read it through `useKiroCliHistoryPreview()` (`hooks/usePreviewFlag.ts`).
+ *
+ * Default OFF. OFF draws the pane as it was before the feature: Crew's own
+ * history, no tabs. Unlike the flags above this one gates the SERVER too: the
+ * gateway reads `dashboard.feature_previews.kiro_cli_history` on every
+ * `/api/kiro-cli/sessions` request and answers 403 `kiro_cli_history_disabled`
+ * while it is off, because those routes read the person's terminal
+ * conversations and copy them into chats.
+ */
+export const PREVIEW_KIRO_CLI_HISTORY = `${PREVIEW_FLAG_PREFIX}kiro-cli-history`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -216,6 +233,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_CREWMATE_HARNESS,
   PREVIEW_CREW_MODE,
   PREVIEW_EXPLORE,
+  PREVIEW_KIRO_CLI_HISTORY,
 ]
 
 /**

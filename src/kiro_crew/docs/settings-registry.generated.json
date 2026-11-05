@@ -1244,6 +1244,14 @@
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
     },
     {
+      "id": "developer.kiro-cli-sessions",
+      "label": "Kiro CLI sessions",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.kiro-cli-sessions",
+      "description": "Your terminal kiro-cli sessions, in Older Sessions.",
+      "hint": "Adds a Kiro CLI tab to Older Sessions in the sidebar. It lists the kiro-cli sessions you ran in a terminal; open one to read it, and Continue in Crew carries it on in a new chat. The session in your terminal stays as it is."
+    },
+    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",

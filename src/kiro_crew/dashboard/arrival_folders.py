@@ -4,7 +4,11 @@ A session can arrive on this instance two ways: a peer pushes one over an
 Instances tunnel, and a person installs one exported to a file. Both reach the
 single server route :func:`~kiro_crew.dashboard.session_transfer.api_chat_slot_import`,
 and both are filed here into ``Imported`` / ``from <sender>`` so "where did this
-session come from" has an answer that outlives the arriving tab's title.
+session come from" has an answer that outlives the arriving tab's title. A
+session this host copies from its own kiro-cli store (Continue in Crew) is not
+an arrival from somewhere else, so that one caller asks for a top-level
+``from <sender>`` folder instead (``top_level=True``), with every other property
+below unchanged.
 
 The decision record is
 [rfc-arrival-provenance-filing.md](../../../docs/request-for-change/rfc-arrival-provenance-filing.md);
@@ -254,7 +258,7 @@ class ArrivalFiling(NamedTuple):
 
 
 async def arrival_folder_id(
-    state: "DashboardState", *, origin: str, request_app: str
+    state: "DashboardState", *, origin: str, request_app: str, top_level: bool = False
 ) -> ArrivalFiling:
     """The folder an arriving session is filed into, creating it if needed.
 
@@ -282,6 +286,12 @@ async def arrival_folder_id(
     created, then ``from <sender>`` beneath it, so a concurrent delete of the
     parent cannot land between the two and leave the child with a dangling
     ``parent_id``.
+
+    *top_level* files into a ``from <sender>`` folder at the top of the sidebar,
+    with no ``Imported`` parent: found there or created there, never under
+    ``Imported``. It is for a session copied from this host's own store, which
+    did not arrive from anywhere. Ignored when *origin* names no sender, since a
+    bare ``Imported`` is then the only destination.
     """
     if request_app:
         # An app arrival is never filed. Not even by adopting an existing folder:
@@ -328,6 +338,23 @@ async def arrival_folder_id(
         created.clear()
         hidden_rows.clear()
         changed = False
+        if top_level and child_name:
+            # One level, at the root: the same find-or-create and the same
+            # deferred unhide the child of ``Imported`` gets below.
+            folder = _find(folders, child_name, "")
+            if folder is None:
+                if len(folders) >= MAX_CHAT_FOLDERS:
+                    return False, ""
+                # After every surviving folder, as the ``Imported`` rows
+                # below: ``len(folders)`` can equal a survivor's order once
+                # a folder has been deleted.
+                folder = _new_folder(child_name, "", next_folder_order(folders))
+                folders.append(folder)
+                created.append((str(folder["id"]), child_name, ""))
+                changed = True
+            elif folder.get("hidden"):
+                hidden_rows.append(str(folder.get("id", "")))
+            return changed, str(folder.get("id", ""))
         group = _find(folders, group_name, "")
         if group is None:
             # Both rows are new: no child of ``Imported`` can exist while

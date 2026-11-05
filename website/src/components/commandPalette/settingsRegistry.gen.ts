@@ -2128,6 +2128,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.kiro-cli-sessions",
+    "label": "Kiro CLI sessions",
+    "labelKey": "pages.developer.featurePreviewsTab.kiro_cli_history",
+    "description": "Your terminal kiro-cli sessions, in Older Sessions.",
+    "hint": "Adds a Kiro CLI tab to Older Sessions in the sidebar. It lists the kiro-cli sessions you ran in a terminal; open one to read it, and Continue in Crew carries it on in a new chat. The session in your terminal stays as it is.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.model-for-the-small-model-judge",
     "label": "Model for the small-model judge",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_model",

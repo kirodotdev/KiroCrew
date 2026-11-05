@@ -9286,6 +9286,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.kiro_cli_history",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: kiro_cli_history",
+      "help": "Turn on the 'kiro_cli_history' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.layout_harness",
       "kind": "core",
       "type": "boolean",

@@ -659,6 +659,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _validate_bundle,
         _write_import_prefix,
         api_chat_slot_import,
+        install_validated_bundle,
     )
     from kiro_crew.dashboard.session_transfer_intake import (  # noqa: F401
         _DISK_CHECK_EVERY_CHUNKS,
@@ -693,6 +694,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _gunzip_file,
         _load_json_file,
         _measure_document,
+        _measure_stream,
         _memory_admission,
         _memory_reserved,
         _MemoryWaitTimedOut,
