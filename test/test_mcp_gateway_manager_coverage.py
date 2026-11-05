@@ -219,6 +219,41 @@ async def test_a_start_that_cannot_confirm_its_daemon_terminates_it(
     assert (waited.await_count, pinged.await_count) == (waits, pings)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("alive", "binds_late", "confirmed", "waits"),
+    [
+        pytest.param(True, True, True, 2, id="alive-daemon-binds-late-is-kept"),
+        pytest.param(True, False, False, 2, id="alive-daemon-never-binds-is-terminated"),
+        pytest.param(False, True, False, 1, id="exited-daemon-is-not-waited-on"),
+    ],
+)
+async def test_a_slow_starting_daemon_gets_the_longer_socket_wait(
+    monkeypatch, tmp_path, alive, binds_late, confirmed, waits
+):
+    m = _manager(tmp_path)
+
+    async def spawn_once():
+        m._process = SimpleNamespace(returncode=None if alive else 0, pid=UNALLOCATABLE_PID)
+
+    terminate = AsyncMock()
+    waited = AsyncMock(side_effect=[False, binds_late])
+    pong = {"type": "pong"}
+    monkeypatch.setattr(mgr.transport, "prepare_dir", lambda _path: None)
+    monkeypatch.setattr(m, "_clear_stale_socket", AsyncMock())
+    monkeypatch.setattr(m, "_spawn_once", spawn_once)
+    monkeypatch.setattr(m, "_wait_for_socket", waited)
+    monkeypatch.setattr(m, "_ping_with_escalation", AsyncMock(return_value=pong))
+    monkeypatch.setattr(m, "_terminate_process", terminate)
+
+    assert await m._spawn_and_confirm() == (pong if confirmed else None)
+    assert waited.await_count == waits
+    if waits == 2:
+        second_budget = waited.await_args_list[1].args[1]
+        assert second_budget == mgr._SOCKET_READY_SLOW_START_SECS - mgr._SOCKET_READY_TIMEOUT_SECS
+    assert terminate.await_count == (0 if confirmed else 1)
+
+
 # ── _spawn_once(): the daemon's argv, and the log it writes to ──
 
 
