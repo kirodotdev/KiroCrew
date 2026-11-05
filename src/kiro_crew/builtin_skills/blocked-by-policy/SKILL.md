@@ -36,7 +36,7 @@ trying to accomplish, and what is the sanctioned path to it".
 
 ### AWS credentials (`~/.aws`, `AWS_*` env vars, IMDS)
 
-**You do not need to read them, and running AWS CLI commands is not blocked.**
+**You do not need to read them, and running AWS CLI commands is not blocked by the rule that refused the read.**
 This is the single most common misdiagnosis: the read is refused, and the
 conclusion "this host has no AWS access" is drawn from it. The SDK resolves
 credentials itself, including refreshing them through a `credential_process`
@@ -61,8 +61,7 @@ finding from "no access", and it is the one a user can act on.
 
 If nothing is configured, that is the user's action in their own terminal (for
 example `aws sso login`) — report that, do not conclude the capability is
-missing. Read-only verbs (`describe*`, `list*`, `get*`) are allowed; destructive
-ones are separately denied on purpose.
+missing. Destructive AWS operations are separately denied on purpose.
 
 #### If this host vends credentials through an MCP tool
 
