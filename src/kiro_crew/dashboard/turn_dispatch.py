@@ -345,10 +345,20 @@ def format_approval_timeout_card(timeout_secs: float) -> str:
 
 
 def _approval_wait_phrase(timeout_secs: float) -> str:
-    """How long an approval prompt waited, in minutes or hours."""
+    """How long an approval prompt waited, in seconds, minutes or hours.
+
+    Picks the singular unit for a count of one, matching the minute/minutes
+    choice :func:`format_background_turn_abandoned_card` already makes, so the
+    note never reads "1 minutes" or "1 hours".
+    """
     if timeout_secs >= 3600:
-        return f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".") + " hours"
-    return f"{max(1, round(timeout_secs / 60))} minutes"
+        hours = f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".")
+        return f"{hours} hour" if hours == "1" else f"{hours} hours"
+    if timeout_secs < 60:
+        seconds = max(1, round(timeout_secs))
+        return f"{seconds} second" if seconds == 1 else f"{seconds} seconds"
+    minutes = round(timeout_secs / 60)
+    return f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
 
 
 #: Title of the bell-feed note an approval prompt nobody answered leaves.

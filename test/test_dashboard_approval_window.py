@@ -398,6 +398,33 @@ class TestTimeoutCard:
         assert "1.5 hours" in td.format_approval_timeout_card(5400.0)
 
 
+class TestWaitPhrasePluralization:
+    """``_approval_wait_phrase`` picks the right unit and singular/plural.
+
+    The note read "waited 1 minutes" (and "1 hours"): the helper always wrote a
+    plural and never used seconds, even for a sub-minute window.
+    """
+
+    @pytest.mark.parametrize(
+        ("secs", "expected"),
+        [
+            (30, "30 seconds"),
+            (60, "1 minute"),
+            (90, "2 minutes"),
+            (120, "2 minutes"),
+            (3600, "1 hour"),
+            (5400, "1.5 hours"),
+        ],
+    )
+    def test_phrase_matches_count_and_unit(self, secs: int, expected: str) -> None:
+        assert td._approval_wait_phrase(float(secs)) == expected
+
+    def test_note_reads_30_seconds_not_1_minutes(self) -> None:
+        note = td.format_approval_expired_note("run_command", "Run Echo", 30.0)
+        assert "waited 30 seconds" in note
+        assert "1 minutes" not in note
+
+
 # ── the window as the runner applies it, through one real turn ───────────────
 
 _PROMPT = AcpEvent(
