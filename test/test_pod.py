@@ -199,16 +199,9 @@ class TestConfig:
 class TestPathOverridesAreAnchoredNotCwdRelative:
     """A relative override must name ONE directory, whoever reads it.
 
-    The CLI and the service-manager-booted gateway do not share a working
-    directory -- the pod unit sets no ``WorkingDirectory`` on purpose, so systemd
-    hands the gateway ``/`` while the CLI runs wherever the operator invoked it.
-    Carried through verbatim, ``KIROCREW_POD_ROOT=tmp/pods`` therefore named two
-    different trees under one name.
-
-    That is a credential leak rather than a path annoyance: ``pod down`` reclaims
-    the tree the CLI resolves while the pod's kiro-cli child mints its MCP OAuth
-    grants under the tree the GATEWAY resolved, so teardown swept a directory the
-    grants were never in and they survived on the real machine.
+    The pod unit sets no ``WorkingDirectory``, so the gateway runs in ``/`` while the
+    CLI runs elsewhere. Two readings of ``tmp/pods`` would let ``pod down`` sweep a
+    tree the pod's MCP OAuth grants were never written into, leaking them.
     """
 
     RELATIVE = "tmp/pods"
@@ -216,19 +209,10 @@ class TestPathOverridesAreAnchoredNotCwdRelative:
     def test_the_clis_resolution_is_what_the_gateway_inherits(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """RED-FIRST: the producer/consumer disagreement, along the real path.
+        """The CLI's resolved pod root survives the unit env into the gateway.
 
-        The contract is a ROUND TRIP, not two independent reads. Anchoring at load
-        cannot make two processes that each resolve ``tmp/pods`` against their own
-        CWD agree -- nothing could. What it does is make the value the CLI resolved
-        survive serialisation, so the gateway reads an absolute path instead of
-        re-resolving a relative one against the ``/`` systemd hands it.
-
-        So this walks the actual sequence: the CLI loads in its own directory, its
-        config is rendered to the pod-plane env, and the gateway then loads with
-        exactly that env from a DIFFERENT directory. Pre-fix the unit carried
-        ``tmp/pods`` verbatim and the gateway landed in a tree ``pod down`` would
-        never reclaim; the grants minted there outlived the pod.
+        The contract is a round trip: the CLI loads in one directory, its config is
+        rendered to the pod-plane env, and the gateway loads that env from another.
         """
         from kiro_crew.pod.config import environment_vars
 
@@ -293,28 +277,11 @@ class TestPathOverridesAreAnchoredNotCwdRelative:
             assert Path(out[key]).is_absolute(), f"{key}={out[key]!r} is not absolute"
 
     def test_anchoring_is_absolute_and_normalising_under_windows_rules_too(self) -> None:
-        """The Windows shape of anchoring, and why it still satisfies the contract.
+        """Under Windows path rules anchoring still yields a rooted, normalised path.
 
-        ``os.path.abspath`` on Windows anchors a driveless rooted path to the CURRENT
-        DRIVE, so ``/tmp/pods`` loads as ``<drive>:\\tmp\\pods``. That is what made the
-        first version of the sibling test fail on Windows CI only: it compared the
-        loaded value against the input spelling, which asserted the platform rather
-        than the contract.
-
-        The contract is unaffected. Anchoring still yields ONE absolute path, and the
-        producer serialises that path into the unit for the consumer to read, so the
-        two sides agree exactly as they do on POSIX -- which is why the fix was to
-        build the expectation through ``_canonical_override`` rather than to special-case
-        a drive.
-
-        Asserted through ``ntpath`` so the rule is exercised under Windows path
-        semantics on any host, but only where that is HONEST. ``ntpath.abspath`` on a
-        POSIX host anchors against a cwd with no drive letter, so it can neither add a
-        drive to ``/tmp/pods`` nor resolve a drive-relative ``C:tmp`` -- asserting
-        either would test the emulation's fidelity rather than the rule. What holds
-        under both, and is the part the contract needs, is that the result is rooted
-        and normalised. The drive behaviour is recorded here in prose and covered for
-        real by Windows CI running the sibling tests above.
+        On Windows ``/tmp/pods`` gains the current drive, so expectations go through
+        ``_canonical_override``. ``ntpath`` on a POSIX host has no drive to add, so
+        only rooting and normalising are asserted; Windows CI covers the drive.
         """
         import ntpath
 
@@ -329,13 +296,10 @@ class TestPathOverridesAreAnchoredNotCwdRelative:
     def test_dot_segments_are_normalised_but_symlinks_are_not_rewritten(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``abspath``, not ``resolve()`` -- the boundary of the fix, pinned.
+        """``abspath``, not ``resolve()``: ``.``/``..`` are normalised, symlinks kept.
 
-        Normalising ``.``/``..`` is part of naming one directory. Rewriting the
-        operator's symlink spelling is NOT: two spellings of one directory already
-        name one inode, so teardown scope is unaffected, and resolving would
-        silently change the value pinned into a unit (every ``/tmp/...`` plane
-        becomes ``/private/tmp/...`` on macOS).
+        Both spellings name one inode, and resolving would change the value pinned into
+        a unit (``/tmp/...`` becomes ``/private/tmp/...`` on macOS).
         """
         real = tmp_path / "real-pods"
         real.mkdir()
@@ -352,14 +316,10 @@ class TestPathOverridesAreAnchoredNotCwdRelative:
     def test_the_torn_down_tree_is_the_tree_the_pod_writes_grants_into(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The consequence the finding was actually about, asserted end to end.
+        """The grant tree sits inside the home ``pod down`` reclaims.
 
-        ``build_pod_env`` derives ``KIROCREW_OS_HOME`` from ``cfg.home_dir(name)``
-        and ``cleanup_home`` deletes a direct child of ``cfg.pod_root``, so both
-        sides come from the same field -- but only once that field is anchored. The
-        assertion is containment rather than equality: the grant tree is nested
-        one level inside the home ``pod down`` reclaims, which is what makes a
-        pod's grants exactly as ephemeral as the pod.
+        ``KIROCREW_OS_HOME`` and ``cleanup_home`` both derive from ``cfg.pod_root``.
+        Containment, not equality: the grant tree is nested one level inside the home.
         """
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("KIROCREW_POD_ROOT", self.RELATIVE)
@@ -507,11 +467,8 @@ class TestPortAllocation:
     def test_a_probe_that_cannot_run_refuses_instead_of_answering(self, monkeypatch) -> None:
         """ "Could not run" is not "busy", and must not be coerced into it.
 
-        Socket creation can fail for reasons that say nothing about the port -- file
-        descriptor exhaustion being the obvious one. Returning False there would
-        relocate a pod on no evidence, and letting the OSError escape would be a
-        traceback. `instances/port_allocator.py` settles the same question for its own
-        probe: a probe that could not run propagates rather than being coerced.
+        Socket creation can fail for reasons unrelated to the port (fd exhaustion);
+        answering False would move a pod on no evidence.
         """
 
         def _no_fds(*_a, **_k):
@@ -559,18 +516,10 @@ class TestPortAllocation:
             rt.allocate_port(c, "demo")
 
     def test_the_probe_mirrors_the_binders_reuseaddr(self, monkeypatch) -> None:
-        """The probe must be no stricter than the process it probes FOR.
+        """The probe sets SO_REUSEADDR like the gateway's aiohttp TCPSite does.
 
-        A pod's gateway binds through aiohttp's TCPSite, which leaves
-        `reuse_address` at the asyncio default (set on POSIX), so it can bind a port
-        whose only occupant is a TIME_WAIT remnant. Without the option here, every
-        `pod down` + `pod up` would read the previous gateway's TIME_WAIT as a
-        collision and relocate the pod for nothing -- the transient occupant that
-        turns into a permanent move.
-
-        The TIME_WAIT state itself is not reliably reproducible in a unit test
-        (which side retains it depends on who closes first), so the mirror is pinned
-        at the option instead of at the symptom.
+        Otherwise a TIME_WAIT remnant after `pod down` reads as a collision and moves
+        the pod. TIME_WAIT is not reliably reproducible, so the option is pinned.
         """
         seen: list[tuple[int, int, int]] = []
         real_socket = rt.socket.socket
@@ -589,13 +538,9 @@ class TestPortAllocation:
         ) in seen, "the probe must set SO_REUSEADDR to match what the gateway binds with"
 
     def test_an_automatic_pin_is_relocated_when_it_goes_busy(self, tmp_path, monkeypatch) -> None:
-        """The auto-pin must not become a permanent trap.
+        """A pin the allocator wrote (marked via PORT_AUTO) is moved when it goes busy.
 
-        A pin this allocator wrote records itself via PORT_AUTO. Without that, one
-        transient occupant of the derived port would move the pod permanently, and
-        every later collision on the fallback would hit the "a pin you set is never
-        moved" refusal -- a rationale written for DELIBERATE pins governing a
-        machine-written one.
+        Only operator pins get the "a pin you set is never moved" refusal.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -620,14 +565,10 @@ class TestPortAllocation:
 
     @pytest.mark.parametrize("bad", ["70000", "0", "99999999"])
     def test_an_unusable_pin_is_refused_not_crashed(self, tmp_path, monkeypatch, bad) -> None:
-        """`_pinned_port` only checks for digits, so nonsense reaches the probe.
+        """An out-of-range or zero pin is refused by name, not crashed or guessed.
 
-        `bind()` answers a port above 65535 with OverflowError -- NOT an OSError, so
-        it would escape the probe as a traceback rather than a refusal. Port 0 is the
-        opposite failure: it binds happily to an EPHEMERAL port, so it would read as
-        free and the pod would be told to come up somewhere nobody can predict,
-        which is the opposite of what pinning is for. Both are operator typos and
-        both must be named, not guessed at.
+        `bind()` raises OverflowError (not OSError) above 65535, and port 0 binds an
+        ephemeral port, so it would read as free.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -642,16 +583,10 @@ class TestPortAllocation:
         assert rt._port_is_free(-1) is False
 
     def test_the_walk_skips_a_port_another_pod_has_recorded(self, tmp_path, monkeypatch) -> None:
-        """A probe answers "is anyone listening", not "is that port somebody's".
+        """The band walk skips a port another pod has recorded, even if it probes free.
 
-        A STOPPED pod listens on nothing, so its operator-pinned port probes free.
-        Landing a displaced pod there boots fine and then hard-fails the pinned pod's
-        next `up` with the "a pin you set is never moved" refusal -- for a squat this
-        code would have created, in a message that blames the operator.
-
-        The same read closes most of the concurrent-start race: a pod's port is
-        written to disk BEFORE its unit is started, so a claim is visible here even
-        while its gateway (units are Type=simple) has not bound yet.
+        A stopped pod listens on nothing; landing on its pin would make its next `up`
+        fail with the "a pin you set is never moved" refusal.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -672,18 +607,11 @@ class TestPortAllocation:
     def test_a_recorded_claim_beats_a_probe_that_cannot_see_it_yet(
         self, tmp_path, monkeypatch
     ) -> None:
-        """THE race this fix exists for, pinned deterministically.
+        """Two names colliding mod 199 get different ports while the first is starting.
 
-        Two DIFFERENT names colliding mod 199 is the precondition for the whole bug
-        (same-name concurrency is already serialized by the per-name mutex, so it
-        cannot express this). A unit is `Type=simple`, so `start_pod` returns before
-        the gateway binds -- meaning the first pod's port still probes FREE while it
-        is starting. Without a recorded claim the second allocation is handed the
-        same port and one gateway crash-loops, which is the original defect
-        reappearing through the concurrent door.
-
-        Nothing is listening anywhere here on purpose: the claim is the only thing
-        that can separate them, so the probe cannot mask a regression.
+        Units are `Type=simple`, so the first pod's port still probes free before its
+        gateway binds. Nothing listens here on purpose: only the recorded claim can
+        separate them.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -707,12 +635,9 @@ class TestPortAllocation:
     def test_concurrent_allocations_never_hand_out_one_port_twice(
         self, tmp_path, monkeypatch
     ) -> None:
-        """The same property under real threads, claim-then-record under the lock.
+        """Under real threads and `pod_plane_mutex`, each claim is recorded before release.
 
-        Serialised by `pod_plane_mutex`, each thread records its claim before
-        releasing, so the next one sees it. Asserted on DISTINCTNESS rather than on
-        any particular assignment, because which name wins the lock is legitimately
-        arbitrary.
+        Asserts distinct ports only: which name wins the lock is arbitrary.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -782,13 +707,8 @@ class TestPortAllocation:
     def test_the_claim_scan_cannot_be_hung_by_a_fifo(self, tmp_path, monkeypatch) -> None:
         """A named pipe in the pods directory must not stall the plane.
 
-        O_NOFOLLOW does NOT cover this: a FIFO is not a symlink. A plain O_RDONLY open
-        of one BLOCKS until a writer appears, so a single FIFO named `*.env` would hang
-        every `pod up` indefinitely -- strictly worse than the symlink case, which
-        merely read the wrong bytes.
-
-        Driven on a worker thread with a join timeout because the failure mode IS a
-        hang: without O_NONBLOCK this would not fail, it would never finish.
+        A plain O_RDONLY open of a FIFO blocks until a writer appears; O_NOFOLLOW does
+        not help. Run on a thread with a join timeout because the failure is a hang.
         """
         import threading
 
@@ -830,17 +750,8 @@ class TestPortAllocation:
     def test_the_scan_leaks_no_descriptors(self, tmp_path, monkeypatch) -> None:
         """Every branch closes its fd, including the non-regular refusal.
 
-        Worth pinning rather than assuming: an un-runnable probe RAISES precisely
-        because descriptor exhaustion is a real state, so a scan leaking one
-        per peer would be feeding the very failure it sits in front of.
-
-        Asserted by spying on `os.open`/`os.close` and pairing what THIS scan
-        acquired under the pods directory, rather than by a `/proc/self/fd`
-        census: that census measures the whole xdist worker at two instants, so
-        two descriptors merely open at the second sample -- a pool thread holding
-        a file and a socket, a log rotation, a metrics export -- fail a pod-port
-        test for a reason that has nothing to do with pods. The pairing needs no
-        repeat loop either; the loop only existed to out-amplify census noise.
+        Pairs this scan's `os.open`/`os.close` calls under the pods directory instead
+        of a `/proc/self/fd` census, which counts the whole xdist worker's fds.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -931,16 +842,10 @@ class TestPortAllocation:
     def test_a_peers_claim_is_exactly_what_that_peer_resolves(
         self, tmp_path, monkeypatch, stored
     ) -> None:
-        """The invariant, stated once instead of guessed per value.
+        """A peer's claim is the port that peer would come up on, per `derive_port`.
 
-        A claim is not "some port we liked the look of" -- it is the port that peer
-        would actually come up on. So it must agree with `derive_port` for every
-        stored value, whatever shape that value is: a usable pin resolves to the pin,
-        and anything unusable (absent, out of range, oversized, non-decimal) resolves
-        to the derivation, because that is what `derive_port` itself falls back to.
-
-        Asserting the AGREEMENT rather than a hardcoded number is what makes this
-        survive a change to either side.
+        A usable pin resolves to the pin; anything unusable falls back to the
+        derivation. Asserting agreement, not a number, survives a change to either side.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -948,16 +853,10 @@ class TestPortAllocation:
         assert rt._peer_effective_port(c, "peer", c.env_file("peer")) == rt.derive_port(c, "peer")
 
     def test_a_pre_upgrade_pod_with_no_pin_is_still_claimed(self, tmp_path, monkeypatch) -> None:
-        """The upgrade window: a pod that predates claims is running, unclaimed.
+        """A pod whose env file has a CHECKOUT but no `PORT=` still claims its derived port.
 
-        Before this change nothing recorded a `PORT=`, so every already-running pod has
-        an env file with a CHECKOUT and no port. Reading that as "claims nothing" would
-        leave exactly those pods unprotected: during a restart gap the pod is listening
-        on nothing, so the probe reports its port free too, and a colliding name would
-        take it and leave the legacy pod crash-looping on EADDRINUSE.
-
-        Resolving what the peer WOULD use closes that window without requiring every
-        pod to be restarted under the new code first.
+        In a restart gap it listens on nothing, so the probe reads its port free; a
+        colliding name would take it and leave the pod crash-looping on EADDRINUSE.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -992,14 +891,8 @@ class TestPortAllocation:
     def test_a_non_utf8_peer_filename_cannot_crash_the_scan(self, tmp_path, monkeypatch) -> None:
         """Filenames are BYTES on POSIX, so a peer name need not be valid UTF-8.
 
-        Such a name arrives decoded with surrogates, and the derivation fallback has to
-        ENCODE the name to hash it -- which raises UnicodeEncodeError on a surrogate.
-        Measured: `bad-\\xff.env` is handed over as `'bad-\\udcff.env'`, and encoding
-        that stem raises. Unguarded, one such file would traceback every `pod up` on the
-        plane.
-
-        Guarded at the NAME rather than at the encode: a stem that is not a legal pod
-        name is not a pod, so it has no port to claim and nothing to read.
+        `bad-\\xff.env` arrives as `'bad-\\udcff.env'`, and hashing that stem raises
+        UnicodeEncodeError. Guarded at the name: an illegal pod name claims nothing.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -1052,16 +945,10 @@ class TestPortAllocation:
         ],
     )
     def test_the_shared_parser_defines_what_counts_as_a_port(self, value, expected, why) -> None:
-        """One parser, one answer, every character class pinned.
+        """One shared port parser, every character class pinned.
 
-        Guarding this per call site gets it wrong differently -- on length, on a
-        sibling that was never audited, and on character class. The parser is a
-        single function, so these cases are asserted once here instead of per site.
-
-        `isdecimal` rather than `isdigit` is the whole point: `isdigit` is not the
-        predicate that matches `int()`. And `isascii` would have been wrong in the
-        other direction -- it rejects U+0662 ARABIC-INDIC DIGIT TWO, which `int()`
-        parses as 2.
+        `isdecimal` is the predicate that matches `int()`: `isdigit` accepts U+00B2,
+        which `int()` rejects, and `isascii` rejects U+0662, which `int()` parses as 2.
         """
         assert rt._port_from_env(value) == expected, why
 

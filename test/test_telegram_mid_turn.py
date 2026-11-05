@@ -15,11 +15,21 @@ from unittest.mock import AsyncMock
 
 import pytest
 from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
-from telegram_helpers import _dispatcher, _dm, _origin, _prime_live, _tg_origin
+from telegram_helpers import (
+    FakeProvider,
+    _dispatcher,
+    _dm,
+    _Ev,
+    _origin,
+    _prime_live,
+    _tg_origin,
+)
 
+from kiro_crew.acp.types import EVENT_COMPLETE
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.telegram.transport import TelegramInboundMessage
 from kiro_crew.telegram.transport_dispatch import _STEER_ACK_EMOJI
+from kiro_crew.testing.wait import await_until
 
 
 class TestTelegramMidTurn:
@@ -643,6 +653,141 @@ class TestTelegramMidTurn:
         assert not any("Queued" in t for t, _ in cli.sent)
 
 
+class TestMidTurnSharedKey:
+    """Under ``dm_scope = "unified"`` two people's DMs share one session key, so the
+    turn running on it can be answering someone else's chat."""
+
+    def test_another_chats_message_is_queued_not_steered(self, monkeypatch: Any) -> None:
+        from kiro_crew.messaging import auto_title
+
+        monkeypatch.setattr(auto_title, "try_claim", lambda _key: False)
+        d, _cli, sess = _dispatcher({7, 8}, dm_scope="unified")
+        provider = FakeProvider()
+        sess._gp = provider
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def _held(message: str) -> Any:
+            started.set()
+            await finish.wait()
+            yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
+
+        async def _acquire(key: str, **kw: Any) -> Any:
+            sess._busy = True
+            return provider, True, False
+
+        provider.stream = _held  # type: ignore[method-assign]
+        sess.get_or_create = _acquire  # type: ignore[method-assign]
+        # The queued entry's own replay is the drain's, pinned in its own tests.
+        d._drain_queue = AsyncMock()  # type: ignore[method-assign]
+
+        async def _go() -> None:
+            turn = asyncio.create_task(d.handle_message(_dm("long job", uid="7")))
+            await await_until(started, what="person 7's turn streaming")
+            await d.handle_message(_dm("hello from 8", uid="8"))
+            await d.handle_message(_dm("and from 7", uid="7"))
+            finish.set()
+            await await_until(turn, what="person 7's turn ending")
+
+        asyncio.run(_go())
+
+        assert provider.steered == ["and from 7"]
+        assert [(kw["telegram_chat_id"], t) for _ts, t, kw in sess.queued] == [
+            ("8", "hello from 8")
+        ]
+        assert d._turn_chats == {}
+
+    def test_a_stale_record_does_not_steer_into_a_successor_turn(self, monkeypatch: Any) -> None:
+        # A reset hands the shared key to another channel's turn while this Telegram
+        # turn's record is still in place: the chat matches, the provider does not.
+        from kiro_crew.messaging import auto_title
+
+        monkeypatch.setattr(auto_title, "try_claim", lambda _key: False)
+        d, _cli, sess = _dispatcher({7}, dm_scope="unified")
+        provider = FakeProvider()
+        successor = FakeProvider()
+        sess._gp = provider
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def _held(message: str) -> Any:
+            started.set()
+            await finish.wait()
+            yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
+
+        async def _acquire(key: str, **kw: Any) -> Any:
+            sess._busy = True
+            return provider, True, False
+
+        provider.stream = _held  # type: ignore[method-assign]
+        sess.get_or_create = _acquire  # type: ignore[method-assign]
+        d._drain_queue = AsyncMock()  # type: ignore[method-assign]
+
+        async def _go() -> None:
+            turn = asyncio.create_task(d.handle_message(_dm("long job", uid="7")))
+            await await_until(started, what="person 7's turn streaming")
+            sess._gp = successor
+            await d.handle_message(_dm("and from 7", uid="7"))
+            finish.set()
+            await await_until(turn, what="person 7's turn ending")
+
+        asyncio.run(_go())
+
+        assert successor.steered == []
+        assert provider.steered == []
+        assert [t for _ts, t, _kw in sess.queued] == ["and from 7"]
+
+    def test_a_turn_another_channel_holds_on_a_unified_key_is_not_steered(self) -> None:
+        # Busy with no Telegram turn recorded: another channel's DM or an injected
+        # event holds the shared key, and it may be anyone's.
+        d, _cli, sess = _dispatcher({8}, dm_scope="unified")
+        sess._busy = True
+
+        asyncio.run(d.handle_message(_dm("hello from 8", uid="8")))
+
+        assert sess._gp.steered == []
+        assert [t for _ts, t, _kw in sess.queued] == ["hello from 8"]
+
+    def test_a_message_queued_behind_another_channels_turn_drains_when_free(
+        self, monkeypatch: Any
+    ) -> None:
+        # The other channel's turn ends without draining Telegram's queue, so the
+        # queueing path itself schedules the drain for when the key is free.
+        from kiro_crew.telegram.dispatch import midturn
+
+        scheduled: list[str] = []
+
+        def _record(*, channel: str, session_key: str, is_busy: Any) -> bool:
+            scheduled.append(channel)
+            return True
+
+        monkeypatch.setattr(midturn, "drain_when_free", _record)
+        d, _cli, sess = _dispatcher({8}, dm_scope="unified")
+        sess._busy = True
+
+        asyncio.run(d.handle_message(_dm("hello from 8", uid="8")))
+
+        assert [t for _ts, t, _kw in sess.queued] == ["hello from 8"]
+        assert scheduled == ["telegram"]
+
+    def test_a_finished_turn_leaves_a_later_turns_record(self, monkeypatch: Any) -> None:
+        from kiro_crew.messaging import auto_title
+
+        monkeypatch.setattr(auto_title, "try_claim", lambda _key: False)
+        d, _cli, sess = _dispatcher({7})
+        later = (7, None)  # the same chat: only identity tells the two records apart
+
+        async def _stream(self: Any, message: str) -> Any:
+            (key,) = d._turn_chats
+            d._turn_chats[key] = later  # a turn that took the key after a reset
+            yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
+
+        monkeypatch.setattr(FakeProvider, "stream", _stream)
+        asyncio.run(d.handle_message(_dm("hi")))
+
+        assert list(d._turn_chats.values()) == [later]
+
+
 class TestMidTurnPrivacyTransaction:
     """A privacy modifier on a mid-turn message is one transaction with its steer.
 
@@ -806,6 +951,32 @@ class TestMidTurnPrivacyTransaction:
         self._send_busy(d, "and also this", message_id=7)
 
         assert log == [("steer", "and also this"), ("note", "and also this"), ("react", 7, "🫡")]
+
+    def test_a_turn_that_changed_during_the_reservation_is_not_steered(
+        self, monkeypatch: Any
+    ) -> None:
+        # The reservation awaits: the turn the ownership check saw can end and a
+        # new turn take the key on the same provider before the steer would land.
+        from kiro_crew.messaging import privacy_mode
+
+        d, cli, sess = _dispatcher({7})
+        sess._busy = True
+        d._turn_chats[self._KEY] = (7, sess._gp)
+        log = self._record(monkeypatch, d, cli, sess, True)
+        recorded_reserve = privacy_mode.reserve
+
+        async def _reserve(mode: str, key: str, **kw: Any) -> Any:
+            reservation = await recorded_reserve(mode, key, **kw)
+            d._turn_chats[key] = (8, sess._gp)  # the next turn took the key
+            return reservation
+
+        monkeypatch.setattr(privacy_mode, "reserve", _reserve)
+
+        self._send_busy(d, "/incognito stop now")
+
+        assert [entry[0] for entry in log] == ["reserve", "release", "send"]
+        assert log[-1] == ("send", "⏳ Queued (1): “stop now”")
+        assert sess.queued[-1][2]["privacy_request"] == "incognito"
 
     def test_a_declined_steer_releases_then_queues(self, monkeypatch: Any) -> None:
         d, cli, sess = _dispatcher({7})

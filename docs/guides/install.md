@@ -116,7 +116,7 @@ backends and Kiro internal delegation refuse private member turns with a reason.
 The owner can still manage memory in the dashboard. A member's memory store is
 chosen when the member is created and cannot be rebound afterwards. Existing
 members, including the default assistant selection, keep their declared V1
-memory after upgrading. To give a crewmate private V2 memory, create a new crew
+memory after upgrading. To give a Bot private V2 memory, create a new crew
 member: new members receive V2 automatically, starting empty, and V1 stores
 remain available for an explicit copy of selected starting knowledge. Check the
 execution requirements above first. A V2 member never falls back to V1 on

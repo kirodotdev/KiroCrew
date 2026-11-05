@@ -51,32 +51,13 @@ def _fake_node_toolchain(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
 def _isolate_pod_host_state(tmp_path_factory, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep pod HOST state out of the developer's real home.
 
-    Two pod paths resolve through ``Path.home()`` rather than ``KIROCREW_HOME``, so
-    conftest's safety net does not cover them, and both are written by ordinary
-    test paths:
+    ``unit.unit_path`` and ``PodConfig.pods_dir`` resolve through ``Path.home()``,
+    not ``KIROCREW_HOME``; an unpinned ``install_unit`` rewrites the host's real
+    ``kirocrew-pod@.service``. Pins ``HOME`` and ``USERPROFILE`` (Windows reads that).
 
-    ``unit.unit_path`` — a test reaching ``install_unit`` (via ``_up`` ->
-    ``install_backend``, or the ``start_pod`` self-heal) rewrites the REAL
-    ``kirocrew-pod@.service`` with this test's tmpdir as
-    ``Environment=KIROCREW_POD_ROOT=``. Every later ``pod up`` on the host then dies
-    with "no pinned checkout", so running the suite breaks pods for everyone until
-    someone re-runs ``pod install``. Observed on a real host.
-
-    ``PodConfig.pods_dir`` — resolves off the DEFAULT data home on purpose (a pod
-    process must not be able to redirect the host's pod registry into its own
-    throwaway home). The per-name lifecycle mutex writes its lock file there.
-
-    Pinning ``HOME`` fixes the cause both share instead of patching each function
-    that reads it, so a future path that resolves through the home is covered
-    without a matching change here. ``USERPROFILE`` too, because Windows
-    ``Path.home()`` reads that one. Tests that pin either themselves still win.
-
-    The rootdir conftest now ALSO pins ``KIROCREW_POD_ROOT`` / ``KIROCREW_POD_ENV_DIR``
-    for every test (the same leak, found again from a module without this fixture).
-    This fixture clears those two pins on purpose: the modules that import it test the
-    home-DERIVED defaults (``test_pod_systemd.py``'s ``TestHostStateIsFenced`` asserts the
-    pod dirs follow the pinned home), and with ``HOME`` redirected above the derivation is
-    already hermetic. Tests that set the variables themselves are unaffected.
+    Clears the rootdir conftest's ``KIROCREW_POD_ROOT`` / ``KIROCREW_POD_ENV_DIR`` pins
+    so these modules test the home-derived defaults, which the ``HOME`` pin keeps
+    hermetic. Tests that set any of these themselves still win.
     """
     home = tmp_path_factory.mktemp("pod-host-home")
     _floor_monkeypatch.setenv("HOME", str(home))
@@ -89,14 +70,9 @@ def _isolate_pod_host_state(tmp_path_factory, _floor_monkeypatch: pytest.MonkeyP
 def _systemd_backend(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise the SYSTEMD backend by default, on every host.
 
-    ``runtime`` dispatches unit operations on ``IS_MACOS`` and ``IS_WINDOWS``,
-    so without this the tests that monkeypatch ``rt.systemctl`` would silently
-    exercise the launchd branch on a Mac or the Task Scheduler branch on the
-    Windows shards — passing on Linux CI and failing (or worse, vacuously
-    passing) elsewhere; a Windows run of the modules that import it fails
-    exactly that way without it. Pinning both makes the
-    default explicit and keeps the systemd contract asserted everywhere. Tests
-    for the macOS or Windows path set their flag True themselves.
+    ``runtime`` dispatches on ``IS_MACOS`` and ``IS_WINDOWS``, so tests patching
+    ``rt.systemctl`` would otherwise run the launchd or Task Scheduler branch. Tests
+    for those paths set their flag True themselves.
     """
     _floor_monkeypatch.setattr(rt, "IS_MACOS", False)
     _floor_monkeypatch.setattr(rt, "IS_WINDOWS", False)
@@ -116,11 +92,8 @@ def _ready_worktree(
 ) -> Path:
     """Build a flat kirocrew worktree checkout (repo root == worktree dir).
 
-    ``flags`` writes a ``cli.py`` declaring the gateway flags a CURRENT checkout
-    declares. ``boot`` probes the target's own source before passing a flag to it
-    (the control plane and the target worktree are independent checkouts), so a
-    fixture without it models an OLD checkout -- pass ``flags=False`` to exercise
-    that arm deliberately rather than by omission.
+    ``flags`` writes a ``cli.py`` declaring the current gateway flags; ``boot`` probes
+    the target's source before passing one. ``flags=False`` models an old checkout.
     """
     co = root / name
     co.mkdir(parents=True, exist_ok=True)

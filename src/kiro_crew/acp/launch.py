@@ -904,6 +904,9 @@ class LaunchRequest:
     env_before_scrub: Callable[[dict[str, str], str | None], Awaitable[dict[str, str]]]
     extra_hidden_dirs: tuple[str, ...] = ()
     extra_expose_files: tuple[str, ...] = ()
+    #: More windows into the masked scratch root for this process alone: the
+    #: runtime's private-state directory.
+    extra_private_dirs: tuple[str, ...] = ()
     internal_sandbox: bool = False
     pod_home_remap: bool = False
     #: The runtime allocates scratch through its guarded hop; the client never has.
@@ -1119,6 +1122,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         )
     if host._shared_scratch is not None:
         scratch_window = (*scratch_window, str(host._shared_scratch))
+    scratch_window = (*scratch_window, *request.extra_private_dirs)
     # Resolve the SSH_AUTH_SOCK forward OFF the event loop (the governance
     # floor and the consent leaf are filesystem reads) ONCE, then pass the
     # resolved boolean into both the sandbox wrap below and the parent-side

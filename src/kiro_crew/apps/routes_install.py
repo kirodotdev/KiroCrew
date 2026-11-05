@@ -42,6 +42,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _refuse_while_startup_hook_runs,
     _register_app_off_loop,
     _restore_app_after_failed_update,
+    _snapshot_agent_configs_off_loop,
     _start_backend_after_install,
     _suspend_app_for_session_approval_reconsent,
 )
@@ -113,11 +114,13 @@ async def handle_update_app(request: web.Request) -> web.Response:
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), stop_app_backend, name
             )
+            # Deregistering deletes the agent configs that hold the user's edits.
+            prior_agents = await _snapshot_agent_configs_off_loop(name)
             await _deregister_app_off_loop(name)
 
             reg_install = await install_from_registry(registry_name)
             if not reg_install.get("ok"):
-                restore_refused = await _restore_app_after_failed_update(name)
+                restore_refused = await _restore_app_after_failed_update(name, prior_agents)
                 if restore_refused:
                     reg_install["backend_refused"] = restore_refused
                 sel().log_api_access(
@@ -133,7 +136,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
             # and a backend started here would run an app the UI shows as disabled.
             still_enabled = await _app_may_run_after_install(name)
             if still_enabled:
-                reg_result = await _register_app_off_loop(name)
+                reg_result = await _register_app_off_loop(name, prior_agents)
                 backend = await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
                 )
@@ -169,6 +172,8 @@ async def handle_update_app(request: web.Request) -> web.Response:
         await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), stop_app_backend, name
         )
+        # Deregistering deletes the agent configs that hold the user's edits.
+        prior_agents = await _snapshot_agent_configs_off_loop(name)
         await _deregister_app_off_loop(name)
 
         # Off-loop: blocking filesystem copy (see handle_install_app).
@@ -178,7 +183,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
             subprocess_executor(), lambda: update_app(source, expected_name=name)
         )
         if not up_result.ok:
-            restore_refused = await _restore_app_after_failed_update(name)
+            restore_refused = await _restore_app_after_failed_update(name, prior_agents)
             sel().log_api_access(
                 caller="dashboard",
                 operation="app_update",
@@ -199,7 +204,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         backend_refused = None
         still_enabled = await _app_may_run_after_install(name)
         if still_enabled:
-            up_reg = await _register_app_off_loop(name)
+            up_reg = await _register_app_off_loop(name, prior_agents)
             # Promote the rewritten app-crons.json into the RUNNING scheduler
             # now. register_app_crons_with_service re-applies a changed entry to
             # the job it already registered, but its other callers are enable,

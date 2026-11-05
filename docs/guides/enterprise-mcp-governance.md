@@ -118,7 +118,7 @@ Always emitted, on every install:
 | `kirocrew-cron` | every scheduled job (`cron_add` and the whole cron surface) |
 | `kirocrew-computer` | desktop automation on supported macOS and Windows hosts (inert unless separately enabled, but still filtered) |
 | `kirocrew-guide` | the platform guide set: where-is answers (`find_ui`), the packaged docs (`search_docs`), dashboard guides and change cards |
-| `kirocrew-mate` | a crewmate's tools over its own record (name, description, face; goal and tools asked through a change card) |
+| `kirocrew-mate` | a Bot's tools over its own record (name, description, face; goal and tools asked through a change card) |
 
 Assignable — emitted only for agents granted the set, and filtered the same way:
 

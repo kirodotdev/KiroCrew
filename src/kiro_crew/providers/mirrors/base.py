@@ -92,7 +92,8 @@ RESOURCES_NO_READER = (
 #: the one backend Crew applies ``toolsSettings`` on, through ``permissions`` rules
 #: and the gate tiers that read the spec's shell and write allowlists
 #: (``acp/kas_agents.py``); the same tiers run on every backend's permission
-#: requests, and nothing hands them a mirrored session's allowlists yet. The field's
+#: requests, and of the mirrored sessions only claude's are handed its allowlists
+#: (``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS``). The field's
 #: ``subagent.availableAgents`` is the exception, read by Crew's spawn gate on every
 #: backend (``subagent_parts/agent_policy.py``).
 TOOLS_SETTINGS_GATE_CHANNEL = (

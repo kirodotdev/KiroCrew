@@ -16,7 +16,8 @@ from typing import Iterator
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+from kiro_crew.hooks import FileTooLargeError, safe_read_file, safe_read_file_bytes_nolink
 from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.skill_runtime import authoring as _authoring
 from kiro_crew.skills_discovery import (
@@ -470,6 +471,41 @@ def _first_linked_skill_component(base: Path, name: str) -> Path | None:
     return None
 
 
+def _released_skill_owners() -> frozenset[str]:
+    """Former built-ins whose wheel copy is released; empty when that cannot be read.
+
+    Deferred import: ``apps`` is a higher layer than this module. An empty set
+    keeps today's sync.
+    """
+    try:
+        from kiro_crew.apps.builtin_adoption import released_builtin_names
+
+        return released_builtin_names()
+    except Exception:  # noqa: BLE001 - an unanswerable question keeps today's sync
+        logger.debug("could not read built-in adoption state", exc_info=True)
+        return frozenset()
+
+
+def _packaged_skill_app(src_file: Path) -> str:
+    """The app packaged *src_file* names in its ``app:`` frontmatter; ``""`` if none or unreadable."""
+    try:
+        meta = parse_frontmatter(safe_read_file(str(src_file)), SKILL_LOADER)
+    except (OSError, ValueError, FileTooLargeError):
+        return ""
+    return meta.get("app", "").strip()
+
+
+def _ships_for_released_app(src_file: Path, released: frozenset[str]) -> bool:
+    """Whether packaged *src_file* names, in its ``app:`` frontmatter, an app in *released*.
+
+    Such a skill is the core's copy of one the adopted app now ships from its own
+    repository, and its destination can be the directory that app's namespaced
+    skills share (``bridges_sources.app_skills_dir``). An unreadable file is not
+    skipped.
+    """
+    return bool(released) and _packaged_skill_app(src_file) in released
+
+
 def installed_skill_currency() -> list[InstalledSkillCurrency]:
     """Judge each installed skill against the packaged tree the sync would pick.
 
@@ -561,6 +597,7 @@ def installed_skill_currency() -> list[InstalledSkillCurrency]:
 
     results: list[InstalledSkillCurrency] = []
     supplied: set[str] = set()
+    released = _released_skill_owners()
     for src_root in (_project_skills_dir(), _BUILTIN_SKILLS_DIR):
         if not src_root or not src_root.exists():
             continue
@@ -569,6 +606,10 @@ def installed_skill_currency() -> list[InstalledSkillCurrency]:
             if name in supplied:
                 continue
             supplied.add(name)
+            if _ships_for_released_app(src_file, released):
+                # The sync neither installs nor updates it, so it has no
+                # currency to judge, like an install no source root ships.
+                continue
             src_dir = src_file.parent
             if not base_readable:
                 # Nothing under an unreadable base can be judged, and presence

@@ -133,20 +133,11 @@ class _Handler(BaseHTTPRequestHandler):
 def stub_gateway(monkeypatch: pytest.MonkeyPatch) -> _RecordingUnixServer:
     """A pod gateway reachable only the way ``pod api`` is allowed to reach it.
 
-    Two peers come up. The first is the pod's private ``AF_UNIX`` socket, bound
-    in the pod's ISOLATED home under the same file name the gateway binds — so a
-    request that arrives here proves both the transport and the path. The second
-    is a TCP listener on the derived port, standing in for a process that took
-    the port over after the pod released it.
-
-    Teardown asserts the TCP peer was never contacted. Every test that drives
-    ``pod_api`` through this fixture therefore also proves the minted credential
-    never left over TCP, without each test having to say so.
-
-    Every acquisition registers its cleanup on an ``ExitStack`` the moment it
-    succeeds, so a failure PART-WAY through setup (a bind refused, a thread that
-    will not start) releases what was already acquired instead of leaking the
-    temp directory and any bound listeners past the fixture.
+    The pod's ``AF_UNIX`` socket sits in its isolated home under the gateway's file
+    name, and a TCP listener on the derived port stands in for a port squatter.
+    Teardown asserts the TCP peer was never contacted, so every user of this fixture
+    proves the credential never left over TCP. Each acquisition joins an
+    ``ExitStack`` at once, so a part-way setup failure leaks nothing.
     """
     if platform_compat.IS_WINDOWS:
         pytest.skip("AF_UNIX transport is POSIX-only")
@@ -209,14 +200,9 @@ def stub_gateway(monkeypatch: pytest.MonkeyPatch) -> _RecordingUnixServer:
 def port_squatter(monkeypatch: pytest.MonkeyPatch) -> _RecordingServer:
     """A live TCP listener on the pod's derived port, and NO pod unix socket.
 
-    The state right after a pod exits and another local user binds its port. Any
-    request that reaches this peer is the credential leak the unix transport
-    exists to prevent, so teardown asserts it stayed silent unless the test
-    deliberately drove traffic here and cleared the record.
-
-    Cleanup registration mirrors ``stub_gateway``: each acquisition lands on the
-    ``ExitStack`` immediately, so a setup failure cannot leak the temp directory
-    or the bound listener.
+    Another local user bound the port after the pod exited. Teardown asserts this
+    peer stayed silent unless the test drove traffic here and cleared the record.
+    Cleanup uses an ``ExitStack`` as ``stub_gateway`` does.
     """
     if platform_compat.IS_WINDOWS:
         pytest.skip("AF_UNIX transport is POSIX-only")
@@ -294,13 +280,9 @@ def _write_record(
 class TestPodRecordFreshness:
     """The pid record must prove it still names the process it was written for.
 
-    A sidecar outlives a crash (``clear_marker`` runs only on a graceful stop),
-    so a bare pid can afterwards name an unrelated process that inherited the
-    number. That single leg is the whole reason listener attribution was ever
-    treated as a precondition. Binding the record to the process's start time
-    closes it at the source, so pid/MainPID agreement can be sufficient again --
-    which is what an agent driving ``pod api`` from a context that cannot
-    attribute another process's socket depends on.
+    A sidecar outlives a crash (``clear_marker`` runs only on a graceful stop), so a
+    bare pid could name a reused number. Binding the record to the start time makes
+    pid/MainPID agreement enough where sockets cannot be attributed.
     """
 
     @pytest.fixture
@@ -311,14 +293,10 @@ class TestPodRecordFreshness:
     def test_an_unattributable_loopback_listener_still_proves_our_pod(
         self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """THE REGRESSION, in the shape the host actually produces.
+        """An empty ``lsof`` answer does not withhold the credential.
 
-        ``lsof`` is installed and runs fine; it simply cannot see a socket held
-        by a process outside the caller's view -- which is every pod gateway,
-        because the service manager started it and ``pod api`` asks from an
-        unprivileged agent process. The lookup returns ``[]``, and treating that
-        as undecidable withholds the credential from a pod that is demonstrably
-        serving, permanently.
+        ``lsof`` cannot see a socket of a process the service manager started, so it
+        returns ``[]`` for every pod gateway asked from an unprivileged agent.
         """
         live = os.getpid()
         _write_record(cfg, "demo", 7999, f"{live}\n", _live_start_token())
@@ -626,11 +604,8 @@ class TestPodPidAttestation:
     ) -> None:
         """``port_owner`` must not refuse win32 outright before consulting anything.
 
-        That was unsatisfiable rather than strict: ``pod up`` mints a token and
-        ``mint_token`` requires positive proof, so a healthy Windows pod could
-        never earn its own credential. Both facts the proof needs answer there
-        now, so the platform gate is gone and the freshness rule alone decides.
-        A record that cannot prove itself is still UNPROVEN, on every host.
+        ``pod up`` mints a token and ``mint_token`` needs positive proof, so a win32
+        gate would lock out every Windows pod. The freshness rule alone decides.
         """
         monkeypatch.setattr(rt, "IS_WINDOWS", True)
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: False)
@@ -819,13 +794,9 @@ class TestPodApiHttp:
 class TestPodApiUnixTransport:
     """The minted credential must be deliverable only to the pod that owns it.
 
-    A pod's port is ordinary loopback: any local user can bind it the moment the
-    pod releases it. Minting a token and then opening a SEPARATE connection to
-    ``127.0.0.1:<port>`` therefore hands the credential to whoever answers, and a
-    replayable ``mc_token_<port>`` cookie survives the pod's restart. The pod's
-    dashboard unix socket lives inside its own owner-only home, so no other local
-    user can answer there — but only if a failed socket connect refuses instead
-    of retrying over TCP.
+    Any local user can bind a released loopback port, and an ``mc_token_<port>``
+    cookie survives a restart. The unix socket in the owner-only home is safe only if
+    a failed connect refuses instead of falling back to TCP.
     """
 
     def test_the_credential_bearing_request_arrives_on_the_pods_own_socket(
@@ -867,17 +838,9 @@ class TestPodApiUnixTransport:
     ) -> None:
         """The generic refusal is wrong ON WINDOWS, not merely unhelpful.
 
-        There the socket is not MISSING, it is never created: CPython on win32
-        exposes no ``AF_UNIX`` (measured on 3.12), so the pod's gateway binds no
-        dashboard socket and no amount of restarting produces one. Sending the
-        operator down "is it healthy / read the logs / down && up" therefore costs
-        them the pod's state on every lap and never reaches an explanation. There is
-        a way through -- mint a token, drive the loopback port yourself -- and the
-        message is the only place they will find it, because the docs that say so
-        are not what a failing command shows them.
-
-        Asserted by CONTENT rather than by absence of the old text, so a future
-        rewording cannot pass by dropping the guidance.
+        CPython on win32 has no ``AF_UNIX`` (3.12), so no restart creates the socket.
+        The message must name the way through: mint a token, drive the loopback port.
+        Asserted by content, so a rewording cannot drop the guidance.
         """
         monkeypatch.setattr(rt, "IS_WINDOWS", True)
         monkeypatch.setattr(rt, "is_active", lambda cfg, name: True)
@@ -1203,13 +1166,8 @@ class TestPodApiAuditAndCli:
     ) -> None:
         """A body that exhausts the recursion budget must not replace the envelope.
 
-        Both halves of the round trip recurse once per nesting level, and which
-        one gives way depends on how much stack is left — measured here, depth
-        20,000 fails to decode while depth 2,000 decodes and then fails to
-        ENCODE on one interpreter and round-trips whole on another. So this
-        asserts the invariant that holds in every case rather than pinning a
-        threshold that shifts with the interpreter, the platform's thread stack
-        and the call depth.
+        Decode and encode both recurse per level, and where either fails shifts with
+        the interpreter and stack, so this pins the invariant, not a threshold.
         """
         raw = "[" * depth + "]" * depth
         monkeypatch.setattr(rt, "pod_api", lambda *args, **kwargs: (200, raw))
@@ -1271,11 +1229,8 @@ class TestPodApiAuditAndCli:
     ) -> None:
         """The ARGPARSE layer must not answer for this command.
 
-        `choices=` on the method argument would reject an unknown verb with
-        argparse's own usage text on stderr and exit 2 — prose where the caller
-        was promised a fixed-key JSON document, and the one exit the in-process
-        tests cannot see because they call `_api` directly. Runs the real parser
-        in a subprocess so the whole chain is covered.
+        `choices=` would answer with argparse usage text and exit 2 instead of the JSON
+        envelope. In-process tests call `_api` directly, so this runs the real parser.
         """
         src = str(Path(kiro_crew.__file__).resolve().parents[1])
         env = os.environ.copy()

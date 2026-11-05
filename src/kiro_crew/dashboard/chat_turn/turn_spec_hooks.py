@@ -11,6 +11,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
 from kiro_crew.agent_sdk.spec_hooks import (
     OverlongHookCommand,
     crew_fired_spec_hooks,
@@ -485,8 +486,9 @@ async def _notice_tools_settings_applied_nowhere(
 
     Named in the wording a backend Crew fires spec hooks on already gets
     (``acp.kas_agents.spec_keys_without_carrier``), so a
-    ``subagent.availableAgents`` the spawn gate applies is never among them.
-    Best-effort: nothing is gated on it, so a spec that cannot be read renders no
+    ``subagent.availableAgents`` the spawn gate applies is never among them, nor,
+    on a backend Crew's gate enforces the shell and write allowlists on, a switch
+    that gate applies. Best-effort: nothing is gated on it, so a spec that cannot be read renders no
     row rather than failing the turn.
     """
     agent = session_agent(client, agent)
@@ -494,7 +496,13 @@ async def _notice_tools_settings_applied_nowhere(
         return
     try:
         unapplied = await asyncio.to_thread(
-            spec_tools_settings_unapplied, agent, spec_project_dir(client)
+            functools.partial(
+                spec_tools_settings_unapplied,
+                agent,
+                spec_project_dir(client),
+                gate_allowlists=capabilities_of(client).backend
+                in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
+            )
         )
     except Exception:  # noqa: BLE001 - an informational row must never fail a turn
         logger.debug("agent spec toolsSettings for %r could not be read", agent, exc_info=True)

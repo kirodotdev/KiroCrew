@@ -376,7 +376,10 @@ async def _run_subagent(
         patch.object(subagent, "update_state"),
         patch.object(subagent, "create_agent_folder", MagicMock()),
         patch.object(subagent, "turn_spec_hooks", AsyncMock(return_value=spec)),
-        patch("kiro_crew.subagent_manager.run.permission_pre_tool_block", pre_tool or AsyncMock()),
+        patch(
+            "kiro_crew.subagent_manager.run.permission_pre_tool_block",
+            pre_tool or AsyncMock(return_value=None),
+        ),
         patch.object(manager, "_write_tombstone"),
     ):
         await asyncio.wait_for(manager._run_inner(info, "subagent:a1"), 30)

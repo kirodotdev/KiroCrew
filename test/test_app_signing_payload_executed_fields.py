@@ -1,4 +1,4 @@
-"""The signed bytes must cover the manifest fields the install chain EXECUTES.
+"""The signed bytes must cover the manifest fields the install chain EXECUTES or CALLS.
 
 Left out of ``AppManifest.signing_payload``, each of these could be rewritten with the
 signature still verifying:
@@ -7,7 +7,8 @@ signature still verifying:
 * ``mcpServers`` ``command``/``args``/``env``, which kiro-cli SPAWNS,
 * ``backend.hooks.*`` (imported by ``module_loader.load_app_module``) and
   ``backend.entryPoint`` + ``backend.type`` (spawned by
-  ``backend._start_app_backend_body``).
+  ``backend._start_app_backend_body``),
+* ``publishProvider.endpoint``, the route the artifact page POSTs the reader's artifact to.
 
 Each key is added under a NON-EMPTY guard, so a manifest declaring none of them hashes
 as before (``test_a_manifest_without_them_produces_the_pre_change_payload``). The tests
@@ -30,7 +31,7 @@ SIGNER = "acme"
 SECRET = "publisher-trust-key"
 APP = "signed-demo"
 
-#: A published manifest that declares all three newly covered field groups.
+#: A published manifest that declares every newly covered field group.
 PUBLISHED: dict = {
     "name": APP,
     "version": "1.0.0",
@@ -45,9 +46,14 @@ PUBLISHED: dict = {
         "type": "python",
         "hooks": {"on_startup": "backend.boot:start"},
     },
+    "publishProvider": {
+        "id": "signed-demo-publish",
+        "label": "Publish to Signed Demo",
+        "endpoint": "/api/apps/signed-demo/publish",
+    },
 }
 
-#: The same publisher, declaring NONE of the three -- the compatibility case.
+#: The same publisher, declaring NONE of them -- the compatibility case.
 PUBLISHED_PLAIN: dict = {
     "name": APP,
     "version": "1.0.0",
@@ -111,17 +117,18 @@ def enforcing_fleet(tmp_path, monkeypatch):
 
 
 def test_a_manifest_without_them_produces_the_pre_change_payload():
-    """The three keys are ABSENT unless declared, so old signatures still hash.
+    """The keys are ABSENT unless declared, so old signatures still hash.
 
     This is the compatibility guarantee in its smallest form: the bytes for a
-    manifest that declares no ``setup``, no ``mcpServers`` and no ``backend``
-    carry none of the three keys, so a signature issued before they were
-    covered verifies unchanged.
+    manifest that declares no ``setup``, ``mcpServers``, ``backend`` or
+    ``publishProvider`` carry none of those keys, so a signature issued before they
+    were covered verifies unchanged.
     """
     payload = AppManifest.from_dict(PUBLISHED_PLAIN).signing_payload()
     assert b'"setup"' not in payload
     assert b'"mcpServers"' not in payload
     assert b'"backend"' not in payload
+    assert b'"publishProvider"' not in payload
 
 
 def test_a_signature_issued_under_the_pre_change_payload_still_verifies(enforcing_fleet):
@@ -157,6 +164,11 @@ def test_precondition_a_declaring_manifest_is_admitted_when_untampered(enforcing
         ("backend.hooks.on_startup", _tampered(backend__hooks__on_startup="backend.evil:go")),
         ("backend.entryPoint", _tampered(backend__entryPoint="backend/evil.py")),
         ("backend.type", _tampered(backend__type="exec")),
+        # publishProvider: where the artifact page sends the reader's artifact.
+        (
+            "publishProvider.endpoint",
+            _tampered(publishProvider__endpoint="/api/apps/signed-demo/other"),
+        ),
     ],
 )
 def test_tampering_a_newly_covered_field_is_denied(enforcing_fleet, label, tampered):
@@ -250,7 +262,7 @@ def test_a_builtin_is_not_refused_by_admission_under_require_signature(tmp_path,
 
 
 def test_an_unsigned_declaring_app_installs_on_a_non_enforcing_fleet(tmp_path, monkeypatch):
-    """No policy configured: an app declaring all three fields still installs.
+    """No policy configured: an app declaring every covered field still installs.
 
     The widened payload adds no refusal. ``app_admission_denied`` returns on
     the open fast path before any signature work, so an unsigned app is

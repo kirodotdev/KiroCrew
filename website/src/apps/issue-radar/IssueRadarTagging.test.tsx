@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import { repoScopeKey } from './lib/links'
+import { i18next } from '../../i18n/index'
+import '../../i18n/all'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -105,6 +107,36 @@ describe('TaggingView', () => {
     })
     renderView()
     await waitFor(() => expect(screen.getByText(/carries at least one label/)).toBeTruthy())
+  })
+
+  it('keeps the repo inside each whole sentence in another language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      api.tagging.mockResolvedValue({
+        owner: 'o', repo: 'r', issues: [], untagged: [], open_count: 4,
+        suggestions: {}, generated_at: null, batch_size: 50, label_counts: { bug: 3, docs: 0 }, bulk_max: 25, titles: TITLES,
+      })
+      setCtx({ repoLabels: [] })
+      const first = renderView()
+      await waitFor(() => expect(screen.getByText('Jedes offene Issue in o/r trägt mindestens ein Label. Nichts zu taggen.')).toBeTruthy())
+      expect(screen.getByText(/^o\/r definiert noch keine Labels, daher gibt es nichts zuzuweisen\./)).toBeTruthy()
+      first.unmount()
+
+      // Japanese puts the repo first, so a fragment glued after a fixed
+      // prefix reads out of order there.
+      await i18next.changeLanguage('ja')
+      const second = renderView()
+      await waitFor(() => expect(screen.getByText('o/r 内のすべてのオープン Issue に少なくとも 1 つのラベルがあります。タグ付けするものがありません。')).toBeTruthy())
+      second.unmount()
+
+      await i18next.changeLanguage('de')
+      setCtx({ labelsError: new Error('boom') })
+      renderView()
+      await waitFor(() => expect(screen.getByText('Labels von o/r konnten nicht geladen werden')).toBeTruthy())
+      expect(screen.queryByText(/s Labels:/)).toBeNull()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('does not offer to apply anything before suggestions exist', async () => {

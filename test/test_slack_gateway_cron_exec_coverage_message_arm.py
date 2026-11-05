@@ -1,11 +1,7 @@
 """Coverage for the ``message`` (LLM) arm of the Kiro Crew gateway's cron callback.
 
-Covers the arm's fire-time governance denial, a crewmate goal check-in passing the same
-gate, the ``_init_cron`` wiring that skips the reaper without a session manager, and a
-job whose ``agent_id`` is an agent alias dispatching that alias's kiro agent mode and
-workspace instead of the alias itself. The deterministic arms are in
-``test_slack_gateway_cron_exec_coverage.py``; the shared harness comes from
-``slack_gateway_cron_exec_coverage_helpers.py``.
+Fire-time governance denial, a goal check-in through the same gate, the ``_init_cron``
+wiring, and agent-alias resolution.
 """
 
 from __future__ import annotations
@@ -102,15 +98,10 @@ class TestCronMessageDenialAndWiring:
 
 
 class TestCronResolvesAgentAlias:
-    """A cron whose agent is a Kiro Crew ALIAS must dispatch the alias's real
-    kiro agent mode + workspace, not the alias verbatim.
+    """A cron whose agent is an ALIAS dispatches the alias's real agent mode and workspace.
 
-    Regression: a cron created in a Slack channel carries that channel's agent
-    alias (e.g. ``in-3d``) in ``job.agent_id``. kiro-cli only accepts a
-    materialized agent MODE, so dispatching the alias failed every run with
-    "Agent mode 'in-3d' is not available on this session … its
-    ~/.kiro/agents/in-3d.json is likely missing". The Slack chat path already
-    collapses the alias via resolve_agent_bindings; the cron path did not.
+    A cron made in a Slack channel carries the channel's alias (e.g. ``in-3d``) in
+    ``job.agent_id``, and kiro-cli accepts only a materialized agent MODE.
     """
 
     @staticmethod

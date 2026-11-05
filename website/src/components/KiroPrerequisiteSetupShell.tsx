@@ -10,6 +10,7 @@ import {
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { Btn } from './ui'
 import { CopyCommand } from './agentHarness'
+import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 
 // Shared full-screen chrome for every gate state. This is the SAME container the
@@ -214,6 +215,34 @@ export function EnterpriseSignInRequired({
           </Btn>
         </div>
       </div>
+    </SetupShell>
+  )
+}
+
+/**
+ * The status check was refused because this browser's dashboard sign-in lapsed,
+ * which says nothing about Kiro CLI. The session-expired banner is the remedy and
+ * its token exchange refetches the check, so there is no retry button: one could
+ * not succeed before that.
+ */
+export function SessionSignInRequired() {
+  return (
+    <SetupShell>
+      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
+        <ShieldCheck className="lucide-inline" />
+      </div>
+      <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
+        {i18nT('components.kiroPrerequisiteGate.sign_in_required')}
+      </p>
+      <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+        {i18nT('components.kiroPrerequisiteGate.sign_in_again_to_continue')}
+      </h1>
+      <ErrorNotice
+        className="mt-3 max-w-lg text-left"
+        message={i18nT('api.client.session_expired_sign_in_again')}
+        testId="kiro-gate-session-sign-in"
+        noHandoffReason="this gate stands between the user and the chat the hand-off would open, and the dashboard sign-in that chat needs is the credential the gateway just refused"
+      />
     </SetupShell>
   )
 }

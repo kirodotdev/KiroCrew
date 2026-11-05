@@ -28,7 +28,7 @@ import KasLoginGate from './KasLoginGate'
 import RelockNotice, { BARE_LOGIN_COMMAND } from './KiroPrerequisiteRelockNotice'
 import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import RemoteCrewSetupSkip from './RemoteCrewSetupSkip'
-import { EnterpriseSignInRequired, SetupShell } from './KiroPrerequisiteSetupShell'
+import { EnterpriseSignInRequired, SessionSignInRequired, SetupShell } from './KiroPrerequisiteSetupShell'
 import {
   AgentDetailActions,
   AgentInstallDetail,
@@ -1639,6 +1639,12 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   if (!prerequisite) {
     if (rememberedSetupComplete()) {
       return app()
+    }
+    // A check refused for a lapsed dashboard sign-in says nothing about Kiro CLI.
+    // `isAuthExpiredError` inline: the gate's suites mock api/client wholesale.
+    const error = statusQuery.error
+    if (error instanceof ApiError && error.authRequired && !error.edgeChallenge) {
+      return <SessionSignInRequired />
     }
     const message = statusQuery.isError
       ? (statusQuery.error?.message || i18nT('components.kiroPrerequisiteGate.the_gateway_returned_an_unexpected_error'))

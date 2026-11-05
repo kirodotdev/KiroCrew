@@ -43,6 +43,8 @@ interface ChatTranscriptViewProps {
   activeSlot: string | null
   appToolCallIds: ReadonlySet<string>
   titleInTopbar: boolean
+  /** A worker breadcrumb sits under the phone's shell bar, so the spacer stays. */
+  workerBreadcrumb?: boolean
   activityOpen: boolean
   completedTurnCount: number
   cursorIsForActiveSlot: boolean
@@ -101,7 +103,7 @@ interface ChatTranscriptViewProps {
  * The transcript column: the welcome hero, or the turn minimap and the scroll shell with its rows, the earlier-messages bar, the measurement farm, the footer, the pulse survey and the tail spacer; and the restore skeleton.
  */
 export default function ChatTranscriptView({
-  embedded, popout, activeSlot, appToolCallIds, titleInTopbar, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
+  embedded, popout, activeSlot, appToolCallIds, titleInTopbar, workerBreadcrumb = false, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
   slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, crewModeOn, openTaskBoard, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
   onScrollPin, pinned, approve, dismissApproval, currentSlot, projectDir = null, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
   spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
@@ -168,8 +170,9 @@ export default function ChatTranscriptView({
       <TranscriptScrollShell
         // The 64px spacer clears the inline title row; with the row in
         // the shell's bar (phone) the transcript starts at the top of the
-        // column and the spacer would be a blank band under the bar.
-        headerSpacer={!titleInTopbar}
+        // column and the spacer would be a blank band under the bar. A worker
+        // breadcrumb still overlays the column there, so it keeps the spacer.
+        headerSpacer={!titleInTopbar || workerBreadcrumb}
         scrollerRef={scrollerRef}
         onScrollerElement={bindScroller}
         onScroll={onScrollPin}

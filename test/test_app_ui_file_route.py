@@ -509,7 +509,10 @@ async def test_a_multi_chunk_file_streams_complete_and_bounded(
     payload = bytes(range(256)) * 13  # 3328 bytes, not chunk-aligned
     (ui_root / "big-ish.js").write_bytes(payload)
     async with TestClient(TestServer(_make_app())) as client:
-        resp = await client.get(f"/apps/{APP}/ui/big-ish.js")
+        # Identity: the gzip path has no Content-Length (see the gzip tests below).
+        resp = await client.get(
+            f"/apps/{APP}/ui/big-ish.js", headers={"Accept-Encoding": "identity"}
+        )
         assert resp.status == 200
         assert resp.headers["Content-Length"] == str(len(payload))
         assert await resp.read() == payload
@@ -577,7 +580,9 @@ async def test_a_client_that_stops_reading_releases_its_permit(ui_root: Path) ->
         mp.setattr(web.StreamResponse, "write", _never_drains)
         mp.setattr(web.StreamResponse, "write_eof", _never_finishes)
         async with TestClient(TestServer(watched)) as client:
-            resp = await client.get(f"/apps/{APP}/ui/stalled.js")
+            resp = await client.get(
+                f"/apps/{APP}/ui/stalled.js", headers={"Accept-Encoding": "identity"}
+            )
             assert resp.status == 200
             try:
                 await await_until(torn_down, what="the stalled connection being torn down")
@@ -689,7 +694,9 @@ async def test_a_served_request_hands_back_every_permit(ui_root: Path) -> None:
     payload = bytes(range(256)) * 9
     (ui_root / "served.js").write_bytes(payload)
     async with TestClient(TestServer(_make_app())) as client:
-        resp = await client.get(f"/apps/{APP}/ui/served.js")
+        resp = await client.get(
+            f"/apps/{APP}/ui/served.js", headers={"Accept-Encoding": "identity"}
+        )
         assert resp.status == 200
         assert resp.headers["Content-Length"] == str(len(payload))
         assert await resp.read() == payload
@@ -709,3 +716,182 @@ async def test_the_response_neuters_a_navigated_document(ui_root: Path) -> None:
         assert "sandbox" in csp, csp
         assert "default-src 'none'" in csp, csp
         assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+
+
+# --- gzip --------------------------------------------------------------------
+#
+# A self-bundled link-preview entry can be megabytes of JavaScript. Sent raw over
+# a slow remote link it outlasts the frame's ready deadline, the frame is torn
+# down mid-download, and the half-read module is never cached, so every hover
+# fails the same way. Text files go gzip-encoded when the client accepts it.
+
+
+def _bundle(size: int = 64 * 1024) -> bytes:
+    """Compressible, not trivially so: JavaScript-like repeated source."""
+    line = b"export function f%d(a, b) { return a.map((x) => x * b).filter(Boolean); }\n"
+    out = b"".join(line % i for i in range(size // 60))
+    return out[:size]
+
+
+@pytest.mark.asyncio
+async def test_a_large_module_is_sent_gzip_encoded_when_accepted(ui_root: Path) -> None:
+    payload = _bundle()
+    (ui_root / "entry.mjs").write_bytes(payload)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"/apps/{APP}/ui/entry.mjs", headers={"Accept-Encoding": "gzip"})
+        assert resp.status == 200
+        assert resp.headers["Content-Encoding"] == "gzip"
+        assert "Content-Length" not in resp.headers, "a gzip body's length is not known up front"
+        assert resp.headers["ETag"].endswith(
+            '-gz"'
+        ), "the encoded bytes are their own representation"
+        assert "Accept-Encoding" in resp.headers["Vary"]
+        assert "Origin" in resp.headers["Vary"]
+        assert resp.headers["Cache-Control"] == "no-cache"
+        assert await resp.read() == payload, "decoded, the body is the file byte for byte"
+
+
+@pytest.mark.asyncio
+async def test_the_gzip_body_is_actually_smaller_on_the_wire(ui_root: Path) -> None:
+    payload = _bundle()
+    (ui_root / "entry.mjs").write_bytes(payload)
+    async with TestClient(TestServer(_make_app()), auto_decompress=False) as client:
+        resp = await client.get(f"/apps/{APP}/ui/entry.mjs", headers={"Accept-Encoding": "gzip"})
+        wire = await resp.read()
+    import gzip as _gzip
+
+    assert len(wire) < len(payload) // 4
+    assert _gzip.decompress(wire) == payload
+
+
+@pytest.mark.asyncio
+async def test_a_multi_chunk_gzip_body_is_complete(
+    ui_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Many tiny reads, each fed to one compressor: the stream must still be
+    one valid gzip member holding the whole file."""
+    monkeypatch.setattr(app_routes, "_UI_STREAM_CHUNK", 7)
+    payload = _bundle(5000)
+    (ui_root / "entry.mjs").write_bytes(payload)
+    status, body = await _get(f"/apps/{APP}/ui/entry.mjs", headers={"Accept-Encoding": "gzip"})
+    assert status == 200
+    assert body == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("accept", ["identity", "gzip;q=0", "br", ""])
+async def test_a_client_that_does_not_accept_gzip_gets_identity(ui_root: Path, accept: str) -> None:
+    payload = _bundle()
+    (ui_root / "entry.mjs").write_bytes(payload)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"/apps/{APP}/ui/entry.mjs", headers={"Accept-Encoding": accept})
+        assert resp.status == 200
+        assert "Content-Encoding" not in resp.headers
+        assert resp.headers["Content-Length"] == str(len(payload))
+        assert not resp.headers["ETag"].endswith('-gz"')
+        assert "Accept-Encoding" in resp.headers["Vary"], "the type is compressible either way"
+        assert await resp.read() == payload
+
+
+@pytest.mark.asyncio
+async def test_an_image_and_a_small_file_are_never_gzipped(ui_root: Path) -> None:
+    (ui_root / "big.png").write_bytes(b"\x89PNG" + b"\x00" * 8192)
+    async with TestClient(TestServer(_make_app())) as client:
+        img = await client.get(f"/apps/{APP}/ui/big.png", headers={"Accept-Encoding": "gzip"})
+        assert "Content-Encoding" not in img.headers, "already-compressed types go as they are"
+        assert img.headers["Vary"] == "Origin"
+        small = await client.get(f"/apps/{APP}/ui/asset.js", headers={"Accept-Encoding": "gzip"})
+        assert "Content-Encoding" not in small.headers, "under the floor the header costs more"
+        assert await small.read() == b"bytes-for-.js"
+
+
+@pytest.mark.asyncio
+async def test_a_gzip_representation_revalidates_to_304_on_its_own_etag(ui_root: Path) -> None:
+    """The second hover's frame: an unchanged module is a body-less 304."""
+    (ui_root / "entry.mjs").write_bytes(_bundle())
+    gz = {"Accept-Encoding": "gzip"}
+    async with TestClient(TestServer(_make_app())) as client:
+        first = await client.get(f"/apps/{APP}/ui/entry.mjs", headers=gz)
+        etag = first.headers["ETag"]
+        again = await client.get(f"/apps/{APP}/ui/entry.mjs", headers={**gz, "If-None-Match": etag})
+        assert again.status == 304
+        assert await again.read() == b""
+        # The identity tag names other bytes, so it does not validate the gzip ones.
+        plain = await client.get(
+            f"/apps/{APP}/ui/entry.mjs", headers={"Accept-Encoding": "identity"}
+        )
+        cross = await client.get(
+            f"/apps/{APP}/ui/entry.mjs", headers={**gz, "If-None-Match": plain.headers["ETag"]}
+        )
+        assert cross.status == 200
+        assert cross.headers["Content-Encoding"] == "gzip"
+
+
+@pytest.mark.asyncio
+async def test_the_null_origin_still_gets_its_cors_answer_on_the_gzip_path(ui_root: Path) -> None:
+    """A link-preview frame imports the module from an opaque origin."""
+    (ui_root / "entry.mjs").write_bytes(_bundle())
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(
+            f"/apps/{APP}/ui/entry.mjs", headers={"Accept-Encoding": "gzip", "Origin": "null"}
+        )
+        assert resp.headers["Content-Encoding"] == "gzip"
+        assert resp.headers["Access-Control-Allow-Origin"] == "null"
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("gzip", True),
+        ("gzip, deflate, br", True),
+        ("br;q=1.0, gzip;q=0.8", True),
+        ("*", True),
+        ("GZIP", True),
+        ("gzip;q=0", False),
+        ("gzip;q=0.0", False),
+        ("gzip;q=junk", False),
+        ("gzip;q=0, *;q=1", False),
+        ("*;q=1, gzip;q=0", False),
+        ("*;q=0", False),
+        ("*;q=0, gzip", True),
+        ("identity", False),
+        ("br", False),
+        ("", False),
+    ],
+)
+def test_accept_encoding_is_read_by_token_and_weight(header: str, expected: bool) -> None:
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.apps.routes_static import _accepts_gzip
+
+    req = make_mocked_request("GET", "/", headers={"Accept-Encoding": header} if header else {})
+    assert _accepts_gzip(req) is expected
+
+
+@pytest.mark.asyncio
+async def test_a_file_truncated_mid_stream_never_completes_a_gzip_body(
+    ui_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rebuild can truncate the file under the open descriptor. The identity
+    path's Content-Length exposes the short read; a chunked gzip body has none,
+    so the route must drop the connection rather than finish a valid gzip member
+    holding only a prefix of the module."""
+    from kiro_crew.apps import routes_static
+
+    payload = _bundle(8192)
+    (ui_root / "entry.mjs").write_bytes(payload)
+    monkeypatch.setattr(app_routes, "_UI_STREAM_CHUNK", 1024)
+    real_read = routes_static.os.read
+    reads = {"n": 0}
+
+    def _shrinking_read(fd: int, n: int) -> bytes:
+        reads["n"] += 1
+        return real_read(fd, n) if reads["n"] == 1 else b""
+
+    monkeypatch.setattr(routes_static.os, "read", _shrinking_read)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"/apps/{APP}/ui/entry.mjs", headers={"Accept-Encoding": "gzip"})
+        assert resp.status == 200
+        assert resp.headers["Content-Encoding"] == "gzip"
+        with pytest.raises(ClientPayloadError):
+            await resp.read()

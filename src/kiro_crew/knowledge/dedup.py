@@ -982,7 +982,9 @@ def _audit_collapse(action: DedupAction) -> None:
         tool_name="knowledge.dedup.collapse", outcome="ok",
         resources=(
             f"loser_source_id={action.loser.source_id} "
-            f"loser_file={action.loser.file_path or '(whole-source)'} "
+            # A loser is always one document, never a source: without a file
+            # path it is named by its label (an artifact slug, an upload name).
+            f"loser_file={action.loser.file_path or action.loser.filename} "
             f"winner_source_id={action.winner.source_id} reason={action.reason} "
             f"items_deleted={len(action.loser.item_ids)}"),
     )

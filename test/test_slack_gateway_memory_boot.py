@@ -241,12 +241,8 @@ class TestAutoMigrateMemory:
 class _LoadRecordingEmbedder:
     """A backend that records whether the model load was kicked.
 
-    Mirrors ``LlamaCppEmbedder``: ``wait_ready()`` kicks the background load (the
-    ~700MB GGUF mmap plus its KV/compute buffers) before joining the loader
-    thread, so a call to ``wait_ready`` IS the cost this sweep must avoid paying
-    on a boot with nothing to embed. ``model_id``/``dim`` are set at construction
-    and readable without a load, which is what lets the staleness probe run
-    ahead of it.
+    Like ``LlamaCppEmbedder``, ``wait_ready()`` kicks the load, while ``model_id``/``dim``
+    are readable without it, so the staleness probe can run first.
     """
 
     def __init__(self, *, model_id: str = "qwen3-embedding:0.6b", dim: int = 1024) -> None:
@@ -270,11 +266,8 @@ class _LoadRecordingEmbedder:
 class TestReembedSweepDefersTheModelLoad:
     """The sweep must probe with SQL before it loads a ~700MB embedding model.
 
-    ``wait_ready()`` is not a free question: it kicks the GGUF load, costing
-    ~1GB RSS for the process's lifetime (measured: VmRSS +1069 MiB — RssAnon
-    +455 MiB private buffers, RssFile +614 MiB mmap'd weights). Steady state has
-    nothing to embed, so a boot that loads the model to discover that is pure
-    waste. These tests pin the load itself, not a proxy for it.
+    ``wait_ready()`` kicks the GGUF load, ~1GB RSS for the process's life (measured
+    VmRSS +1069 MiB), and steady state has nothing to embed.
     """
 
     def _orch(self, *, pending: bool):

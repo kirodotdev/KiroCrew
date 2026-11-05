@@ -1,11 +1,4 @@
-"""The OPTIONS record and block helpers the Slack options lifecycle tests share.
-
-``_recs`` reads the OPTIONS records for a slot or key through the accessor the code
-uses and ``_set_recs`` seeds them; ``_is_live_control`` says whether blocks carry a
-clickable control and ``_context_text`` joins their context text; ``_slack_app`` is an
-aiohttp app serving the slot's Slack-link route. ``test_slack_options_lifecycle.py``
-and its ``_expiry`` and ``_link`` siblings import what they use of these by name.
-"""
+"""The OPTIONS record and block helpers the Slack options lifecycle tests share."""
 
 from __future__ import annotations
 
@@ -17,12 +10,8 @@ from kiro_crew.slack.format import is_options_actions_block
 def _recs(state, key):
     """The OPTIONS records for *key*, read through the accessor the code uses.
 
-    Accepts a slot or a key. Given a slot it looks under the slot's EFFECTIVE
-    session key and, failing that, under its bare name -- test fixtures record
-    under whichever of the two reads more naturally, and the point of an assertion
-    here is which records exist, not which spelling filed them. Production has no
-    such ambiguity: record and expiry both resolve the live owner the same way, and
-    the accessor canonicalises what it is given.
+    Given a slot it looks under the EFFECTIVE session key, then the bare name, since
+    fixtures record under either; production resolves the live owner one way.
     """
     from kiro_crew.dashboard.chat_utils import effective_session_key, options_records
 

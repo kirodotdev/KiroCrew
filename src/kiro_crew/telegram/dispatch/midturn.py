@@ -18,6 +18,8 @@ from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from kiro_crew.messaging import privacy_mode
+from kiro_crew.messaging.link import DM_SCOPE_UNIFIED, channel_namespace_of
+from kiro_crew.messaging.queue_drain import drain_when_free
 from kiro_crew.messaging.queue_receipt import STEER_ACK_EMOJI as _STEER_ACK_EMOJI
 from kiro_crew.telegram.client import audit_reply_parent, frame_reply_context_for_message
 from kiro_crew.telegram.dispatch import origin as _origin
@@ -95,7 +97,24 @@ async def _handle_busy(
         # message is re-run or queued instead of lost.
         has_active = getattr(provider, "has_active_turn", None)
         live = has_active is None or bool(has_active())
-        can_steer = live and bool(getattr(provider, "supports_steer", False)) and steer is not None
+        # A steered message is answered in the running turn's chat. Under
+        # ``dm_scope = "unified"`` that turn can be another person's, so a message
+        # from a different chat takes the queue path and runs as its sender's own
+        # turn. A turn this dispatcher did not start records no chat, and a record
+        # whose provider is not the key's current one is left from a turn a reset
+        # replaced: on a unified key that turn may be anyone's, on any other key it
+        # is this conversation's.
+        turn_chat = self._turn_chats.get(session_key)
+        if turn_chat is not None and turn_chat[1] is provider:
+            own_turn = turn_chat[0] == chat_id
+        else:
+            own_turn = channel_namespace_of(session_key) != DM_SCOPE_UNIFIED
+        can_steer = (
+            live
+            and own_turn
+            and bool(getattr(provider, "supports_steer", False))
+            and steer is not None
+        )
         reservation: privacy_mode.Reservation | None = None
         # ONE producer for everything this path tells the user about the
         # mode: the refusal (at once), the confirmation (by commit, only once
@@ -125,6 +144,12 @@ async def _handle_busy(
                 )
             except privacy_mode.PrivacyModeRefused:
                 return
+            # The reservation awaited, so the turn the ownership check saw may have
+            # ended and another taken the key on the same provider. Only the same
+            # record still names the turn this message may join; otherwise the
+            # reservation is released and the message queues, as a declined steer.
+            if self._turn_chats.get(session_key) is not turn_chat:
+                can_steer = False
         try:
             # Frame the reply's quoted context onto the steered text so a reply
             # that lands mid-turn reaches the running turn with its parent, the
@@ -241,6 +266,15 @@ async def _handle_busy(
         # carries the modifier, so command parsing re-derives the request rather
         # than this path having to re-thread it.
         await self.handle_message(msg)
+    elif session_key not in self._turn_chats:
+        # No Telegram turn holds the key, so no Telegram turn's end drains this
+        # queue: another channel's turn, or an injected event, releases without
+        # it. Drain once the lease is free, as a drain that found it held does.
+        drain_when_free(
+            channel=_origin._CHANNEL,
+            session_key=session_key,
+            is_busy=self.sessions.is_busy,
+        )
 
 
 async def _handle_resumed_busy(

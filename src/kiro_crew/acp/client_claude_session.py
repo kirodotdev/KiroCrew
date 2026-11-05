@@ -15,7 +15,8 @@ Instance fields written: ``_claude_inline_settings``,
 
 Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_permission_mode``,
 ``_session_id``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
-``_side_read_only``, ``_spec_zero_tools``, ``memory_mode``.
+``_side_read_only``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
+``_spec_zero_tools``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS
+from kiro_crew.acp.spec_tools_allowlists import claude_ask_rules_for_allowlists
 from kiro_crew.acp.transport_errors import AcpError, AcpTimeoutError
 from kiro_crew.acp.types import METHOD_SET_MODE
 from kiro_crew.security import sandbox_credential_targets
@@ -452,6 +454,22 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
             inline = getattr(self, "_session_mcp_inline_settings", None)
         if isinstance(inline, dict) and inline:
             options["settings"] = dict(inline)
+    # The spec's shell and write allowlists' ask rules ride the envelope whether or
+    # not ``settings.local.json`` is Crew's: a declined project file still loads,
+    # and its allow rules would otherwise approve those calls without a request.
+    # Built from the allowlists this session's requests are stamped with.
+    allowlist_asks = claude_ask_rules_for_allowlists(
+        getattr(self, "_spec_shell_allowlist", None),
+        getattr(self, "_spec_write_allowlist", None),
+    )
+    if allowlist_asks:
+        carried_settings = dict(options.get("settings") or {})
+        carried_permissions = dict(carried_settings.get("permissions") or {})
+        ask = list(carried_permissions.get("ask") or [])
+        ask.extend(rule for rule in allowlist_asks if rule not in ask)
+        carried_permissions["ask"] = ask
+        carried_settings["permissions"] = carried_permissions
+        options["settings"] = carried_settings
     if getattr(self, "_spec_zero_tools", False):
         # The spec declares ``"tools": []`` (the background ``kirocrew-lite``
         # helpers). Without ``tools`` the adapter mounts Claude Code's whole

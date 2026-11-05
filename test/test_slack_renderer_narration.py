@@ -24,11 +24,8 @@ from kiro_crew.slack.renderer import _STATUS_WORKING, SlackRenderer
 class TestNarrationFoldsIntoSteps:
     """Interim narration is not reply text, on Slack as on the dashboard.
 
-    The dashboard folds a turn's narration ("I'll look at the open issues...")
-    into its steps and shows only the text after the last step as the reply;
-    Slack does the same. Each case drives the REAL TurnDriver, because the run
-    its stream redactor holds across a tool call is what would otherwise split
-    a sentence around a step.
+    Only text after the last step is the reply. Each case drives the REAL TurnDriver,
+    since its stream redactor holds text across a tool call.
     """
 
     @staticmethod

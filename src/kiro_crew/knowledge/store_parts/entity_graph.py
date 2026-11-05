@@ -89,14 +89,10 @@ class SimpleDiGraph:
     """Minimal directed graph replacing networkx.DiGraph for the subset of API we use."""
 
     def __init__(self) -> None:
-        # Guards all reads/writes of the three dicts. KnowledgeStore mutates the
-        # graph inline on the event-loop thread (ingest _store_entities,
-        # dedup -> _load_graph clear()+rebuild), while HybridRetriever.search()
-        # traverses it on an mc-embed executor thread (get_neighbors ->
-        # successors/predecessors/nodes). Without this, concurrent iterate +
-        # clear/insert on the same dict raises "dictionary changed size during
-        # iteration" (HTTP 500) or returns a half-rebuilt graph. Re-entrant
-        # because a single logical op (e.g. get_neighbors) takes it repeatedly.
+        # Guards the three dicts: the loop thread mutates the graph while
+        # HybridRetriever.search() walks it on an mc-embed thread, which would
+        # otherwise raise "dictionary changed size during iteration".
+        # Re-entrant because one op (e.g. get_neighbors) takes it repeatedly.
         self._lock = threading.RLock()
         self._node_attrs: dict[str, dict] = {}
         self._fwd: dict[str, dict[str, dict]] = defaultdict(dict)
@@ -162,37 +158,18 @@ def _prune_orphan_entities(self: KnowledgeStore) -> None:
 def ensure_graph_loaded(self: KnowledgeStore) -> SimpleDiGraph:
     """Materialise the entity graph if no reader has done so yet, and return it.
 
-    Called by each graph reader before it touches :attr:`graph` --
-    ``get_entity_graph`` and ``get_full_graph`` in the dashboard handlers --
-    from a worker thread via ``asyncio.to_thread``. Deliberately NOT called
-    from ``__init__``, for the reason ``ensure_fts_index_current`` gives
-    about itself: the constructor runs on the gateway's boot path and this
-    work is proportional to ``entities`` + ``entity_relations``, so doing it
-    there stalls the gateway before the socket binds.
+    Graph readers (``get_entity_graph``, ``get_full_graph``) call this from a
+    worker via ``asyncio.to_thread``. It is not run in ``__init__`` because the
+    work scales with ``entities`` + ``entity_relations`` and would stall boot,
+    and it must not run on the loop, where the loop-stall watchdog can
+    hard-exit the gateway. ``allow_on_loop()`` is for constructor setup only.
 
-    **The offload is load-bearing, not hygiene.** Both handlers are
-    ``async def`` and read the graph on the loop, where the loop-stall
-    watchdog IS armed (it is started after the bind). Reaching this lazily
-    from the loop would move a data-scaled read out of the pre-bind window,
-    where nothing is armed and nothing is served, into the one window where
-    a stall can hard-exit the gateway. ``allow_on_loop()`` is not an option
-    here either -- its own contract restricts it to constructor-shaped setup
-    paths and directs production code to offload.
+    The first caller takes the lock and loads; concurrent readers wait.
 
-    Steady state is a single boolean check. The first caller takes the lock
-    and does the work; concurrent readers wait rather than each starting
-    their own scan. The lock is re-entrant and :meth:`_load_graph` takes it
-    again, so a mutation refresh cannot interleave with this load -- see that
-    method for why serializing every rebuild is the property that matters.
-
-    The return value is the graph this call saw loaded. A reader must use it
-    rather than re-read :attr:`graph` later: a delete on another thread may
-    mark the graph stale in between (:func:`mark_graph_stale`), and a later
-    read would then rebuild on the caller's thread, the event loop for the
-    dashboard handlers. The fast path returns the graph it read only when the
-    flag says loaded AND that graph is still the published one: a placeholder is
-    published with the flag already down, and every stale mark publishes a new
-    one, so the graph returned is never an empty placeholder.
+    A reader must use the returned graph rather than re-read :attr:`graph`:
+    a later :func:`mark_graph_stale` would make that re-read rebuild on the
+    caller's thread. The fast path returns a graph only when it is still the
+    published one, so it never returns an empty placeholder.
     """
     graph = self._graph
     if self._graph_loaded and self._graph is graph:
@@ -206,40 +183,18 @@ def ensure_graph_loaded(self: KnowledgeStore) -> SimpleDiGraph:
 def _load_graph(self: KnowledgeStore):
     """Rebuild the in-memory graph from the tables, atomically.
 
-    Takes ``_graph_lock`` around the WHOLE rebuild, not just the first one.
-    Holding it only at the first-touch call site was not enough: the six
-    mutation-refresh sites acquire no lock of their own, so a first graph GET
-    racing a source DELETE put two threads through the rebuild at once, and
-    the loser's rows survived into a graph whose ``_graph_loaded`` was then
-    set True -- a flag asserting "loaded" over data that is wrong, which is
-    worse than an unloaded graph because it never gets rescanned.
+    Takes ``_graph_lock`` around the WHOLE rebuild: mutation-refresh sites
+    hold no lock, and two concurrent rebuilds could leave wrong rows under a
+    ``_graph_loaded`` flag that never gets rescanned. The SELECTs run after
+    acquisition, so the last rebuild reads the freshest state.
 
-    Serializing the whole rebuild also fixes WHICH snapshot wins: the SELECTs
-    below run after acquisition, so the rebuild that acquires last reads the
-    freshest committed state rather than replaying rows it captured earlier.
+    The graph is built fresh and published with one reference swap, so a
+    reader holding the old object never sees it torn. Multi-step readers
+    (``get_entity_subgraph``, ``get_neighbors``, the graph handlers) pin one
+    reference for their whole read.
 
-    **Build a fresh graph, then publish it with one reference assignment.**
-    Clearing the live ``self._graph`` and re-adding row
-    by row would be stale-publish-safe under serialization but leave the object a
-    reader could be iterating momentarily empty: a reader holding
-    ``self._graph`` between the ``clear()`` and the last insert would see a torn
-    (empty or truncated) graph, and a multi-step reader that re-read
-    ``self.graph`` across its own steps -- degree ranking, then per-node
-    attribute reads -- could miss a node that ``clear()`` had just removed.
-    Building into a NEW ``SimpleDiGraph`` and swapping the reference
-    under the lock closes that window: the old object is never mutated, so a
-    reader holding it sees a complete, consistent OLD graph until it drops the
-    reference, and the next read sees the complete NEW one. The multi-step
-    readers pin one reference for the duration of their read (see
-    ``get_entity_subgraph`` / ``get_neighbors`` and the graph handlers) so a
-    swap mid-read cannot mix old and new nodes.
-
-    The lock is only ever taken here and in :meth:`ensure_graph_loaded`, and
-    this method never takes SQLite's writer lock -- it is read-only, and all
-    six refresh sites call it after their own COMMIT -- so there is no
-    ordering against ``BEGIN IMMEDIATE`` to invert. (That is the hazard the
-    ``_fts_lock`` comment warns about, and it does not apply here: the FTS
-    rebuild acquires its lock and THEN a writer lock.)
+    This never takes SQLite's writer lock (refresh sites call it after their
+    COMMIT), so unlike ``_fts_lock`` there is no lock order to invert.
     """
     with self._graph_lock:
         rebuilt = SimpleDiGraph()

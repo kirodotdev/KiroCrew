@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import subprocess
@@ -22,6 +23,18 @@ def _ok(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         python.parent.mkdir(parents=True, exist_ok=True)
         python.write_text("", encoding="utf-8")
     return subprocess.CompletedProcess(argv, 0, "", "")
+
+
+def _gateway_ships(monkeypatch, *present: str) -> None:
+    """Pin which of ``pip`` / ``ensurepip`` the gateway interpreter can import."""
+    real = importlib.util.find_spec
+
+    def find_spec(name: str, *args, **kwargs):
+        if name in ("pip", "ensurepip"):
+            return real("json") if name in present else None
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
 
 
 def test_the_lock_pins_the_harness_release_with_hashes_on_every_line() -> None:
@@ -56,6 +69,8 @@ def test_install_runs_venv_then_hash_pinned_pip_and_writes_the_marker(
         "download_chromium",
         lambda prefix, progress=None, **kw: chromium.chromium_state(prefix),
     )
+    # The packaged app's interpreter: ``pip`` present (pinned, not the test venv's).
+    _gateway_ships(monkeypatch, "pip")
     stages: list[str] = []
     state = install.install_sync(tmp_path, lambda s, d: stages.append(s), runner=runner)
     prefix = tmp_path / install.PREFIX_LEAF
@@ -90,6 +105,92 @@ def test_install_runs_venv_then_hash_pinned_pip_and_writes_the_marker(
         install.STAGE_INSTALLING_HARNESS,
     ]
     assert stages[-1] == install.STAGE_FINISHING
+
+
+def test_without_gateway_pip_the_venv_bootstraps_its_own_and_installs_with_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The Toolbox runtime ships ``ensurepip`` but no ``pip`` module.
+    _gateway_ships(monkeypatch, "ensurepip")
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _ok(argv, timeout)
+
+    prefix = tmp_path / install.PREFIX_LEAF
+    # A finished earlier install made ``--without-pip``: the venv is still rebuilt.
+    (prefix / "venv").mkdir(parents=True)
+    install.venv_python(prefix).parent.mkdir(parents=True, exist_ok=True)
+    install.venv_python(prefix).write_text("", encoding="utf-8")
+    (prefix / install.MARKER_FILE).write_text(
+        json.dumps({"version": HARNESS_VERSION}), encoding="utf-8"
+    )
+    install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert calls[0] == [
+        sys.executable,
+        "-I",
+        "-m",
+        "venv",
+        "--clear",
+        str(install.venv_dir(prefix)),
+    ]
+    assert calls[1][:5] == [str(install.venv_python(prefix)), "-I", "-m", "pip", "install"]
+    assert "--python" not in calls[1] and calls[1][-1] == str(install.LOCK_FILE)
+
+
+def _current_install(prefix: Path, *, venv_pip: bool) -> None:
+    """A finished install on disk: interpreter, marker, and optionally the venv's pip."""
+    install.venv_python(prefix).parent.mkdir(parents=True, exist_ok=True)
+    install.venv_python(prefix).write_text("", encoding="utf-8")
+    if venv_pip:
+        lib = "Lib" if install.IS_WINDOWS else "lib/python3.12"
+        (install.venv_dir(prefix) / lib / "site-packages" / "pip").mkdir(parents=True)
+    (prefix / install.MARKER_FILE).write_text(
+        json.dumps({"version": HARNESS_VERSION}), encoding="utf-8"
+    )
+
+
+def test_without_gateway_pip_a_venv_with_its_own_pip_is_kept(tmp_path: Path, monkeypatch) -> None:
+    _gateway_ships(monkeypatch, "ensurepip")
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _ok(argv, timeout)
+
+    prefix = tmp_path / install.PREFIX_LEAF
+    _current_install(prefix, venv_pip=True)
+    install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert len(calls) == 1 and calls[0][:4] == [str(install.venv_python(prefix)), "-I", "-m", "pip"]
+
+
+def test_a_rebuild_whose_pip_fails_reads_as_not_installed(tmp_path: Path, monkeypatch) -> None:
+    _gateway_ships(monkeypatch, "ensurepip")
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        if "pip" in argv:
+            return subprocess.CompletedProcess(argv, 1, "", "network unreachable")
+        return _ok(argv, timeout)
+
+    prefix = tmp_path / install.PREFIX_LEAF
+    _current_install(prefix, venv_pip=False)
+    assert install.install_state(tmp_path).installed is True
+    with pytest.raises(install.InstallError):
+        install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert install.install_state(tmp_path).installed is False
+
+
+def test_neither_pip_nor_ensurepip_fails_before_any_spawn(tmp_path: Path, monkeypatch) -> None:
+    _gateway_ships(monkeypatch)
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(f"unexpected spawn: {argv}")
+
+    with pytest.raises(install.InstallError) as excinfo:
+        install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert excinfo.value.stage == install.STAGE_PREPARING
+    assert "ensurepip" in excinfo.value.detail
 
 
 def test_a_failing_pip_raises_with_the_stage_and_the_output_tail(
