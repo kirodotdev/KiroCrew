@@ -151,6 +151,8 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'chat.background-effort': ['background reasoning effort', 'effort for background tasks', 'helper model effort'],
   'chat.background-model': ['model for titles and summaries', 'helper model', 'cheap model for background work', 'background tasks model'],
   'chat.compact-empty-folders': ['collapse empty folders', 'shrink empty folders', 'empty folder rows'],
+  // The idle compaction labels name the mechanism; these find them by what it does for the user.
+  'chat.compact-idle-chats-before-cache-expiry': ['idle compaction', 'summarize', 'save credits'],
   'chat.compaction-time-limit-seconds': ['compaction timeout', 'compact timeout', 'how long compaction may take'],
   'chat.completion-event-characters': ['subagent result length', 'completion message length', 'worker report length'],
   'chat.completion-event-truncation': ['cut off subagent results', 'truncate completion events', 'worker report truncation'],
@@ -173,6 +175,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'chat.follow-up-bar-layout': ['suggested replies layout', 'follow up suggestions', 'suggestion chips layout'],
   'chat.hide-empty-folders': ['hide folders with no chats', 'empty folders', 'clean up sidebar folders'],
   'chat.history-expanded': ['expand history', 'history section open', 'show history by default'],
+  'chat.idle-compaction-minimum-context': ['summarize', 'save credits'],
   'chat.include-subfolder-contents-in-folder-counts': ['folder count', 'nested folder count', 'subfolder sessions count'],
   'chat.jump-to-the-bottom-when-you-send': ['scroll to bottom', 'auto scroll', 'stay at the bottom', 'jump to latest message', 'scroll on send'],
   'chat.keep-side-panel-open': ['side panel stays open', 'pin the side panel', 'right panel'],

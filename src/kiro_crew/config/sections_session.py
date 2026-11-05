@@ -162,10 +162,13 @@ class SessionConfig:
             "backend's prompt-cache lifetime, compact it once so your next turn "
             "re-sends a summary instead of the full history. It saves credits only "
             "on large chats you come back to: each idle compaction is an extra "
-            "model call that costs credits even if you never return, if you return "
+            "model call that can cost about as much as one or two replies in that "
+            "chat, even if you never return, if you return "
             "just after it starts you wait for it to finish, up to the compaction "
             "wait limit plus about 20 seconds (5 minutes by default), "
-            "and the summary loses detail from earlier in the conversation. Only "
+            "and the summary loses detail from earlier in the conversation. The "
+            "dashboard shows the cost of a reply below it when that cost is known. "
+            "Only "
             "chats whose context is at least Idle Compaction Minimum Context full "
             "are compacted. Backends with an unknown cache lifetime are skipped.",
         ),

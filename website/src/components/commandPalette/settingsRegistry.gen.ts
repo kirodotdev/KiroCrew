@@ -1238,6 +1238,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.compact-idle-chats-before-cache-expiry",
+    "label": "Compact Idle Chats Before Cache Expiry",
+    "labelKey": "pages.settings.chatPanel.idle_compaction",
+    "description": "Summarizes a long chat that you leave idle, so your next message in it costs less. Each summary costs about as much as one or two replies in that chat, even if you never return.",
+    "hint": "After each reply, a chat's history stays in a cache, a short-term copy that makes your next message cheaper. That copy lasts 5 minutes to 1 hour, depending on the Agent Harness. If that time is not known for the Agent Harness, its chats are not summarized. If a dashboard chat stays idle until just before the copy expires, it is summarized once. Your next message then sends the short summary instead of the full history. Only chats whose context is at least Idle Compaction Minimum Context full are summarized. The summary keeps less detail from early in the chat. Each summary is an extra model call and costs about as much as one or two replies in that chat, even if you never return. When the cost of a reply is known, it shows below the reply. The total cost is lower only for long chats that you return to. If you return just after a summary starts, you wait for it to finish, up to the Compaction Time Limit plus about 20 seconds (5 minutes by default).",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "advanced"
+    },
+    "configKey": "session.idle_compaction"
+  },
+  {
     "id": "chat.compaction-time-limit-seconds",
     "label": "Compaction Time Limit (seconds)",
     "labelKey": "pages.settings.chatPanel.compaction_wait_budget",
@@ -1505,6 +1519,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "sessions"
     }
+  },
+  {
+    "id": "chat.idle-compaction-minimum-context",
+    "label": "Idle Compaction Minimum Context (%)",
+    "labelKey": "pages.settings.chatPanel.idle_compaction_min_context",
+    "tab": "chat",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "advanced"
+    },
+    "configKey": "session.idle_compaction_min_context_pct"
   },
   {
     "id": "chat.include-subfolder-contents-in-folder-counts",
