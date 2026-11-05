@@ -189,10 +189,42 @@ def test_validate_proves_existence_with_a_pinned_open_that_refuses_a_link(tmp_pa
 def test_validate_rejects_sensitive_path(tmp_path, monkeypatch):
     real = tmp_path / "standards"
     real.mkdir()
-    monkeypatch.setattr("kiro_crew.dashboard.chat_folders.is_sensitive_path", lambda p: True)
+    # The validator hands the gate the realpath it already computed, through
+    # canonical_path_refusal; that is the name to patch, as the artifact store's
+    # tests do. (On the loop that helper still takes the bounded gate; it is the
+    # entry point, not the bound, that differs here.)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_folders.canonical_path_refusal",
+        lambda p: f"Blocked: access to sensitive path: {p}",
+    )
     resolved, err = _validate_steering_dirs([str(real)])
     assert resolved == []
-    assert err and "sensitive" in err.lower()
+    assert err == "steering_dirs refers to a sensitive path"
+
+
+@_needs_pinned_walk
+def test_validate_reports_a_resolver_stall_as_unverifiable_not_sensitive(tmp_path, monkeypatch):
+    """A stalled resolver is not a match: the person is told to retry, not that an
+    ordinary directory is sensitive, and the audit line keeps the two apart."""
+    import kiro_crew.dashboard.chat_folders as cf
+    from kiro_crew.security import UNVERIFIABLE_PATH_PREFIX
+
+    real = tmp_path / "standards"
+    real.mkdir()
+    monkeypatch.setattr(cf, "canonical_path_refusal", lambda p: f"{UNVERIFIABLE_PATH_PREFIX}: {p}")
+    audited: list[dict] = []
+    monkeypatch.setattr(
+        cf, "sel", lambda: MagicMock(log_api_access=lambda **kw: audited.append(kw))
+    )
+    resolved, err = _validate_steering_dirs([str(real)])
+    assert resolved == []
+    assert (
+        err == "steering_dirs could not be verified against the sensitive-path list; retry shortly"
+    )
+    (event,) = audited
+    assert event["operation"] == "chat.folder_steering_dirs"
+    assert event["outcome"] == "denied"
+    assert event["error"] == "sensitive path unverifiable"
 
 
 @_needs_pinned_walk
