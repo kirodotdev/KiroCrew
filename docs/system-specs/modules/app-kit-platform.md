@@ -4767,6 +4767,37 @@ route tests are split by the behaviour they pin into `test_routes_<topic>.py` fi
 beside `test_routes.py`, which keeps the route contract. They share state
 redirection, the autouse live-state guard and the client builders in
 `tests/routes_helpers.py`, and a new route test goes in the part for its behaviour.
+The per-helper coverage suites, `tests/test_routes_coverage*.py`, share their fakes
+in `tests/routes_coverage_helpers.py`.
+
+**Repository boundary.** Spec Builder is to leave this repository whole, so no module
+under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
+`kiro_crew.apps.builtins.spec_builder` or names `spec_builder` / `spec-builder` in a
+non-docstring string. The core needs nothing from the app, so there is no seam to
+fill. The outbox's two process-local claim sets (in flight, and consumed but not yet
+finalized) are the app's own: `orchestration/decision_outbox.py` creates them on the
+dashboard state on first use, and `DashboardState` declares neither.
+`test/test_core_spec_builder_decoupling.py` is the gate, on the shared
+`test/core_app_independence.py` scanner. The only core strings left naming the app are
+a pinned list that may only shrink: the `security_posture.py` rows classifying its
+backend modules, and the docs lint's runtime-data row for
+`trust/spec-builder-decisions.json`, which [security](security.md) cites. Its
+dashboard half is `website/src/apps/spec-builder/specBuilderBoundary.test.ts`: outside
+`src/apps/spec-builder/`, only `apps/builtinRegistry.ts` imports the UI, and the
+page's tests live beside it. The app's rows of core contracts are pinned in the app's
+`tests/`: the `fd_real_path` binding, the parser's fail-closed security import and
+the Windows extended-prefix fold (`test_host_parity.py`), the provenance its turns
+carry (`test_turn_provenance.py`), and the Pause under a declined Stop
+(`test_pause_while_compacting.py`). What still names the app in core, deliberately for
+this wave: the app-store row in `appManifest.ts`, the `apps.specBuilder.*` catalog
+keys, the core comments and docs that cite it as an example, the capture scenes under
+`website/capture/` and `website/scripts/`, and the repository-wide scan tables whose
+rows name its files (`test_lenient_read_rewrite_ratchet.py`,
+`test_chat_follow_default_slot_kinds.py`, `test_transcript_derivation_seam.py`,
+`test_source_pin_budget.py`, and the dashboard's site lists in
+`ResizeHandle.parity.test.tsx`, `RadioChipGroup.test.tsx`,
+`windowsBasenameSites.test.tsx`, `hoverVariantPolicy.test.ts` and
+`countSingularForms.test.ts`). Each goes with the app.
 
 Writers: `apps/builtins/spec_builder/backend/handlers.py`, `runtime.py`,
 `decisions.py`, `orchestration/`; `apps/builtins/spec_builder/tests/routes_facade.py`
