@@ -2614,11 +2614,12 @@ subset, or past the bound, allows nothing: the row fails closed and the
 session-start notice names `allowedCommands`. A malformed record reads as an
 empty allowlist. A listed command still prompts: the author's own
 `denyByDefault` withholds the `allowedCommands` grant, as above. No allowlist is
-recorded when the spec's `allowedTools` names the shell the way kiro-cli's
-matcher reads it (`kas_permissions.allowed_tools_grant_shell`: `@builtin`,
-`@builtin/*`, or an entry matching `execute_bash`/`shell` with only `*`/`?`
-glob syntax) AND every `deniedCommands` entry rides the projected policy as a
-KAS shell `deny` rule (`kas_permissions.shell_denies_carried`): kiro-cli's
+recorded when the spec's `allowedTools` names the shell by its exact name
+(`kas_permissions.allowed_tools_grant_shell`: `@builtin`, `@builtin/`,
+`@builtin/*`, or an entry that is exactly `execute_bash` or `shell`, bare or
+after `@builtin/`; an entry holding `*` or `?` grants nothing) AND every
+`deniedCommands` entry rides the projected policy as a KAS shell `deny` rule
+(`kas_permissions.shell_denies_carried`): kiro-cli's
 `eval_perm` allows every command of such an agent that `deniedCommands` does not
 deny, before it reads `denyByDefault`. Its commands take the gate's usual path
 and prompt or are answered there. A deny with no glob spelling, a redirect, a
