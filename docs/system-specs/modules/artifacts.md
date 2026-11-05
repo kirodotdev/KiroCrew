@@ -1941,7 +1941,11 @@ gone get `anchor_orphaned=true` (a dedicated field, deliberately not a
 `sync_state` value so push status is never clobbered); the flag clears if
 the text returns (e.g. a revert). The UI shows a warning and de-emphasizes
 orphaned threads. The rescan reads `anchor_quote` only: it never rewrites
-`start_offset`, `end_offset`, `prefix` or `suffix`.
+`start_offset`, `end_offset`, `prefix` or `suffix`. A hand-edited quote that
+is not a string is skipped like an empty one, so it never stops the rescan of
+the other threads. The comment list route sends such a comment with no
+`anchor`, and a non-string prefix or suffix as `null`, so nothing unredacted
+reaches the dashboard. The stored values are not rewritten.
 
 **Two anchor offset spaces** — the stored anchor columns carry one of two
 conventions, told apart by the anchor's context rather than by a kind field:
