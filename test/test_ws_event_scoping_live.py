@@ -406,6 +406,10 @@ class TestLiveScopeNarrowing:
             'for _owner_only in ("branch", "commit")' in src
         ), "the periodic dashboard frame must withhold checkout identity from apps"
         assert 'if not ws.get("_is_dashboard_user", False):' in src
+        # The live auto-approve grant joins the frame only for a dashboard user.
+        assert (
+            'dashboard_user=ws.get("_is_dashboard_user", False)' in src
+        ), "the periodic dashboard frame must carry the grant to the dashboard user alone"
         # And the owner surfaces must NOT be narrowed: /api/status and SSE run on
         # dashboard-user tokens and still need the full snapshot.
         state_src = _state_source()

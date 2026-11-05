@@ -432,11 +432,47 @@ async def test_status_frame_publishes_null_for_unknown_counts(monkeypatch):
 
     state = SimpleNamespace(status_snapshot=fake_snapshot)
 
-    frame = await _status_frame(state)  # type: ignore[arg-type]
+    frame = await _status_frame(state, dashboard_user=False)  # type: ignore[arg-type]
 
     assert frame["lessons"] is None
     assert frame["cron_jobs"] == 4
     assert "version" in frame and "platform" in frame
+
+
+@pytest.mark.asyncio
+async def test_status_frame_carries_the_live_grant_to_the_dashboard_user_only(monkeypatch):
+    """Each frame replaces the client's stored status, so the dashboard user's frame
+    carries the live grant Settings > Security reads; without it the page shows
+    "Interactive". The expiry is whole seconds, so an unchanged grant leaves the
+    frame unchanged. An app socket's Tier-0 frame does not carry the grant."""
+    from kiro_crew.dashboard import status_counts as sc_module
+    from kiro_crew.dashboard.ws import _status_frame
+    from kiro_crew.safety_override_records import OverrideStatus
+
+    async def fake_refresh(_state):
+        return (0, 0)
+
+    monkeypatch.setattr(sc_module, "_refresh_status_counts", fake_refresh)
+    grant = OverrideStatus(
+        active=True,
+        source="dashboard",
+        remaining_secs=21600,
+        activation_count=1,
+        activated_at_iso="2026-11-05T12:00:00+00:00",
+        expires_at_iso="2026-11-05T18:00:00.123456+00:00",
+        last_renewed_at_iso=None,
+        last_renewed_by="",
+    )
+    monkeypatch.setattr(sc_module, "safety_override", lambda: SimpleNamespace(status=lambda: grant))
+    state = SimpleNamespace(status_snapshot=lambda **_kwargs: {"sessions": 1})
+
+    owner = await _status_frame(state, dashboard_user=True)  # type: ignore[arg-type]
+    assert owner.get("yolo") is True
+    assert owner.get("yolo_expires_at") == "2026-11-05T18:00:00+00:00"
+    assert owner.get("yolo_until_shutdown") is False
+
+    app = await _status_frame(state, dashboard_user=False)  # type: ignore[arg-type]
+    assert not [key for key in app if key.startswith("yolo")]
 
 
 def _warm_counts_cache(monkeypatch, counts):
