@@ -2142,6 +2142,7 @@
         "back": "Back",
         "endAndReview": "End and review",
         "ended": "Ended",
+        "exportMarkdown": "Export {{name}} output as Markdown",
         "live": "Live",
         "loadFailed": "Could not open this meeting",
         "moreActions": "More actions",

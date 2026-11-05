@@ -774,6 +774,19 @@ default visual rhythm. Empty copy distinguishes an active meeting from review or
 ended states, and the durable list is not an ARIA live region because the compact
 caption already announces recognizer updates.
 
+The meeting's More menu carries one Export item per enabled notes (markdown)
+agent (`components/ExportMenuItems.tsx`). It saves what that panel shows, the
+user's saved edit when one exists, as `<title>-<YYYY-MM-DD>-<agent id>.md`. The
+title keeps letters, digits, spaces and `_,&'()+-` (anything else becomes `-`,
+because the desktop app saves a download only under the exact name it announced
+and Chromium rewrites more characters than a file system refuses), and the date
+is the meeting's start (else creation) day in the viewer's time zone. An export
+is a snapshot, so it works while the meeting runs and after it has ended; the
+item is disabled while there is no text to save, and a save the browser could
+not start shows an error notice above the agent bar. A diagram agent gets no
+item yet: its output only renders inside the sandboxed frame, and its portable
+form is a separate change.
+
 The shared STT settings choose among `local` (resident whisper.cpp, the default),
 `apple` (on-device SpeechAnalyzer on supported macOS), and `transcribe` (paid AWS
 Transcribe with recorded operator consent). `/api/ws/stt` requires both
@@ -937,6 +950,7 @@ transition table), `MeetingsPage.test.tsx` and `MeetingsPageCov80.test.tsx` (lis
 refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
 `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
+`MeetingsExport.test.tsx` (the menu's Markdown export and its file name),
 `MeetingsTranslation.test.tsx`, `MeetingsNote.test.tsx`, `MeetingsNoteDraft.test.tsx`, and
 `MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
 split-to-primary layout transition), `UseMeetingSessionCoverage.test.tsx` and the two

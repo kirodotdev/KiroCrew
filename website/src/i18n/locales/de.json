@@ -3551,6 +3551,7 @@
         "endAndReview": "Beenden und prüfen",
         "ended": "Beendet",
         "endingReview": "Wird beendet — Rückblick wird vorbereitet…",
+        "exportMarkdown": "Ausgabe von {{name}} als Markdown exportieren",
         "live": "Live",
         "loadFailed": "Diese Besprechung konnte nicht geöffnet werden",
         "moreActions": "Weitere Aktionen",

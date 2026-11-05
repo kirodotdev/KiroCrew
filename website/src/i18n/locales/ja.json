@@ -3439,6 +3439,7 @@
         "endAndReview": "終了して確認",
         "ended": "終了",
         "endingReview": "終了処理中 — レビューを準備しています…",
+        "exportMarkdown": "{{name}}の出力を Markdown としてエクスポート",
         "live": "ライブ",
         "loadFailed": "この会議を開くことができませんでした",
         "moreActions": "その他の操作",

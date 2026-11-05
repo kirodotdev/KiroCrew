@@ -3663,6 +3663,7 @@
         "endAndReview": "Terminer et passer en revue",
         "ended": "Terminée",
         "endingReview": "Fin en cours — préparation de la revue…",
+        "exportMarkdown": "Exporter le résultat de {{name}} en Markdown",
         "live": "En cours",
         "loadFailed": "Impossible d’ouvrir cette réunion",
         "moreActions": "Plus d'actions",

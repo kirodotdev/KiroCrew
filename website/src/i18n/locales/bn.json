@@ -3462,6 +3462,7 @@
         "endAndReview": "শেষ করে পর্যালোচনা করুন",
         "ended": "শেষ হয়েছে",
         "endingReview": "শেষ হচ্ছে — রিভিউ প্রস্তুত হচ্ছে…",
+        "exportMarkdown": "{{name}}-এর আউটপুট Markdown হিসেবে এক্সপোর্ট করো",
         "live": "চলছে",
         "loadFailed": "এই মিটিংটি খোলা গেল না",
         "moreActions": "আরও অ্যাকশন",
