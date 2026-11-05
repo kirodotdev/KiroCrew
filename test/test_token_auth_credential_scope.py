@@ -144,6 +144,39 @@ async def test_app_token_denied_on_unscoped_endpoint(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_app_token_refused_on_a_held_back_entry_is_told_how_to_fix_it(monkeypatch) -> None:
+    """The middleware's refusal body names the held-back entry and the approval step."""
+    import json
+    import time
+
+    import kiro_crew.dashboard.token_auth as _ta
+    from kiro_crew.dashboard.app_scope_refusal import GrantFacts
+
+    stamp = time.time()
+    # The scope check pins a not owner-enabled app to an empty allowlist first.
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
+    monkeypatch.setattr(_ta, "_app_perms_cache", {"file-explorer": (stamp, ("/api/sessions",))})
+    facts = GrantFacts(
+        label="File Explorer",
+        declared=("/api/sessions", "/api/memory/*"),
+        held_back=("/api/memory/*",),
+    )
+    monkeypatch.setattr(_ta, "_app_grant_facts", {"file-explorer": (stamp, facts)})
+    mw = token_auth_middleware()
+    token = generate_token("file-explorer", app="file-explorer")
+    req = _make_request(path="/api/memory/search", query={"token": token})
+
+    resp = await mw(req, _ok_handler)
+
+    assert resp.status == 403
+    body = json.loads(resp.body)
+    assert body["code"] == "app_permission_not_approved"
+    assert body["pending_approval"] == ["/api/memory/*"]
+    assert "/apps/detail/file-explorer" in body["error"]
+    assert "Approve new permissions" in body["error"]
+
+
+@pytest.mark.asyncio
 async def test_app_token_named_registries_denied_on_refresh(monkeypatch) -> None:
     """An app token named 'registries' must NOT reach the shared
     POST /api/apps/registries/refresh (which triggers outbound git fetches of
@@ -424,13 +457,24 @@ async def test_an_app_token_out_of_scope_on_an_api_route_keeps_the_flat_refusal(
     import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
+    monkeypatch.setattr(_ta, "_app_perms_cache", {})
+    monkeypatch.setattr(_ta, "_app_grant_facts", {})
     mw = token_auth_middleware()
     token = generate_token("file-explorer", app="file-explorer")
     resp = await mw(_make_request(path="/api/members", query={"token": token}), _ok_handler)
     assert resp.status == 403
+    # The dashboard's flat body, not the Crew API envelope and not ``owner_only``. The
+    # patched allowlist read stored no grant facts, so the refusal claims nothing
+    # about the manifest and asks for a retry.
     assert json.loads(resp.body) == {
-        "error": "app token not permitted for this endpoint",
-        "code": "forbidden",
+        "error": (
+            'App "file-explorer" cannot call /api/members right now: its permissions '
+            "could not be read, or an update of the app is in progress. Retry in a "
+            "moment. If this keeps happening, check the app with: kirocrew app info "
+            "file-explorer"
+        ),
+        "code": "app_permission_unavailable",
+        "pending_approval": [],
     }
 
 
