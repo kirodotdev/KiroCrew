@@ -5159,7 +5159,9 @@ relocated variant of a ledger-adjudicated class; an adjudication goes stale
 for lines the current head materially changed. A prior disposition never
 hides a currently provable new defect. Any failed call makes the review
 incomplete and leaves no current-SHA reviewed marker, so the gate fails
-closed.
+closed. The fork lane names each failed pass and its cause (the per-pass time
+limit at `exit 124`, a review CLI error at `exit 1`, or the exit code) in its
+comment and in the check-run summary.
 
 ## Readiness: what the aggregate does and does not mask
 
