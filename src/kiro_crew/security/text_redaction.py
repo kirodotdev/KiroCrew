@@ -36,7 +36,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
+def redact_with_findings(
+    text: str, *, attested_sharepoint_digests: frozenset[str] = frozenset()
+) -> tuple[str, list[str], list[str]]:
     """Apply all redaction passes, reporting what each one removed.
 
     Both passes find their spans on the original text and the text is rewritten
@@ -53,13 +55,23 @@ def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
     finish the text through ``platform.context.redact_via_context`` so a loaded
     companion's extra patterns apply; use this one for the warnings, or where the
     baseline is deliberately the subject.
+
+    ``attested_sharepoint_digests`` is a gateway boundary's immutable snapshot,
+    handed to every credential pass of the composition (see ``redact_credentials``).
+    With the empty default the composed pass is called exactly as before, so the
+    caller stays fail closed.
     """
-    return pass_compose.compose(text)
+    if not attested_sharepoint_digests:
+        return pass_compose.compose(text)
+    return pass_compose.compose(text, attested_sharepoint_digests=attested_sharepoint_digests)
 
 
-def redact(text: str) -> str:
-    """Apply all redaction passes (exfiltration URLs + credentials)."""
-    return redact_with_findings(text)[0]
+def redact(text: str, *, attested_sharepoint_digests: frozenset[str] = frozenset()) -> str:
+    """Apply all redaction passes (exfiltration URLs + credentials).
+
+    ``attested_sharepoint_digests`` as in :func:`redact_with_findings`.
+    """
+    return redact_with_findings(text, attested_sharepoint_digests=attested_sharepoint_digests)[0]
 
 
 # ── Streaming redaction ──
