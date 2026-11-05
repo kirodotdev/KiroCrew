@@ -556,7 +556,10 @@ in an oss build). One fetch is the Kiro control plane's
   rule. A shape it does not know is off, not unnamed, because `capabilities.cron`
   is an open control: unnamed, it keeps Crew's default. For a capability with a
   resource, only a deny `exclude` grants anything; a lone deny `match` leaves the capability unnamed, so the
-  baseline keeps it off. `DISABLED` answers
+  baseline keeps it off. The reply's configuration entries (`body.configuration`)
+  are read only for the hash today; RFC D7 (added 2026-11-05) makes Crew apply
+  `crew_sandbox_min_level` to `sandbox.min_level`, tighten-only, and that change
+  is pending in #30178. `DISABLED` answers
   a document that names no scope, so the baseline holds every control. `UNCHANGED`
   keeps the cache. `NOT_ELIGIBLE`, an HTTP error, an unreachable service, a malformed
   answer, a hash mismatch and an untranslatable rule each raise. With no usable cache,
