@@ -127,7 +127,10 @@ async def _run(provider: _Provider, hook: ToolHookResult) -> SubagentInfo:
             "turn_spec_hooks",
             AsyncMock(return_value=TurnSpecHooks([], None, False, False)),
         ),
-        patch("kiro_crew.subagent_manager.run.permission_pre_tool_block", AsyncMock()),
+        patch(
+            "kiro_crew.subagent_manager.run.permission_pre_tool_block",
+            AsyncMock(return_value=None),
+        ),
         patch.object(manager, "_write_tombstone") as tombstone,
     ):
         await asyncio.wait_for(manager._run_inner(info, "subagent:a1"), 30)

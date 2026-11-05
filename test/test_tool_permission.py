@@ -1060,7 +1060,7 @@ def test_hook_gate_reports_identity_evidence_only_for_a_verified_identity_grant(
 
 
 @pytest.mark.asyncio
-async def test_spec_hooks_consult_the_gate_only_on_a_gated_turn():
+async def test_spec_hooks_consult_the_gate_on_gated_and_ungated_turns():
     calls: list = []
 
     async def pre_tool(store, hooks, cwd, title, tool_input, **kw):
@@ -1096,7 +1096,8 @@ async def test_spec_hooks_consult_the_gate_only_on_a_gated_turn():
         )
     ]
     ungated = SpecHooks(TurnSpecHooks([], None, False, False), store=lambda: 1, pre_tool=pre_tool)
-    assert await ungated.refuse(ask) is None and len(calls) == 1
+    assert (await ungated.refuse(ask)).reason == "guard.sh: hook denied"
+    assert calls[1][:3] == (1, [], None)
 
 
 @pytest.mark.asyncio
