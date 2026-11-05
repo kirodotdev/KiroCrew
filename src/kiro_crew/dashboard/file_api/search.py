@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         _WALK_TIME_BUDGET_SECS,
         DashboardState,
         _batch_stall_path,
+        _dot_dir_walk_plan,
         _PathProbeBusy,
         _probe_busy_response,
         _run_path_probe,
@@ -461,18 +462,22 @@ async def api_file_search(request: web.Request) -> web.Response:
                 # one means os.stat-ing it, which pops a consent modal; a scoped
                 # root is deliberate and is never TCC-pruned, matching the
                 # descent rule below. Only the leading-dot rule differs: a dot-
-                # dir is a valid candidate but is removed from the descent list.
+                # dir is a valid candidate but is removed from the descent list,
+                # except the _OPEN_DOT_DIRS children the plan below opens.
                 base_dirs = [d for d in dirnames if d not in skip_dirs]
-                if scoped:
-                    candidate_dirs = base_dirs
-                else:
-                    candidate_dirs = platform_compat.tcc_prune_walk_dirs(
-                        root_dir, dirpath, base_dirs
-                    )
-                dirnames[:] = [d for d in candidate_dirs if not d.startswith(".")]
+                if not scoped:
+                    base_dirs = platform_compat.tcc_prune_walk_dirs(root_dir, dirpath, base_dirs)
+                # The same plan the indexed fast path uses, so the two paths
+                # open exactly the same dot directories (.kiro/specs and
+                # .kiro/steering) and offer nothing else inside .kiro.
+                candidate_dirs, descend_dirs, offer_files = _dot_dir_walk_plan(
+                    root_dir, dirpath, base_dirs
+                )
+                dirnames[:] = descend_dirs
                 # Files first: under a tight scan budget the file candidates are
                 # the ones that survive.
-                _collect("file", dirpath, filenames, root_dir)
+                if offer_files:
+                    _collect("file", dirpath, filenames, root_dir)
                 _collect("dir", dirpath, candidate_dirs, root_dir)
                 if _full() or timed_out:
                     break
