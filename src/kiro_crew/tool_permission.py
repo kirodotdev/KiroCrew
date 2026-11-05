@@ -577,11 +577,9 @@ class AcpWire:
         Asked of the client itself (``take_batch_refusal``), so a provider that
         wraps the transport hands the question to the transport holding the
         reason; a client without the method has nothing to say."""
-        take = getattr(self.client, "take_batch_refusal", None)
-        if take is None:
-            return None
-        reason = take(ask.request_id)
-        return reason if isinstance(reason, str) else None
+        from kiro_crew import agent_sdk
+
+        return agent_sdk.take_batch_guard_refusal(self.client, ask.request_id)
 
     async def refuse(self, ask: Ask, notice: Notice | None) -> None:
         if notice is not None:

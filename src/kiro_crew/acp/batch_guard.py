@@ -61,7 +61,9 @@ __all__ = [
     "classify",
     "classify_command",
     "guard_settings",
+    "refusal_outcome",
     "screen_approval",
+    "take_client_refusal",
 ]
 
 READ = "read"
@@ -594,6 +596,44 @@ def take_refusal(transport: Any, request_id: Any) -> str | None:
         return None
     reason = kept.pop(_refusal_key(request_id), None)
     return reason if isinstance(reason, str) else None
+
+
+def take_client_refusal(client: Any, request_id: Any) -> str | None:
+    """This guard's reason for the approval of *request_id* ``client`` just refused,
+    taken once, or ``None``.
+
+    The single owner of asking a client for its kept reason: a provider that wraps
+    the transport forwards ``take_batch_refusal`` to the transport holding the
+    reason, a client without the method has nothing to say, and a non-string answer
+    is read as nothing. Both the audit consumers (through :func:`refusal_outcome`)
+    and ``tool_permission`` call this rather than repeat the steps.
+    """
+    take = getattr(client, "take_batch_refusal", None)
+    if take is None:
+        return None
+    reason = take(request_id)
+    return reason if isinstance(reason, str) else None
+
+
+def refusal_outcome(reason: str | None) -> tuple[str, dict[str, str] | None]:
+    """The SEL ``(outcome, metadata)`` a consumer's row should carry for a request
+    ``approve_tool`` answered ``False``.
+
+    *reason* is what :func:`take_refusal` (``transport.take_batch_refusal``) returned
+    for the request: a string when THIS guard refused it, ``None`` when the security
+    floor did. A guard refusal records the guard's own outcome and mechanism, so the
+    consumer's row is never read as a security-floor refusal; a floor refusal keeps
+    the plain transport-floor label with no added metadata. The caller takes the
+    reason once, so pass it here rather than letting this read (and clear) it again.
+    """
+    if reason is not None:
+        return OUTCOME_REJECTED_BATCH_GUARD, {
+            "mechanism": AUDIT_MECHANISM,
+            "cause": DENY_CAUSE_BATCH_READ_WRITE,
+        }
+    from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+
+    return OUTCOME_REJECTED_TRANSPORT_FLOOR, None
 
 
 def note_refined(window: BatchWindow | None, event: Any) -> None:

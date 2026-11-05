@@ -950,6 +950,25 @@ def test_a_kept_refusal_is_held_under_a_bounded_key(tmp_path, make_transport):
     assert transport.take_batch_refusal(huge) is None
 
 
+def test_refusal_outcome_labels_a_guard_refusal_as_the_guard():
+    # A consumer that writes its own SEL row for an approve_tool False reads the
+    # kept reason, then asks refusal_outcome how to label its row.
+    guard = _guard()
+    from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+
+    outcome, metadata = guard.refusal_outcome("Blocked by the batch guard: ...")
+    assert outcome == guard.OUTCOME_REJECTED_BATCH_GUARD
+    assert metadata == {
+        "mechanism": guard.AUDIT_MECHANISM,
+        "cause": guard.DENY_CAUSE_BATCH_READ_WRITE,
+    }
+
+    # No kept reason means the floor refused: the plain floor label, no metadata.
+    outcome, metadata = guard.refusal_outcome(None)
+    assert outcome == OUTCOME_REJECTED_TRANSPORT_FLOOR
+    assert metadata is None
+
+
 # ── retries after a refusal ──
 
 

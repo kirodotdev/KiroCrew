@@ -1454,9 +1454,27 @@ returns `False`. The reason is kept per request id (`batch_guard.take_refusal`,
 at most 64, bounded keys), so `tool_permission` settles that `False` as a host
 refusal with cause `DENY_CAUSE_BATCH_READ_WRITE` rather than a bare
 `floor_refused`, writes no `floor_refused` approval row for it, and a subagent
-turn's refusal recovery carries it. Consumers that write their own row when
-`approve_tool` returns `False` still label it `rejected_transport_floor`; the
-guard's row for the same `request_id` is the one that says why.
+turn's refusal recovery carries it. A consumer that writes its OWN audit row when
+`approve_tool` returns `False` (the dashboard chat path in
+`dashboard/chat_turn/tool_approval.py` and `permission_prompt.py`, the Slack
+ladder in `slack/handler_runtime/permission_ladder.py`) reads the kept reason
+back and maps it through `batch_guard.refusal_outcome`, so that row records
+`rejected_batch_guard` (with `mechanism=batch_write_guard`) when the guard
+refused and keeps `rejected_transport_floor` only when the security floor did.
+`batch_guard.take_client_refusal(client, request_id)` is the one place the kept
+reason is asked of a client — the audit consumers and `tool_permission` all call
+it rather than repeat the getattr/take-once/string-check steps — and it takes the
+reason once, so each refused request reads it at exactly one site. Only the
+dashboard and Slack rows are routed this way. Every OTHER consumer that writes its
+own row when `approve_tool` returns `False` still labels a batch-guard refusal
+`rejected_transport_floor`, the same as a security-floor one: the CLI
+(`cli_chat.py`), the LLM-helpers transport (`llm_helpers_parts/tool_approval.py`),
+the eval runner (`eval/runner.py`), the dashboard hooks handler
+(`dashboard/handlers/hooks.py`), the channel and messaging transports
+(`channel.py`, `messaging/driver.py`) and the task planner (`task_planner.py`).
+The guard's own `source=batch_guard` row for the same `request_id` is still the
+one that names the cause there; relabelling those consumer rows is not part of this
+change.
 
 Coverage: the tables name kiro-cli and KAS built-ins and Kiro Crew's own MCP
 tools, so the guard is expected to work on the kiro-cli and KAS harnesses. On a
@@ -1466,9 +1484,20 @@ and the guard rarely fires. Calls an agent spec pre-approves through
 they still count as peers. Known limit: the shared reader stops at a live
 `<<`, so a write inside a here-document body, or after its terminator on later
 lines, is not judged and passes (fail-open: the guard misses it, it never
-refuses more). It has been tested only at the transport level; do
-one live run on the target harness before turning it on. Pinned by
-`test_batch_write_guard.py`.
+refuses more). A second known gap is the GraphQL body the guard cannot read:
+`_graphql_may_mutate` sees the literal `query`/`-f query=...` argument text, so a
+body given as `@path` (read from a file) already counts as a possible mutation,
+but a `gh api graphql` query whose body is supplied through a shell command
+substitution (`-f query="$(cat file)"`) or a shell variable (`-f query="$Q"`)
+reaches the guard as that unexpanded token, which is not `@`-prefixed and does
+not start with `mutation`, so it classifies as a READ and a mutation hidden there
+is not guarded. This is left as a documented gap rather than closed in code:
+treating every unreadable query body as a possible mutation would make the guard
+refuse more than it does today, and the guard's contract is to never refuse more
+than its explicit tables name (the security floor, which runs first, is the
+control that judges such a call regardless). It has been tested only at the
+transport level; do one live run on the target harness before turning it on.
+Pinned by `test_batch_write_guard.py`.
 
 The rendered tool-input cache is consumed by the first permission event, but
 structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
