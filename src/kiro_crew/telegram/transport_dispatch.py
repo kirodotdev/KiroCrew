@@ -424,6 +424,9 @@ class TelegramDispatcher:
         # start, popped in finally. Records text only — no buffer slicing, so
         # none of the old steer-split fragility.
         self._active_renderers: dict[str, TelegramRenderer] = {}
+        # session_key -> (chat id, provider) of the turn holding it; the mid-turn
+        # steer checks both.
+        self._turn_chats: dict[str, tuple[int, object]] = {}
         # route -> the model id the user picked with /model, applied to every
         # session this conversation starts from now on. Keyed by ROUTE, not
         # session_key, so the choice survives /new and the idle/daily rotation
