@@ -322,14 +322,9 @@ class TestBrandingReadsTheLiveConfig:
 class TestLogoAssetInvariant:
     """The dashboard-served logo and the PWA 512 icon are the same image.
 
-    ``src/kiro_crew/static/kirocrew-logo.png`` (served at ``/logo.png`` for the
-    sidebar, favicon, and notification avatar) is kept byte-identical to
-    ``website/public/icon-512.png`` (the PWA/manifest 512 icon) by hand — they
-    are two copies of one brand mark. Nothing else asserts that equality, so an
-    icon update that touches one copy and forgets the other would silently ship
-    a mismatched favicon vs. installed-app icon. This guard fails that drift in
-    CI. If the two are intentionally decoupled in future, delete this test in
-    the same change.
+    ``src/kiro_crew/static/kirocrew-logo.png`` (``/logo.png``) and
+    ``website/public/icon-512.png`` are hand-kept copies of one brand mark; this
+    catches an update to only one of them.
     """
 
     def test_logo_matches_pwa_512_icon(self):

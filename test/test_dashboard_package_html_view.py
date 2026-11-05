@@ -1,13 +1,7 @@
 """``view.html``: the package shape for a page its owner WROTE, rather than composed.
 
-A ``kind="dashboard"`` package has carried one kind of view -- ``view.blocks``, a list of
-block types out of a closed catalog, drawn by host renderers. That shape cannot hold the
-pages this surface exists for: a dispatch tree, a chart, a 3D scene are layouts no fixed
-renderer knows, and a catalog that grew a type per picture would be the host writing every
-page anyway.
-
-So a view is one HTML page. A stored block list is read as the page it becomes,
-one way, and the block catalog is gone. The page
+A view is one HTML page, since a tree, a chart or a 3D scene fits no fixed renderer. A
+stored block list is read as the page it becomes, one way. The page
 is agent-authored and may run JS, and what keeps that safe is not a check on the markup --
 it is :mod:`kiro_crew.dashboard_frame`: text-only bindings, ``connect-src 'none'``,
 ``allow-scripts`` and nothing else, over an opaque origin. The checks here are the ones
@@ -295,13 +289,10 @@ def test_an_agentic_field_is_a_custom_source() -> None:
 
 
 def test_the_binding_attribute_matches_the_frame() -> None:
-    """The gate that checks a page's bindings and the frame that fills them cannot
-    disagree about what a binding IS.
+    """The binding gate and the frame agree on what a binding attribute IS.
 
-    Mirrored rather than imported: this module is on the artifact write path and the
-    frame is the panel read path's. A drift either way is silent in the worst direction
-    -- the gate would pass a page whose bindings the frame never fills, or refuse a
-    field name the frame would have filled.
+    Mirrored, not imported (write path vs. read path), so a drift would pass bindings
+    the frame never fills.
     """
     from kiro_crew import dashboard_frame
 
@@ -328,15 +319,10 @@ def test_the_page_cap_is_the_frames_own() -> None:
 
 
 class TestAScriptsOffPageStillShowsItsValues:
-    """THE BOOTSTRAP IS WHAT FILLS A BINDING, so a page mounted without it filled none.
+    """With ``scripts: false`` no bootstrap runs, so bindings are filled server-side.
 
-    With ``scripts: false`` the frame mounts under an empty sandbox and no script runs.
-    Every bound cell was drawn EMPTY and the stale band stayed hidden, so the page read
-    as a current one showing nothing -- the one thing this surface must not do.
-
-    Filled server-side instead, ESCAPED, which keeps the frame's own promise that a
-    value can never become markup: the same guarantee the ``textContent`` assignment
-    makes, made in Python.
+    The values are ESCAPED, the Python form of the ``textContent`` promise that a value
+    never becomes markup.
     """
 
     @staticmethod
@@ -414,14 +400,9 @@ class TestAScriptsOffPageStillShowsItsValues:
     ) -> None:
         """EACH START TAG IS READ ONCE, so no page stalls the fill however it is cut.
 
-        One page per way a scan can re-read what it has read: every ``<a`` runs on to
-        the end of a page with no ``>`` after it; one tag name is cut again at every
-        ``-``; one start tag names the attribute many times, each reading on to the
-        same ``>`` and each failing at the same wrong close. A quadratic form takes
-        about a second at 16-64 KiB, and the cost grows with the square, so a page at
-        the cap holds the GIL for hours, which the ``_run`` offload cannot help. Each
-        page below is at the cap. A quadratic form does not finish it, and the
-        per-test timeout is what fails a regression: no time is asserted.
+        Each cap-sized page targets one way a scan could re-read input; a quadratic scan
+        holds the GIL for hours there. The per-test timeout fails a regression; no time
+        is asserted.
         """
         from kiro_crew import dashboard_frame as frame
 

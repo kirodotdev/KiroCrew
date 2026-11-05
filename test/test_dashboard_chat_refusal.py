@@ -598,12 +598,8 @@ class TestRunChatRefusalFallback:
 class TestRunChatEarlyExitHandOff:
     """Every ``_run_chat`` exit runs the turn's tail exactly once.
 
-    A local slash command answers without a provider and returns before the
-    turn's ``finally``. The exit guard runs the tail for it, so a message queued
-    behind the command runs next, the cycle sends exactly one terminal
-    chat_done, and the slot's task is released -- and the tail takes its policy
-    from what the turn and the slot recorded, never from where the turn
-    stopped."""
+    A local slash command returns before the turn's ``finally``, so the exit guard runs
+    the tail: queued messages run, one chat_done is sent, the slot's task is released."""
 
     _make_state_for_run_chat = staticmethod(TestRunChatModelRefusal._make_state_for_run_chat)
 

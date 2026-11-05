@@ -280,11 +280,8 @@ class TestKiroReadinessQueueHandoff:
     ):
         """A queued item is never lost to a readiness check.
 
-        Probing readiness on turn entry AND again before dequeueing would let
-        a third false answer drop an item already popped off the queue.
-        Both probes are gone — readiness is latched at boot and the ACP attempt
-        reports auth failures — so the successor turn simply runs. This pins the
-        no-loss invariant that outlives the probes.
+        Readiness is latched at boot and the ACP attempt reports auth failures, so a
+        probe before dequeueing could only drop an item already popped.
         """
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
@@ -380,11 +377,8 @@ class TestHistorySaveOnClose:
     async def test_resume_restores_the_channel_filing_marker(self, tmp_path, monkeypatch):
         """Resuming from History must carry the channel-filing marker into memory.
 
-        Four paths rebuild a slot from history. This one (the History page's
-        resume endpoint) is the one that reaches a channel conversation the user
-        opens by hand. Without the marker in memory the slot reports itself as
-        never-filed to every in-memory reader, and the save path would have to
-        rescue it from disk.
+        The History resume endpoint reaches channel conversations opened by hand; without
+        the marker the slot reads as never-filed to every in-memory reader.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

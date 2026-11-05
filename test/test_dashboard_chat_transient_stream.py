@@ -76,14 +76,10 @@ class TestRunChatTransientRetryStreamFailure:
 
     @pytest.mark.asyncio
     async def test_transient_post_token_textonly_retries_once(self, tmp_path, monkeypatch):
-        """A transient 5xx AFTER text streamed (no tool call) is retried EXACTLY
-        ONCE, APPEND-ONLY: the streamed partial is PRESERVED (finalized as a
-        normal assistant message, exactly like the terminal else: branch), a
-        recovery notice is surfaced, and a CONTINUE instruction — NOT the
-        original prompt — is re-queued onto the same live session. The retry
-        appends the continued answer as a NEW message below. The user sees an
-        append-only sequence [partial] [recover notice] [continued answer] with
-        nothing retracted. No chat_stream_reset event exists anymore."""
+        """A transient 5xx after streamed text is retried once, append-only.
+
+        The partial is kept, a recovery notice is shown, and a continue instruction (not
+        the original prompt) is re-queued; nothing is retracted."""
         from kiro_crew.acp.client import AcpError
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
@@ -683,13 +679,10 @@ class TestRunChatTransientRetryStreamFailure:
 
     @pytest.mark.asyncio
     async def test_transient_budget_refreshed_after_terminal_error(self, tmp_path, monkeypatch):
-        """Regression: a cycle that EXHAUSTS the transient budget and surfaces
-        the terminal ❌ must refresh the budget for the NEXT cycle. The
-        happy-path reset only runs when a cycle COMPLETES, so before the fix
-        the exhausted counter leaked into every later cycle: the very next
-        5xx — e.g. right after the Continue press the ❌ message itself
-        invites ("retry in a moment") — failed instantly with ZERO retries
-        until some turn happened to finish cleanly."""
+        """A cycle that exhausts the transient budget refreshes it for the next cycle.
+
+        The happy-path reset runs only on completion, so a leaked counter would fail the
+        next 5xx (e.g. after Continue) with zero retries."""
         from kiro_crew.acp.client import AcpError
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
@@ -731,8 +724,7 @@ class TestRunChatTransientRetryStreamFailure:
             await _run_chat(state, slot, "second question")
             await self._drain_bg(state)
 
-        # Before the fix: 3 < TRANSIENT_RETRIES was False on the first 5xx, so
-        # cycle 2 died instantly (call_count == 1, a second ❌, no answer).
+        # A leaked counter would end cycle 2 at once (call_count == 1, a second ❌).
         assert call_count == 2
         tail = slot.messages[n_before:]
         tail_errs = [m["content"] for m in tail if m.get("role") == "error"]

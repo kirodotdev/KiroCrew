@@ -1,33 +1,12 @@
 """The ``office`` built-in, checked against the fold values a pod and a sample serve.
 
-Fold paths first, for the reason every module in this family states: the manifest format
-validates a path's SPELLING and never its target, so a plausible path that resolves to
-nothing ships and renders a blank cell forever with every gate green. This page reads
-one fold, ``workstreams``, which the pod capture PREDATES -- so the paths are resolved
-against ``sample_workstreams.json`` and against this page's own
-``sample_office.json``, whose fold half is the former's with only the TEXT rewritten.
+The manifest checks a path's spelling, never its target, so paths are resolved against
+``sample_workstreams.json`` and ``sample_office.json`` (the pod capture predates the fold).
 
-This page's own risks are three, and they are what most of this module is about.
-
-The first is that its two lists are the SAME shape drawn from different facts. "Delivered
-today" is the conductor's own verdict (``state == 'accepted'``) and "Waiting for your
-review" is the writer's claim about itself (``state == 'open'`` with the worker reporting
-``done`` or ``question``). Collapsing the two would show a crewmate's claim as a ruled
-delivery, which is the one error a page about someone else's work must not make. So the
-split is pinned against :mod:`kiro_crew.work_vocab` rather than against this page's list,
-and a state or status the product adds has to land somewhere deliberate.
-
-The second is the TYPE chip. Deck, mail, sheet and doc are not a fold's field: the
-crewmate writes a type in its ``drafts`` entry, and absent one the page matches words out
-of the title. A guess drawn in the same ink as a record would pass an inference off as the
-record, so the two renderings are required to differ and the guess is required to carry
-its own mark.
-
-The third is the three answers a published value has. ``drafts`` and ``steps`` are the
-crewmate's own, and a missing entry, an entry written as something this page cannot read,
-and an entry written properly are three different facts -- only one of which is anybody's
-fault. Each is required to have its own wording, because folding the unreadable case into
-the absent one shows a broken write as silence.
+"Delivered today" (``accepted``) is the conductor's verdict; "Waiting for your review" is
+the worker's own claim. The split is pinned against :mod:`kiro_crew.work_vocab` so a claim
+never shows as a delivery. A missing, an unreadable and a proper ``drafts`` / ``steps``
+entry each get their own wording, so a broken write never reads as silence.
 """
 
 from __future__ import annotations
@@ -130,11 +109,8 @@ class TestItLoads(dashboard_template_checks.TheSharedLoaderAcceptsIt):
     def test_only_the_drafts_and_steps_maps_are_agentic(self, loaded: tuple[Any, str]) -> None:
         """Both answer a question no fold has a field for, and nothing else here does.
 
-        The deliverable's TYPE and FILE are facts about an artifact, and the workstreams
-        fold records work, not artifacts. The STEP a writer is on inside an open board is
-        not recorded anywhere -- the fold knows what is open, never what is being done in
-        it. Every other value on this page is the record's, and a third agentic field
-        would make the page a report the crewmate wrote about itself.
+        The fold records work, not artifacts, and never the step inside an open board. A
+        third agentic field would make the page the crewmate's report about itself.
         """
         manifest, _ = loaded
         agentic = sorted(n for n, f in manifest.fields.items() if f.agentic)
@@ -403,10 +379,8 @@ class TestTheTypeChip:
         """A guess shown as a record is this page's own worst available failure, because
         the reader has no way to tell from the picture.
 
-        So nothing is guessed: the tag carries the record or there is no tag at all.
-        Drawing a guess in its own ink -- hollow, or marked with a trailing ``?`` -- asks
-        the reader to know a convention before they can see which of the two a tag is,
-        and the absent tag is the one rendering that needs no convention.
+        So the tag carries the record or there is no tag; a marked guess would need the
+        reader to know a convention.
         """
         assert (
             "told: true" in html and "told: false" in html
@@ -685,10 +659,8 @@ class TestItDrawsFromTheHost(
         emerald on dark and indigo on light), so a hard-coded hex renders a colour the
         product never serves in one of them.
 
-        Checked by REMOVING every ``var(--name, fallback)`` and looking at what hex is
-        left, rather than by a lookbehind: a lookbehind only sees the character right
-        before the hex, and in ``var(--text, #e4e4e7)`` that is a space, so it would
-        report every legitimate fallback on the page as a bare literal.
+        Every ``var(--name, fallback)`` is removed first: a lookbehind sees a space in
+        ``var(--text, #e4e4e7)`` and would flag each fallback.
         """
         stripped = re.sub(r"var\(\s*--[a-z0-9-]+\s*,[^()]*\)", "var(X)", html)
         bare = re.findall(r"#[0-9a-fA-F]{3,8}\b", stripped)

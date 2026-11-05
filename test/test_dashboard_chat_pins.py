@@ -206,11 +206,8 @@ async def test_create_pin_enforces_per_slot_limit_without_mutation(tmp_path, mon
 async def test_create_pin_quota_is_scoped_per_origin_app(tmp_path, monkeypatch):
     """One origin's pins filling a slot to the cap must not block another origin.
 
-    The quota is scoped by (slot_key, origin_app) to match the idempotency
-    lookup and api_chat_pins_list. An app-owned slot pre-filled to the cap with
-    foreign-origin records (e.g. legacy pins carrying no origin_app) must still
-    let the app create its own pin -- otherwise it gets a 409 for records it can
-    neither see nor unpin.
+    The quota is scoped by (slot_key, origin_app), like the idempotency lookup, so an
+    app is never refused 409 over pins it can neither see nor unpin.
     """
     monkeypatch.setattr(chat_pins_module, "_MAX_PINS_PER_SLOT", 2)
     state = _make_state(tmp_path)

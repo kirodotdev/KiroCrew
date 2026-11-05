@@ -1,19 +1,8 @@
 """Tests for ``GET /api/sessions/clearable/count`` and its shared selector.
 
-A bulk delete's confirmation needs to state how many
-sessions it will remove. ``DELETE /api/sessions`` offered no way to learn that
-before committing, so this endpoint answers it and nothing else.
-
-Two properties carry the feature and each has tests here:
-
-- the endpoint is READ-ONLY. Proven by naming the survivors — the files are
-  still on disk afterwards, byte-identical, with unchanged mtimes. An
-  "assert nothing was deleted" would pass just as happily against an empty
-  directory, which is why it is not the assertion used.
-- the count and the delete resolve the SAME set, because they call one
-  selector that takes no cutoff. A count the delete does not honour is worse
-  than no count: a filtered count would report a subset of what the unfiltered
-  delete permanently unlinks.
+The endpoint is read-only, proven by naming survivors byte-identical with unchanged mtimes
+("nothing deleted" would pass on an empty directory). The count and the delete call one
+selector with no cutoff, so they resolve the same set.
 """
 
 from __future__ import annotations
@@ -302,11 +291,8 @@ async def test_an_individual_delete_excludes_and_reports_unparseable_metadata(
 async def test_count_and_bulk_delete_resolve_the_same_set() -> None:
     """The property that makes the count worth displaying.
 
-    Same fixture through both paths: whatever the selector reports is exactly what
-    the delete removes, named explicitly on both sides. This is the only test in
-    the suite that can see the two drifting apart — the delete's own suite stays
-    green if the selector's pinned exclusion is removed, because the atomic
-    ``skip_pinned`` still catches it and the counts work out identically.
+    The selector's report equals what the delete removes. The delete's own suite cannot
+    see drift: the atomic ``skip_pinned`` masks a dropped pinned exclusion.
     """
     k_open, k_pinned = _history_key_for("chat-1"), "pinned-one"
     sessions = [{"key": k_open}, {"key": k_pinned}, {"key": "plain-a"}, {"key": "plain-b"}]

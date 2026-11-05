@@ -1,14 +1,7 @@
 """Tests for DashboardState WebSocket subscriber methods (activity viewer).
 
-This file pins the status snapshot during memory recovery, the sub-agent subscriber
-registry and its broadcasts, the folder tree and generation the slots frame carries,
-owner-scoped delivery, the slot model and its effective-agent report, stop state, the
-sub-agent probe and compaction callback wiring, folder breadcrumbs, which audience each
-source-link status frame reaches, and that only an owner's connection refreshes it at
-connect. Its periodic and turn-boundary refreshes live in
-``test_dashboard_state_ws_status_refresh.py``, ``api_ws`` unregistering its socket on
-every exit in ``test_dashboard_state_ws_unregister.py``, and the shared fixtures in
-``dashboard_state_ws_helpers.py``.
+Status refreshes live in ``test_dashboard_state_ws_status_refresh.py``, socket unregister in
+``test_dashboard_state_ws_unregister.py``, shared fixtures in ``dashboard_state_ws_helpers.py``.
 """
 
 from __future__ import annotations
@@ -123,14 +116,10 @@ class TestSubagentSubscribers:
 
 
 class TestSlotsBroadcastCarriesFolders:
-    """The slots broadcast frame piggybacks the folder tree so the sidebar can
-    group sessions on first paint without waiting for GET /api/chat/folders.
+    """The slots broadcast frame carries the folder tree for first paint.
 
-    A dashboard-user client receives the ``default_msg`` verbatim (the scope
-    chokepoint only rebuilds the frame for app tokens), so ``folders`` on the
-    broadcast note reaches it in the sent JSON. The frame must carry the cheap
-    in-memory tree WITHOUT ``history_count`` (that field costs a synchronous
-    session scan the broadcast hot path must never run)."""
+    The tree has no ``history_count``: that field costs a synchronous session scan
+    the broadcast hot path must never run."""
 
     class _DashboardWS:
         """Minimal fake WS that reads as a dashboard user and captures sends.
@@ -431,17 +420,9 @@ class TestSlotModel:
 class TestSlotEffectiveAgent:
     """`to_dict()["effective_agent"]` — the non-destructive divergence report.
 
-    The contract is asymmetric on purpose. ``agent`` is the user's INTENT and is
-    stored verbatim; ``effective_agent`` is a claim that something else answers,
-    and is emitted ONLY when that is known to be true. Every "we cannot tell yet"
-    case therefore has to come back empty: a false "your agent was substituted"
-    marker sends the user chasing a substitution that never happened, which is
-    strictly worse than a boot window with no marker at all.
-
-    The other pinned property is that resolution touches NO filesystem. It runs
-    inside every slots frame on the event loop, so a scan here would be a
-    recurring gateway stall — the tests below make the scanning entry points
-    explode and still expect an answer.
+    ``effective_agent`` is emitted only when another agent is known to answer; every
+    "cannot tell yet" case stays empty, since a false substitution marker misleads.
+    Resolution touches no filesystem: it runs in every slots frame on the event loop.
     """
 
     @staticmethod
@@ -1240,13 +1221,8 @@ class TestOwnerSourceStatusTransport:
     ) -> None:
         """The three audience frames come from ONE ``to_dict`` per slot.
 
-        Serializing the list once per audience re-ran the projection body
-        (markdown strip, credential redaction, options parse) three times per
-        slot on the event loop -- ~600 ms per broadcast on a real sidebar, which the adaptive
-        concurrency controller read as ``loop_lag`` pressure and cut the subagent
-        cap to its floor on an idle host. Pin the single pass, and pin that the
-        derived views are byte-for-byte what a full per-audience pass yields, so
-        the optimization can never ship a view that a full pass would not.
+        A pass per audience costs ~600 ms on the event loop for a real sidebar, read as
+        ``loop_lag`` pressure. The derived views must equal a full per-audience pass.
         """
         from kiro_crew.dashboard.state import _ChatSlot
 
@@ -1341,12 +1317,8 @@ class TestOwnerSourceStatusTransport:
     ) -> None:
         """The `slots` exclusion must not silence an owner socket generally.
 
-        The generic fan-out skips owner sockets for `slots` alone, because that is
-        the one message type they receive twice. Every other type has no
-        owner-specific frame to fall back on, so a skip that keyed on the socket
-        rather than on the message type would drop it entirely — an owner window
-        that stops seeing refreshes, with nothing raised anywhere. This is the
-        control for that: it fails if the exclusion is ever widened.
+        Owner sockets get `slots` twice, so only that type is skipped. Other types have
+        no owner-specific frame, so a skip keyed on the socket would drop them silently.
         """
         sent: list[tuple[object, dict]] = []
         monkeypatch.setattr(
