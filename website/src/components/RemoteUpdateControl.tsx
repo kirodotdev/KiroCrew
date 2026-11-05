@@ -16,7 +16,7 @@
  * post-update offer) reads the same job query, so a job started in one place
  * shows its progress in the other.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowDownCircle, CheckCircle, Info, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
@@ -88,6 +88,30 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
   const queryClient = useQueryClient()
   // Which confirmation is open: the update, or the restart that does not wait.
   const [armed, setArmed] = useState<false | 'update' | 'force'>(false)
+  // Arming swaps the pressed button for the confirm row and Cancel swaps it
+  // back, so each press unmounts the focused button and focus would fall to
+  // the page. Move it to the control that takes its place: Cancel on arm (the
+  // safe choice, so a held Enter cannot also start the job) and the pressed
+  // button on Cancel. Only after a press, so nothing is stolen on render.
+  const updateRef = useRef<HTMLButtonElement>(null)
+  const forceRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const focusNext = useRef<'cancel' | 'update' | 'force' | null>(null)
+  useEffect(() => {
+    const target = focusNext.current
+    focusNext.current = null
+    if (target === 'cancel') cancelRef.current?.focus()
+    else if (target === 'update') updateRef.current?.focus()
+    else if (target === 'force') forceRef.current?.focus()
+  }, [armed])
+  const arm = (kind: 'update' | 'force') => {
+    focusNext.current = 'cancel'
+    setArmed(kind)
+  }
+  const disarm = (from: 'update' | 'force') => {
+    focusNext.current = from
+    setArmed(false)
+  }
   const jobQ = useRemoteUpdateJob(instanceId)
   const start = useMutation({
     mutationFn: (force: boolean) =>
@@ -239,7 +263,7 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
               <ArrowDownCircle className="lucide-inline shrink-0" aria-hidden />{' '}
               <span className="min-w-0">{i18nT('components.remoteUpdate.confirm', { name })}</span>
             </Btn>
-            <Btn onClick={() => setArmed(false)}>{i18nT('components.remoteUpdate.cancel')}</Btn>
+            <Btn ref={cancelRef} onClick={() => disarm('update')}>{i18nT('components.remoteUpdate.cancel')}</Btn>
           </span>
         </span>
       ) : armed === 'force' ? (
@@ -249,14 +273,14 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
             <RefreshCw className="lucide-inline shrink-0" aria-hidden />{' '}
             <span className="min-w-0">{i18nT('components.remoteUpdate.restart_now_confirm', { name })}</span>
           </Btn>
-          <Btn onClick={() => setArmed(false)}>{i18nT('components.remoteUpdate.cancel')}</Btn>
+          <Btn ref={cancelRef} onClick={() => disarm('force')}>{i18nT('components.remoteUpdate.cancel')}</Btn>
         </span>
       ) : (
         <>
           {/* A crew too old to report its work answers the same way to every
               retry, and its message names only its own two ways out. */}
           {!cannotWait && (
-            <Btn onClick={() => setArmed('update')} aria-label={i18nT('components.remoteUpdate.update_aria', { name })}>
+            <Btn ref={updateRef} onClick={() => arm('update')} aria-label={i18nT('components.remoteUpdate.update_aria', { name })}>
               <ArrowDownCircle className="lucide-inline" aria-hidden />{' '}
               {again ? i18nT('components.remoteUpdate.try_again') : i18nT('components.remoteUpdate.update')}
             </Btn>
@@ -264,7 +288,7 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
           {/* Restarting without waiting stops the crew's running work, so it
               asks for its own confirmation too. */}
           {stopped && (
-            <Btn onClick={() => setArmed('force')}>
+            <Btn ref={forceRef} onClick={() => arm('force')}>
               <RefreshCw className="lucide-inline" aria-hidden /> {i18nT('components.remoteUpdate.restart_now')}
             </Btn>
           )}

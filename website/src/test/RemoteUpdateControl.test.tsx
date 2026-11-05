@@ -66,6 +66,22 @@ describe('RemoteUpdateControl', () => {
     expect(api.updateRemoteInstance).not.toHaveBeenCalled()
   })
 
+  it('keeps keyboard focus on the swapped-in buttons when arming and cancelling', async () => {
+    // Arming replaces the pressed Update with the confirm row, and Cancel
+    // swaps it back. Each swap unmounts the focused button, so without a
+    // handoff focus falls to the page. Arming lands on Cancel, the safe
+    // choice, so the Enter that armed it cannot also start the update.
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    const update = await screen.findByRole('button', { name: 'Update Old box' })
+    update.focus()
+    await u.keyboard('{Enter}')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
+    await u.keyboard('{Enter}')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Update Old box' }))
+    expect(api.updateRemoteInstance).not.toHaveBeenCalled()
+  })
+
   it('the confirming click starts exactly one job and shows its progress', async () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
@@ -179,6 +195,21 @@ describe('RemoteUpdateControl', () => {
     await u.click(screen.getByRole('button', { name: /Restart “Old box” and stop its work/ }))
     expect(api.updateRemoteInstance).toHaveBeenCalledTimes(1)
     expect(api.updateRemoteInstance).toHaveBeenCalledWith('old', { force: true })
+  })
+
+  it('Cancel on the Restart now confirm returns focus to Restart now', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, state: 'failed', phase: 'waiting_for_idle', code: 'still_busy', finished_at: 2 },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    const restart = await screen.findByRole('button', { name: 'Restart now' })
+    restart.focus()
+    await u.keyboard('{Enter}')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
+    await u.keyboard('{Enter}')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Restart now' }))
+    expect(api.updateRemoteInstance).not.toHaveBeenCalled()
   })
 
   it('a failed update that did not stop for running work offers no Restart now', async () => {
