@@ -6,6 +6,8 @@ chat session there whose spec sets it gets one notice naming the key. Backends C
 fires spec hooks on (goose, opencode, strands) already name it in the notice their
 spec-key read posts, and keep exactly that one row. ``subagent.availableAgents`` is
 the exception: Crew's spawn gate reads it on every backend, so no notice names it.
+On claude Crew's gate applies the shell and write allowlists, so its notice names
+only the rest.
 """
 
 from __future__ import annotations
@@ -44,6 +46,8 @@ _APPLIED_NOWHERE = [
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
 ]
+#: The mirrored backends whose gate is never fed the shell and write allowlists.
+_ALLOWLIST_UNAPPLIED = [b for b in _APPLIED_NOWHERE if b != ACP_BACKEND_CLAUDE]
 _CREW_FIRED = [ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_STRANDS]
 _SPAWN_GATED = {"subagent": {"availableAgents": ["helper-*"]}}
 
@@ -108,7 +112,7 @@ def test_claude_and_codex_rule_it_a_gap_with_a_destination(backend):
     assert "spec-shell-allowlist" in ruling.channel
 
 
-@pytest.mark.parametrize("backend", _APPLIED_NOWHERE)
+@pytest.mark.parametrize("backend", _ALLOWLIST_UNAPPLIED)
 def test_a_new_session_gets_one_notice_and_a_later_turn_none(backend, agents_dir, notices):
     _write_spec(agents_dir, "a1", toolsSettings=_SHELL_ALLOWLIST)
     assert _prepare(backend, "a1", is_new=True) == ([], False, None)
@@ -191,7 +195,7 @@ def test_a_spawn_allowlist_alone_gets_no_notice(backend, agents_dir, notices):
     assert _tools_settings_rows(notices) == []
 
 
-@pytest.mark.parametrize("backend", _APPLIED_NOWHERE + _CREW_FIRED)
+@pytest.mark.parametrize("backend", _ALLOWLIST_UNAPPLIED + _CREW_FIRED)
 def test_beside_a_spawn_allowlist_only_the_rest_is_named(backend, agents_dir, notices):
     _write_spec(agents_dir, "a1", toolsSettings={**_SHELL_ALLOWLIST, **_SPAWN_GATED})
     _prepare(backend, "a1", is_new=True)
@@ -199,3 +203,47 @@ def test_beside_a_spawn_allowlist_only_the_rest_is_named(backend, agents_dir, no
     assert len(rows) == 1
     assert "sets toolsSettings.shell, which this backend does not receive" in rows[0]
     assert "availableAgents" not in rows[0]
+
+
+def test_claude_names_no_allowlist_its_gate_applies(agents_dir, notices):
+    """claude's gate refuses what a ``denyByDefault`` or ``fallbackAction: "deny"``
+    allowlist does not cover, so the notice never says those go unapplied."""
+    write = {"fs_write": {"fallbackAction": "deny", "allowedPaths": ["docs/**"]}}
+    _write_spec(agents_dir, "a1", toolsSettings={**_SHELL_ALLOWLIST, **write, **_SPAWN_GATED})
+    _prepare(ACP_BACKEND_CLAUDE, "a1", is_new=True)
+    assert _tools_settings_rows(notices) == []
+
+
+def test_claude_names_only_what_its_gate_does_not_apply(agents_dir, notices):
+    write = {"fs_write": {"fallbackAction": "deny", "deniedPaths": ["secrets/**"]}}
+    _write_spec(agents_dir, "a1", toolsSettings={**_SHELL_ALLOWLIST, **write})
+    _prepare(ACP_BACKEND_CLAUDE, "a1", is_new=True)
+    rows = _tools_settings_rows(notices)
+    assert len(rows) == 1
+    assert "sets toolsSettings.fs_write.deniedPaths, which this backend does not receive" in rows[0]
+    assert "toolsSettings.shell" not in rows[0]
+
+
+@pytest.mark.parametrize(
+    ("settings", "named"),
+    [
+        (_SHELL_ALLOWLIST, []),
+        ({"shell": {"allowedCommands": ["ls"]}}, ["toolsSettings"]),
+        ({"read": {"deniedPaths": ["~/.ssh"]}}, ["toolsSettings"]),
+        ({"execute_bash": {"allowedCommands": ["ls"]}, "shell": {"denyByDefault": True}}, []),
+        (
+            {"fs_write": {"fallbackAction": "interactive", "allowedPaths": ["a"]}},
+            ["toolsSettings"],
+        ),
+        (
+            {**_SHELL_ALLOWLIST, "web_fetch": {"blocked": ["x"]}, "read": {"deniedPaths": ["y"]}},
+            ["toolsSettings.read.deniedPaths", "toolsSettings.web_fetch.blocked"],
+        ),
+    ],
+)
+def test_the_gate_applied_allowlists_are_left_out(settings, named):
+    """Both halves of an applied allowlist, across both alias keys, are left out;
+    without either switch the field is named as on every other mirror."""
+    from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
+
+    assert tools_settings_unapplied(settings, gate_allowlists=True) == named
