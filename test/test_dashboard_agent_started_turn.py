@@ -611,6 +611,64 @@ async def test_a_claude_session_hands_the_turn_and_its_permission_request_to_the
 
 
 @pytest.mark.asyncio
+async def test_a_request_wait_in_the_hand_off_window_does_not_leave_the_turn_empty(tmp_path):
+    """A live config push while the agent's turn waits to be read must not lose it.
+
+    The push's request wait holds the turn's frames until its answer arrives, so
+    the dashboard turn started meanwhile still opens, waits, then reads them.
+    """
+    state, session = _make_state(tmp_path)
+    slot = _make_slot()
+    provider, client, reader = _provider(ACP_BACKEND_CLAUDE)
+    client.on_agent_turn = lambda _client: None
+    client._maybe_start_idle_reader()
+    reader.feed_data(
+        _frame(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "The background build finished."},
+            }
+        )
+    )
+    await async_wait_until(client._agent_turn_pending)
+    push = asyncio.ensure_future(client._wait_for_response(9, timeout=default_timeout()))
+    await async_wait_until(lambda: client._agent_turn_held == [client._agent_turn_start])
+    _agent_turn_client(state, session, [])
+    session.agent_turn_pending = MagicMock(
+        side_effect=lambda: acp_turns.agent_turn_pending(provider)
+    )
+    session.stream_unsolicited = MagicMock(
+        side_effect=lambda *a, **kw: acp_turns.stream_unsolicited(provider, *a, **kw)
+    )
+
+    with _patch_stats(), patch.object(acp_turns, "record_live_children_after_turn", AsyncMock()):
+        turn = asyncio.ensure_future(_run_agent_turn(state, slot))
+        hold_end = client._agent_turn_hold_end
+        assert hold_end is not None
+        await async_wait_until(lambda: bool(hold_end._waiters) or turn.done())
+        assert not turn.done()
+        reader.feed_data((json.dumps({"jsonrpc": "2.0", "id": 9, "result": {}}) + "\n").encode())
+        await await_until(push, what="the config push's request wait")
+        reader.feed_data(
+            _frame(
+                {
+                    "sessionUpdate": "usage_update",
+                    "used": 10,
+                    "size": 100,
+                    "_meta": {"_claude/origin": {"kind": "task-notification"}},
+                }
+            )
+        )
+        await await_until(turn, what="the agent-started turn")
+
+    [reply] = _rows(slot, "assistant")
+    assert "The background build finished." in reply["content"]
+    assert reply["meta"]["origin"] == _ORIGIN
+    await async_wait_until(lambda: client._stdout_claims == 0)
+    await client._stop_idle_reader()
+
+
+@pytest.mark.asyncio
 async def test_a_kiro_session_registers_no_watch_and_never_reads_between_turns():
     provider, client, _reader = _provider(ACP_BACKEND_KIRO)
 

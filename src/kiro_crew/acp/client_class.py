@@ -131,6 +131,8 @@ class AcpClient:
     # That turn's frames a claimed reader other than the turn has read, held for
     # the turn until that reader returns (see _claiming_stdout).
     _agent_turn_held: list[JsonRpcMessage] | None = None
+    # Set when that reader has put the held frames back; stream_unsolicited waits on it.
+    _agent_turn_hold_end: asyncio.Event | None = None
     # _install_idle_reader has bound its steps on this client.
     _idle_reader_installed: bool = False
     # Held by stream_unsolicited while it reads; a prompt waits on it (see
@@ -1416,6 +1418,7 @@ class AcpClient:
     _stop_idle_reader = _client_transport._stop_idle_reader
     _cancel_idle_reader = _client_transport._cancel_idle_reader
     _agent_turn_pending = _client_transport._agent_turn_pending
+    has_pending_agent_turn = _client_transport.has_pending_agent_turn
     _maybe_start_idle_reader = _client_transport._maybe_start_idle_reader
     _idle_read_loop = _client_transport._idle_read_loop
 
