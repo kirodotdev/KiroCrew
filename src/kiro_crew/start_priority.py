@@ -75,6 +75,12 @@ def notify_start_queue(
 ) -> None:
     """Fire a caller's start-queue entry/exit callback; an ``Exception`` from it is
     logged, never fatal to the start it describes."""
+    if len(args) == 2:
+        # ``(wait_ms, queue)`` is an acquire; the turn timing record reads it
+        # even when no caller callback is wired (a dashboard turn passes none).
+        from kiro_crew import turn_timing
+
+        turn_timing.gate_acquired(args[1], args[0])
     if callback is None:
         return
     try:

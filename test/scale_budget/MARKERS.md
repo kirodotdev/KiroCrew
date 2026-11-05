@@ -23,7 +23,6 @@ scale-F18 deletes markers whose PR merged before the harness.
 | `test_listing_budget.py::test_first_listing_after_warm_reads_no_transcripts` | scale-F10 | main has no boot warm of the listing; the first listing pays the cold read (item 2.10) |
 | `test_push_budget.py::test_warm_flush_builds_no_slot_links` | scale-F7 | main rebuilds every slot's links on every flush |
 | `test_push_budget.py::test_diff_tab_frames_stay_under_2kb` | scale-F13 | a delta carries each changed row whole (review C-T12 finding 13), about 2,300 chars for one row at this seed; met by field-level row deltas or a raised budget |
-| `test_turn_admission_work.py::test_turn_path_admission_is_budgeted` | scale-F16 | no in-process provider double runs a real `_run_chat`, so turn admission is unbudgeted; F16 replaces the placeholder body with the real budget |
 | `test_push_budget.py::test_one_dirty_slot_serializes_at_most_10_rows` | scale-F19 | one dirty slot still re-serializes every row (no per-slot dirty set) |
 
 The F8 walk fixture pins `runtime_process_tree._CHILDREN_INTERFACE` to `True`

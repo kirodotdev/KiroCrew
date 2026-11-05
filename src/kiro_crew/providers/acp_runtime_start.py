@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import model_scope
+from kiro_crew import model_scope, turn_timing
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -772,6 +772,7 @@ async def _start_kiro_runtime_impl(
     finally:
         # subprocess launch + ACP `initialize` handshake
         phases["spawn_init"] = (time.monotonic() - _t_spawn) * 1000.0
+        turn_timing.phase("spawn_init", phases["spawn_init"])
         if remote is not None and not isinstance(remote, PreparedCloudSession):
             # Closed once this runtime ends (at once if the spawn failed); its
             # placement entry goes with it, so the bounded table holds live ones.
@@ -857,6 +858,7 @@ async def _start_kiro_runtime_impl(
                     if cloud_hold is not None:
                         cloud_hold.settle(handle)
                     phases["session_load"] = (time.monotonic() - _t_load) * 1000.0
+                    turn_timing.phase("session_load", phases["session_load"])
                 resumed = handle is not None
                 meta["resume_outcome"] = "loaded" if resumed else "fallback_replay"
                 if handle is None:
@@ -978,6 +980,7 @@ async def _start_kiro_runtime_impl(
                 # so a successful resume never reports a near-zero session_new
                 # that would understate the phase's real distribution.
                 phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
+                turn_timing.phase("session_new", phases["session_new"])
 
         # The cloud session id this chat's row held before this start, when this
         # start replaced it with a new one (a new sandbox, without its files).
@@ -1111,6 +1114,7 @@ async def _start_kiro_runtime_impl(
                     )
                 finally:
                     phases["set_model"] = (time.monotonic() - _t_model) * 1000.0
+                    turn_timing.phase("set_model", phases["set_model"])
 
         # Replace the placeholder AcpClient with the real AcpSessionProvider
         provider = AcpSessionProvider(

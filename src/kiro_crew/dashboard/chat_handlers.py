@@ -24,6 +24,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError  # noqa: F401
 
 from kiro_crew import members as members_mod  # noqa: F401
 from kiro_crew import model_registry  # noqa: F401
+from kiro_crew import turn_timing  # noqa: F401 -- chat_api.chat_send runs on these globals
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import (  # noqa: F401
