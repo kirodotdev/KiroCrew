@@ -626,18 +626,26 @@ async def api_update_apply(request: web.Request) -> web.Response:
         creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
-        await asyncio.wait_for(fetch.communicate(), timeout=30)
+        # Matches the fast-forward's own 60s bound below: the fetch is the
+        # heavier network leg, so a reachable-but-slow remote (a large pack over
+        # a thin link) must get at least as long as the local merge that follows
+        # it. A tighter bound kills a fetch that would have completed.
+        await asyncio.wait_for(fetch.communicate(), timeout=60)
     except asyncio.CancelledError:
         await platform_compat.kill_and_reap(fetch)
         raise
     except asyncio.TimeoutError:
+        # Reachable but slow past the bound: a transient condition the caller
+        # can retry, so it answers like the adjacent non-zero-rc refusal (409)
+        # rather than a 5xx. The failure stays surfaced with its reason; the
+        # fetch is never skipped.
         await platform_compat.kill_and_reap(fetch)
         return web.json_response(
             {
-                "error": "Timed out refreshing the remote before updating",
+                "error": "Timed out refreshing the remote before updating; retry",
                 "code": "git_fetch_failed",
             },
-            status=500,
+            status=409,
         )
     if fetch.returncode != 0:
         logger.warning("Update refused: pre-apply git fetch failed (rc=%s)", fetch.returncode)
