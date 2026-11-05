@@ -17,7 +17,6 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_folder_app, _make_state, _make_tags_app
 
-from kiro_crew.dashboard.chat_folders import api_chat_folder_reorder
 from kiro_crew.messaging.link import ChannelLink
 
 _hermetic_signing_secret = chat_tags_helpers._hermetic_signing_secret
@@ -29,13 +28,8 @@ _AGENT = {"X-Internal-Secret": "s3cret", "X-Internal-Caller": "kirocrew-dashboar
 _WRITES = {
     "folder-create": ("folders", "POST", "/api/chat/folders", {"name": "Gamma"}, 201),
     "folder-move": ("folders", "PATCH", "/api/chat/folders/{alpha}", {"parent_id": "{beta}"}, 200),
-    "folder-reorder": (
-        "folders",
-        "POST",
-        "/api/chat/folders/reorder",
-        {"orders": [{"id": "{alpha}", "order": 5}]},
-        200,
-    ),
+    # A position names a sibling and puts nothing else in the PATCH.
+    "folder-position": ("folders", "PATCH", "/api/chat/folders/{alpha}", {"after": "{beta}"}, 200),
     "session-file": ("folders", "PATCH", "/api/chat/slots/a/folder", {"folder_id": "{alpha}"}, 200),
     "tag-create": ("tags", "POST", "/api/chat/tags", {"name": "Fresh"}, 201),
     "tag-rename": ("tags", "PATCH", "/api/chat/tags/{tag}", {"name": "New"}, 200),
@@ -61,9 +55,7 @@ def _fill(value: Any, ids: dict[str, str]) -> Any:
 def _app(state: Any, which: str) -> web.Application:
     if which == "tags":
         return _make_tags_app(state)
-    app = _make_folder_app(state)
-    app.router.add_post("/api/chat/folders/reorder", api_chat_folder_reorder)
-    return app
+    return _make_folder_app(state)
 
 
 def _store(state: Any) -> list[Any]:

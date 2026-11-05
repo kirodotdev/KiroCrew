@@ -1,0 +1,399 @@
+{
+  "$comment": [
+    "Rank cases consumed by BOTH suites:",
+    "  - pytest  test/test_chat_folder_rank.py        (kiro_crew.dashboard.folder_rank)",
+    "  - vitest  website/src/test/folderRank.test.ts   (website/src/utils/folderRank.ts)",
+    "The gateway computes every stored rank; the sidebar computes the same keys only",
+    "to draw a drag before the server answers, so both must produce identical keys",
+    "and sort identically."
+  ],
+  "between_cases": [
+    {
+      "lo": null,
+      "hi": null,
+      "expected": "V"
+    },
+    {
+      "lo": null,
+      "hi": "V",
+      "expected": "F"
+    },
+    {
+      "lo": "V",
+      "hi": null,
+      "expected": "k"
+    },
+    {
+      "lo": "1",
+      "hi": "2",
+      "expected": "1V"
+    },
+    {
+      "lo": null,
+      "hi": "01",
+      "expected": "00V"
+    },
+    {
+      "lo": "z",
+      "hi": null,
+      "expected": "zV"
+    },
+    {
+      "lo": "zz",
+      "hi": "zzV",
+      "expected": "zzF"
+    },
+    {
+      "lo": "0V",
+      "hi": "1",
+      "expected": "0k"
+    },
+    {
+      "lo": "F",
+      "hi": "V",
+      "expected": "N"
+    },
+    {
+      "lo": "Vz",
+      "hi": "W",
+      "expected": "VzV"
+    },
+    {
+      "lo": "abc",
+      "hi": "abd",
+      "expected": "abcV"
+    },
+    {
+      "lo": null,
+      "hi": "1",
+      "expected": "0V"
+    }
+  ],
+  "spread_cases": [
+    {
+      "count": 1,
+      "expected": [
+        "V"
+      ]
+    },
+    {
+      "count": 2,
+      "expected": [
+        "Kf",
+        "fK"
+      ]
+    },
+    {
+      "count": 3,
+      "expected": [
+        "FV",
+        "V",
+        "kV"
+      ]
+    },
+    {
+      "count": 10,
+      "expected": [
+        "5d",
+        "BG",
+        "Gt",
+        "MW",
+        "S9",
+        "Xm",
+        "dP",
+        "j2",
+        "of",
+        "uI"
+      ]
+    },
+    {
+      "count": 61,
+      "expected": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+        "M",
+        "N",
+        "O",
+        "P",
+        "Q",
+        "R",
+        "S",
+        "T",
+        "U",
+        "V",
+        "W",
+        "X",
+        "Y",
+        "Z",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "i",
+        "j",
+        "k",
+        "l",
+        "m",
+        "n",
+        "o",
+        "p",
+        "q",
+        "r",
+        "s",
+        "t",
+        "u",
+        "v",
+        "w",
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    {
+      "count": 62,
+      "expected": [
+        "0z",
+        "1y",
+        "2x",
+        "3w",
+        "4v",
+        "5u",
+        "6t",
+        "7s",
+        "8r",
+        "9q",
+        "Ap",
+        "Bo",
+        "Cn",
+        "Dm",
+        "El",
+        "Fk",
+        "Gj",
+        "Hi",
+        "Ih",
+        "Jg",
+        "Kf",
+        "Le",
+        "Md",
+        "Nc",
+        "Ob",
+        "Pa",
+        "QZ",
+        "RY",
+        "SX",
+        "TW",
+        "UV",
+        "VU",
+        "WT",
+        "XS",
+        "YR",
+        "ZQ",
+        "aP",
+        "bO",
+        "cN",
+        "dM",
+        "eL",
+        "fK",
+        "gJ",
+        "hI",
+        "iH",
+        "jG",
+        "kF",
+        "lE",
+        "mD",
+        "nC",
+        "oB",
+        "pA",
+        "q9",
+        "r8",
+        "s7",
+        "t6",
+        "u5",
+        "v4",
+        "w3",
+        "x2",
+        "y1",
+        "z"
+      ]
+    }
+  ],
+  "sort_cases": [
+    {
+      "name": "ranked rows sort before unranked, by rank",
+      "rows": [
+        {
+          "id": "u0",
+          "name": "a",
+          "order": 0
+        },
+        {
+          "id": "r1",
+          "name": "z",
+          "rank": "k"
+        },
+        {
+          "id": "r0",
+          "name": "y",
+          "rank": "F"
+        }
+      ],
+      "expected": [
+        "r0",
+        "r1",
+        "u0"
+      ]
+    },
+    {
+      "name": "equal ranks break by id, not name",
+      "rows": [
+        {
+          "id": "b",
+          "name": "a",
+          "rank": "V"
+        },
+        {
+          "id": "a",
+          "name": "z",
+          "rank": "V"
+        }
+      ],
+      "expected": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "name": "equal ranks break by UTF-16 id order",
+      "rows": [
+        {
+          "id": "\ud83d\ude00",
+          "name": "a",
+          "rank": "V"
+        },
+        {
+          "id": "\uffff",
+          "name": "z",
+          "rank": "V"
+        }
+      ],
+      "expected": [
+        "\ud83d\ude00",
+        "\uffff"
+      ]
+    },
+    {
+      "name": "a corrupt rank reads as unranked",
+      "rows": [
+        {
+          "id": "t0",
+          "name": "x",
+          "rank": "a0",
+          "order": 0
+        },
+        {
+          "id": "t1",
+          "name": "x",
+          "rank": 5,
+          "order": 1
+        },
+        {
+          "id": "t2",
+          "name": "x",
+          "rank": "",
+          "order": 2
+        },
+        {
+          "id": "t3",
+          "name": "x",
+          "rank": "a b",
+          "order": 3
+        },
+        {
+          "id": "ok",
+          "name": "x",
+          "rank": "zz"
+        }
+      ],
+      "expected": [
+        "ok",
+        "t0",
+        "t1",
+        "t2",
+        "t3"
+      ]
+    },
+    {
+      "name": "shorter rank is a smaller fraction",
+      "rows": [
+        {
+          "id": "long",
+          "name": "a",
+          "rank": "V1"
+        },
+        {
+          "id": "short",
+          "name": "b",
+          "rank": "V"
+        },
+        {
+          "id": "zero",
+          "name": "c",
+          "rank": "U"
+        }
+      ],
+      "expected": [
+        "zero",
+        "short",
+        "long"
+      ]
+    },
+    {
+      "name": "digits sort before capitals before lowercase",
+      "rows": [
+        {
+          "id": "lower",
+          "name": "a",
+          "rank": "a"
+        },
+        {
+          "id": "upper",
+          "name": "b",
+          "rank": "A"
+        },
+        {
+          "id": "digit",
+          "name": "c",
+          "rank": "9"
+        }
+      ],
+      "expected": [
+        "digit",
+        "upper",
+        "lower"
+      ]
+    }
+  ]
+}

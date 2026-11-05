@@ -1359,13 +1359,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.chat_folders_routes import (  # noqa: F401
         _ICON_PREVIEW_ATTEMPTS,
-        _MAX_REORDER_BODY_BYTES,
-        _MAX_REORDER_ENTRIES,
+        _MAX_FOLDER_UPDATE_BODY_BYTES,
+        _STALE_POSITION_WRITE_MESSAGE,
         _mate_home_locked,
         api_chat_folder_create,
         api_chat_folder_delete,
         api_chat_folder_icon_preview,
-        api_chat_folder_reorder,
+        api_chat_folder_reorder_retired,
         api_chat_folder_update,
         api_chat_folders,
     )
