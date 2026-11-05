@@ -362,14 +362,20 @@ def build_session_context(
 
     from kiro_crew.crewmate_harness import crewmate_for_session
 
+    _crewmate_key = crewmate_for_session(_cfg, session_key)
     if mode == _member_mode and ctx._member_dispatch_held(
-        member_dispatch_mounted, _cfg, crewmate_for_session(_cfg, session_key)
+        member_dispatch_mounted, _cfg, _crewmate_key
     ):
         from kiro_crew.member_mate_tools import binding_has_ledger_tools
 
-        _crewmate = _cfg.agents.get(crewmate_for_session(_cfg, session_key))
+        _crewmate = _cfg.agents.get(_crewmate_key)
+        # A crewmate's chat runs on the shared conductor template, so
+        # ``agent_label`` names that template. The block must name the crewmate,
+        # by the same name its [MEMBER IDENTITY] block uses: the config key, not
+        # the slug-like ``member_id``.
+        _crewmate_name = _crewmate_key or agent_label
         append_required(
-            _member.operating_mode_block(agent_label, ledger=binding_has_ledger_tools(_crewmate))
+            _member.operating_mode_block(_crewmate_name, ledger=binding_has_ledger_tools(_crewmate))
         )
 
     # Legacy member-DM identity. Private V2 has already derived its owner
