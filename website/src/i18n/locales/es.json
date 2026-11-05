@@ -9456,6 +9456,7 @@
       "make_a_status_tag": "Convertir {{name}} en etiqueta de estado",
       "make_status_tag": "Convertir en etiqueta de estado",
       "new_tag": "Nueva etiqueta… ↵",
+      "new_tag_label": "Nombre de la nueva etiqueta",
       "remove_status_flag_from": "Quitar la marca de estado de {{name}}",
       "rename_tag": "Cambiar el nombre de la etiqueta {{name}}",
       "set_color_to_name": "Establecer color en {{name}}",

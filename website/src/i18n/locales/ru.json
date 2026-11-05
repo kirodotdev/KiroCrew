@@ -9672,6 +9672,7 @@
       "make_a_status_tag": "Сделать {{name}} тегом статуса",
       "make_status_tag": "Сделать тегом статуса",
       "new_tag": "Новый тег… ↵",
+      "new_tag_label": "Название нового тега",
       "remove_status_flag_from": "Убрать отметку статуса с {{name}}",
       "rename_tag": "Переименовать тег {{name}}",
       "set_color_to_name": "Задать цвет: {{name}}",

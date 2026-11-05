@@ -9240,6 +9240,7 @@
       "make_a_status_tag": "{{name}} को स्टेटस टैग बनाएँ",
       "make_status_tag": "स्टेटस टैग बनाएँ",
       "new_tag": "नया टैग… ↵",
+      "new_tag_label": "नए टैग का नाम",
       "remove_status_flag_from": "{{name}} से स्टेटस फ़्लैग हटाएँ",
       "rename_tag": "टैग {{name}} का नाम बदलें",
       "set_color_to_name": "रंग {{name}} पर सेट करें",

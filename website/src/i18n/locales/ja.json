@@ -9024,6 +9024,7 @@
       "make_a_status_tag": "{{name}} をステータスタグに設定",
       "make_status_tag": "ステータスタグを作成",
       "new_tag": "新しいタグ… ↵",
+      "new_tag_label": "新しいタグの名前",
       "remove_status_flag_from": "{{name}} のステータスフラグを解除",
       "rename_tag": "タグ {{name}} の名前を変更",
       "set_color_to_name": "色を{{name}}に設定",
