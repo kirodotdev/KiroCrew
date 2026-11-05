@@ -83,7 +83,7 @@ vi.mock('../components/SegmentedControl', () => ({
 
 import LibraryPage from '../pages/apps/LibraryPage'
 import AppDetailPage from '../pages/AppDetailPage'
-import {
+import TrustAppModal, {
   isTrustDeniedError,
   isSessionApprovalConsentRequiredError,
   retryFailureDetail,
@@ -92,6 +92,8 @@ import {
   APP_EXECUTION_DENIED,
   SESSION_APPROVAL_CONSENT_REQUIRED,
   credentialFreeRepository,
+  localOnlyTrustRepository,
+  APP_TRUST_LOCAL_ONLY,
   safeHref,
 } from '../components/appstore/TrustAppModal'
 import {
@@ -255,6 +257,27 @@ describe('isTrustDeniedError', () => {
     // consent modal on the install path.
     expect(isTrustDeniedError(INSTALL_DENIED())).toBe(true)
     expect(isTrustDeniedError({ ok: false, error: 'clone failed' })).toBe(false)
+  })
+})
+
+describe('localOnlyTrustRepository', () => {
+  const REPO = 'https://github.com/acme/notes'
+
+  it('reads the repository off a resolved stream refusal and a rejected /update body', () => {
+    expect(localOnlyTrustRepository({ ok: false, code: APP_TRUST_LOCAL_ONLY, trustRepository: REPO })).toBe(REPO)
+    expect(localOnlyTrustRepository(apiError(400, { code: APP_TRUST_LOCAL_ONLY, trustRepository: REPO }))).toBe(REPO)
+  })
+
+  it('answers empty for another code, a missing repository, or one carrying credentials', () => {
+    // The code decides, never the presence of a repository field.
+    expect(localOnlyTrustRepository({ ok: false, code: APP_EXECUTION_DENIED, trustRepository: REPO })).toBe('')
+    expect(localOnlyTrustRepository({ ok: false, code: APP_TRUST_LOCAL_ONLY })).toBe('')
+    expect(localOnlyTrustRepository({ ok: false, code: APP_TRUST_LOCAL_ONLY, trustRepository: 7 })).toBe('')
+    // A proof that is not already credential-free is never shown or sent back.
+    expect(localOnlyTrustRepository({
+      ok: false, code: APP_TRUST_LOCAL_ONLY, trustRepository: 'https://user:token@github.com/acme/notes',
+    })).toBe('')
+    expect(localOnlyTrustRepository(undefined)).toBe('')
   })
 })
 
@@ -794,6 +817,35 @@ describe('registry install trust gate', () => {
     expect(dialog.getByRole('button', { name: `${K}.confirm_update` })).toBeTruthy()
     expect(dialog.queryByRole('button', { name: `${K}.confirm_install` })).toBeNull()
     expect(dialog.queryByRole('button', { name: `${K}.confirm` })).toBeNull()
+  })
+
+  it('labels the local-source switch confirm with the banner button words, above the capability list', () => {
+    // The banner button says "Trust the repository and update"; the dialog's
+    // confirm on that path says the same, and an ordinary update keeps its own.
+    const target = {
+      name: 'secretary', displayName: 'Secretary', origin: 'local', _registry: 'official',
+      trustRepository: 'https://github.com/acme/secretary',
+      retryInstalls: true, replacesInstalled: true,
+    }
+    const { rerender } = render(
+      <TrustAppModal app={{ ...target, switchesLocalSource: true }} pending={false} failed={false} granted={false} onCancel={() => {}} onConfirm={() => {}} />,
+    )
+    let dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByRole('button', { name: `${K}.confirm_switch_local_source` })).toBeTruthy()
+    expect(dialog.queryByRole('button', { name: `${K}.confirm_update` })).toBeNull()
+    // The switch line precedes the capability list so a phone shows it first.
+    const switchLine = dialog.getByText(`${K}.local_source_switch Secretary`, { exact: false })
+    const list = screen.getByRole('dialog').querySelector('ul')
+    expect(list).not.toBeNull()
+    expect(switchLine.compareDocumentPosition(list as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    rerender(
+      <TrustAppModal app={target} pending={false} failed={false} granted={false} onCancel={() => {}} onConfirm={() => {}} />,
+    )
+    dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByRole('button', { name: `${K}.confirm_update` })).toBeTruthy()
+    expect(dialog.queryByRole('button', { name: `${K}.confirm_switch_local_source` })).toBeNull()
+    expect(dialog.queryByText(`${K}.local_source_switch`, { exact: false })).toBeNull()
   })
 
   it('names the update while the UPDATE path is working, and keeps its outcome line after a failure', async () => {

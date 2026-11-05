@@ -6665,6 +6665,8 @@
       "storage_yes": "Storage: yes",
       "sync": "Sync",
       "sync_app_from_its_source_directory": "Sync app from its source directory",
+      "trust_repository_and_update": "Trust the repository and update",
+      "local_only_refusal": "{{app}} was installed from a folder on this computer. A newer version is published at {{repository}}. To update, trust that repository. Updating replaces the folder copy and keeps the app's data.",
       "tags": "Tags",
       "this_app_requires_macos_and_needs_to_be_installe": "This app requires macOS and needs to be installed on your local machine.\n                  Run this in your Mac terminal:",
       "this_will_remove_the_app_and_all_its_registered": "This will remove the app and all its registered resources.",
@@ -6724,7 +6726,9 @@
       "installed_app_find_in_library_and_enable": "Installed {{name}}. Enable it in Library.",
       "synced_from_its_source_directory": "Synced {{name}} from its source directory.",
       "updated_from_the_registry": "Updated {{name}} from the registry.",
+      "updated_from_its_repository": "Updated {{name}} from its repository.",
       "updated_needs_session_approval_consent": "{{name}} is disabled because it newly asks to control your chats. Review the permission in the app details, then enable it.",
+      "update_needs_repository_trust": "{{name}} was not updated, because its newer version comes from a repository you have not trusted yet. Open its details and choose Trust the repository and update.",
       "refresh_store": "Refresh the store",
       "refreshing_store": "Refreshing the store…",
       "store_catalog_unreachable": "Could not reach the official app catalog, so the store is showing its offline list. Check that the gateway can reach the internet, then refresh again."

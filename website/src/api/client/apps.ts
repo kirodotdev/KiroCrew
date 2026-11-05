@@ -23,6 +23,12 @@ export interface InstallStreamResult {
    * consent modal to open at all.
    */
   code?: string
+  /**
+   * On an `app_trust_local_only` refusal: the repository this update installs
+   * from, as the server normalized it. The update route takes it back as consent
+   * proof (`updateApp(name, 'registry:' + name, trustRepository)`).
+   */
+  trustRepository?: string
   needsClientInstall?: boolean
   clientInstall?: { shell?: string; postInstall?: string }
 }
@@ -119,7 +125,13 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
           userInstalled: { id: string; type: string; reason: string }[]
         }
       }>,
-    updateApp: (name: string, source?: string) => post('/api/apps/' + encodeURIComponent(name) + '/update', source ? { source } : {}).then(j),
+    // `trustRepository` is the consent proof from an `app_trust_local_only`
+    // refusal, sent with `source: registry:<name>` to switch the app's local-only
+    // grant to that repository for this update (the server puts it back on failure).
+    updateApp: (name: string, source?: string, trustRepository?: string) => post(
+      '/api/apps/' + encodeURIComponent(name) + '/update',
+      { ...(source ? { source } : {}), ...(trustRepository ? { trustRepository } : {}) },
+    ).then(j),
     migrateCleanup: (name: string) => del('/api/apps/' + encodeURIComponent(name) + '/migrate-cleanup').then(j),
     // apps is intentionally `any[]`: each page (AppsPage/MigrationPage/AppDetailPage)
     // narrows it to its own local RegistryApp shape at the call site. Typing it as

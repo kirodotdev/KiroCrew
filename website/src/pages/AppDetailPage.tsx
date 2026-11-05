@@ -26,7 +26,7 @@ import SessionApprovalModes from '../components/appstore/SessionApprovalModes'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, {
   APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isSessionApprovalConsentRequiredError,
-  isTrustDeniedError, SESSION_APPROVAL_CONSENT_REQUIRED, useTrustGate,
+  isTrustDeniedError, localOnlyTrustRepository, SESSION_APPROVAL_CONSENT_REQUIRED, useTrustGate,
 } from '../components/appstore/TrustAppModal'
 import { isRegistrySourced } from '../components/appstore/types'
 import { REGISTRY_STALE_MS, registryQueryFn } from './apps/useAppsData'
@@ -57,6 +57,8 @@ import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
 import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
 import AppDetailLinks from './AppDetailLinks'
+import AppDetailPageLocalOnlyNotice from './AppDetailPageLocalOnlyNotice'
+import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
@@ -194,6 +196,8 @@ export default function AppDetailPage() {
    * permanent refusal from a failure worth retrying.
    */
   const installFailureRef = useRef<{ message: string; code: string }>({ message: '', code: '' })
+  /** An `app_trust_local_only` refusal's repository, offered while its message is the error. */
+  const [localSwitch, setLocalSwitch] = useState<{ message: string; repository: string } | null>(null)
   const [clientInstall, setClientInstall] = useState<{ shell?: string; postInstall?: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const [serverHostname, setServerHostname] = useState('')
@@ -559,12 +563,9 @@ export default function AppDetailPage() {
     autoActionTriggered.current = true
     // Clear the state so a refresh or Back/Forward doesn't re-fire it.
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
-    // An installed app whose bytes came from a directory on this machine has no
-    // registry row to install from — its refresh is the update endpoint, which
-    // re-copies the source directory recorded at install. The streaming registry
-    // install is for everything else: a registry-sourced app, and an app not
-    // installed at all.
-    if (stateAction === 'update' && app.installed && !isRegistrySourced(app)) {
+    // A directory install with no registry update pending is this page's Sync (a
+    // re-copy). Everything else runs the streaming registry install, as Update does.
+    if (stateAction === 'update' && app.installed && !isRegistrySourced(app) && !app.updateAvailable) {
       handleAction('update')
       return
     }
@@ -594,6 +595,7 @@ export default function AppDetailPage() {
     // Drop the previous attempt's reason: a retry that fails for a new cause (or
     // is aborted, which has none) must never show the first attempt's.
     installFailureRef.current = { message: '', code: '' }
+    setLocalSwitch(null)
     setBackendRefusedMsg('')
     setClientInstall(null)
     installAbortRef.current?.abort()
@@ -646,7 +648,14 @@ export default function AppDetailPage() {
         await load()
         window.dispatchEvent(new Event('mc:apps-changed'))
       } else {
-        reportInstallFailure(result.error || i18nT('pages.appDetailPage.install_failed'), 'system', result.code || '')
+        const message = result.error || i18nT('pages.appDetailPage.install_failed')
+        reportInstallFailure(message, 'system', result.code || '')
+        const repository = localOnlyTrustRepository(result)
+        if (repository) {
+          // Refused before the clone: the log is empty and the banner's button is the way on.
+          setShowInstallLog(false)
+          setLocalSwitch({ message, repository })
+        }
         return 'failed'
       }
     } catch (e: unknown) {
@@ -705,7 +714,9 @@ export default function AppDetailPage() {
   // instead of the first-party fallback label (#20656).
   // Until the registries list lands (or when it fails) the tier is unknown, so
   // the not-vetted box shows (`consentTierFor`) rather than read it as vetted.
-  const consentTarget = trust.target && app && app.name === trust.target.name && app.origin !== 'local' && app._registry
+  // Except a local-source switch: it asks to trust the listing's own repository.
+  const consentTarget = trust.target && app && app.name === trust.target.name
+    && (app.origin !== 'local' || trust.target.switchesLocalSource === true) && app._registry
     ? { ...trust.target, _registry: app._registry, ...consentTierFor(app._registry, sourceNames, registriesData === undefined) }
     : trust.target
   const { confirm: confirmConsent, confirmDialog: consentDialog } = useConfirm()
@@ -762,6 +773,21 @@ export default function AppDetailPage() {
         }
       },
     )
+  }
+
+  // The local-only refusal's way on (`appDetailPageLocalSwitch.ts`).
+  const openLocalSwitch = () => {
+    if (!app || !localSwitch) return
+    openLocalSourceSwitch(app, localSwitch.repository, {
+      openTrust: trust.open,
+      settle: async () => {
+        clearError(); setLocalSwitch(null); setShowInstallLog(false)
+        await load()
+        window.dispatchEvent(new Event('mc:apps-changed'))
+      },
+      setBackendRefusedMsg,
+      showSuccess: (msg) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(''), 4000) },
+    })
   }
 
   const handleAction = async (action: 'enable' | 'disable' | 'uninstall' | 'update') => {
@@ -1005,6 +1031,7 @@ export default function AppDetailPage() {
   // the journal key, so a later unrelated `setError` never inherits an install
   // failure's code.
   const errorReport = error ? findReport(error) : undefined
+  const localOnlyRepo = localSwitch && localSwitch.message === error ? localSwitch.repository : ''
   // The desktop build-step refusal is permanent for this app as it is: the
   // Install / Update buttons below are disabled while its banner is up, because
   // pressing them runs the same clone and build into the same refusal. The
@@ -1305,6 +1332,10 @@ export default function AppDetailPage() {
             dismissLabelVisible
             className="mb-4 animate-rise"
           />
+        ) : localOnlyRepo ? (
+          // The refusal's error notice keeps the trust-and-update path in its footer.
+          <AppDetailPageLocalOnlyNotice name={appDisplayName(app)} repository={localOnlyRepo}
+            report={errorReport} busy={actionBusy} onTrust={openLocalSwitch} onDismiss={clearError} />
         ) : (
           <ErrorNotice
             message={memberThreadsRefused ? i18nT('pages.appDetailPage.session_approval_member_threads_refused') : error}

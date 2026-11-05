@@ -2064,6 +2064,8 @@
         "failed_generic": "Trusting “{{app}}” is what turns it on. It could not be turned on, and trust was not saved.",
         "install_outcome": "Trusting “{{app}}” does not turn it on: it installs switched off, and you turn it on from this page when you're ready.",
         "update_outcome": "Trusting “{{app}}” updates it: the new version replaces the one you have.",
+        "local_source_switch": "“{{app}}” is installed from a folder on this computer. Trusting this repository replaces that copy with the repository version and keeps the app's data. Its trust then covers the repository instead of the folder.",
+        "confirm_switch_local_source": "Trust the repository and update",
         "install_on_cancel": "“Cancel” changes nothing: nothing is installed, and “{{app}}” is not trusted.",
         "install_on_cancel_granted": "“Cancel” keeps “{{app}}” trusted, and the install does not run again.",
         "install_failed": "“{{app}}” is now trusted, but it could not be installed. To remove the trust, open Settings → Security → Third-party apps.",

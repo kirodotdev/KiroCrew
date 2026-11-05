@@ -55,7 +55,17 @@ logger = logging.getLogger("kiro_crew.apps.routes")
 
 
 async def handle_update_app(request: web.Request) -> web.Response:
-    """POST /api/apps/{name}/update — update an installed app from its source path."""
+    """POST /api/apps/{name}/update — update an installed app from its source path.
+
+    ``source`` (optional) overrides the recorded source; ``registry:<name>``
+    updates the app from the registry. ``trustRepository`` (optional, only with
+    that source) is the consent proof from an ``app_trust_local_only`` refusal:
+    the app's local-only grant is switched to that repository for the update and
+    put back if the update fails (:mod:`kiro_crew.apps.local_trust_switch`).
+    """
+    # Deferred like the gate below: the switch reaches the trust writer in the
+    # dashboard handlers package, which imports this route family.
+    from kiro_crew.apps import local_trust_switch
     from kiro_crew.dashboard.handlers._shared import (
         body_not_object_error,
         require_owner_dashboard_request,
@@ -89,6 +99,29 @@ async def handle_update_app(request: web.Request) -> web.Response:
 
     source = body.get("source", info.get("source", ""))
 
+    # Consent to the repository a registry update installs, sent when the app's
+    # grant covers its local folder only (the ``app_trust_local_only`` refusal
+    # carries this value). Valid only with a registry source for this same app:
+    # the grant it records names this app and the row this update installs.
+    consent = body.get("trustRepository")
+    if consent is not None and (
+        not isinstance(consent, str)
+        or not consent
+        or not isinstance(source, str)
+        or not is_registry_source(source)
+        or registry_name_from_source(source) != name
+    ):
+        return web.json_response(
+            {
+                "error": (
+                    "trustRepository must be a repository string and is accepted only "
+                    "with source registry:<this app>"
+                ),
+                "code": "invalid_repository_consent",
+            },
+            status=400,
+        )
+
     # Registry-installed apps: re-clone from registry.
     if is_registry_source(source):
         registry_name = registry_name_from_source(source)
@@ -112,8 +145,71 @@ async def handle_update_app(request: web.Request) -> web.Response:
                     status=400,
                 )
 
-            reg_install = await _reinstall_from_registry(name, registry_name)
+            # The local-to-repository trust switch is checked and written BEFORE
+            # the install, so a refused consent leaves the app untouched, and the
+            # grant is in place before ``install_from_registry`` fetches or runs
+            # any repository code.
+            switched_to: local_trust_switch.SwitchedGrant | None = None
+            if consent is not None:
+                switched = await local_trust_switch.switch_cancel_safe(
+                    name, consent, caller=request.get("user", "dashboard")
+                )
+                if isinstance(switched, local_trust_switch.SwitchRefusal):
+                    return web.json_response(
+                        {"ok": False, "name": name, "error": switched.error, "code": switched.code},
+                        status=switched.status,
+                    )
+                switched_to = switched
+            revert_task: asyncio.Future[None] | None = None
+
+            async def _revert_switch() -> None:
+                # One revert per request, shielded so a cancellation cannot stop it
+                # halfway. A later call awaits the same revert, so the lifecycle
+                # lock is not released while it is still writing.
+                nonlocal revert_task
+                if switched_to is None:
+                    return
+                if revert_task is None:
+                    revert_task = asyncio.ensure_future(
+                        local_trust_switch.revert_switch(
+                            name, switched_to, caller=request.get("user", "dashboard")
+                        )
+                    )
+                await asyncio.shield(revert_task)
+
+            failed_before_take_down = False
+
+            async def _after_failure(taken_down: bool) -> None:
+                nonlocal failed_before_take_down
+                failed_before_take_down = not taken_down
+                await _revert_switch()
+
+            # The whole install is one rollback scope: a failed result, a step that
+            # raises, or a cancelled request must not leave the repository grant
+            # over the local code that is still there. A failed install reverts
+            # through ``after_failure`` BEFORE the restore starts the old local code
+            # again, so it starts under the grant that covered it.
+            try:
+                reg_install = await _reinstall_from_registry(
+                    name, registry_name, after_failure=_after_failure
+                )
+            except BaseException:
+                await _revert_switch()
+                raise
             if not reg_install.get("ok"):
+                await _revert_switch()
+                if (
+                    switched_to is not None
+                    and failed_before_take_down
+                    and await _app_may_run_after_install(name)
+                ):
+                    # The old app kept running through the clone and build under the
+                    # repository grant, which does not cover its local code, so the
+                    # health watch can have stopped it. Start it again under the
+                    # restored grant. This does nothing while it still runs.
+                    restart_refused = await _start_backend_after_install(name)
+                    if restart_refused and not reg_install.get("backend_refused"):
+                        reg_install["backend_refused"] = restart_refused
                 sel().log_api_access(
                     caller="dashboard",
                     operation="app_update",
