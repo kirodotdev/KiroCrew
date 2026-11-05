@@ -228,7 +228,14 @@ gateway's automatic update) build each new version as its own tree beside it,
 `crew-venv-current` link to it. After each update the engine keeps the current
 tree, the previous one (a recovery target), and any tree a running `kirocrew`
 process still uses; older ones are removed. A direct installer run still
-rebuilds the fixed `crew-venv` in place. On a host that restricts unprivileged user
+rebuilds the fixed `crew-venv` in place (and a pipx install reinstalls into its
+own venv), so a gateway that is running during the re-run keeps the old version
+loaded while it reads the new files. The installer never restarts it: when it
+finds one running (an active `kirocrew` systemd unit, the
+`dev.kirocrew.gateway` launchd agent, or a `kirocrew gateway` process holding
+the data home's `gateway.lock`), it ends with a warning that names the restart
+command for that setup, such as `systemctl --user restart kirocrew`. Run it
+straight away. On a host that restricts unprivileged user
 namespaces and uses the `kirocrew-userns` AppArmor profile, run
 `kirocrew service install` again after every update so the profile follows the
 new launcher; the gateway's automatic update waits for you instead of applying
