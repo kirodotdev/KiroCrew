@@ -181,6 +181,9 @@ with no row here.
    * - ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``
      - driver-internal (whether the ADVERTISED option, rather than Crew's model
        registry, answers that this session takes an effort level and which ones)
+   * - ``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``
+     - driver-internal (whether an unpinned session serves a pseudo-model the
+       registry cannot name, so the advertised effort option answers there)
    * - ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
@@ -1143,6 +1146,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     _MODEL_REFUSAL_PHRASE_BY_BACKEND,
     _MODEL_REGISTRY_NAMESPACE_BY_BACKEND,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
