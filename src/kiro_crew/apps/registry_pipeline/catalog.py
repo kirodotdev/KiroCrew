@@ -1018,13 +1018,28 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     # Only paid when it can change the answer. With every `git` row already seeded
     # the fetch cannot unlock anything, so the storefront's hot path keeps costing
     # one cached read.
-    fresh_installable: dict[str, dict[str, Any]] = {}
-    if any(
+    #
+    # The fresh fetch and the external-registry rows do not depend on each other:
+    # the external rows are deduplicated against ``reserved_names``, which is
+    # settled above and never reads the fetch. So the two run at the same time,
+    # and the listing waits for the slower one instead of for both in turn.
+    needs_fresh_installable = any(
         row.get("source", {}).get("type") == "git" and row.get("name") not in installable_names
         for row in rows
-    ):
-        fresh_installable = await asyncio.to_thread(_catalog_installable_rows)
-        installable_names |= set(fresh_installable)
+    )
+
+    async def _fresh_installable_rows() -> dict[str, dict[str, Any]]:
+        if not needs_fresh_installable:
+            return {}
+        return await asyncio.to_thread(_catalog_installable_rows)
+
+    installed = await asyncio.to_thread(list_installed_apps)
+    installed_map = {a["name"]: a for a in installed}
+    fresh_installable, (external_rows, external_detected) = await asyncio.gather(
+        _fresh_installable_rows(),
+        _append_external_registry_apps([], reserved_names, installed_map),
+    )
+    installable_names |= set(fresh_installable)
     rows = [
         row
         for row in rows
@@ -1054,17 +1069,13 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
         install_row = seed_by_name.get(name) or fresh_installable.get(name)
         resolved_repositories[name] = _entry_git_url(install_row) if install_row is not None else ""
 
-    installed = await asyncio.to_thread(list_installed_apps)
-    installed_map = {a["name"]: a for a in installed}
     # Probed like every seed row is offline, so an edition app installed outside
     # the app manager reads installed on either path.
     edition_names = {row.get("name") for row in edition_rows}
     detected = await _detect_installed_probe(
         [row for row in rows if row.get("name") in edition_names], installed_map
     )
-    rows, external_detected = await _append_external_registry_apps(
-        rows, reserved_names, installed_map
-    )
+    rows.extend(external_rows)
     detected |= external_detected
     trust_repositories = _trust_repository_bindings(rows, installed_map, resolved_repositories)
     return _apply_trust_fields(
