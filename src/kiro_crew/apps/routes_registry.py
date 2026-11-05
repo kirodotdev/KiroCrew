@@ -22,7 +22,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps import official_catalog
-from kiro_crew.apps.manager import app_lifecycle_lock
+from kiro_crew.apps.manager import app_lifecycle_lock, get_app
 from kiro_crew.apps.official_category_order import forget_cache as forget_category_order_cache
 from kiro_crew.apps.official_category_order import load_category_order
 from kiro_crew.apps.official_editorial import forget_cache as forget_editorial_cache
@@ -198,6 +198,9 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     # lock-free internally (asyncio.Lock is not reentrant), so this is the
     # single acquisition covering clone/build → copy → register → backend.
     async with app_lifecycle_lock(name):
+        # Read before the install writes the app: an app already installed makes
+        # this install an update, whose rewritten crons must reach the scheduler.
+        was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
         result = await install_from_registry(name)
 
         # Redact install log and error before returning to client — build output
@@ -363,6 +366,8 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # lock (install_from_registry is lock-free internally).
     async def _locked_install() -> dict[str, Any]:
         async with app_lifecycle_lock(name):
+            # Read before the install, as in handle_registry_install.
+            was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
             r = await install_from_registry(name, log_lines=streaming_log)
             if r.get("ok") and not r.get("needsClientInstall"):
                 may_run = await _app_may_run_after_install(r["name"])
