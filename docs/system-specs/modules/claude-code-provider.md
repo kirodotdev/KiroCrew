@@ -728,10 +728,13 @@ from any call an activity event names, with or without a card (`_native_child_tc
 the dashboard, as the messaging driver's own set), so no child can act on the
 parent's chat. The ids outlive
 the turn, because a background child keeps running after the turn that started it;
-a later turn that reads one of its frames lists it again. Not wired: the per-child
-`capabilities.cancel` the adapter offers (a card's Stop still only closes the card),
-a resume naming a child id (it misses as an unknown conversation), and reporting the
-children as uncharged residency. A child's permission request is answered like any
+a later turn that reads one of its frames lists it again. The parent is the boundary,
+as for a kiro-cli child: a `spawn_continue` or `POST /api/spawn` resume naming a child
+id is refused with `native_child_not_resumable` naming the parent, and session health
+reports the children seen this turn as uncharged residency (`native_children`), never
+charged. Not
+wired: the per-child `capabilities.cancel` the adapter offers (a card's Stop still
+only closes the card). A child's permission request is answered like any
 other request on the session. The cards do not change the approval gate: the
 native-crew auto-approve rung (`hooks.auto_approve_subagent_tools` while a crew card
 is open, `tool_approval.py`) skips the claude backend, because a claude request does
