@@ -684,7 +684,7 @@ export function useChatPageSessionController({
       const next = new URLSearchParams(searchParams)
       next.set('sid', target)
       next.delete('slot')
-      // Never re-write a credential the token effect already stripped.
+      // Never write the credential boot took off the address bar back.
       next.delete('token')
       navigate(
         { pathname: locationPathname, search: `?${next}`, hash: locationHash },
@@ -1060,7 +1060,7 @@ export function useChatPageSessionController({
     next.delete('autoSend')
     next.delete('newSession')
     next.delete('msg')
-    // Never re-write a credential the token effect already stripped
+    // Never write the credential boot took off the address bar back
     // (session deep links arrive as `/chat?sid=…&token=…`).
     next.delete('token')
     const url = `${expectedPath}?${next}`
