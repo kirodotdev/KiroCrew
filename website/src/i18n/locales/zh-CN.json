@@ -17325,6 +17325,7 @@
         "commits_behind_other": "落后 {{count}} 个提交",
         "updates_managed_by_policy": "此安装的更新由管理员定义的更新策略管理。新版本将通过该机制到达。",
         "updates_managed_by_policy_desktop": "此计算机上的策略管理此应用的更新。新版本通过该策略到达，因此 {{productName}} 不会自行检查。请联系设置者进行更改，或编辑 security_policy.json。",
+        "updates_policy_file": "策略文件：{{path}}",
         "updates_managed_externally": "此安装的更新由外部包管理器管理。请使用该包管理器获取新版本。",
         "updates_managed_externally_by": "此安装的更新由 {{managedBy}} 管理。请使用它获取新版本。",
         "updates_managed_lane": "此安装的更新由外部包管理器管理。如需手动更新，请在终端中运行以下命令。",

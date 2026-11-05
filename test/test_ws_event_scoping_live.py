@@ -403,8 +403,8 @@ class TestLiveScopeNarrowing:
             Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / "ws.py"
         ).read_text(encoding="utf-8")
         assert (
-            'for _owner_only in ("branch", "commit")' in src
-        ), "the periodic dashboard frame must withhold checkout identity from apps"
+            'for _owner_only in ("branch", "commit", "update_policy_file")' in src
+        ), "the periodic dashboard frame must withhold checkout identity and the policy path"
         assert 'if not ws.get("_is_dashboard_user", False):' in src
         # The live auto-approve grant joins the frame only for a dashboard user.
         assert (

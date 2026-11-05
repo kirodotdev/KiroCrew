@@ -79,6 +79,12 @@ export interface StatusData {
    */
   update_channel_move_pending?: boolean
   update_managed_by?: string
+  /**
+   * The home security policy file's path when its update commands manage
+   * this install, so the policy notice can say where it is. Empty under any
+   * other policy tier, absent on older gateways and on app sockets.
+   */
+  update_policy_file?: string
   update_can_arm?: boolean
   /**
    * What an available update leads to on this install: `install` (with the

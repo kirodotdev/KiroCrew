@@ -2246,7 +2246,8 @@ counts-and-environment only. The `cron_jobs` and `lessons` counts are nullable:
 `null` means the gateway's count refresh has not succeeded yet (unknown), never
 zero — app consumers must treat `null` as "no data", not `0`. The checkout's `branch`/`commit` are stripped for app
 tokens (they say what the operator is working on and have no consumer outside the
-owner surfaces); `/api/status` and the SSE stream run on dashboard-user tokens and
+owner surfaces), and so is `update_policy_file`, a path in the operator's home
+directory; `/api/status` and the SSE stream run on dashboard-user tokens and
 keep the full snapshot. The live auto-approve grant (`yolo`, `yolo_expires_at` and the
 rest of `status_counts.yolo_grant_fields`) joins only a dashboard user's frame; an app
 socket's frame never carries it. Moving the whole frame behind a declaration was rejected:

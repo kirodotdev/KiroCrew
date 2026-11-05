@@ -613,6 +613,9 @@ export function AboutPanel() {
   // True when the policy provider governs this bundled install.
   // Read from the main-process-confirmed update-state (useIsPolicyGoverned).
   const isGatewayPolicyManaged = useIsPolicyGoverned(infoQuery.data)
+  // Where the policy file the notice says to edit lives; '' when it is not one
+  // the user can edit to change updates.
+  const policyFile = useAppSelector(s => s.dashboard.status?.update_policy_file) || ''
   // In-app arm+approve applies only where the backend probed the managed-venv
   // shape; managed_by alone also covers bare source installs whose arm would 409.
   const gwCanArm = useAppSelector(s => s.dashboard.status?.update_can_arm) === true
@@ -1427,6 +1430,11 @@ export function AboutPanel() {
               <p className="text-sm text-text" data-testid="gateway-policy-managed-note">
                 {i18nT('pages.settings.aboutPanel.updates_managed_by_policy_desktop')}
               </p>
+              {policyFile && (
+                <p className="text-sm text-muted break-all" data-testid="gateway-policy-file">
+                  {i18nT('pages.settings.aboutPanel.updates_policy_file', { path: policyFile })}
+                </p>
+              )}
               {/* When the provider has a pending update, render the gateway's
                   check/apply controls so the user can act on it. Shown ONLY
                   when showUpdate is true to avoid displaying a "Check for

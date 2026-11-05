@@ -2864,6 +2864,16 @@ because the provider is resolved before the desktop deferral. On such a bundle
 gateway's loop runs; on a bundle with no provider it reports `notify`, the app's
 own updater owning the update.
 
+`update_policy_file` is the path of the security policy file to edit, so About's
+"managed by policy" notice can show where it is. It is set only when
+`update_managed_by` is `command` and the composed ceiling's top tier is the home
+file (`<data home>/security_policy.json`). The update commands come from the top
+tier alone, so under a central, `KIROCREW_SECURITY_POLICY` or bundled policy,
+editing the home file would change nothing, and the field is empty. The path names
+the operator's home directory, so an app socket's `dashboard` frame drops it, as it
+drops `branch` and `commit`. The notice keeps its "ask whoever set this up" line
+either way: a file in the home directory does not show who wrote it.
+
 **`auto_update` is validated on read and on write.** Validation and the loader
 run it through `fields._coerce_bool(..., False)`: a recognized spelling is
 honoured (`"false"`/`"off"`/`"0"` read OFF, `"true"`/`"on"`/`"1"` read ON) and
