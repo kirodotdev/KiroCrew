@@ -909,7 +909,27 @@ def _live_child_instance(state: "DashboardState", slot: "_ChatSlot") -> str:
         return ""
 
 
-def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot") -> None:
+def _open_oauth_banner_rows(slot: "_ChatSlot") -> list[dict]:
+    """*slot*'s ``mcp_oauth`` rows that still offer a link and record no outcome."""
+    return [
+        message
+        for message in list(slot.messages)
+        if message.get("role") == "mcp_oauth"
+        for meta in (message.get("meta") or {},)
+        if meta.get("oauth_url")
+        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
+    ]
+
+
+def _oauth_banner_row_key(message: dict) -> str:
+    """A stable name for one banner row: its ``mid``, else its ``ts``."""
+    meta = message.get("meta") or {}
+    return str(meta.get("mid") or message.get("ts") or "")
+
+
+def _broadcast_expired_oauth_banners(
+    state: "DashboardState", slot: "_ChatSlot", *, only: "set[str] | None" = None
+) -> None:
     """Push the read-time gate's current verdict on *slot*'s OAuth banners to open tabs.
 
     The gate in `_prepare_messages` runs only when a client FETCHES, so an
@@ -946,16 +966,15 @@ def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot")
     # any tab in this process (opening the tab loads the window first), so no
     # tab shows one of its banners to withdraw; asking would load its whole
     # transcript on the loop for nothing.
+    #
+    # ``only`` limits the frames to the rows with those keys
+    # (:func:`_oauth_banner_row_key`), so a caller that already announced some
+    # rows does not send them again.
     if getattr(slot, "window_pending", False) is True:
         return
-    candidates = [
-        message
-        for message in slot.messages
-        if message.get("role") == "mcp_oauth"
-        for meta in (message.get("meta") or {},)
-        if meta.get("oauth_url")
-        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
-    ]
+    candidates = _open_oauth_banner_rows(slot)
+    if only is not None:
+        candidates = [m for m in candidates if _oauth_banner_row_key(m) in only]
     if not candidates:
         return
     live_child = _live_child_instance(state, slot)

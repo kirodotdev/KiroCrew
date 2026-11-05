@@ -678,6 +678,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DisplayRedactionKey,
         _expire_dead_child_oauth_meta,
         _live_child_instance,
+        _oauth_banner_row_key,
+        _open_oauth_banner_rows,
         _prepare_messages,
         _prepare_messages_scoped,
         _redact_for_display,
