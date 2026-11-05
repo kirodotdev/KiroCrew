@@ -564,9 +564,16 @@ describe('SkillBrowserModal', () => {
     expect(within(row).queryByRole('button', { name: 'Reinstall' })).not.toBeInTheDocument()
     fireEvent.click(row)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Reinstall' }))
+    const reinstall = await screen.findByRole('button', { name: 'Reinstall' })
+    // The button says, before the click, that it replaces the local copy.
+    expect(reinstall).toHaveAccessibleDescription(
+      'Reinstall replaces your local copy with the latest from skills.sh, including any edits you made.')
+    fireEvent.click(reinstall)
     await waitFor(() => expect(mockApi.installDiscoveredSkill)
       .toHaveBeenCalledWith('skillsh', 'acme/widget-wrangler', { overwrite: true }))
+    // The done state differs from the badge shown before the click.
+    expect(await screen.findAllByText('Reinstalled')).not.toHaveLength(0)
+    expect(screen.queryByText(/Reinstall replaces your local copy/)).not.toBeInTheDocument()
     // Reinstalling does not navigate away: the row stays selected.
     expect(row).toHaveAttribute('aria-selected', 'true')
   })
