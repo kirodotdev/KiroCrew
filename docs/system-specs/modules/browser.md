@@ -193,7 +193,11 @@ browser can never answer, behind which every `http(s)` navigation -- loopback in
 -- hangs forever while `data:` pages still load. The key stays in memory; the profile
 it protects is Kiro's own hidden leaf. Kiro's profile is a
 `HIDDEN` crew-home leaf: cookies from a takeover login stay there and the agent
-cannot read the file. `browser.choice` (`auto|user_chrome|kiro_chromium|headless`)
+cannot read the file. Tabs do not survive a relaunch of Kiro's Chromium: before
+each launch the supervisor removes the profile's session files
+(`Default/Sessions/` and the older `Current`/`Last` `Session`/`Tabs` files), so
+pages from closed chats are not reopened; cookies and logins are kept. The
+user's own Chrome or Edge is never touched. `browser.choice` (`auto|user_chrome|kiro_chromium|headless`)
 overrides the order by hand.
 
 Chrome 144+ asks "Allow remote debugging?" once per connection. The supervisor's
