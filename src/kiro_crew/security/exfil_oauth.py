@@ -236,6 +236,7 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("mcp.neon.tech", "/api/authorize"),
         ("mcp.paypal.com", "/authorize"),
         ("mcp.postman.com", "/authorize"),
+        ("mcp.quo.com", "/authorize"),
         ("mcp.sentry.dev", "/oauth/authorize"),
         ("mcp.squareup.com", "/authorize"),
         ("mcp.webflow.com", "/oauth/authorize"),
