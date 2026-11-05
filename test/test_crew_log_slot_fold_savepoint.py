@@ -28,6 +28,7 @@ import re
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -87,7 +88,7 @@ def _ledger(unit_id: str, *, slot: str = SLOT, **fields: Any) -> None:
     payload: dict[str, Any] = {"slot": slot}
     payload.update(fields)
     crew_log_emit.on_ledger_recorded(unit_id, payload)
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _steps(unit_id: str, first: int, last: int, *, slot: str = SLOT) -> None:
@@ -832,7 +833,7 @@ def test_one_fold_name_read_both_ways_keeps_two_files(_cheap_writes):
     _unit(FIRST)
     for step in range(1, 7):
         crew_log_emit.on_tool_called(FIRST, 1, name=f"t{step}", call_id=f"c{step}")
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
     crew_log.fold_slot_warm("tools", (FIRST,), slot=SLOT)
     crew_log.fold_session(FIRST, ("tools",))
