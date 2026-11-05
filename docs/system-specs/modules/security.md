@@ -2570,7 +2570,12 @@ or an authored restriction in the RAW spec inputs
 `permissions` block, all three capabilities when that block is anything but a
 readable `{"rules": [...]}` with no `policies` bundle (the shapes the merge refuses
 whole, which a KAS session's start notice names as `permissions`), and any
-`toolsSettings` entry for one of these built-ins. The raw reading
+`toolsSettings` entry for one of these built-ins. The keys that
+only grant on kiro-cli are not read as a restriction there: a shell entry's
+`allowedCommands` and a read or write entry's `allowedPaths`
+(`kas_grant_only_settings.without_grant_only_settings`), so `allowedTools: ["write"]` with
+`write.allowedPaths` still writes without a prompt, as on kiro-cli. Any other key
+beside them (`deniedPaths`, `fallbackAction`, `denyByDefault`) still withholds. The raw reading
 exists because a merge or a translation drops what it cannot carry; an authored
 "ask me" reaches Crew as a permission request, and the `allowedTools` grant must not
 answer it. Because it is a grant row, every deny row
@@ -2616,7 +2621,7 @@ entries match. An escape must be ASCII punctuation, and in an entry with any of
 that wider syntax not `<` `>` (Rust reads `\<` `\>` as word boundaries and refuses
 other escapes, a non-ASCII one included); an entry outside it, an over-long list,
 and a list the projection withholds are named in the session-start notice) only when
-`may_grant_builtin_at_gate_now("execute_bash")` holds and no restriction the spec's author wrote on the shell withholds it (`withhold_answered_under_authored_rules`, read over every `toolsSettings` shell key except `allowedCommands` itself, `kas_permissions.without_allowed_commands`, so a `deniedCommands` or `denyByDefault` beside it keeps every command prompting), the handle keeps them
+`may_grant_builtin_at_gate_now("execute_bash")` holds and no restriction the spec's author wrote on the shell withholds it (`withhold_answered_under_authored_rules`, read over every `toolsSettings` shell key except `allowedCommands` itself, `kas_grant_only_settings.without_allowed_commands`, so a `deniedCommands` or `denyByDefault` beside it keeps every command prompting), the handle keeps them
 (`AcpSessionHandle.kas_crew_answered_commands`) and stamps them on the same own
 requests (`AcpEvent.spec_granted_commands`). In place of the built-in name, the row
 then needs a shell call (`execute_bash` among its names, `is_shell`) whose
