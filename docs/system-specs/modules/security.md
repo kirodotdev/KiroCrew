@@ -4080,7 +4080,14 @@ confirm"). The user's `auto_deny_tools` globs
 — and only those, never the shipped shell regexes — are also matched against
 the same `@server/tool` / `Running: @server/tool` / `@server` spellings whenever
 the server name is present, so a deny written in the spelling the approve loop
-teaches binds on the identity plane and deny still beats approve there. The hook reports the last two with
+teaches binds on the identity plane and deny still beats approve there. A call
+with no server name whose title is `mcp__<server>__<tool>` (claude sends no
+`_meta.kiro`, so its MCP calls carry only that title) gets the same three
+spellings from `mcp_title_to_ref`, the last-`__` split the governance ceilings
+use: a server named `npm__playwright` serving `click` reads back correctly, a
+tool name holding `__` does not. That reading feeds this deny tier alone — never
+the deny targets, never `auto_approve_tools` or the own-server grant — because the
+title is agent-influenced and a deny can only deny (`test_auto_deny_mcp_title.py`). The hook reports the last two with
 `ToolHookResult.identity_grant`, and the child-admission rule lives in two
 places only: `hooks.identity_grant_covers_child`, which both the dashboard
 runner and the subagent manager consult before letting a hook auto-approve
