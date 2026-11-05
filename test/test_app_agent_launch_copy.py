@@ -17,6 +17,7 @@ from app_bridges_helpers import app_env_fixture  # noqa: F401
 from app_bridges_helpers import _make_app_source
 from turn_harness import ScriptedProvider, SlotSpec, TurnScript, run_turn
 
+from conftest import requires_symlinks
 from kiro_crew.acp import managed_agent_shadow
 from kiro_crew.acp.session_handle import AcpRuntimeError
 from kiro_crew.acp.skill_projection import project_agent_view
@@ -578,7 +579,7 @@ def test_a_foreign_file_at_the_copy_path_is_left_alone(agents_dir):
     assert json.loads(target.read_text())["prompt"] == "someone else's"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+@requires_symlinks
 def test_a_link_at_the_copy_path_is_not_written_through(agents_dir, tmp_path):
     _register(agents_dir)
     elsewhere = tmp_path / "elsewhere.json"

@@ -12,7 +12,6 @@ traversal or symlink-escape write anywhere in the app.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -22,6 +21,7 @@ from meetings_helpers import (  # noqa: F401
 )
 from named_cases_helpers import named_cases
 
+from conftest import requires_symlinks
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 
@@ -97,7 +97,7 @@ class TestContainment:
         with pytest.raises(store.MeetingsPathError):
             store.contain(root / ".." / "escape.md", operation="test", root=root)
 
-    @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+    @requires_symlinks
     def test_symlink_out_of_root_refused(self, root: Path, tmp_path: Path):
         # The attack this barrier exists for: a symlink planted INSIDE the data
         # dir pointing out of it. resolve() follows it, so containment fails and
@@ -198,7 +198,7 @@ class TestMeetingMeta:
     def test_delete_unknown_meeting_returns_false(self, root: Path):
         assert store.delete_meeting("missing", root) is False
 
-    @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+    @requires_symlinks
     def test_delete_refuses_an_in_root_directory_link(self, root: Path):
         store.write_meeting_meta("target", store.new_meeting_meta("target", "Keep"), root)
         (store.meetings_root(root) / "alias").symlink_to(

@@ -26,11 +26,9 @@ from collections.abc import Iterator
 import pytest
 
 import xdist_budget as ct
-from conftest import absent_sysconf
+from conftest import absent_sysconf, requires_symlinks
 
-needs_symlinks = pytest.mark.skipif(
-    os.name != "posix", reason="symlink creation needs privileges on Windows"
-)
+needs_symlinks = requires_symlinks
 
 
 @pytest.fixture

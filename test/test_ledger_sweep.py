@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import ledger_sweep as sweep
 from kiro_crew import session_ledger as sl
 from kiro_crew import work_ledger as wl
@@ -535,7 +536,7 @@ def test_doctor_counts_what_the_dry_run_lists_and_deletes_nothing(capsys):
     assert session.is_dir() and work.is_dir(), "doctor must not remove anything"
 
 
-@pytest.mark.skipif(not IS_POSIX, reason="symlink creation needs no privilege on POSIX")
+@requires_symlinks
 def test_doctor_counts_a_linked_store_without_calling_it_finished(tmp_path, capsys):
     import shutil
 
@@ -964,7 +965,7 @@ def test_a_header_that_tore_after_the_scan_is_refused_by_a_plain_purge():
 # ── a link is never followed ───────────────────────────────────────────────
 
 
-@pytest.mark.skipif(not IS_POSIX, reason="symlink creation needs no privilege on POSIX")
+@requires_symlinks
 def test_a_linked_items_directory_is_damage_and_the_purge_never_follows_it(tmp_path):
     """An ``items/`` that is a link names another directory's files as this
     store's items. The census reports it as damage, the store refuses the purge
@@ -997,7 +998,7 @@ def test_a_linked_items_directory_is_damage_and_the_purge_never_follows_it(tmp_p
     assert (directory / "items").is_symlink() and directory.is_dir()
 
 
-@pytest.mark.skipif(not IS_POSIX, reason="symlink creation needs no privilege on POSIX")
+@requires_symlinks
 def test_a_linked_store_directory_is_reported_and_never_aimed_at(tmp_path):
     """Both halves: a store directory that is itself a link is listed for the
     operator as ``report`` and is never purged -- the scanners never classify

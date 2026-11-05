@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.project_scan import (
     MAX_DECLARATION_BYTES,
     Candidate,
@@ -427,7 +428,7 @@ class TestMemberLimits:
 
         assert _relative_paths(scan(tmp_path, depth_cap=3), tmp_path) == ["a/b"]
 
-    @pytest.mark.skipif(_IS_WINDOWS, reason="directory symlinks need elevation on Windows")
+    @requires_symlinks
     def test_a_member_reached_through_a_symlink_is_dropped(self, tmp_path: Path) -> None:
         outside = tmp_path / "outside"
         _make(outside, "pkg/")
@@ -438,7 +439,7 @@ class TestMemberLimits:
 
         assert _relative_paths(scan(root), root) == ["packages/api"]
 
-    @pytest.mark.skipif(_IS_WINDOWS, reason="file symlinks need elevation on Windows")
+    @requires_symlinks
     def test_a_symlinked_declaration_is_not_read(self, tmp_path: Path) -> None:
         # The scan opens declarations, so following a link would read a file from
         # outside the tree the user pointed at. The name still signals a manifest,

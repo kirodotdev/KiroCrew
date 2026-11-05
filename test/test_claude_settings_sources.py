@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import sys
 from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.acp.claude_settings_sources import (
     other_sources_define_available_models,
     read_claude_settings_bytes,
@@ -197,7 +197,7 @@ def test_managed_dropin_without_a_json_suffix_is_skipped(tmp_path):
     assert _check(tmp_path / "work", tmp_path / "user", managed) is False
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
+@requires_symlinks
 def test_managed_dropin_that_is_a_symlink_to_json_is_true(tmp_path):
     managed = _managed(tmp_path)
     real = _write(tmp_path / "elsewhere.json", {"availableModels": ["opus"]})
@@ -218,7 +218,7 @@ def test_read_claude_settings_bytes_raises_for_a_missing_path(tmp_path):
         read_claude_settings_bytes(tmp_path / "absent.json", follow_links=False)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
+@requires_symlinks
 def test_read_claude_settings_bytes_refuses_a_link_when_not_following(tmp_path):
     real = _write(tmp_path / "real.json", {"availableModels": ["opus"]})
     link = tmp_path / "link.json"
@@ -226,7 +226,7 @@ def test_read_claude_settings_bytes_refuses_a_link_when_not_following(tmp_path):
     assert read_claude_settings_bytes(link, follow_links=False) is None
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+@requires_symlinks
 def test_project_settings_reached_through_a_symlink_is_false(tmp_path):
     """A cloned repository controls .claude/settings.json, so a link there is not followed."""
     real = _write(tmp_path / "elsewhere.json", {"availableModels": ["haiku"]})
@@ -236,7 +236,7 @@ def test_project_settings_reached_through_a_symlink_is_false(tmp_path):
     assert _check(work, tmp_path / "user", _managed(tmp_path)) is False
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+@requires_symlinks
 def test_user_settings_reached_through_a_symlink_is_true(tmp_path):
     """A dotfile-managed user settings file is commonly a link, and it is still read."""
     real = _write(tmp_path / "dotfiles" / "claude-settings.json", {"availableModels": ["opus"]})

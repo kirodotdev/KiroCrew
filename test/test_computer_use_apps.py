@@ -31,9 +31,9 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.computer_use import apps_macos, macos_ffi, policy
 from kiro_crew.computer_use.types import AppRef, ComputerUseError, PolicyConfig
-from kiro_crew.platform_compat import IS_POSIX
 
 # The live finding, as a fixture. Both entries claim the same owner name; only the
 # layer distinguishes them, and only the layer-0 one has a populated AX tree.
@@ -449,11 +449,7 @@ def test_a_plist_on_the_sensitive_path_floor_is_never_read(
     assert apps_macos.resolve_identity(5150).resolved is False
 
 
-@pytest.mark.skipif(
-    not IS_POSIX,
-    reason="creating a symlink needs elevation on Windows; the resolved-target check "
-    "it exercises is platform-independent and covered by the sensitive-dir case above",
-)
+@requires_symlinks
 def test_a_plist_that_is_a_SYMLINK_into_a_protected_dir_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

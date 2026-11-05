@@ -21,6 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from conftest import requires_symlinks
 from kiro_crew import crewmate_bundle as reader
 from kiro_crew import crewmate_bundle_export as ex
 from kiro_crew import member_goals
@@ -523,7 +524,7 @@ def test_a_script_path_outside_the_cron_folder_is_refused(spec: str, tmp_path: P
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+@requires_symlinks
 def test_a_linked_script_and_a_script_holding_a_credential_stay_home() -> None:
     root = _crons_root()
     target = root.parent / "real.py"
@@ -659,7 +660,7 @@ def test_a_sub_folder_or_an_oversized_skill_is_left_out(tmp_path: Path) -> None:
     }
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+@requires_symlinks
 def test_a_linked_skill_folder_file_or_root_is_never_followed(tmp_path: Path) -> None:
     secret_dir = tmp_path / "elsewhere"
     secret_dir.mkdir()
