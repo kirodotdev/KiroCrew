@@ -413,6 +413,7 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
 from kiro_crew.dashboard.chat_runner import (  # noqa: F401
     _arm_pending_reset_retry,
     _context_usage_payload,
+    _forwards_harness_command,
     _run_chat,
     _start_next_queued_turn,
     _sync_served_model,

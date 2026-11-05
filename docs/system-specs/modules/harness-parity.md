@@ -218,6 +218,19 @@ The public schema admits only `agent.provider = "acp"` (H2); a dormant
 a caller injects that unsupported label. An edition adding a provider seam must
 define its allocation and capability authority rather than inherit a label-based
 exemption.
+`ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS` is the H6 opt-in for forwarding ANY
+leading-slash word to the harness raw, not only kiro-cli's command names: Claude
+Code resolves `/review`, `/init`, `/security-review`, `.claude/commands` and skills
+by name inside `session/prompt`. Only Claude belongs today. The slash gate and the
+app-grant send refusal both ask `_forwards_harness_command`, which reads `SessionCapabilities.runs_own_slash_commands`
+from the backend the `/todos` gate resolves (a positively live provider first, else
+the member-aware `select_provider_backend`), so a member pinned to another harness
+is not misrouted by the default. The dormant `"claude_code"` label still grants the
+same rule. A quick-prompt macro and the dashboard's local commands win first. Only a
+leading-slash word outside kiro-cli's command names triggers the backend lookup, so
+plain text and kiro-cli's own commands take the path they took before. Forwarding
+and mirroring are separate: a word only this set forwards still mirrors its echo
+and reply to linked surfaces, so a Slack sender hears the answer.
 An unsupported pre-acquisition answer refuses without cold-starting or waiting
 for a provider. Refusal preserves
 live Slack OPTIONS and the context owed by a first claim, including speculative

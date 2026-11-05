@@ -920,7 +920,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     _refusal_reasons = turn._refusal_reasons
     _stop_reason = turn._stop_reason
     _turn_flushed_visible_text = turn._turn_flushed_visible_text
-    is_slash = turn.is_slash
+    _slash_withholds_mirror = turn._slash_withholds_mirror
     needs_session_reset = turn.needs_session_reset
     session_key = turn.session_key
     slot = turn.slot
@@ -1244,7 +1244,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     # mirror-link writer free to retarget between them. The text is the turn's
     # whole answer, as on the Slack leg: `turn.assistant_text` is only the
     # segment after the last tool call.
-    if not is_slash:
+    if not _slash_withholds_mirror:
         _xs_reply = _cross_surface_reply_text(_turn_reply_segments(turn), turn.assistant_text)
         if not _xs_reply.strip() and turn._terminal_directive_applied:
             # Same quiet end as the Slack leg above: the outcome line is the reply.

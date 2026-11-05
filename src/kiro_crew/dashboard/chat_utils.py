@@ -373,8 +373,9 @@ def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
     """Whether *first_word* should be forwarded to the harness as a command.
 
     Two rules, and the second exists because of a trap. A member of
-    :data:`_SLASH_COMMANDS` is a command on every provider. Under ``claude_code``
-    the harness owns its own command set, so ANY leading slash is forwarded —
+    :data:`_SLASH_COMMANDS` is a command on every provider. When *cc_provider* says
+    the harness owns its own command set (the ``claude_code`` label, or a backend in
+    ``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``), ANY leading slash is forwarded —
     except a quick-prompt token, which is not a command at all but a macro
     :meth:`ContextBuilder.build_message` expands into an instruction. Forwarding one
     would hand the harness a command it has no definition for, and the token would

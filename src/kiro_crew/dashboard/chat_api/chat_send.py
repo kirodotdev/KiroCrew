@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         _deny_app_session_settings,
         _emit_agent_assignment,
+        _forwards_harness_command,
         _history_key_for,
         _maybe_auto_title,
         _normalize_slot_key,
@@ -56,7 +57,6 @@ if TYPE_CHECKING:
         drained_to_thread,
         effective_session_key,
         is_claude_code,
-        is_harness_slash_command,
         is_registered_agent_name,
         load_window_off_loop,
         logger,
@@ -142,10 +142,10 @@ def _send_writes_persona(body: dict) -> bool:
     return "color_theme" in body
 
 
-async def _send_harness_command(message: str) -> str:
+async def _send_harness_command(message: str, state: DashboardState, slot: _ChatSlot) -> str:
     """The harness slash command *message* opens with, or ``""`` for plain text.
 
-    The same predicate the runner forwards on (``is_harness_slash_command``), so
+    The same predicate the runner forwards on (``_forwards_harness_command``), so
     what this refuses is exactly what would reach the harness as a command. The
     config is read only for a first word that starts with ``/``.
     """
@@ -154,7 +154,9 @@ async def _send_harness_command(message: str) -> str:
         return ""
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     cc_provider = is_claude_code(cfg.agent.provider)
-    return first_word if is_harness_slash_command(first_word, cc_provider=cc_provider) else ""
+    key = effective_session_key(slot)
+    forwarded = await _forwards_harness_command(state, key, first_word, cc_provider=cc_provider)
+    return first_word if forwarded else ""
 
 
 def steer_is_auto(value: object) -> bool:
@@ -796,7 +798,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # an agent other than the one named would be a silent substitution. A
         # harness slash command is refused here, above the busy branch, so a
         # queued copy cannot run it later.
-        command = await _send_harness_command(message)
+        command = await _send_harness_command(message, state, slot)
         # The slot may have closed, or a cron or channel binder may have
         # re-linked it, during the permission and config reads; the grant
         # reaches only a local user session.
