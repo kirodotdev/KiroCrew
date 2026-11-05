@@ -445,6 +445,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "reader loses by choosing another harness. A wrong membership forwards a "
         "command the acquired provider cannot serve, which is a defect"
     ),
+    "ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS": (
+        "whether the dashboard forwards every leading-slash word to the harness raw, "
+        "rather than only kiro-cli's command names. It selects a command-dispatch path "
+        "for a harness that resolves its own commands, not a feature a reader gains by "
+        "choosing it. A wrong membership either sends prompt text to the harness as a "
+        "command with no context, or hands one of its own commands to the model as "
+        "text, which is a defect"
+    ),
     "ACP_BACKENDS_LOCAL_CLEAR": (
         "whether the dashboard answers /clear itself or hands it to the harness. "
         "/clear drops the conversation on every harness either way, so a reader "
