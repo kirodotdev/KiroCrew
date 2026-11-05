@@ -64,15 +64,16 @@ def post_compaction_parts(
     The agent contract, the memory activity index, the skills index (same gate and
     glob restriction as session start), the learned-lessons block (same store,
     gates and budgets as session start, ranked against *query_text*, the user's
-    own text for this turn), the CURRENT reply-style preferences and the CURRENT
+    own text for this turn), the CURRENT reply-style preferences, the Claude Code
+    backend's steering resources (same gate as session start) and the CURRENT
     folder steering. The member section is re-injected by the caller, through the
     member lifecycle chokepoint. Also starts the session's shown-lesson record
     again, from the lessons block re-sent here.
 
     A minimal-context turn (shared and guest channel turns, minimal crons) gets back
     only what its minimal session start carried: the agent contract and the
-    reply-style preferences. The operator's memory, lessons, skills and folder
-    steering stay out of a prompt other people read.
+    reply-style preferences. The operator's memory, lessons, skills, steering
+    resources and folder steering stay out of a prompt other people read.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
@@ -188,6 +189,19 @@ def post_compaction_parts(
         )
     if _prefs:
         parts.append("[REINJECTED AFTER COMPACTION — response preferences]\n" + _prefs)
+    # The Claude Code backend got the agent config's steering resources as
+    # session-start prompt text, so the compaction dropped them; kiro-cli keeps
+    # its natively loaded ``resources``, so the gate is the session-start one.
+    # The files are user-written: scrub the payload, keep the wrapper outside it.
+    _steering_ctx = _inclusion.steering_resources_part(
+        agent=agent, is_cc=is_cc, essentials=_essentials, context_groups=context_groups
+    )
+    if _steering_ctx:
+        parts.append(
+            "[REINJECTED AFTER COMPACTION — steering resources]\n"
+            + ctx._neutralize_structural_markers(_steering_ctx)
+            + "\n[END REINJECTED]\n\n"
+        )
     # Folder steering is session-start context too, and unlike kiro's
     # native project steering it has no host-side persistence across a
     # compaction -- it was prompt text, and the compaction dropped it.
