@@ -80,6 +80,7 @@ import { Composer, type ComposerCapabilities } from '../chat-core/composer/Compo
 import { ComposerEditor, ComposerSend } from '../chat-core/composer/atoms'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
 import { EMBED_HIDDEN_COMMANDS, useEmbedPickers } from './useEmbedPickers'
+import { useEmbedSendRefocus } from './useEmbedSendRefocus'
 import { sendFailureCopy, deliveryUnconfirmedCopy } from '../chat-core/transport/receiptCopy'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { drainEmbedRecovery, stashEmbedRecovery, subscribeEmbedRecovery, type PendingEmbedRecovery } from './embedSendRecovery'
@@ -1089,6 +1090,8 @@ function ChatEmbed({
     onSettled: () => { void refetch() },
   })
 
+  const { rowRef: composerRowRef, armRefocus } = useEmbedSendRefocus(sendMutation.isPending, textareaRef)
+
   /** `override` carries the text a follow-up chip's send arrow supplies (double-click
    *  or the send segment); without it the draft is the source of truth. Every call
    *  site wraps this in an arrow, so a click event can never arrive here as the
@@ -1117,6 +1120,7 @@ function ChatEmbed({
       setDraft('')
       closePickers()
       pastes.install([])
+      armRefocus()
     }
     // A fresh id and the slot the send belongs to: the yardstick for "did the
     // poll show THIS send", and the address a receipt is delivered to if this
@@ -1158,7 +1162,7 @@ function ChatEmbed({
       before,
     }])
     sendMutation.mutate({ msg, meta, files, resized, sentPastes, draftText, override: override != null, sendId, slot: slotKey, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
-  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers, pastes])
+  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers, pastes, armRefocus])
 
   const pickerLabel = attachments.uploading
     ? i18nT('appSdk.chatEmbed.uploading_files')
@@ -1494,6 +1498,7 @@ function ChatEmbed({
 
       <Composer slotKey={slotKey} value={draft} onChange={setDraft} pastes={pastes} capabilities={EMBED_CAPABILITIES}>
         <div
+          ref={composerRowRef}
           className={`flex items-end gap-2 px-3 py-2 shrink-0 ${frameless ? '' : `${attachments.notice || attachments.files.length || attachments.uploadingNames.length || stopError || pressHint ? '' : 'border-t'} border-border bg-bg-accent`}`}
         >
           {attachments.granted && (
