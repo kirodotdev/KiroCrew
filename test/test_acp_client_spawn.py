@@ -5,6 +5,7 @@ environment, session cwd, backend selection, ensure_ready and spawn-argv refusal
 import asyncio
 import os
 import sys
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -450,6 +451,44 @@ class TestAcpClientBackendSelection:
             ], "claude backend must spawn node + script explicitly"
 
         await _stop_stderr_drain(client)
+
+    @pytest.mark.asyncio
+    async def test_spawn_claude_resolves_the_cli_off_the_event_loop(self, tmp_path, monkeypatch):
+        # The resolver shells out to mise, so it must run off the event loop.
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        resolved_on: list[int] = []
+
+        def _resolve() -> str:
+            resolved_on.append(threading.get_ident())
+            return "/usr/local/bin/claude"
+
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        with (
+            patch(
+                "kiro_crew.acp.client._resolve_claude_acp_bin",
+                return_value=(["/usr/local/bin/node", "/x/acp.js"], ""),
+            ),
+            patch("kiro_crew.acp.client._resolve_claude_code_executable", side_effect=_resolve),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                side_effect=lambda argv, mode, **kwargs: (argv, None),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = UNALLOCATABLE_PID
+            mock_proc.returncode = None
+            mock_exec.return_value = mock_proc
+
+            await client._spawn()
+
+            env = mock_exec.call_args.kwargs["env"]
+
+        await _stop_stderr_drain(client)
+        assert resolved_on and threading.get_ident() not in resolved_on
+        assert env["CLAUDE_CODE_EXECUTABLE"] == "/usr/local/bin/claude"
 
     @pytest.mark.asyncio
     async def test_spawn_claude_backend_missing_bin_raises(self, tmp_path):
