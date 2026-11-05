@@ -16,11 +16,12 @@ import tempfile
 import threading
 import urllib.error
 import urllib.parse
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 import kiro_crew
@@ -32,7 +33,7 @@ from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
 
 
-class _RecordingServer(HTTPServer):
+class _RecordingServer(LoopbackHTTPServer):
     """A TCP peer on the pod's derived port, standing in for a port squatter.
 
     ``pod api`` must never send its minted credential here: the port is bindable

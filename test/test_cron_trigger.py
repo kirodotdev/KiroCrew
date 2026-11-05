@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 from threading import Thread
 from unittest.mock import patch
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
 from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.mcp_cron import _call_tool_inner
@@ -67,7 +68,7 @@ class _MockDashboardHandler(BaseHTTPRequestHandler):
 @pytest.fixture()
 def mock_dashboard(tmp_path):
     """Start a mock dashboard server and write matching secret file."""
-    server = HTTPServer(("127.0.0.1", 0), _MockDashboardHandler)
+    server = LoopbackHTTPServer(("127.0.0.1", 0), _MockDashboardHandler)
     port = server.server_address[1]
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -302,7 +303,7 @@ _PROXY_ENV_KEYS = (
 def mock_proxy():
     """Start a second real listener standing in for an env-configured proxy."""
     _MockProxyHandler.hits = []
-    server = HTTPServer(("127.0.0.1", 0), _MockProxyHandler)
+    server = LoopbackHTTPServer(("127.0.0.1", 0), _MockProxyHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield server.server_address[1], _MockProxyHandler.hits

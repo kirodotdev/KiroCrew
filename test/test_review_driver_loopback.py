@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
 from kiro_crew.apps.builtins.code_review_sage.sage_lib import review_driver
 
@@ -73,7 +74,7 @@ def _make_handler(sink):
 
 
 def _serve(sink):
-    server = http.server.HTTPServer(("127.0.0.1", 0), _make_handler(sink))
+    server = LoopbackHTTPServer(("127.0.0.1", 0), _make_handler(sink))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, server.server_address[1]
 
