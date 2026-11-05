@@ -75,6 +75,36 @@ class TestBatchRejection:
         assert slot._batch_rejected is False  # reset in finally
 
     @pytest.mark.asyncio
+    async def test_the_rejection_log_lines_redact_the_tool_title(self, tmp_path, caplog):
+        """The title is model-written; a credential in it must not reach the log."""
+        import logging
+
+        token = "ghp_" + "a1B2" * 9
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        evt1 = _permission_event(title=f"git push https://x:{token}@github.com/o/r")
+        evt1.request_id = "req-1"
+        evt1.tool_call_id = "tc-1"
+        evt2 = _permission_event(title=f"curl -H 'Authorization: token {token}' x")
+        evt2.request_id = "req-2"
+        evt2.tool_call_id = "tc-2"
+        _set_stream(client, [evt1, evt2, _complete_event()])
+
+        async def _reject_first() -> None:
+            await _answer_approval(slot, "req-1", "rejected")
+
+        rejecter = asyncio.get_event_loop().create_task(_reject_first())
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew"), _patch_stats():
+            await _run_chat(state, slot, "hello")
+        await _drain(rejecter)
+
+        lines = [r.getMessage() for r in caplog.records if "REJECTED tool=" in r.getMessage()]
+        assert any("PERM REJECTED" in line for line in lines), lines
+        assert any("AUTO-REJECTED" in line for line in lines), lines
+        assert all(token not in line for line in lines), lines
+
+    @pytest.mark.asyncio
     async def test_batch_rejected_reset_on_exception(self, tmp_path):
         """_batch_rejected is reset even if event loop raises."""
         state, client = _make_state(tmp_path, context_builder=_context_builder())

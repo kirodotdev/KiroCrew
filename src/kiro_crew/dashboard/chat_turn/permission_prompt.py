@@ -89,6 +89,9 @@ async def _on_permission_prompt(
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
+    # The title is model-written and can carry a secret the log filter's narrow
+    # patterns miss, so every log line below uses this redacted copy.
+    _log_title = _redact_display_text(event.title or "")
     # Auto-reject remaining tools after one rejection in a batch
     if getattr(slot, "_batch_rejected", False):
         _cascade_offer = getattr(turn, "_deny_override", None)
@@ -169,7 +172,7 @@ async def _on_permission_prompt(
             "resolved": "rejected",
         }
         slot.append("permission", _title, json.dumps(perm_meta))
-        logger.warning("AUTO-REJECTED tool=%r (batch rejection)", event.title)
+        logger.warning("AUTO-REJECTED tool=%r (batch rejection)", _log_title)
         return _Flow.CONTINUE
     # Interactive approval — send to frontend, wait for decision
     #
@@ -379,7 +382,7 @@ async def _on_permission_prompt(
                 # the moment this decline is recorded.
                 logger.warning(
                     "Linked approval delivery to Slack failed; auto-rejecting tool %r",
-                    event.title,
+                    _log_title,
                 )
                 slot.append(
                     "assistant",
@@ -401,7 +404,7 @@ async def _on_permission_prompt(
                     "Linked approval delivery to Slack failed after the prompt "
                     "was answered from the dashboard; keeping that answer for "
                     "tool %r",
-                    event.title,
+                    _log_title,
                 )
         except Exception:
             # Any failure before the future is resolved (ImportError,
@@ -496,7 +499,7 @@ async def _on_permission_prompt(
             # relabels the unanswered approval as a turn timeout.
             logger.warning(
                 "Declining approval for %r without waiting: no turn budget left",
-                event.title,
+                _log_title,
             )
             _approval_card = format_approval_no_budget_card()
             _host_deny_cause = DENY_CAUSE_APPROVAL_NO_BUDGET
@@ -512,7 +515,7 @@ async def _on_permission_prompt(
         # is never told an approval was waiting.
         logger.warning(
             "Tool approval for %r went unanswered for %.0fs; declining",
-            event.title,
+            _log_title,
             _approval_window,
         )
         _approval_card = format_approval_timeout_card(_approval_window)
@@ -954,7 +957,7 @@ async def _on_permission_prompt(
         # Deny this one tool but do NOT cascade to remaining batch
         logger.info(
             "PERM REJECTED ONCE tool=%r — remaining batch unaffected",
-            event.title,
+            _log_title,
         )
         return _Flow.CONTINUE
     if outcome != "approved":
@@ -984,7 +987,7 @@ async def _on_permission_prompt(
         turn._batch_cascade_steered = _batch_cascade_steered
         logger.warning(
             "PERM REJECTED tool=%r outcome=%r — auto-rejecting remaining batch",
-            event.title,
+            _log_title,
             outcome,
         )
         return _Flow.CONTINUE

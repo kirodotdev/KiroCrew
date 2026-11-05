@@ -303,6 +303,15 @@ METHOD_KAS_OPEN_EXTERNAL_URL = "_kiro/openExternalUrl"
 #: not answer (a -32601) makes the engine report ``cancel`` to the server, so the
 #: elicitation-gated tool fails silently rather than asking.
 METHOD_KAS_MCP_ELICITATION = "_kiro/mcp/elicitation"
+#: Engine -> client request carrying the model's own question (KAS's
+#: ``user_input`` tool): ``{sessionId, toolCallId, question, options}``. Sent only
+#: to a client that declares ``_meta.kiro.userInput``. The answer is
+#: ``{"action": "answered", "answer": <text>}``; KAS hands only an ``answered``
+#: with a non-empty ``answer`` to the model, and every other reply (``dismissed``,
+#: an error) becomes "move on to the next phase", which the tool tells the model
+#: to read as yes. Kiro Crew therefore always answers ``answered``
+#: (``acp/elicitation.py``).
+METHOD_KAS_USER_INPUT = "_kiro/userInput"
 METHOD_SUBAGENT_LIST_UPDATE = "_kiro.dev/subagent/list_update"
 METHOD_KIRO_SESSION_UPDATE = "_kiro.dev/session/update"
 METHOD_SET_CONFIG_OPTION = "session/set_config_option"
@@ -473,12 +482,19 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
 # the link of a sign-in Crew starts with ``_kiro/mcp/resetServer``, and a remote
 # OAuth server never connects.
 #
+# ``userInput`` is declared so the model's own questions (KAS's ``user_input``
+# tool) arrive as ``_kiro/userInput`` with their options and a free-text answer,
+# put to the person on the same card as an MCP elicitation. Undeclared, KAS
+# sends them as a permission request whose Deny reaches the model as "yes".
+# The handler (``acp/elicitation.py``) ships with this flag: declared without
+# one, the method-not-found would turn into the same "yes".
+#
 # ``secretStorage`` is NOT in this constant: the spawn adds it to a copy while
 # ``agent.kas_persist_mcp_sign_in`` is on (the default; ``acp/kas_secret_storage.py``),
 # and every other callback stays undeclared (= false).
 KAS_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
-    "_meta": {"kiro": {"settings": {}, "openExternalUrl": True}},
+    "_meta": {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}},
 }
 
 # ── Claude backend permission modes ──

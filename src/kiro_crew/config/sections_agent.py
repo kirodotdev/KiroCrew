@@ -678,7 +678,10 @@ class AgentConfig:
             "tool_search_min_tokens; disabling reverts to sending full tool "
             "specs. Crew's servers defer only when the spawn runs the pinned "
             "kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0; any "
-            "other executable, an older or unknown version keeps them resident. To override the never-defer list, set "
+            "other executable, an older or unknown version keeps them resident. "
+            "On Kiro Crew's own KAS engine bundle they always defer: that engine "
+            "keeps its tools array fixed when a tool loads. To override the "
+            "never-defer list, set "
             "ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the "
             "gateway's environment. No effect on any other ACP backend.",
         ),

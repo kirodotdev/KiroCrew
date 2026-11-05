@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -73,6 +74,35 @@ def _model_is_a_launch_argument(provider: Any) -> bool:
     """Whether *provider*'s harness reads its model at launch, so a switch relaunches it."""
     backend = getattr(getattr(provider, "client", None), "backend", None)
     return isinstance(backend, str) and backend in ACP_BACKENDS_MODEL_AT_LAUNCH
+
+
+def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bool:
+    """Whether a resumed session's recorded cwd is a scratch tree its new process cannot read.
+
+    Each process gets its own directory under the scratch root, and the sandbox hides
+    every other one. A conversation that worked in its ``$KIROCREW_SCRATCH`` records
+    that directory as its cwd, but its next process gets a fresh tree, so the old one
+    is hidden from it and the child cannot read its own working directory (kiro-cli
+    exits at start-up with ``EPERM ... uv_cwd`` on macOS). The tree the spawn shares
+    (``shared_scratch``) is re-exposed to it, so a cwd inside that one is kept. With the
+    sandbox off (after the governance floor) nothing is hidden, so the cwd is kept too.
+    """
+    from kiro_crew.agent_scratch import scratch_root
+    from kiro_crew.sandbox_tiers import _clamp_sandbox_mode, configured_sandbox_mode
+
+    path = Path(os.path.realpath(stored_cwd))
+    if not path.is_relative_to(os.path.realpath(scratch_root())):
+        return False
+    try:
+        if _clamp_sandbox_mode(configured_sandbox_mode()) == "off":
+            return False
+    except Exception:
+        # An unreadable floor counts as masked: the session then starts in its
+        # default directory, which it can always read.
+        pass
+    if shared_scratch is not None and path.is_relative_to(os.path.realpath(str(shared_scratch))):
+        return False
+    return True
 
 
 async def _session_runs_remotely(session_key: str) -> bool:
@@ -689,7 +719,20 @@ async def _get_or_create_impl(
     if not effective_cwd and (resume_sid or native_fork):
         stored_cwd = owner._session_map.get_cwd(key)
         if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
-            effective_cwd = stored_cwd
+            if await asyncio.to_thread(
+                _stored_cwd_is_hidden_scratch,
+                stored_cwd,
+                extra_factory_kwargs.get("shared_scratch"),
+            ):
+                self._deps.logger.warning(
+                    "session %s: not resuming in %s, an earlier process's scratch "
+                    "directory the sandbox hides from this one; starting in the "
+                    "default directory",
+                    key,
+                    stored_cwd,
+                )
+            else:
+                effective_cwd = stored_cwd
     claim_crew = extra_factory_kwargs.get("crew_agent")
     session_agent = agent
     preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
