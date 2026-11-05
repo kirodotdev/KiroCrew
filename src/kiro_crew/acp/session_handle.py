@@ -142,7 +142,6 @@ from kiro_crew.acp.session_handle_model_selection import (
     _READ_PATH_REPROBE_MIN_INTERVAL_SECS,
     _SET_MODEL_REPLY_TIMEOUT,
     advertised_models_from_session,
-    check_mode_frame,
     model_select_envelope,
     models_from_config_options,
     parse_advertised_models,

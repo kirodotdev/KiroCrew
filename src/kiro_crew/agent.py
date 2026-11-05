@@ -198,7 +198,6 @@ from kiro_crew.agent_parts.spec_rebuild import (
     _hold_cause,
     _install_aim_capabilities,
     _install_heartbeat_agent,
-    _install_sibling_specs,
     _invalidate_projection_if_answer_moved,
     _lineage_unreadable_refusal,
     _pending_projection_warned_generation,
@@ -223,39 +222,17 @@ from kiro_crew.agent_parts.spec_rebuild import (
     retry_held_conductor_specs,
     sync_aim_packages,
 )
+from kiro_crew.agent_parts.spec_siblings import _install_sibling_specs, _refilter_kept_mirrors
 from kiro_crew.agent_parts.spec_unreadable import (
-    _MAIN_SPEC_EARLY_RETRY_DELAYS,
-    _audit_main_spec_denial,
-    _declares_agent_name,
     _first_main_spec_warning,
-    _governed_by_main_spec,
-    _is_main_spec_file,
-    _is_main_spec_source,
-    _main_spec_declared_name,
     _main_spec_episode_lock,
     _main_spec_episode_revision,
-    _main_spec_files,
-    _main_spec_own_names,
-    _main_spec_retry_attempts,
-    _main_spec_retry_stopped,
-    _main_spec_retry_timer,
-    _main_spec_retry_timer_factory,
     _main_spec_skip_generation,
     _main_spec_unreadable,
     _main_spec_warned,
     _note_main_spec_readable,
-    _run_main_spec_early_retry,
-    _schedule_main_spec_early_retry,
     _skip_unreadable_main_spec,
     _spec_hold_open,
-    _start_main_spec_retry_timer,
-    cancel_main_spec_early_retry,
-    main_spec_episode,
-    refuse_unprojected_main_spec_start,
-    require_main_spec_launch_bound,
-    require_main_spec_projected,
-    resume_main_spec_early_retry,
-    unprojected_main_spec_source,
 )
 from kiro_crew.agent_parts.spec_upgrades import (
     _claim_propagated_model,
@@ -566,6 +543,7 @@ _PARTS = (
     "kiro_crew.agent_parts.spec_lookup",
     "kiro_crew.agent_parts.spec_prompts",
     "kiro_crew.agent_parts.spec_rebuild",
+    "kiro_crew.agent_parts.spec_siblings",
     "kiro_crew.agent_parts.spec_unreadable",
     "kiro_crew.agent_parts.spec_upgrades",
 )
@@ -1486,17 +1464,6 @@ class _AgentSpecUnreadable(Exception):
     the read retry, a permission error, an I/O error) says nothing about its
     contents.
     """
-
-
-class _EarlyRetryRunning:
-    """Stands in :data:`_main_spec_retry_timer` while an early retry runs.
-
-    A refusal during that rebuild then finds a retry pending and schedules no
-    second, overlapping one; the run schedules its own successor when it ends.
-    """
-
-    def cancel(self) -> None:
-        """Nothing to cancel: the running retry checks the stop flag when it ends."""
 
 
 _KNOWLEDGE_SYSTEM_PROMPT = (

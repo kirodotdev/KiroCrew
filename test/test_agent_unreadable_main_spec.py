@@ -1,25 +1,18 @@
 """Tests for a rebuild that cannot read an existing ``kirocrew.json``.
 
 The rebuild keeps the user's spec and skips the cycle instead of writing defaults over
-it, and the main agent and its mirrors are refused until a rebuild writes the spec
-again: the skip and its sibling pass, the start gate and the launch bound, the early
-retry with its simulated clock, the SEL denial on every refusal, and the readers that
-report the skipped cycle.
+it, and a rebuild that writes the spec again closes the episode: the skip and its
+sibling pass, the hold that has the maintenance wake retry it, and the readers that
+report the skipped cycle. Starts are not gated on the episode.
 """
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
-import os
-import sys
-import tempfile
 import threading
-import time
-import warnings
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from agent_helpers import _pinned_kiro_cli_version  # noqa: F401
@@ -28,54 +21,6 @@ from mcp_merge_helpers import bundled_defaults as _bundled_defaults
 from unreadable_spec_helpers import custom_spec
 
 from kiro_crew import atomic_write as aw
-
-
-class _FakeTimers:
-    """A simulated clock for ``agent._main_spec_retry_timer_factory``.
-
-    ``start`` records a timer due at ``now + delay`` and starts no thread;
-    ``fire_next`` advances ``now`` to the earliest due timer and runs it.
-    """
-
-    def __init__(self) -> None:
-        self.now = 0.0
-        self.delays: list[float] = []
-        self._due: list[list] = []
-        #: Every timer's callback and handle, in start order, so a test can run a
-        #: callback whose thread was already past its check when it was cancelled.
-        self.callbacks: list = []
-        self.handles: list = []
-
-    def start(self, delay: float, callback):
-        entry = [self.now + delay, callback, False]
-        self.delays.append(delay)
-        self._due.append(entry)
-        self.callbacks.append(callback)
-
-        class _Handle:
-            def cancel(self_inner) -> None:
-                entry[2] = True
-
-        handle = _Handle()
-        self.handles.append(handle)
-        return handle
-
-    @property
-    def pending(self) -> bool:
-        return self.pending_count > 0
-
-    @property
-    def pending_count(self) -> int:
-        return sum(1 for _due, _cb, cancelled in self._due if not cancelled)
-
-    def fire_next(self) -> None:
-        self.fired = getattr(self, "fired", 0) + 1
-        assert self.fired <= 20, "the early retry never stops rescheduling"
-        live = [e for e in self._due if not e[2]]
-        entry = min(live, key=lambda e: e[0])
-        self._due.remove(entry)
-        self.now = entry[0]
-        entry[1]()
 
 
 class TestUnreadableMainSpec:
@@ -102,6 +47,11 @@ class TestUnreadableMainSpec:
         hook repair) still run. It reports the skip as an unwritten, held
         rebuild so every retry path (the ceiling memo, the boot baseline, the
         maintenance wake) runs again.
+
+        Regression pin for main's behaviour: reading a present-but-unreadable
+        spec as missing (``_read_existing_spec`` returning ``None`` and
+        ``mcp_aliases._durable_tool_aliases`` returning ``(False, None)`` on an
+        ``OSError``, as main does) writes defaults over the file and this goes red.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         spec = self._custom_spec(tmp_path)
@@ -257,289 +207,142 @@ class TestUnreadableMainSpec:
         assert held_flag._main_spec_unreadable is True
         return cfg_dir, spec, _denied
 
-    def test_the_main_agent_is_refused_while_its_spec_stays_unreadable(
-        self, tmp_path: Path, held_flag
-    ):
-        """Fail-closed: every governed start is refused, with the truthful remedy.
+    def test_an_open_episode_changes_no_start_decision(self, tmp_path: Path, held_flag):
+        """While the spec stays unreadable, starts are decided exactly as with no episode.
 
-        The gate reads no file and runs no rebuild, so a refused start costs
-        nothing on the spawn path. An agent resolving to a spec of its own is not
-        this gate's to refuse. Mutation pin: dropping the refusal admits
-        ``kirocrew`` and this goes red.
+        Keeping the file is the whole change: the start gate refuses nothing new
+        on the episode's account. The main agent, its mirrors, another installed
+        agent and a name no file declares each get the same answer from
+        ``require_fork_governance`` with the episode open as with it closed, on
+        the same unreadable file. Mutation pin: refusing the main agent or its
+        mirrors in ``require_fork_governance`` while the episode is open goes red.
         """
-        _cfg_dir, spec, _denied = self._skipped(tmp_path, held_flag)
-        rebuild = MagicMock(return_value=(spec, False))
-        reads = MagicMock(side_effect=_denied)
+        _cfg_dir, spec, denied = self._skipped(tmp_path, held_flag)
+
+        def _outcome(name: str) -> str | None:
+            try:
+                held_flag.require_fork_governance(name)
+            except Exception as exc:  # the answer itself is what is compared
+                return f"{type(exc).__name__}: {exc}"
+            return None
+
+        names = ("kirocrew", "kirocrew-heartbeat", "kirocrew-worker", "kirocrew-conductor", "nope")
         with (
             patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
-            patch("kiro_crew.agent.rebuild_agent_config_reporting", rebuild),
-            patch("kiro_crew.agent.read_bytes_with_retry", reads),
+            patch("kiro_crew.agent.read_bytes_with_retry", denied),
         ):
-            for name in ("kirocrew", "kirocrew-heartbeat", "kirocrew-worker"):
-                with pytest.raises(held_flag.ForkGovernanceUnresolved) as info:
-                    held_flag.require_main_spec_projected(name)
-                text = str(info.value)
-                assert "the last rebuild could not read" in text
-                assert "Restore read access" in text
-                assert "hourly maintenance retry" in text
-                assert "--clean" not in text
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_fork_governance("kirocrew")
-            # A non-main agent on a spec of its own is unaffected.
-            assert (spec.parent / "kirocrew-conductor.json").is_file()
-            held_flag.require_main_spec_projected("kirocrew-conductor")
-        rebuild.assert_not_called()
-        reads.assert_not_called()
+            during = {name: _outcome(name) for name in names}
+            held_flag._main_spec_unreadable = False
+            after = {name: _outcome(name) for name in names}
+            held_flag._main_spec_unreadable = True
+        assert during == after
+        assert during["kirocrew"] is None, "the main agent starts as it would on main"
 
-    def test_a_readable_spec_stays_refused_until_an_existing_rebuild_writes_it(
-        self, tmp_path: Path, held_flag
-    ):
-        """Restoring access alone does not admit: the flag clears only on a rebuild's write.
-
-        The rebuild here is the ordinary one the hourly retry, the config
-        watcher and a restart all run. Once it has written the spec the start is
-        admitted with no gate-side work.
-        """
-        cfg_dir, spec, _denied = self._skipped(tmp_path, held_flag)
-        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent):
-            # Readable again, not yet rebuilt.
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-            assert held_flag._main_spec_unreadable is True
-            wrote: list[bool] = []
-            _run_install(tmp_path, cfg_dir, _wrote_out=wrote)
-            assert wrote == [True]
-            assert held_flag._main_spec_unreadable is False
-            held_flag.require_main_spec_projected("kirocrew")
-            held_flag.require_fork_governance("kirocrew")
-        assert json.loads(spec.read_text(encoding="utf-8"))["model"] == "claude-user-custom"
-
-    @pytest.mark.parametrize("lock_ends_at", [1.0, 6.0, 19.0, 21.0, 79.0, 300.0])
-    def test_a_lock_episode_that_ends_is_admitted_within_a_minute(
-        self, tmp_path: Path, monkeypatch, held_flag, lock_ends_at
-    ):
-        """A concurrent writer's lock episode, on a simulated clock: ≤ 60 s to admit.
-
-        The spec is held open the way a concurrent writer holds it on Windows: every
-        read raises a sharing violation through the Windows retry branch until
-        *lock_ends_at*. The first refused start schedules the existing held-spec
-        retry early (5, 15 and 60 s apart, then every 60 s while the episode is
-        open), and once the lock has ended the next retry rewrites the spec and
-        starts are admitted, a 300 s lock included. No skip on any OS:
-        the Windows branch is forced, so every CI shard, the Windows ones included,
-        runs this measurement. Mutation pins: with no early retry the only retry
-        is the hourly wake, nothing is pending, and the start is never admitted
-        here; stopping after the third retry leaves the 300 s lock refused.
-        """
-        cfg_dir = _bundled_defaults(tmp_path)
-        spec = self._custom_spec(tmp_path)
-        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
-        clock = _FakeTimers()
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", clock.start)
-        real_read = aw._read_bytes
-
-        def _concurrent_writer(target: Path, max_bytes):
-            if target == spec and clock.now < lock_ends_at:
-                raise PermissionError(13, "The process cannot access the file", str(target))
-            return real_read(target, max_bytes)
-
-        def _windows_read(path, **kwargs):
-            with patch.object(aw.platform_compat, "IS_WINDOWS", True):
-                return aw.read_bytes_with_retry(path, **kwargs)
-
-        def _rebuild(**kwargs):
-            return _run_install(tmp_path, cfg_dir, **kwargs)
-
-        with (
-            patch.object(aw, "_read_bytes", _concurrent_writer),
-            patch("kiro_crew.agent.read_bytes_with_retry", _windows_read),
-            patch("kiro_crew.agent.rebuild_agent_config", _rebuild),
-            patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
-        ):
-            _run_install(tmp_path, cfg_dir)
-            assert held_flag._main_spec_unreadable is True
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-            admitted_at = None
-            while clock.pending and admitted_at is None:
-                clock.fire_next()
-                try:
-                    held_flag.require_main_spec_projected("kirocrew")
-                except held_flag.ForkGovernanceUnresolved:
-                    continue
-                admitted_at = clock.now
-
-        assert admitted_at is not None, "the episode ended but no retry admitted the start"
-        # The retries fire at simulated 5, 20 and 80 s, then every 60 s: the first
-        # one at or after the lock's end admits, and no lock end leaves more than
-        # 60 s to it.
-        fire_times = (5.0, 20.0, *(80.0 + 60.0 * k for k in range(10)))
-        assert admitted_at == min(t for t in fire_times if t >= lock_ends_at)
-        assert admitted_at - lock_ends_at <= 60.0  # flake-ok: simulated clock, not wall time
-        assert json.loads(spec.read_text(encoding="utf-8"))["model"] == "claude-user-custom"
-
-    @pytest.mark.parametrize("writer_lock", [True, False], ids=["same-lock", "lock-free"])
-    def test_the_15515_harness_reports_refusals_and_episode_lengths(
-        self, tmp_path: Path, monkeypatch, held_flag, writer_lock
-    ):
-        """The reported harness, unforced: real rebuilds against a real concurrent writer.
-
-        A writer thread rewrites ``kirocrew.json`` unchanged by temp file plus
-        ``os.replace``, in a loop, either under ``agents_spec_lock`` (the issue's
-        harness, an unrelated dashboard sync) or with no lock (another process, an
-        indexer). Twenty real rebuilds run against it with no read patched, so on a
-        Windows host the read fails only when the OS refuses it, and the sharing
-        violations, retries, skips and refusals counted are the host's own. Every
-        rebuild is followed by a main-agent start through the gate. Measured and
-        reported as a ``UserWarning`` in the run's warnings summary: refusals,
-        episodes, and each episode's length in rebuilds and seconds. Asserted, on every OS: the user's server is never lost (the
-        issue's acceptance criterion), a start is refused exactly while an episode
-        is open, and once the writer stops one rebuild closes any open episode and
-        the start is admitted. POSIX rename never refuses a reader, so there this
-        is the no-violation control with zero episodes.
-        """
-        _HARNESS_REBUILDS = 20
-        cfg_dir = _bundled_defaults(tmp_path)
-        spec = self._custom_spec(tmp_path)
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", _FakeTimers().start)
-        _run_install(tmp_path, cfg_dir)
-        assert held_flag._main_spec_unreadable is False
-
-        stop = threading.Event()
-        writes = [0]
-        writer_errors = [0]
-
-        def _rewrite_unchanged() -> None:
-            data = spec.read_bytes()
-            fd, tmp_name = tempfile.mkstemp(dir=spec.parent, suffix=".tmp")
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-            try:
-                os.replace(tmp_name, spec)
-            except OSError:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_name)
-                raise
-
-        def _writer() -> None:
-            while not stop.is_set():
-                try:
-                    if writer_lock:
-                        with held_flag.agents_spec_lock(spec.parent):
-                            _rewrite_unchanged()
-                    else:
-                        _rewrite_unchanged()
-                    writes[0] += 1
-                except OSError:
-                    writer_errors[0] += 1
-                # Pacing, not a wait on anything: leave the rebuild the GIL and
-                # the lock between writes, as the issue's writer did (~58 per
-                # rebuild).
-                stop.wait(0.005)  # flake-ok: pacing between writes; nothing waits on it
-
-        def _start_refused() -> bool:
-            try:
-                held_flag.require_main_spec_projected("kirocrew")
-            except held_flag.ForkGovernanceUnresolved:
-                return True
-            return False
-
-        refusals = 0
-        episodes: list[tuple[int, float]] = []
-        opened: tuple[int, float] | None = None
-        rebuild_errors = 0
-        thread = threading.Thread(target=_writer, name="15515-writer", daemon=True)
-        thread.start()
-        try:
-            with patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent):
-                for index in range(_HARNESS_REBUILDS):
-                    try:
-                        _run_install(tmp_path, cfg_dir)
-                    except OSError:
-                        rebuild_errors += 1
-                    unreadable = held_flag._main_spec_unreadable
-                    refused = _start_refused()
-                    assert refused is unreadable, "the gate disagrees with the episode flag"
-                    refusals += refused
-                    if unreadable and opened is None:
-                        opened = (index, time.monotonic())
-                    elif not unreadable and opened is not None:
-                        episodes.append((index - opened[0], time.monotonic() - opened[1]))
-                        opened = None
-        finally:
-            stop.set()
-            thread.join(timeout=60)
-        assert not thread.is_alive()
-
-        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent):
-            _run_install(tmp_path, cfg_dir)
-            assert held_flag._main_spec_unreadable is False
-            assert not _start_refused()
-        if opened is not None:
-            episodes.append((_HARNESS_REBUILDS - opened[0], time.monotonic() - opened[1]))
-        kept = json.loads(spec.read_text(encoding="utf-8"))
-        assert kept["mcpServers"]["user-server"]["command"] == "/opt/user-server"
-        assert kept["model"] == "claude-user-custom"
-
-        lengths = ", ".join(f"{count} rebuild(s) / {secs:.2f} s" for count, secs in episodes)
-        report = (
-            f"#15515 harness [{sys.platform}, {'same-lock' if writer_lock else 'lock-free'}"
-            f" writer]: rebuilds={_HARNESS_REBUILDS} writer_writes={writes[0]} writer_errors={writer_errors[0]}"
-            f" rebuild_errors={rebuild_errors} refused_starts={refusals}"
-            f" episodes={len(episodes)} episode_lengths=[{lengths}]"
-        )
-        # Reported as a warning, never a failure: an xdist worker's stderr does
-        # not reach the CI log, but its warnings are relayed into the warnings
-        # summary every shard prints, so each OS shard's log carries its counts.
-        # stacklevel=2 would point at pytest, not at this test.
-        warnings.warn(report, UserWarning, stacklevel=1)
-
-    def test_refusals_share_one_pending_retry_that_repeats_while_the_episode_is_open(
+    def test_a_tightened_ceiling_reaches_the_kept_mirrors_in_place(
         self, tmp_path: Path, held_flag, monkeypatch
     ):
-        """Debounced and steady: one timer at a time, 5 → 15 → 60 s, then 60 s on.
+        """While ``kirocrew.json`` is unreadable, the mirrors' grants still go through the ceiling.
 
-        A spec that stays unreadable costs one rebuild attempt a minute while the
-        episode is open. The rebuild that writes the spec cancels the pending
-        timer, so nothing is pending outside an episode, and the next episode
-        starts its backoff from the beginning. Mutation pins: a timer per refusal,
-        a retry that stops after the third, or a timer left pending once the
-        episode closes, goes red.
+        The skip cannot re-derive the heartbeat and worker specs from a main spec
+        it cannot read, so it re-filters what is on disk: a grant the tightened
+        ceiling withholds leaves ``allowedTools`` and every server's
+        ``autoApprove``, a grant it still allows stays, no server is added, and
+        ``kirocrew.json`` is left byte for byte. Mutation pin: skipping the
+        in-place re-filter (the mirrors untouched while the main spec is
+        unreadable) leaves the withheld grants on both specs and this goes red.
         """
-        cfg_dir, spec, _denied = self._skipped(tmp_path, held_flag)
-        clock = _FakeTimers()
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", clock.start)
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        _run_install(tmp_path, cfg_dir)
+        worker_path = spec.parent / "kirocrew-worker.json"
+        heartbeat_path = spec.parent / "kirocrew-heartbeat.json"
+        # Grants an earlier, looser ceiling left on the two mirrors.
+        worker = json.loads(worker_path.read_text(encoding="utf-8"))
+        worker["allowedTools"].append("@kirocrew-core/learn_list")
+        worker["mcpServers"]["kirocrew-core"]["autoApprove"] = ["learn_list"]
+        worker["mcpServers"]["user-server"]["autoApprove"] = ["user_tool"]
+        worker_path.write_text(json.dumps(worker), encoding="utf-8")
+        heartbeat = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+        heartbeat["mcpServers"]["kirocrew-core"]["autoApprove"] = ["learn_list"]
+        heartbeat_path.write_text(json.dumps(heartbeat), encoding="utf-8")
+        main_before = spec.read_bytes()
 
-        def _rebuild(**kwargs):
-            return _run_install(tmp_path, cfg_dir, **kwargs)
+        def _denied(path, **kwargs):
+            if Path(path) == spec:
+                raise PermissionError(13, "Permission denied", str(path))
+            return aw.read_bytes_with_retry(path, **kwargs)
 
-        with (
-            patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
-            patch("kiro_crew.agent.rebuild_agent_config", _rebuild),
-        ):
-            with patch("kiro_crew.agent.read_bytes_with_retry", _denied):
-                for _ in range(5):
-                    with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                        held_flag.require_main_spec_projected("kirocrew")
-                assert clock.delays == [5.0]
-                for _ in range(6):
-                    clock.fire_next()
-                    assert clock.pending_count == 1
-                    with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                        held_flag.require_main_spec_projected("kirocrew")
-                assert clock.delays == [5.0, 15.0, 60.0, 60.0, 60.0, 60.0, 60.0]
-                assert held_flag._main_spec_unreadable is True
-            # Readable again: a rebuild outside the timer (the hourly wake's)
-            # closes the episode and cancels the pending retry.
-            assert held_flag.retry_held_conductor_specs() is True
-            assert held_flag._main_spec_unreadable is False
-            assert held_flag._main_spec_retry_attempts == 0
-            assert held_flag._main_spec_retry_timer is None
-            assert not clock.pending
-            held_flag._main_spec_unreadable = True
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-        assert clock.delays[-1] == 5.0
+        # The tightened ceiling: kirocrew-core must go through the gate.
+        def _ceiling(ref: str) -> bool:
+            return not ref.startswith("@kirocrew-core")
+
+        from kiro_crew.platform import governance
+
+        monkeypatch.setattr(held_flag, "_may_auto_approve", _ceiling)
+        monkeypatch.setattr(governance, "may_skip_gate_now", _ceiling)
+        wrote_out: list[bool] = []
+        with patch("kiro_crew.agent.read_bytes_with_retry", _denied):
+            _run_install(tmp_path, cfg_dir, _wrote_out=wrote_out)
+
+        assert wrote_out == [False]
+        assert held_flag._main_spec_unreadable is True
+        assert spec.read_bytes() == main_before
+        worker_after = json.loads(worker_path.read_text(encoding="utf-8"))
+        heartbeat_after = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+        assert "@kirocrew-core/learn_list" not in worker_after["allowedTools"]
+        assert "@kirocrew-work/work_brief" in worker_after["allowedTools"]
+        assert "autoApprove" not in worker_after["mcpServers"]["kirocrew-core"]
+        assert worker_after["mcpServers"]["user-server"]["autoApprove"] == ["user_tool"]
+        assert "autoApprove" not in heartbeat_after["mcpServers"]["kirocrew-core"]
+        # Nothing is copied in from the unreadable main spec.
+        assert set(worker_after["mcpServers"]) == set(worker["mcpServers"])
+        assert set(heartbeat_after["mcpServers"]) == set(heartbeat["mcpServers"])
+
+    def test_a_mirror_re_filter_that_fails_keeps_the_sibling_pass_owed(
+        self, tmp_path: Path, held_flag, monkeypatch
+    ):
+        """A kept mirror whose re-filter could not be written leaves the generation unrecorded.
+
+        The skip records the governance generation only after a sibling pass that
+        held nothing, and a later skip under a recorded generation runs no pass. So
+        a re-filter that failed must count as held, or the tightened grants it could
+        not remove would never be retried. Mutation pin: ignoring the re-filter's
+        result records the generation and this goes red.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+        _run_install(tmp_path, cfg_dir)
+        worker_path = spec.parent / "kirocrew-worker.json"
+        worker = json.loads(worker_path.read_text(encoding="utf-8"))
+        worker["allowedTools"].append("@kirocrew-core/learn_list")
+        worker_path.write_text(json.dumps(worker), encoding="utf-8")
+
+        def _denied(path, **kwargs):
+            if Path(path) == spec:
+                raise PermissionError(13, "Permission denied", str(path))
+            return aw.read_bytes_with_retry(path, **kwargs)
+
+        real_write = held_flag._atomic_json_write
+
+        def _write(path, data, *args, **kwargs):
+            if Path(path) == worker_path:
+                raise OSError(5, "Input/output error", str(path))
+            return real_write(path, data, *args, **kwargs)
+
+        monkeypatch.setattr(
+            held_flag, "_may_auto_approve", lambda ref: ref != "@kirocrew-core/learn_list"
+        )
+        monkeypatch.setattr(held_flag, "_atomic_json_write", _write)
+        held_out: list[bool] = []
+        with patch("kiro_crew.agent.read_bytes_with_retry", _denied):
+            _run_install(tmp_path, cfg_dir, refresh_forks=False, _held_out=held_out)
+
+        assert held_out == [True]
+        assert (
+            "@kirocrew-core/learn_list"
+            in json.loads(worker_path.read_text(encoding="utf-8"))["allowedTools"]
+        )
+        assert held_flag._main_spec_skip_generation is None, "a failed re-filter was recorded"
 
     def test_a_skip_right_after_a_close_warns_for_its_own_episode(
         self, tmp_path: Path, held_flag, monkeypatch, caplog
@@ -578,7 +381,7 @@ class TestUnreadableMainSpec:
         caplog.set_level(logging.DEBUG, logger="kiro_crew.agent")
         caplog.clear()
         reopen[0] = True
-        held_flag._note_main_spec_readable(spec, "kirocrew", held_flag._main_spec_episode_revision)
+        held_flag._note_main_spec_readable(spec, held_flag._main_spec_episode_revision)
         assert not reopen[0], "the close never released the episode lock"
         opening = [
             r.levelno
@@ -595,9 +398,8 @@ class TestUnreadableMainSpec:
 
         The lock is replaced by one that records whether it is held, and the set
         by one that notes any operation made while it is not. The skip, a failed
-        retry, a denial that cannot be audited and the close each touch the
-        episode's state. Mutation pin: removing the episode lock around any of
-        the four goes red.
+        retry and the close each touch the episode's state. Mutation pin:
+        removing the episode lock around any of the three goes red.
         """
 
         class _Recording:
@@ -645,78 +447,27 @@ class TestUnreadableMainSpec:
         def _rebuild(**kwargs):
             return _run_install(tmp_path, cfg_dir, **kwargs)
 
-        def _unauditable():
-            raise OSError("security event log unavailable")
-
         with (
             patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
             patch("kiro_crew.agent.rebuild_agent_config", _rebuild),
         ):
             with patch("kiro_crew.agent.read_bytes_with_retry", _denied):
                 assert held_flag.retry_held_conductor_specs() is False
-            with patch("kiro_crew.agent.sel", _unauditable):
-                held_flag._audit_main_spec_denial("kirocrew")
-            assert set(episode_set) >= {"read:13", "retry", "denial-audit"}
+            assert set(episode_set) >= {"read:13", "retry"}
             assert held_flag.retry_held_conductor_specs() is True
         assert not episode_set
         assert {op for op, _held in episode_set.ops} >= {"in", "add", "clear"}
         assert all(held for _op, held in episode_set.ops), episode_set.ops
 
-    def test_a_late_timer_never_takes_the_slot_of_a_newer_episode(
-        self, tmp_path: Path, held_flag, monkeypatch
-    ):
-        """A retry whose timer was cancelled too late finds a newer timer and does nothing.
-
-        ``threading.Timer.cancel()`` cannot stop a callback already past its
-        check. Here T1 is that callback: the episode closes (cancelling T1), a new
-        episode's refusal arms T2, and only then does T1 run. It must not claim
-        the slot, overwriting T2 and orphaning it beside its own successor, and it
-        must not rebuild. Exactly T2 stays pending, and shutdown then leaves none.
-        Mutation pin: claiming the slot without checking it still holds T1's own
-        handle leaves two timers pending and one live after shutdown.
-        """
-        cfg_dir, spec, denied = self._skipped(tmp_path, held_flag)
-        clock = _FakeTimers()
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", clock.start)
-        rebuilds: list[bool] = []
-
-        def _record_retry() -> bool:
-            rebuilds.append(True)
-            return False
-
-        with (
-            patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
-            patch("kiro_crew.agent.read_bytes_with_retry", denied),
-        ):
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-            late_t1 = clock.callbacks[0]
-            held_flag._note_main_spec_readable(
-                spec, "kirocrew", held_flag._main_spec_episode_revision
-            )
-            _run_install(tmp_path, cfg_dir)
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-            assert clock.pending_count == 1
-            with patch("kiro_crew.agent.retry_held_conductor_specs", _record_retry):
-                late_t1()
-        assert rebuilds == []
-        assert clock.pending_count == 1
-        assert held_flag._main_spec_retry_timer is clock.handles[1]
-        held_flag.cancel_main_spec_early_retry()
-        assert clock.pending_count == 0
-        assert held_flag._main_spec_retry_timer is None
-
     def test_a_retry_that_still_cannot_read_warns_once_per_episode(
         self, tmp_path: Path, held_flag, monkeypatch, caplog
     ):
-        """The minute-by-minute retry logs one WARNING an episode, then debug.
+        """The maintenance retry logs one WARNING an episode, then debug.
 
         Closing the episode clears the key, so the next episode warns again.
         Mutation pin: a plain ``logger.warning`` logs it on every retry.
         """
         cfg_dir, spec, _denied = self._skipped(tmp_path, held_flag)
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", _FakeTimers().start)
 
         def _rebuild(**kwargs):
             return _run_install(tmp_path, cfg_dir, **kwargs)
@@ -743,116 +494,14 @@ class TestUnreadableMainSpec:
                 assert held_flag.retry_held_conductor_specs() is False
         assert _retry_warnings() == 2
 
-    def test_a_refusal_during_a_running_retry_arms_no_second_one(
-        self, tmp_path: Path, held_flag, monkeypatch
-    ):
-        """While an early retry rebuilds, a refused start schedules nothing beside it.
-
-        The run arms its own successor when it ends, so exactly one is pending.
-        Mutation pin: clearing the pending timer before the rebuild lets the
-        refusal arm a second, overlapping retry.
-        """
-        _cfg_dir, spec, _denied = self._skipped(tmp_path, held_flag)
-        clock = _FakeTimers()
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", clock.start)
-        armed_during: list[int] = []
-
-        def _retry_with_a_refusal() -> bool:
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-            armed_during.append(clock.pending_count)
-            return False
-
-        with (
-            patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
-            patch("kiro_crew.agent.read_bytes_with_retry", _denied),
-        ):
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-            with patch("kiro_crew.agent.retry_held_conductor_specs", _retry_with_a_refusal):
-                clock.fire_next()
-        assert armed_during == [0]
-        assert clock.pending_count == 1
-        assert clock.delays == [5.0, 15.0]
-
-    def test_shutdown_cancels_the_pending_retry_and_schedules_none(
-        self, tmp_path: Path, held_flag, monkeypatch
-    ):
-        """Gateway shutdown leaves no retry pending, and a retry in flight arms no successor.
-
-        The flag stays set: a shutdown admits nothing. Mutation pins: a cancel
-        that leaves the timer, or a running retry that re-arms after it, is red.
-        """
-        _cfg_dir, spec, _denied = self._skipped(tmp_path, held_flag)
-        clock = _FakeTimers()
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", clock.start)
-        with (
-            patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
-            patch("kiro_crew.agent.read_bytes_with_retry", _denied),
-        ):
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-            assert clock.pending
-            held_flag.cancel_main_spec_early_retry()
-            assert not clock.pending
-            assert held_flag._main_spec_retry_timer is None
-            # A timer whose thread was past its check when shutdown cancelled it
-            # rebuilds nothing during teardown and schedules nothing more.
-            with patch(
-                "kiro_crew.agent.retry_held_conductor_specs", return_value=False
-            ) as late_retry:
-                clock.callbacks[0]()
-            late_retry.assert_not_called()
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-            assert not clock.pending
-            # A retry already running when shutdown begins schedules no successor.
-            held_flag.resume_main_spec_early_retry()
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-
-            def _shutdown_during_the_rebuild() -> bool:
-                held_flag.cancel_main_spec_early_retry()
-                return False
-
-            with patch("kiro_crew.agent.retry_held_conductor_specs", _shutdown_during_the_rebuild):
-                clock.fire_next()
-        assert not clock.pending
-        assert clock.delays == [5.0, 15.0]
-        assert held_flag._main_spec_unreadable is True
-
-    def test_a_restart_in_the_same_process_gets_early_retries_again(
-        self, tmp_path: Path, held_flag, monkeypatch
-    ):
-        """The shutdown stop lasts until the next gateway start, not the process.
-
-        Mutation pin: a resume that leaves the stop set schedules nothing here.
-        """
-        _cfg_dir, spec, _denied = self._skipped(tmp_path, held_flag)
-        clock = _FakeTimers()
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", clock.start)
-        with (
-            patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
-            patch("kiro_crew.agent.read_bytes_with_retry", _denied),
-        ):
-            held_flag.cancel_main_spec_early_retry()
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-            assert not clock.pending
-            held_flag.resume_main_spec_early_retry()
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-        assert clock.pending_count == 1
-        assert held_flag._main_spec_retry_stopped is False
-
     def test_the_retry_and_the_baseline_read_an_open_episode_as_a_hold(
         self, tmp_path: Path, held_flag
     ):
         """An open episode is a hold on its own, whatever the conductor memo says.
 
         Mutation pins: a retry keyed on ``_conductor_spec_held`` alone returns
-        without rebuilding and the start stays refused; a baseline keyed on it
-        alone seeds a generation the unread spec never projected.
+        without rebuilding, so the kept spec is never rewritten; a baseline keyed
+        on it alone seeds a generation the unread spec never projected.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         spec = self._custom_spec(tmp_path)
@@ -869,7 +518,6 @@ class TestUnreadableMainSpec:
             patch("kiro_crew.agent.rebuild_agent_config", _rebuild),
         ):
             assert held_flag.retry_held_conductor_specs() is True
-            held_flag.require_main_spec_projected("kirocrew")
         assert held_flag._main_spec_unreadable is False
 
     def test_an_older_write_never_closes_an_episode_a_newer_skip_opened(
@@ -880,14 +528,12 @@ class TestUnreadableMainSpec:
         Rebuild A reads the spec and writes it. Between its write and the point it
         closes the episode, rebuild B's read fails and B skips (a profile tightening
         that reads the file A is replacing). A's write never read what B failed on, so
-        A must leave the episode open with its retry; the retry's rebuild reads the
-        recovered file and closes it. Mutation pin: closing unconditionally clears
-        the newer episode, cancels its retry, and admits a start on a revoked grant.
+        A must leave the episode open and held; the maintenance retry's rebuild reads
+        the recovered file and closes it. Mutation pin: closing unconditionally clears
+        the newer episode and drops its hold, so the kept spec is never re-projected.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         spec = self._custom_spec(tmp_path)
-        clock = _FakeTimers()
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", clock.start)
         real_note = held_flag._note_main_spec_readable
         landed = [False]
 
@@ -910,11 +556,7 @@ class TestUnreadableMainSpec:
             _run_install(tmp_path, cfg_dir, _wrote_out=wrote)
         assert wrote == [True]
         assert held_flag._main_spec_unreadable is True, "an older write closed a newer episode"
-        assert held_flag._spec_hold_open()
-
-        with pytest.raises(held_flag.ForkGovernanceUnresolved):
-            held_flag.require_main_spec_projected("kirocrew")
-        assert clock.pending, "the newer episode lost its pending retry"
+        assert held_flag._spec_hold_open(), "the newer episode lost its hold"
 
         def _rebuild(**kwargs):
             return _run_install(tmp_path, cfg_dir, **kwargs)
@@ -925,7 +567,6 @@ class TestUnreadableMainSpec:
         ):
             assert held_flag.retry_held_conductor_specs() is True
         assert held_flag._main_spec_unreadable is False
-        held_flag.require_main_spec_projected("kirocrew")
 
     def test_an_overlapping_skip_leaves_no_episode_the_retry_cannot_close(
         self, tmp_path: Path, held_flag
@@ -935,7 +576,7 @@ class TestUnreadableMainSpec:
         Rebuild A writes ``kirocrew.json`` and clears the flag, and while its
         sibling pass runs, rebuild B's read fails and B skips. A then settles the
         conductor memo to its own verdict. That settle may not drop B's hold, so
-        the hourly wake and the early retry still rebuild once the file reads.
+        the hourly wake still rebuilds once the file reads.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         spec = self._custom_spec(tmp_path)
@@ -969,12 +610,11 @@ class TestUnreadableMainSpec:
             patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
             patch("kiro_crew.agent.rebuild_agent_config", _rebuild),
         ):
-            for _ in range(3):  # three timer firings or wakes
-                held_flag.retry_held_conductor_specs()
             assert not (
                 held_flag._main_spec_unreadable and not held_flag._conductor_spec_held
             ), "episode open but nothing held: retry_held_conductor_specs will never rebuild"
-            held_flag.require_main_spec_projected("kirocrew")
+            assert held_flag.retry_held_conductor_specs() is True
+        assert held_flag._main_spec_unreadable is False
 
     @pytest.mark.parametrize(
         "skip_lands",
@@ -995,14 +635,12 @@ class TestUnreadableMainSpec:
         *skip_lands* places the failed read's skip inside the writing rebuild,
         between each pair of its flag writes, after it, or the other way round:
         the whole writing rebuild inside the skip's own sibling pass. Whatever the
-        order, an open episode keeps the hold, a refused start arms an early
-        retry, and that retry closes the episode once the file reads. Mutation
+        order, an open episode keeps the hold, and the maintenance retry closes
+        the episode once the file reads. Mutation
         pin: a settle that drops the hold while the episode is open goes red.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         spec = self._custom_spec(tmp_path)
-        clock = _FakeTimers()
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", clock.start)
         fired = [False]
 
         def _skip() -> None:
@@ -1090,116 +728,9 @@ class TestUnreadableMainSpec:
             patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
             patch("kiro_crew.agent.rebuild_agent_config", _rebuild),
         ):
-            if held_flag._main_spec_unreadable:
-                with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                    held_flag.require_main_spec_projected("kirocrew")
-                assert clock.pending, "an open episode has no pending retry"
-                clock.fire_next()
             assert held_flag.retry_held_conductor_specs() is True
-            held_flag.require_main_spec_projected("kirocrew")
         assert held_flag._main_spec_unreadable is False
         assert held_flag._conductor_spec_held is False
-        assert not clock.pending
-
-    def test_every_refusal_writes_an_sel_denial(self, tmp_path: Path, held_flag):
-        """The existing governance-denial event, once per refused start.
-
-        Each refusal is a permission decision, so a retried start and a start
-        of an agent already refused this episode are audited too. Mutation pins:
-        no audit, or a per-agent or per-episode debounce, goes red.
-        """
-        cfg_dir, spec, _denied = self._skipped(tmp_path, held_flag)
-        log = MagicMock()
-        with (
-            patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
-            patch("kiro_crew.agent.sel", return_value=log),
-        ):
-            for _ in range(3):
-                for name in ("kirocrew", "kirocrew-heartbeat"):
-                    with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                        held_flag.require_main_spec_projected(name)
-            calls = log.log_governance_decision.call_args_list
-            assert [c.kwargs["agent"] for c in calls] == ["kirocrew", "kirocrew-heartbeat"] * 3
-            for c in calls:
-                assert c.kwargs["outcome"] == "denied"
-                assert c.kwargs["reason"].startswith("cause=unreadable_main_spec")
-            log.log.assert_not_called()
-            # The episode closes, the next one audits too.
-            _run_install(tmp_path, cfg_dir)
-            held_flag._main_spec_unreadable = True
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-        assert log.log_governance_decision.call_count == 7
-
-    def test_a_refusal_stands_when_the_sel_write_fails(self, tmp_path: Path, held_flag, caplog):
-        """Audit failure never admits: each start is refused, the failure warned once per episode.
-
-        Repeats drop to debug, the same form as the skip and the retry, so a
-        persistent SEL failure stays visible. Mutation pin: dropping the debug
-        arm leaves the repeat unlogged.
-        """
-        _cfg_dir, spec, _denied = self._skipped(tmp_path, held_flag)
-        log = MagicMock()
-        log.log_governance_decision.side_effect = OSError(28, "No space left on device")
-        with (
-            patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
-            patch("kiro_crew.agent.sel", return_value=log),
-            caplog.at_level(logging.DEBUG, logger="kiro_crew.agent"),
-        ):
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_main_spec_projected("kirocrew")
-            with pytest.raises(held_flag.ForkGovernanceUnresolved):
-                held_flag.require_fork_governance("kirocrew")
-        assert log.log_governance_decision.call_count == 2
-        levels = [
-            r.levelno
-            for r in caplog.records
-            if "could not audit the refused start" in r.getMessage()
-        ]
-        assert levels == [logging.WARNING, logging.DEBUG]
-
-    def test_an_audit_failure_after_a_close_leaves_no_key_for_the_next_episode(
-        self, tmp_path: Path, held_flag, caplog
-    ):
-        """A close during the SEL write leaves the next episode's first audit failure a WARNING.
-
-        The gate reads the flag without the episode lock, so a rebuild can close
-        the episode while the denial is being written. If that write then fails,
-        the failure is warned about but records no ``denial-audit`` key, so
-        nothing outlives the closed episode. Mutation pin: recording the key
-        whether or not an episode is open leaks it and silences the next
-        episode's first warning.
-        """
-        cfg_dir, spec, denied = self._skipped(tmp_path, held_flag)
-
-        def _closes_then_fails():
-            held_flag._note_main_spec_readable(
-                spec, "kirocrew", held_flag._main_spec_episode_revision
-            )
-            raise OSError("security event log unavailable")
-
-        def _fails():
-            raise OSError("security event log unavailable")
-
-        with (
-            patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
-            caplog.at_level(logging.WARNING, logger="kiro_crew.agent"),
-        ):
-            with patch("kiro_crew.agent.sel", _closes_then_fails):
-                held_flag._audit_main_spec_denial("kirocrew")
-            assert held_flag._main_spec_unreadable is False
-            assert "denial-audit" not in held_flag._main_spec_warned
-            with patch("kiro_crew.agent.read_bytes_with_retry", denied):
-                _run_install(tmp_path, cfg_dir)
-            assert held_flag._main_spec_unreadable is True
-            caplog.clear()
-            with patch("kiro_crew.agent.sel", _fails):
-                held_flag._audit_main_spec_denial("kirocrew")
-        warned = [
-            r for r in caplog.records if "could not audit the refused start" in r.getMessage()
-        ]
-        assert [r.levelno for r in warned] == [logging.WARNING]
-        assert "denial-audit" in held_flag._main_spec_warned
 
     def test_repeat_skips_run_the_sibling_pass_once_per_governance_generation(
         self, tmp_path: Path, held_flag
@@ -1563,27 +1094,6 @@ class TestUnreadableMainSpec:
             config, fresh = agent_mod._load_existing_config(tmp_path / "absent.json")
         assert (config, fresh) == ({"model": "d"}, True)
         b.assert_called_once()
-
-    def test_with_no_factory_installed_the_retry_starts_its_own_timer(self, held_flag, monkeypatch):
-        """Production installs no factory, so the scheduler starts the retry's timer itself.
-
-        Mutation pin: dropping the fallback leaves an open episode with no early retry.
-        """
-        started: list[float] = []
-
-        class _Handle:
-            def cancel(self) -> None:
-                pass
-
-        def _start(delay, _callback):
-            started.append(delay)
-            return _Handle()
-
-        monkeypatch.setattr(held_flag, "_main_spec_retry_timer_factory", None)
-        monkeypatch.setattr(held_flag, "_start_main_spec_retry_timer", _start)
-        monkeypatch.setattr(held_flag, "_main_spec_unreadable", True)
-        held_flag._schedule_main_spec_early_retry()
-        assert started == [5.0]
 
 
 def test_a_dashboard_rebuild_that_did_not_write_names_both_causes(monkeypatch, caplog):

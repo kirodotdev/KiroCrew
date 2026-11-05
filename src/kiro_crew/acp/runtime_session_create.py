@@ -17,8 +17,7 @@ Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_d
 ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
 ``_pool_lookup``, ``_process``, ``_refuse_over_ceiling_start``, ``_remote_session_servers``,
-``_remote_workspace_agents``, ``_require_launch_bound_for_session_open``,
-``_send_session_open``, ``_session_label_elements``, ``_start_collect_timeout``,
+``_remote_workspace_agents``, ``_session_label_elements``, ``_start_collect_timeout``,
 ``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
 """
@@ -182,10 +181,6 @@ async def create_session(
     # no agent inherits the spawn agent, whose spec the spawn check saw only as it
     # stood then.
     await self._refuse_over_ceiling_start(agent or self._agent)
-    # Checked here as well as in _send_session_open, so a refusal lands
-    # before the admission gate: it takes no start permit and records no
-    # failed start sample for the adaptive controller.
-    await self._require_launch_bound_for_session_open()
 
     # Inject the shared gateway's broker stubs unless the caller supplied an
     # explicit list. A session-injected server outranks the same-named entry
@@ -446,13 +441,7 @@ async def create_session(
     # Wall time the request went out, for the session-open mount check.
     request_sent_at = time.time()
     try:
-        resp = await self._send_session_open(
-            METHOD_SESSION_NEW,
-            params,
-            timeout=budget,
-            built_on=kas_extras.main_spec_episode,
-            built_for=active_agent,
-        )
+        resp = await self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget)
         session_id = str(resp.get("sessionId") or "")
         permit.release()
         if not session_id:
@@ -1088,11 +1077,7 @@ async def probe_advertised_models(
         self._session_inits_in_flight += 1
         try:
             try:
-                # A refusal of an unbound launch raises here, before the
-                # request is written, and takes the failure arm below: the
-                # attempt clock is stamped, so one probe per TTL writes one
-                # SEL denial.
-                resp = await self._send_session_open(
+                resp = await self._send_and_await(
                     METHOD_SESSION_NEW, params, timeout=_ENTITLEMENT_PROBE_TIMEOUT
                 )
                 session_id = str(resp.get("sessionId") or "")

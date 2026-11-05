@@ -821,7 +821,7 @@ def test_an_unreadable_main_spec_episode_is_rebuilt_beside_an_unchanged_template
 
     A rebuild is what closes an unreadable-main-spec episode, so an open one is
     retried even when an earlier pass left an unchanged shared-template hold.
-    Mutation pin: dropping the episode from the probe leaves it refused until a restart.
+    Mutation pin: dropping the episode from the probe leaves the kept spec unretried.
     """
     calls: list[int] = []
 
