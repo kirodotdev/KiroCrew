@@ -654,8 +654,8 @@ def build_permission_event(
     ``harness_tool_id`` anyway: the tool name its preceding ``tool_call`` frame
     stated, qualified by the backend (``goose#shell``). Only a backend with a name
     table (:mod:`kiro_crew.acp.harness_tool_names`) gets one. On a claude or goose
-    Side Chat session (``side_read_only``) the same cache gives
-    ``harness_builtin_tool`` instead: the kiro-cli read built-in the call stands
+    Side Chat session (``side_read_only``) the same cache also gives
+    ``harness_builtin_tool``: the kiro-cli read built-in the call stands
     for (:data:`~kiro_crew.acp.harness_tool_names.CLAUDE_READ_ONLY_BUILTINS`,
     :data:`~kiro_crew.acp.harness_tool_names.GOOSE_READ_ONLY_BUILTINS`). Every
     other session's event is built exactly as before.
@@ -1102,8 +1102,9 @@ def build_permission_event(
         # Only from the envelope's owner: a project's own tool named ``shell``
         # must not meet an ``execute_bash`` matcher as the built-in shell.
         _harness_tool_id = strands_identity.harness_tool_id if strands_identity else ""
-    # goose and opencode state no such id; the tool name their tool_call frame
-    # stated stands in for it, qualified so it is read through that backend's table.
+    # goose, opencode and claude state no such id; the tool name their tool_call
+    # frame stated stands in for it, qualified so it is read through that
+    # backend's table.
     elif not _harness_tool_id and harness_tool_name_cache is not None and tool_call_id:
         _harness_tool_id = qualified_harness_tool_id(
             harness_backend, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers

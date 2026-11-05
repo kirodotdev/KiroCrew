@@ -1,0 +1,359 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "Terminal",
+        "tool_call_id": "toolu_bdrk_01MLg8fA8HbYbHwwzr1mTn7D",
+        "tool_kind": "execute",
+        "wire_title": "Terminal"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "touch made.txt"
+        },
+        "title": "touch made.txt",
+        "tool_call_id": "toolu_bdrk_01MLg8fA8HbYbHwwzr1mTn7D",
+        "tool_input": "{\n  \"command\": \"touch made.txt\"\n}",
+        "wire_title": "touch made.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01MLg8fA8HbYbHwwzr1mTn7D",
+        "tool_output": "Create empty file made.txt",
+        "tool_output_bytes": 26,
+        "tool_output_digest": "cfa235223e6faf0fabe0dcc2f866f687a261ee542079268696c404d4101f7952"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "touch made.txt",
+          "description": "Create empty file made.txt"
+        },
+        "title": "Create empty file made.txt",
+        "tool_call_id": "toolu_bdrk_01MLg8fA8HbYbHwwzr1mTn7D",
+        "tool_input": "{\n  \"command\": \"touch made.txt\",\n  \"description\": \"Create empty file made.txt\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Yes"
+          },
+          {
+            "id": "reject",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "touch made.txt",
+          "description": "Create empty file made.txt"
+        },
+        "shell_classified": true,
+        "title": "touch made.txt",
+        "tool_call_id": "toolu_bdrk_01MLg8fA8HbYbHwwzr1mTn7D",
+        "tool_input": "{\n  \"command\": \"touch made.txt\",\n  \"description\": \"Create empty file made.txt\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-once",
+      "once": "allow-once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01MLg8fA8HbYbHwwzr1mTn7D",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Edit",
+        "tool_call_id": "toolu_bdrk_012AnrKZiua3A22gg5QLVYmr",
+        "tool_kind": "edit",
+        "wire_title": "Edit"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/work/note.txt"
+        },
+        "title": "Edit note.txt",
+        "tool_call_id": "toolu_bdrk_012AnrKZiua3A22gg5QLVYmr",
+        "tool_input": "{\n  \"file_path\": \"/work/note.txt\"\n}",
+        "wire_title": "Edit note.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/work/note.txt",
+          "old_string": "alpha"
+        },
+        "tool_call_id": "toolu_bdrk_012AnrKZiua3A22gg5QLVYmr",
+        "tool_input": "{\n  \"file_path\": \"/work/note.txt\",\n  \"old_string\": \"alpha\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "diff_old_text": "alpha",
+        "diff_path": "/work/note.txt",
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/work/note.txt",
+          "new_string": "beta",
+          "old_string": "alpha",
+          "replace_all": false
+        },
+        "tool_call_id": "toolu_bdrk_012AnrKZiua3A22gg5QLVYmr",
+        "tool_input": "--- /work/note.txt\n+++ /work/note.txt\n@@ -1 +1 @@\n-alpha\n+beta"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow-with-updates",
+            "label": "Yes, allow all edits during this session"
+          },
+          {
+            "id": "reject",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "file_path": "/work/note.txt",
+          "new_string": "beta",
+          "old_string": "alpha",
+          "replace_all": false
+        },
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "Edit note.txt",
+        "tool_call_id": "toolu_bdrk_012AnrKZiua3A22gg5QLVYmr",
+        "tool_input": "--- /work/note.txt\n+++ /work/note.txt\n@@ -1 +1 @@\n-alpha\n+beta",
+        "tool_kind": "edit"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-with-updates",
+      "once": "allow-once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_012AnrKZiua3A22gg5QLVYmr",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Fetch",
+        "tool_call_id": "toolu_bdrk_01Nzp8UtsQ3GtMAeBC18ciLg",
+        "tool_kind": "fetch",
+        "wire_title": "Fetch"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "url": "https://example.com"
+        },
+        "title": "Fetch https://example.com",
+        "tool_call_id": "toolu_bdrk_01Nzp8UtsQ3GtMAeBC18ciLg",
+        "tool_input": "{\n  \"url\": \"https://example.com\"\n}",
+        "wire_title": "Fetch https://example.com"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01Nzp8UtsQ3GtMAeBC18ciLg",
+        "tool_output": "What is the page title?",
+        "tool_output_bytes": 23,
+        "tool_output_digest": "83f6654e2b5cf21f444bbd118279a772e7d84503f0fdb394715de45da29b2876"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "prompt": "What is the page title?",
+          "url": "https://example.com"
+        },
+        "tool_call_id": "toolu_bdrk_01Nzp8UtsQ3GtMAeBC18ciLg",
+        "tool_input": "{\n  \"url\": \"https://example.com\",\n  \"prompt\": \"What is the page title?\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow-with-updates",
+            "label": "Yes, and don't ask again for example.com"
+          },
+          {
+            "id": "reject",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "prompt": "What is the page title?",
+          "url": "https://example.com"
+        },
+        "request_id": 2,
+        "shell_classified": true,
+        "title": "Fetch https://example.com",
+        "tool_call_id": "toolu_bdrk_01Nzp8UtsQ3GtMAeBC18ciLg",
+        "tool_input": "{\n  \"url\": \"https://example.com\",\n  \"prompt\": \"What is the page title?\"\n}",
+        "tool_kind": "fetch"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-with-updates",
+      "once": "allow-once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01Nzp8UtsQ3GtMAeBC18ciLg",
+        "tool_final": true,
+        "tool_output": "The page title is \"Example Domain.\"",
+        "tool_output_bytes": 35,
+        "tool_output_digest": "109b36101621ae47b7d6a4ff0001f3042260bdd851e56d0580ba358f02bf97d8",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]
