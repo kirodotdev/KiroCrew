@@ -341,8 +341,8 @@ export interface SessionStorageCleanup {
  * a single slot, so a second empty is refused with 409 and this same shape rather
  * than queued.
  *
- * `total_bytes` comes from the staged manifests — the same figure the trash row
- * showed — so it is the denominator for `freed_bytes` and never a remeasurement.
+ * `total_bytes` counts what the delete counts in `freed_bytes` (the trash row's
+ * figure plus each batch's manifest), so it is the denominator, never a remeasurement.
  */
 export interface SessionStorageEmptyJob {
   job_id: string
