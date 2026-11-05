@@ -220,7 +220,7 @@ export function lastAssistant(messages: SlotData['messages']): string {
 // state)"). Strip parentheticals and cap the length — the full text stays in the tooltip.
 export function shortLabel(s: string | undefined): string {
   const t = String(s || '').replace(/\s*[([].*?[)\]]\s*/g, ' ').replace(/\s+/g, ' ').trim()
-  if (!t) return 'Screen'
+  if (!t) return i18nT('apps.designCritique.utils.screen_fallback')
   return t.length > 18 ? t.slice(0, 17).trimEnd() + '…' : t
 }
 

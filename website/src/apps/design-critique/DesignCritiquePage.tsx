@@ -1011,7 +1011,8 @@ export default function DesignCritiquePage() {
     // on a string and take the whole report down. Trust the shape only when it
     // really is an array.
     const st = Array.isArray(f.steps) ? f.steps.slice().sort((a, b) => a - b) : []
-    if (!st.length) return 'flow'
+    // No steps: FindingRow shows its own translated flow badge and no range line.
+    if (!st.length) return ''
     if (st.length === 1) return String(st[0])
     if (st.length === 2 && st[1] === st[0] + 1) return st[0] + '→' + st[1]
     return st[0] + '–' + st[st.length - 1]
