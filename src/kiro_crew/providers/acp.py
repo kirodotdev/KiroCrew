@@ -378,10 +378,15 @@ class AcpProvider(LLMProvider):
                 pass
 
     async def answer_elicitation(
-        self, request_id: str | int, action: str, content: dict[str, Any] | None = None
+        self,
+        request_id: str | int,
+        action: str,
+        content: dict[str, Any] | None = None,
+        *,
+        person: bool = True,
     ) -> bool:
         """Answer a pending MCP elicitation on the inner client."""
-        return await self._client.answer_elicitation(request_id, action, content)
+        return await self._client.answer_elicitation(request_id, action, content, person=person)
 
     @property
     def model_pin_refused(self) -> str:

@@ -2,6 +2,7 @@ import { safeSetItem, safeSetSessionItem } from '../../utils/safeStorage'
 import { newerTs } from '../../lib/slotReadRelay'
 import { slotListHoldTest } from '../../utils/slotListHold'
 import { crewRootOf } from '../../lib/crewMode'
+import { isEmbeddableHubOrigin } from '../../lib/tunnelOrigin'
 import type { DashboardState } from '../dashboardSlice'
 
 /** The unread record behind the session badges: its Web Storage persistence,
@@ -249,14 +250,16 @@ export const restoreUnreadBadges = (since: Record<string, string>): string[] => 
 // When running embedded inside the Instances hub (an iframe), relay unread-count
 // changes to the parent so it can badge this instance's switcher chip (§5.3).
 // Only the count (a non-secret number) is sent; the parent validates event.origin
-// against its known tunnel origins before trusting it (§5.4). Posting to the
-// referrer's origin (the hub) when known, else '*', avoids broadcasting widely.
+// against its known tunnel origins before trusting it (§5.4). The message goes
+// only to the referrer's origin, and only when that is a hub origin a pane may
+// embed under; with no such referrer nothing is sent.
 export const _relayUnreadToParent = (slotsJson: string): void => {
   try {
     if (typeof window === 'undefined' || window.parent === window) return
+    let target = ''
+    try { if (document.referrer) target = new URL(document.referrer).origin } catch { /* no target */ }
+    if (!isEmbeddableHubOrigin(target)) return
     const count = (JSON.parse(slotsJson) as string[]).length
-    let target = '*'
-    try { if (document.referrer) target = new URL(document.referrer).origin } catch { /* keep '*' */ }
     window.parent.postMessage({ source: 'kirocrew', type: 'mc-unread-slots', count }, target)
   } catch { /* never let the relay break a state update */ }
 }

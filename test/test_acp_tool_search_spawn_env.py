@@ -85,6 +85,44 @@ def test_older_or_unknown_engine_keeps_crew_servers(harness, overlay, monkeypatc
     assert env[_ENV] == "edition-a,kirocrew-work,kirocrew-z"
 
 
+@pytest.mark.parametrize("root", ["kas", "app/kas"], ids=["data-home", "desktop"])
+@pytest.mark.parametrize("overlay", [None, "", "overlay-server"])
+def test_kas_engine_bundle_defers_crew_servers(overlay, root, tmp_path, monkeypatch) -> None:
+    """Crew's own KAS bundle keeps ``tools`` fixed on a load: no engine floor applies."""
+    from kiro_crew.acp import kas_bundle
+
+    def unexpected_probe(*_args):
+        pytest.fail("A bundle spawn must not consult the kiro-cli engine floor")
+
+    monkeypatch.setattr(kas_bundle, "kas_engines_root", lambda home=None: tmp_path / "kas")
+    monkeypatch.setattr(kas_bundle, "bundled_kas_root", lambda: tmp_path / "app" / "kas")
+    node = tmp_path / root / "0.66.33" / "node" / "bin" / "node"
+    monkeypatch.delenv(_ENV, raising=False)
+    monkeypatch.setattr(kiro_cli, "mandatory_mcps_drop_allowed", unexpected_probe)
+    env = {} if overlay is None else {_ENV: overlay}
+    KasHarness().apply_spawn_env(env, spawned_binary=str(node))
+    assert _ENV not in env
+
+
+@pytest.mark.parametrize("spawned_binary", [None, "elsewhere"])
+def test_kas_outside_the_engine_bundle_keeps_the_floor(
+    spawned_binary, tmp_path, monkeypatch
+) -> None:
+    """The relay runs whatever KAS its kiro-cli carries, so the floor still decides."""
+    from kiro_crew.acp import kas_bundle
+
+    monkeypatch.setattr(kas_bundle, "kas_engines_root", lambda home=None: tmp_path / "kas")
+    monkeypatch.setattr(kas_bundle, "bundled_kas_root", lambda: None)
+    binary = None if spawned_binary is None else str(tmp_path / "bin" / "kiro-cli")
+    monkeypatch.delenv(_ENV, raising=False)
+    monkeypatch.setattr(kiro_cli, "mandatory_mcps_drop_allowed", lambda _binary: False)
+    monkeypatch.setattr(agent_mod, "_MANAGED_MCP_SERVERS", {"kirocrew-z": {}})
+    monkeypatch.setattr(agent_mod, "_extra_mcp_servers", lambda: {})
+    env: dict[str, str] = {}
+    KasHarness().apply_spawn_env(env, spawned_binary=binary)
+    assert env[_ENV] == "kirocrew-z"
+
+
 @_HOSTS
 def test_empty_crew_server_set_removes_overlay(harness, monkeypatch) -> None:
     monkeypatch.delenv(_ENV, raising=False)

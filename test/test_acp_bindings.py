@@ -72,7 +72,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "accepts_elicitation": ("property", False, "a6632a57e602", "acp"),
     "agent_prompt_upgrade_notice": ("property", False, "bb418bb7ece8", "acp"),
     "agent_version": ("property", False, "bb418bb7ece8", "acp"),
-    "answer_elicitation": ("function", True, "2fcb1ac189fa", "acp"),
+    "answer_elicitation": ("function", True, "8ba26aba28fc", "acp"),
     "approval_withdrawable": ("data", False, "", ""),
     "approve_tool": ("function", True, "86811c6ce780", "acp"),
     "available_models": ("function", False, "92d6193dbe19", "acp"),

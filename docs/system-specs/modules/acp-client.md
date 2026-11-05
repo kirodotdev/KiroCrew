@@ -1519,6 +1519,8 @@ server `-32601` itself — so on that harness nothing reaches Crew. The standard
 `elicitation/complete` NOTIFICATION (a URL ask finished out of band) shares the
 prefix and carries no id; the classifiers leave it to `skip`.
 
+**KAS user input (`_kiro/userInput`, `METHOD_KAS_USER_INPUT`)** is the MODEL's own question (KAS's `user_input` tool), sent only because `KAS_CLIENT_CAPABILITIES` declares `_meta.kiro.userInput`. Params are `{sessionId, toolCallId, question, options}`, each option `{title, description?, recommended?, subOptions?}`. Undeclared, KAS asks through `session/request_permission`, and a Deny with no reject option reaches the model as "move on", which the tool tells it to read as yes. The request rides the elicitation path above (same classifier action, card, pending registry, cancel and stranded-drain paths) as a form: an optional `choice` enum of the option titles, and an `answer` text field that is required only when no option is offered. Sub-options are not drawn; the answer is the chosen title. The request's `method` alone decides the reply's shape, built by `elicitation_reply` / `user_input_response`; a driver deciding without a person passes `person=False` (also through `answer_elicitation`). The reply and is ALWAYS `{"action": "answered", "answer": <non-empty text>}`, because KAS hands the model only an `answered` with a non-empty answer and reads `dismissed` or an error as "move on". An accept sends the chosen title, the typed text, or `choice: text`; a person's Deny (or an empty accept) sends `USER_INPUT_DECLINED_ANSWER`; every exit where no person answered (no consumer can ask, unrenderable, a dashboard card refused for a tainted value, text-only prompt path, turn boundary, stranded request, trust/yolo sweep, window expired, Stop) sends `USER_INPUT_NO_PERSON_ANSWER`. Both texts say plainly that the reply is not agreement. KAS persists a pending question and replays it on `session/load` only as a `session_info_update` history row, which Crew does not read as a live ask; KAS does not re-send `_kiro/userInput` after a restart, so there is nothing for Crew to re-answer.
+
 `acp/elicitation.py` owns the shape on both wires. `parse_elicitation_request`
 reads either into one `ElicitationRequest` **fail-closed**: a shape this client
 cannot render (a non-primitive property, an enum of non-strings, more than
@@ -4149,9 +4151,13 @@ minus kiro-cli. There is no `--auth-method` on this route, so the plan carries
 The spawn is labelled `kas-bundle` (a Node program names no engine). Every seam
 after the spawn is unchanged — measured: `initialize`, the
 `_kiro/auth/getAccessToken` callback answered from the vault, and the
-`AcpRuntime` cold start behave as on the relay. `pin_mandatory_mcps_env` sees a
-non-kiro-cli program and keeps every Crew server resident, the conservative
-answer. The `engines` leaf is `READONLY` in every sandbox mode and on the
+`AcpRuntime` cold start behave as on the relay. The KAS harness sees a program
+under `<data home>/engines/kas` or the desktop app's staged copy
+(`bundled_kas_root()`) and calls `defer_mandatory_mcps_env` instead of
+the engine-version gate: that engine keeps its `tools` array fixed when a
+deferred tool loads (measured on 0.66.33 with thinking models), so every Crew
+server defers and only an operator's ambient `ASBX_KIRO_MANDATORY_MCPS` is
+passed. The relay keeps `pin_mandatory_mcps_env`. The `engines` leaf is `READONLY` in every sandbox mode and on the
 file-tool floor ([security.md](security.md)): a sandboxed KAS process reads and
 executes its engine, and nothing in a sandbox rewrites the code the next session
 runs. `kirocrew doctor` reports the route when selected (`_report_kas_bundle`:

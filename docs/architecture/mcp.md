@@ -4262,7 +4262,16 @@ passed through the edition's `agent_executable` resolver, the one the OS sandbox
 to argv[0], so a managed launcher is judged by the install it runs. For any other executable (a pod bundle, a `kiro-cli`
 found on `PATH`), below that floor, or when the version is unknown, Crew keeps its
 servers resident to avoid the thinking-signature
-"tools list differs" rejection that bricks a session. KAS ignores the toggle and the
+"tools list differs" rejection that bricks a session. That floor is kiro-cli's own
+engine and the KAS relay, which runs whatever KAS its kiro-cli carries. On Crew's
+own KAS engine bundle (a spawn whose program sits under `<data home>/engines/kas` or the desktop app's
+staged engine copy),
+Crew's servers always defer: `tool_load` returns a tool's schema as a tool result and the call runs
+through KAS's fixed `tool_call` meta-tool, so the request's `tools` array never changes
+mid-conversation and a signed thinking block stays valid. Measured on the bundled KAS
+0.66.33 with thinking models across 9-turn chats that loaded `kirocrew-*` and
+third-party tools on separate turns: no rejection, and the first request's MCP share
+fell from 156,746 characters to 0. KAS ignores the toggle and the
 thresholds and defers every MCP tool not on its `toolSearch.neverDefer` list, so for an
 agent whose `tools` grants no `tool_search` Crew sends that list with each of the
 agent's MCP tools as `<server>::<tool>`, expanding `@server` grants from the tool names

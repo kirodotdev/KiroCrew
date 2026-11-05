@@ -75,13 +75,15 @@ class TestSharedSpellings:
             assert cp.AWS_KEY_ID in pattern, f"{name} no longer carries the shared AWS spelling"
 
         assert cp.JWT_MULTI_SEGMENT in security._CREDENTIAL_PATTERNS.pattern
+        assert security._TOKEN_PARAM_RE.pattern == cp.TOKEN_PARAMETER
 
     def test_redaction_floor_compiles_the_shared_spellings(self) -> None:
         """``log_redaction``'s patterns are exactly the shared strings."""
-        from kiro_crew.log_redaction import _AWS_KEY_ID_RE, _JWT_RE
+        from kiro_crew.log_redaction import _AWS_KEY_ID_RE, _JWT_RE, _TOKEN_PARAM_RE
 
         assert _AWS_KEY_ID_RE.pattern == cp.AWS_KEY_ID_REDACTION
         assert _JWT_RE.pattern == cp.JWT_MULTI_SEGMENT
+        assert _TOKEN_PARAM_RE.pattern == cp.TOKEN_PARAMETER
 
     def test_no_module_spells_the_prefix_group_by_hand(self) -> None:
         """No module under ``src/kiro_crew`` writes the prefix group as a literal.
