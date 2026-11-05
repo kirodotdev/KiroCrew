@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import partial
 from typing import Any
 
 from aiohttp import web
@@ -25,7 +26,12 @@ from kiro_crew.apps.backend import (
     stop_app_backend,
     unstopped_backend_port,
 )
-from kiro_crew.apps.bridges import RegistrationResult, deregister_app, register_app
+from kiro_crew.apps.bridges import (
+    RegistrationResult,
+    deregister_app,
+    register_app,
+    snapshot_app_agent_configs,
+)
 from kiro_crew.apps.hooks_integration import stop_retained_startup_hooks
 from kiro_crew.apps.manager import get_app
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
@@ -117,7 +123,9 @@ async def _start_backend_after_install(name: str) -> str | None:
     return await _backend_platform_refusal(name, backend)
 
 
-async def _register_app_off_loop(name: str) -> RegistrationResult:
+async def _register_app_off_loop(
+    name: str, prior_agent_configs: dict[str, dict[str, Any]] | None = None
+) -> RegistrationResult:
     """Run ``register_app`` on the subprocess executor, off the event loop.
 
     ``register_app`` / ``deregister_app`` do real filesystem work under
@@ -127,16 +135,26 @@ async def _register_app_off_loop(name: str) -> RegistrationResult:
     loop they freeze every task including the liveness heartbeat until the
     stall watchdog kills the gateway.  Same offload pattern as ``install_app``
     and ``start_app_backend`` on these handlers.
+
+    ``prior_agent_configs`` is the snapshot an update took before it deregistered the
+    app (:func:`_snapshot_agent_configs_off_loop`); it is passed on to ``register_app``
+    so the user's agent edits survive. An empty one is the plain call every other
+    caller makes.
     """
     from kiro_crew.mcp_gateway.overlay_refresh import refresh_after_agent_change
 
     loop = asyncio.get_running_loop()
     box: list = []
+    job = (
+        partial(register_app, name, prior_agent_configs)
+        if prior_agent_configs
+        else partial(register_app, name)
+    )
 
     async def _register() -> bool:
         # Under the broker's refresh lock: no spec write between check and publish.
         try:
-            box.append(await loop.run_in_executor(subprocess_executor(), register_app, name))
+            box.append(await loop.run_in_executor(subprocess_executor(), job))
         except BaseException as exc:
             box.append(exc)
             raise
@@ -144,10 +162,22 @@ async def _register_app_off_loop(name: str) -> RegistrationResult:
 
     await refresh_after_agent_change(_register)
     if not box:  # no broker serves, or the refresh failed before registering
-        box.append(await loop.run_in_executor(subprocess_executor(), register_app, name))
+        box.append(await loop.run_in_executor(subprocess_executor(), job))
     if isinstance(box[0], BaseException):
         raise box[0]
     return box[0]
+
+
+async def _snapshot_agent_configs_off_loop(name: str) -> dict[str, dict[str, Any]]:
+    """Read *name*'s materialized agent configs off the loop, before a deregister.
+
+    ``deregister_app`` deletes them, and they hold the user's own edits (``model``,
+    ``description``...), so an update takes this snapshot first and hands it to
+    :func:`_register_app_off_loop` (see ``snapshot_app_agent_configs``).
+    """
+    return await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), snapshot_app_agent_configs, name
+    )
 
 
 async def _deregister_app_off_loop(name: str) -> RegistrationResult:
@@ -190,7 +220,9 @@ async def _app_may_run_after_install(name: str, *, fresh_install: bool = False) 
     return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), _read_live_state)
 
 
-async def _restore_app_after_failed_update(name: str) -> str | None:
+async def _restore_app_after_failed_update(
+    name: str, prior_agent_configs: dict[str, dict[str, Any]] | None = None
+) -> str | None:
     """Put an app back the way a failed update found it.
 
     The update stopped the backend and scrubbed the resources before it touched
@@ -206,13 +238,16 @@ async def _restore_app_after_failed_update(name: str) -> str | None:
     failed-update audit line and the 400 body, and the cause of the failed
     update (disk full, no free port) is often what breaks the restore too.
 
+    ``prior_agent_configs`` is the update's pre-deregister snapshot, so the restored
+    agents keep the user's edits.
+
     Returns the restarted backend's platform refusal for the 400 body's
     ``backend_refused`` field, or None.
     """
     if not await _app_may_run_after_install(name):
         return None
     try:
-        await _register_app_off_loop(name)
+        await _register_app_off_loop(name, prior_agent_configs)
     except Exception:
         logger.warning("Re-register after failed update failed for app %s", name, exc_info=True)
     return await _start_backend_after_install(name)
