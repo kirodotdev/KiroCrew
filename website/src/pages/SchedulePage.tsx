@@ -271,7 +271,13 @@ export function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder:
           <Btn danger onClick={() => { setConfirming(false); onDelete() }}>
             {i18nT('pages.schedulePage.cronFolders.delete_folder_named', { name: folder.name })}
           </Btn>
-          <Btn onClick={() => setConfirming(false)}>
+          {/* Cancel unmounts the row and itself with it, which would drop
+              focus to the page: hand it back to the trigger, as the rename
+              editor does, a frame later so the row has gone. */}
+          <Btn onClick={() => {
+            setConfirming(false)
+            requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }))
+          }}>
             {i18nT('pages.schedulePage.cancel')}
           </Btn>
         </div>
