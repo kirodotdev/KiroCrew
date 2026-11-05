@@ -56,7 +56,7 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.elicitation import (
     ELICITATION_CANCEL,
-    elicitation_response,
+    elicitation_reply,
     is_elicitation_request,
 )
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
@@ -626,7 +626,7 @@ async def _run_turn(
             )
             try:
                 await self._runtime.send_response(
-                    stale.id, elicitation_response(ELICITATION_CANCEL)
+                    stale.id, elicitation_reply(stale.method, ELICITATION_CANCEL, person=False)
                 )
             except asyncio.CancelledError:
                 self._queue.put_nowait(stale)

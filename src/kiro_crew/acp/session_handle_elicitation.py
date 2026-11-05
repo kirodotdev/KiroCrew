@@ -34,7 +34,7 @@ from kiro_crew.acp.elicitation import (
     ElicitationContentError,
     ElicitationParseError,
     ElicitationRequest,
-    elicitation_response,
+    elicitation_reply,
     parse_elicitation_request,
     validate_form_content,
 )
@@ -128,7 +128,9 @@ async def _handle_elicitation_request(
         )
         if msg.id is not None:
             self._audit_elicitation_decision(msg.id, ELICITATION_DECLINE, "unrenderable_request")
-            await self._runtime.send_response(msg.id, elicitation_response(ELICITATION_DECLINE))
+            await self._runtime.send_response(
+                msg.id, elicitation_reply(msg.method, ELICITATION_DECLINE, person=False)
+            )
         return None
     if not self.accepts_elicitation:
         logger.info(
@@ -146,7 +148,7 @@ async def _handle_elicitation_request(
             mode=request.mode,
         )
         await self._runtime.send_response(
-            request.request_id, elicitation_response(ELICITATION_DECLINE)
+            request.request_id, elicitation_reply(request.method, ELICITATION_DECLINE, person=False)
         )
         return None
     self._pending_elicitations[request.request_id] = request
@@ -171,8 +173,14 @@ async def answer_elicitation(
     request_id: str | int,
     action: str,
     content: dict[str, Any] | None = None,
+    *,
+    person: bool = True,
 ) -> bool:
     """Send the person's answer to a pending elicitation.
+
+    ``person`` is False when the caller decided without showing the ask to
+    anyone (the dashboard refusing a tainted card); it picks the
+    ``_kiro/userInput`` reply text and changes nothing for an MCP elicitation.
 
     ``content`` is read only for an accepted form, and is checked against the
     requested schema first: a value that does not fit raises
@@ -190,7 +198,7 @@ async def answer_elicitation(
             self._session_id,
         )
         return False
-    payload = _answer_payload(request, action, content)
+    payload = _answer_payload(request, action, content, person=person)
     # Popped only once the payload is built: a content error above leaves the
     # request pending for a corrected answer.
     self._pending_elicitations.pop(request_id, None)
@@ -204,12 +212,12 @@ async def answer_elicitation(
 
 
 def _answer_payload(
-    request: ElicitationRequest, action: str, content: dict[str, Any] | None
+    request: ElicitationRequest, action: str, content: dict[str, Any] | None, *, person: bool
 ) -> dict[str, Any]:
     """The response for *action*, with form content validated when it rides along."""
     if action == ELICITATION_ACCEPT and request.is_form:
-        return elicitation_response(action, validate_form_content(request, content))
-    return elicitation_response(action)
+        return elicitation_reply(request.method, action, validate_form_content(request, content))
+    return elicitation_reply(request.method, action, person=person)
 
 
 async def cancel_pending_elicitations(self: AcpSessionHandle) -> int:
@@ -231,7 +239,9 @@ async def cancel_pending_elicitations(self: AcpSessionHandle) -> int:
             mode=request.mode,
         )
         try:
-            await self._runtime.send_response(request_id, elicitation_response(ELICITATION_CANCEL))
+            await self._runtime.send_response(
+                request_id, elicitation_reply(request.method, ELICITATION_CANCEL, person=False)
+            )
         except Exception as exc:  # the runtime may already be gone at teardown
             logger.debug(
                 "cancel_pending_elicitations: req=%s not answered (%s)",

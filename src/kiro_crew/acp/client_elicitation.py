@@ -35,7 +35,7 @@ from kiro_crew.acp.elicitation import (
     ELICITATION_DECLINE,
     ElicitationParseError,
     ElicitationRequest,
-    elicitation_response,
+    elicitation_reply,
     parse_elicitation_request,
     validate_form_content,
 )
@@ -124,7 +124,9 @@ async def _handle_elicitation_request(self: AcpClient, msg: JsonRpcMessage) -> A
             await self._audit_elicitation_decision(
                 msg.id, ELICITATION_DECLINE, "unrenderable_request"
             )
-            await self._send_response(msg.id, elicitation_response(ELICITATION_DECLINE))
+            await self._send_response(
+                msg.id, elicitation_reply(msg.method, ELICITATION_DECLINE, person=False)
+            )
         return None
     if not self.accepts_elicitation:
         logger.info(
@@ -141,7 +143,10 @@ async def _handle_elicitation_request(self: AcpClient, msg: JsonRpcMessage) -> A
             tool_call_id=request.tool_call_id,
             mode=request.mode,
         )
-        await self._send_response(request.request_id, elicitation_response(ELICITATION_DECLINE))
+        await self._send_response(
+            request.request_id,
+            elicitation_reply(request.method, ELICITATION_DECLINE, person=False),
+        )
         return None
     self._pending_elicitations[request.request_id] = request
     logger.info(
@@ -170,7 +175,9 @@ async def _decline_elicitation(self: AcpClient, msg: JsonRpcMessage) -> None:
         self._session_id,
     )
     await self._audit_elicitation_decision(msg.id, ELICITATION_DECLINE, "text_only_prompt_api")
-    await self._send_response(msg.id, elicitation_response(ELICITATION_DECLINE))
+    await self._send_response(
+        msg.id, elicitation_reply(msg.method, ELICITATION_DECLINE, person=False)
+    )
 
 
 async def answer_elicitation(
@@ -178,6 +185,8 @@ async def answer_elicitation(
     request_id: str | int,
     action: str,
     content: dict[str, Any] | None = None,
+    *,
+    person: bool = True,
 ) -> bool:
     """Send the person's answer to a pending elicitation.
 
@@ -196,9 +205,9 @@ async def answer_elicitation(
         )
         return False
     if action == ELICITATION_ACCEPT and request.is_form:
-        payload = elicitation_response(action, validate_form_content(request, content))
+        payload = elicitation_reply(request.method, action, validate_form_content(request, content))
     else:
-        payload = elicitation_response(action)
+        payload = elicitation_reply(request.method, action, person=person)
     self._pending_elicitations.pop(request_id, None)
     await self._audit_elicitation_decision(
         request_id, action, "consumer", tool_call_id=request.tool_call_id, mode=request.mode
@@ -220,7 +229,9 @@ async def cancel_pending_elicitations(self: AcpClient) -> int:
             mode=request.mode,
         )
         try:
-            await self._send_response(request_id, elicitation_response(ELICITATION_CANCEL))
+            await self._send_response(
+                request_id, elicitation_reply(request.method, ELICITATION_CANCEL, person=False)
+            )
         except Exception as exc:  # the process may already be gone
             logger.debug(
                 "cancel_pending_elicitations: req=%s not answered (%s)",
