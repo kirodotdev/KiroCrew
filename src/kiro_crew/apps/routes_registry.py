@@ -43,6 +43,7 @@ from kiro_crew.apps.registry import (
     list_registry,
 )
 from kiro_crew.apps.routes_art import _SAFE_REPO_RE, _is_safe_repo_identifier
+from kiro_crew.apps.routes_install import _resync_app_crons_after_update
 from kiro_crew.apps.routes_lifecycle import (
     _app_may_run_after_install,
     _register_app_off_loop,
@@ -235,6 +236,12 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         else:
             # Auto-register resources
             reg = await _register_app_off_loop(result["name"])
+            if was_installed:
+                # A re-install over an installed, still-enabled app is an
+                # update: carry its rewritten crons into the running scheduler
+                # (see handle_update_app). A fresh install is disabled, and
+                # enabling it registers the crons.
+                await _resync_app_crons_after_update(request, result["name"])
             # Spawn the backend now so apps with a server are reachable immediately —
             # without this the backend only starts on the next gateway reboot (via
             # start_enabled_app_backends), leaving the app's UI with "no reachable
@@ -366,6 +373,9 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                     r["registration"] = reg.to_dict()
                 else:
                     reg = await _register_app_off_loop(r["name"])
+                    if was_installed:
+                        # An update, as in handle_registry_install.
+                        await _resync_app_crons_after_update(request, r["name"])
                     # Spawn the backend immediately (see handle_registry_install) so
                     # the app is reachable without a gateway reboot. No-op for
                     # backend-less apps.
