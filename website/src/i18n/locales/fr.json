@@ -9812,6 +9812,8 @@
       "ask_kiro": "Demander à Kiro",
       "ask_kiro_prompt": "Ouvre {{url}} dans le navigateur et montre-moi la page.",
       "no_origins_yet": "Aucun serveur de développement n’est encore autorisé. Ajoute le tien dans Réglages → Navigateur → Aperçu local.",
+      "loopback_not_allowed_body": "C’est un nom localhost, mais l’onglet Aperçu n’ouvre que les adresses locales que tu as autorisées — localhost ou 127.0.0.1 avec un port. Ajoutes-en une dans Réglages → Navigateur → Aperçu local.",
+      "loopback_not_allowed_title": "Ce nom localhost ne peut pas être affiché ici",
       "open_in_your_chrome": "Ouvrir dans ton Chrome",
       "origin_not_allowed_body": "L’onglet Aperçu n’ouvre que les adresses locales que tu as autorisées. Autorise celle-ci pour l’afficher ici.",
       "origin_not_allowed_title": "Cette adresse n’est pas dans ta liste d’aperçu local",

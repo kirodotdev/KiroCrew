@@ -357,8 +357,10 @@ describe('WebPreviewPanel', () => {
 
   // `*.localhost` is potentially trustworthy too, but the dashboard's frame-src
   // only admits it in instances mode, so relaxing the guard for it would trade
-  // the explanation for a CSP-blanked frame.
-  it('refuses a *.localhost target as an outside address: the allowlist takes loopback spellings only', async () => {
+  // the explanation for a CSP-blanked frame. It therefore STAYS refused — but as
+  // a localhost name, not as an "outside address" (#30387): the card that fits a
+  // loopback name, never the public-site wording.
+  it('refuses a *.localhost target as a localhost name the list cannot admit, not as an outside address', async () => {
     const originalHref = window.location.href
     window.location.href = 'https://dashboard.example.com/'
     try {
@@ -366,7 +368,9 @@ describe('WebPreviewPanel', () => {
       const input = screen.getByLabelText('Preview URL')
       fireEvent.change(input, { target: { value: 'http://app.localhost:5173/' } })
       fireEvent.submit(input.closest('form') as HTMLFormElement)
-      expect(screen.getByTestId('web-preview-outside-refused')).toBeInTheDocument()
+      // Still refused: the loopback-name card, no frame.
+      expect(screen.getByTestId('web-preview-loopback-refused')).toBeInTheDocument()
+      expect(screen.queryByTestId('web-preview-outside-refused')).toBeNull()
       expect(screen.queryByTitle('Web preview')).toBeNull()
     } finally {
       window.location.href = originalHref
@@ -432,6 +436,27 @@ describe('WebPreviewPanel', () => {
     expect(screen.getByTestId('web-preview-ask-kiro')).toBeInTheDocument()
     // Nothing went to the gateway: no launcher, no allow.
     expect(patchConfig).not.toHaveBeenCalled()
+  })
+
+  // A `*.localhost` name is a loopback name (it resolves to this machine) but is
+  // deliberately NOT one the list can admit, so it is refused — correctly. The
+  // refusal card it gets must fit a loopback name, not tell the user it "is not a
+  // local address" (the wording meant for a public site like example.com). The
+  // deny decision is unchanged: the frame still never appears.
+  it('refuses a *.localhost name with loopback-fitting wording, not "not a local address"', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'http://foo.localhost:5173/' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    // Still refused: no frame, nothing sent to the gateway.
+    await screen.findByTestId('web-preview-loopback-refused')
+    expect(screen.queryByTitle('Web preview')).toBeNull()
+    expect(patchConfig).not.toHaveBeenCalled()
+    // The misleading public-site wording must NOT be shown for a loopback name.
+    expect(screen.queryByText('This is not a local address')).toBeNull()
+    expect(screen.queryByTestId('web-preview-outside-refused')).toBeNull()
+    // It is not offered a one-click Allow either (the list cannot admit it).
+    expect(screen.queryByTestId('web-preview-allow-origin')).toBeNull()
   })
 
   it('offers a one-click Allow for a loopback address outside the list, and writes the whole list back', async () => {
