@@ -1,6 +1,6 @@
 import { memo, useContext, useId, useState } from 'react'
 import { ReactReduxContext } from 'react-redux'
-import { Ban, CheckCircle, Clock, ExternalLink, Loader2, MessageSquareMore } from 'lucide-react'
+import { Ban, CheckCircle, Clock, ExternalLink, Loader2, MessageSquareMore, X } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import SimpleSelect from '../../components/SimpleSelect'
 import { approvalBtnClass } from '../../components/chat-input/approval'
@@ -286,6 +286,14 @@ export function answerSummary(fields: ElicitationField[], answer: Record<string,
   return parts.join(' · ')
 }
 
+/**
+ * The three answers MCP lets a person give (`ElicitationResult.action`):
+ * `accept` with the form's content, `decline` as an explicit no, and `cancel`
+ * as "dismissed without choosing" -- the server reads the last two differently,
+ * so the card offers each on its own control.
+ */
+type ElicitationAction = 'accept' | 'decline' | 'cancel'
+
 export function resolvedLabel(resolved: string): string {
   if (resolved === 'accept') return i18nT('pages.chat.elicitationCard.resolved_accept')
   if (resolved === 'decline') return i18nT('pages.chat.elicitationCard.resolved_decline')
@@ -319,7 +327,7 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
   const fields = meta.fields ?? []
   const isForm = meta.mode !== 'url'
   const [draft, setDraft] = useState<ElicitationDraft>(() => initialDraft(fields))
-  const [busy, setBusy] = useState<'accept' | 'decline' | null>(null)
+  const [busy, setBusy] = useState<ElicitationAction | null>(null)
   // Two different things a person reads under the form: a client-side hint
   // that a required field is still empty (plain text beside the field it
   // names), and a request that failed (the shared ErrorNotice surface). They
@@ -335,7 +343,7 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
   // row to stamp, and the gateway's frame is then its only resolution.
   const store = useContext(ReactReduxContext)?.store
 
-  const answer = async (action: 'accept' | 'decline') => {
+  const answer = async (action: ElicitationAction) => {
     if (!slot || !requestId || !requestMid) return
     let content: Record<string, unknown> | undefined
     if (action === 'accept' && isForm) {
@@ -473,6 +481,25 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
             </>
           )}
         </div>
+        {!resolved && !busy && (
+          // `cancel`, MCP's third answer: the person closes the question
+          // without taking a position, which the server reads apart from
+          // Decline's explicit no. Its label is visible text so a reader knows
+          // what it does before clicking. It sits on its own line under the
+          // Submit / Decline row, muted, because it is "put the question away",
+          // not a third peer of yes / no.
+          <div className="pl-6">
+            <button
+              type="button"
+              onClick={() => void answer('cancel')}
+              className="inline-flex items-center gap-1 text-[12px] text-muted hover:text-text disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!slot}
+              data-testid="elicitation-dismiss"
+            >
+              <X size={12} className="shrink-0" />{i18nT('pages.chat.elicitationCard.dismiss')}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
