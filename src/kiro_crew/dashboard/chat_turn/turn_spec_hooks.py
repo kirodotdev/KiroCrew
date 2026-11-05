@@ -800,14 +800,13 @@ async def _fire(
                     },
                 )
             elif event == HOOK_EVENT_PRE_TOOL_USE and r.exit_code != 0 and not r.pre_tool_blocks:
-                # A spec hook that a policy refused, or that crashed, was killed
-                # or timed out. kiro-cli, which runs these hooks on its own
-                # backend, warns and lets the tool run; so does Crew, so one
-                # broken hook in an agent package cannot stop every tool call.
+                # A spec hook that crashed, was killed or timed out. kiro-cli,
+                # which runs these hooks on its own backend, warns and lets the
+                # tool run; so does Crew, so one broken hook in an agent package
+                # cannot stop every tool call.
                 logger.warning(
-                    "Spec hook %s %s (%s); tool allowed",
+                    "Spec hook %s failed (%s); tool allowed",
                     r.hook_name,
-                    "was refused by policy" if r.refused else "failed",
                     r.failure_detail,
                 )
                 state.broadcast_ws(
@@ -819,10 +818,10 @@ async def _fire(
                     },
                 )
             elif r.exit_code == 2 and r.refused:
-                # A policy refused the hook, so it never ran. On PreToolUse this
-                # is a Hooks-page hook (a refused spec hook took the branch
-                # above): a gate with no verdict, which blocks. Log the refusal
-                # itself, so it does not read like a hook that asked to block.
+                # A policy refused the hook, so it never ran: a gate with no
+                # verdict, which blocks, a spec hook's as much as a Hooks-page
+                # hook's. Log the refusal itself, so it does not read like a hook
+                # that asked to block.
                 injected.append(f"BLOCKED:{r.hook_name}:{r.failure_detail}")
                 logger.warning(
                     "Hook %s refused by policy: %s",

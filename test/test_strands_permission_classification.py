@@ -297,7 +297,8 @@ def test_a_strands_mcp_tool_never_meets_a_builtin_spec_hook_by_its_bare_name():
         mcp_server=event.mcp_server_name,
         harness_tool_id=event.harness_tool_id,
     )
-    assert spec == ("@docs/web_fetch", "mcp__docs__web_fetch")
+    # The `@docs` and `@mcp` kinds trail the names (spec_hook_kind_names).
+    assert spec == ("@docs/web_fetch", "mcp__docs__web_fetch", "@docs", "@mcp")
     assert "web_fetch" not in every
     # A built-in still meets its kiro-cli name.
     builtin, _ = _build(_frame(_envelope("web_fetch", "builtin")))
