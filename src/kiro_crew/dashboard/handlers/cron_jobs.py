@@ -283,13 +283,29 @@ async def api_cron_tools(request: web.Request) -> web.Response:
             status=400,
         )
 
+    presented_token = request.headers.get("X-Session-Token", "")
+
     def dispatch() -> str:
+        # A tool that calls back into the gateway (cron_add creating a missing
+        # folder through POST /api/cron-folders) must name the same session
+        # behind an attestation, or that route answers it as a caller it cannot
+        # name. Forward the caller's own token, and only when it verifies to the
+        # session this request was already verified as.
+        token = ""
+        if isinstance(presented_token, str) and presented_token:
+            from kiro_crew.session_token_sig import verify_session_token
+
+            if verify_session_token(presented_token) == actual:
+                token = presented_token
         # ContextVars are isolated by to_thread. Restore the prior value even
         # on failure; no caller identity survives into a later request.
         previous = current_caller()
         set_current_caller(
             CallerContext(
-                session_key=actual, session_type=actual.partition(":")[0], from_gateway=True
+                session_key=actual,
+                session_type=actual.partition(":")[0],
+                from_gateway=True,
+                session_token=token,
             )
         )
         try:
