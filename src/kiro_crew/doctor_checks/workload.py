@@ -36,6 +36,10 @@ _STALL_CURRENT_SECS = 24 * 3600
 #: gateway costs a short pause, never a hung diagnostic.
 _ADAPTIVE_READ_TIMEOUT_SECS = 2
 
+#: How much of a refusal's body the controller read parses for its code. An auth
+#: refusal is a small JSON object; reading more than this is never needed.
+_ADAPTIVE_ERROR_BODY_BYTES = 4096
+
 #: The loopback host the controller read dials. The local credential is
 #: resolved for this same host, so it pairs with the listener actually reached.
 _LOOPBACK_HOST = "127.0.0.1"
@@ -364,7 +368,19 @@ def _gateway_adaptive_state() -> tuple[int, dict[str, Any] | None, str]:
     except _GatewayPeerRefused:
         return port, None, "the answering process is not proven to be this install's gateway"
     except urllib.error.HTTPError as exc:
-        return port, None, f"the gateway refused the read (HTTP {exc.code})"
+        # The auth layer refuses with a bare "Forbidden" and a code; the code names
+        # the cause (a credential from another instance, most often), so say that.
+        import http.client
+
+        from kiro_crew.auth_refusal_text import auth_refusal_text
+
+        why = f"the gateway refused the read (HTTP {exc.code})"
+        try:
+            body = json.loads(exc.read(_ADAPTIVE_ERROR_BODY_BYTES))
+        except (OSError, ValueError, http.client.HTTPException):
+            body = None
+        explained = auth_refusal_text(body.get("code")) if isinstance(body, dict) else None
+        return port, None, f"{why}: {explained}" if explained else why
     except (urllib.error.URLError, OSError) as exc:
         # Only a bare read timeout (the connection was accepted and the gateway
         # then stalled -- a loop thread starved of the GIL) means it is up but

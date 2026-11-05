@@ -76,6 +76,19 @@ def _peer_refusal() -> type[Exception]:
     return _GatewayPeerRefused
 
 
+def _refusal_text(body: dict, fallback: object) -> str:
+    """The text to show for a gateway refusal whose JSON *body* was read.
+
+    An auth-layer refusal carries a bare ``Forbidden`` and a ``code``; the code names
+    what went wrong (most often a credential from another instance), so its
+    explanation from :mod:`kiro_crew.auth_refusal_text` is shown instead, the same
+    sentence an MCP tool gets. Any other refusal shows its ``error``, else *fallback*.
+    """
+    from kiro_crew.auth_refusal_text import auth_refusal_text
+
+    return auth_refusal_text(body.get("code")) or str(body.get("error", fallback))
+
+
 def _spawn_row_text(row: dict[str, object]) -> str:
     """A ``spawn list`` row's id and task, as one terminal line.
 
@@ -121,7 +134,7 @@ def _spawn(args: argparse.Namespace) -> None:
         except urllib.error.HTTPError as e:
             try:
                 body = json.loads(e.read())
-                print(f"Error: {body.get('error', e.reason)}")
+                print(f"Error: {_refusal_text(body, e.reason)}")
             except Exception:
                 print(f"Error: {e.code} {e.reason}")
             sys.exit(1)
@@ -211,7 +224,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
     except urllib.error.HTTPError as e:
         try:
             body = json.loads(e.read())
-            print(f"Error: {body.get('error', e.reason)}")
+            print(f"Error: {_refusal_text(body, e.reason)}")
         except Exception:
             print(f"Error: {e.code} {e.reason}")
         sys.exit(1)
@@ -319,7 +332,7 @@ def _artifact(args: argparse.Namespace) -> None:
             return {"error": f"gateway ownership not verified: {exc}"}
         except urllib.error.HTTPError as exc:
             try:
-                return {"error": json.loads(exc.read()).get("error", str(exc))}
+                return {"error": _refusal_text(json.loads(exc.read()), str(exc))}
             except Exception:
                 return {"error": str(exc)}
         except Exception as exc:
