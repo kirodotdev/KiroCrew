@@ -22,7 +22,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
     workspace_dir_from_entry,
 )
-from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE
+from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE, drop_extra_section_keys
 from kiro_crew.config.sections import _migrate_workspaces, _sanitize_bot_name
 from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import (
@@ -820,13 +820,27 @@ def _refuse_unknown_key(key: str, parsed: object, *, overlay: bool = False) -> N
         ):
             _refuse_emitted_elsewhere_value(key, parts[0], parts[1], parsed)
             return
-    d = KiroCrewConfig.load().to_dict()
+    cfg = KiroCrewConfig.load()
+    d = cfg.to_dict()
+    # ``to_dict()`` re-emits keys a modelled section does not declare, so a
+    # save keeps them. They exist in the document but no code reads them, so
+    # existence is judged without them (the dashboard's config view does the
+    # same); ``preserved`` says the refusal is about such a key.
+    preserved = _dict_get(d, key) is not _MISSING
+    drop_extra_section_keys(d, getattr(cfg, "_extra_keys", {}))
+    preserved = preserved and _dict_get(d, key) is _MISSING
     stored = _dict_set(d, key, parsed)
     declared = _declared_entry(key)
     if declared is None:
         if stored:
             return
         print(f"❌ Unknown key: {key}", file=sys.stderr)
+        if preserved:
+            print(
+                "   It is in config.json, but this version does not read it, "
+                "so setting it changes nothing.",
+                file=sys.stderr,
+            )
         sys.exit(1)
     if stored and parsed is None:
         return
