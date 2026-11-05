@@ -699,6 +699,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           ) : null}
         </p>
       )}
+      {rowBanner && <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide opacity-70" data-testid="user-message-banner-from" data-message-search-skip>{i18nT('pages.chat.userMessage.sent_by_script')}</p>}
       {carriedQuote && <QuoteCard quote={carriedQuote} variant="sent" onJump={carriedQuote.ts ? onJumpToQuote : undefined} />}
       {rowBanner ? (
         <>

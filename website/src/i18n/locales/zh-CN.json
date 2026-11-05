@@ -12575,6 +12575,7 @@
         "steer_queue_instead": "改为排队",
         "show_full_message": "显示完整消息",
         "hide_full_message": "隐藏完整消息",
+        "sent_by_script": "由脚本发送",
         "steer_take_back_more": "编辑或撤回",
         "steer_unsend_in_flight": "正在撤回…",
         "steer_edit_in_flight": "正在移回消息框…",
