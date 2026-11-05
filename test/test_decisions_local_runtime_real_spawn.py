@@ -119,7 +119,7 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
-#: Ports to try before the run is a failure rather than a lost race (#30691).
+#: Ports to try before the run is a failure rather than a lost race.
 _PORT_ATTEMPTS = 5
 
 
@@ -311,7 +311,7 @@ def test_the_server_does_not_outlive_a_gateway_that_dies(tmp_path):
 
 
 def test_a_picked_port_taken_before_the_server_binds_it_is_picked_again(runtime, monkeypatch):
-    """#30691: the picked port held elsewhere by the time the runtime probes it.
+    """The picked port held elsewhere by the time the runtime probes it.
 
     The holder is bound and not listening, the way an outgoing connect's source port
     is: the runtime's probe reads it taken while a connect to it is refused.
