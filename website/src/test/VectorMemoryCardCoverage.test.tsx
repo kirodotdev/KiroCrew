@@ -795,12 +795,37 @@ describe('VectorMemoryCard — semantic write, edit and delete', () => {
     await waitForActive()
 
     await user.click(screen.getByRole('button', { name: 'Delete' }))
+    await user.click(await screen.findByRole('button', { name: 'Delete entry' }))
     await waitFor(() => expect(screen.getByText('delete refused')).toBeInTheDocument())
 
     vi.mocked(api.vectorSemanticDelete).mockResolvedValue(undefined as never)
     await user.click(screen.getByRole('button', { name: 'Delete' }))
+    await user.click(await screen.findByRole('button', { name: 'Delete entry' }))
     await waitFor(() => expect(screen.queryByText('delete refused')).not.toBeInTheDocument())
     expect(api.vectorSemanticDelete).toHaveBeenCalledWith('pref.style.tone')
+  })
+
+  it('asks before deleting a semantic row and keeps it when the ask is cancelled', async () => {
+    const user = userEvent.setup()
+    setupApi({ semantic: { entries: [{ key: 'lesson.always.run_tests', value_json: '"run the tests"', confidence: 1, source: 'user_explicit' }] } })
+    renderWithProviders(<VectorMemoryCard />)
+    await waitForActive()
+    const row = (await screen.findByText('lesson.always.run_tests')).closest('tr')!
+
+    await user.click(within(row).getByRole('button', { name: 'Delete' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this memory entry?' })
+    expect(dialog).toHaveTextContent('Deletes lesson.always.run_tests from semantic memory. This cannot be undone.')
+    expect(api.vectorSemanticDelete).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(api.vectorSemanticDelete).not.toHaveBeenCalled()
+    expect(screen.getByText('lesson.always.run_tests')).toBeInTheDocument()
+
+    await user.click(within(row).getByRole('button', { name: 'Delete' }))
+    await user.click(await screen.findByRole('button', { name: 'Delete entry' }))
+    await waitFor(() => expect(api.vectorSemanticDelete).toHaveBeenCalledTimes(1))
+    expect(api.vectorSemanticDelete).toHaveBeenCalledWith('lesson.always.run_tests')
   })
 
   it('clears the filter with the Clear button', async () => {

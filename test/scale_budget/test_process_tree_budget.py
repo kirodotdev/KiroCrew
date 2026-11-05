@@ -133,11 +133,6 @@ def test_a_full_tree_walk_finds_every_descendant(walk) -> None:
     assert len(set(found)) == len(found), "F8: the walk reported a pid twice"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F8: main forks pgrep for every leaf whose children file is empty",
-)
 def test_a_full_tree_walk_spawns_nothing(walk) -> None:
     """300 roots x 5 leaves: 0 subprocesses, because every children file was readable."""
     walk.run()
@@ -148,11 +143,6 @@ def test_a_full_tree_walk_spawns_nothing(walk) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F8: a pid with no /proc entry still falls through to pgrep",
-)
 def test_a_vanished_pid_is_a_leaf_without_pgrep(walk) -> None:
     """A pid with no ``/proc/<pid>/task`` has exited: 0 children and 0 spawns."""
     assert walk.run(4_000_000) == []

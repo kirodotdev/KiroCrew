@@ -794,19 +794,6 @@ class TestReExports:
             is runner.PROVIDER_EXECUTABLE_CANDIDATES
         )
 
-    def test_github_client_url_parser_is_the_shared_function(self):
-        from kiro_crew.apps.builtins.issue_radar.backend import github_client
-
-        assert github_client.parse_github_repo_url is runner.parse_github_repo_url
-
-    def test_repo_url_error_is_one_class_across_layers(self):
-        from kiro_crew.apps.builtins.issue_radar.backend import errors, github_client
-
-        assert errors.RepoUrlError is runner.RepoUrlError
-        assert github_client.RepoUrlError is runner.RepoUrlError
-        with pytest.raises(errors.RepoUrlError):
-            runner.parse_github_repo_url("https://evil.example/o/r")
-
     def test_source_providers_gh_auth_keys_derive_from_the_canonical_union(self):
         """D3 lock-in: the sidebar's gh key set cannot drift from the
         app-side passthrough — it derives from the runner's canonical list,

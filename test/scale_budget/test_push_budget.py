@@ -61,11 +61,6 @@ def test_refresh_frames_carry_their_kind(state) -> None:
     assert _refresh_kinds(ws) == [{"crons"}], f"refresh frames read as {_refresh_kinds(ws)}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F3: main sends one refresh frame per turn_end push",
-)
 def test_turn_end_burst_coalesces_and_history_goes_at_once(state, fake_clock) -> None:
     """3,000 ``turn_end`` pushes 20 ms apart cost at most span/window + 1 frames.
 
@@ -136,7 +131,10 @@ def test_one_flush_reprojects_once_per_view_and_serializes_once_per_slot(state, 
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
-    reason="scale-F13: main sends every capable tab the full slot list per flush",
+    reason=(
+        "scale-F13: a delta carries each changed row whole, about 2,300 chars for one row "
+        "at this seed"
+    ),
 )
 def test_diff_tab_frames_stay_under_2kb(state) -> None:
     """At 400 slots, every frame a diff-capable tab gets after its first is under 2,000 chars."""
@@ -186,11 +184,6 @@ def _count_row_encodings(monkeypatch: pytest.MonkeyPatch, prefix: str) -> dict[s
     return counter
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F13: a diff tab plus a legacy tab serialize every row twice per flush",
-)
 def test_mixed_audience_serializes_each_row_once(state, monkeypatch) -> None:
     """One diff owner tab and one legacy owner tab: each slot row is JSON-encoded once per flush.
 

@@ -115,6 +115,18 @@ def finish_suspended_spawn(process: object, pid: int, *, label: str) -> bool:
     return True
 
 
+def provider_data_text(error: object) -> str:
+    """The provider-field text of a raw ACP error frame, for the dependency adapter.
+
+    Thin delegation to :func:`kiro_crew.acp.structured_error_data.provider_data_text`:
+    a frame whose ``data`` is a structured object reads its provider sentence from
+    ``message``, so the adapter's ``data``-scoped verdict matches the client's.
+    """
+    from kiro_crew.acp.structured_error_data import provider_data_text as _impl
+
+    return _impl(error)
+
+
 def provider_error_client() -> object | None:
     """The module that owns the provider-error vocabulary, or ``None`` when absent.
 
@@ -188,6 +200,7 @@ def build_acp_provider(
     acp_backend: str = "",
     effort_per_model: dict[str, str] | None = None,
     unbound_effort: str = "",
+    inherited_effort: str = "",
     effort_defaults: object = None,
     tool_search: bool | None = None,
     tool_search_min_pct: object = None,
@@ -243,6 +256,7 @@ def build_acp_provider(
         acp_backend=acp_backend,
         effort_per_model=effort_per_model,
         unbound_effort=unbound_effort,
+        inherited_effort=inherited_effort,
         effort_defaults=effort_defaults,
         tool_search=tool_search,
         tool_search_min_pct=tool_search_min_pct,

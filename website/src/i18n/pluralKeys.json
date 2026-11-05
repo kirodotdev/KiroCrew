@@ -492,5 +492,12 @@
   "apps.designCritique.composer.critique_this_flow_count_screens",
   "apps.designCritique.scopingPicker.critique_this_flow_count_screens",
   "apps.designCritique.composer.staged_flow_hint",
-  "apps.designCritique.designCritiquePage.rail_flow"
+  "apps.designCritique.designCritiquePage.rail_flow",
+  "components.pastedChip.collapse_pasted_lines",
+  "components.pastedChip.expand_pasted_lines",
+  "pages.settings.instancesPanel.warm_cap_count",
+  "pages.settings.postureDisclosure.show_more_count",
+  "apps.designCritique.designCritiquePage.entry_meta_screens",
+  "apps.designCritique.designCritiquePage.findings_count",
+  "apps.designCritique.designCritiquePage.flow_screens_count"
 ]

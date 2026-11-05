@@ -26,7 +26,6 @@ import logging
 import re
 import time
 import unicodedata
-from collections.abc import Iterable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
@@ -35,6 +34,7 @@ from typing import TYPE_CHECKING, Any, cast
 from kiro_crew import crew_mode
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard import warm_task_brief_facts as facts
 from kiro_crew.dashboard import warm_task_brief_inputs as inputs
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.slot_preparing import preparing_message
@@ -146,22 +146,23 @@ _TEXT_LABEL_KEYS = (
     "next",
     "why",
     "recommended",
+    "checked",
 )
 # One "|"-separated row per language, in _TEXT_LABEL_KEYS order: the four
 # status words, then the section labels.
 _TEXT_LABEL_ROWS = {
     "en": "On track|Waiting on you|Blocked|Done|Needs you|Left|You asked|Done so far|Next"
-    "|Why|Recommended",
-    "zh": "进展顺利|等你处理|卡住了|已完成|需要你|还剩|你让我做|已做完|下一步|原因|建议",
-    "ja": "順調|あなた待ち|止まっています|完了|あなたの番|残り|ご依頼|済んだこと|次に|理由|おすすめ",
-    "ko": "순조로움|답변 대기|막힘|완료|확인 필요|남은 일|요청하신 일|한 일|다음|이유|추천",
+    "|Why|Recommended|Checked just now",
+    "zh": "进展顺利|等你处理|卡住了|已完成|需要你|还剩|你让我做|已做完|下一步|原因|建议|已核实",
+    "ja": "順調|あなた待ち|止まっています|完了|あなたの番|残り|ご依頼|済んだこと|次に|理由|おすすめ|確認済み",
+    "ko": "순조로움|답변 대기|막힘|완료|확인 필요|남은 일|요청하신 일|한 일|다음|이유|추천|확인함",
     "ru": "По плану|Ждёт вас|Застряло|Готово|Нужно от вас|Осталось|Вы просили|Сделано|Дальше"
-    "|Почему|Совет",
+    "|Почему|Совет|Проверено",
     "hi": "ठीक चल रहा है|आपका इंतज़ार|अटका है|पूरा हुआ|आपसे चाहिए|बाकी|आपने कहा था|हो चुका|आगे"
-    "|क्यों|सुझाव",
+    "|क्यों|सुझाव|जाँचा गया",
     "bn": (
         "ঠিকঠাক চলছে|আপনার অপেক্ষায়|আটকে আছে|শেষ|"
-        "আপনার কাছে দরকার|বাকি|আপনি বলেছিলেন|যা হয়েছে|এরপর|কেন|পরামর্শ"
+        "আপনার কাছে দরকার|বাকি|আপনি বলেছিলেন|যা হয়েছে|এরপর|কেন|পরামর্শ|যাচাই করা হয়েছে"
     ),
 }
 _TEXT_LABELS = {
@@ -202,9 +203,9 @@ The snapshot, most important first:
   with its "options".
 - "changes_since_away": what changed while the owner was away, each with its
   source and time.
-- "live_prs": pull requests the gateway read from GitHub just now ("read_at").
-  An entry with "checked": false was not read; "checks": "not fully read" means
-  its check results are unknown.
+- "checked_facts": what the gateway read just now, each with an "id" (f1, ...):
+  pull requests from GitHub ("read_at"; one it could not read says only "not
+  checked since HH:MM") and work items from the task list.
 - "transcript_since_owner": the owner's last message and every turn since.
 - "open_items": open work items, questions and blocked ones first.
 - "goal", and "goal_progress" when the goal has a count.
@@ -218,15 +219,17 @@ Write these parts in order, leaving out any that would be empty:
    which one you recommend and why. An ask that answers a waiting_on_you entry
    names it by "source" (its index) and copies that entry's options exactly, in
    order; never add, drop or rename one. Any other ask has no options. An ask
-   that live_prs or a newer change shows already done goes under part 2
+   that checked_facts or a newer change shows already done goes under part 2
    instead. An ask about someone else's pull request says whose it is.
 4. Problems that do not need the owner, each with its cause.
 5. What you will do next without the owner.
 
-Facts: say a pull request is merged, green, approved or in conflict only from
-live_prs or from a change newer than the away time. Otherwise write "not
-checked since HH:MM" with the time the snapshot gives. Name only pull
-requests that appear in the snapshot. Never state a percentage, elapsed time,
+Facts: write parts 2, 4 and 5 as "lines", one fact each, with "kind" (what it
+names: pr, task, file, deploy, ticket or none) and "facts" (the checked_facts
+ids it states). A pr or task line lists a fact of that kind, or it is deleted;
+file, deploy and ticket lines are deleted (nothing checks them yet). A pull
+request "not checked since HH:MM" gets no state. Name only pull requests that
+appear in the snapshot. Never state a percentage, elapsed time,
 deadline or ETA, and never count work items unless goal_progress gives the
 count. If a fact is missing, say you are not sure.
 
@@ -238,13 +241,14 @@ Return exactly one JSON object:
    "source": <waiting_on_you index, or null>,
    "options": [{{"label": "<copied label>", "consequence": "<what happens>"}}],
    "recommended": "<one option label, or empty>", "recommended_why": "..."}}],
- "body": "<parts 2, 4 and 5>"}}
+ "lines": [{{"text": "<one plain sentence>", "kind": "<kind>", "facts": ["<fN>"]}}],
+ "body": "<pictures only, or empty>"}}
 
 "asks" holds at most {max_items} asks, each text at most {item_cap} characters
 and each consequence at most {consequence_cap};
-it is [] when nothing waits on the owner. "body" is markdown of at most
-{body_cap} characters and {body_lines} lines, mostly short "- " lines; a
-picture that would pass either cap is dropped whole. When a picture helps the
+it is [] when nothing waits on the owner; "lines" holds at most {max_lines}. "body"
+holds pictures only, at most {body_cap} characters and {body_lines} lines (a
+picture past a cap is dropped whole); every fact goes in "lines". When a picture helps the
 owner act faster, you may add one, in the form that fits best: a ```mermaid
 diagram, a markdown table, or an <mcwidget> (a live widget: HTML, CSS and
 script in one block, coloured only with the theme's CSS variables, never a
@@ -285,6 +289,7 @@ class TaskSnapshot:
     # claim stored ("" when there was no earlier brief).
     ledger_digest: str = ""
     previous_digest: str = ""
+    previous_facts: str = ""  # the newest delivered brief's facts.facts_digest
     # Worker sessions this thread created or revived that are running now;
     # not part of ``fingerprint``.
     running_workers: int = 0
@@ -799,6 +804,7 @@ def _snapshot_sync(
         pending_options=member_waiting.pending_options(rows) or "",
         ledger_digest=inputs.ledger_digest(conductor_record, items_raw, session_state),
         previous_digest=_claim_digest(rows),
+        previous_facts=facts.previous_facts_digest(rows, _RESULT_KIND, _GROUNDING_MISS_KEY),
         last_claim_at=_claim_epoch(rows),
         user_fingerprint=user_fingerprint,
         last_user_at=max(
@@ -981,33 +987,9 @@ def _ask_items(snapshot: TaskSnapshot) -> list[dict[str, Any]]:
     return [item for item in snapshot.work_items if inputs.is_open_ask(item, work_item_is_terminal)]
 
 
-def _ask_texts(snapshot: TaskSnapshot) -> list[str]:
-    """The text of every open ask, where the live read looks for full PR URLs."""
-    texts = [
-        part
-        for item in snapshot.waiting
-        for part in (str(item.get("text") or ""), *(str(o) for o in item.get("options") or []))
-        if part
-    ]
-    for item in _ask_items(snapshot):
-        texts.extend(
-            str(v)
-            for v in (
-                item.get("title"),
-                item.get("summary"),
-                item.get("decision"),
-                *(item.get("artifacts") or {}).values(),
-            )
-            if v
-        )
-    return texts
-
-
 def _live_refs(snapshot: TaskSnapshot) -> list[inputs.PrRef]:
-    """The PRs the open asks name: each ask item's own PR from ledger data,
-    then full PR URLs in the asks' text. A bare ``#N`` is never guessed."""
-    ledger = (inputs.ledger_ref(item) for item in _ask_items(snapshot))
-    return inputs.pr_refs(_ask_texts(snapshot), [ref for ref in ledger if ref is not None])
+    """The PRs read before the brief may name them (``facts.live_refs``)."""
+    return facts.live_refs(snapshot.work_items, snapshot.waiting, work_item_is_terminal)
 
 
 def _is_quiet(snapshot: TaskSnapshot, previous_digest: str, anchor: float | None) -> bool:
@@ -1034,15 +1016,16 @@ def _payload(
     """The prompt's snapshot: each section budgeted on its own, whole entries
     only, what waits on the owner and the changes first."""
     progress = snapshot.progress
+    open_items = inputs.open_item_entries(snapshot.work_items, anchor, work_item_is_terminal)
     payload: dict[str, Any] = {
         "away_since": inputs.clock(anchor),
         "waiting_on_you": inputs.waiting_entries(snapshot.waiting),
         "changes_since_away": inputs.change_entries(
             snapshot.work_items, anchor, snapshot.session_state
         ),
-        "live_prs": inputs.public_live(live),
+        "checked_facts": facts.checked_facts(live, open_items),
         "transcript_since_owner": inputs.turns_since_owner(snapshot.turns),
-        "open_items": inputs.open_item_entries(snapshot.work_items, anchor, work_item_is_terminal),
+        "open_items": open_items,
         "running_worker_sessions": snapshot.running_workers,
         "goal": _goal(snapshot),
         "owner_request": snapshot.original_request,
@@ -1080,6 +1063,7 @@ def _build_prompt(
         consequence_cap=_MAX_CONSEQUENCE_CHARS,
         item_cap=_MAX_ITEM_CHARS,
         max_items=_MAX_ITEMS,
+        max_lines=facts.MAX_LINES,
         body_cap=_MAX_BODY_CHARS,
         body_lines=_MAX_BODY_LINES,
     )
@@ -1135,6 +1119,8 @@ class Brief:
     links: tuple[inputs.PrRef, ...] = ()
     # The model's structured asks, labels checked against their source.
     asks: tuple[Ask, ...] = ()
+    checked: tuple[dict[str, Any], ...] = ()
+    lines: tuple[dict[str, Any], ...] = ()
 
     def as_meta(self) -> dict[str, Any]:
         meta: dict[str, Any] = {
@@ -1156,6 +1142,10 @@ class Brief:
             meta["links"] = [ref.url for ref in self.links]
         if self.asks:
             meta["asks"] = [ask.as_meta() for ask in self.asks]
+        if self.checked:
+            meta["checked"] = [dict(fact) for fact in self.checked]
+        if self.lines:
+            meta["lines"] = [dict(line) for line in self.lines]
         return meta
 
     def model_text(self) -> str:
@@ -1165,6 +1155,7 @@ class Brief:
         model text a new brief carries, so it is left out."""
         parts = [self.headline, self.asked, self.remaining, self.body]
         parts.extend(self.done + self.needs_you + self.next)
+        parts.extend(line["text"] for line in self.lines)
         for ask in self.asks:
             parts.extend(ask.texts())
         for title, items in self.extra:
@@ -1552,6 +1543,7 @@ def _parse_result(
         waiting=owner_items,
         waiting_total=waiting_total,
         asks=asks,
+        lines=facts.raw_lines(raw.get("lines"), lambda v: _clean(v, _MAX_ITEM_CHARS)),
     )
 
 
@@ -1569,7 +1561,8 @@ def _posted_text(brief: "Brief", content: str) -> str:
     """Every string the result row posts: its ``content`` and each field of
     ``meta.brief`` as stored. The secret scan reads this, after every
     transform has run, so no later step can rejoin what it would catch."""
-    return "\n".join([content, brief.model_text(), *(ref.url for ref in brief.links)])
+    checked = [text for fact in brief.checked for text in inputs.text_values(fact)]
+    return "\n".join([content, brief.model_text(), *(ref.url for ref in brief.links), *checked])
 
 
 def _posted_model_text(brief: "Brief") -> str:
@@ -1653,6 +1646,8 @@ def _gateway_only(brief: "Brief", language: str) -> "Brief":
         body="",
         links=(),
         asks=(),
+        checked=(),
+        lines=(),
     )
 
 
@@ -1685,19 +1680,6 @@ def _inert_body(body: str) -> str:
     return _defang_markers(text)
 
 
-def _live_links(live: Iterable[Mapping[str, Any]]) -> tuple[inputs.PrRef, ...]:
-    """The link row (section 3.9.3): each pull request read live, once, its
-    URL built from the read's own repo. Model text never adds to it."""
-    refs: list[inputs.PrRef] = []
-    for entry in live:
-        repo, number = entry.get("repo"), str(entry.get("pr", "")).lstrip("#")
-        if entry.get("checked") is True and isinstance(repo, str) and number.isdigit():
-            ref = inputs.PrRef(repo, int(number))
-            if ref not in refs:
-                refs.append(ref)
-    return tuple(refs)
-
-
 def _brief_text(brief: Brief, language: str) -> str:
     """The brief as plain text, for every reader of ``content`` rather than the card."""
     labels = _TEXT_LABELS[language]
@@ -1727,6 +1709,9 @@ def _brief_text(brief: Brief, language: str) -> str:
         # inert like the body: no live widget, link or address.
         # Ask fields are plain text, so their HTML is escaped as well.
         lines.append(html.escape(_inert_body("\n".join(asks)), quote=False))
+    if brief.lines or brief.checked:
+        typed = facts.lines_text(brief.lines, brief.checked, labels["checked"])
+        lines.append(html.escape(_inert_body(typed), quote=False))
     if brief.body:
         lines.append(_inert_body(brief.body))
     if brief.remaining:
@@ -1765,6 +1750,7 @@ def _post_message(
     brief: Brief | None = None,
     grounding_miss: str = "",
     options: str = "",
+    facts_digest: str = "",
 ) -> dict[str, Any]:
     """Post one crewmate message; *options* is its one live, gateway-copied marker."""
     if options:
@@ -1772,6 +1758,8 @@ def _post_message(
     from kiro_crew.dashboard.state import append_and_surface
 
     meta: dict[str, Any] = {"kind": kind, "fingerprint": fingerprint}
+    if facts_digest:
+        meta[facts.FACTS_DIGEST_KEY] = facts_digest
     if brief is not None:
         meta["brief"] = brief.as_meta()
     if grounding_miss:
@@ -1921,26 +1909,36 @@ async def _run_warm_task_brief(
             options=_live_options(slot, fresh),
         )
         return
-    # From here the thread shows the "preparing your catch-up" indicator
-    # without marking a turn: the deferral below still reads ``slot.running``.
-    # The finished message replaces it in place; there is no separate opener.
+    read_left = inputs.LIVE_READ_TOTAL_SECS
+    read_started = time.monotonic()
+    live = tuple(await inputs.read_live_prs(_live_refs(fresh), budget=read_left))
+    read_left -= time.monotonic() - read_started
+    # One limit covers every read. A turn or leave during it: wait, re-read.
+    if slot.running or not _is_foreground(state, slot.key) or not _same_slot(state, slot):
+        if (fresh := await _settled(state, slot, snapshot, deadline)) is None:
+            return
+        read_started = time.monotonic()
+        live = tuple(await inputs.read_live_prs(_live_refs(fresh), budget=read_left))
+        read_left -= time.monotonic() - read_started
+    digest = facts.facts_digest(fresh.ledger_digest, fresh.waiting, live)
+    if digest == fresh.previous_facts and not inputs.assistant_spoke_since(fresh.turns, anchor):
+        return _skip(slot.key, "unchanged")
+    # The indicator marks no turn (the deferral reads ``slot.running``).
     indicator.enter_context(preparing_message(state, slot))
-    # From now on the owner leaving the thread keeps the brief: only a typed
-    # row, a reset or a close cancels it.
+    # Leaving now keeps the brief: only a typed row, a reset or a close cancels it.
     opened = getattr(state, "_warm_task_brief_opened", None)
     if isinstance(opened, set):
         opened.add(slot.key)
     # What the owner sees must still be true when it posts: an ask answered or
     # a ledger write during the model call makes the result stale. Regenerate
     # once from the new state; a second change posts nothing this visit.
-    # One time limit covers the live reads of every attempt; only the time
-    # spent reading counts, never the model call or the wait between.
-    read_left = inputs.LIVE_READ_TOTAL_SECS
     options = ""
-    for _attempt in range(WARM_TASK_BRIEF_ATTEMPTS):
-        read_started = time.monotonic()
-        live = tuple(await inputs.read_live_prs(_live_refs(fresh), budget=read_left))
-        read_left -= time.monotonic() - read_started
+    for attempt in range(WARM_TASK_BRIEF_ATTEMPTS):
+        if attempt:
+            read_started = time.monotonic()
+            live = tuple(await inputs.read_live_prs(_live_refs(fresh), budget=read_left))
+            read_left -= time.monotonic() - read_started
+            digest = facts.facts_digest(fresh.ledger_digest, fresh.waiting, live)
         asked_at = time.time()
         text, source = await _generate(state, slot, fresh, anchor, live, now=asked_at)
         # Once the indicator shows, the result lands as ordinary history even
@@ -1980,8 +1978,9 @@ async def _run_warm_task_brief(
     # go; the gateway's waiting cards and the failure line post, and the row
     # is marked so the next return is not read as already caught up.
     # The scans run last, on the exact strings the row would post.
-    # The gateway's own link row; the checks below read the text with it.
-    brief = replace(brief, links=_live_links(live))
+    items = inputs.open_item_entries(fresh.work_items, anchor, work_item_is_terminal)
+    checked = facts.checked_facts(live, items)
+    brief = cast(Brief, facts.checked_brief(brief, checked, facts.live_links(live)))
     content = _brief_text(brief, language)
     miss = _grounding_miss(brief, content, inputs.pr_numbers(source), grounding, clocks)
     if miss:
@@ -1997,4 +1996,5 @@ async def _run_warm_task_brief(
         brief=brief,
         grounding_miss=miss,
         options=options,
+        facts_digest=digest,
     )

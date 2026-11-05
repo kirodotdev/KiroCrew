@@ -117,6 +117,12 @@ EXEMPT = {
     "apps/builtins/ops_mission_control/tests/test_ledger_index.py::_real_store_with_semantic_pair": (
         "test harness, isolated workspace"
     ),
+    # Auto-improvement's member test seeds each role's private memory store under its
+    # own tmp path (never the live store) to prove an assignment reads only its own.
+    "apps/builtins/auto_improvement/tests/test_auto_improvement_members.py"
+    "::test_assignments_build_real_context_from_only_their_private_store": (
+        "test harness, isolated workspace"
+    ),
     # The CLI's own explicit `kirocrew learn add`, which carries its own check
     # (a refusal message rather than a silent skip) — see cli_commands.
     "cli_commands_learn.py::_learn": "carries its own refusal",

@@ -153,20 +153,6 @@ class TestWebhookSources:
         assert store.is_switch_on() is False
         assert store.set_switch(True) is False
 
-    @pytest.mark.parametrize("edition", EDITIONS)
-    def test_ops_mission_control_asks_its_own_source(self, monkeypatch, edition) -> None:
-        from kiro_crew.apps.builtins.ops_mission_control.backend.providers import webhook
-
-        _set_edition(monkeypatch, edition)
-        monkeypatch.setattr(webhook, "provider_enabled", lambda _id: False)
-        _install_policy(monkeypatch, _webhooks("agent"))
-        accepted, detail = webhook.enqueue(b"{}", "sha256=x")
-        assert accepted is False
-        assert "refused by the security policy" in detail
-        # Named: the app's own checks answer next.
-        _install_policy(monkeypatch, _webhooks("ops-mission-control"))
-        assert webhook.enqueue(b"{}", "sha256=x") == (False, "webhook source is not enabled")
-
 
 # ── Hook trigger events ─────────────────────────────────────────────────
 
@@ -237,7 +223,7 @@ class TestHookEvents:
         _install_policy(monkeypatch, _hook_events("PreToolUse"))
         script = tmp_path / "hooks" / "a.sh"
         script.parent.mkdir()
-        script.write_text("#!/bin/sh\nexit 0\n")
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         script.chmod(0o755)
         config: dict = {"hooks": {}}
         entry = [{"command": str(script)}]

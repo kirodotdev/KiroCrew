@@ -64,7 +64,7 @@ class TestFdRealPathHome:
     """``fd_real_path`` is defined in pinned_fs and every consumer binds THAT object.
 
     The primitive has cross-module consumers (hooks, sandbox, the app UI route,
-    spec_builder), and its containment guarantees — including the Windows
+    and app backends, which pin their own binding), and its containment guarantees — including the Windows
     fail-closed branch — belong with the other descriptor-pinned mechanisms.
     Pinning the location keeps a refactor from quietly forking the
     implementation into a consumer module.
@@ -77,18 +77,14 @@ class TestFdRealPathHome:
     def test_every_consumer_binds_the_pinned_fs_object(self):
         from kiro_crew import hooks, sandbox
         from kiro_crew.apps import routes as app_routes
-        from kiro_crew.apps.builtins.spec_builder.backend import repository as spec_repository
 
         assert hooks._fd_real_path is pinned_fs.fd_real_path
         assert sandbox.fd_real_path is pinned_fs.fd_real_path
         assert app_routes.fd_real_path is pinned_fs.fd_real_path
-        # spec_builder's descriptor-pinned reads live in repository.py (the
-        # handlers refactor moved them out of routes.py).
-        assert spec_repository.fd_real_path is pinned_fs.fd_real_path
 
     def test_resolves_an_open_descriptor_to_its_real_path(self, tmp_path: Path):
         target = tmp_path / "witness.txt"
-        target.write_text("x")
+        target.write_text("x", encoding="utf-8")
         fd = os.open(target, os.O_RDONLY)
         try:
             got = pinned_fs.fd_real_path(fd)

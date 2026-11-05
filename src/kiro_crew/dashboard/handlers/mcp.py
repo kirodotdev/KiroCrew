@@ -57,6 +57,8 @@ from kiro_crew.dashboard.handlers.mcp_agent_sync import (
 )
 from kiro_crew.dashboard.handlers.mcp_config_entries import (
     _find_server_spec_anywhere,
+    _kirocrew_entry_is_muted,
+    _remove_kirocrew_entry,
     _scope_has_entry,
     _set_kirocrew_entry,
     _set_scope_entry,
@@ -67,6 +69,7 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     _KIRO_GLOBAL_SURFACE,
     _MCP_LOCK_PATH,
     AmbiguousServerKey,
+    McpConfigHasComments,
     _config_key_for,
     _extra_mcp_scopes,
     _is_valid_mcp_name,
@@ -503,7 +506,8 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
 async def api_mcp_toggle(request: web.Request) -> web.Response:
     """POST /api/mcp/toggle — enable or disable an MCP server globally.
 
-    1. Sets ``disabled`` in ``~/.kiro/settings/mcp.json`` (ACP runtime).
+    1. Sets ``disabled`` in ``~/.kiro/settings/mcp.json`` (ACP runtime), or in
+       ``<data home>/mcp.json`` for a server only that store holds.
     2. Syncs ``tools``/``allowedTools`` in ``kirocrew.json`` (non-ACP mode).
     """
     # Body-scope import, like the sibling gates in this package
@@ -534,10 +538,11 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
         return not_owned
 
     async with _get_mcp_lock():
-        _refuse_commented_config(_GLOBAL_MCP_JSON)
-        # 1. Update global mcp.json
+        # 1. Update global mcp.json. Read with comments allowed: a commented file
+        # is refused below only when this toggle is about to rewrite it.
         try:
-            data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            text = await asyncio.to_thread(_GLOBAL_MCP_JSON.read_text, encoding="utf-8")
+            data = loads_mcp_config(text, jsonc=True)
         except FileNotFoundError:
             data = {"mcpServers": {}}
         except json.JSONDecodeError:
@@ -557,7 +562,31 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": str(exc), "code": "mcp_server_name_ambiguous"}, status=409
             )
+        # Not in the Kiro global file but in the Kiro Crew store (a custom add):
+        # the flag lives in the store, and the shared file -- which may not even
+        # exist -- is left exactly as it was.
+        store_action = "absent"
         if key is None:
+            try:
+                store_action = await _offload_config_write(
+                    _set_kirocrew_entry, name, enabled=enabled, existing_only=True
+                )
+            except McpConfigHasComments:
+                raise
+            except Exception:
+                return _mcp_write_failed("mcp toggle")
+        if store_action == "ambiguous":
+            return web.json_response(
+                {"error": f"{name!r} is ambiguous", "code": "mcp_server_name_ambiguous"},
+                status=409,
+            )
+        if store_action == "corrupt":
+            return web.json_response(
+                {"error": "cannot parse the Kiro Crew mcp.json", "code": "config_corrupt"},
+                status=500,
+            )
+        store_held = store_action in ("enabled", "disabled", "noop")
+        if key is None and not store_held:
             # Server may exist in another scope (agent config, ~/.claude.json).
             # Create a stub so we can store disabled state here.
             from kiro_crew.mcp_discovery import (
@@ -570,21 +599,41 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
             servers[name] = {}
             key = name
 
-        spec = servers[key]
-        if not isinstance(spec, dict):
-            if isinstance(spec, str):
-                servers[key] = spec = {"command": spec}
+        # Every refusal on the global path runs before anything is written; the
+        # write is the last step, and only after it lands does an enable lift a
+        # store mute left behind the global row (a per-tool stub, say), since a
+        # mute left in either file keeps the server off.
+        if key is not None and not store_held:
+            _refuse_commented_config(_GLOBAL_MCP_JSON)
+            lift_store = enabled and await asyncio.to_thread(_kirocrew_entry_is_muted, name)
+            if lift_store:
+                await asyncio.to_thread(_refuse_commented_config, _kirocrew_mcp_json())
+            spec = servers[key]
+            if not isinstance(spec, dict):
+                if isinstance(spec, str):
+                    servers[key] = spec = {"command": spec}
+                else:
+                    return _mcp_spec_invalid(name, spec)
+            if enabled:
+                spec.pop("disabled", None)
             else:
-                return _mcp_spec_invalid(name, spec)
-        if enabled:
-            spec.pop("disabled", None)
-        else:
-            spec["disabled"] = True
+                spec["disabled"] = True
 
-        try:
-            _write_mcp_json(data)
-        except Exception:
-            return _mcp_write_failed("mcp toggle")
+            try:
+                _write_mcp_json(data)
+            except Exception:
+                return _mcp_write_failed("mcp toggle")
+            if lift_store:
+                # A store it cannot read or resolve is left as it is: the
+                # global write above is the toggle's answer, as it always was.
+                try:
+                    await _offload_config_write(
+                        _set_kirocrew_entry, name, enabled=True, existing_only=True
+                    )
+                except McpConfigHasComments:
+                    raise
+                except Exception:
+                    return _mcp_write_failed("mcp toggle")
 
         # 2. Sync to kirocrew.json tools/allowedTools (lock prevents lost updates vs agents.py)
         from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
@@ -783,8 +832,13 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     # reports it available so the handler stays fully functional without it.
     from kiro_crew.dashboard.handlers._shared import _capability_manager
 
-    # Before the uninstall, so a refused global file leaves nothing half done.
-    await asyncio.to_thread(_refuse_commented_config, _GLOBAL_MCP_JSON)
+    # Before the uninstall and before either file is written, so a commented
+    # file leaves nothing half done. Both the Kiro global and the Kiro Crew
+    # store are mutated below, so both are refused up front: a store the user
+    # hand-edited with JSONC would otherwise raise only at its own write, after
+    # the global file had already lost the entry and with the agent-spec sync
+    # skipped.
+    await asyncio.to_thread(_refuse_commented_config, _GLOBAL_MCP_JSON, _kirocrew_mcp_json())
     mgr = _capability_manager()
     if mgr.available():
         try:
@@ -795,18 +849,28 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
         except Exception as exc:
             logger.warning("capability-manager mcp uninstall failed for %s: %s", name, exc)
 
-    # Remove from global mcp.json
+    # Remove from both the Kiro global (~/.kiro/settings/mcp.json) and the
+    # Kiro Crew store (<data home>/mcp.json). The Add Custom path writes a
+    # server ONLY to the store, so removing one of those left the entry (and
+    # its projection into the agent spec) in place while the response said
+    # removed:false. ``removed`` is true when EITHER store held the entry.
     async with _get_mcp_lock():
         try:
             data = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             data = {"mcpServers": {}}
-        removed = data.get("mcpServers", {}).pop(name, None) is not None
-        if removed:
+        removed_global = data.get("mcpServers", {}).pop(name, None) is not None
+        if removed_global:
             _write_mcp_json(data)
             logger.info("MCP remove: removed %s from global mcp.json", name)
         else:
             logger.warning("MCP remove: %s not found in global mcp.json", name)
+
+        store_result = await asyncio.to_thread(_remove_kirocrew_entry, name)
+        removed_store = store_result == "removed"
+        if removed_store:
+            logger.info("MCP remove: removed %s from Kiro Crew store", name)
+        removed = removed_global or removed_store
 
         # Sync kirocrew.json
         from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
@@ -1011,7 +1075,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.mcp_config_entries import (  # noqa: F401
         _get_kirocrew_entry,
         _remove_from_agent_file,
-        _remove_kirocrew_entry,
         _replace_kirocrew_spec,
         _rmw_remove_entry,
     )
@@ -1020,7 +1083,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_MCP_NAME_LEN,
         _VALID_MCP_NAME_RE,
         MCP_CONFIG_HAS_COMMENTS,
-        McpConfigHasComments,
         _atomic_write,
         _config_entry_for,
         _get_mcp_lock_sync,

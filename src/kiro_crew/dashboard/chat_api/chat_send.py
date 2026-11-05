@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
+from kiro_crew import turn_timing
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _CREATABLE_MODES,
@@ -492,6 +494,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
 async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
+    _timing_t0 = turn_timing.now()
     state: DashboardState = request.app["state"]
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
@@ -1626,10 +1629,13 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             target=str(_user_row.get("meta", {}).get("mid") or ""),
         )
         _user_mid = _user_row.get("meta", {}).get("mid")
-        if not may_configure or (ws_mode and user_meta and user_meta.get("sendId")):
+        if not may_configure or not ws_mode or (user_meta and user_meta.get("sendId")):
             # Raw user content belongs on the per-client slot-authorized WS path.
-            # The global SSE queues have no slot gate. In-band sends keep
-            # their existing stream contract and must not gain an extra WS echo.
+            # The global SSE queues have no slot gate. The one send left out is a
+            # `?ws=1` send with no `sendId`: a composer may have drawn that row and
+            # could not match an echo to it. No dashboard composer sends on the
+            # bare SSE endpoint, so no open tab drew a row sent there, and its
+            # stream to the caller is unchanged: the echo goes to WS clients only.
             # An app's turn on a user's session always reaches the user's open tabs,
             # whose composer never drew it.
             state.broadcast_ws(
@@ -1762,6 +1768,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             note_admission_ended(slot, turn_admission)
             state.push_slots_update()
 
+        # Opened here so the turn task's copied context carries the record.
+        turn_timing.begin(slot.key, "ws" if ws_mode else "sse", _timing_t0)
+        turn_timing.mark("dispatched")
         with _turn_initiated_by("" if request_app else _turn_actor_budget(request)):
             task = spawn_guarded_turn(
                 state,
@@ -1847,6 +1856,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                         continue
                     chunk = _build_stream_chunk(msg)
                     await write_sse_or_abort(request, resp, f"data: {chunk}\n\n".encode())
+                    turn_timing.sse_first_frame(slot.key)
                 try:
                     await asyncio.wait_for(slot.event.wait(), timeout=30)
                 except asyncio.TimeoutError:

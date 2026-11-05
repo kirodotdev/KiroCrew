@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import hmac
 import logging
+import threading
 from dataclasses import dataclass
 
 from aiohttp import web
@@ -621,6 +622,52 @@ def _maybe_consolidate(state, slot) -> None:
         )
 
 
+# Guards ``_published_slot_keys`` and the ``_slots`` read each writer pairs with it: the
+# sync compares and stores (on or off the loop), the listing narrows.
+_PUBLISHED_SLOT_KEYS_LOCK = threading.Lock()
+
+
+def _published_keys_of(state: "DashboardState") -> frozenset[str]:
+    published: object = getattr(state, "_published_slot_keys", frozenset())
+    return published if isinstance(published, frozenset) else frozenset()
+
+
+def listing_slot_snapshot(state: "DashboardState") -> list[_ChatSlot]:
+    """The open slots the Older Sessions listing filters with, read under the publish lock.
+
+    Every published key no slot in the snapshot holds leaves ``_published_slot_keys``:
+    the listing is about to show that session as a row, so the next sync that finds
+    its slot open counts it as gained and pushes ``history``. A resume or an import
+    takes its slot out of ``_slots`` for a finalization tail after the first sync
+    published it; a listing served in that tail is the case this covers.
+    """
+    with _PUBLISHED_SLOT_KEYS_LOCK:
+        slots = list(state._slots.values())
+        published = _published_keys_of(state)
+        if published:
+            state._published_slot_keys = published & {effective_session_key(s) for s in slots}
+    return slots
+
+
+def _owe_listing_refresh(state: "DashboardState") -> None:
+    """Owe one listing refresh, paid on the next loop tick unless a ``history`` push lands first."""
+    state._listing_refresh_owed = True
+    loop = getattr(state, "serving_loop", None)
+    if loop is None or loop.is_closed():
+        _pay_listing_refresh(state)
+        return
+    loop.call_soon_threadsafe(_pay_listing_refresh, state)
+
+
+def _pay_listing_refresh(state: "DashboardState") -> None:
+    if not getattr(state, "_listing_refresh_owed", False):
+        return
+    state._listing_refresh_owed = False
+    push_listing_refresh = getattr(state, "push_listing_refresh", None)
+    if callable(push_listing_refresh):
+        push_listing_refresh()
+
+
 def _sync_dashboard_slots(state: "DashboardState") -> None:
     """Publish the open slots' session keys to SessionManager and the surface registry.
 
@@ -629,6 +676,19 @@ def _sync_dashboard_slots(state: "DashboardState") -> None:
     (see :mod:`kiro_crew.session_surface`). A channel-born slot contributes its
     channel key, which is what both consumers must match against.
     """
-    keys = {effective_session_key(s) for s in state._slots.values()}
+    with _PUBLISHED_SLOT_KEYS_LOCK:
+        keys = {effective_session_key(s) for s in state._slots.values()}
+        previous = _published_keys_of(state)
+        gained = not keys <= previous
+        lost = not previous <= keys
+        state._published_slot_keys = frozenset(keys)
     state.sessions.set_active_dashboard_slots(keys)
     set_dashboard_surfaced(keys)
+    # A newly open session leaves Older Sessions, and a session whose slot leaves ``_slots``
+    # returns to it; tabs re-read only on a ``history`` frame. A shrink owes one, paid by a
+    # close or delete's direct ``history`` push.
+    push_listing_refresh = getattr(state, "push_listing_refresh", None)
+    if gained and callable(push_listing_refresh):
+        push_listing_refresh()
+    if lost:
+        _owe_listing_refresh(state)

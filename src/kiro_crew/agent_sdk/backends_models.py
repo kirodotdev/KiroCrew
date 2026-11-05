@@ -338,7 +338,9 @@ def effort_config_option_value(
 # the advertised levels rather than offered, accepted or stepped down onto.
 # claude-agent-acp also offers ``default``, but outside
 # ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`` the registry, not the advertised
-# list, decides what it may be sent, so it needs no row.
+# list, decides what it may be sent, so it needs no row here. Its ``default`` is
+# what a live clear writes, which ``EFFORT_CONFIG_OPTION_CLEAR_VALUES`` below
+# records; a value hidden here never reaches that check, so no backend has both.
 EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES: Mapping[str, frozenset[str]] = {
     ACP_BACKEND_OPENCODE: frozenset({"default"}),
 }
@@ -348,6 +350,27 @@ def effort_config_option_levels(backend: str, values: list[str]) -> list[str]:
     """*values* advertised by *backend*'s effort option, minus its no-override values."""
     hidden = EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES.get(backend, frozenset())
     return [value for value in values if value not in hidden]
+
+
+# The value a backend's effort option takes to DROP a level live, for a backend
+# measured doing so. claude-agent-acp's ``default`` clears the adapter's flag layer
+# and hands effort back to the CLI's own per-model resolution, which is what a cold
+# start with no slot level runs: ``test/fixtures/acp_frames/claude/effort-clear-live.jsonl``
+# writes ``high`` and then ``default`` on one session and reads each back.
+# ``clear_effort`` writes this value instead of asking for a session reset. A backend
+# without a row keeps the reset. Opt-in (harness-parity H6): opencode offers a
+# ``default`` too, but no capture shows what writing it does there, so it has no row.
+#
+# Read ONLY through :func:`effort_config_option_clear_value`, for the reason
+# ``EFFORT_CONFIG_OPTION_IDS`` gives.
+EFFORT_CONFIG_OPTION_CLEAR_VALUES: Mapping[str, str] = {
+    ACP_BACKEND_CLAUDE: "default",
+}
+
+
+def effort_config_option_clear_value(backend: str) -> str | None:
+    """The value that clears *backend*'s effort level live, or None when only a reset does."""
+    return EFFORT_CONFIG_OPTION_CLEAR_VALUES.get(backend)
 
 
 # Backends that resolve the WIRE model id from the provider's OWN advertised list

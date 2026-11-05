@@ -101,6 +101,13 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "_fan_out_web_push": ("function", False, False, "(self, note: 'dict[str, Any]') -> 'None'"),
     "_flush_dirty_slots": ("function", False, False, "(self) -> 'None'"),
     "_flush_loop": ("function", True, False, "(self) -> 'None'"),
+    "_has_generic_slots_audience": ("function", False, False, "(self) -> 'bool'"),
+    "answer_slots_resync": (
+        "function",
+        False,
+        False,
+        "(self, ws: 'web.WebSocketResponse') -> 'None'",
+    ),
     "_has_legacy_slots_audience": ("function", False, False, "(self) -> 'bool'"),
     "_has_slot_patch_clients": ("function", False, False, "(self) -> 'bool'"),
     "_lineage_rows": ("function", False, False, "(self) -> 'list[dict[str, Any]]'"),
@@ -186,11 +193,20 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, msg_type: 'str', data: 'object', msg: 'str') -> 'None'",
     ),
+    "_broadcast_slots_note": (
+        "function",
+        False,
+        False,
+        "(self, slots_data: 'list[dict]', slots_data_ws: 'list[dict]', slots_json: 'str', "
+        "legacy_only: 'bool', envelope_args: 'dict[str, Any]', envelope: 'dict[str, Any]', "
+        "user_frame: 'str | None' = None) -> 'None'",
+    ),
     "_send_ws_owners": (
         "function",
         False,
         False,
-        "(self, msg: 'str', *, skip_slot_patch_clients: 'bool' = False) -> " "'None'",
+        "(self, msg: 'str', *, skip_slot_patch_clients: 'bool' = False, "
+        "skip_slot_diff_clients: 'bool' = False) -> 'None'",
     ),
     "_serialize_for_client": (
         "function",
@@ -486,6 +502,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, slug: 'str', version: 'int', *, deleted: 'bool' = False) -> " "'None'",
     ),
     "push_lineage_patch": ("function", False, False, "(self) -> 'None'"),
+    "push_listing_refresh": ("function", False, False, "(self) -> 'None'"),
     "push_refresh": ("function", False, False, "(self, *kinds: 'str') -> 'None'"),
     "push_session_summary": ("function", False, False, "(self, key: 'str') -> 'None'"),
     "push_slot_patch": (
@@ -661,7 +678,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "function",
         False,
         False,
-        "(self, *, owner: 'bool') -> 'tuple[list[dict], list[dict], " "list[dict] | None]'",
+        "(self, *, owner: 'bool', user: 'bool' = True) -> 'tuple[list[dict], list[dict], "
+        "list[dict] | None]'",
     ),
     "serialize_slots": (
         "function",

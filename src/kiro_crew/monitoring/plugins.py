@@ -51,10 +51,13 @@ Two consequences of a kind being contributed rather than built in:
   unknown kind does today. Registering conditionally (behind a setting, say)
   therefore retires every monitor of the kind the first boot the condition is
   false; gate the provider's behaviour instead of the registration.
-* **The dashboard does not recognise it.** The dashboard's kind vocabulary is
-  the checked-in ``website/src/monitoring/contract.json`` snapshot of the
-  built-ins, so a contributed-kind monitor is shown as blocked even while it
-  probes, and its save and restart controls are disabled. Stop works.
+* **The dashboard recognises it at runtime.** The gateway serves the live kind
+  list (``monitor_frontend_contract()``) at the cookie-authed read ``GET
+  /api/monitor-contract``, and the dashboard prefers it over the checked-in
+  ``website/src/monitoring/contract.json`` snapshot, so a contributed-kind
+  monitor shows its real state with save and restart enabled. An older gateway
+  without the route 404s and the dashboard falls back to the bundled snapshot,
+  under which a contributed-kind monitor would again read as blocked.
 """
 
 from __future__ import annotations

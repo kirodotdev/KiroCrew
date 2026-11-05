@@ -219,6 +219,24 @@ install_node_via_ensure() {
     fi
 }
 
+# After a distro package install ($1 names the package manager): keep its Node
+# only when it meets the floor. A distro Node below it (node 18 on Amazon Linux
+# 2023, Debian's archive) cannot build the dashboard, so install a supported one
+# through ensure-node.sh instead of building against it.
+node_to_floor() {
+    if node_supported; then
+        ok "Node.js $(node --version) installed via $1"
+        return 0
+    fi
+    info "The $1 Node.js is missing or below v$NODE_MIN_VERSION — installing Node.js $NODE_VERSION via ensure-node.sh…"
+    install_node_via_ensure
+    if node_supported; then
+        ok "Node.js $(node --version) now active"
+    else
+        warn "Node.js is still below v$NODE_MIN_VERSION — the frontend build will fail"
+    fi
+}
+
 # ── Pre-flight ──
 
 banner
@@ -420,16 +438,16 @@ elif has node; then
         || warn "Node.js is still below v$NODE_MIN_VERSION — the frontend build will fail"
 elif has apt-get; then
     info "Installing nodejs via apt…"
-    sudo apt-get install -y nodejs npm >/dev/null 2>&1
-    has node && ok "Node.js $(node --version) installed via apt" || warn "Node.js install failed — run: sudo apt-get install -y nodejs npm"
+    sudo apt-get install -y nodejs npm >/dev/null 2>&1 || true
+    node_to_floor apt
 elif has dnf; then
     info "Installing nodejs via dnf…"
-    sudo dnf install -y nodejs >/dev/null 2>&1
-    has node && ok "Node.js $(node --version) installed via dnf" || warn "Node.js install failed — run: sudo dnf install -y nodejs"
+    sudo dnf install -y nodejs >/dev/null 2>&1 || true
+    node_to_floor dnf
 elif has brew; then
     info "Installing Node.js via Homebrew…"
-    brew install node >/dev/null 2>&1
-    has node && ok "Node.js $(node --version) installed via brew" || warn "Node.js install failed — run: brew install node"
+    brew install node >/dev/null 2>&1 || true
+    node_to_floor brew
 else
     info "Installing Node.js via ensure-node.sh…"
     install_node_via_ensure

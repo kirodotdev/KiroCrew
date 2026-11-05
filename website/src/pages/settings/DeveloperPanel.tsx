@@ -106,7 +106,7 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
                   <SettingsCard>
                     <SettingsToggle
                       label={i18nT('pages.settings.developerPanel.run_a_local_gateway')}
-                      description={i18nT('pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers')}
+                      description={i18nT('pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers_summary')} hint={i18nT('pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers')}
                       checked={localGatewayEnabled}
                       onChange={setLocalGatewayEnabled}
                     />

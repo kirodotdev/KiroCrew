@@ -70,7 +70,7 @@ def test_list_servers_reports_pointer_as_registry_before_any_probe(tmp_path, mon
     agent_dir = tmp_path / "agents"
     agent_dir.mkdir()
     cfg = {"mcpServers": {"gov": dict(POINTER), "local": {"command": "cmd"}}}
-    (agent_dir / "defaults.json").write_text(json.dumps(cfg))
+    (agent_dir / "defaults.json").write_text(json.dumps(cfg), encoding="utf-8")
     monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "x",))
     monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)

@@ -160,6 +160,7 @@ class AcpProvider(LLMProvider):
         acp_backend: str = "",
         effort_per_model: dict[str, str] | None = None,
         unbound_effort: str = "",
+        inherited_effort: str = "",
         effort_defaults: object = None,
         tool_search: bool | None = None,
         tool_search_min_pct: object = None,
@@ -215,8 +216,13 @@ class AcpProvider(LLMProvider):
         self.app_launch_agent = ""
         # The app that owns this session, set by session allocation from the chat
         # slot's own app (never from transcript metadata). The remote git proxy's
-        # egress check passes it to governance so an app-bound profile applies.
+        # egress check and the cloud start pass it to governance so an app-bound
+        # profile applies.
         self.owning_app = ""
+        # A Kiro Cloud start's (session_key, agent, app), which every later turn
+        # re-checks governance against (``acp_turns._readmit_cloud_session``);
+        # None for every other session, which then skips the check.
+        self._cloud_governance_scope: tuple[str, str, str] | None = None
         # Kept on the provider, not only on the placeholder client: on the kiro
         # path ``_start_kiro_runtime_impl`` replaces that client with an
         # ``AcpRuntime`` it constructs itself, and a dedicated subagent's
@@ -279,6 +285,10 @@ class AcpProvider(LLMProvider):
         # and bound to that model on every (re)start (``_bind_unbound_effort``).
         self._unbound_effort: str = unbound_effort or ""
         self._unbound_effort_drop_logged: bool = False
+        # The crew/role/chat level a session with no slot pick resolves to,
+        # carried only for a harness that clears effort live (the factory's
+        # ``inherited_effort``): such a clear must land where a cold start does.
+        self._inherited_effort: str = inherited_effort or ""
         self._effort_defaults = effort_defaults
         # The spelling the factory keyed ``effort_per_model`` under.
         self._configured_model: str = model or ""
@@ -467,6 +477,17 @@ class AcpProvider(LLMProvider):
         attribute, so one read covers them.
         """
         return str(getattr(self._client, "agent_version", "") or "")
+
+    @property
+    def prompts_written(self) -> int | None:
+        """Prompts this session's turns have written to the backend, or ``None``.
+
+        Forwarded from ``AcpSessionProvider``; a raw ``AcpClient`` keeps no such
+        count, and ``None`` tells a caller that it cannot know whether a turn's
+        prompt went out.
+        """
+        value = getattr(self._client, "prompts_written", None)
+        return value if isinstance(value, int) else None
 
     @property
     def steer_upgrade_notice(self) -> str:
@@ -1124,6 +1145,12 @@ class AcpProvider(LLMProvider):
         if not self._client:
             return None
         return self._client.background_launch()
+
+    @property
+    def turn_survives_disconnect(self) -> bool:
+        return (
+            isinstance(self._client, AcpSessionProvider) and self._client.turn_survives_disconnect
+        )
 
     def has_unfinished_turn(self) -> bool:
         """True if the client reports a native turn that has NOT reached its

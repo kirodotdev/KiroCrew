@@ -109,6 +109,16 @@ already reads TRUE for KAS on a plain public build.
 | H7 | `is_kiro_cli` is a positive Kiro test at every call site. It drives internal-sandbox delegation: macOS skips Kiro Crew's seatbelt because Kiro's sandbox cannot nest inside it, and Windows permits the official Kiro backend to run despite having no Kiro Crew OS wrapper. Passed for a harness with no internal sandbox, it hands isolation to a layer that never starts; this is the only Group B row that is also a security invariant. **Windows requires `is_kiro_cli is True` exactly** — `None` and `_spawns_kiro_cli` basename inference can never grant the backend-less-host exception. On macOS a site may grant membership explicitly or pass `None` to defer to the positive basename test. The verdict is `spawn_delegates_to_internal_sandbox`: `ACP_BACKENDS_INTERNAL_SANDBOX` on every route, or `ACP_BACKENDS_RELAY_INTERNAL_SANDBOX` when the spawn plan states `kiro_cli_internal_sandbox` -- KAS's relay route is the kiro-cli process and starts kiro-cli's seatbelt on macOS with its switch on, while its bundle route runs Node and keeps Crew's layer. The KAS relay never claims it on Windows: measured there (kiro-cli 2.35.1), its KAS child runs unconfined with the switch on or off, so Windows keeps the no-backend path for KAS. The runtime driver decides it from the plan, after the plan is resolved, and every reader (the wrap flag, the verified workspace, the voice-runtime guard) takes that one answer. | `test_harness_parity.py::test_is_kiro_cli_is_positive`, `::test_kas_bundle_route_keeps_crew_sandbox`, `test_sandbox_argv.py::TestKiroInternalSandboxExclusion` | `acp/launch.py` (`launch`, the one tail both drivers take, for every known host), `acp/runtime_spawn_launch.py` (`_spawn_admitted`), `acp/client_spawn_env.py` (`apply_pod_bundle_spawn`), `agent_sdk/backends.py` (`spawn_delegates_to_internal_sandbox`), `sandbox_wrap.py` (`wrap_argv`), `sandbox_delegation.py` (`_spawns_kiro_cli`) |
 | H8 | New harness identifiers live in `agent_sdk/backends.py` — a LEAF module behind the agent-SDK boundary, so every consumer can name the constants rather than copy them — and are added to `ACP_BACKENDS_KNOWN`; every capability set is defined there or in one of the leaf `backends_<role>.py` owners that `VOCABULARY_PATHS` lists and the module re-exports, and is a subset of it; and `AcpProvider.__init__` rejects anything outside it. `ACP_BACKEND_KIRO` is the empty string, so a value that falls through every identity check spawns `kiro-cli` under a foreign label. `acp/types.py` and the `acp_backends` shim both re-export the vocabulary and remain import sites for existing callers. | `test_harness_parity.py::test_capability_sets_are_subsets_of_known_backends`, `::test_unknown_backend_rejected_at_construction`, `::test_codex_is_selectable_and_answerable` | `agent_sdk/backends.py` (`ACP_BACKENDS_KNOWN`), `providers/acp.py` (`AcpProvider.__init__`), `scripts/check_harness_parity.py` (`VOCABULARY_PATHS`) |
 
+The value that clears an effort level LIVE is per-harness vocabulary, like the
+effort option's id: `effort_config_option_clear_value(backend)` reads it from
+`EFFORT_CONFIG_OPTION_CLEAR_VALUES`. Only claude has a row (`default`, measured in
+`test/fixtures/acp_frames/claude/effort-clear-live.jsonl`). `clear_effort` writes
+it when the session advertised it and nothing is inherited, and every backend
+without a row keeps the session reset, as does a claude session that did not
+advertise the value, refused the write, or inherits a level. The factory computes
+`inherited_effort` only for a backend with a row, and the kiro-family branch never
+reads it or `every_model`.
+
 `ACP_BACKENDS_MEMBER_CAPABILITIES` is the H6 opt-in for loading an enrolled
 member's saved agent spec. Kiro and KAS belong natively (kiro-cli reads the
 saved file at spawn; KAS receives it whole as `_meta.kiro.customAgents` and
@@ -365,14 +375,20 @@ The heartbeat agent has no approver behind it, so `_heartbeat_approval`
 never on the title the model wrote (`slack/gateway_runtime/tool_policy.py`,
 `_is_heartbeat_safe_tool`). kiro-cli stamps `_meta.kiro.toolName` on every tool
 call, goose writes `_meta.goose.toolCall`, codex-acp marks MCP calls with
-`_meta.is_mcp_tool_call`. claude-agent-acp stamps `_meta.claudeCode.toolName` on its
-built-ins, but Crew reads that key only on a Side Chat session the harness itself
-launched read-only (`claude-code-provider.md`, "A Side Chat session"); it is not a row
-of `_MCP_IDENTITY_META_CHANNELS`, so a heartbeat event on claude-agent-acp carries no
-trusted identity. opencode sends `kind="other"` and no identity (`acp/_dispatch_parts/tool_call_identity.py`,
-`classify_tool_call`). On those two, every heartbeat tool call is denied and audited
-`reason=no_trusted_identity`, with one gateway warning per denied call naming the
-backend condition, and the heartbeat cycle runs as a text-only poller. The signal is
+`_meta.is_mcp_tool_call`. claude-agent-acp names an MCP call's server on its
+permission request (`_meta.claudeCode.mcpServer`), and Crew adopts that pair only for a
+server it placed on the session array (`permission_requests.claude_mcp_identity`:
+`source` is `dynamic`, the name is a placed one, and `toolName` is exactly
+`mcp__<server>__<tool>` as the tool_call frame stamped it), so a heartbeat core read
+such as `kirocrew-core` `spawn_list` is approved there. Its built-ins and the servers of
+the user's own `~/.claude` config still carry no trusted name: the built-in stamp is
+read for the read-only proof only on a Side Chat session (`claude-code-provider.md`,
+"A Side Chat session"), and neither is a row of `_MCP_IDENTITY_META_CHANNELS`.
+opencode sends `kind="other"` and no identity (`acp/_dispatch_parts/tool_call_identity.py`,
+`classify_tool_call`). On opencode, and for those claude calls, every heartbeat tool
+call is denied and audited `reason=no_trusted_identity`, with one gateway warning per
+denied call naming the backend condition, so an opencode heartbeat runs as a
+text-only poller. The signal is
 per call on purpose: each row is derived from the event itself, so it cannot drift
 from what the gate decided, and the positive set a start-time warning would key on
 (`ACP_BACKENDS_META_IDENTITY`) deliberately omits kiro-cli -- it lists harnesses whose

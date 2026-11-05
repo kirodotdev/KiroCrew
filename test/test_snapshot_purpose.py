@@ -254,9 +254,9 @@ class TestMemoryRoundTrip:
         )
         dest_conn.close()
 
-        assert (dest / "workspace/memory/preferences.md").read_text() == (
+        assert (dest / "workspace/memory/preferences.md").read_text(encoding="utf-8") == (
             src / "workspace/memory/preferences.md"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         assert (dest / "workspace/memory/history/2026-01-01.md").is_file()
         assert (dest / "workspace/knowledge/kb.sqlite3").is_file()
 
@@ -269,7 +269,7 @@ class TestMemoryRoundTrip:
         dest = tmp_path / "dest2"
         (dest / "workspace").mkdir(parents=True)
         keep = dest / "workspace" / "unrelated.md"
-        keep.write_text("local work, not in the bundle\n")
+        keep.write_text("local work, not in the bundle\n", encoding="utf-8")
         monkeypatch.setenv("KIROCREW_HOME", str(dest))
 
         assert (
@@ -279,5 +279,5 @@ class TestMemoryRoundTrip:
             )
             == 0
         )
-        assert keep.read_text() == "local work, not in the bundle\n"
+        assert keep.read_text(encoding="utf-8") == "local work, not in the bundle\n"
         assert (dest / "workspace/memory/preferences.md").is_file()

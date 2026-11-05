@@ -1109,6 +1109,17 @@ such a value exists only here, so the overlay rides
 the dashboard export and the snapshot `config` component next to `config.json`
 (see [Settings import](#settings-import-dashboard-merge)).
 
+A renamed key (`agent.dangerously_skip_permissions`, read also as
+`dangerouslySkipPermissions` and `yolo`; `knowledge.auto_add_documents`, read
+also as `auto_ingest_doc_links`) is matched under its current name on both sides
+(`resolution._canonical_renamed_keys`), with the spelling and value conversion
+its reader uses. When the overlay owns it and `config.json` stores it only
+under an older spelling, `save()` keeps that older spelling and value
+(`resolution._restore_stored_renamed_spellings`) instead of migrating it to the
+current name: the current name would outrank the overlay's older spelling and
+change what loads. The migration to the current name finishes on the first
+save after the overlay stops setting the key.
+
 `config.json` is the persistent settings file, not a generated one: no upgrade
 or restart regenerates or resets it. The routine writers (dashboard PUTs, keyed
 `kirocrew config set`, setup, boot migrations) are locked delta
@@ -3329,6 +3340,8 @@ class SessionConfig:
     empty_response_auto_continue: bool = True  # after TWO consecutive empty model responses, auto-send synthetic "continue" nudges on the same live session (transcript-visible notice; count bounded by empty_response_max_continues; the config gate fails OPEN to the default so a config-load hiccup cannot disable self-healing). See session.md "Empty-response recovery ladder".
     empty_response_max_continues: int = 1  # how many continue nudges may run back to back before the give-up card (EMPTY_RESPONSE_MAX_CONTINUES_MIN/MAX; load-time clamped to [1, 10] so a hand-edited 0 cannot disable recovery and a large value cannot arm an unbounded ladder). Default 1 keeps the pre-knob behavior byte-identical; above 1 the notice numbers each recovery ("recovery 2 of 3").
     autocompact_pct: float = 70.0  # context usage % at which auto-compaction triggers (DEFAULT_AUTOCOMPACT_PCT). Load-time clamped to [5.0, 90.0] (one constant pair shared with the dashboard write gate)
+    idle_compaction: bool = False  # compact an idle dashboard chat once, shortly before its backend's prompt cache expires (session.md, "Idle compaction before cache expiry"). Read off the manager's live _cfg at each turn end and each fire; turning it off cancels every pending idle timer (config_apply._on_config_change). No UI control yet
+    idle_compaction_min_context_pct: float = 50.0  # context usage % below which an idle chat is left alone; below about 40% on kiro a compaction costs more than the cold resend it saves (rfc-idle-compaction-before-cache-expiry.md, section 2.3). Load-time clamped to its own [40.0, 90.0] pair, IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN and IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX in config/sections_limits.py, so a value below 40 loads as 40
     pool_size: int = 0             # pre-warmed kiro-cli processes kept ready for instant session start; 0 (the default) disables. Single source of truth: DEFAULT_POOL_SIZE, read by both the field default and load()'s file-parse fallback. Load-time clamped to [0, 10]
     kas_delete_delay_secs: int = 0  # on kas, seconds a task-runner session's record and a reused workflow worker's previous conversation stay on disk after the session ends, before the released_sessions sweep deletes them; 0 (the default) deletes at once, as does a process the sandbox launched (sandbox_launch_mark). Load-time clamped to [KAS_DELETE_DELAY_SECS_MIN, KAS_DELETE_DELAY_SECS_MAX] = [0, 86400]. Point-of-use reads: open_task_session reads SessionManager._cfg (kept current by the session applier) as each task session opens; the workflow worker reads KiroCrewConfig.load() before each reuse. Needs an engine that advertises sessionCapabilities.close. A record that comes due while another backend is selected waits until kas is selected again. See session.md "Released KAS session records".
     watchdog_rss_max_mb: int = 4096   # DEFAULT_WATCHDOG_RSS_MAX_MB: recycle a session when its process tree RSS exceeds this many MiB; 4096 sits above a healthy tree with many MCP servers (1.4-2.6 GB measured) and still bounds a runaway one; 0 disables; the internal background runtime recycles at BACKGROUND_RSS_FALLBACK_MB (1536), or at this value when it is lower. Busy sessions (turn in flight) are never recycled, and neither is a parent whose sub-agents are still running, queued, or delivering their results on its runtime.
@@ -3823,8 +3836,8 @@ screenshot.
 `session_environments` (`SessionEnvironmentsConfig` in `config/sections.py`)
 persists what the Settings UI needs to offer remote session environments, and
 nothing else: `coder_url`, `profiles`, and the optional `sprites_profiles`,
-`boxd_profiles`, `default_profile` and `stop_on_shutdown`.
-`config/session_environments.py` owns
+`boxd_profiles`, `kiro_cloud_profiles`, `default_profile` and
+`stop_on_shutdown`. `config/session_environments.py` owns
 every rule: its strict `validate_*` functions back the dashboard write gate (a
 400, nothing written) and its lenient `load_session_environments` backs
 `SessionEnvironmentsConfig.from_raw`, which keeps every valid part of a
@@ -3858,6 +3871,14 @@ duplicate or over-cap profile is dropped with a warning).
   `boxd_profiles` leaf write refuses to drop the profile the saved default names
   (`unknown_profile`).
 - `stop_on_shutdown`: a boolean, default `true`.
+- `kiro_cloud_profiles` (optional): at most 20 Kiro Cloud Sessions records,
+  each exactly `{id, name, repositories}`: `id` and `name` follow the profile
+  rules above, and `repositories` is a list of at most 10 `name` or
+  `owner/name` entries (whitespace-stripped, duplicates dropped; empty opens an
+  empty workspace). The cross-provider id rule above applies to it, with the
+  same 400 `profile_id_collision`. Unlike a Sprites or boxd leaf write, a
+  `kiro_cloud_profiles` leaf write that removes the default's profile is
+  accepted and drops the default (below).
 
 There is no `enabled` field (the opt-in is the per-device preview flag) and no
 credential field, so the masked GET returns the whole section; unknown keys are
@@ -3865,10 +3886,15 @@ refused. An absent or non-object section loads with every key at its default,
 and an unmodelled key inside it is preserved by `save()` and omitted from the
 GET.
 
-`PATCH /api/config/kirocrew` accepts `session_environments` and each of its seven
-keys as paths, all through the `"normalized"` spec type. Whole-section saves
+`PATCH /api/config/kirocrew` accepts `session_environments` and the leaf paths
+`coder_url`, `sprites_profiles`, `boxd_profiles`, `kiro_cloud_profiles`,
+`default_profile` and `stop_on_shutdown` (`profiles` only through the whole
+section), all through the `"normalized"` spec type. Whole-section saves
 require the Coder keys; an omitted `SECTION_OPTIONAL_KEYS` key keeps its saved
-value under the config lock. A write goes through `update_config_locked`,
+value under the config lock. After every write to the section, a saved
+`default_profile` that no profile list of the merged section still holds is
+dropped under the same lock, so a `kiro_cloud_profiles` leaf write that removes
+the default's profile cannot leave it dangling. A write goes through `update_config_locked`,
 preserves unrelated config and is hot-applied. Saving registers no provider,
 checks no connection and provisions nothing.
 

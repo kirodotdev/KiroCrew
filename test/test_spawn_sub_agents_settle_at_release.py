@@ -1063,7 +1063,9 @@ async def test_a_cron_turn_resumed_after_a_post_token_error_confirms_nothing_its
     orch = _cron_orchestrator(sessions, [a])
     seen: dict[str, Any] = {"prompts": [], "injected": []}
 
-    async def inject(info: Any, _client: Any, _msg: Any, _parent: str, _label: str) -> str:
+    async def inject(
+        info: Any, _client: Any, _msg: Any, _parent: str, _label: str, **_kw: Any
+    ) -> str:
         seen["injected"].append(info.id)
         info._report_delivered = True  # _inject_with_retry acknowledges on landing
         return "answered from the completion"

@@ -887,10 +887,12 @@ class TestSignInCommands:
         assert exited.value.code == enterprise_boot.EXIT_CODE
         assert "no Kiro sign-in was found" in capsys.readouterr().err
 
-    def test_oss_does_not_exempt_the_sign_in_verbs(self, monkeypatch, tmp_path):
+    def test_oss_does_not_exempt_the_sign_in_verbs(self, monkeypatch, tmp_path, capsys):
         cli = self._main(monkeypatch, tmp_path, ["kas", "whoami"])
-        with pytest.raises(PlatformCompositionError):
+        with pytest.raises(SystemExit) as exited:
             cli.main()
+        assert exited.value.code == 1
+        assert "no Kiro sign-in was found" in capsys.readouterr().err
 
 
 class TestOss:

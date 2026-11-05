@@ -58,6 +58,7 @@ from kiro_crew.apps.registry_pipeline.subprocess_env import (
     anonymous_git_env,
     minimal_env,
 )
+from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -561,6 +562,12 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     # Platform config from app.json
     if "platform" in manifest:
         result["platform"] = manifest["platform"]
+
+    # Store-page links, checked here because this manifest is untrusted content.
+    if "links" in manifest:
+        links = sanitize_links(manifest["links"], app_name=str(entry.get("name", "")))
+        if links:
+            result["links"] = links
 
     # Icon — convert a manifest-relative path to a blob proxy URL, joined under
     # the entry's ``subdirectory`` (the directory app.json was read from) so the

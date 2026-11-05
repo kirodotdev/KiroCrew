@@ -111,12 +111,9 @@ class FleetProbeHarness:
         junction on Windows) because that is what the kernel exposes and what
         the probe reads.
 
-        A ``stat`` file is always written: every live process on a real system
-        has one, and the probe reads its ``starttime`` (field 22) as the process
-        incarnation token that brackets the per-pid reads. A stable ``stat`` here
-        means one incarnation across the scan, so cwd classification is exercised
-        as it is in production; omitting it would model a process that exited
-        mid-scan, which is a different case with its own tests.
+        A ``stat`` file is always written: the probe reads its ``starttime`` (field 22)
+        as the incarnation token, and omitting it would model a process that exited
+        mid-scan.
         """
         proc = tmp_path / "proc"
         (proc / pid).mkdir(parents=True, exist_ok=True)

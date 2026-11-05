@@ -487,7 +487,7 @@ class TestProcessStartTime:
 
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux /proc contract")
     def test_linux_reports_stat_field_22(self):
-        stat_text = Path(f"/proc/{os.getpid()}/stat").read_text()
+        stat_text = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="utf-8")
         expected = stat_text.rsplit(")", 1)[1].split()[19]
         assert pc.process_start_time(os.getpid()) == expected
 

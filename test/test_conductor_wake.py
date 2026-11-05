@@ -38,6 +38,7 @@ from conductor_wake_helpers import (
     _service,
     _Svc,
 )
+from crew_log_drain import assert_drained
 
 from kiro_crew import conductor_wake, work_ledger
 from kiro_crew.testing.wait import async_wait_until, default_timeout
@@ -503,7 +504,7 @@ def _write(unit: str, **fields) -> None:
     from kiro_crew.crew_log import emit as crew_log_emit
 
     assert crew_log_emit.on_work_recorded(unit, dict(fields), timeout=5.0) is True
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     assert crew_log_eager.drain(timeout=10.0)
 
 

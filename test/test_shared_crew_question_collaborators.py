@@ -80,6 +80,7 @@ def state(tmp_path, monkeypatch):
     st.broadcast_ws_owners = MagicMock()
     st.deliver_ws_owners = AsyncMock(return_value=1)
     st.push_slots_update = MagicMock()
+    st.push_listing_refresh = MagicMock()
     st.owner_id = "owner"
     return st
 

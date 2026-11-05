@@ -39,6 +39,7 @@ src/kiro_crew/apps/builtins/code_review_sage/tests/fixtures.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_activity_progress.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_adapters.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_backend_routes.py
+src/kiro_crew/apps/builtins/code_review_sage/tests/test_backend_routes_coverage.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_blast_radius.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_consolidate.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_discovery.py
@@ -56,6 +57,7 @@ src/kiro_crew/apps/builtins/code_review_sage/tests/test_record_adoption.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_repo_review.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_report.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_review_driver.py
+src/kiro_crew/apps/builtins/code_review_sage/tests/test_review_driver_loopback.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_review_guidance.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_review_pool.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_run_endpoints.py
@@ -212,7 +214,6 @@ src/kiro_crew/skill_usage.py
 src/kiro_crew/skills_dedupe.py
 src/kiro_crew/skills_script_validator.py
 src/kiro_crew/slack/enterprise.py
-src/kiro_crew/slack/events.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/webhooks.py
@@ -232,8 +233,6 @@ test/test_acp_offload.py
 test/test_acp_prompt_blocks.py
 test/test_agent_discovery.py
 test/test_agent_source_ownership_durability.py
-test/test_ai_agent_runner_coverage.py
-test/test_ai_backend_routes_coverage.py
 test/test_api_agents_order.py
 test/test_api_file_diff.py
 test/test_api_input_validation.py
@@ -297,7 +296,6 @@ test/test_bench_windows_symlink.py
 test/test_bootstrap.py
 test/test_brand_name_gate.py
 test/test_browser_recording_skill.py
-test/test_bug_proposal_skip_status_default.py
 test/test_bug_validation_send_message_schema.py
 test/test_build_desktop_launcher_symlink.py
 test/test_build_desktop_rm_resilient.py
@@ -479,8 +477,6 @@ test/test_issue_radar_investigation_tool.py
 test/test_issue_radar_list_probe.py
 test/test_issue_radar_recent_repos.py
 test/test_issue_radar_ref_summary.py
-test/test_issue_radar_routes_ai_coverage.py
-test/test_issue_radar_routes_coverage.py
 test/test_issue_radar_tagging.py
 test/test_issue_summary_workflow.py
 test/test_kas_display_mapping.py
@@ -610,11 +606,9 @@ test/test_resource_health_endpoint.py
 test/test_resource_pressure_notify.py
 test/test_reveal_in_file_manager.py
 test/test_reveal_path.py
-test/test_review_driver_loopback.py
 test/test_route_registry.py
 test/test_run_config_write.py
 test/test_safety_override.py
-test/test_sage_backend_routes_coverage.py
 test/test_sandbox_backend_cache.py
 test/test_sandbox_default_fix.py
 test/test_sandbox_first_party_exec.py

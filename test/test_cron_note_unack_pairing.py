@@ -62,8 +62,10 @@ def test_unacking_a_note_read_from_the_bell_leaves_the_job_items_alone() -> None
 
 
 def test_the_unack_names_the_exact_entry_and_runs_once() -> None:
-    state = _unack_state(_cron_note(acked=True, **_record()))
-    _unack(state)
+    note = _cron_note(acked=True, **_record())
+    state = _unack_state(note)
+    assert _unack(state)["ok"] is True
+    assert CRON_ACK_ITEM_KEY not in note
     _unack(state)
     _unack(state)
     state.crons.unack_job_async.assert_awaited_once_with("j1", "a1")

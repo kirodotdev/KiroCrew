@@ -62,6 +62,7 @@ test("runtime gateway owners take every host dependency from the supervisor", ()
     "reconnect.js",
     "remote-crew-prompt.js",
     "remote-switch.js",
+    "respawn-owner.js",
     "shutdown.js",
     "successor-handoff.js",
     "token-sources.js",

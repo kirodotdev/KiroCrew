@@ -3,6 +3,14 @@
   "sockets": {
     "viewer": [
       {
+        "type": "refresh",
+        "data": {
+          "kinds": [
+            "history"
+          ]
+        }
+      },
+      {
         "type": "slots",
         "data": [
           {
@@ -78,6 +86,7 @@
             "memory_mode": "persistent",
             "forked_from": null,
             "linked_session_key": "",
+            "history_key": "dashboard:chat-golden-1",
             "app": "",
             "origin": "",
             "created_by": "",
@@ -321,6 +330,7 @@
             "memory_mode": "persistent",
             "forked_from": null,
             "linked_session_key": "",
+            "history_key": "dashboard:chat-golden-1",
             "app": "",
             "origin": "",
             "created_by": "",
@@ -372,7 +382,7 @@
         "type": "refresh",
         "data": {
           "kinds": [
-            "history"
+            "turn_end"
           ]
         }
       }

@@ -422,3 +422,31 @@ async def test_user_only_drops_a_never_used_session(tmp_path) -> None:
 
     full = await _call(_real_request(log, {}))
     assert "dashboard_chat-3-1790874654" in _keys(full), "the full inventory must still list it"
+
+
+@pytest.mark.asyncio
+async def test_exclude_open_forgets_the_published_keys_it_lists_as_rows() -> None:
+    """A session this listing shows as a row leaves the published set, so the sync
+    that next finds its slot open pushes ``history`` and the tabs re-read."""
+    sessions = [{"key": "dashboard_chat-1"}, {"key": "dashboard_chat-2"}]
+    request = _make_request(
+        sessions, slots={"chat-1": _FakeSlot("chat-1")}, query={"exclude_open": "1"}
+    )
+    state = request.app["state"]
+    state._published_slot_keys = frozenset({"dashboard:chat-1", "dashboard:chat-2"})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["dashboard_chat-2"]
+    assert state._published_slot_keys == frozenset({"dashboard:chat-1"})
+
+
+@pytest.mark.asyncio
+async def test_the_full_inventory_leaves_the_published_keys_alone() -> None:
+    request = _make_request([{"key": "dashboard_chat-2"}], slots={})
+    state = request.app["state"]
+    state._published_slot_keys = frozenset({"dashboard:chat-2"})
+
+    await _call(request)
+
+    assert state._published_slot_keys == frozenset({"dashboard:chat-2"})

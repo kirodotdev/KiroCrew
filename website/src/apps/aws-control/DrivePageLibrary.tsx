@@ -166,6 +166,40 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
   const qc = useQueryClient()
   const appKey = useAppQueryKey()
 
+  /* Where focus returns when the picker is dismissed.
+
+     Captured at the OPEN click rather than left to the shared focus trap's own
+     restore. The trap records `document.activeElement` when its open effect
+     runs, but by then it has already moved focus into the dialog, so it would
+     aim the return at a control that unmounts on close and focus would fall to
+     the page body. Recording the control that opened the dialog here, and
+     restoring to it after the dialog unmounts, keeps focus on the opener. The
+     two openers below share one ref because only one dialog is open at a time;
+     the trap keeps focus-in but not restore (see the dialog). */
+  const openerRef = useRef<HTMLElement | null>(null)
+  /* The empty-state opener can disappear while the dialog is open: adding an
+     artifact fills the bucket, the listing refetches, and the empty-state
+     button unmounts with it, so the captured opener is a detached node by close
+     time and focusing it does nothing (focus falls to the body). The header
+     Add button renders whenever the listing is non-empty, so it is the stable
+     place to send focus when the original opener is gone. */
+  const addBtnRef = useRef<HTMLButtonElement | null>(null)
+  const openPicker = () => {
+    openerRef.current = document.activeElement as HTMLElement | null
+    setPicking(true)
+  }
+  const closePicker = () => {
+    const opener = openerRef.current
+    setPicking(false)
+    // After the close: the focused control inside the dialog is removed in the
+    // same commit, which drops focus to the page body, so the restore runs on
+    // the next frame, once that commit has happened.
+    requestAnimationFrame(() => {
+      const target = opener?.isConnected ? opener : addBtnRef.current
+      target?.focus?.({ preventScroll: true })
+    })
+  }
+
   /* Removal lives HERE, on the listing of what is actually in the bucket, and
      the state for it is the SECTION's rather than each card's.
 
@@ -387,7 +421,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <ViewModeToggle section="library" mode={mode} onChange={setMode} />
-            <Btn primary onClick={() => setPicking(true)} data-testid="library-add-open">
+            <Btn primary ref={addBtnRef} onClick={openPicker} data-testid="library-add-open">
               <Plus size={13} />
               {i18nT('apps.awsControl.console.library_add')}
             </Btn>
@@ -473,7 +507,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
              Same mistake as reading orphan-hood out of an empty map. */
           action={
             !localAnswered || nothingLocalYet ? undefined : pushable.length > 0 ? (
-              <Btn primary onClick={() => setPicking(true)} data-testid="library-empty-add">
+              <Btn primary onClick={openPicker} data-testid="library-empty-add">
                 <Plus size={13} />
                 {i18nT('apps.awsControl.console.library_add_count', { count: fmtNumber(pushable.length) })}
               </Btn>
@@ -641,7 +675,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
 
       <CliDrawer bucket={bucket} prefix="artifacts/" />
 
-      {picking && <AddFromArtifactsDialog account={account} onClose={() => setPicking(false)} />}
+      {picking && <AddFromArtifactsDialog account={account} onClose={closePicker} />}
     </section>
   )
 }
@@ -871,7 +905,13 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
    * to it is what made the drift invisible.
    */
   const panelRef = useRef<HTMLDivElement>(null)
-  useDialogFocusTrap(panelRef, onClose)
+  /* `restoreFocus: false`: the trap still moves focus INTO the dialog on open,
+     but the caller owns the return. The trap's own restore reads
+     `document.activeElement` after focus has already entered the dialog, so it
+     would aim the return at a control that unmounts on close; the caller
+     captured the opener before the dialog mounted and restores to it on every
+     dismiss path (Escape, backdrop, and the close button all run `onClose`). */
+  useDialogFocusTrap(panelRef, onClose, { restoreFocus: false })
 
   const libQ = useAppQuery(['library', account], {
     queryFn: () => awsControlApi.library(account),

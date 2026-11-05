@@ -643,6 +643,13 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
         self._kas_auto_fallback = (
             pick_served_default("auto", ids) if select.get("currentModelId") == "auto" else ""
         )
+        # KAS sends no ``models`` object, so the select's ``currentValue`` is
+        # the only place it says which model the session runs (``auto`` on a
+        # new session). Without it ``served_model`` stays ``""`` and every turn
+        # is recorded unattributed. A ``models`` block below still wins.
+        select_current = select.get("currentModelId")
+        if self._runtime.acp_backend == ACP_BACKEND_KAS and isinstance(select_current, str):
+            self._resolved_model_id = select_current
     # The same select is the KAS engine's CATALOG (its served models with their
     # credit multipliers), kept for the bundle-route picker, which has no
     # ``--list-models`` to read. A catalog, not this session's advertised list:

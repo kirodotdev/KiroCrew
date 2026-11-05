@@ -582,7 +582,11 @@ class TestFileShards(unittest.TestCase):
             self.assertNotIn("--splits", command)
             if name == "backend-test":
                 leaf = command.split('if [ "$LEAF" = "true" ]; then', 1)[1].split("exit 0", 1)[0]
-                self.assertNotIn("ci_file_shards", leaf)
+                # Corpus gates are sharded; changed files are not (they repeat on every job).
+                self.assertIn("ci_file_shards", leaf)
+                self.assertIn("leaf changed files, pass", leaf)
+                changed_loop = leaf.split("leaf changed files, pass", 1)[1]
+                self.assertNotIn("ci_file_shards", changed_loop)
                 self.assertIn('"${CHANGED[@]}"', leaf)
                 self.assertCountEqual(
                     [word for word in command.split() if word.startswith("--cov=")],

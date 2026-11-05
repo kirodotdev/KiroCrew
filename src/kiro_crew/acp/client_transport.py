@@ -46,6 +46,7 @@ from kiro_crew.acp.runtime_models import (
     _is_model_substitution_advisory,
     _substitute_model_from_advisory,
 )
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.transport_framing import (
     RequestWriteResult,
@@ -1059,6 +1060,8 @@ async def _drain_notifications(
     # Process notifications buffered during _wait_for_response
     for idx, msg in enumerate(self._mcp_notifications):
         drained += 1
+        if consume_stale_compaction_status(self, msg):
+            continue
         _capture_oauth(msg)
         _capture_config_update(msg)
         _capture_agent_switched(msg)
@@ -1114,6 +1117,8 @@ async def _drain_notifications(
             if not read_msg.method:
                 continue
             drained += 1
+            if consume_stale_compaction_status(self, read_msg):
+                continue
             _capture_oauth(read_msg)
             _capture_config_update(read_msg)
             _capture_agent_switched(read_msg)

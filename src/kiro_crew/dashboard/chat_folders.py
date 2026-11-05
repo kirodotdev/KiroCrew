@@ -1323,6 +1323,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_principal_steering_dirs,
         _resolve_folder_project_dir,
         _resolve_folder_steering_dirs,
+        _sensitive_refusal,
         _validate_project_dir,
         _validate_steering_dirs,
         resolve_folder_project_dir_off_loop,

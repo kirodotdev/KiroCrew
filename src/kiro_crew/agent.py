@@ -174,6 +174,7 @@ from kiro_crew.agent_parts.spec_prompts import (
     _CONDUCTOR_SYSTEM_PROMPT,
     _CONDUCTOR_WORK_LEDGER_PROTOCOL,
     _DASHBOARD_MANAGER_SYSTEM_PROMPT,
+    _DEPENDENT_CALLS_RULE,
     _LEDGER_CONDUCTOR_RULES,
     _PIPELINE_CONDUCTOR_SYSTEM_PROMPT,
     _SECURITY_CONDUCTOR_SYSTEM_PROMPT,
@@ -459,6 +460,11 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _install_team_lead_agent,
         knowledge_agent_model,
         repair_knowledge_agent_spec,
+    )
+    from kiro_crew.agent_materialization.shared_template_view import (  # noqa: F401
+        govern_shared_template_injected_servers,
+        govern_shared_template_view,
+        governed_view_names,
     )
     from kiro_crew.agent_materialization.skill_resources import (  # noqa: F401
         map_prompt_skills,
@@ -1048,6 +1054,11 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "name_has_another_claimant",
         "hold_spawn_gate",
     ),
+    "kiro_crew.agent_materialization.shared_template_view": (
+        "governed_view_names",
+        "govern_shared_template_injected_servers",
+        "govern_shared_template_view",
+    ),
     "kiro_crew.agent_materialization.service_agents": (
         "_install_guest_agent",
         "_install_lite_agent_fallback",
@@ -1607,6 +1618,7 @@ from kiro_crew.agent_materialization import (  # noqa: E402, F401 -- the owners 
     mcp_aliases,
     mcp_sources,
     service_agents,
+    shared_template_view,
     skill_resources,
     worker_agent,
 )

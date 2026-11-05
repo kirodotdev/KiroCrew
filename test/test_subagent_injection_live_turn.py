@@ -105,7 +105,7 @@ async def _drive(route: str, key: str) -> tuple[Any, Any, _ParentNextTurn, Sessi
     parent_turn = _ParentNextTurn(sessions, key)
     injected_into: list[Any] = []
 
-    async def inject_times_out(info, client, msg, parent_key, label):
+    async def inject_times_out(info, client, msg, parent_key, label, **_kw):
         # The injection holds the parent's lease here. The parent's next turn
         # arrives now and parks on it, as a cron fire or channel message does.
         injected_into.append(client)

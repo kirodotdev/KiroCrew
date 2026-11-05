@@ -1397,9 +1397,10 @@ export function RemoteCrewPanel() {
               <button
                 type="button"
                 onClick={() => setShowMoreSizes(v => !v)}
+                aria-expanded={showMoreSizes}
                 className="mt-2.5 w-full flex items-center gap-2 text-[12px] text-muted px-3 py-2 rounded-md border border-dashed border-border-strong hover:text-text"
               >
-                <ChevronDown size={14} className={`transition-transform ${showMoreSizes ? 'rotate-180' : ''}`} /> {i18nT('pages.settings.remoteCrewPanel.more_sizes')}
+                <ChevronDown size={14} aria-hidden="true" className={`transition-transform ${showMoreSizes ? 'rotate-180' : ''}`} /> {i18nT('pages.settings.remoteCrewPanel.more_sizes')}
               </button>
               {showMoreSizes && (
                 <>

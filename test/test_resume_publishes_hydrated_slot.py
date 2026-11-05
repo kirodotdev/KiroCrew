@@ -9,6 +9,7 @@ prompt gets it ordered *before* the history the resume then appends.
 import asyncio
 import threading
 import time
+from unittest.mock import MagicMock, call
 
 import pytest
 from aiohttp import web
@@ -1380,3 +1381,81 @@ def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, m
     assert "flush-leak-1" not in state._slots, "leaked a registered slot on flush failure"
     assert state.live_slot_count() == before, "leaked a construction reservation"
     assert "flush-leak-1" not in state._slots_under_construction
+
+
+@pytest.mark.asyncio
+async def test_resuming_a_closed_session_refreshes_the_older_sessions_listing(
+    tmp_path, monkeypatch
+):
+    """A resume moves the session out of Older Sessions, which every tab re-reads
+    only on a ``history`` frame: publishing the slot pushes exactly one listing refresh."""
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:listed1"
+    log.append(key, "user", "history-1")
+    log.update_metadata(key, {"closed": True, "closed_at": 1_700_000_000.0})
+    push_listing_refresh = MagicMock()
+    monkeypatch.setattr(state, "push_listing_refresh", push_listing_refresh)
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/listed1/resume", json={"key": key})
+
+    assert resp.status == 200, f"resume did not publish (status {resp.status})"
+    assert "listed1" in state._slots, "the slot was not published"
+    push_listing_refresh.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_resuming_an_already_live_session_pushes_no_history_refresh(tmp_path, monkeypatch):
+    """A resume answered by the open slot publishes nothing new, so the listing
+    has not changed and no ``history`` frame is sent."""
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    live = state.get_or_create_slot("open1")
+    push_listing_refresh = MagicMock()
+    monkeypatch.setattr(state, "push_listing_refresh", push_listing_refresh)
+    push_refresh = MagicMock()
+    monkeypatch.setattr(state, "push_refresh", push_refresh)
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/open1/resume", json={"key": "dashboard:open1"})
+        data = await resp.json()
+
+    assert resp.status == 200, f"resume of a live slot failed (status {resp.status})"
+    assert data["key"] == live.key and state._slots["open1"] is live, "not the dedup answer"
+    push_listing_refresh.assert_not_called()
+    assert call("history") not in push_refresh.call_args_list, push_refresh.call_args_list
+
+
+@pytest.mark.asyncio
+async def test_a_listing_during_the_resume_tail_is_corrected_on_publish(tmp_path, monkeypatch):
+    """A reserved resume takes its slot out of ``_slots`` until its tail passes, after
+    the creation sync already pushed ``history``. A listing served in that tail shows
+    the session as an Older Sessions row, so publishing the slot pushes again."""
+    from kiro_crew.dashboard.chat_handlers import resume_slot_from_history
+    from kiro_crew.dashboard.chat_utils import listing_slot_snapshot
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:tail1"
+    log.append(key, "user", "history-1")
+    log.update_metadata(key, {"closed": True, "closed_at": 1_700_000_000.0})
+    pushes: list[bool] = []
+    monkeypatch.setattr(
+        state, "push_listing_refresh", lambda: pushes.append("tail1" in state._slots)
+    )
+    listed: list[list[str]] = []
+
+    async def _containment(_slot):
+        listed.append([s.key for s in listing_slot_snapshot(state)])
+        return None
+
+    outcome = await resume_slot_from_history(
+        state, name="tail1", history_key=key, containment=_containment, rebind_manager=False
+    )
+
+    assert outcome.refusal is None and "tail1" in state._slots, outcome
+    assert listed and "tail1" not in listed[0], f"the tail did not run retracted: {listed}"
+    assert pushes == [True, True], f"publish after the listing pushed {pushes}"

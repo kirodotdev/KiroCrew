@@ -52,8 +52,8 @@ def resolve_project_path(raw: str) -> str:
 
     ``""`` stays ``""`` (no project directory: today's cwd). Anything else goes
     through the chat folder's own project-directory validator
-    (``_validate_project_dir``: absolute or ``~``, ``realpath``, not
-    ``is_sensitive_path``, an existing directory), so the two fences cannot
+    (``_validate_project_dir``: absolute or ``~``, ``realpath``, no
+    ``canonical_path_refusal``, an existing directory), so the two fences cannot
     drift. A UNC-shaped path, raw or resolved, is refused before and after it,
     so a share is never probed. Raises ``ValueError`` naming the rule. Called on
     every write AND at every fire, so a directory that was removed, or that a
@@ -208,6 +208,19 @@ def _check_timeout_range(timeout: int) -> None:
         raise ValueError(f"timeout must be within 0..86400, got {timeout}")
 
 
+def whole_seconds(field_name: str, value: Any) -> int:
+    """``int(value)``, or ``ValueError`` naming *field_name* when it cannot be read.
+
+    OverflowError too: ``int(float("inf"))`` raises it, and it is not a
+    ``ValueError``, so an infinite timeout would otherwise escape the documented
+    refusal as a different exception type.
+    """
+    try:
+        return int(value)
+    except (ValueError, TypeError, OverflowError) as e:
+        raise ValueError(f"Invalid {field_name}: {value!r}") from e
+
+
 def validate_create_timeouts(
     timeout: int, timeout_secs: int, *, command: str = "", script: str = ""
 ) -> None:
@@ -223,9 +236,9 @@ def validate_create_timeouts(
     Raises ``ValueError``.
     """
     if timeout:
-        _check_timeout_range(int(timeout))
+        _check_timeout_range(whole_seconds("timeout", timeout))
     if timeout_secs:
-        _check_timeout_secs_range(int(timeout_secs))
+        _check_timeout_secs_range(whole_seconds("timeout_secs", timeout_secs))
     if timeout_secs and (command or script):
         if timeout:
             _eff_sub = int(timeout)
@@ -302,12 +315,9 @@ def build_job(
     failed runs it takes before the failure message is delivered; ``None`` means
     the ``_ALERT_AFTER_DEFAULT`` of 1.
 
-    The optional presentation/routing fields (``agent_id``, ``model``,
-    ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
-    here so the job is persisted **fully-formed** in the single locked
-    transaction. This closes a create-then-mutate-then-unlocked-``_save``
-    window (two concurrent creates could otherwise interleave at the
-    ``await`` and the unlocked save could clobber the other request's job).
+    Every optional field is set here so the job is persisted fully-formed
+    in one locked transaction; a later unlocked ``_save`` could clobber a
+    concurrent create's job.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
@@ -505,10 +515,7 @@ def apply_job_update(
     # save to persist. Assignments happen below with the rest.
     _tsecs: int | None = None
     if "timeout_secs" in kwargs and kwargs["timeout_secs"] is not None:
-        try:
-            _tsecs = int(kwargs["timeout_secs"])
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid timeout_secs: {kwargs['timeout_secs']!r}") from e
+        _tsecs = whole_seconds("timeout_secs", kwargs["timeout_secs"])
         _check_timeout_secs_range(_tsecs)
     _auto_pause: int | None = None
     if "auto_pause_after_failures" in kwargs and kwargs["auto_pause_after_failures"] is not None:
@@ -521,10 +528,7 @@ def apply_job_update(
     # update is accepted and silently dropped.
     _tsub: int | None = None
     if "timeout" in kwargs and kwargs["timeout"] is not None:
-        try:
-            _tsub = int(kwargs["timeout"])
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid timeout: {kwargs['timeout']!r}") from e
+        _tsub = whole_seconds("timeout", kwargs["timeout"])
         _check_timeout_range(_tsub)
     # Vault secret grant: validated with the other pre-mutation
     # checks so a rejected grant cannot strand earlier field
@@ -619,18 +623,11 @@ def apply_job_update(
     if "channel" in kwargs:
         job.channel = kwargs["channel"] or None
     if "thread_ts" in kwargs:
-        # Paired with ``channel``: together they decide WHERE a run's
-        # output lands, and ``add_job`` has always accepted both. With
-        # no branch here the field was validated (see the caps table)
-        # and then dropped, so the caller was told "Updated" while the
-        # cron kept replying in the old thread. Falsy clears, mirroring
-        # ``channel`` and how mcp_cron normalizes blank to None.
-        #
-        # A granted script job re-threaded this way fails its NEXT run
-        # closed: thread_ts is bound into the grant's delivery
-        # fingerprint (cron_script.delivery_fingerprint), so the pin
-        # stops verifying until the operator re-approves. That is the
-        # intended fail-closed path, not a regression.
+        # With ``channel``, decides where a run's output lands. Falsy clears,
+        # as for ``channel`` and mcp_cron's blank-to-None. A granted script
+        # job re-threaded here fails its next run closed on purpose:
+        # thread_ts is in the grant's delivery fingerprint
+        # (cron_script.delivery_fingerprint) until the operator re-approves.
         job.thread_ts = kwargs["thread_ts"] or None
     if "approval_mode" in kwargs:
         job.approval_mode = kwargs["approval_mode"] or ""

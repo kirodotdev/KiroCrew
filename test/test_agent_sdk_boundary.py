@@ -3,7 +3,9 @@
 ``scripts/check_agent_sdk_boundary.py`` refuses new imports of the ACP layer from
 application code. Pinned here:
 
-1. Only ``agent_sdk/``, ``acp/`` and ``providers/`` are exempt, and each must exist.
+1. Only ``agent_sdk/``, ``acp/`` and ``providers/`` are exempt, and each must exist;
+   a built-in app's ``tests/`` suite is out of scope as test code, its runtime
+   code is not.
 2. Every recorded baseline violation still exists, so the list only shrinks.
 3. ``TYPE_CHECKING``-only, relative, ``importlib.import_module`` and
    ``from kiro_crew import acp`` imports are all caught.
@@ -79,6 +81,19 @@ def test_the_exempt_set_is_exactly_the_boundary(gate):
         "src/kiro_crew/acp/",
         "src/kiro_crew/providers/",
     }
+
+
+def test_only_a_built_in_apps_test_suite_is_out_of_scope(gate):
+    """An app's tests/ suite is test code; everything beside it is still gated."""
+    assert gate._is_app_test("src/kiro_crew/apps/builtins/auto_improvement/tests/test_x.py")
+    for rel in (
+        "src/kiro_crew/apps/builtins/auto_improvement/backend/runner.py",
+        "src/kiro_crew/apps/builtins/auto_improvement/spine/tests_helpers.py",
+        "src/kiro_crew/apps/builtins/auto_improvement/backend/tests/x.py",
+        "src/kiro_crew/apps/tests/test_x.py",
+        "src/kiro_crew/dashboard/tests/test_x.py",
+    ):
+        assert not gate._is_app_test(rel), rel
 
 
 def test_every_exempt_prefix_points_at_a_real_tree(gate):

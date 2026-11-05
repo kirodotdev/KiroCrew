@@ -45,7 +45,7 @@ SHARED_BINDINGS_CHECKS = ("the_field_scan_counts_every_read_and_write_shape",)
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "22e43ccb505a", "acp"),
+    "__init__": ("function", False, "2c65337d97d7", "acp"),
     "_abc_impl": ("data", False, "", ""),
     "_advertised_effort_levels": ("function", False, "93b23ca4342b", "acp_model_effort"),
     "_apply_effort_overlay": ("function", False, "66550c0d40fa", "acp_cli_overlay"),
@@ -84,7 +84,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "change_effort": ("function", True, "581451d2b011", "acp_model_effort"),
     "child_fidelity_aware": ("property", False, "a6632a57e602", "acp"),
     "cleanup_session": ("function", True, "c284282f8a1d", "acp_lifecycle"),
-    "clear_effort": ("function", True, "16180c63d5e6", "acp_model_effort"),
+    "clear_effort": ("function", True, "7830fb6429af", "acp_model_effort"),
     "client": ("property", False, "4d5584e1d14b", "acp"),
     "compact": ("function", True, "416a3df991e6", "acp_turns"),
     "compaction_self_managed": ("property", False, "a6632a57e602", "acp"),
@@ -148,6 +148,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "note_user_message": ("function", False, "ce7410240196", "acp"),
     "process_instance": ("property", False, "bb418bb7ece8", "acp"),
     "prompt_timeout_for_deadline": ("function", False, "b97d05f9c710", "acp"),
+    "prompts_written": ("property", False, "8dc15be1dfda", "acp"),
     "reapply_live_effort": ("function", True, "581451d2b011", "acp_model_effort"),
     "reject_tool": ("function", True, "84bed4474307", "acp"),
     "reports_effort_support": ("data", False, "", ""),
@@ -174,6 +175,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "tested_version_notice": ("property", False, "bb418bb7ece8", "acp"),
     "tool_search_settings": ("property", False, "da838953900b", "acp"),
     "touch_activity": ("function", False, "b60c5fea256e", "acp"),
+    "turn_survives_disconnect": ("property", False, "a6632a57e602", "acp"),
     "uses_kiro_identity_store": ("property", False, "a6632a57e602", "acp"),
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "acp_turns"),
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "acp"),

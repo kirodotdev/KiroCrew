@@ -117,7 +117,7 @@ own `/api/apps/<app>/` or `/apps/<app>/` namespace):
 | Grant | Value | Applied by |
 |---|---|---|
 | `build_rlimit` | yes | `apps/backend.py` spawns the backend with `RLIMIT_PROFILE_BUILD` |
-| `bound_port` | yes | `apps/backend.py` hands it `KIROCREW_BOUND_PORT`; `backend_runtime/startup.py` defers its spawn to `start_deferred_app_backends` |
+| `bound_port` | yes | `apps/backend.py` hands it `KIROCREW_BOUND_PORT`; it spawns in the one boot wave, after the port is reserved and exported |
 | `backend_env_names` | `KIROCREW_DEVFLEET_REPO` | forwarded to every app backend by `apps/backend.py` |
 | `backend_env_prefixes` | `KIROCREW_DEVFLEET_BIN_` | as above, by prefix |
 | `config_top_keys` | `dev_fleet` | `config/validation.py`'s unrecognized-key warning skips it |
@@ -1608,14 +1608,14 @@ choose the gateway's next image. Instead:
   `apps/backend.py` hands to this one backend at spawn from the gateway's own
   environment — the port is exported the moment it is reserved
   (`dashboard.server._reserve_dashboard_port`, before any backend spawns;
-  `_export_bound_port` republishes it once the site serves), and
-  `dashboard.server.start_dashboard` spawns this backend in a second wave
-  (the app's `bound_port` host grant, `apps.builtin_host_grants.bound_port_apps()`;
-  the main wave still runs before
-  `runner.setup()` so every other app's startup hooks find their backend up). A
-  backend spawned before the bind would have no port for its whole lifetime;
-  `test_bound_port_backends_start_only_after_the_export_and_the_rest_before_setup`
-  pins both orders.
+  `_export_bound_port` republishes it once the site serves), so
+  `dashboard.server.start_dashboard` spawns this backend in the one boot wave
+  with every other app, before `runner.setup()` (the app's `bound_port` host
+  grant, `apps.builtin_host_grants.bound_port_apps()`, only scopes the variable).
+  A broker call made while the gateway is still booting waits in the reserved
+  socket's backlog until the listener accepts; one that outlasts the broker's 5 s
+  timeout is a broker outage, handled as below.
+  `test_every_app_backend_starts_in_one_wave_before_setup` pins the order.
   `_live_worktree_path`, `_staged_target_resolved` and
   `_staged_cancel_available` route through it. A broker outage raises
   `PointerUnavailable` — never `None`: the fleet view degrades (no row is marked

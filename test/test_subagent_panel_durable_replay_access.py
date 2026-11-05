@@ -1,10 +1,7 @@
 """Who may read a persisted run, and the record each decision leaves.
 
-Ownership and visibility both bound a rebuilt record before the row cap: the pre-cap
-decision and both of its readings, the caller's filter, the saturated scan window, an app
-token that cannot read another app's runs, the recheck on the loop and a lazily hydrated
-slot that is not a breach. Redaction runs before clamping, and every grant and refusal on
-the persisted listing leaves a SEL record. The shared helpers live in
+Ownership and visibility both bound a rebuilt record before the row cap. Redaction runs
+before clamping, and every grant and refusal leaves a SEL record. Shared helpers are in
 ``subagent_panel_durable_replay_helpers.py``.
 """
 
@@ -107,11 +104,8 @@ class TestAGrantIsAuditedNotOnlyARefusal:
 class TestVisibilityBoundsTheCapNotOnlyOwnership:
     """Ownership and visibility are independent, and both belong before the cap.
 
-    A record can name a slot the caller owns while carrying an event the caller
-    never declared, and it can be visible under a declaration while belonging to
-    another app. Sizing the cap on ownership alone lets a burst of records this
-    socket may not see spend the slots its own visible runs need, and the cut count
-    is then computed over records that were never its to receive.
+    Sizing the cap on ownership alone would let records this socket may not see spend the
+    slots its visible runs need, and skew the cut count.
     """
 
     def slot(self, app: str, origin: str = ""):
@@ -335,11 +329,8 @@ class TestPersistedListingDenialsAreAudited:
     def test_a_stale_snapshot_is_overruled_by_the_loop_recheck(self, agent_root, monkeypatch):
         """The REST listing decides ownership on the loop, not in the worker thread.
 
-        The snapshot is taken before the scan and can be out of date by the time
-        the records come back, because slot keys are caller-supplied and another
-        app can reclaim one mid-scan. Here the snapshot still says the caller owns
-        the slot while live state says another app does, which is the shape of that
-        race; the record must be withheld and audited on the live answer.
+        Another app can reclaim a slot key mid-scan, so the record is withheld and audited on
+        the live answer, not the stale snapshot.
         """
         write_record(agent_root, "stale11", app="appA", parent_session="dashboard:chat-1")
         monkeypatch.setattr(messaging, "slot_owner_snapshot", lambda _state: {"chat-1": "appA"})
@@ -411,12 +402,8 @@ class TestPersistedListingDenialsAreAudited:
     def test_an_internal_caller_on_the_default_store_is_still_bound(self, agent_root, monkeypatch):
         """The empty store is the COMMON internal case, not an exemption.
 
-        ``internal_memory_scope`` answers ``scope.store or None``, so a verified
-        internal caller whose execution record names the default store resolves
-        the same ``None`` the dashboard owner does. Gating the session bound on
-        that value therefore lifted it for nearly every attested caller, handing a
-        subagent another session's persisted ``task``, ``parent`` and full
-        ``result`` text -- which the live half of the same response withholds.
+        ``internal_memory_scope`` answers ``scope.store or None``, so the default store looks
+        like the dashboard owner's ``None``; gating on it would leak another session's ``result``.
         """
         write_record(agent_root, "dflt11", parent_session="dashboard:chat-1")
         calls, body = self.run_listing(
@@ -731,17 +718,9 @@ class TestASaturatedScanWindowIsReportedOnItsOwn:
 class TestAnAppTokenCannotReadAnotherAppsRuns:
     """An app caller and the dashboard owner both arrive with ``scope is None``.
 
-    ``internal_memory_scope`` answers that for a non-internal caller AND for a
-    verified session whose execution record is empty, so scope alone cannot tell
-    an app token from the owner. The app CLAIM can: every transport publishes it
-    only for a positively resolved app and leaves it absent for the person, so
-    its presence is the positive signal and the app bound hangs off that.
-
-    A transport flag cannot carry this, which is what these cases pin. The
-    internal-secret arm is one of four arms that publish an app claim; the other
-    three are the ordinary cookie and token transports, which set the claim and
-    no flag. An app bound keyed to the flag is therefore absent on exactly the
-    transport an installed app normally arrives over.
+    The app claim tells them apart: every transport publishes it only for a resolved app.
+    A transport flag cannot: only the internal-secret arm sets it, and installed apps
+    usually arrive over the cookie and token transports.
     """
 
     def audited(self, monkeypatch) -> list[tuple[str, str, str]]:
@@ -853,14 +832,9 @@ class TestAnAppTokenCannotReadAnotherAppsRuns:
 class TestOwnershipIsRecheckedOnTheLoop:
     """The snapshot sizes the cap; the loop decides delivery.
 
-    Slot keys are caller-supplied and are not namespaced by app, so another app
-    can reclaim one WHILE the off-loop scan runs. A decision taken inside the
-    worker thread would then be read from state the socket does not describe,
-    so the admission the scan uses is a snapshot taken on the loop beforehand and
-    every surviving record is checked again on the loop before its frame is kept.
-
-    This exercises the two real functions in the order the replay calls them,
-    with the owner changing in between.
+    Another app can reclaim a slot key while the off-loop scan runs, so every surviving
+    record is checked again on the loop. The two real functions run in replay order, with
+    the owner changing in between.
     """
 
     def snapshot(self, state) -> dict:

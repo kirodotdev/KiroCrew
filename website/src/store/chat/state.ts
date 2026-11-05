@@ -233,8 +233,9 @@ export interface ChatState {
   activatedRequestSeq?: number
   /** The resume that opened its session last, and the session that was
    *  active when it did, so the swap in `handleResumeSession` retires only
-   *  the tab that resume replaced. */
-  lastResumeActivation?: { requestId: string; replaced: string | null } | null
+   *  the tab that resume replaced. `leaveSplit` marks a resume whose caller
+   *  asked the chat page to leave Split View once it takes the view. */
+  lastResumeActivation?: { requestId: string; replaced: string | null; leaveSplit?: boolean } | null
   /** The last session the user OPENED by a gesture, set when that open's
    *  transcript load lands (`switchSlot.fulfilled` for a switch marked
    *  `gesture`, which only user-initiated opens set; see `SwitchSlotArg`). `seq` counts the opens,

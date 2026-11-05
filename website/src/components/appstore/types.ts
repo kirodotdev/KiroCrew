@@ -69,6 +69,8 @@ export type RegistryApp = {
   highlights?: string[]
   useCases?: string[]
   configuration?: string[]
+  /** Store-page links from app.json, validated server-side (`apps/store_links.py`). */
+  links?: { label: string; url: string }[]
   screenshots?: string[]
   heroImage?: string
   heroImageDark?: string

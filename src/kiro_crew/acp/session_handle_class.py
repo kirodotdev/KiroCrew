@@ -111,6 +111,7 @@ class AcpSessionHandle:
     _input_wait_status = _sh_watchdog._input_wait_status
     # The session's MCP servers: ``kiro_crew.acp.session_handle_mcp``.
     _remote_flat_launches = _sh_mcp._remote_flat_launches
+    _mcp_attribution_launches = _sh_mcp._mcp_attribution_launches
     record_mcp_launches = _sh_mcp.record_mcp_launches
     queued_frame_count = _sh_mcp.queued_frame_count
     _owns_mcp_frame = _sh_mcp._owns_mcp_frame
@@ -237,6 +238,7 @@ class AcpSessionHandle:
     wait_turn_done = _sh_turn.wait_turn_done
     prompt = _sh_turn.prompt
     stream_command = _sh_turn.stream_command
+    command_is_native = _sh_turn.command_is_native
     _run_turn = _sh_turn._run_turn
     _close_abandoned_turn = _sh_turn._close_abandoned_turn
     # The per-turn event loop: ``kiro_crew.acp.session_handle_dispatch``.
@@ -298,6 +300,11 @@ class AcpSessionHandle:
         # answered ``startedNewTurn``, whose untargeted cancel could then land on
         # the prompt about to go out, so no steer is sent until it is set.
         self._prompt_written: bool = False
+        # Prompts this handle has written to the adapter, over its whole life.
+        # Never reset, so a caller that snapshots it before a turn can tell,
+        # after that turn timed out or was cancelled, whether the prompt reached
+        # the backend.
+        self.prompts_written: int = 0
         self.native_context_documents: dict[str, str] = {}
         self.native_context_documents_fit: Callable[[], bool] | None = None
         # Whether THIS session's array carries the member session-control entry.
@@ -323,6 +330,7 @@ class AcpSessionHandle:
         # The release ``destroy()`` started, kept so a second ``destroy()`` waits for
         # it instead of releasing again (``_release_ending``).
         self._release_task: asyncio.Future[None] | None = None
+        self._cloud_replayed_permissions: set[str | int | None] = set()
         # Token carried by THIS session's injected broker-stub entries
         # (``mcp_gateway.claim.mint_stub_session_token``), set by the runtime
         # that created the session. It is what a later claim-push names so
@@ -346,13 +354,15 @@ class AcpSessionHandle:
         self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings(crew_agent)
         # How this session launched its stdio MCP servers, recorded by the
         # runtime once the session's array is final (``record_mcp_launches``).
-        # The oracle's remote_flat scan reads it to find the in-flight tool's
-        # own server process; empty means no server can be found, which keeps
-        # the full window.
+        # The oracle reads it to find the in-flight tool's own server process:
+        # the movement sample covers that server alone, and the remote_flat
+        # scan looks at its sockets. Empty means no server can be found, which
+        # keeps the whole-tree sample and the full window.
         self._mcp_launches: dict[str, tuple[tuple[str, ...], ...]] = {}
         self._oracle = LivenessOracle(
             sample_min_secs=self._watchdog.wellness_sample_secs,
             server_launches=self._remote_flat_launches,
+            attribution_launches=self._mcp_attribution_launches,
         )
         # Keep the executor future, not an await-scoped flag: wait_for can time
         # out while the underlying thread continues its /proc walk. A pending

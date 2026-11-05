@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
 from kiro_crew.apps import official_catalog as oc
 
@@ -901,7 +902,7 @@ class TestRedirectsAreRefused:
         errors elsewhere in the same shard -- which is exactly how this file made
         `Backend Tests (*, 3)` fail on two platforms while passing in isolation.
         """
-        srv = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+        srv = LoopbackHTTPServer(("127.0.0.1", 0), handler_cls)
         t = threading.Thread(target=srv.serve_forever, daemon=True)
         t.start()
 

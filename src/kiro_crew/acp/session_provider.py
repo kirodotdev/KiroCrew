@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
+from kiro_crew.acp import stale_compaction
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -84,6 +85,15 @@ from kiro_crew.trust_patterns import GrantDeadline
 logger = logging.getLogger(__name__)
 
 
+def _prompts_since(turn: tuple[Any, Any]) -> int:
+    """Prompts written on *turn*'s handle since the turn began, or 0 when unknown."""
+    handle, before = turn
+    after = getattr(handle, "prompts_written", 0)
+    if isinstance(before, int) and isinstance(after, int):
+        return max(0, after - before)
+    return 0
+
+
 class AcpSessionProvider(LLMProvider):
     """LLMProvider adapter over an AcpSessionHandle on a shared runtime.
 
@@ -99,6 +109,11 @@ class AcpSessionProvider(LLMProvider):
     """
 
     approval_withdrawable = True
+    # Class defaults, so a provider built without ``__init__`` (``__new__`` in
+    # tests, a copy) still counts from zero; ``stream`` sets the instance values.
+    _prompts_written: int = 0
+    # The open turn's handle and that handle's count when the turn began.
+    _open_turn_count: tuple[Any, Any] | None = None
 
     # Applying a dashboard MCP config change to this live session by re-sending
     # its projection: ``kiro_crew.acp.session_provider_mcp_reinject``.
@@ -546,6 +561,10 @@ class AcpSessionProvider(LLMProvider):
         self._runtime_lease = None
         await RUNTIME_OWNERSHIP.release(lease)
 
+    @property
+    def turn_survives_disconnect(self) -> bool:
+        return self._runtime.is_cloud_sandbox is True
+
     async def shutdown(self) -> None:
         """Destroy the session and optionally kill the runtime.
 
@@ -631,7 +650,7 @@ class AcpSessionProvider(LLMProvider):
             # `~/.kiro/sessions/cli/{sid}.json(+.jsonl)`, as the comment below
             # says. Nothing retries: every caller drops the provider afterwards.
             try:
-                if self._handle.is_turn_active:
+                if self._handle.is_turn_active and not self.turn_survives_disconnect:
                     try:
                         await asyncio.wait_for(self._handle.cancel(), timeout=5.0)
                     except Exception:
@@ -735,12 +754,22 @@ class AcpSessionProvider(LLMProvider):
             raise
         # Bind only to this attempt's handle, after any re-injection replaced it.
         send = self._handle.prompt
+        stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
         if sign_in_ask:
             send = functools.partial(send, sign_in_ask=sign_in_ask)
         if not allow_image:
             send = functools.partial(send, allow_image=False)
         if timeout is not None:
             send = functools.partial(send, timeout=timeout)
+        # The handle this turn writes through, read after the reinjection above
+        # may have replaced it, so its count is the one this turn moves.
+        handle = self._handle
+        # A turn whose generator was abandoned without being closed still holds
+        # the live slot; settle it before this turn takes the slot.
+        if self._open_turn_count is not None:
+            self._settle_turn_count(self._open_turn_count)
+        open_turn = (handle, getattr(handle, "prompts_written", 0))
+        self._open_turn_count = open_turn
         emitted = False
         try:
             async with aclosing(
@@ -780,6 +809,7 @@ class AcpSessionProvider(LLMProvider):
             # it instead of hitting its generic `except Exception`.
             raise AcpError(str(exc)) from exc
         finally:
+            self._settle_turn_count(open_turn)
             # End the shared turn FIRST so the tenancy release is never delayed
             # or skipped, then record any child this turn forked while the
             # leader is still alive (it stays alive past the turn), so a leader
@@ -789,6 +819,30 @@ class AcpSessionProvider(LLMProvider):
             # that release off the record's cancel path.
             await self._end_shared_turn(claim)
             await record_live_children_after_turn(self)
+
+    def _settle_turn_count(self, turn: tuple[Any, Any]) -> None:
+        """Fold *turn*'s prompts into the settled count, once, and free the slot."""
+        if self._open_turn_count is not turn:
+            return
+        self._open_turn_count = None
+        self._prompts_written += _prompts_since(turn)
+
+    @property
+    def prompts_written(self) -> int:
+        """Prompts this provider's turns have written to the backend.
+
+        A turn counts once its prompt request is written, whether or not it then
+        finishes. A caller whose turn timed out compares this against a snapshot
+        taken before the turn to tell a prompt the backend received from one that
+        never left, and so avoids sending the same prompt twice.
+
+        The open turn is read live off its handle. A caller cancelled while it
+        awaits something other than the next event leaves this generator
+        suspended at a ``yield`` and unclosed, so its cleanup has not run yet
+        when that caller reads the count.
+        """
+        turn = self._open_turn_count
+        return self._prompts_written + (_prompts_since(turn) if turn is not None else 0)
 
     async def discard_unanswered_prompt(self) -> bool:
         """Forward to the session handle: rewind KAS history to before the last prompt."""
@@ -837,6 +891,10 @@ class AcpSessionProvider(LLMProvider):
         """True when the backing handle can steer a deny notice into a refused turn."""
         return self._handle.supports_refusal_steer
 
+    def command_is_native(self, command: str) -> bool:
+        """True when *command* goes to native ``commands/execute``, with no model request."""
+        return bool(self._handle.command_is_native(command))
+
     async def stream_command(self, command: str) -> AsyncIterator[LLMEvent]:
         """Execute a slash command natively via ``_kiro.dev/commands/execute``.
 
@@ -849,15 +907,24 @@ class AcpSessionProvider(LLMProvider):
         Same exception translation as stream(): everything leaving this
         surface stays within AcpError.
         """
+        if stale_compaction.is_compact_command(
+            command
+        ) and stale_compaction.provider_refuses_compaction(self):
+            raise AcpError(stale_compaction.UNRESOLVED_COMPACTION_ERROR)
         # /compact and /clear discard native history; invalidate before dispatch
         # so the next warm turn resends the complete snapshot even when the
         # status receipt is missing or arrives late.
+        stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
         self.essential_delivery.prepare_command(command)
         claim = self._claim_shared_turn()
         try:
             async with aclosing(
                 self.essential_delivery.stream(
-                    command, self._handle.stream_command, lambda: self.context_incarnation
+                    command,
+                    self._handle.stream_command,
+                    lambda: self.context_incarnation,
+                    # Native commands/execute makes no model request.
+                    requests_model=not self.command_is_native(command),
                 )
             ) as events:
                 async for event in events:
@@ -1450,14 +1517,23 @@ class AcpSessionProvider(LLMProvider):
         await self._guarded(self._handle.set_config_option(config_id, value))
 
     async def compact(self, context: str = "") -> None:
-        """Trigger context compaction."""
+        """Trigger context compaction.
+
+        While an earlier compaction status is unresolved, this sends nothing
+        and the next :meth:`wait_for_compaction` returns one ``failed`` result.
+        """
+        if stale_compaction.refuse_provider_compaction(self):
+            return
         self.essential_delivery.invalidate()
         await self._guarded(self._handle.compact(context))
 
     async def wait_for_compaction(
         self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS
     ) -> dict[str, str]:
-        """Wait for compaction completed/failed event."""
+        """Wait for compaction completed/failed event, or return a refused compact's result."""
+        refusal = stale_compaction.take_provider_compaction_refusal(self)
+        if refusal is not None:
+            return refusal
         return await self._guarded(self._handle.wait_for_compaction(timeout))
 
     async def _drain_post_compaction_metadata(self) -> None:

@@ -363,6 +363,13 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         "::test_a_planted_tmp_symlink_is_not_followed",
         "apps/builtins/code_review_sage/tests/test_backend_routes.py"
         "::test_the_predictable_tmp_name_is_never_used",
+        # Same construct and classification: ``asyncio.run`` drives one of the app's
+        # own route coroutines (``_run_review_bg`` against a stub driver, ``_record``
+        # on a private copy of the routes module) to completion. No child process;
+        # every run record is a literal dict built by the test.
+        "apps/builtins/code_review_sage/tests/test_backend_routes_coverage.py::_drive",
+        "apps/builtins/code_review_sage/tests/test_routes_parts_composition_contract.py"
+        "::test_a_patched_function_on_a_copy_is_what_a_moved_caller_awaits",
         # md-notebook shells out to the real git binary rather than a pure-Python
         # implementation, because a server refuses a push from the shallow clone
         # isomorphic-git produces. The command is the literal "git"; the remote
@@ -596,5 +603,21 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # overrides are the test's own ``tmp_path``. Nothing here is agent-derived.
         "apps/builtins/design_critique/tests/test_capture_site_resolver_rule.py::_rules",
         "apps/builtins/design_critique/tests/test_ssrf_guard_fail_closed.py::_run_node",
+        # TEST-ONLY: auto-improvement's git-safety tests. Each builds a repository
+        # under ``tmp_path`` with a fixed ``git`` argv (``init``, ``config``, ``add``,
+        # ``commit``, ``--version``), plants a hook, filter or merge driver in it, then
+        # runs the app's OWN pinned argv (``gate._git_argv``, ``driver_commit._apply_argv``)
+        # against it to prove the planted program never runs. No shell=True and nothing
+        # agent-derived; the repository is the fixture, so sandboxing the spawn would
+        # sandbox the fixture rather than the pin under test.
+        "apps/builtins/auto_improvement/tests/test_ai_spine_gate_fence.py::_git",
+        "apps/builtins/auto_improvement/tests/test_auto_improvement_driver_apply_stdin.py::git",
+        "apps/builtins/auto_improvement/tests/test_auto_improvement_host_git_apply_pins.py::_g",
+        "apps/builtins/auto_improvement/tests/test_auto_improvement_host_git_apply_pins.py"
+        "::test_three_way_apply_runs_no_repo_merge_driver",
+        "apps/builtins/auto_improvement/tests/test_git_safety_config_hooks.py::_git",
+        "apps/builtins/auto_improvement/tests/test_git_safety_config_hooks.py::_git_version",
+        "apps/builtins/auto_improvement/tests/test_git_safety_config_hooks.py"
+        "::test_git_safety_commit_does_not_fire",
     }
 )

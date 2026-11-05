@@ -179,6 +179,55 @@ async def test_import_releases_the_construction_count_on_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_landed_import_refreshes_the_older_sessions_listing(monkeypatch):
+    """The slot is out of ``_slots`` while its transcript is saved, so a listing
+    served then shows it under Older Sessions. Creation pushes the first listing
+    refresh, the landing's sync pushes the one that corrects that listing, and a
+    refused import pushes only the first."""
+    from kiro_crew.dashboard import chat_utils_slots
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(chat_utils_slots, "set_dashboard_surfaced", lambda _keys: None)
+
+    def _really_synced(save):
+        state = _stub_state(st, monkeypatch, save=save)
+        state.sessions.set_active_dashboard_slots = lambda _keys: None
+        monkeypatch.setattr(st, "_sync_dashboard_slots", chat_utils_slots._sync_dashboard_slots)
+        create = state.get_or_create_slot
+
+        def _create_and_sync(*args, **kwargs):
+            # As production's get_or_create_slot does, before construction begins.
+            slot = create(*args, **kwargs)
+            chat_utils_slots._sync_dashboard_slots(state)
+            return slot
+
+        state.get_or_create_slot = _create_and_sync
+        return state
+
+    listed: list[list[str]] = []
+
+    async def _save_while_listed(*_a, **_k):
+        listed.append([s.key for s in chat_utils_slots.listing_slot_snapshot(state)])
+        return True
+
+    state = _really_synced(_save_while_listed)
+    resp = await st.api_chat_slot_import(_make_request(state, _valid()))
+
+    assert resp.status == 200
+    assert listed and listed[0] == [], f"the save did not run with the slot retracted: {listed}"
+    assert state.push_listing_refresh.call_count == 2
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("disk gone")
+
+    refused = _really_synced(_boom)
+    resp = await st.api_chat_slot_import(_make_request(refused, _valid()))
+
+    assert resp.status == 503
+    assert refused.push_listing_refresh.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_slot_cap_is_rechecked_after_the_pre_creation_awaits(monkeypatch):
     """Body parsing and agent resolution await, so the cap is checked again before creation.
 

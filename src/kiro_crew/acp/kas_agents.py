@@ -1682,6 +1682,19 @@ def _pin_legacy_negotiation(servers: list[dict[str, Any]]) -> list[dict[str, Any
     return out
 
 
+def _carries_env_reference(entry: Any) -> bool:
+    """Whether a projected entry's ``env`` holds a ``${NAME}`` reference.
+
+    KAS expands a reference in an agent-block entry but passes a session-level
+    ``mcpServers`` element's env to the child verbatim (measured on the 0.66.33
+    bundle), so such an entry must keep the block path on ``session/load`` too.
+    """
+    env = entry.get("env") if isinstance(entry, dict) else None
+    return isinstance(env, dict) and any(
+        isinstance(v, str) and _ENV_REFERENCE.search(v) for v in env.values()
+    )
+
+
 def _managed_first(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*servers* with Crew's own entries moved to the front, each group in its order.
 
@@ -1758,6 +1771,9 @@ def hoist_servers_for_session(
       (for ``session/load``)
       hoists remaining user-declared servers, without a session token, UNLESS
       the name is in *reserved_names* (see below);
+    * a non-managed entry whose ``env`` holds a ``${NAME}`` reference -- KAS
+      expands it only in the agent block, so a hoisted copy would start the
+      server with the literal text (:func:`_carries_env_reference`);
     * an inactive agent's block -- it must not widen the active session's tool
       surface or carry another identity's key;
     * an entry with a key outside :data:`_HOISTABLE_ENTRY_KEYS`, a ``type``
@@ -1846,7 +1862,7 @@ def hoist_servers_for_session(
                 # already refused a restricted entry, so only no-op keys drop here.
                 entry = without_noop_restrictions(entry)
             if (
-                (managed or include_user_servers)
+                (managed or (include_user_servers and not _carries_env_reference(entry)))
                 and name not in taken
                 and isinstance(entry, dict)
                 and set(entry) <= _HOISTABLE_ENTRY_KEYS

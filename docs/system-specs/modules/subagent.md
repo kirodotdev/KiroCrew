@@ -109,7 +109,11 @@ When the recorded directory resolves to the current pool default, continuation
 omits the redundant override. Disabled overrides therefore do not reject a turn
 that stays in the default directory. A different recorded directory remains an
 explicit override and must pass current directory policy, including after the
-pool default changes.
+pool default changes. A recorded directory that no longer exists is forwarded
+anyway, so `spawn` refuses it, with one exception: the run's own per-run scratch
+directory (`workspace_root()/<its session key>`, recorded only by a run spawned
+without a cwd and reclaimed when that run ends) is omitted, so the follow-up
+goes where a spawn without a cwd goes (`recorded_cwd_impl`).
 
 A run whose parent session is bound to a remote session environment inherits it
 before its session starts (`coder.session_launch.inherit_environment_for_subagent`):
@@ -3671,6 +3675,10 @@ Where `PreToolUse` runs depends on the backend (`agent_sdk/spec_hooks.py:turn_sp
   (`hook_runtime/hook_dispatch.py:permission_pre_tool_block`, the ladder's
   spec-hooks floor), and can refuse it. The informational `EVENT_TOOL_CALL` fire
   is skipped on such a turn, so each hook runs once.
+- On claude (`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS` alone) the turn is not
+  gated: it gets the spec's hooks on every event but `PreToolUse`
+  (`spec_hooks.OBSERVER_HOOK_EVENTS`) and keeps the informational fire, and a
+  spec that cannot be read leaves it with none.
 
 The tool name is cached on `EVENT_TOOL_CALL` by `tool_call_id` and looked up
 when the result arrives. The `Running: ` prefix is stripped so both hooks

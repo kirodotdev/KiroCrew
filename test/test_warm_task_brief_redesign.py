@@ -800,7 +800,7 @@ async def test_rc4_one_live_read_limit_covers_every_attempt(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rc4_only_prs_named_in_open_asks_are_read(monkeypatch, _no_github):
+async def test_rc4_only_ledger_prs_and_full_urls_are_read(monkeypatch, _no_github):
     state = _State()
     slot = _foreground_slot(state)
     items = (
@@ -821,9 +821,9 @@ async def test_rc4_only_prs_named_in_open_asks_are_read(monkeypatch, _no_github)
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     read = [url.rsplit("/", 1)[1] for url in _no_github[0]]
-    # The ledger item's PR, then the full URL; #111 (not an ask) and the bare
-    # #444 are never read.
-    assert read == ["222", "333"]
+    # The ask's ledger PR, the full URL, then the other open item's ledger PR
+    # (M3: read before the brief may name it); the bare #111 and #444 never are.
+    assert read == ["222", "333", "1"]
 
 
 @pytest.mark.asyncio
@@ -901,8 +901,8 @@ async def test_rc4_a_bare_number_in_the_choices_is_never_read(monkeypatch, _no_g
     )
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
     await warm_task_brief._prepare_warm_task_brief(state, slot)
-    # The repo would have to be guessed, so nothing is read.
-    assert _no_github == []
+    # The repo would have to be guessed, so the bare number is never read.
+    assert _no_github == [["https://github.com/kirodotdev/KiroCrew/pull/1"]]
 
 
 @pytest.mark.asyncio
@@ -1068,7 +1068,9 @@ def test_rc4_a_live_merged_pr_is_not_a_change_since_away():
     }
     payload = warm_task_brief._payload(_snapshot(), time.time() - 3600, (entry,))
     assert all("pr" not in change for change in payload["changes_since_away"])
-    assert payload["live_prs"][0]["state"] == "merged"
+    # A checked read is a checked fact, not a "not checked" live entry.
+    assert payload["checked_facts"][0]["values"] == {"state": "merged"}
+    assert "live_prs" not in payload
 
 
 def test_rc4_a_hex_colour_or_a_capped_number_names_no_pr():

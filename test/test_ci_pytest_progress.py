@@ -349,7 +349,7 @@ class TestCIProgress(unittest.TestCase):
         self.assertEqual(command.count("--timeout=120"), 4)
         self.assertEqual(command.count('-n "$WORKERS"'), 4)
         self.assertNotIn("-n auto", command)
-        self.assertEqual(command.count("-p scripts.ci_file_shards"), 2)
+        self.assertEqual(command.count("-p scripts.ci_file_shards"), 3)
         self.assertIn("--cov=kiro_crew --cov=sage_lib", command)
         self.assertIn("--cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging", command)
         self.assertIn("--cov=src/kiro_crew/apps/builtins/code_review_sage/tests", command)

@@ -37,6 +37,7 @@ from kiro_crew import (  # noqa: F401
     runtime_death,
     session_directive,
     shutdown_event,
+    turn_timing,
 )
 from kiro_crew.acp.client import (
     AcpAuthRequired,
@@ -948,8 +949,15 @@ async def _run_chat(
         monitor_completion=monitor_completion,
         _current_message=_current_message,
     )
+    # Bench timing (KIROCREW_TURN_TIMING): top-level user prompts only, the
+    # same population as the TTFT histogram.
+    _timed = _prompt_depth == 0 and not _synthetic_payload
+    if _timed:
+        turn_timing.ensure(slot.key, "runner")
     _flow = await _turn_open(turn)
     if _flow is _Flow.END:
+        if _timed:
+            turn_timing.emit("ended_at_open")
         return
 
     _tcid_collapsed = turn._tcid_collapsed
@@ -958,6 +966,8 @@ async def _run_chat(
     session_key = turn.session_key
     _flow = await _turn_slash_gate(turn)
     if _flow is _Flow.END:
+        if _timed:
+            turn_timing.emit("ended_at_slash_gate")
         return
     is_slash = turn.is_slash
     # Where the most recent compaction started inside `assistant_text`. A
@@ -969,7 +979,13 @@ async def _run_chat(
     # to clear it, and a cut with no text after it leaves nothing to judge.
     _compaction_text_offset = 0
     turn._compaction_text_offset = _compaction_text_offset
+    # A turn that is not timed (a nested ``/prompts get`` turn shares its outer
+    # turn's task and context) hides the open record from every gate and phase
+    # it reaches, and gives it back on the way out.
+    _timing_hidden = None if _timed else turn_timing.suspend()
     try:
+        if _timed:
+            turn_timing.mark("admit_start")
         _flow = await _turn_admit(turn)
         if _flow is _Flow.END:
             return
@@ -980,6 +996,8 @@ async def _run_chat(
         await _turn_dispatch_prep(turn)
         await _turn_build_prompt(turn)
         message = turn.message
+        if _timed:
+            turn_timing.mark("prompt_built")
 
         # No await from here to the stream loop: begin_turn (in _turn_dispatch_gates) and the
         # stream's turn registration stay one yield-free span.
@@ -1016,7 +1034,11 @@ async def _run_chat(
             if is_slash
             else client.stream(_segment_user_span(turn, full_message))
         )
+        if _timed:
+            turn_timing.mark("stream_open")
         async for event in event_stream:
+            if _timed:
+                turn_timing.mark("first_event")
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS
             ):
@@ -1052,6 +1074,10 @@ async def _run_chat(
             # First visible model output for this user prompt — emit TTFT once.
             if _ttft_t0 is not None and event.kind in (EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK):
                 _emit_ttft_metric(_ttft_t0, session_key, is_new=is_new, resumed=resumed)
+                if _timed:
+                    turn_timing.mark("first_visible")
+                    turn_timing.note(is_new=bool(is_new), resumed=bool(resumed), kind=event.kind)
+                    turn_timing.emit("visible")
                 _ttft_t0 = None
                 turn._ttft_t0 = _ttft_t0
 
@@ -1290,6 +1316,12 @@ async def _run_chat(
         await _on_error(turn, exc)
     finally:
         state.release_turn_heartbeat(turn)
+        if _timed:
+            # A turn with no visible output (error, stop, tool-only, cancel)
+            # still reports where its time went; emit is once per record.
+            turn_timing.emit("no_visible")
+        else:
+            turn_timing.resume(_timing_hidden)
         # An interrupted or unexecuted proposal must not survive into a turn
         # whose backend may reuse its call id. Executed walker work is separate.
         _local_turn_marker_generation = turn._local_turn_marker_generation

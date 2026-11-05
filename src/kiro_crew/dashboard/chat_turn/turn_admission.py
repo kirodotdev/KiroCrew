@@ -8,6 +8,7 @@ import asyncio
 import functools
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import turn_timing
 from kiro_crew.config.loader import normalize_agent_model
 from kiro_crew.context import discard_memory_prefetch
 from kiro_crew.dashboard.chat_utils import (
@@ -107,10 +108,12 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _steer_segment_cut
     from kiro_crew.dashboard.chat_turn.turn_spec_hooks import (
+        _notice_inherited_conductor_skills,
         _notice_seed_declined,
         _notice_steer_upgrade,
         _prepare_spec_hooks,
         _surface_agent_welcome,
+        _surface_startup_notice,
     )
 
 
@@ -318,6 +321,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     from kiro_crew.memory_startup import wait_for_memory_preparation
 
     await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
+    turn_timing.mark("memory_ready")
     _memory_preparation_admitted = True
     turn._memory_preparation_admitted = _memory_preparation_admitted
 
@@ -408,6 +412,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn._dispatch_lock = _dispatch_lock
     await _dispatch_lock.acquire()
     turn._dispatch_lock_held = True
+    turn_timing.mark("dispatch_lock")
     selected_binding = _current_binding(turn)
     turn.selected_binding = selected_binding
     registered_slot = state._slots.get(slot.key)
@@ -1025,6 +1030,8 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             session_key, wait_if_busy=wait_if_busy, **_allocation_kwargs
         )
 
+    turn_timing.mark("claim_start")
+    turn_timing.note(priority=getattr(_turn_priority, "value", _turn_priority))
     for _claim in (0, 1):
         try:
             client, is_new, resumed = await _claim_session(_wait_if_busy)
@@ -1071,6 +1078,8 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     except BaseException:
         state.sessions.release(session_key)
         raise
+    turn_timing.mark("claim_end")
+    turn_timing.note(is_new=bool(is_new), resumed=bool(resumed))
     _clear_eager_spawn_failures(slot)
     if not is_new and slot._pending_reset_history_key == session_key and client.cwd:
         # The deferred project reset is still armed for the session this
@@ -1159,6 +1168,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     from kiro_crew.skill_scope_pin import pin_session_skill_spec
 
     pin_session_skill_spec(session_key, _pinned_spec)
+    _surface_startup_notice(state, slot, client)
     # The acquired provider is the final authority for harness-specific slash
     # gates. A dead live row can be replaced during the get_or_create call
     # above. The positive capability fails closed for unknown adapters and
@@ -1254,6 +1264,9 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     if is_new:
         _notice_steer_upgrade(state, slot, client)
         await _notice_seed_declined(state, slot, client)
+        await _notice_inherited_conductor_skills(
+            state, slot, client, kiro_agent or slot.agent or ""
+        )
     # A member DM's first turn carries the four-layer member section as
     # session-start context. Record that it is at stake HERE — the moment
     # the session client exists — not at the context build: every early

@@ -1214,6 +1214,7 @@ def _prepare_file_changes(
                 "before": fc["content"],
                 "after": "",
                 "_before_truncated": before_truncated,
+                "_fragment": bool(fc.get("fragment_before")),
             }
             if fc.get("pending_str_replace"):
                 pending_by_path[key] = fc["pending_str_replace"]
@@ -1252,6 +1253,11 @@ def _prepare_file_changes(
                 # re-truncating would append a second marker.
                 entry["before"] = resolved.content
                 before_truncated = resolved.truncated
+                entry["_fragment"] = False
+        # Stored on every entry, True or False: a reader that diffs before
+        # against after (the Files tab's Show changes) must know whether this
+        # before is only the replaced span. The excerpts are cut from whole sides.
+        entry["before_fragment"] = entry.pop("_fragment") and excerpt is None
         if excerpt is not None:
             # The per-file cap keeps a side's first _MAX_SNAPSHOT chars, so an
             # edit past it leaves two equal cuts: no diff, and the turn budget

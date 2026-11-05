@@ -10,13 +10,11 @@ replaced by a turn that emits one chunk and parks. The counts span the
 handler's own admission (slot lookup, auth, the SSE response) up to that frame,
 and each is pinned at its measured value, 0.
 
-What this does not cover: everything inside the real ``_run_chat``. That is
-``_turn_open``, ``_turn_slash_gate``, ``_turn_admit`` (which runs
-``refresh_materialized_agents`` on a cold or incomplete snapshot,
-``chat_turn/turn_admission.py``), ``_turn_dispatch_prep``, the app-agent warm in
-``chat_turn/eager_spawn.py``, agent binding and the runtime spawn. Those need an
-in-process provider double to run a turn on, and the strict xfail below holds
-that budget open until one exists.
+The second test covers the real ``_run_chat`` behind it: ``_turn_open``,
+``_turn_slash_gate``, ``_turn_admit``, ``_turn_dispatch_prep`` and agent
+binding, up to the provider's stream. Its provider is the scripted session
+double of ``chat_runner_coverage_helpers``, so the runtime spawn and the ACP
+session are doubles and their own cost is not counted here.
 """
 
 from __future__ import annotations
@@ -26,8 +24,11 @@ from collections import Counter
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from chat_runner_coverage_helpers import _complete, _drive, _runner_state, _set_stream, _slot
 from chat_test_helpers import _make_app, _make_state
 
+from kiro_crew.acp.types import EVENT_TEXT_CHUNK
+from kiro_crew.providers.base import LLMEvent
 from kiro_crew.testing.wait import async_wait_until
 
 from .conftest import Spy, harness_fail
@@ -129,28 +130,65 @@ async def test_handler_admission_costs_no_inventory_read(tmp_path, monkeypatch, 
         harness_fail("the listing spy did not count a list_sessions call on the state's log")
 
 
-#: The in-process seam that runs a real ``_run_chat`` to its first provider frame:
-#: a provider double the turn path accepts, so the counters above can span
-#: ``_turn_admit``. ``kiro_crew.testing.fake_acp_backend`` is not that seam: it is
-#: an ACP subprocess for ``spawn_feature_gateway``, whose calls no in-process spy
-#: sees. ``None`` until the F16 PR adds the seam and the budget together.
-TURN_PATH_PROVIDER_DOUBLE = None
+def _refreshes(spy: Spy) -> int:
+    """Agent snapshot refreshes counted so far: one scan of the user agents directory each."""
+    from kiro_crew.config.paths import kiro_agents_dir
 
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F16: no in-process provider double runs a real _run_chat, so turn admission is unbudgeted",
-)
-def test_turn_path_admission_is_budgeted() -> None:
-    """Placeholder for the turn-path budget the handler test above cannot reach.
-
-    The F16 PR replaces this body with the real budget: one send through the
-    real ``_run_chat`` to its first provider frame costs 0 listings, 0
-    process-tree walks and at most 1 catalog scan (the cold-snapshot rescan in
-    ``_turn_admit``), and a second send costs 0 catalog scans.
-    """
-    assert TURN_PATH_PROVIDER_DOUBLE is not None, (
-        "scale-F16: the real turn path (_turn_admit, eager_spawn, agent binding, runtime "
-        "spawn) has no in-process provider double, so it has no budget"
+    user_dir = kiro_agents_dir()
+    return sum(
+        1 for args, _ in spy.calls.get("catalog:scan_dir", []) if args and args[0] == user_dir
     )
+
+
+def _turn(spy: Spy) -> dict[str, int]:
+    return {
+        "listing": sum(n for label, n in spy.counts.items() if label.startswith("listing:")),
+        "process_tree": spy.counts["process_tree:walk"],
+        "catalog_refresh": _refreshes(spy),
+    }
+
+
+@pytest.mark.asyncio
+async def test_turn_path_admission_is_budgeted(tmp_path, spy) -> None:
+    """A real ``_run_chat`` send: 0 listings, 0 tree walks, at most 1 catalog refresh.
+
+    The first send refreshes the cold agent snapshot once (``dispatch_kiro_agent``
+    during agent binding scans the user and crewmate agents directories); the
+    second send on the same slot reads the snapshot from memory and refreshes
+    nothing. The root conftest resets the snapshot before each test, so the first
+    send here is always the cold one.
+    """
+    from kiro_crew.config import loader_snapshots
+
+    state, client = _runner_state(tmp_path)
+    slot = _slot()
+    wrapped = _install_counters(spy)
+    spy.wrap(loader_snapshots, "_scan_materialized_index", "catalog:scan_dir", record=True)
+
+    turns = []
+    for text in ("first", "second"):
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text=text), _complete()])
+        await _drive(state, slot, text)
+        if client.stream.call_count != 1:
+            harness_fail(f"the {text} send never reached the provider stream")
+        turns.append(_turn(spy))
+        spy.reset()
+
+    first, second = turns
+    assert first["listing"] == 0 and second["listing"] == 0, f"sends listed sessions: {turns}"
+    assert (
+        first["process_tree"] == 0 and second["process_tree"] == 0
+    ), f"sends walked a process tree: {turns}"
+    assert first["catalog_refresh"] <= 1, f"the first send refreshed the catalog: {first}"
+    assert second["catalog_refresh"] == 0, f"the second send refreshed the catalog: {second}"
+    stale = [
+        f"{getattr(m, '__name__', m)}.{n}"
+        for m, n in wrapped
+        if getattr(m, n).__name__ != "counted"
+    ]
+    if stale:
+        harness_fail(f"spies replaced before the measurement ended: {stale}")
+    # Positive control: the counter sees a refresh made through the same binding.
+    loader_snapshots.refresh_materialized_agents(heal_default=False)
+    if _refreshes(spy) != 1:
+        harness_fail("the catalog spy did not count a direct refresh_materialized_agents call")

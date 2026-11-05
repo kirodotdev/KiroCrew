@@ -76,31 +76,18 @@ def add_job(
     """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
     ``enabled=False`` creates the job already paused (``user_paused=True``,
-    mirroring :meth:`enable_job`) so the paused state is part of the FIRST
-    persist — never an enabled-then-paused two-save window that a crash or
-    a concurrent reader of the store could capture as enabled.
+    as :meth:`enable_job` does) in the FIRST persist, so no crash or
+    concurrent reader can catch it enabled between two saves.
 
-    ``timezone``/``skip_dates`` are validated HERE, at the persistence
-    owner, and folded into the job before its single ``_save()`` -- so no
-    caller can strand a half-populated or invalid job on disk, and every
-    create path (MCP, apps SDK, dashboard, CLI) shares one check. This
-    consolidates **every** first-save field
-    (``agent_id``/``model``/``silent``/``strict_schedule``/``hide_in_chat``,
-    ``command``/``script``/``agent_sequence``/``env``/``persistent_session``)
-    into the same single locked build+persist, totalizing over all fields
-    into the same single locked build+persist, totalizing over all fields
-    the "fully-formed on first save" invariant. The MCP create path folds
-    ``session_key``/``minimal_context``/``timeout`` here too, replacing its
-    former create-then-mutate plus second unlocked ``_save()``.
+    Every field, ``timezone``/``skip_dates`` validation included, is
+    validated and folded in before the single locked ``_save()``, so no
+    create path (MCP, apps SDK, dashboard, CLI) can strand a half-built or
+    invalid job on disk or need a follow-up unlocked ``_save()``.
 
-    Synchronous variant: the lock+save runs INLINE and so must only be
-    called from a loop-less context (CLI / MCP server process / a worker
-    thread) — the ``_file_lock`` loop-safety guard rejects it on a running
-    event loop. On the gateway loop use :meth:`add_job_async`. Accepts the
-    same full field set as :meth:`add_job_async` so a caller (e.g. the
-    synchronous ``CronSDK`` facade) can persist a fully-formed, owner-tagged
-    job in the single locked transaction with no follow-up unlocked
-    ``_save()``.
+    Synchronous: the lock+save runs INLINE, so call it only without a
+    running loop (CLI, MCP server process, worker thread); the
+    ``_file_lock`` guard rejects it on a running event loop. On the gateway
+    loop use :meth:`add_job_async`, which takes the same fields.
     """
     job = self._build_job(
         name,
@@ -189,22 +176,18 @@ async def add_job_if_absent_async(
 def add_managed_job(self: CronService, managed_by: str, **kwargs: Any) -> CronJob:
     """Create the job an installer owns under the key *managed_by*.
 
-    *kwargs* are :meth:`add_job`'s fields and are validated by the same
-    :func:`build_job` before any disk work. The key is unique across the
-    store, and this is its only writer, so the uniqueness holds by
-    construction: an existing job under the key is a refusal
-    (``ValueError`` naming its id), checked INSIDE the store lock after
-    ``_sync_for_write()`` so two installers racing the same key cannot both
-    see it absent and persist two jobs.
+    *kwargs* are :meth:`add_job`'s fields, validated by :func:`build_job`
+    before any disk work. The key is unique across the store and this is
+    its only writer: an existing job under the key raises ``ValueError``
+    naming its id, checked INSIDE the store lock after
+    ``_sync_for_write()`` so two racing installers cannot both persist.
 
-    There is deliberately no replace-in-place. Every run-driven removal --
-    a script that raises ``Done``, a one-shot consumed on completion, a
-    deferred removal -- deletes its row BY ID with no record of which
-    definition the run started from, so a replacement reusing the id would
-    be deleted by the run it replaced. An installer re-installs with
-    ``cron remove --managed-by KEY`` then ``cron add --managed-by KEY``: the
-    new job gets a fresh id, so an in-flight run can only remove the dead
-    one. Replace-in-place needs a definition-generation fence first.
+    No replace-in-place: run-driven removals (``Done``, a consumed
+    one-shot, a deferred removal) delete BY ID, so a replacement reusing
+    the id would be deleted by the run it replaced. Re-install with
+    ``cron remove --managed-by KEY`` then ``cron add --managed-by KEY``;
+    the fresh id keeps an in-flight run on the dead job. Replace-in-place
+    needs a definition-generation fence first.
     """
     validate_managed_by(managed_by)
     job = self._build_job(**kwargs)
@@ -262,19 +245,12 @@ def _persist_add_if_absent_locked(
         bind_cron_memory(job)
         self._drop_owner_if_parent_gone(job)
         self._jobs.append(job)
-        # A save that fails must leave the in-memory list as the caller found
-        # it: the appended row is published to every reader the instant it
-        # lands (``list_jobs`` hands out ``self._jobs`` itself), so a job the
-        # store rejected would otherwise stay visible, be fired by the timer,
-        # and be persisted by the next save that succeeds -- the exact
-        # survive-a-failed-save defect the remove and update cores already
-        # guard. Popping the row restores the list to exactly what disk still
-        # holds, so no fingerprint reset is needed (the same reason
-        # ``_update_job_locked`` omits one): the failed ``_save`` never reached
-        # ``_record_fingerprint``, so the tracked digest still matches the
-        # untouched file and the cache now matches it too. The remove cores
-        # reset the fingerprint only because they reassign ``self._jobs`` and a
-        # failed save leaves the cache missing rows that are still on disk.
+        # A failed save must leave the list as disk still holds it: readers
+        # see ``self._jobs`` itself, so a rejected row would be fired by the
+        # timer and persisted by the next good save. Popping it restores the
+        # list exactly; the failed ``_save`` never reached
+        # ``_record_fingerprint``, so no fingerprint reset is needed (unlike
+        # the remove cores, which reassign ``self._jobs``).
         try:
             self._save()
         except BaseException:
@@ -287,21 +263,16 @@ def _persist_add_if_absent_locked(
 def _drop_owner_if_parent_gone(self: CronService, job: CronJob) -> None:
     """Blank a ``cron:`` owner whose parent is absent. MUST hold the store lock.
 
-    Call after ``_sync_for_write()`` and before appending, so the decision is
-    made against the authoritative reloaded store. This is what makes a child
-    under a dead parent STRUCTURALLY impossible rather than merely cleaned up
-    afterwards: the removal cascade
-    (:meth:`_release_children_of_removed`) can only release children that
-    existed when it scanned, and a run of the parent still in flight can call
-    ``cron_add`` in the window between that scan and its own teardown — the
-    new row would then be born stamped with a key no session can ever present
-    again. Both halves resolve against the same in-lock reload, so whichever
-    transaction lands second sees the other's write.
+    Call after ``_sync_for_write()`` and before appending. The removal
+    cascade (:meth:`_release_children_of_removed`) releases only children
+    present when it scanned, and an in-flight run of the parent can
+    ``cron_add`` after that scan; checking here against the same in-lock
+    reload makes a child under a dead parent impossible, whichever
+    transaction lands second.
 
-    Dropped rather than refused: the caller's request to schedule work is
-    honoured and the row lands in the documented ownerless state the CLI and
-    the Schedule page manage, which is the semantics every release path here
-    uses. Refusing would lose the user's job over a race they did not cause.
+    Dropped rather than refused: the job lands in the ownerless state the
+    CLI and the Schedule page manage, as every release path does, instead
+    of losing the user's job over a race they did not cause.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
@@ -385,20 +356,16 @@ async def add_job_async(
 ) -> CronJob:
     """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
 
-    The gateway's aiohttp/Slack handlers run on the sole asyncio event loop;
-    calling the sync :meth:`add_job` there parks the loop in the bounded lock
-    spin under contention. This builds+validates on the loop (no I/O),
-    offloads the lock+persist to a worker thread via ``asyncio.to_thread``
-    (the disk core is thread-safe — flock on separate fds mutually excludes
-    in-process too), then re-arms the timer back on the loop. Raises
+    The sync :meth:`add_job` would park the gateway's one event loop in the
+    lock spin. This builds and validates on the loop (no I/O), runs the
+    lock+persist via ``asyncio.to_thread`` (flock on separate fds excludes
+    in-process too), then re-arms the timer on the loop. Raises
     :class:`CronStoreBusy` (retryable) on sustained contention; the public
-    boundaries translate it to a clean 409 / structured error.
+    boundaries turn it into a 409 / structured error.
 
-    Optional presentation/routing fields (``agent_id``, ``model``,
-    ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are
-    applied during the single locked build+persist so callers never need a
-    follow-up unlocked ``_save()`` (which could race a concurrent create and
-    drop a job).
+    Every field is applied in the single locked build+persist, so callers
+    never need a follow-up unlocked ``_save()`` that could race a
+    concurrent create and drop a job.
     """
     job = self._build_job(
         name,

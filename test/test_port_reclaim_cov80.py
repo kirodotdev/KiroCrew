@@ -21,6 +21,13 @@ import kiro_crew.cli_server as cli_server
 from kiro_crew.dashboard import port_reclaim as pr
 
 
+@pytest.fixture(autouse=True)
+def _fabricated_holders_are_old(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pids these cases fabricate may name a real young process on the host;
+    read every holder as long-lived unless a case says otherwise."""
+    _floor_monkeypatch.setattr(pr, "_holder_age_secs", lambda _pid: 3600.0)
+
+
 async def _unhealthy(_port: int, _timeout: float) -> bool:
     return False
 

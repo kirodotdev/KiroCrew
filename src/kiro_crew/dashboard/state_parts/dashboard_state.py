@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.listener_guard import ListenerGuard
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
+    from kiro_crew.dashboard.state_parts.refresh_coalesce import RefreshCoalescer
     from kiro_crew.messaging.transport import MessagingTransport
     from kiro_crew.power import SleepInhibitor
     from kiro_crew.slack.outbound import PostedOptions
@@ -165,6 +166,15 @@ class DashboardState:
 
     _slots_broadcast_timer: "asyncio.TimerHandle | None" = None
 
+    _refresh_coalescer: "RefreshCoalescer | None" = None
+    _history_coalescer: "RefreshCoalescer | None" = None
+
+    # The session keys ``_sync_dashboard_slots`` last published. A gained key pushes
+    # ``history``; a lost key owes it. A class default lets a ``__new__`` state read an empty set.
+    _published_slot_keys: "frozenset[str]" = frozenset()
+    # Whether a slot-set shrink still owes the Older Sessions listing a ``history`` refresh.
+    _listing_refresh_owed: bool = False
+
     _slots_broadcast_last: float = 0.0
 
     # Current coalescing window, sized from the last broadcast's frame (see
@@ -179,6 +189,12 @@ class DashboardState:
     _slots_push_all_owed: bool = False
 
     _slots_push_legacy_owed: bool = False
+
+    # The last slot list each ``slots_diff`` audience was sent, and the sequence
+    # counter its frames carry (``state_parts/slots_diff.py``). Event-loop only.
+    _slot_diff_bases: "dict[str, Any] | None" = None
+
+    _slot_diff_seq: int = 0
 
     # The person's pinned-session order (``pinned_session_order``). A class
     # default for the same reason as the push fields above: serialize_slot
@@ -539,13 +555,6 @@ class DashboardState:
         )
         self._slots: dict[str, _ChatSlot] = {}
         self._slot_registry = SlotRegistry()
-        # Process-local Spec Builder outbox claims, keyed by directory + delivery.
-        # Directory scope matters because aliases use different slots for the same
-        # files; durable status remains owned by the app's decision ledger.
-        self._spec_decision_deliveries_inflight: set[tuple[str, str]] = set()
-        # Consumed claims whose durable finalization failed remain blocked from
-        # redispatch while a later Spec Builder detail poll retries the ledger write.
-        self._spec_decision_deliveries_consumed: set[tuple[str, str]] = set()
         # Sandbox kind -> monotonic time of the last notification for it. Keyed on
         # the sandbox layer's own closed kind set (three values), NEVER on request
         # data: auto-speak synthesises one request per sentence, so a key carrying
@@ -1234,6 +1243,9 @@ class DashboardState:
     _trailing_slots_flush = _slots_push._trailing_slots_flush
     _take_slots_audience = _slots_push._take_slots_audience
     _has_legacy_slots_audience = _slots_push._has_legacy_slots_audience
+    _has_generic_slots_audience = _slots_push._has_generic_slots_audience
+    answer_slots_resync = _slots_push.answer_slots_resync
+    _broadcast_slots_note = _slots_push._broadcast_slots_note
     _do_slots_broadcast = _slots_push._do_slots_broadcast
     push_slot_title = _slots_push.push_slot_title
     push_slot_patch = _slots_push.push_slot_patch
@@ -1248,6 +1260,7 @@ class DashboardState:
     push_session_summary = _slots_push.push_session_summary
     push_artifact_update = _slots_push.push_artifact_update
     push_refresh = _slots_push.push_refresh
+    push_listing_refresh = _slots_push.push_listing_refresh
     push_update_progress = _slots_push.push_update_progress
     clear_update_progress = _slots_push.clear_update_progress
     _broadcast = _slots_push._broadcast

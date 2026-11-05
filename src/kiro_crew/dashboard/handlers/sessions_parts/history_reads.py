@@ -14,9 +14,12 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from aiohttp import web
+
+if TYPE_CHECKING:
+    from kiro_crew.dashboard.state import _ChatSlot
 
 # circular import: handlers/__init__.py imports this family through the facade while
 # the package is still initialising, so a `from ... import` of individual names would
@@ -39,7 +42,6 @@ from kiro_crew.dashboard.handlers.sessions_parts.app_scope import (
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import (
-    _SEARCH_SCAN_WINDOW,
     INCOGNITO_EXCLUDED_HEADER,
     SEARCH_MIN_CHARS,
     ConversationLog,
@@ -51,6 +53,7 @@ from kiro_crew.history import (
     transcript_stems,
     transcript_withholds_derivation,
 )
+from kiro_crew.history_search import SearchRows, search_candidate_cap, search_coverage
 from kiro_crew.messaging.link import _in_namespace
 from kiro_crew.security import redact
 from kiro_crew.validation import sanitize_string
@@ -59,7 +62,9 @@ from kiro_crew.validation import sanitize_string
 logger = logging.getLogger("kiro_crew.dashboard.handlers.sessions")
 
 
-def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
+def _open_slot_transcript_keys(
+    state: DashboardState, slots: list[_ChatSlot] | None = None
+) -> set[str]:
     """Every transcript key and filename stem a live slot could be reading.
 
     A session in this set is reachable as an open tab. That single fact drives
@@ -82,20 +87,24 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
     cannot supply. Both names belong to the SAME slot, so covering both is safe
     in either direction — it can only protect, or hide, a transcript that one
     slot could itself be showing.
+
+    *slots* is a snapshot the caller already took; by default this takes its own.
     """
     from kiro_crew.dashboard.chat_utils import slot_history_key, slot_transcript_key
 
     keys: set[str] = set()
     # Snapshot the values: a concurrent turn can add or remove a slot while this
     # iterates, and a dict mutated mid-iteration raises.
-    for slot in list(state._slots.values()):
+    for slot in list(state._slots.values()) if slots is None else slots:
         for candidate in (slot_history_key(slot), slot_transcript_key(slot.key)):
             keys.add(candidate)
             keys.update(transcript_stems(candidate))
     return keys
 
 
-def _open_row_test(state: DashboardState) -> Callable[[str], bool]:
+def _open_row_test(
+    state: DashboardState, slots: list[_ChatSlot] | None = None
+) -> Callable[[str], bool]:
     """Whether a session row's ``key`` names a transcript an open tab owns.
 
     The one answer for every reader: the Older-sessions list hides these rows and
@@ -105,7 +114,7 @@ def _open_row_test(state: DashboardState) -> Callable[[str], bool]:
     report the RAW stem of whichever file won on mtime, so a resume round-trip's
     ``dashboard_dashboard_<name>`` file arrives under a name no slot produces.
     """
-    open_keys = _open_slot_transcript_keys(state)
+    open_keys = _open_slot_transcript_keys(state, slots)
     log = getattr(state, "conversation_log", None)
     canon = getattr(log, "_canonical_key", None) or (lambda key: key)
     return lambda key: key in open_keys or canon(key) in open_keys
@@ -324,7 +333,11 @@ async def api_sessions(request: web.Request) -> web.Response:
         )
         _audit_app_allow(request_app, "session_list", f"sessions={len(all_sessions)}")
     if exclude_open:
-        is_open = _open_row_test(state)
+        from kiro_crew.dashboard.chat_utils import listing_slot_snapshot
+
+        # One snapshot for the filter and the publish tracker: a session this listing
+        # shows as a row counts as newly open when its slot is next published.
+        is_open = _open_row_test(state, listing_slot_snapshot(state))
         all_sessions = [s for s in all_sessions if not is_open(s.get("key", ""))]
     if user_only:
         log = state.conversation_log
@@ -521,7 +534,13 @@ async def api_sessions_search(request: web.Request) -> web.Response:
             if value:
                 s[field] = redact(value)
     headers = {INCOGNITO_EXCLUDED_HEADER: "1"} if exclude_incognito else None
-    return web.json_response({"sessions": sessions}, headers=headers)
+    body: dict[str, object] = {"sessions": sessions}
+    coverage = search_coverage(sessions)
+    if coverage is not None:
+        # Present only when the scan window left sessions out, so the list can
+        # say its results come from the newest sessions alone.
+        body["scan"] = {"searched": coverage[0], "total": coverage[1]}
+    return web.json_response(body, headers=headers)
 
 
 def _wants_incognito_excluded(request: web.Request) -> bool:
@@ -536,7 +555,7 @@ def _wants_incognito_excluded(request: web.Request) -> bool:
     return request.query.get("exclude_incognito") in ("1", "true", "yes")
 
 
-def _search_excluding_incognito(log: ConversationLog, q: str, limit: int) -> list[dict]:
+def _search_excluding_incognito(log: ConversationLog, q: str, limit: int) -> SearchRows:
     """Ranked search rows with every restricted session excluded, judged under lock.
 
     The ranking's own snippet is read OUTSIDE the transcript lock, so a line
@@ -547,7 +566,7 @@ def _search_excluding_incognito(log: ConversationLog, q: str, limit: int) -> lis
     drops the row (fails closed), and a busy lock drops it too ("cannot vouch").
     Restricted rows are excluded BEFORE the limit is applied, so a restricted
     match cannot hide an eligible one behind it: the ranking is asked for its
-    WHOLE bounded scan window (``_SEARCH_SCAN_WINDOW``, the same pull the local
+    WHOLE bounded scan window (:func:`search_candidate_cap`, the same pull the local
     ``search_chat_history`` tool makes before it filters), not a multiple of the
     caller's limit, because any smaller window is a number of restricted matches
     above which an eligible one goes silently missing. The ranking slices to that
@@ -556,12 +575,16 @@ def _search_excluding_incognito(log: ConversationLog, q: str, limit: int) -> lis
     """
     from kiro_crew.history_search import split_title_scope
 
-    candidates = log.search_sessions(q, _SEARCH_SCAN_WINDOW)
+    candidates = log.search_sessions(q, search_candidate_cap(q))
     # The snippet looks for what the ranking searched: a leading ``title:`` term
     # only narrows the window (``search_sessions``), so it is not a content needle.
     scope = split_title_scope(q)
     snippet_q = scope.rest if scope is not None else q
-    out: list[dict] = []
+    # The counts describe the scan, not this filter, so they carry over as-is.
+    out = SearchRows(
+        searched=getattr(candidates, "searched", 0),
+        eligible=getattr(candidates, "eligible", 0),
+    )
     for row in candidates:
         if len(out) >= limit:
             break

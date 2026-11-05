@@ -168,6 +168,93 @@ class TestRecentHistoryCache:
         results = store.search("nonexistent_term_xyz")
         assert results == []
 
+    def test_search_finds_line_added_to_file_on_disk(self, tmp_path):
+        """A line written straight into preferences.md on disk is found.
+
+        The store only updates the FTS index from its own writers, so an edit made
+        directly to the file (an editor, a sync tool, another process) bypasses the
+        index. search() reconciles the on-disk markdown before reading the index,
+        so the new line is found the same as one saved through the store.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.write_preferences("# Preferences\n\n- Likes tea\n")
+        store.rebuild_index()
+        assert store.search("quokkablossom") == []
+        # Append directly on disk, NOT through the store -- index is untouched.
+        prefs = tmp_path / "memory" / "preferences.md"
+        with prefs.open("a", encoding="utf-8") as f:
+            f.write("- Second p119 snack: quokkablossom tea\n")
+        results = store.search("quokkablossom")
+        assert len(results) >= 1
+        assert "quokkablossom" in results[0]["snippet"].lower()
+
+    def test_search_finds_history_file_edited_on_disk(self, tmp_path):
+        """An out-of-band edit to a history file is reconciled too."""
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.append_history("first entry")
+        store.rebuild_index()
+        assert store.search("quokkablossom") == []
+        history_files = sorted((tmp_path / "memory" / "history").glob("*.md"))
+        assert history_files
+        with history_files[0].open("a", encoding="utf-8") as f:
+            f.write("\nlater: quokkablossom sighting\n")
+        results = store.search("quokkablossom")
+        assert len(results) >= 1
+        assert "quokkablossom" in results[0]["snippet"].lower()
+
+    def test_search_does_not_thrash_on_crlf_vs_lf(self, tmp_path):
+        """A CRLF file matching the LF index is not re-flagged on every search.
+
+        The index stores LF content, while the size-capped reader keeps a file's
+        CRLF bytes. Comparing them raw marks every file drifted on every search,
+        so the drift scan folds both to one newline shape first. A file that is
+        unchanged apart from its line endings must therefore leave the stale set
+        empty.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        history_dir = tmp_path / "memory" / "history"
+        crlf_file = history_dir / "2099-02-02.md"
+        # Write CRLF bytes directly; rebuild_index reads with universal newlines
+        # and stores the LF form, so disk is CRLF and the index row is LF.
+        crlf_file.write_bytes(b"- note: zebracrossing habits\r\n")
+        store.rebuild_index()
+        # The drift scan itself must not flag the file: comparing raw CRLF to the
+        # LF row would mark it stale every search (the catch-up then redraws it,
+        # so the thrash is invisible after search() returns -- assert on the scan).
+        store._mark_ondisk_drift_stale()
+        assert str(crlf_file) not in store._index_stale, (
+            "a CRLF file matching the LF index was wrongly marked stale: " f"{store._index_stale}"
+        )
+
+    def test_search_skips_oversized_ondisk_history_file(self, tmp_path):
+        """Reconciliation reads through the size cap, so a huge file is skipped.
+
+        The history dir is agent-writable; reading a planted oversized file whole
+        into memory on every search could exhaust memory and let the OS kill the
+        gateway. The drift scan and catch-up use the size-capped reader, so a
+        file over the read cap is refused and never read whole or indexed, and
+        the search still returns normally. A sparse file is used so the test
+        costs no real disk; the uncapped reader would still read it whole.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.rebuild_index()
+        history_dir = tmp_path / "memory" / "history"
+        oversized = history_dir / "2099-01-01.md"
+        # Just over the 50 MiB read cap, written sparsely: the token lives at the
+        # start, then a hole makes the file exceed the cap without using disk.
+        over_cap = 50 * 1024 * 1024 + 1024
+        with oversized.open("wb") as f:
+            f.write(b"quokkablossom\n")
+            f.truncate(over_cap)
+        # Search must not read the oversized file whole or index its content;
+        # the planted token is therefore not found and the search returns.
+        results = store.search("quokkablossom")
+        assert results == []
+
     def test_rebuild_index(self, tmp_path):
         store = MemoryStore(workspace=tmp_path)
         store.init()

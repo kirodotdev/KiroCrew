@@ -31,6 +31,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
 from kiro_crew.loopback_http import build_loopback_opener, loopback_urlopen
 
@@ -87,7 +88,7 @@ def _make_handler(sink, redirect_to=None):
 
 
 def _serve(sink, redirect_to=None):
-    server = http.server.HTTPServer(("127.0.0.1", 0), _make_handler(sink, redirect_to))
+    server = LoopbackHTTPServer(("127.0.0.1", 0), _make_handler(sink, redirect_to))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, server.server_address[1]
 

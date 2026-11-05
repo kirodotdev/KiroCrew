@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         _broadcast_turn_stats,
         _last_reply_row,
         _persist_abnormal_turn_usage,
+        _session_selected_auto,
         turn_stats_meta,
     )
 
@@ -328,7 +329,12 @@ def _attach_abnormal_turn_stats(
             elapsed_ms,
             float(usage.credits or 0.0),
             float(usage.cost_usd or 0.0),
-            (read_turn_model(turn.client) if model is None else model) or "",
+            (
+                (read_turn_model(turn.client) or _session_selected_auto(slot))
+                if model is None
+                else model
+            )
+            or "",
         )
         row = _last_reply_row(slot, turn._turn_msg_boundary, turn._turn_start_mid)
         if stats is None or row is None:

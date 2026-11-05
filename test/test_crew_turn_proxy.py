@@ -109,7 +109,7 @@ def test_the_control_header_matches_the_containers_own_constant():
     )
     spec = importlib.util.spec_from_file_location("_container_config_probe", config)
     assert spec is not None and spec.loader is not None
-    text = config.read_text()
+    text = config.read_text(encoding="utf-8")
     # Read as source rather than imported: the container package has its own
     # import root and loading it here would pull its dependencies.
     assert f'CONTROL_SECRET_HEADER = "{mod.CONTROL_SECRET_HEADER}"' in text

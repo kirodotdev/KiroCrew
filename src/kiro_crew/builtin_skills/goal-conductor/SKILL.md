@@ -455,8 +455,9 @@ Each cycle:
    patrol ever ran.
 
    Evaluate **every `done` item in ONE call** — each invocation costs one
-   approval prompt — then record each answer with `work_ledger_record`
-   `action=verdict` (with `fails` when you are counting retries).
+   approval prompt — then, in a later step once it has printed, record each
+   answer with `work_ledger_record` `action=verdict` (with `fails` when you are
+   counting retries).
 
    Verdicts: `pass` / `fail` are final for this cycle. `pending` means keep
    waiting, within the budget below. `refused` means the spec asked for

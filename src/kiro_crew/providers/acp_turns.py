@@ -9,7 +9,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_compact_result``, ``_sign_in_ask``.
 
-Instance fields read: ``_client``, ``essential_delivery``.
+Instance fields read: ``_client``, ``_cloud_governance_scope``, ``essential_delivery``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import relaunch_reload
+from kiro_crew.acp import relaunch_reload, stale_compaction
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.launch_tuning import switch_barrier
 from kiro_crew.acp.types import (
@@ -177,8 +177,11 @@ async def _ready_confirmed_session(self: AcpProvider) -> None:
     must be confirmed before anything is prompted into it. A spec that cannot be
     confirmed raises out of ``confirm_member_projection``, so nothing is sent.
     A no-op for every session that projects nothing, and for one already
-    confirmed. Called on this arm only: the Kiro and KAS runtimes are not an
-    ``AcpClient``, so their paths gain no call or await (harness-parity H13).
+    confirmed. The readiness steps run on this arm only: the Kiro and KAS runtimes
+    are not an ``AcpClient``, so their paths gain no call or await (harness-parity
+    H13). The one exception is a Kiro Cloud session, whose governance is checked
+    again before each send (:func:`_readmit_cloud_session`); every other session
+    skips it on an attribute read.
     """
     if isinstance(self._client, AcpClient):
         # A model or effort switch on a launch-time harness holds this lock across
@@ -191,6 +194,54 @@ async def _ready_confirmed_session(self: AcpProvider) -> None:
             # session is the one confirmed and prompted. A no-op with no mark set.
             await relaunch_reload.apply_pending_mcp_relaunch(self._client)
         await self._client.confirm_member_projection()
+    # Set only by a Kiro Cloud start, so every other session skips this await.
+    scope = getattr(self, "_cloud_governance_scope", None)
+    if scope is not None:
+        await _readmit_cloud_session(self, scope)
+
+
+#: Said when a turn of a running Kiro Cloud chat is refused by governance. The
+#: governance reason follows, so the person knows what changed.
+CLOUD_GOVERNANCE_WITHDRAWN = (
+    "Kiro Cloud Sessions are no longer allowed for this chat, so its cloud sandbox "
+    "was disconnected (it was not deleted and is still listed in Kiro Web): "
+)
+
+
+async def _readmit_cloud_session(provider: AcpProvider, scope: tuple[str, str, str]) -> None:
+    """Re-run the Kiro Cloud governance check before a turn on ``provider``'s cloud runtime.
+
+    A cloud session's tools run in Kiro's cloud, outside every gate Kiro Crew
+    enforces, so the start's check (``prepare_for_session``) is not enough: a
+    policy refresh or a profile edit can withdraw the capability, or govern a new
+    scope, while the chat runs. ``scope`` is the start's own ``(session_key,
+    agent, app)``, so the turn is judged exactly as its start was. On a refusal
+    the runtime is stopped through the provider's ordinary shutdown, which never
+    deletes a cloud sandbox, and the turn is refused with words a retry cannot
+    change; the next start then meets the same refusal in ``prepare_for_session``.
+    """
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.coder.session_launch import kiro_cloud_governance_refusal
+
+    client = provider._client
+    if not isinstance(client, AcpSessionProvider) or client._runtime.is_cloud_sandbox is not True:
+        return
+    session_key, agent, app = scope
+    # Off the loop: profile resolution and the SEL audit read and write disk.
+    refusal = await asyncio.to_thread(
+        kiro_cloud_governance_refusal, session_key, agent=agent, app=app
+    )
+    if refusal is None:
+        return
+    logger.warning(
+        "session %s: Kiro Cloud Sessions is no longer allowed; stopping its cloud runtime",
+        session_key,
+    )
+    try:
+        await client.shutdown()
+    except Exception:
+        logger.warning("session %s: stopping the cloud runtime failed", session_key, exc_info=True)
+    raise AcpError(CLOUD_GOVERNANCE_WITHDRAWN + refusal, transient=False, user_worded=True)
 
 
 async def stream(
@@ -200,6 +251,7 @@ async def stream(
     # The direct client can respawn in ensure_ready; resolve that BEFORE
     # comparing receipts so a recycled conversation receives the full text.
     await self._ready_confirmed_session()
+    stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
     send = self._client.stream_events
     if ask:
         from kiro_crew.acp.session_provider import AcpSessionProvider
@@ -225,6 +277,10 @@ async def stream(
 
 async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEvent]:
     _, self._sign_in_ask = getattr(self, "_sign_in_ask", ""), ""
+    if stale_compaction.is_compact_command(
+        command
+    ) and stale_compaction.provider_refuses_compaction(self):
+        raise AcpError(stale_compaction.UNRESOLVED_COMPACTION_ERROR)
     # _kiro.dev/commands/execute is a kiro extension, so only
     # ACP_BACKENDS_KIRO_SLASH_COMMANDS members can be sent it. Everyone else
     # routes through session/prompt, which an adapter interprets natively for
@@ -241,15 +297,22 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
     # so the next warm turn resends the complete snapshot even when the
     # status receipt is missing or arrives late.
     await self._ready_confirmed_session()
+    stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
     self.essential_delivery.prepare_command(command)
-    send = (
-        self._client.stream_events
-        if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
-        else self._client.stream_command
-    )
+    native = self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS
+    send = self._client.stream_command if native else self._client.stream_events
+    # Whether THIS command makes a model request is the transport's per-command
+    # answer: a session handle keeps /compact and /help on session/prompt even
+    # on kiro, and only a real commands/execute call leaves the floor alone.
+    per_command = getattr(self._client, "command_is_native", None)
+    makes_no_request = per_command(command) if native and callable(per_command) else native
     try:
         async with aclosing(
-            self.essential_delivery.stream(command, send, lambda: self.context_incarnation)
+            # Native commands/execute makes no model request, so it never moves
+            # the idle-compaction request floor.
+            self.essential_delivery.stream(
+                command, send, lambda: self.context_incarnation, requests_model=not makes_no_request
+            )
         ) as events:
             async for e in events:
                 yield self._to_llm_event(e)
@@ -258,7 +321,14 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
 
 
 async def compact(self: AcpProvider, context: str = "") -> None:
-    """Trigger native /compact with optional context-preserving prompt."""
+    """Trigger native /compact with optional context-preserving prompt.
+
+    While an earlier compaction status is unresolved, this sends nothing and
+    the next :func:`wait_for_compaction` returns one ``failed`` result.
+    """
+    if stale_compaction.refuse_provider_compaction(self):
+        self._compact_result = None
+        return
     await self._ready_confirmed_session()
     self.essential_delivery.invalidate()
     if context:
@@ -379,7 +449,11 @@ async def wait_for_compaction(
     On a cached ``completed``, still grace-drains the inner client for
     kiro's post-compaction metadata so the mid-turn path reports real
     numbers too — mirrors ``AcpSessionHandle.wait_for_compaction``.
+    A refused :func:`compact` is answered first, with its ``failed`` result.
     """
+    refusal = stale_compaction.take_provider_compaction_refusal(self)
+    if refusal is not None:
+        return refusal
     cached = getattr(self, "_compact_result", None)
     if cached is not None:
         self._compact_result = None

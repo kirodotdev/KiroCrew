@@ -727,7 +727,7 @@ not PATCH-writable; the config view masks it).
 | `kirocrew.crew_mode.steers_per_run` | counter | `steers` (`0` / `1` / `2` / `3+`) | Same site: the closed item's own `steer` events, bucketed. A bucketed counter rather than a histogram so the distribution survives a backend with no explicit buckets. |
 | `kirocrew.crew_mode.steers` | counter | `on_item` (bool — the steer landed as a `steer` event on a ledger item) | `dashboard/handlers/crew_workers.py::api_crew_worker_steer`, one per delivered person steer. No message text is emitted. |
 | `kirocrew.crew_mode.worker_waits` | counter | `status` (`blocked` / `question`), `reason` (`approval` / `needs_human` / `none`) | `dashboard/handlers/work_ledger_worker.py::api_work_report`, after a committed report on a Crew Mode board that says the crew member is stuck or needs the person. Other statuses count nothing here. No summary text is emitted. |
-| `kirocrew.context.compactions` | counter | `success` (bool — whether the compaction ATTEMPT itself completed) | `session_compaction.py::CompactionCoordinator._fire_compact_callback`, one point per compaction that reached a verdict. Placed on this method rather than inside the callback because every compaction passes through here whether or not a surface registered a compact callback, and the early return below would otherwise drop exactly the surfaces that register none. The sum is compaction ATTEMPTS. `success` is deliberately NOT an effectiveness measure: the coordinator learns whether the backend finished the compaction, not how much context it actually freed, and no before/after context reading is taken, so a compaction can complete while reclaiming little. **The counter's `success` is also not the callback's.** `_recycle_held` fires this funnel with `success=True` because the SESSION now has headroom — which is what the callback needs to know — but it is reached exactly when an in-place `/compact` FAILED and the provider had to be replaced instead. Counting that as a successful compaction would report the failure mode as the success case, so the counter reports `False` there. The recycling marker is set for the whole of `_recycle_held` and popped only after this call, which is what separates the two populations at this point; `test_a_failed_compact_that_recycles_is_not_counted_successful` pins that ordering. |
+| `kirocrew.context.compactions` | counter | `success` (bool — whether the compaction ATTEMPT itself completed); `trigger` (`threshold` when context use crossed the auto-compact threshold, `idle` when `session.idle_compaction` compacted a quiet chat before its cache expired) | `session_compaction.py::CompactionCoordinator._fire_compact_callback`, one point per compaction that reached a verdict. Placed on this method rather than inside the callback because every compaction passes through here whether or not a surface registered a compact callback, and the early return below would otherwise drop exactly the surfaces that register none. The sum is compaction ATTEMPTS. `success` is deliberately NOT an effectiveness measure: the coordinator learns whether the backend finished the compaction, not how much context it actually freed, and no before/after context reading is taken, so a compaction can complete while reclaiming little. **The counter's `success` is also not the callback's.** `_recycle_held` fires this funnel with `success=True` because the SESSION now has headroom — which is what the callback needs to know — but it is reached exactly when an in-place `/compact` FAILED and the provider had to be replaced instead. Counting that as a successful compaction would report the failure mode as the success case, so the counter reports `False` there. The recycling marker is set for the whole of `_recycle_held` and popped only after this call, which is what separates the two populations at this point; `test_a_failed_compact_that_recycles_is_not_counted_successful` pins that ordering. |
 | `kirocrew.mcp.reconnects` | counter | `pool` (bool — the reconnecting stub was a warm-pool bridge rather than a directly owned one) | `mcp_gateway/stub_link.py::_reconnect`, one increment per stub reconnect to a restarted gateway daemon, emitted after the replayed handshake is delivered. Each increment is a bridge that died and was rebuilt under a live session, so a rising rate is daemon instability that sessions are absorbing silently. The daemon detail string and the per-session reconnect ordinal go to the log line only, never the attributes. |
 | `kirocrew.mcp_gateway.liveness.escalated_probes` | counter | `answered` (bool — the daemon replied to the longer probe after missing the fast 2 s ping) | `mcp_gateway/manager.py`, once per escalated liveness probe. `answered=true` is a loaded-but-alive daemon, the precursor to a kill cycle; `false` missed both probes |
 | `kirocrew.mcp_gateway.liveness.escalated_latency_ms` | histogram (ms) | `process` (`gatewayd`) | `mcp_gateway/manager.py`, recorded only when the escalated probe was answered (a miss has no latency), so the `_LIVENESS_ESCALATED_TIMEOUT_SECS` bound can be checked against field data |
@@ -2492,6 +2492,37 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.app.task.completed` | counter | `app`: a shipped built-in app id (`BUILTIN_NAMES`, its `apps/builtins/` directory name) or `private`; `outcome`: `ok` / `error` / `other` | a finished Papyrus compile (`record_app_task`) |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |
+| `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `other`; `feature`: the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
+| `kirocrew.feature_video.status` | counter | `status`: `seen` / `dismissed` / `other`; `feature`: the video's feature key when it is an Explore feature id, an allowlisted doc or the stem of one, else `other` | `feature_videos.record_status`, after the status is saved |
+| `kirocrew.milestone.*` | counter | `group`, `milestone` (catalog keys, tier keys, `all`), `surface`, `send`, `via`; `reached` adds `recommended_by` | the Explore panel and the milestone hooks (`milestones.py`); every value is checked by `milestones.closed_attrs` at the emit site |
 
 Recording is an in-memory add after the measured action commits, and a recording
 failure never changes that action's result.
+
+### Recommendation attribution
+
+`kirocrew.milestone.reached` carries `recommended_by`: which in-product
+recommendation last pointed at a feature before its first use. Values: `tip`,
+`explore`, `video`, `several` (more than one channel inside the window), `none`.
+
+A tip `shown` or `ack`, an Explore `starter_clicked` and a feature video `seen`
+each stamp the feature's milestone in the `recommended` field of
+`milestones.json` (owner-only): a milestone id, a channel name and a timestamp,
+nothing else. `RECOMMENDATION_TARGETS` in `milestones.py` maps a tip doc or a
+video feature key to milestone ids; a key it does not list cannot be attributed.
+A stamp counts for `RECOMMENDATION_WINDOW_S` (14 days) and is pruned after. When
+a feature row is first reached the stamps are read and the row's record is
+cleared. Only a reach by use (`via` `starter` or `organic`) or by following the
+starter (`arrived`) is attributed; `backfill` and `manual` reaches, and every
+usage tier, read `none`. The record never leaves the machine; only the label on
+the reached point does. A stamp is written only while telemetry collection is on
+(the recorder's `enabled`, failing closed), so a label never carries activity
+from before consent.
+
+Limits a reader of this attribute should know: it is last-touch within a window,
+so it shows that a recommendation came before first use, not that it caused it.
+A feature used before this record existed, or only through a path no hook counts,
+reads `none`. A temporary session shows no tip and no feature video, and an
+incognito session shows no feature video, so neither records those counters or
+stamps for them. Tips in an incognito session are counted like any other
+session's: incognito stops memory writes, and a counter is not memory.

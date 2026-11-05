@@ -22,6 +22,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         _TIME_WAIT_BUDGET_SECS,
+        BOOTING_PEER,
         FOREIGN_HOLDER,
         HEALTHY_PEER,
         NO_HOLDER,
@@ -168,10 +169,10 @@ async def _start_site(
                         "Reclaimed port %d from a stale Kiro Crew gateway — rebinding.",
                         port,
                     )
-                elif outcome not in (HEALTHY_PEER, FOREIGN_HOLDER):
+                elif outcome not in (HEALTHY_PEER, BOOTING_PEER, FOREIGN_HOLDER):
                     # NO_HOLDER / UNAVAILABLE / RECLAIM_FAILED / reclaim error:
                     # nothing safely reclaimable, so wait for a possible graceful
-                    # handover. (A healthy peer / foreign holder won't release, so
+                    # handover. (A healthy or booting peer / foreign holder won't release, so
                     # we skip this misleading "waiting" message for those.)
                     logger.warning(
                         "Port %d in use — waiting up to %.0fs for the previous"
@@ -289,7 +290,7 @@ async def _reserve_dashboard_port(
                         "Reclaimed port %d from a stale Kiro Crew gateway — rebinding.",
                         port,
                     )
-                elif outcome not in (HEALTHY_PEER, FOREIGN_HOLDER):
+                elif outcome not in (HEALTHY_PEER, BOOTING_PEER, FOREIGN_HOLDER):
                     # NO_HOLDER + EADDRINUSE is the TIME_WAIT signature: the
                     # previous generation's connections still pin the port in
                     # the kernel with no process to reclaim. On Windows the

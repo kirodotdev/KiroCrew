@@ -1368,7 +1368,7 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "kiro path an awaited step it does not need (H13).",
     (
         "src/kiro_crew/acp/session_handle_turn.py",
-        "stream_command",
+        "command_is_native",
     ): "``_kiro.dev/commands/execute`` is kiro-cli's own RPC. The positive test is what "
     "makes every other harness fail CLOSED onto the prompt transport instead of "
     "inheriting a kiro-only verb (H5/H6).",
@@ -1386,6 +1386,13 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "Another host reaching it would have its resolved id rewritten from a list it did "
     "not author. KAS has its own narrower arm: it moves only an ``auto`` default its "
     "own ``model`` select does not list, onto an id that select does list.",
+    (
+        "src/kiro_crew/acp/session_handle_model_selection.py",
+        "store_session_config",
+    ): "KAS sends no ``models`` object, so its ``model`` select's ``currentValue`` is "
+    "the only place it names the model a session runs. It stays out of "
+    "``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` because that select is its catalog, "
+    "not its advertised list, so only the current value is adopted, and only here.",
     (
         "src/kiro_crew/acp/session_handle_compaction.py",
         "_kas_compact_request",

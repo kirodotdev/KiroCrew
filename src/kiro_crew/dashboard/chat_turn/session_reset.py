@@ -544,17 +544,19 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
             # cleanup below still lets it finish.
             turn._code_channel_turn = False
             try:
+                if turn._stop_reason == STOP_REASON_CANCELLED:
+                    outcome = "stopped"
+                elif turn._stop_reason == STOP_REASON_END_TURN:
+                    outcome = "ok"
+                else:
+                    outcome = "error"
                 await asyncio.shield(
                     notify_code_channel_turn_end(
                         _mirror_chan,
                         _mirror_thread,
                         session_key,
                         source="slack" if slot._turn_channel_origin else "dashboard",
-                        outcome=(
-                            "stopped"
-                            if turn._stop_reason == STOP_REASON_CANCELLED
-                            else "ok" if turn._stop_reason == STOP_REASON_END_TURN else "error"
-                        ),
+                        outcome=outcome,
                     )
                 )
             except Exception:

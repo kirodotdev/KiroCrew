@@ -800,20 +800,10 @@ class TestBundledFfmpeg:
         assert captured[0][:2] == (flag, "file,pipe")
         assert captured[0].index(flag) < captured[0].index("-i")
 
-    def test_every_import_suffix_has_a_forced_demuxer(self):
-        """GPT review r20: the protocol pin stops NETWORK fetches, but an
-        auto-probed playlist demuxer could still open other LOCAL files its
-        text names — reads that never went through ``validate_file_path``.
-        Forcing the validated suffix's own demuxer turns playlist text into a
-        decode error. Every import-admissible suffix must therefore map to a
-        demuxer, so no attacker-influenced input ever falls back to content
-        sniffing."""
-        from kiro_crew.apps.builtins.meetings.backend import constants as k
-
-        for suffix in k.IMPORT_AUDIO_EXTENSIONS:
-            forced = transcribe._forced_demuxer_args(f"/tmp/talk{suffix}")
-            assert forced and forced[0] == "-f", f"no forced demuxer for {suffix}"
-        # Internal temp files with unrecognized names keep the old behaviour.
+    def test_an_unrecognized_suffix_forces_no_demuxer(self):
+        """Internal temp files with unrecognized names keep FFmpeg's own probe.
+        That every suffix an app's audio import admits DOES map to a forced
+        demuxer is the importing app's pin, in its own tests."""
         assert transcribe._forced_demuxer_args("/tmp/unknown.xyz") == ()
 
     @pytest.mark.skipif(os.name == "nt", reason="descriptor paths are the POSIX branch")

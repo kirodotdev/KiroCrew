@@ -33,12 +33,10 @@ import pytest
 from test_theme_clone_stderr_redact_before_bound import _find_slice_before_redact_offenders
 
 import kiro_crew.apps.builtins.dev_fleet.gateway_service as gateway_service
-import kiro_crew.apps.builtins.ops_mission_control.backend.providers.github_issues as github_issues
 import kiro_crew.cli_setup as cli_setup
 import kiro_crew.dashboard.tailnet as tailnet
 import kiro_crew.env as env_mod
 import kiro_crew.voice_reply as voice_reply
-from kiro_crew.apps.builtins.ops_mission_control.backend.models import ACTION_COMMENT, Signal
 from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
@@ -81,63 +79,6 @@ def _assert_straddle_redacted(excerpt: str, bound: int) -> None:
 def _assert_tail_anchored(excerpt: str) -> None:
     assert "LAST-LINE-MARKER" in excerpt
     assert "FIRST-LINE-MARKER" not in excerpt
-
-
-# ── ops_mission_control github_issues (dashboard-visible) ────────────────────
-
-
-def _configured_adapter(monkeypatch: pytest.MonkeyPatch) -> github_issues.GitHubIssuesAdapter:
-    monkeypatch.setattr(github_issues.GitHubIssuesAdapter, "configured", lambda self: True)
-    monkeypatch.setattr(github_issues, "config_value", lambda *_a, **_k: "o/r")
-    monkeypatch.setattr(github_issues, "config_list", lambda *_a, **_k: [])
-    return github_issues.GitHubIssuesAdapter()
-
-
-def _signal() -> Signal:
-    return Signal(
-        id="s1", source="github-issues", title="t", labels={"repo": "o/r", "issue_number": "7"}
-    )
-
-
-class TestGitHubIssuesStderrExcerpts:
-    @pytest.mark.asyncio
-    async def test_poll_failure_redacts_the_whole_stream_before_the_tail_cut(self, monkeypatch):
-        adapter = _configured_adapter(monkeypatch)
-        monkeypatch.setattr(
-            github_issues, "_run_gh", AsyncMock(return_value=(1, "", _straddling(200)))
-        )
-        with pytest.raises(RuntimeError) as info:
-            await adapter.poll()
-        _assert_straddle_redacted(str(info.value).removeprefix("gh issue list failed: "), 200)
-
-    @pytest.mark.asyncio
-    async def test_poll_failure_keeps_the_tail_of_gh_stderr(self, monkeypatch):
-        adapter = _configured_adapter(monkeypatch)
-        monkeypatch.setattr(
-            github_issues, "_run_gh", AsyncMock(return_value=(1, "", _two_markers(200)))
-        )
-        with pytest.raises(RuntimeError) as info:
-            await adapter.poll()
-        _assert_tail_anchored(str(info.value))
-
-    @pytest.mark.asyncio
-    async def test_execute_failure_redacts_the_whole_stream_before_the_tail_cut(self, monkeypatch):
-        adapter = _configured_adapter(monkeypatch)
-        monkeypatch.setattr(
-            github_issues, "_run_gh", AsyncMock(return_value=(1, "", _straddling(200)))
-        )
-        result = await adapter.execute(_signal(), ACTION_COMMENT, {"note": "n"})
-        assert result.ok is False
-        _assert_straddle_redacted(result.error, 200)
-
-    @pytest.mark.asyncio
-    async def test_execute_failure_keeps_the_tail_of_gh_stderr(self, monkeypatch):
-        adapter = _configured_adapter(monkeypatch)
-        monkeypatch.setattr(
-            github_issues, "_run_gh", AsyncMock(return_value=(1, "", _two_markers(200)))
-        )
-        result = await adapter.execute(_signal(), ACTION_COMMENT, {"note": "n"})
-        _assert_tail_anchored(result.error)
 
 
 # ── dev_fleet gateway_service (returned as the user-visible failure reason) ──
@@ -385,8 +326,16 @@ class TestHookLastErrorAnchor:
 # ── structural pins ─────────────────────────────────────────────────────────
 
 
+#: Ops Mission Control's GitHub Issues adapter is named by path, not imported: core tests
+#: do not import a built-in app, and its behavioural straddle and tail cases run in that
+#: app's own ``tests/``. The row leaves with the file.
+_OMC_GITHUB_ISSUES = (
+    Path(__file__).resolve().parents[1]
+    / "src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/github_issues.py"
+)
+
 _CONVERTED_MODULES = (
-    Path(github_issues.__file__),
+    _OMC_GITHUB_ISSUES,
     Path(gateway_service.__file__),
     Path(cli_setup.__file__),
     Path(env_mod.__file__),

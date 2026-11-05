@@ -185,10 +185,11 @@ def test_tool_apps_name_the_apps_whose_routes_gate_the_calls() -> None:
 
     ``installed.json`` is found by installed name, so a literal that drifts from the
     app's ``APP_NAME`` would gate the listing on a record the route never reads.
+    Issue Radar pins its rows against its own ``APP_NAME`` in its ``tests/``, so the
+    core reads none of its code; here they are the literal the app id is.
     """
     from kiro_crew.apps import builtins
     from kiro_crew.apps.builtins.dev_fleet import agent_pod_api
-    from kiro_crew.apps.builtins.issue_radar.backend import store as issue_radar_store
     from kiro_crew.apps.builtins.ops_mission_control.backend import store as omc_store
 
     root = Path(builtins.__file__).parent
@@ -199,7 +200,7 @@ def test_tool_apps_name_the_apps_whose_routes_gate_the_calls() -> None:
         for tool in builtin_agent_tools.agent_tools()
     }
     expected = {
-        **{tool: issue_radar_store.APP_NAME for tool in ISSUE_RADAR_TOOLS},
+        **{tool: "issue-radar" for tool in ISSUE_RADAR_TOOLS},
         **{tool: agent_pod_api.APP_NAME for tool in DEV_FLEET_TOOLS},
         **{tool: omc_store.APP_NAME for tool in OPS_MISSION_CONTROL_TOOLS},
         **manifest_names,

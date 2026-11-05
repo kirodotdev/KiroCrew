@@ -46,6 +46,7 @@ from kiro_crew.acp.client_timeouts import (
     _STEERING_WAIT_SLICE_SECS,
     _effective_prompt_timeout_async,
 )
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.transport_framing import write_notification_best_effort
 from kiro_crew.acp.types import (
@@ -1120,6 +1121,8 @@ async def _read_steer_answers(
         if msg is None:
             if not self._is_process_alive():
                 break
+            continue
+        if consume_stale_compaction_status(self, msg):
             continue
         if msg.method is None and msg.id in ids:
             into[msg.id] = (msg, other_output)

@@ -679,7 +679,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             <SettingsToggle
               settingId="display.keep-running-in-the-background-after-closing-the-window"
               label={i18nT('pages.settings.displayPanel.keep_running_when_window_closed')}
-              description={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_desc')}
+              hint={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_desc')}
               checked={closeAction === 'background'}
               disabled={closeActionPending}
               onChange={on => setCloseAction(on ? 'background' : 'quit')}
@@ -887,7 +887,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <ErrorNotice message={completionError} variant="inline" />
           <SettingsToggle
             label={i18nT('pages.settings.displayPanel.terminal_reuse_current')}
-            description={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc')}
+            description={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc_summary')} hint={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc')}
             checked={shownReuseCurrent}
             onChange={v => reuseCurrentMut.mutate(v)}
             disabled={reuseCurrentMut.isPending || !mcQ.isSuccess}

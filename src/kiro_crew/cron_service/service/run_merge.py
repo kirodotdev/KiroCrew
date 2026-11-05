@@ -49,42 +49,30 @@ def _hold_run_record(
 ) -> None:
     """Keep a completed run's record until a save under the lock persists it.
 
-    Loop-side; the finalizer calls it before the result merge. The merge
-    is best-effort: a lock that stays contended raises
-    :class:`CronStoreBusy` before anything is merged, and the record then
-    lives only in memory. A reload of a store another writer changed
-    replaces the job with its disk copy, which never received the run, so
-    an ``every`` job is due again early and a fired one-shot is enabled
-    again. Every reload re-applies a held record
-    (:meth:`_reapply_held_run_records`), and the next save under the lock
-    (the merge, the timer tick, :meth:`stop`) persists and releases it.
+    Loop-side; the finalizer calls it before the result merge, which may
+    raise :class:`CronStoreBusy` and leave the record only in memory. A
+    reload would then swap in a disk copy that never got the run (an
+    ``every`` job due early, a fired one-shot enabled again), so every
+    reload re-applies held records (:meth:`_reapply_held_run_records`) and
+    the next locked save (merge, timer tick, :meth:`stop`) persists and
+    releases them.
 
-    Result finalizers normally hold one job in run order. Cancel and reap
-    release the claim before their terminal save returns, so an older delayed
-    failure can arrive after a newer run is already held. The generation fence
-    keeps that newer record. ``job`` is the object the run wrote its fields on.
-    The record is applied
-    here to the job listed under its id, whether that is ``job`` itself or
-    the disk copy a reload swapped in during the run, which adds the
-    generation and the persisted spellings (``user_paused`` for a fired
-    one-shot), so any save of it lands the record and a re-apply skips it.
-    A timer tick the store lock also refuses works from this list, so the
-    listed job must carry the run before this finalizer yields, or that
-    tick finds it due and runs it again.
+    Cancel and reap release the claim before their terminal save returns,
+    so an older failure can arrive after a newer run is held; the
+    generation fence keeps the newer record. ``job`` is the object the run
+    wrote on. The record is applied now to the job listed under its id
+    (``job`` or a reloaded disk copy), so a timer tick the lock refuses
+    does not find it due and run it again.
 
-    A reload on a worker thread can replace the list at any point here. The
-    record is registered first, and the lookup and the apply run under the
-    same guard as a reload's re-apply: a reload that re-applies after the
-    registration applies the record to its own copies, and one that
-    re-applied before it had already swapped its copies into the list
-    (``_load`` replaces the list before it re-applies), so the lookup finds
-    them. Under the one guard, the two applies to a job never interleave.
+    Registration comes first, and lookup and apply share the guard a
+    reload's re-apply uses (``_load`` swaps the list before re-applying),
+    so the two applies to a job never interleave.
 
     ``settlement`` marks a scheduled cancel or reap's terminal record
     (:meth:`_merge_terminal_state_with_retry`), applied by
-    :func:`apply_settlement_record`, at the record's own generation too: a
-    save of the list can carry the generation before the park reaches the
-    store, and the reload after it must still find the job parked.
+    :func:`apply_settlement_record` at its own generation too: a save can
+    carry the generation before the park reaches the store, and the reload
+    after it must still find the job parked.
     """
     with self._held_run_records_guard:
         held = self._held_run_records.get(record.id)
@@ -242,26 +230,18 @@ def _flush_held_run_records(self: CronService) -> None:
 def _merge_job_result(self: CronService, job: CronJob) -> None:
     """Merge a single job's runtime state back to disk.
 
-    Enters the bounded sync :meth:`_file_lock` (which spins with
-    ``time.sleep`` under contention) and may raise :class:`CronStoreBusy`.
-    MUST NOT be called directly on the gateway event loop — its sole
-    loop-side caller, :meth:`_run_job_isolated`, offloads it via
-    ``asyncio.to_thread`` so the spin never parks the loop. Sync/CLI
-    contexts with no running loop may call it directly.
+    Enters the bounded sync :meth:`_file_lock` (spins with ``time.sleep``)
+    and may raise :class:`CronStoreBusy`. MUST NOT run on the gateway event
+    loop: :meth:`_run_job_isolated` offloads it via ``asyncio.to_thread``.
+    Sync/CLI contexts with no running loop may call it directly.
 
-    Fenced by run generation (``run_generation``, see :class:`CronJob`):
-    the record's fields are applied only while its generation is not
-    below the one the store holds, compared under the lock after the
-    ``_sync()``. The finalizer calls this behind the release of its claim,
-    so a replacement run can be accepted, complete and merge while this
-    call is still waiting for the lock; an older record landing after it
-    would revert status, error, result and the failure counter to a run
-    that is not the last one. ONLY the field copies are fenced: the
-    one-shot consume below is owed by this run's completion whatever
-    landed since -- a replacement's terminal merge writes status fields and
-    retires nothing -- and a stale record that skipped it would leave a
-    consumed ``delete_after_run`` at-job enabled on disk, due again on
-    every tick. The consume already tolerates the row being gone.
+    Fenced by ``run_generation`` (see :class:`CronJob`), compared under the
+    lock after ``_sync()``: the finalizer runs this after releasing its
+    claim, so a replacement run can merge first, and an older record must
+    not revert status, error, result and failure count. ONLY the field
+    copies are fenced: the one-shot consume below is still owed by this
+    run, or a consumed ``delete_after_run`` at-job stays enabled on disk
+    and fires every tick. The consume tolerates the row being gone.
     """
     with self._file_lock():
         self._sync()
@@ -276,26 +256,14 @@ def _merge_job_result(self: CronService, job: CronJob) -> None:
             )
         elif job.id in by_id:
             apply_run_record(by_id[job.id], job)
-        # A fire-time-DENIED run is a policy refusal, not a completed run:
-        # deleting the one-shot here would make the documented
-        # resume-on-policy-loosening semantic impossible for at-jobs.
-        # A run that never STARTED is the same story for a different reason --
-        # every pool worker was busy for the whole queue budget -- so consuming
-        # the one-shot would destroy scheduled work that never got a chance to
-        # run. Only the delete is suppressed: unlike a policy denial this needs
-        # no operator action, so the job stays enabled and simply retries.
-        # TWO signals, because the queue and the audit ask different
-        # questions and a corrupt store answers them differently.
-        #   delete_owed      -- is a consume OWED by this path at all?
-        #   removed_one_shot -- did this path actually remove a PRESENT job?
-        # Deriving both from presence conflated them: `_load` degrades an
-        # unreadable store to an empty job list WITHOUT raising, so presence
-        # is exactly what a corrupt store destroys, and the deferred queue
-        # below then never fired for a delete that was still owed on disk.
-        # A failed run is parked, not consumed. Its auto-pause is in the run
-        # record the finalizer holds until a save lands it, so a save fault
-        # leaves the park to the next save under the lock, as the busy path
-        # does.
+        # No consume for a fire-time-DENIED run (an at-job must resume when
+        # policy loosens) or a run that never STARTED (the pool was busy all
+        # queue budget; the job stays enabled and retries). A failed run is
+        # parked, not consumed; its auto-pause rides the held run record.
+        #   delete_owed      -- is a consume owed by this path at all?
+        #   removed_one_shot -- did this path remove a PRESENT job (audit)?
+        # Kept apart because `_load` degrades an unreadable store to an empty
+        # list without raising, so presence says nothing about what is owed.
         delete_owed = (
             job.delete_after_run
             and job.last_status != "error"
@@ -309,18 +277,12 @@ def _merge_job_result(self: CronService, job: CronJob) -> None:
             # already removed by the gateway path leaves nothing to delete
             # here, and that path owns the audit record.
             removed_one_shot = job.id in by_id
-            # BACKGROUND writer: a failed epoch bump must not crash the
-            # run path, but the delete is skipped — the deferred drain
-            # retries once the epoch state heals, never deleting a
-            # still-live grant record. The job has ALREADY RUN, so the
-            # held delete needs the same two-layer guard as
-            # `defer_removal`: the run path deliberately leaves `enabled`
-            # untouched for a delete_after_run at-job (the delete is what
-            # stops it), so without a persisted pause the save below
-            # writes it back live and every tick re-fires it until the
-            # bump succeeds; and without the queue entry no later pass
-            # ever retries the delete. `user_paused` is the persisted
-            # spelling `enabled` is re-derived from on reload.
+            # BACKGROUND writer: a failed epoch bump must not crash the run
+            # path; the delete is skipped and the deferred drain retries it,
+            # never deleting a still-live grant record. Same two-layer guard
+            # as `defer_removal`: a persisted pause (`user_paused`, which
+            # `enabled` is re-derived from) stops every tick re-firing the
+            # already-run job, and the queue entry makes a later pass retry.
             try:
                 self._bump_grant_epochs_for({job.id})
             except (OSError, ValueError):
@@ -500,56 +462,42 @@ def _merge_terminal_state_locked(
 ) -> str | None:
     """Persist a job's terminal runtime state under the store lock.
 
-    Used for the reaper timeout (:meth:`_force_reap`) and user cancel
-    (:meth:`cancel`) paths. Mutating the in-memory job and calling a bare,
-    unlocked ``self._save()`` directly on the event loop would open a
-    lost-update race: between a concurrent
-    ``add_job_async``/``update_job_async`` worker's ``_sync`` and its
-    ``_save``, the unlocked save would re-serialize a stale ``self._jobs``
-    and silently drop the just-added/updated job from ``crons.json``.
+    Used by the reaper timeout (:meth:`_force_reap`) and user cancel
+    (:meth:`cancel`). A bare unlocked ``self._save()`` on the event loop
+    would race a concurrent ``add_job_async``/``update_job_async`` worker
+    between its ``_sync`` and ``_save`` and drop that job from
+    ``crons.json``.
 
-    WORKER-THREAD ONLY. Mirrors :meth:`_merge_job_result`: enters the
-    bounded sync :meth:`_file_lock` (whose spin does ``time.sleep`` and may
-    raise :class:`CronStoreBusy`), ``_sync()``s FIRST so any concurrent
-    worker's persisted job list is reloaded, then applies the terminal
-    fields to the disk copy and ``_save()``s — the whole read-modify-write
-    is one lock transaction. Both loop-side callers offload it via
-    ``asyncio.to_thread`` so the spin never parks the gateway loop. A
-    missing id (removed meanwhile) is a no-op.
+    WORKER-THREAD ONLY. Like :meth:`_merge_job_result`, the whole
+    read-modify-write is one :meth:`_file_lock` transaction (may raise
+    :class:`CronStoreBusy`): ``_sync()`` first, apply the terminal fields
+    to the disk copy, ``_save()``. Loop-side callers offload it via
+    ``asyncio.to_thread``. A missing id is a no-op.
 
-    Fenced by run generation like :meth:`_merge_job_result`:
-    ``run_generation`` is the number the caller drew for the run this
-    record is for. A scheduled caller sets ``retry_failed_save`` so an
-    unreadable or failed store write moves the terminal record to the existing
-    held-record owner; that owner retries once per ordinary store tick without
-    extending cancel, reap, or shutdown with an await loop. The record is
-    skipped (debug log, nothing saved)
-    when the store already holds a higher one. Both callers release the
-    run's claim before they offload this call, so a Run
-    accepted in that gap can complete and merge first; applying the older
-    record would persist that run's success as the cancellation or timeout
-    that came before it. Returning early here skips nothing owed: unlike
-    ``_merge_job_result`` this helper writes only the three status fields
-    (plus clearing a command/script job's carried result, the failure
-    count when ``count_failure``, and the one-shot park when
-    ``park_one_shot``), and the save after them has nothing to
-    record once they are skipped.
+    Fenced by ``run_generation`` (the number the caller drew for this run):
+    a record older than the store's is skipped (debug log, nothing saved),
+    since both callers release the claim first and a run accepted in that
+    gap may already have merged its success. Skipping loses nothing: this
+    writes only the three status fields (plus clearing a command/script
+    job's result, the failure count when ``count_failure`` and the park
+    when ``park_one_shot``). A scheduled caller sets ``retry_failed_save``
+    so a failed or unreadable write leaves the record with the held-record
+    owner, retried once per store tick, not in an await loop.
 
-    Returns None only once a ``_save()`` holding this record has returned,
-    with the park in it when ``park_one_shot`` asks for one. Every other
-    path returns why it was not saved, so a caller never reports a park the
-    store did not take: the job missing from the store (removed, or an
-    unreadable store loaded as empty), a newer run's record, a disk copy whose
-    schedule is not a one-shot, for a scheduled caller a pause or resume ordered
-    after the freeze (``_PARK_NEWER_CHOICE``: the save keeps that choice), or an unreadable store refusing the save (logged,
-    not raised). A busy store (``CronStoreBusy``) and any other write error
-    raise, after a failed save has taken the park back off the disk copy.
-    A scheduled failed write is instead held until a later store save
-    returns. A park request also leaves the job as a reload would show it: at a
-    newer run's record, and for a disk copy whose
-    schedule is not a one-shot, the caller's provisional hold comes off, and a
-    failed save restores the hold only onto a one-shot. The caller words every
-    end from that job (:func:`_cancelled_park_report`).
+    Returns None only once a ``_save()`` holding this record (and the park,
+    if asked) has returned. Every other path returns why it was not saved,
+    so a caller never reports a park the store did not take: job missing
+    (removed, or an unreadable store loaded empty), a newer run's record, a
+    disk copy that is not a one-shot, for a scheduled caller a pause or
+    resume ordered after the freeze (``_PARK_NEWER_CHOICE``: the save keeps
+    that choice), or an unreadable store refusing the save (logged, not
+    raised). ``CronStoreBusy`` and other write errors raise, after a failed
+    save took the park back off the disk copy; a scheduled failed write is
+    held for a later save. A park request leaves the job as a reload would
+    show it: at a newer run's record, or a disk copy that is not a one-shot,
+    the provisional hold comes off, and a failed save restores it only onto
+    a one-shot. The caller words every end from that job
+    (:func:`_cancelled_park_report`).
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 

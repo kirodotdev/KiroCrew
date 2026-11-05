@@ -224,4 +224,48 @@ describe('composer auto-size measurement memo', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('re-measures when the last measurement ran at a width the observer never saw', () => {
+    const instances = new Set<{ cb: ResizeObserverCallback; targets: Set<Element> }>()
+    const RO = class {
+      cb: ResizeObserverCallback
+      targets = new Set<Element>()
+      constructor(cb: ResizeObserverCallback) { this.cb = cb; instances.add(this) }
+      observe(el: Element) { this.targets.add(el) }
+      unobserve(el: Element) { this.targets.delete(el) }
+      disconnect() { instances.delete(this) }
+    } as unknown as typeof ResizeObserver
+    vi.stubGlobal('ResizeObserver', RO)
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { frames.push(cb); return frames.length })
+    try {
+      renderWithProviders(<Harness />)
+      const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+      const mine = [...instances].filter((i) => i.targets.has(ta))
+      let width = 600
+      Object.defineProperty(ta, 'clientWidth', { configurable: true, get: () => width })
+      const fire = () => {
+        for (const i of mine) i.cb([], {} as ResizeObserver)
+        for (const frame of frames.splice(0)) frame(0)
+      }
+      // The observer sees the box at its resting width, and the box is measured there.
+      fire()
+      const state = countMeasures(ta)
+
+      // A measurement runs while the layout is briefly narrow. The input
+      // handler stands in for any measurement the observer does not drive.
+      width = 40
+      fireEvent.input(ta, { target: { value: 'x' } })
+      expect(state.measures).toBe(1)
+
+      // The layout is restored before the observer delivers, so its only
+      // notification reports the width it saw before the narrow measurement.
+      width = 600
+      fire()
+      expect(state.measures).toBe(2)
+    } finally {
+      raf.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
 })

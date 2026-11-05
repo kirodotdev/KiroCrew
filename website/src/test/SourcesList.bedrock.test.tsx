@@ -9,7 +9,7 @@
  * credential-shaped), and the field reset after a successful add.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentProps } from 'react'
 import SourcesList from '../pages/knowledge/SourcesList'
@@ -563,5 +563,272 @@ describe('SourcesList bedrock_kb branch', () => {
     const meaning = screen.getByTestId('bedrock-kb-live-meaning')
     expect(meaning.textContent).toMatch(/queried live from your aws account/i)
     expect(meaning.className).not.toMatch(/sr-only/)
+  })
+
+  // Every wait below sits behind a chained query: the sources list loads,
+  // each Bedrock KB row's consent query answers, and that answer re-reads
+  // the sources list before the chip settles. A loaded worker can take
+  // longer than Testing Library's 1000 ms default for that chain.
+  const CHAIN = { timeout: 5000 }
+
+  // The chip says "Live" only while the consent query (the one the
+  // add form polls) reports the row's own (profile, region) as granted.
+  const savedKbRow = {
+    id: 'kb1', name: 'Team KB', source_type: 'bedrock_kb',
+    uri: 'bedrock-kb://us-west-2/KBTEST1234', sync_status: 'pending', item_count: 0,
+    properties: JSON.stringify({ kb_ids: 'KBTEST1234', region: 'us-west-2', profile: 'team' }),
+  }
+  const listOnly = (row: unknown): Handler => (path, opts) =>
+    path === '/sources' && !(opts as RequestInit | undefined)?.method ? [row] : { ok: true }
+
+  it('keeps Live for a granted row, asking about that row\u2019s own target', async () => {
+    handler = listOnly(savedKbRow)
+    renderList()
+    await waitFor(() => expect(clientApi.awsConsent).toHaveBeenCalledWith(
+      'bedrock-kb', { profile: 'team', region: 'us-west-2' }), CHAIN)
+    expect(await screen.findByText('Live', undefined, CHAIN)).toBeInTheDocument()
+    expect(screen.queryByTestId('bedrock-kb-grant-revoked')).not.toBeInTheDocument()
+  })
+
+  it('shows Grant revoked when the grant is gone, and leads back to the consent card', async () => {
+    vi.mocked(clientApi.awsConsent).mockImplementation(async () =>
+      ({ ...grantedStatus, profile: 'team', region: 'us-west-2', granted: false, grant: null }) as never)
+    handler = listOnly(savedKbRow)
+    renderList()
+    const revoked = await screen.findByTestId('bedrock-kb-grant-revoked', undefined, CHAIN)
+    expect(revoked).toHaveTextContent('Not enabled · Review AWS account')
+    expect(revoked.tagName).toBe('BUTTON')
+    expect(screen.queryByText('Live')).not.toBeInTheDocument()
+
+    fireEvent.click(revoked)
+    // The add form opens on the Bedrock KB branch, targeted at this row.
+    expect((screen.getByLabelText('AWS region') as HTMLInputElement).value).toBe('us-west-2')
+    expect((screen.getByLabelText('AWS profile (optional)') as HTMLInputElement).value).toBe('team')
+    expect(await screen.findByTestId('bedrock-kb-consent-card', undefined, CHAIN)).toBeInTheDocument()
+  })
+
+  it('asks to remove and re-add a granted row the gateway reports unsearchable (profile moved to another account)', async () => {
+    vi.mocked(clientApi.awsConsent).mockImplementation(async () =>
+      ({ ...grantedStatus, profile: 'team', region: 'us-west-2', granted: true }) as never)
+    handler = listOnly({ ...savedKbRow, searchable: false, searchable_reason: 'other_account' })
+    renderList()
+    const chip = await screen.findByTestId('bedrock-kb-needs-readd', undefined, CHAIN)
+    expect(chip).toHaveTextContent('Added under a different AWS account, so searches skip it. Remove it with ✕ and add it again.')
+    // Confirming again cannot bring this row back, so it is not offered.
+    expect(screen.queryByTestId('bedrock-kb-grant-revoked')).not.toBeInTheDocument()
+    expect(screen.queryByText('Live')).not.toBeInTheDocument()
+  })
+
+  it('reads the sources list again when the row\u2019s grant changes, so searchable describes the same grant', async () => {
+    let granted = false
+    vi.mocked(clientApi.awsConsent).mockImplementation(async () =>
+      ({ ...grantedStatus, profile: 'team', region: 'us-west-2', granted,
+        grant: granted ? { ...grantedStatus.grant, granted_at: '2026-11-05T00:00:00Z' } : null }) as never)
+    // No grant at the first list fetch: the gateway computed searchable=false.
+    // After the grant is restored it answers searchable=true.
+    handler = (path, opts) => {
+      if (path === '/sources' && !(opts as RequestInit | undefined)?.method) {
+        return [{ ...savedKbRow, searchable: granted, searchable_reason: 'other_account' }]
+      }
+      return { ok: true }
+    }
+    const { queryClient } = renderList()
+    await screen.findByTestId('bedrock-kb-grant-revoked', undefined, CHAIN)
+    granted = true
+    await queryClient.invalidateQueries({ queryKey: ['awsConsent', 'bedrock-kb'] })
+    // Settled state: the list was read again for the restored grant.
+    await waitFor(() => expect(vi.mocked(api.knowledgeApi).mock.calls.filter(([p, o]) =>
+      p === '/sources' && !(o as RequestInit | undefined)?.method).length).toBeGreaterThanOrEqual(3), CHAIN)
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0), CHAIN)
+    expect(await screen.findByText('Live', undefined, CHAIN)).toBeInTheDocument()
+    expect(screen.queryByTestId('bedrock-kb-needs-readd')).not.toBeInTheDocument()
+  })
+
+  it('reads the sources list again on the first consent answer, so a list older than the grant is not trusted', async () => {
+    // The cached list predates a grant restored elsewhere: its first answer
+    // says not searchable, every later one says searchable.
+    let listFetches = 0
+    handler = (path, opts) => {
+      if (path === '/sources' && !(opts as RequestInit | undefined)?.method) {
+        listFetches += 1
+        return [{ ...savedKbRow, searchable: listFetches > 1, searchable_reason: 'other_account' }]
+      }
+      return { ok: true }
+    }
+    renderList()
+    // The stale list must never surface its warning, not even for a frame
+    // before the second read lands.
+    const seenWarning = { value: false }
+    const observer = new MutationObserver(() => {
+      if (document.querySelector('[data-testid="bedrock-kb-needs-readd"]')) seenWarning.value = true
+    })
+    observer.observe(document.body, { childList: true, subtree: true })
+    try {
+      await waitFor(() => expect(listFetches).toBeGreaterThan(1), CHAIN)
+      await waitFor(() => expect(screen.getByText('Live')).toBeInTheDocument(), CHAIN)
+      expect(seenWarning.value).toBe(false)
+      expect(screen.queryByTestId('bedrock-kb-needs-readd')).not.toBeInTheDocument()
+    } finally {
+      observer.disconnect()
+    }
+  })
+
+  it('keeps Remove and add again on screen through a background refetch with the same grant', async () => {
+    vi.mocked(clientApi.awsConsent).mockImplementation(async () =>
+      ({ ...grantedStatus, profile: 'team', region: 'us-west-2', granted: true }) as never)
+    // Later reads hang until released, so the refetch is visibly in flight.
+    let release: () => void = () => {}
+    let hold = false
+    handler = (path, opts) => {
+      if (path === '/sources' && !(opts as RequestInit | undefined)?.method) {
+        const rows = [{ ...savedKbRow, searchable: false, searchable_reason: 'other_account' }]
+        return hold ? new Promise(r => { release = () => r(rows) }) : rows
+      }
+      return { ok: true }
+    }
+    const { queryClient } = renderList()
+    await screen.findByTestId('bedrock-kb-needs-readd', undefined, CHAIN)
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0), CHAIN)
+    hold = true
+    let flippedToLive = false
+    const observer = new MutationObserver(() => {
+      if (!document.querySelector('[data-testid="bedrock-kb-needs-readd"]')) flippedToLive = true
+    })
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+    try {
+      const refetch = queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
+      await waitFor(() => expect(queryClient.isFetching()).toBeGreaterThan(0), CHAIN)
+      // Let React commit the in-flight render before releasing the read.
+      await act(async () => { await Promise.resolve() })
+      expect(screen.queryByTestId('bedrock-kb-needs-readd')).toBeInTheDocument()
+      release()
+      await refetch
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0), CHAIN)
+      expect(flippedToLive).toBe(false)
+      expect(screen.getByTestId('bedrock-kb-needs-readd')).toBeInTheDocument()
+    } finally {
+      observer.disconnect()
+    }
+  })
+
+  it('does not trust a stale searchable flag when the re-read fails; it says the check failed', async () => {
+    vi.mocked(clientApi.awsConsent).mockImplementation(async () =>
+      ({ ...grantedStatus, profile: 'team', region: 'us-west-2', granted: true }) as never)
+    let listFetches = 0
+    handler = (path, opts) => {
+      if (path === '/sources' && !(opts as RequestInit | undefined)?.method) {
+        listFetches += 1
+        if (listFetches > 1) throw new Error('gateway down')
+        return [{ ...savedKbRow, searchable: false, searchable_reason: 'other_account' }]
+      }
+      return { ok: true }
+    }
+    renderList()
+    expect(await screen.findByTestId('bedrock-kb-grant-check-error', undefined, CHAIN)).toBeInTheDocument()
+    expect(screen.queryByTestId('bedrock-kb-needs-readd')).not.toBeInTheDocument()
+    expect(screen.getByText('Live')).toBeInTheDocument()
+  })
+
+  it('does not trust a stale flag when the stale read and the grant share a millisecond', async () => {
+    // Every clock read returns the same instant, so a timestamp cannot tell
+    // the list read before the grant from one after it.
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000)
+    try {
+      vi.mocked(clientApi.awsConsent).mockImplementation(async () =>
+        ({ ...grantedStatus, profile: 'team', region: 'us-west-2', granted: true }) as never)
+      let listFetches = 0
+      handler = (path, opts) => {
+        if (path === '/sources' && !(opts as RequestInit | undefined)?.method) {
+          listFetches += 1
+          if (listFetches > 1) throw new Error('gateway down')
+          return [{ ...savedKbRow, searchable: false, searchable_reason: 'other_account' }]
+        }
+        return { ok: true }
+      }
+      renderList()
+      expect(await screen.findByTestId('bedrock-kb-grant-check-error', undefined, CHAIN)).toBeInTheDocument()
+      expect(screen.queryByTestId('bedrock-kb-needs-readd')).not.toBeInTheDocument()
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('shows Remove and add again after an identical re-read in the same millisecond', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000)
+    try {
+      vi.mocked(clientApi.awsConsent).mockImplementation(async () =>
+        ({ ...grantedStatus, profile: 'team', region: 'us-west-2', granted: true }) as never)
+      handler = listOnly({ ...savedKbRow, searchable: false, searchable_reason: 'other_account' })
+      renderList()
+      expect(await screen.findByTestId('bedrock-kb-needs-readd', undefined, CHAIN)).toBeInTheDocument()
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('does not count a cache write (an optimistic removal or its rollback) as a fresh read', async () => {
+    vi.mocked(clientApi.awsConsent).mockImplementation(async () =>
+      ({ ...grantedStatus, profile: 'team', region: 'us-west-2', granted: true }) as never)
+    let listFetches = 0
+    const rows = [{ ...savedKbRow, searchable: false, searchable_reason: 'other_account' }]
+    handler = (path, opts) => {
+      if (path === '/sources' && !(opts as RequestInit | undefined)?.method) {
+        listFetches += 1
+        if (listFetches > 1) throw new Error('gateway down')
+        return rows
+      }
+      return { ok: true }
+    }
+    const { queryClient } = renderList()
+    expect(await screen.findByTestId('bedrock-kb-grant-check-error', undefined, CHAIN)).toBeInTheDocument()
+    act(() => { queryClient.setQueryData(['knowledge-sources'], [...rows]) })
+    act(() => { queryClient.setQueryData(['knowledge-sources'], rows) })
+    expect(screen.queryByTestId('bedrock-kb-needs-readd')).not.toBeInTheDocument()
+    expect(screen.getByTestId('bedrock-kb-grant-check-error')).toBeInTheDocument()
+  })
+
+  it('offers no re-add for an unsearchable row the gateway never registered', async () => {
+    vi.mocked(clientApi.awsConsent).mockImplementation(async () =>
+      ({ ...grantedStatus, profile: 'team', region: 'us-west-2', granted: true }) as never)
+    handler = listOnly({ ...savedKbRow, searchable: false, searchable_reason: 'unknown' })
+    const { queryClient } = renderList()
+    await waitFor(() => expect(clientApi.awsConsent).toHaveBeenCalled(), CHAIN)
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0), CHAIN)
+    expect(await screen.findByText('Live', undefined, CHAIN)).toBeInTheDocument()
+    expect(screen.queryByTestId('bedrock-kb-needs-readd')).not.toBeInTheDocument()
+  })
+
+  it('keeps Live for a granted row the gateway reports searchable', async () => {
+    handler = listOnly({ ...savedKbRow, searchable: true })
+    renderList()
+    await waitFor(() => expect(clientApi.awsConsent).toHaveBeenCalled(), CHAIN)
+    expect(await screen.findByText('Live', undefined, CHAIN)).toBeInTheDocument()
+    expect(screen.queryByTestId('bedrock-kb-needs-readd')).not.toBeInTheDocument()
+  })
+
+  it('keeps Live while the consent read fails: an unanswered read says nothing about the grant', async () => {
+    vi.mocked(clientApi.awsConsent).mockImplementation(async () => { throw new Error('offline') })
+    handler = listOnly(savedKbRow)
+    renderList()
+    await waitFor(() => expect(clientApi.awsConsent).toHaveBeenCalled(), CHAIN)
+    expect(await screen.findByText('Live', undefined, CHAIN)).toBeInTheDocument()
+    expect(screen.queryByTestId('bedrock-kb-grant-revoked')).not.toBeInTheDocument()
+    // The failure is said, not swallowed.
+    expect(await screen.findByTestId('bedrock-kb-grant-check-error', undefined, CHAIN))
+      .toHaveTextContent("Couldn't check the AWS grant for this knowledge base.")
+  })
+
+  it('focuses the consent card again on a second Grant revoked click', async () => {
+    vi.mocked(clientApi.awsConsent).mockImplementation(async () =>
+      ({ ...grantedStatus, profile: 'team', region: 'us-west-2', granted: false, grant: null }) as never)
+    handler = listOnly(savedKbRow)
+    renderList()
+    fireEvent.click(await screen.findByTestId('bedrock-kb-grant-revoked', undefined, CHAIN))
+    const card = await screen.findByTestId('bedrock-kb-consent-card', undefined, CHAIN)
+    await waitFor(() => expect(document.activeElement).toBe(card), CHAIN)
+    fireEvent.click(screen.getByText('Cancel'))
+    fireEvent.click(screen.getByTestId('bedrock-kb-grant-revoked'))
+    const again = await screen.findByTestId('bedrock-kb-consent-card', undefined, CHAIN)
+    await waitFor(() => expect(document.activeElement).toBe(again), CHAIN)
   })
 })

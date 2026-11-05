@@ -34,12 +34,18 @@ _DECLARING_MODULES = (
     "kiro_crew.metrics.turns",
     "kiro_crew.metrics.turn_completed",
     "kiro_crew.metrics.monitor_loops",
+    "kiro_crew.metrics.crew_log_export",
+    "kiro_crew.metrics.session_control_calls",
+    "kiro_crew.metrics.work",
+    "kiro_crew.metrics.crew_mode",
     "kiro_crew.metrics.feature_usage",
     "kiro_crew.metrics.http_metrics",
     "kiro_crew.metrics.db_metrics",
     "kiro_crew.metrics.tool_calls",
     "kiro_crew.metrics.inventory_gauges",
     "kiro_crew.metrics.process_gauges",
+    # The Explore panel's counters are declared beside the state they count.
+    "kiro_crew.milestones",
 )
 
 #: Up/down counter instrument names. EMPTY, and that is a fact about the tree

@@ -806,6 +806,10 @@ class ConversationLog:
     def read_rotated_messages_chained(self, key: str) -> list[dict]:
         return self._read_projection.read_rotated_messages_chained(key)
 
+    def read_rotated_messages(self, key: str) -> list[dict]:
+        """Rows size-rotation archived out of *key*'s own transcript, oldest first."""
+        return self._read_projection.read_rotated_messages(key)
+
     def chain_mid_rotation(self, key: str) -> bool:
         """See ``HistoryReadProjection.chain_mid_rotation``."""
         return self._read_projection.chain_mid_rotation(key)

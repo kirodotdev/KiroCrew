@@ -80,6 +80,14 @@ async def api_reveal_path(request: web.Request) -> web.Response:
     # refuses to start, and either way this degrades to the clipboard rather than
     # failing a click in the file viewer.
     if action == "open":
+        # Answer "can this host open anything?" BEFORE the transaction below. On
+        # a Linux gateway started outside the desktop login, that answer can take
+        # a `systemctl --user` lookup, which platform_compat keeps for a short
+        # while. Run here, off the loop and outside the probe pool, it leaves the
+        # launch inside the transaction a read of that kept answer, so no spawn
+        # lands between the stat and the launch. The answer itself is not used
+        # here: the launcher asks it again.
+        await asyncio.to_thread(platform_compat.desktop_launcher_available)
 
         def _stat_then_launch() -> tuple[bool, bool]:
             """The regular-file check AND the launch, in one worker transaction.

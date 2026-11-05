@@ -128,6 +128,14 @@ class LLMProvider(ABC):
     #: Read from the provider's TYPE, so a loose mock cannot opt in by accident.
     approval_withdrawable: bool = False
 
+    @property
+    def turn_survives_disconnect(self) -> bool:
+        """Only a remote agent may keep its turn when the gateway detaches."""
+        return False
+
+    startup_notice: tuple[str, str] | None = None
+    """One-shot (wire token, channel fallback text), surfaced at the next chat claim."""
+
     @cached_property
     def essential_delivery(self) -> EssentialDelivery:
         """Private prompt receipts belong to this provider, never the builder."""
@@ -517,6 +525,17 @@ class LLMProvider(ABC):
         never as a wildcard.
         """
         return ""
+
+    @property
+    def prompts_written(self) -> int | None:
+        """Prompts this provider's turns have written to the backend, or ``None``.
+
+        A caller whose turn timed out compares it against a reading taken before
+        the turn to learn whether the prompt went out. Default ``None``: this
+        provider keeps no count, so the caller cannot tell and must assume the
+        prompt never left.
+        """
+        return None
 
     @property
     def model_pin_refused(self) -> str:

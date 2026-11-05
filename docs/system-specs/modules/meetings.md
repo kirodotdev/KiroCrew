@@ -863,7 +863,7 @@ broadcast bar remains available when speech input is unavailable.
   by Kiro Crew's own bootstrap from the declarative `div.mermaid` / fenced
   ```mermaid markup the agent is instructed to emit, so the agent has no
   documented need to ship JS. Both directions are tested in
-  `website/src/test/sketchSrcdoc.test.ts` — nothing executable survives, **and** a
+  `website/src/apps/meetings/sketchSrcdoc.test.ts` — nothing executable survives, **and** a
   Mermaid diagram plus an inline-styled HTML table still render (the guards
   against over-stripping the panel into a blank).
 * **A client-supplied FILE path exists in exactly one place** — the audio import —
@@ -922,12 +922,16 @@ fake session manager in `test/meetings_helpers.py`. Every dispatch goes through
 that fake session manager; no test spawns a process, opens a socket, calls a
 model, or decodes audio.
 
-The app's current tests live in the repo-level `test/` tree. `setup.cfg` sets
-`testpaths = test src/kiro_crew/apps/builtins`, so a future in-package Meetings
-suite would also be collected by CI; the second root already collects builtin-app
-suites that intentionally ship beside their code.
+Most of the app's backend tests live in the repo-level `test/` tree. The pins of
+core behaviour the app relies on live in the package's own `tests/` (collected
+through `setup.cfg`'s `testpaths = test src/kiro_crew/apps/builtins`):
+`test_owner_only_store.py` (the startup sweep lists the store the app writes, and a
+transcript inside the data home is created `0600`), `test_import_suffix_demuxers.py`
+(every import-admissible suffix maps to a forced FFmpeg demuxer) and
+`test_translation_start_priority.py` (live translation names no start priority).
 
-Frontend: `website/src/test/MeetingsApiClient.test.ts` (fetch-boundary
+Frontend, all beside the page in `website/src/apps/meetings/`:
+`MeetingsApiClient.test.ts` (fetch-boundary
 translation), `MeetingsSessionLogic.test.ts` (dedup, preset resolution, the
 transition table), `MeetingsPage.test.tsx` and `MeetingsPageCov80.test.tsx` (list,
 refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
@@ -935,4 +939,32 @@ refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
 `MeetingsTranslation.test.tsx`, `MeetingsNote.test.tsx`, `MeetingsNoteDraft.test.tsx`, and
 `MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
-split-to-primary layout transition).
+split-to-primary layout transition), `UseMeetingSessionCoverage.test.tsx` and the two
+`UseMeetingTranscription*` suites (the hooks), `meetingsSplitsNarrow.test.ts` (the
+view's narrow-viewport split), `BroadcastBarImeGuard.test.tsx` (the broadcast bar's
+IME Enter guard), and `settingsStaleTime.test.ts` (the settings view's focus-refetch
+opt-in).
+
+**Repository boundary.** Meetings is to leave this repository whole, so no module
+under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
+`kiro_crew.apps.builtins.meetings`. The app imports the core (speech-to-text, the
+`UNTRUSTED_CALENDAR_EVENT` fence in `kiro_crew.context`, redaction, the sandbox and
+path helpers); the core needs nothing from the app, so no seam is involved.
+`test/test_core_meetings_decoupling.py` is the gate, on the shared
+`test/core_app_independence.py` scanner. The core strings left naming the app are a
+pinned list that may only shrink: the `meetings` skill id in
+`metrics/feature_usage.py`, the data-home floors that name its stores
+(`owner_only_files.STARTUP_SWEEP_STORES`, the HIDDEN sandbox leaf and file-tool
+fence of `apps/meetings/data/edits`, the write fence of `apps/meetings/data/notes`),
+and the `security_posture.py` rows classifying its backend modules. Because the app
+id is an ordinary word, the list also carries the Zoom connector's
+`zoom.meetings.*` operation ids, which are not the app. Its dashboard half is
+`website/src/apps/meetings/meetingsBoundary.test.ts`: outside `src/apps/meetings/`,
+only the `/meetings` row of `apps/builtinRegistry.ts` imports the UI. What still
+names the app in core, deliberately for this wave: `BUILTIN_NAMES`, the app-store
+row in `appManifest.ts`, the `apps.meetings.*` catalog keys, the bundled
+`builtin_skills/meetings/` skill, the eslint path overrides naming its files, the i18n capture
+surface row, the capture harnesses under `website/capture/` and
+`website/scripts/capture-meetings-*.mjs`, and the repo-level `test/test_meetings_*`
+suites with their helpers (one of which, `test_meetings_providers.py`, the native
+IPv6 CI lane names by path).

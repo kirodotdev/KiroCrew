@@ -24,7 +24,6 @@ from aiohttp import web
 from kiro_crew import platform_compat, port_resolution, shutdown_event  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.apps.backend import (  # noqa: F401
-    start_deferred_app_backends,
     start_enabled_app_backends,
 )
 from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler  # noqa: F401
@@ -165,6 +164,7 @@ from kiro_crew.dashboard.origin import (  # noqa: F401
     should_canonicalize_host,
 )
 from kiro_crew.dashboard.port_reclaim import (  # noqa: F401
+    BOOTING_PEER,
     FOREIGN_HOLDER,
     HEALTHY_PEER,
     NO_HOLDER,
@@ -229,7 +229,6 @@ from kiro_crew.dashboard.server_runtime.app_platform import (  # noqa: F401
     _kick_default_app_installs,
     _reconcile_app_resources,
     _start_app_backends,
-    _start_bound_port_app_backends,
     _warm_builtin_app_names,
     _warm_materialized_agents,
 )
@@ -1270,7 +1269,6 @@ async def start_dashboard(
     # exported this same socket's name before the spawn pass — the one
     # authoritative write on this path. The headless entrypoint, which binds
     # via _start_site with no reservation step, still exports post-listen.)
-    await _start_bound_port_app_backends()
     _kick_default_app_installs(state)
     _kick_builtin_adoption_staging(state)
     # Additional kernel-verifiable transport for the internal API (POSIX only;

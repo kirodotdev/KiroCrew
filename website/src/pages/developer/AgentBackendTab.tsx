@@ -935,6 +935,9 @@ export function AgentBackendTab() {
     model_allowlist: (name: string) =>
       i18nT('pages.developer.agentBackendTab.mcp_concern_model_allowlist', { name }),
     hooks: () => i18nT('pages.developer.agentBackendTab.mcp_concern_hooks'),
+    // Where Crew fires every spec hook event itself but the one that can refuse a tool
+    // call, so "your hooks will not run" would be false there.
+    hooks_pre_tool_use: () => i18nT('pages.developer.agentBackendTab.mcp_concern_hooks_pre_tool_use'),
   }
 
   /** One ineffective-setting line: this frontend's phrase, or the setting's own id. */

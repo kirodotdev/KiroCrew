@@ -263,7 +263,14 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     after the directory that held it is removed; reporting that pin as unchanged
     leaves the server to fail at spawn time with no earlier warning. A pin that
     does not resolve is therefore divergence.
+
+    *source_cmd* is compared with its home/login names expanded
+    (``env.expand_spec_args``), the form the agent config resolves and stores.
     """
+    from kiro_crew.env import expand_spec_args as _expand
+
+    if isinstance(source_cmd, str):
+        source_cmd = _expand([source_cmd])[0]
     if source_cmd == agent_cmd:
         return False
     # Two RESOLVED paths for one binary, differing only in separator flavour or
@@ -340,7 +347,15 @@ def _envs_agree(agent_env: dict, source_env: dict) -> bool:
 
     A superset is fine: keys the agent entry adds on its own (a managed pin) are
     not the source's business.
+
+    Source values are compared with their home/login names expanded
+    (``env.expand_spec_args``), because that is the form the agent config
+    stores; a ``${HOME}/...`` value would otherwise read as diverged forever.
     """
+    from kiro_crew.env import expand_spec_args as _expand
+
+    keys = list(source_env)
+    source_env = dict(zip(keys, _expand([source_env[k] for k in keys])))
     for key, val in source_env.items():
         current = agent_env.get(key)
         if key == "PATH" and val:

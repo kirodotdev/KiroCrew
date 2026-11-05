@@ -46,7 +46,10 @@ def test_linked_directory_is_refused_before_enumerating_outside_sources(env, tmp
     (target / "secret.md").write_text("SIBLING_SECRET", encoding="utf-8")
     make_dir_link(env.project / "guides", target)
     spec = env.project / ".kiro" / "agents" / "writer-template.json"
-    spec.write_text(json.dumps({"name": "writer-template", "resources": ["file://guides/*.md"]}))
+    spec.write_text(
+        json.dumps({"name": "writer-template", "resources": ["file://guides/*.md"]}),
+        encoding="utf-8",
+    )
     with pytest.raises(MemberEssentialContextError, match="guides"):
         env.builder.build_message(
             "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)

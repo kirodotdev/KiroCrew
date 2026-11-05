@@ -15,6 +15,7 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -58,7 +59,7 @@ def _ledger(unit_id: str, **fields: Any) -> None:
     payload: dict[str, Any] = {"slot": SLOT}
     payload.update(fields)
     crew_log_emit.on_ledger_recorded(unit_id, payload)
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _radar(unit_id: str, *, number: int, event: str, kind: str = "investigate") -> None:
@@ -73,7 +74,7 @@ def _radar(unit_id: str, *, number: int, event: str, kind: str = "investigate") 
             "event_kind": kind,
         },
     )
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _work(unit_id: str, *, item_id: str, event: str) -> None:
@@ -90,7 +91,7 @@ def _work(unit_id: str, *, item_id: str, event: str) -> None:
         },
         timeout=5.0,
     )
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _normalized(value: dict[str, Any]) -> str:

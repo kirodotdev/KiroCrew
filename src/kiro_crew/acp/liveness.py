@@ -328,6 +328,7 @@ class LivenessOracle:
         steady_now_fn=steady_now,
         tenancy: Callable[[], int | None] | None = None,
         server_launches: Callable[[], LaunchRoster | None] | None = None,
+        attribution_launches: Callable[[], LaunchRoster | None] | None = None,
     ) -> None:
         self._proc = str(proc_root)
         self._now = now
@@ -363,6 +364,11 @@ class LivenessOracle:
         # ``None`` -- undeclared, or the callable answering None -- keeps the
         # tag off.
         self._server_launches = server_launches
+        # The same roster with no ``remote_flat`` gate, read only to find the
+        # in-flight tool's own server so the opaque-MCP movement sample covers
+        # that server's subtree alone (:meth:`_attributed_server_root`).
+        # ``None`` samples the whole runtime tree, as before.
+        self._attribution_launches = attribution_launches
         # sample key -> (ts, counter). Keys: "io", "cpu".
         self._samples: dict[str, tuple[float, int]] = {}
 
@@ -402,6 +408,7 @@ class LivenessOracle:
             steady_now_fn=self._steady_now,
             tenancy=self._tenancy,
             server_launches=self._server_launches,
+            attribution_launches=self._attribution_launches,
         )
 
     # ── Public checks ──
@@ -447,9 +454,22 @@ class LivenessOracle:
         if tool.is_shell:
             return self._check_shell_child(runtime_pid, tool)
 
-        # Opaque MCP tool: any CPU/IO movement in the runtime's descendant
-        # tree (which contains the serving MCP server process) reads WORKING.
-        moved, evidence = self._tree_movement(runtime_pid)
+        # Opaque MCP tool: CPU/IO movement reads WORKING. When the call names
+        # its own server and that server's process is found exactly once, only
+        # that server's subtree is sampled, so the engine's own activity (the
+        # KAS relay and its Node engine, both inside the runtime's tree) or a
+        # warm sibling server cannot hold a call its server is not serving.
+        # Otherwise the whole runtime tree is sampled, as before.
+        own_root = self._attributed_server_root(runtime_pid, tool)
+        if own_root is not None:
+            moved, evidence = self._tree_movement(own_root, key_prefix=f"server{own_root}")
+            if moved:
+                return (
+                    VERDICT_WORKING,
+                    f"{EVIDENCE_MCP_SUBTREE_ACTIVE} (own server pid {own_root}: {evidence})",
+                )
+        else:
+            moved, evidence = self._tree_movement(runtime_pid)
         if moved:
             return VERDICT_WORKING, f"{EVIDENCE_MCP_SUBTREE_ACTIVE} ({evidence})"
         if evidence == "no readable counters" and not self._tree_observable():
@@ -515,6 +535,27 @@ class LivenessOracle:
                     f"own server (pid {root}) holds an established TCP connection ({evidence})",
                 )
         return VERDICT_UNKNOWN, f"mcp subtree flat ({evidence})"
+
+    def _attributed_server_root(self, runtime_pid: int, tool: ToolCallState) -> int | None:
+        """The pid of the in-flight tool's own MCP server, or None.
+
+        Found by the same rules the ``remote_flat`` scan uses
+        (:meth:`_own_server_root`): the trusted server name, a declared launch
+        roster, and exactly one topmost matching process. Anything less answers
+        None, which keeps the whole-tree sample.
+        """
+        if not tool.mcp_server_name or self._attribution_launches is None:
+            return None
+        try:
+            roster = self._attribution_launches()
+        except Exception:
+            logger.debug("liveness: attribution roster probe failed", exc_info=True)
+            return None
+        if not isinstance(roster, Mapping) or not roster.get(tool.mcp_server_name):
+            return None
+        if self._darwin is None and not os.path.isdir(self._proc):
+            return None
+        return self._own_server_root(runtime_pid, tool.mcp_server_name, roster)
 
     def _launch_roster(self) -> LaunchRoster | None:
         """The declared :data:`LaunchRoster`, or None when none is declared.

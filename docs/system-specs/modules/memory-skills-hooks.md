@@ -4848,7 +4848,19 @@ last page that still names the line count, not a refusal. `read_scoped_skill` ke
 whole-or-`None` contract for the required-skill and `$key` activation paths.
 An external mapping rooted above a catalog prunes that catalog before descent.
 Its entries come only from normal discovery, retaining project consent, no-link
-confinement, disabled-app filtering and first-wins precedence.
+confinement, disabled-app filtering and the per-key copy choice below.
+The enumeration keeps every extra root's copy of a key in precedence order,
+because package installers copy a dependency's skills into every consumer's
+tree. The unscoped catalog serves the first copy per key; a mapped scope
+matches its mappings against every copy, after the disabled-app filter, and
+serves the first matched copy per key. A matched copy another root won is read
+by its own path, fenced to the narrowest admitted root (this loader's roots
+plus the provider roots) that holds it. Budgeted always-loading reads a pinned
+body by path, so it serves that copy; triggers and the unbudgeted legacy
+renderer read the winning copy by key, so they leave it out. The body search
+index is keyed by path
+so scopes serving different copies of one key do not overwrite each other's
+entry. A project copy whose key an operator root holds is still dropped.
 Each literal external `SKILL.md` mapping scans its own directory, so sibling
 skills are not scanned again for every explicit mapping.
 
@@ -6382,7 +6394,7 @@ result or config type to `hook_types`.
 
 A script hook's `command` is a single shell command line stored in
 `~/.kiro/crew/hooks.json`. It runs in that platform's native shell language, and
-a hook is therefore **not portable across platforms**. `ScriptHookStore.fire` also runs a caller's never-persisted `extra_hooks` (an agent spec's own `hooks` on a backend that cannot run them, `agent_sdk/spec_hooks.py`) after the stored ones, through the same matcher, gate and spawn, in `extra_hooks_cwd` (the session's workspace), and their payload's `cwd` says so. Their tool matcher is written in kiro-cli's tool names, so the caller passes `extra_hooks_tool_names`, the names the harness's own id for the call stands for. A dashboard turn and a subagent run pass them on PostToolUse as on PreToolUse (#25320): the id the call's permission request stated, else, for a call its frame classified as a shell command, KAS's shell tool (`spec_hooks.post_tool_hook_tool_id`), kept beside the call's canonical tool name and trusted MCP server so an `@server/tool` matcher still meets an MCP call (`spec_hooks.PostToolIdentity`, recorded per call in `_ChatTurn._pending_tool_ids` and the run's own map), because KAS's `tool_call` frame names no built-in tool and titles it in prose; a call nothing names keeps title matching. Both fire PostToolUse once per call, on its terminal result (`tool_final`, or a status in `TERMINAL_TOOL_STATUSES`): a progress frame that carries partial output, as opencode sends, neither fires it nor retires the call's name. Every event kiro-cli runs a spec hook for (`agentSpawn` on the session's first turn, `userPromptSubmit`, `preToolUse` once per call at its permission request, `postToolUse`, `stop`) is pinned through a real `chat_runner._run_chat` KAS turn by `test_kas_spec_hooks_turn_loop.py`. The shells:
+a hook is therefore **not portable across platforms**. `ScriptHookStore.fire` also runs a caller's never-persisted `extra_hooks` (an agent spec's own `hooks` on a backend that cannot run them, `agent_sdk/spec_hooks.py`) after the stored ones, through the same matcher, gate and spawn, in `extra_hooks_cwd` (the session's workspace), and their payload's `cwd` says so. Their tool matcher is written in kiro-cli's tool names, so the caller passes `extra_hooks_tool_names`, the names the harness's own id for the call stands for. A dashboard turn and a subagent run pass them on PostToolUse as on PreToolUse (#25320): the id the call's permission request stated, else, for a call its frame classified as a shell command, KAS's shell tool (`spec_hooks.post_tool_hook_tool_id`), kept beside the call's canonical tool name and trusted MCP server so an `@server/tool` matcher still meets an MCP call (`spec_hooks.PostToolIdentity`, recorded per call in `_ChatTurn._pending_tool_ids` and the run's own map), because KAS's `tool_call` frame names no built-in tool and titles it in prose; a call nothing names keeps title matching. claude's frames carry no tool id either, so on claude, where Crew fires every spec hook event but PreToolUse (`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`), a call of kind `execute` is named by the same shell fallback and meets an `execute_bash` matcher. Both fire PostToolUse once per call, on its terminal result (`tool_final`, or a status in `TERMINAL_TOOL_STATUSES`): a progress frame that carries partial output, as opencode sends, neither fires it nor retires the call's name. Every event kiro-cli runs a spec hook for (`agentSpawn` on the session's first turn, `userPromptSubmit`, `preToolUse` once per call at its permission request, `postToolUse`, `stop`) is pinned through a real `chat_runner._run_chat` KAS turn by `test_kas_spec_hooks_turn_loop.py`. The shells:
 
 | | Shell | Env var in a command | Quote grouping |
 |---|---|---|---|

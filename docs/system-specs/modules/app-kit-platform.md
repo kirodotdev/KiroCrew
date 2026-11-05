@@ -558,6 +558,23 @@ and admitted by the gateway for an own slot only. It also pins the reverse:
 every other slot-scoped frame is named in `_READ_UNCHANGED` with why it leaves
 the read as it was, so a new slot-scoped frame fails until it is placed.
 
+The slot list is the second signal source. A row can enter a slot with no
+slot-scoped frame: the gateway sends no user-row `chat_message` for a `?ws=1`
+send without `meta.sendId`, because its sender may have drawn the row. The
+`slots` frame that follows still restates the slot's row. `useSlotListSync`
+(`hooks/websocket/slotList.ts`) hands each list it applies, a full `slots` frame
+or the partial rows of a `slot_patch`, to `noteAppSlotRows`. For a watched slot
+it compares `messages`, `running`, `stopping`, `queue_depth` and
+`pending_approval` (`SLOT_ROW_FIELDS`) with the values it last saw, and a change
+signals the owning app as a frame does. A field a `slot_patch` row omits keeps
+its last value. The first values are the row this tab lists when the watch
+starts, because the embed reads at mount. A slot not listed then signals on its
+first row, which can already carry a send the mount read missed: a spurious
+signal costs one read, a missed one a backstop poll. An app token receives the same row for its own slot
+(`filter_slots_for_app`), so this source grants nothing new either. The cost is
+up to one extra read when a turn starts or ends, joined with the frame signals
+of the same moment by the 250 ms gap below.
+
 Reads: a signal reads at once. Signals during an in-flight read collapse into
 one trailing read, at least 250 ms after the previous one, and the read joins
 an in-flight request rather than aborting it (`cancelRefetch: false`), so a
@@ -591,9 +608,11 @@ whose slot is unowned; session controls; the vendored iframe SDK) pass none
 and poll.
 Writers: `website/src/app-sdk/slotPush.ts`, `website/src/app-sdk/ChatEmbed.tsx`,
 `website/src/utils/appSlotPush.ts`, `website/src/hooks/useWebSocket.ts`,
+`website/src/hooks/websocket/slotList.ts`,
 `website/src/hooks/websocket/gatewayConnectivity.ts`.
 Tests: `website/src/test/ChatEmbed.pushRead.test.tsx`,
-`website/src/test/appSlotPush.test.ts`, `test/test_app_slot_push_frames.py`.
+`website/src/test/appSlotPush.test.ts`,
+`website/src/test/useWebSocket.appSlotRows.test.ts`, `test/test_app_slot_push_frames.py`.
 
 ## App Store source selection
 
@@ -655,12 +674,34 @@ fails on any dashboard module outside `src/apps/file-explorer/` except
 imports (`hooks/useDebouncedValue.ts`, `utils/parentDir.ts`), and the app pins its
 copy of the core file-read endpoint's binary-extension set in its own `tests/`.
 
+Code Review Sage needs no seam: it reaches core only through public surfaces it
+imports itself (the ACP worker pool, `github_runner`, the dashboard's pull-request
+panel and resize grip). `test/test_core_code_review_sage_decoupling.py` fails on any
+core module or script that imports `kiro_crew.apps.builtins.code_review_sage` or names
+`code_review_sage` / `code-review-sage` in a non-docstring string, except its pinned
+rows: the `security_posture.py` redaction rows for the app's modules and the
+`scripts/docs_lint.py` skip of the app's test fixtures, each deleted with the app.
+`website/src/apps/code-review-sage/codeReviewSageBoundary.test.ts` fails on any
+dashboard module outside that directory except `builtinRegistry.ts` that imports from
+it. The app's backend and frontend tests live in its own directories, including its
+rows of core-wide pins (the internal-credential port pairing, the Windows
+replace-retry, the folder `created_at` stamp, the focus-refetch, touch-state and
+resize-grip policies), which `codeReviewSageSharedPolicies.test.ts` and the app's
+`tests/` hold.
+
 Every backend app gate runs the same scanner, `test/core_app_independence.py`:
 `core_app_imports` finds a core import of the app's package in any spelling, and
 `core_name_strings` finds a core string naming it, minus the reasoned rows the gate
-allows. The aws-control, Files and Design Critique gates call it with their own
-package and names, and the next app to leave adds a gate that does the same, never
-another scanner.
+allows. Each app's gate, `test/test_core_<app>_decoupling.py`, calls it with its own
+package and names (aws-control, Files, Design Critique, Auto-Improvement and Code
+Review Sage among them), and the next app to leave adds a gate that does the same,
+never another scanner. An app that core never calls, as with Auto-Improvement, needs no
+seam: its gate pins that direction and the reasoned rows left (see `auto-improvement.md`,
+"Repository boundary").
+Issue Radar's gate (`test/test_core_issue_radar_decoupling.py`) pins the rows
+that still name it, chiefly its three agent tools, which the data-only
+`apps.builtin_agent_tools` seam cannot carry (`issue-radar.md`, "Repository
+boundary").
 
 ## 0. Three-axis classification: origin, resources, lifecycle
 
@@ -1696,7 +1737,16 @@ lifecycle lock and the one step that can safely refuse runs FIRST:
    is itself a store mutation needing the very lock that is contended.
 2. `onUninstall` script, reached only once cron cleanup succeeded, so a
    non-idempotent teardown never runs on an uninstall that will be retried.
-3. Backend stop (every app), then resource deregistration (gateway-managed only).
+3. In-process teardown (every app), then backend stop (every app), then resource
+   deregistration (gateway-managed only). The in-process half is the one disable
+   reaches through `teardown_app_runtime`, run by
+   `teardown.stop_app_hooks_for_uninstall`: the app's disable hook is told, its
+   `backend.hooks` routes leave the route registry (so they answer 404 once the
+   uninstall returns, not at the hook reconciler's next tick), its `on_shutdown`
+   runs from the manifest the hooks were LOADED from and only when one is retained,
+   and its job runs, SDK entry, hook health and loaded-hook record are dropped. A
+   failed `on_shutdown` or incomplete job or cron cleanup is reported in both
+   `warnings` and the uninstall log; none of it aborts the uninstall.
    The stop is ungated for the same reason as step 1, and the port recorded for
    the app is observed after it: a port still accepting connections is REPORTED,
    because the stop's own boolean answers `False` both for "there was nothing to
@@ -1920,6 +1970,25 @@ The bound is applied where the script runs. The enable route and
 carries one: the record holds `int(raw)`. Each clamp logs a warning naming the app, the field, the value as written
 and the seconds used. It fires once per script run, not per listing, so it needs
 no memory of what it already said.
+
+The update's stop → deregister → swap → re-register → restart chain has one
+terminal entry point besides the dashboard's Sync: `kirocrew app update <name>
+[--source DIR]`, which is `POST /api/apps/{name}/update` sent through the
+owner-only socket the way `enable`, `disable` and `uninstall` are. It is the one app
+verb with NO gateway-less path. Only the gateway's process can run that chain; a
+file-only `update_app` would leave a running gateway serving the old manifest over
+new files — the half-updated state the route exists to prevent — and on Windows the
+swap fails under the backend's open files anyway. So when the lifecycle client
+reports "no gateway", including on the AF_UNIX-less platforms where one may well be
+running, the CLI changes nothing, exits 1 and points at the app's page in the dashboard. The CLI
+makes a given `--source` absolute (the gateway resolves paths against its own
+working directory), refuses an empty one rather than reading it as the current
+directory, and sends no body without the flag, so the gateway uses the app's
+recorded source. The route records the directory it updated from, so a
+`--source` update also moves the recorded source and later bare updates use
+it. A version that newly declares `permissions.sessionApproval`
+comes back disabled with a message saying so; the CLI prints it and offers no
+`enable` step, since that consent is the dashboard's alone.
 
 Writers: `apps/routes_uninstall.py::handle_uninstall_app`, `_run_lifecycle_script`,
 `apps/routes_uninstall.py::_deregister_crons_with_retry`; `apps/manager_uninstall.py::uninstall_app`.
@@ -3519,6 +3588,18 @@ it: a `subdirectory` the lexical gate rejects is not joined, an absolute path or
 URL is left untouched, and no normalisation happens, so a `..` in the asset path
 still reaches the blob route's own rejection.
 
+`links` is the one store field that is a clickable outbound URL, so it is
+checked rather than copied. `apps/store_links.py` (`sanitize_links`) owns the
+rule: at most 6 entries, a label of 1 to 40 plain-text characters, a URL of at
+most 2048 characters that is `https:` with a host, no userinfo and no port other
+than 443. A bad entry is dropped with one log line and never fails the manifest.
+Every reader goes through it: `AppManifest.from_dict` for an installed app,
+`_merge_manifest` for a registry row, and `official_catalog._curated_links` for
+a catalog row. There is no host allowlist; the Details card
+(`AppDetailLinks.tsx`) re-applies the rule to the row it receives, shows each
+URL's host under its label and opens it in a new tab with
+`rel="noopener noreferrer"`. An app with no `links` renders as before.
+
 **Where the detail page's code lives.** `website/src/pages/AppDetailPage.tsx` is the
 page and its only import path: it loads the app (`load()` resolves the art fields
 described here), holds the page's state, and renders the actions and the info
@@ -4241,6 +4322,14 @@ The boundary:
   dismissed card. An unnamed text pattern is named by its declaration index before
   the grant filter runs, so a pattern waiting for approval never renames a later
   one or its off switch.
+- **Failure.** A frame that does not say `ready` within `READY_TIMEOUT_MS`, says
+  `failed`, or cannot be minted is removed, and the dashboard draws its own card
+  in the app card's place (`FrameHost.cardSpot`, the card surface tokens) naming
+  the cause (`timeout`, `app`, `unavailable`). Its Retry disposes the provider's
+  non-ready hover frame and mints a new one through the same grant-checked route
+  (`FrameHost.retryFrame`); nothing about the grant, sandbox or timeout changes.
+  A provider-list refresh closes the card and drops its hover, so a Retry never
+  resends a link payload (`fullUrl` or not) built from the replaced list.
 - **Updates.** A frame keeps the module it loaded. Each resolved provider carries
   a revision (entry, version, install and update time); when an app-list refresh shows a new
   revision for a key, its frames are disposed, so the next hover loads the current
@@ -4729,6 +4818,37 @@ route tests are split by the behaviour they pin into `test_routes_<topic>.py` fi
 beside `test_routes.py`, which keeps the route contract. They share state
 redirection, the autouse live-state guard and the client builders in
 `tests/routes_helpers.py`, and a new route test goes in the part for its behaviour.
+The per-helper coverage suites, `tests/test_routes_coverage*.py`, share their fakes
+in `tests/routes_coverage_helpers.py`.
+
+**Repository boundary.** Spec Builder is to leave this repository whole, so no module
+under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
+`kiro_crew.apps.builtins.spec_builder` or names `spec_builder` / `spec-builder` in a
+non-docstring string. The core needs nothing from the app, so there is no seam to
+fill. The outbox's two process-local claim sets (in flight, and consumed but not yet
+finalized) are the app's own: `orchestration/decision_outbox.py` creates them on the
+dashboard state on first use, and `DashboardState` declares neither.
+`test/test_core_spec_builder_decoupling.py` is the gate, on the shared
+`test/core_app_independence.py` scanner. The only core strings left naming the app are
+a pinned list that may only shrink: the `security_posture.py` rows classifying its
+backend modules, and the docs lint's runtime-data row for
+`trust/spec-builder-decisions.json`, which [security](security.md) cites. Its
+dashboard half is `website/src/apps/spec-builder/specBuilderBoundary.test.ts`: outside
+`src/apps/spec-builder/`, only `apps/builtinRegistry.ts` imports the UI, and the
+page's tests live beside it. The app's rows of core contracts are pinned in the app's
+`tests/`: the `fd_real_path` binding, the parser's fail-closed security import and
+the Windows extended-prefix fold (`test_host_parity.py`), the provenance its turns
+carry (`test_turn_provenance.py`), and the Pause under a declined Stop
+(`test_pause_while_compacting.py`). What still names the app in core, deliberately for
+this wave: the app-store row in `appManifest.ts`, the `apps.specBuilder.*` catalog
+keys, the core comments and docs that cite it as an example, the capture scenes under
+`website/capture/` and `website/scripts/`, and the repository-wide scan tables whose
+rows name its files (`test_lenient_read_rewrite_ratchet.py`,
+`test_chat_follow_default_slot_kinds.py`, `test_transcript_derivation_seam.py`,
+`test_source_pin_budget.py`, and the dashboard's site lists in
+`ResizeHandle.parity.test.tsx`, `RadioChipGroup.test.tsx`,
+`windowsBasenameSites.test.tsx`, `hoverVariantPolicy.test.ts` and
+`countSingularForms.test.ts`). Each goes with the app.
 
 Writers: `apps/builtins/spec_builder/backend/handlers.py`, `runtime.py`,
 `decisions.py`, `orchestration/`; `apps/builtins/spec_builder/tests/routes_facade.py`
@@ -4842,9 +4962,8 @@ that binds that name, and each owner reads its own bindings, so a
 reaches the call site in whichever owner makes the call. The mutable state is one
 object per name, defined once in its owner and imported by the owners that act on it,
 so `bmod._processes.clear()` empties the table every owner reads and replacing it
-through the facade reaches every holder. The two flags rebound with `global` each have
-one holder: `_warned_unconfined_cache` in `backend.py` and `_DEFERRED_BOUND_PORT_APPS` in
-`startup.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
+through the facade reaches every holder. The one flag rebound with `global` has one
+holder: `_warned_unconfined_cache` in `backend.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
 `importlib.reload(backend)` reloads each owner in layer order.
 `mock.patch(..., create=True)` on a forwarded name is the one spelling the facade
 cannot undo, and a guard refuses it. The lock order is unchanged: `_health_reconcile_lock`
@@ -5476,6 +5595,19 @@ backend modules, which leave with those files. The UI half is
 `website/src/apps/design-tweak/designTweakBoundary.test.ts`: only `builtinRegistry.ts`
 imports the app's directory, and the app's tests live in it.
 
+Ops Mission Control's `ops_mission_control_api` is not a declared tool: it is a GET/POST
+dispatcher over an allowlist of the app's `/api/apps/ops-mission-control` routes, with a
+query, a JSON body and a per-operation channel deny, and this seam carries one POST route
+under the app proxy. The tool therefore stays core (`mcp_tools/apps.py`, its validation
+row, its internal paths and its `channel.py` deny), unchanged for users, until an
+app-contributed tool seam can carry it under the same name and permission key.
+`test/test_core_ops_mission_control_decoupling.py` is that app's gate, on the shared
+scans: no core module or script imports it, and the core strings still naming it (that
+tool, the `webhooks` source id, the sandbox leaf tables, the security-posture rows, its
+packaged skill id and two docs-lint rows) are a pinned list that may only shrink (see
+`ops-mission-control.md`, "Repository boundary"). The UI half is
+`website/src/apps/ops-mission-control/opsMissionControlBoundary.test.ts`.
+
 ## 31. A marketplace app installs disabled and is trusted by its listing
 
 A Kiro Space marketplace app version is one zip of the app folder.
@@ -5869,8 +6001,9 @@ through one seam that is empty by default:
 - **Host grants** (`apps/builtin_host_grants.py`). A package in `BUILTIN_NAMES` may ship
   a `host_grants.py` data module holding one `HOST_GRANTS` mapping: `build_rlimit` (the
   backend spawns with `RLIMIT_PROFILE_BUILD`), `bound_port` (the backend receives
-  `KIROCREW_BOUND_PORT` and `backend_runtime/startup.py` defers its spawn to
-  `start_deferred_app_backends`), `backend_env_names` / `backend_env_prefixes`
+  `KIROCREW_BOUND_PORT` at spawn; it starts in the one boot wave, which runs after
+  `start_dashboard` has reserved the port and exported that value),
+  `backend_env_names` / `backend_env_prefixes`
   (operator-set `KIROCREW_*` variables `apps/backend.py` forwards to every backend),
   `config_top_keys` (`config/validation._APP_OWNED_TOP_KEYS`), `strict_internal_paths`
   (folded into `server._STRICT_INTERNAL_API_PATHS`) and `relay_credential_paths`

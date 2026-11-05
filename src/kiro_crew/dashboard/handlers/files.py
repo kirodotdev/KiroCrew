@@ -256,8 +256,10 @@ from kiro_crew.dashboard.file_api.project_tree import (  # noqa: F401
     _project_tree_nested_repos,
     _project_tree_pin,
     _project_tree_rebase,
+    _project_tree_repo_ignored,
     _project_tree_scandir,
     _project_tree_scandir_entries,
+    _project_tree_shallow_git,
     _project_tree_subdir,
     _project_tree_walk,
     _project_tree_walk_order,
@@ -313,6 +315,7 @@ from kiro_crew.dashboard.file_api.workspaces import (  # noqa: F401
     api_workspaces_update,
 )
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS  # noqa: F401
+from kiro_crew.dashboard.file_index import _dot_dir_walk_plan  # noqa: F401
 from kiro_crew.dashboard.git_repo_touches import _GIT_ROOT_WALK_LIMIT  # noqa: F401
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _probe_persisted_session,

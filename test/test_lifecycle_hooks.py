@@ -1237,7 +1237,7 @@ class TestGatewayShutdownBackendSweep:
 
     @pytest.mark.asyncio
     async def test_the_sweep_shares_one_deadline_instead_of_stacking_waits(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A wedged backend's stop cannot hold the sweep past its shared
         budget: the sweep returns (logging a warning) so the rest of gateway
@@ -1269,6 +1269,13 @@ class TestGatewayShutdownBackendSweep:
         finally:
             # Unblock the executor thread so it does not outlive the test.
             release.set()
+        overruns = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "kiro_crew.apps.hooks_integration"
+            and "did not finish within" in r.getMessage()
+        ]
+        assert len(overruns) == 1 and overruns[0].endswith(": wedged")
 
     @pytest.mark.asyncio
     async def test_sweep_runs_even_when_hook_dispatch_fails_or_is_cancelled(

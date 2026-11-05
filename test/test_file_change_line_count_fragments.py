@@ -18,6 +18,7 @@ from file_change_snapshots_helpers import _make_slot_with_assistant_message
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import (
+    _flush_file_changes,
     _record_turn_snapshot,
     _snapshot_write_target,
     _turn_line_changes,
@@ -117,3 +118,41 @@ def test_a_fragment_stays_uncounted_after_a_second_writer_drops_its_settling(
     target.write_text("a\n" + _FILE)
 
     assert _turn_line_changes(slot._file_changes) == 0
+
+
+def _stored_entry(target: Path, params: dict, fragment: str, after: str) -> dict:
+    """Snapshot one write, apply it, flush the turn: the entry the transcript keeps."""
+    snapshot = _snapshot_write_target({**params, "path": str(target)}, diff_old_text=fragment)
+    assert snapshot is not None
+    slot = _make_slot_with_assistant_message()
+    slot._file_changes = []
+    _record_turn_snapshot(slot, snapshot, "call-1")
+    target.write_text(after)
+    _flush_file_changes(slot)
+    (entry,) = slot.messages[-1]["meta"]["file_changes"]
+    return entry
+
+
+def test_an_unsettled_fragment_before_is_marked_on_the_stored_entry(short_tmp_dir: Path) -> None:
+    """A reader of the stored pair (the Files tab's Show changes) must not diff it."""
+    target = short_tmp_dir / "mod.py"
+    target.write_text(_FILE)
+    params = {"command": "strReplace", "oldStr": "line7", "newStr": "LINE7", "replaceAll": True}
+
+    entry = _stored_entry(target, params, "line7", _FILE.replace("line7\n", "LINE7\n"))
+
+    assert entry["before"] == "line7" and entry["before_fragment"] is True
+
+
+def test_a_settled_or_whole_before_is_marked_whole(short_tmp_dir: Path) -> None:
+    """False, not absent: an entry with no mark was written before the mark existed."""
+    target = short_tmp_dir / "mod.py"
+    target.write_text("a\nb\n" + _FILE)
+    settled = {"command": "strReplace", "oldStr": "a\nb\n", "newStr": "a\n"}
+
+    entry = _stored_entry(target, settled, "a\nb\n", "a\n" + _FILE)
+
+    assert entry["before"] == "a\nb\n" + _FILE and entry["before_fragment"] is False
+    target.write_text(_FILE)
+    create = {"command": "create", "fileText": _FILE + "tail\n"}
+    assert _stored_entry(target, create, _FILE, _FILE + "tail\n")["before_fragment"] is False

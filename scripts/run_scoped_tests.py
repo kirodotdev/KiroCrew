@@ -938,7 +938,7 @@ def _self_test() -> int:
     # marker, so `clone_setup.py` was treated as `setup.py`.
     check(
         "broad impact: a name merely containing a marker is NOT broad",
-        has_broad_impact(["src/kiro_crew/apps/builtins/auto_improvement/backend/clone_setup.py"]) is None,
+        has_broad_impact(["src/kiro_crew/example/backend/clone_setup.py"]) is None,
     )
 
     # Git C-quotes a path carrying a non-ASCII byte, a quote or a newline unless

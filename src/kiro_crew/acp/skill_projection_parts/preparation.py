@@ -478,7 +478,12 @@ def prepare_native_skill_projection(
     # one gets -- see agent_discovery.inherited_skill_globs.
     inherited_globs = inherited_skill_globs(work_dir, kiro_home_dir=kiro_home())
     # Call-time: a module-level name here would be served by the facade as well.
+    from kiro_crew import agent as agent_mod
     from kiro_crew.acp.default_crew_servers import with_default_crew_servers
+
+    # A crew-bound spec's view carries only the grants the governance ceiling
+    # permits: kiro-cli runs the view, not the authored file, which is never written.
+    governed_names = agent_mod.governed_view_names()
 
     for agent in list_agents(project_dir=str(work_dir)):
         if not agent.filename:
@@ -508,6 +513,8 @@ def prepare_native_skill_projection(
         if view is None:
             errors[agent.name] = refusal or ""
             continue
+        if governed_names is None or agent.name in governed_names:
+            agent_mod.govern_shared_template_view(agent.name, view)
         if search:
             search_agents.add(agent.name)
         specs[agent.name] = view

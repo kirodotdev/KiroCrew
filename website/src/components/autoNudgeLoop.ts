@@ -8,7 +8,7 @@
  */
 import { i18nT } from '../i18n/t'
 import { fmtDuration, fmtTimeNumeric } from '../i18n/format'
-import monitorContract from '../monitoring/contract.json'
+import { activeMonitorKinds } from '../monitoring/automation'
 
 export interface AutoNudgeLoop {
   id: string
@@ -110,11 +110,19 @@ export function loopFinished(loop: Pick<AutoNudgeLoop, 'active' | 'stopped_reaso
   return !!loop && !loop.active && FINISHED_STOP_REASONS.has(loop.stopped_reason ?? '')
 }
 
-/** The watch kinds whose subject is a pull or merge request: the gated prompt
- *  loop's own `gh-pr`, plus the structured provider kinds. A finished watch of
- *  any other kind (a conductor's work ledger) is worded as a subject, not as a
- *  pull request, because its finish is neither a merge nor a close. */
-export const PULL_REQUEST_WATCH_KINDS = new Set<string>(['gh-pr', ...monitorContract.pullRequestMonitorKinds])
+/** Whether a watch's kind is a pull or merge request: the gated prompt loop's
+ *  own `gh-pr`, plus the structured provider kinds. A finished watch of any
+ *  other kind (a conductor's work ledger) is worded as a subject, not a pull
+ *  request, because its finish is neither a merge nor a close.
+ *
+ *  Consults the runtime
+ *  monitor contract (`activeMonitorKinds`), so a kind an edition contributed at
+ *  boot is recognized once the gateway's runtime list is installed,
+ *  and falls back to the bundled vocabulary otherwise. */
+export function isPullRequestWatchKind(kind: string | null | undefined): boolean {
+  if (!kind) return false
+  return kind === 'gh-pr' || activeMonitorKinds().has(kind)
+}
 
 /** Cycle readout: "3/24" when a finite cap is armed, and a bare "3" when
  *  max_cycles is 0, which means infinite -- a loop with no backstop has no

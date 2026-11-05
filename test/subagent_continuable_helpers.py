@@ -1,12 +1,8 @@
 """Shared fakes and fixtures for the continuable subagent conversation tests.
 
-``test_subagent_continuable.py`` and its ``test_subagent_continuable_*.py`` siblings
-import from here: the mocked SessionManager (``_mock_sessions``) and context builder,
-the ``_manager`` builder, ``_stop_reason`` for a failing run's diagnostic, and the
-``continuation_runtime`` fixture (real allocation and protected state; only the
-external native provider is doubled). ``_close_subagent_managers`` is autouse, so
-every test module binds it. Other suites import some of these names from
-``test_subagent_continuable``, which re-exports them.
+``continuation_runtime`` uses real allocation and protected state; only the native provider
+is doubled. ``_close_subagent_managers`` is autouse, so every test module binds it. Other
+suites import these names via ``test_subagent_continuable``, which re-exports them.
 """
 
 from __future__ import annotations
@@ -87,11 +83,8 @@ def _manager(sessions: MagicMock | None = None) -> SubagentManager:
 def _stop_reason(info: SubagentInfo) -> str:
     """Every marker that says WHY a run stopped, for an assertion message.
 
-    A run cancelled from outside takes the auto-continue branch, which sets
-    neither ``error`` nor ``done``: without these markers in the message, "the
-    run was cancelled" is indistinguishable from "the run produced the wrong
-    answer" -- the reading that let a real loop stall be reported as a
-    memory-mode mismatch.
+    A run cancelled from outside sets neither ``error`` nor ``done``, so without these a
+    cancel reads like a wrong answer.
     """
     return (
         f"error={info.error!r} done={info.done} user_stopped={info.user_stopped} "

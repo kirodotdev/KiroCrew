@@ -166,6 +166,27 @@ itself is not read back; the floor is the evidence. Whether it forwards a `PreTo
 in this repository, and that is the prerequisite for Crew gating *every* Claude tool
 call rather than every call Claude asks about.
 
+### The agent spec's own hooks
+
+The harness is handed no agent spec, so nothing in it runs the spec's `hooks`. Crew's
+turn loop fires the events that cannot refuse a tool call instead: `postToolUse`,
+`userPromptSubmit`, `agentSpawn` and `stop` (`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`,
+`agent_sdk/spec_hooks.py`), on the chat and subagent turn loops, through the same hook
+store, gates and sandboxed spawn as a Hooks-page hook. A call whose frame has kind
+`execute` (the Bash tool) is named `execute_bash` for a matcher and on the hook's
+stdin, so the default agent's `audit.log` hook records Claude's shell calls too. It
+fires once per call, on the call's terminal update.
+
+`preToolUse` is left out. A pre-approved call never asks (see above), so a Crew-fired
+gating hook would be skipped on exactly the calls it most needs to see. A new session
+whose spec carries one gets a `notice` row saying it does not run, and the mirror rules
+the hooks concern `no-channel`. The backend card says only that much: its `hooks` line
+narrows to `hooks_pre_tool_use` ("the preToolUse hooks ... will not run",
+`backend_mcp_ability.HOOKS_PRE_TOOL_USE_CARD_ID`), while `kirocrew doctor` keeps the
+route-level `no channel yet: hooks`. Nothing gates on the spec here, so Claude stays out of
+`ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`: a spec that cannot be read leaves the turn with
+no spec hooks, never a blocked call.
+
 ### MCP tools on a Claude session
 
 The `claude-agent-acp` adapter reads **no** agent file: the `mcpServers` array on
@@ -284,6 +305,26 @@ what keeps the per-spawn freshness promise.
 The kiro-cli path is unchanged: it receives the same servers via `--agent`, and a
 duplicate array here would shadow the spec's own entries, so that backend passes
 none.
+
+**A call on a placed server carries its identity to the gate.** The adapter's
+`tool_call` frame names an MCP tool only in its fused `_meta.claudeCode.toolName`
+(`mcp__crew-probe__crew_probe_echo`), and its `session/request_permission` adds
+`_meta.claudeCode.mcpServer` `{name, source}` (captured live in
+`test/fixtures/acp_frames/claude/mcp-stdio-mount-live.jsonl`). On a claude session
+`build_permission_event` reads that pair through
+`permission_requests.claude_mcp_identity`, and only when all of these hold: `source`
+is `dynamic` (a server the client handed over on the array), the name is one Crew
+placed there (`_harness_mcp_server_names`), `toolName` is exactly
+`mcp__<server>__<tool>` and equals the name the preceding `tool_call` frame stamped,
+and both halves pass `mcp_identity_name`. The title is never read. Such a call then
+reaches every tier keyed on a trusted `(server, tool)` exactly as a kiro-cli MCP call
+does: `@server` operator grants and denies, the Reads-mode own-tool proof, the
+`MCP_DOCUMENT_BODY_FIELDS` exemption and the heartbeat core reads. Like a kiro-cli
+MCP call's, its `command` argument leaves the raw-command tier (it names its server);
+its arguments are scanned as any trusted MCP call's are. Any other frame (a user, project or plugin server of the
+harness's own config, a server Crew did not place, a mismatched name) keeps the empty
+identity, so it stays title-only and `_foreign_mcp_identity` never refuses the user's
+own servers. Pinned by `test/test_claude_mcp_identity.py`.
 
 ### Session-scoped Claude settings
 
@@ -746,6 +787,22 @@ Unchanged by Claude Code becoming selectable: `agent.provider` stays
 single-valued and **no provider selector is re-added**. The harness switch is
 `agent.acp_backend`, and it is gated in exactly one place
 (`resolve_selected_backend`).
+
+### Clearing effort live
+
+The adapter's `effort` select offers `default` beside the levels. A write of it
+clears the adapter's flag layer, which hands effort back to the CLI's own per-model
+resolution. That is what a cold start with no slot level runs, so `clear_effort`
+writes `default` (`EFFORT_CONFIG_OPTION_CLEAR_VALUES`) instead of asking the
+dashboard to reset the session. `test/fixtures/acp_frames/claude/effort-clear-live.jsonl`
+is the evidence: `high` and then `default` written on one 0.94.0 session, each read
+back. A session that did not advertise `default`, or refused the write, keeps the
+reset, with the slot's level put back first. So does a session with an inherited
+level (`agent.reasoning_effort`, a crew pin or a role effort, handed over by the
+factory as `inherited_effort`): a cold start applies that level, not the adapter's
+default. A slot clear (`every_model=True`) also drops the levels stored for models
+the session ran before, so a fallback restore does not re-apply one; a refused
+write puts them back. `test_claude_effort_live_clear.py` pins each outcome.
 
 ## Model registry
 

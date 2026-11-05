@@ -267,6 +267,7 @@ export interface SidebarScope {
   // From `useSessionSources`
   historySearchResults: ReturnType<typeof useSessionSources>['historySearchResults']
   historySearchFailed: ReturnType<typeof useSessionSources>['historySearchFailed']
+  historySearchScan: ReturnType<typeof useSessionSources>['historySearchScan']
   instanceSessions: ReturnType<typeof useSessionSources>['instanceSessions']
   remoteSessionsError: ReturnType<typeof useSessionSources>['remoteSessionsError']
   selectInstance: ReturnType<typeof useSessionSources>['selectInstance']

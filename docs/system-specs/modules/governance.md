@@ -1206,19 +1206,44 @@ onto their own crewmate file (crew-mode.md, "Existing crewmates move at startup"
 row still bound to one the ceiling holds two ways. KAS never takes grants from the file:
 Crew projects the spec at session start and filters both lists against the live ceiling
 there (`acp.kas_agents._ceiling_permitted`, `kas_permissions.merge_user_permissions`).
-kiro-cli does read them, so a kiro-cli start on a crew-bound spec Crew does not own is
-REFUSED while the two governance passes would remove a grant (an `allowedTools` entry or a
-server's `autoApprove` entry; an empty list is no grant) from any file that claims the
-agent, or while such a file cannot be read or has a second hard link
-(`fork_refresh.require_shared_template_within_ceiling`, called from the kiro-cli harness and
-from `AcpClient` for every host in `ACP_BACKENDS_SPEC_FILE_GRANTS`), and
-again when a shared runtime activates another agent's spec from disk at `session/set_mode`
-(`acp.runtime_mode_activation._activate_mode_bracketed`, which ends the session first), since
-that spec is read there and not at the spawn. A runtime on such a host also checks the
-session's effective agent before each `session/new` and `session/load`
-(`acp.runtime_session_setup._refuse_over_ceiling_start`), because a session that names no
-agent inherits the spawn agent on a warm runtime, and its spec may have gained a grant since
-the spawn checked it. A binding counts when it records the agent's
+kiro-cli does read them, but on kiro-cli a session normally runs a Crew-owned copy of the
+spec, not the file: the native skill projection (`acp.skill_projection`) writes each agent's
+skill view into the agents directory and hands kiro-cli the view's name on `--agent` and
+`session/set_mode`. For every name a crew binding records (either spelling, below) and every
+agent a crewmate ran on before the migration, the view loses every grant the two governance
+passes remove (`agent_materialization.shared_template_view`, over the same
+`may_skip_gate_now` predicate the KAS projection filters with), so both hosts withhold the
+same grants and the file is never written. The removal is logged and recorded in the SEL as
+`mcp_auto_approve_withheld` once per distinct removal per process; the tools stay mounted and
+their calls go through the gate. A set of bindings that cannot be known whole governs every
+view. The view is rebuilt from the file at every spawn and every `set_mode` re-preparation,
+under a name derived from its content, so it follows an edit of the file and a change of the
+ceiling. Broker stubs injected into a governed agent's session array pass through the same
+`autoApprove` filter at `mcp_gateway.session_servers.pooled_session_servers`, before they can
+override the skill view's server entry; unbound agents' injected entries remain unchanged.
+
+The start check judges the name kiro-cli is handed. A kiro-cli start on a crew-bound spec Crew
+does not own is REFUSED while the two governance passes would remove a grant (an
+`allowedTools` entry or a server's `autoApprove` entry; an empty list is no grant) from any
+file that claims the agent, or while such a file cannot be read or has a second hard link.
+When kiro-cli is handed a skill view, the check independently judges the view file that
+kiro-cli reads, even when the authored claimants are within the ceiling; a view that is
+absent, does not parse or still carries a denied grant is refused
+(`fork_refresh.require_shared_template_within_ceiling` with `launch_name`, called after the
+projection by `acp.runtime_spawn_launch._refuse_over_ceiling_launch` and by `AcpClient` for
+every host in `ACP_BACKENDS_SPEC_FILE_GRANTS`). An absent view is allowed only when every
+spelling of the agent has its own Crew writer or saved capability materialization and its
+claimants are within the ceiling. This preserves client construction for managed specs whose
+synthetic launch alias has no file, without exempting any existing stale view. With no view
+(projection off, a busy alias
+lock, an unreadable settings file) kiro-cli reads the file, and the start is refused as
+before. The same check runs again when a shared runtime activates another agent at
+`session/set_mode` (`acp.runtime_mode_activation._activate_mode_bracketed`, which ends the
+session first), on each view name it sends, since that spec is read there and not at the
+spawn. A runtime on such a host also checks the session's effective agent before each
+`session/new` and `session/load` (`acp.runtime_session_setup._refuse_over_ceiling_start`, on
+the name that agent runs under), because a session that names no agent inherits the spawn
+agent on a warm runtime, and its spec may have gained a grant since the spawn checked it. A binding counts when it records the agent's
 name or the file stem kiro-cli is dispatched under its declared name
 (`config.loader_snapshots.dispatch_kiro_agent`), and a config load that could not read a
 config file whole checks the agent's claimants as if it were bound, because the missing
@@ -2984,8 +3009,24 @@ chokepoints, every layer honoured; see below), and `capabilities.decisions` (the
 Jev decision seam's paid external egress — the consent PUT plus the gate's own
 keystone read, every layer honoured; see below), and
 `capabilities.decisions_local` (a local decision-model preset, which only narrows
-`capabilities.decisions`; see [the Jev decision seam](#the-jev-decision-seam--capabilitiesdecisions)). Only the live `approval_mode`
-clamp remains reserved.
+`capabilities.decisions`; see [the Jev decision seam](#the-jev-decision-seam--capabilitiesdecisions)), and
+`capabilities.kiro_cloud_sessions` (opt-in, `capability_default=False`: a session
+on Kiro Agent's Kiro Cloud Sessions feature runs its agent and tools in Kiro's cloud, outside every scope of
+this ceiling. `coder.session_launch.kiro_cloud_governance_refusal` refuses
+the start with `SessionEnvironmentUnavailable` when the policy or the session's
+profile governs any scope other than this row (no second scope list, so a
+scope added to the catalog later is covered), unless the POLICY enables this
+row and no profile withdraws it; a profile alone
+cannot grant it. Resolution receives the provider's execution agent and the
+app that owns the chat (the chat slot's own `slot._app`, the one the tool gate
+passes, carried by session allocation onto the provider as `owning_app`; never
+read from transcript metadata), so an app-bound profile applies first, then
+an agent-bound task profile, then the surface binding. A policy or profile
+denial of this capability refuses even on an otherwise ungoverned host, and
+an unreadable ceiling or profile fails closed. Every grant, denial and evaluation
+error is emitted through `sel().log_governance_decision`, including the session,
+agent, capability and reason; audit failures never change the permission result).
+Only the live `approval_mode` clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
 denied-command rules. A deny-mode `commands` ScopedRuleset's `deny` patterns are

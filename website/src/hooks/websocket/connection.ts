@@ -88,7 +88,10 @@ export function useSocketConnection(): SocketConnection {
       // `fold_hello` (see `foldWatch.ts`). An older gateway ignores it and
       // keeps sending every board's slot-fold frames. `fold_delta.2`: send the
       // work board as `slot_fold` deltas; a gateway without it sends whole values.
-      const ws = new WebSocket(`${proto}//${location.host}/api/ws?caps=slot_patch,${foldDeltaCapability},${foldApplyCapability}`)
+      // `slot_diff.1`: this bundle rebuilds the slot list from `slots_diff`
+      // frames (see `slotList.ts`), so the gateway sends the rows that changed
+      // instead of the whole list on each coalesced push.
+      const ws = new WebSocket(`${proto}//${location.host}/api/ws?caps=slot_patch,slot_diff.1,${foldDeltaCapability},${foldApplyCapability}`)
       wsRef.current = ws
       return ws
     },

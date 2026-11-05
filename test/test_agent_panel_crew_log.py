@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import agent_panel
 from kiro_crew import crew_log as lg
@@ -76,7 +77,7 @@ def _publish(
             "crew_key": crew_key,
         },
     )
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _folded(slot: str = SLOT) -> dict[str, Any]:
@@ -350,7 +351,7 @@ def test_a_line_missing_its_template_or_data_is_skipped_not_half_applied():
     crew_log_emit.on_panel_published(
         UNIT, {"template": "default", "data": "not-an-object", "title": "also damaged"}
     )
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
     value = _folded()
     assert value["title"] == "good"
@@ -455,7 +456,7 @@ def test_an_append_that_times_out_is_final_and_never_lands_later():
     # The writer runs the job it was holding. The waiter has already given up, so the
     # job must decline to append rather than landing a publish reported as failed.
     held[0]()
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
     titles = [e["data"].get("title") for e in _lines() if e.get("type") == PANEL_ENTRY_TYPE]
     assert "never-lands" not in titles, "an abandoned append came back on a later drain"

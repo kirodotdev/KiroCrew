@@ -42,6 +42,39 @@ _SESSIONS = frozenset(
         # Finished turns (metrics/turn_completed.py): closed outcome,
         # trigger_source, origin and harness only.
         "kirocrew.turn.completed",
+        # Turns that hit the timeout ceiling: a closed `path` and two booleans.
+        "kirocrew.turn.timeout.cause",
+    }
+)
+
+# Crew sessions and session control (metrics/crew_log_export.py,
+# metrics/session_control_calls.py). `agent_kind`, `actor`, `parent_kind` and
+# `caller` fold anything outside their closed sets to `other`; `depth` and
+# `nth` are fixed buckets.
+_CREW = frozenset(
+    {
+        "kirocrew.crew.session.started",
+        "kirocrew.crew.turn.started",
+        "kirocrew.crew.session.tree.depth",
+        "kirocrew.crew.session.tree.child",
+        "kirocrew.crew.session_control.calls",
+    }
+)
+
+# Work ledger and Crew Mode (metrics/work.py, metrics/crew_mode.py). Every
+# attribute is a tuple-backed enum or a fixed bucket, with `other` as the
+# remainder.
+_WORK = frozenset(
+    {
+        "kirocrew.work.created",
+        "kirocrew.work.item_closed",
+        "kirocrew.work.dispatches",
+        "kirocrew.work.reports",
+        "kirocrew.crew_mode.turned_on",
+        "kirocrew.crew_mode.new_chats",
+        "kirocrew.crew_mode.runs_finished",
+        "kirocrew.crew_mode.steers_per_run",
+        "kirocrew.crew_mode.worker_waits",
     }
 )
 
@@ -52,7 +85,13 @@ _FEATURES = frozenset(
         "kirocrew.artifact.created",
         "kirocrew.workflow.runs",
         "kirocrew.approval.decisions",
+        "kirocrew.autonudge.loops.started",
         "kirocrew.autonudge.loops.stopped",
+        "kirocrew.autonudge.ticks",
+        # A registered monitor kind or `other` (metrics/monitor_loops.py).
+        "kirocrew.monitor.decisions",
+        # Outcome folded by webhooks.metric_outcome.
+        "kirocrew.webhook.requests",
         # Feature-use counters (metrics/feature_usage.py).
         "kirocrew.memory.recalled",
         "kirocrew.lesson.injected",
@@ -76,11 +115,35 @@ _INVENTORY = frozenset(
         "kirocrew.inventory.mcp.servers",
         "kirocrew.inventory.config.toggle",
         "kirocrew.inventory.probe.failures",
+        # Crewmates the person created; the count rides in the value.
+        "kirocrew.inventory.members",
+    }
+)
+
+# In-product recommendations: feature tips, the Explore panel (milestones.py)
+# and feature videos -- are they used, and does a recommended feature get used.
+# Every attribute value is closed at its emit site: tip and video features are
+# shipped doc names or Explore ids, milestone values are catalog keys, and
+# milestone.reached{recommended_by} is one of tip / explore / video / several /
+# none. No tip id, video id or timestamp is an attribute.
+_RECOMMENDATIONS = frozenset(
+    {
+        "kirocrew.tips.feedback",
+        "kirocrew.feature_video.status",
+        "kirocrew.milestone.panel_opened",
+        "kirocrew.milestone.starter_clicked",
+        "kirocrew.milestone.reached",
+        "kirocrew.milestone.skipped",
+        "kirocrew.milestone.mark_all_done",
+        "kirocrew.milestone.notice_shown",
+        "kirocrew.milestone.features_completed",
     }
 )
 
 #: The v1 export allowlist: every metric a product destination may receive.
-PRODUCT_METRICS: "frozenset[str]" = _SESSIONS | _FEATURES | _INVENTORY
+PRODUCT_METRICS: "frozenset[str]" = (
+    _SESSIONS | _CREW | _WORK | _FEATURES | _INVENTORY | _RECOMMENDATIONS
+)
 
 # PENDING -- reviewed for export but NOT exportable yet. Each one joins
 # PRODUCT_METRICS in the change that clears its reason, not before.
@@ -104,21 +167,12 @@ PRODUCT_METRICS: "frozenset[str]" = _SESSIONS | _FEATURES | _INVENTORY
 #
 # Held on a missing instrument -- a name here with no instrument would export
 # nothing while reading as if it did:
+#   kirocrew.knowledge.searched
 #
-# Session trees and session control (open change):
-#   kirocrew.crew.session.started, kirocrew.crew.turn.started,
-#   kirocrew.crew.session.tree.depth, kirocrew.crew.session.tree.child,
-#   kirocrew.crew.session.tree.roots, kirocrew.crew.session_control.calls
-# Features (proposed):
-#   kirocrew.autonudge.loops.started, kirocrew.autonudge.ticks,
-#   kirocrew.monitor.decisions, kirocrew.knowledge.searched,
-#   kirocrew.webhook.requests, kirocrew.work.created,
-#   kirocrew.work.item_closed, kirocrew.work.dispatches, kirocrew.work.reports
-# Inventory (proposed):
-#   kirocrew.inventory.webhooks.registered
-# Crew log health (proposed):
-#   kirocrew.crew_log.write.lost, kirocrew.crew_log.fold.apply,
-#   kirocrew.crew_log.fold.start, kirocrew.crew_log.savepoint.write,
-#   kirocrew.crew_log.append.bytes, kirocrew.crew_log.append.batch,
-#   kirocrew.crew_log.eager.queue_depth, kirocrew.crew_log.writer.buffered,
-#   kirocrew.crew_log.bus.subscriber_error, kirocrew.crew_log.fold.lag
+# Held on the kind oracle:
+#   kirocrew.crew.session.tree.roots -- an observable gauge declared outside
+#     inventory_gauges / process_gauges, so the kind check would read it as a
+#     counter. It joins once the test's gauge population includes it.
+#
+# Not proposed: kirocrew.crew_log.* is the crew log's own runtime health
+# (queue depths, fold timings, lost writes). It stays on the machine.

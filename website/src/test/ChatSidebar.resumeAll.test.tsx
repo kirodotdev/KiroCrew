@@ -13,6 +13,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { ThemeProvider } from '../hooks/useTheme'
 
 vi.mock('@dnd-kit/core', async (importOriginal) => {
@@ -274,7 +275,7 @@ describe('chat sidebar — Resume all interrupted sessions', () => {
   it('resumes only the sessions it confirmed, even when another is interrupted meanwhile', async () => {
     resumeAll.mockResolvedValue({ ok: true, total: 0, run_id: '' })
     const many = Array.from({ length: RESUME_ALL_CONFIRM_ABOVE + 1 }, (_, i) => slot(`s${i}`, { interrupted: true }))
-    const { getByTestId, findByRole, setSlots } = renderSidebar(many)
+    const { getByTestId, findByRole, setSlots, queryAllByRole } = renderSidebar(many)
     await act(async () => { fireEvent.click(getByTestId('resume-all-button')) })
     await findByRole('dialog')
     act(() => setSlots([...many, slot('late', { interrupted: true })]))
@@ -282,6 +283,15 @@ describe('chat sidebar — Resume all interrupted sessions', () => {
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: `Resume ${RESUME_ALL_CONFIRM_ABOVE + 1} sessions` }))
     })
+    // Diagnostic assertions that split "0 calls" into named failure modes.
+    // If the dialog never settled: namedCeiling names it and appends the DOM dump.
+    // If the label changed: getByRole above would have thrown "not found".
+    // If two dialogs appear: the count below fails with "Expected 0, received 1".
+    await waitFor(
+      () => expect(queryAllByRole('dialog')).toHaveLength(0),
+      namedCeiling('confirm never settled -- dialog still open', 1000),
+    )
+    // If the dialog closed but mutate never ran: only the spy assertion fails.
     await waitFor(() => expect(resumeAll).toHaveBeenCalledTimes(1))
     expect(resumeAll).toHaveBeenCalledWith(false, many.map(s => s.key))
   })

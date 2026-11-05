@@ -164,6 +164,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_sources import (  # noqa: F401
         _bedrock_registration_identity,
         _folder_picker_available,
+        _mark_bedrock_searchable,
         _reclaim_rowless_attestations,
         _url_allowed_hosts_or_none,
     )

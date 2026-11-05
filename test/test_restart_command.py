@@ -35,7 +35,11 @@ def restart_audit(tmp_path, monkeypatch):
     def _rows() -> list[tuple[str, str]]:
         if not path.exists():
             return []
-        events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        events = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
         return [
             (e["outcome"], e["resources"])
             for e in events

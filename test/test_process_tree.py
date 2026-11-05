@@ -5,12 +5,14 @@ import inspect
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.acp import runtime as rt
+from kiro_crew.acp import runtime_process_tree as rpt
 from kiro_crew.acp.client import (
     AcpClient,
     _direct_children,
@@ -188,7 +190,15 @@ class TestIsOurChild:
 
 
 class TestDirectChildren:
-    def test_proc_children_parsed(self):
+    @pytest.fixture(autouse=True)
+    def _posix(self, _floor_monkeypatch):
+        """Every case here takes a POSIX branch, so Windows runners pin it too."""
+        _floor_monkeypatch.setattr(
+            "kiro_crew.acp.client.platform_compat", SimpleNamespace(IS_WINDOWS=False)
+        )
+
+    def test_proc_children_parsed(self, monkeypatch):
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
         with (
             patch("kiro_crew.acp.client.sys") as mock_sys,
             patch("kiro_crew.acp.client.Path") as mock_path_cls,
@@ -205,6 +215,200 @@ class TestDirectChildren:
             mock_path.iterdir.return_value = [tid]
             result = _direct_children(100)
         assert result == [200, 300]
+
+    @staticmethod
+    def _proc_with(children_files):
+        """A fake /proc/<pid>/task tree: one task per entry.
+
+        An entry is the children text, or an exception the task's read raises (a
+        task that exited mid-scan).
+        """
+        mock_path = MagicMock()
+        tids = []
+        for text in children_files:
+            child_file = MagicMock()
+            if isinstance(text, BaseException):
+                child_file.read_text.side_effect = text
+            else:
+                child_file.read_text.return_value = text
+            tid = MagicMock()
+            tid.__truediv__ = lambda self, x, f=child_file: f
+            tids.append(tid)
+        mock_path.iterdir.return_value = tids
+        return mock_path
+
+    @staticmethod
+    def _spawner(out=b""):
+        """A stand-in for the facade's subprocess module; records every spawn."""
+        sub = MagicMock()
+        sub.check_output.return_value = out
+        return sub
+
+    def test_an_empty_children_file_is_the_answer_without_pgrep(self, monkeypatch):
+        """A leaf's empty list is authoritative: no pgrep spawn per leaf per walk."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner(b"999\n")
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=self._proc_with(["", "\n"])),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == []
+        sub.check_output.assert_not_called()
+
+    def test_a_kernel_without_children_files_still_falls_back_to_pgrep(self, monkeypatch):
+        """No children interface on this kernel, so /proc says nothing: ask pgrep."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", False)
+        sub = self._spawner(b"4242\n")
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == [4242]
+        assert sub.check_output.call_args[0][0][:2] == ["pgrep", "-P"]
+
+    def test_a_task_vanishing_mid_walk_keeps_the_children_already_read(self, monkeypatch):
+        """A task that exits mid-scan costs neither the children read nor a pgrep."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner()
+        sub.check_output.side_effect = subprocess.TimeoutExpired(["pgrep"], 2)
+        proc = self._proc_with(["200", FileNotFoundError()])
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=proc),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == [200]
+        assert proc.iterdir.call_count == 2
+        sub.check_output.assert_not_called()
+
+    def test_a_pid_exiting_before_the_relist_keeps_the_first_pass(self, monkeypatch):
+        """The re-list after a vanished task finds the pid gone: the first pass stands."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner(b"999\n")
+        proc = self._proc_with(["200", FileNotFoundError()])
+        first = proc.iterdir.return_value
+        proc.iterdir.side_effect = [first, FileNotFoundError()]
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=proc),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == [200]
+        sub.check_output.assert_not_called()
+
+    def test_an_empty_relist_keeps_the_children_the_first_pass_read(self, monkeypatch):
+        """The re-list sees the parent as a zombie with empty files: the first pass's pid stays."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner(b"999\n")
+        proc = self._proc_with(["200", FileNotFoundError()])
+        first = proc.iterdir.return_value
+        second = self._proc_with([""]).iterdir.return_value
+        proc.iterdir.side_effect = [first, second]
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=proc),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == [200]
+        assert proc.iterdir.call_count == 2
+        sub.check_output.assert_not_called()
+
+    def test_a_child_read_by_both_passes_appears_once(self, monkeypatch):
+        """Children found on the re-list join the first pass's, each pid listed once."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner(b"999\n")
+        proc = self._proc_with(["200", FileNotFoundError()])
+        first = proc.iterdir.return_value
+        second = self._proc_with(["200 300"]).iterdir.return_value
+        proc.iterdir.side_effect = [first, second]
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=proc),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == [200, 300]
+        sub.check_output.assert_not_called()
+
+    def test_a_vanished_pid_is_a_leaf_without_pgrep(self, monkeypatch):
+        """A pid with no /proc entry has exited: it has no children to ask pgrep about."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner(b"777\n")
+        gone = MagicMock()
+        gone.iterdir.side_effect = FileNotFoundError()
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=gone),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == []
+        sub.check_output.assert_not_called()
+
+    def test_a_full_tree_walk_spawns_nothing(self, monkeypatch):
+        """300 roots with 5 leaves each, walked through _get_child_pids: every pid, no spawn."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        top = 1
+        roots = list(range(1000, 1300))
+        tree = {top: roots}
+        for i, root in enumerate(roots):
+            tree[root] = [10_000 + i * 5 + j for j in range(5)]
+
+        def fake_path(path):
+            pid = int(str(path).split("/")[2])
+            return self._proc_with([" ".join(map(str, tree.get(pid, [])))])
+
+        sub = self._spawner(b"999\n")
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", side_effect=fake_path),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            pids = _get_child_pids(top)
+        assert len(pids) == 300 + 300 * 5
+        assert len(set(pids)) == len(pids)
+        assert sub.method_calls == []
+
+    def test_the_interface_check_reads_the_real_kernel_once(self, monkeypatch):
+        """The answer comes from /proc/self, never the walk's Path, and is cached."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", None)
+        kernel_os = MagicMock()
+        kernel_os.path.exists.return_value = True
+        exists = kernel_os.path.exists
+        monkeypatch.setattr(rpt, "_kernel_os", kernel_os)
+        with patch("kiro_crew.acp.client.Path") as walk_path:
+            assert rpt._children_interface() is True
+            assert rpt._children_interface() is True
+        walk_path.assert_not_called()
+        exists.assert_called_once()
+        assert exists.call_args[0][0].startswith("/proc/self/task/")
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="reads the real /proc children files")
+    def test_a_real_leaf_process_answers_from_proc(self):
+        """Against the live kernel: a childless process reads back [] with no spawn."""
+        import subprocess
+        from pathlib import Path
+
+        leaf = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+        )
+        try:
+            if not (Path(f"/proc/{leaf.pid}/task/{leaf.pid}/children")).exists():
+                pytest.skip("kernel built without /proc/<pid>/task/<tid>/children")
+            sub = self._spawner(b"999\n")
+            with patch("kiro_crew.acp.client.subprocess_mod", sub):
+                assert _direct_children(leaf.pid) == []
+            sub.check_output.assert_not_called()
+        finally:
+            leaf.stdin.close()
+            leaf.wait(timeout=30)
 
 
 # ── 5. _snapshot_process_tree: captures full descendant tree ──

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -123,7 +124,7 @@ def _ledger(unit_id: str, **fields: Any) -> None:
     payload: dict[str, Any] = {"slot": SLOT}
     payload.update(fields)
     crew_log_emit.on_ledger_recorded(unit_id, payload)
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _stub_directory_sync(

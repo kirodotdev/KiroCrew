@@ -176,6 +176,8 @@ with no row here.
      - driver-internal (which VALUE that option spells a Crew effort level with)
    * - ``effort_config_option_levels``
      - driver-internal (which advertised values are levels, not "no override")
+   * - ``effort_config_option_clear_value``
+     - driver-internal (which value drops the effort level live, where one does)
    * - ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``
      - driver-internal (whether the ADVERTISED option, rather than Crew's model
        registry, answers that this session takes an effort level and which ones)
@@ -244,6 +246,8 @@ with no row here.
        answers the three hook methods; no consumer above the boundary asks it)
    * - ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``
      - semantic question (``SessionCapabilities.crew_fires_spec_hooks``)
+   * - ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS``
+     - semantic question (``SessionCapabilities.crew_fires_spec_observer_hooks``)
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
@@ -1149,10 +1153,12 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     CC_PERMISSION_MODE_ENV,
     DEFAULT_EFFORT_CONFIG_OPTION_ID,
     EFFORT_CONFIG_OPTION_ABSENT_FOLDS,
+    EFFORT_CONFIG_OPTION_CLEAR_VALUES,
     EFFORT_CONFIG_OPTION_IDS,
     EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES,
     EFFORT_CONFIG_OPTION_VALUES,
     EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND,
+    effort_config_option_clear_value,
     effort_config_option_id,
     effort_config_option_levels,
     effort_config_option_value,
@@ -1172,6 +1178,7 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
     ACP_BACKEND_ROUTING,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+    ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_HOOKS_LIST,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -1221,6 +1228,15 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
+    CLAUDE_PROMPT_CACHE_TTL_ENV,
+    CLAUDE_PROMPT_CACHE_TTLS,
+    PROMPT_CACHE_LIFETIMES,
+    PROMPT_CACHE_LONG_FIRE_FRACTION,
+    PROMPT_CACHE_SHORT_LIFETIME_SECS,
+    PROMPT_CACHE_SHORT_MARGIN_SECS,
+    claude_prompt_cache_lifetime,
     escape_user_message_markup,
+    idle_compaction_delay_secs,
+    prompt_cache_lifetime_secs,
     wrap_user_message,
 )

@@ -144,8 +144,8 @@ export interface MemberRosterRow {
 /** One entry of GET /api/members/{slug}/activity — a recorded engagement.
  *  `via` distinguishes a session the user opened with the member ('chat'),
  *  an orchestrator routing decision ('select_crew', intent, not a run), a
- *  delegated `spawn_run(crew=...)` run ('spawn') and an auto-improvement
- *  run ('auto-improvement'). */
+ *  delegated `spawn_run(crew=...)` run ('spawn') and a run an app's own runner
+ *  made (that app's id). */
 /** `GET /api/agents/resolved-model`: what a new session on a crew runs. The
  *  harness fields come only for the owner and only for a configured crew: the
  *  crewmate's pin is read here and nowhere else (`GET /api/agents` leaves it out). */
@@ -183,7 +183,7 @@ export interface AgentResolvedModel {
 export interface MemberActivityEntry {
   /** Epoch seconds (UTC) the engagement was recorded. */
   ts: number
-  via: 'chat' | 'select_crew' | 'spawn' | 'auto-improvement' | string
+  via: 'chat' | 'select_crew' | 'spawn' | string
   project?: string
 }
 

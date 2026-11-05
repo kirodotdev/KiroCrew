@@ -100,30 +100,31 @@ def test_the_session_ledger_refusal_names_the_env_file_the_gateway_reads(monkeyp
     "refusal",
     [
         "work_ledger",
-        "crew_store",
         "mcp_ledger",
     ],
 )
 def test_every_crew_log_off_refusal_names_the_env_file_the_gateway_reads(
     monkeypatch, tmp_path, refusal
 ):
-    """The same file, spelled once, in every place that tells an operator to edit it."""
+    """The same file, spelled once, in every place that tells an operator to edit it.
+
+    Issue Radar's crew store refuses the same way; the app pins its own refusal in
+    its ``tests/``.
+    """
     import importlib
     import inspect
 
     from kiro_crew import session_ledger
-    from kiro_crew.apps.builtins.issue_radar.backend import crew_store
     from kiro_crew.dashboard.handlers import work_ledger
     from kiro_crew.mcp_tools import ledger as mcp_ledger
 
     module = {
         "session_ledger": session_ledger,
         "work_ledger": work_ledger,
-        "crew_store": crew_store,
         "mcp_ledger": mcp_ledger,
     }[refusal]
     source = inspect.getsource(module)
-    if refusal in ("crew_store", "work_ledger"):  # mirror facades: code is in their owners
+    if refusal == "work_ledger":  # mirror facade: code is in its owners
         source += "".join(inspect.getsource(importlib.import_module(o)) for o in module._OWNERS)
     assert "~/.kiro/crew/.env" not in source
     assert "env_file_display()" in source

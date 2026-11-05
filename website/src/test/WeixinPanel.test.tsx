@@ -238,7 +238,7 @@ describe('WeixinPanel — session folder', () => {
     await screen.findByLabelText('Folder name')
 
     expect(
-      screen.getByText('Created for you when you turn this on, if it does not exist yet.'),
+      screen.getByTitle('Created for you when you turn this on, if it does not exist yet.'),
     ).toBeInTheDocument()
     expect(screen.queryByText(/when you save these settings/i)).not.toBeInTheDocument()
   })

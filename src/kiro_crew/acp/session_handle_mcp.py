@@ -42,6 +42,7 @@ from kiro_crew.acp.session_handle_runtime_contract import (
     AcpRuntimeDead,
     AcpRuntimeError,
 )
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
@@ -193,6 +194,18 @@ def _remote_flat_launches(self: AcpSessionHandle) -> dict[str, tuple[tuple[str, 
     """
     if self._watchdog.remote_flat_probe_secs <= 0:
         return None
+    return self._mcp_launches
+
+
+def _mcp_attribution_launches(
+    self: AcpSessionHandle,
+) -> dict[str, tuple[tuple[str, ...], ...]]:
+    """The launch roster the oracle reads to sample only the in-flight tool's
+    own MCP server, with no ``remote_flat`` gate.
+
+    Read per call, like :func:`_remote_flat_launches`, so a resumed session's
+    re-declared servers govern the next probe.
+    """
     return self._mcp_launches
 
 
@@ -360,6 +373,7 @@ async def wait_mcp_ready(
         if msg is None:
             self._queue.put_nowait(None)
             raise AcpRuntimeDead("Runtime exited while waiting for managed MCP readiness")
+        dropped_compaction = consume_stale_compaction_status(self, msg)
         try:
             # Config/OAuth side effects also belong to external servers and
             # pre-mode frames. They must not become readiness requirements.
@@ -368,6 +382,8 @@ async def wait_mcp_ready(
             logger.debug("error processing init notification", exc_info=True)
         if stale:
             stale -= 1
+            continue
+        if dropped_compaction:
             continue
         self._mcp_report.record_frame(msg, owned=self._owns_mcp_frame(msg))
         readiness.record(msg)
@@ -472,6 +488,8 @@ async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple
             # Runtime died: re-poison so the turn that follows sees it.
             await self._queue.put(None)
             break
+        if consume_stale_compaction_status(self, msg):
+            continue
         try:
             report.record_frame(msg, owned=self._owns_mcp_frame(msg))
             self._apply_init_notification(msg, classify_notification(msg))
@@ -919,6 +937,8 @@ async def drain_init(
         stale_backlog = stale_frames > 0
         if stale_backlog:
             stale_frames -= 1
+        if consume_stale_compaction_status(self, msg):
+            continue
         try:
             action = classify_notification(msg)
             if not stale_backlog:

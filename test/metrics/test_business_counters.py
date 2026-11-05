@@ -217,18 +217,27 @@ class TestCompactions:
         # reports as different outcomes. This case is the FAILED one, so the set is
         # empty -- present rather than absent, because the real ``CompactionState``
         # always has it and a double without it would pass by accident.
-        stub.state = SimpleNamespace(on_compacted=None, uncompactable_recycles=set())
+        # ``compaction_triggers`` likewise: empty means the threshold trigger.
+        stub.state = SimpleNamespace(
+            on_compacted=None, uncompactable_recycles=set(), compaction_triggers={}
+        )
         asyncio.run(
             CompactionCoordinator._fire_compact_callback(coordinator, "k", 0.9, success=success)
         )
 
     def test_a_compaction_verdict_is_counted(self, rec):
         self._fire(True)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": True}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": True,
+            "trigger": "threshold",
+        }
 
     def test_a_failed_compaction_is_still_an_attempt(self, rec):
         self._fire(False)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": False}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": False,
+            "trigger": "threshold",
+        }
 
     def test_a_failed_compact_that_recycles_is_not_counted_successful(self, rec):
         """The counter's success is not the callback's success.
@@ -243,7 +252,10 @@ class TestCompactions:
         this test is what notices.
         """
         self._fire(True, recycling=True)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": False}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": False,
+            "trigger": "threshold",
+        }
 
     def test_a_surface_with_no_callback_is_still_counted(self, rec):
         """The early return below the emit would otherwise drop those surfaces."""

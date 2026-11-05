@@ -1201,6 +1201,10 @@ class TestRedactionSinkRegistry:
             # THEN redact_credentials, cached by content hash, so a sink calling it is
             # fully covered; test_the_display_redactor_runs_both_scanners pins that.
             "_redact_for_display(",
+            # _redact_project_path (dashboard/file_api/project_dirs.py) is `redact()`,
+            # both scanners, over the whole path; on Darwin only the OS-generated temp
+            # id is withheld from the scan (TestMacosPrefixBoundary pins that).
+            "_redact_project_path(",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")
