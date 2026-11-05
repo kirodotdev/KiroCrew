@@ -397,8 +397,13 @@ def _brace_expansions(token: str) -> "list[str] | None":
     return words
 
 
-def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
+def _operand_targets_self(operand: str, *, host_position: bool = True, dns: bool = True) -> bool:
     """True if *operand* names THIS machine as a connection target.
+
+    ``dns=False`` passes ``dns_fallback=False`` to every host check (no
+    hosts-file or DNS alias verdict, no unread-address-table window), for a
+    word that is not itself the destination (see
+    ``_command_value_names_self_endpoint``).
 
     Resolves the host part the way the ssh family reads an operand: an
     optional ``ssh://``/``scp://``/``sftp://``/``rsync://`` scheme (authority
@@ -434,7 +439,7 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     # has no operator left, so the recursive call cuts nothing and does not
     # recurse again, and a bare ``$VAR`` (no operator to cut) is unaffected.
     cut = _cut_at_operator(t)
-    if cut != t and _operand_targets_self(cut, host_position=host_position):
+    if cut != t and _operand_targets_self(cut, host_position=host_position, dns=dns):
         return True
     for hint in _HOSTNAME_SUBSTITUTION_HINTS:
         if hint in t:
@@ -449,7 +454,7 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     # (``foo${X:-localhost}bar``): the embedded word alone is self even when
     # the resolved whole is not.
     for match in _EXPANSION_DEFAULT_RE.finditer(t):
-        if _operand_targets_self(match.group(1), host_position=host_position):
+        if _operand_targets_self(match.group(1), host_position=host_position, dns=dns):
             return True
     # Bash substitutes a parameter default INTO the surrounding
     # word (``local${KC_UNSET:-host}`` -> ``localhost``), so the whole
@@ -459,7 +464,7 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     # (nesting and colon-less operators included); the recursive call sees a
     # string with no such form left, so it does not recurse here again.
     resolved = _resolve_param_defaults(t)
-    if resolved != t and _operand_targets_self(resolved, host_position=host_position):
+    if resolved != t and _operand_targets_self(resolved, host_position=host_position, dns=dns):
         return True
     # A single integer literal inside arithmetic expansion is
     # printed decimally by bash (``$((0x7f))`` -> ``127``), gluing into the
@@ -468,7 +473,7 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     # docstring) — and the substituted string carries no ``$((…))`` literal,
     # so the recursion is a single level.
     normalized = _ARITH_INT_LITERAL_RE.sub(_arith_int_literal_repl, t)
-    if normalized != t and _operand_targets_self(normalized, host_position=host_position):
+    if normalized != t and _operand_targets_self(normalized, host_position=host_position, dns=dns):
         return True
     # An arithmetic expansion that SURVIVED normalization is an
     # expression (``$((0+1))``) whose produced text only the shell knows.
@@ -491,7 +496,7 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     if choices is None:
         return True
     for choice in choices:
-        if choice != t and _operand_targets_self(choice, host_position=host_position):
+        if choice != t and _operand_targets_self(choice, host_position=host_position, dns=dns):
             return True
     scheme_seen = False
     for scheme in ("ssh://", "scp://", "sftp://", "rsync://"):
@@ -507,7 +512,7 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     # The DNS layer applies to the WHOLE token only when the token sits in
     # host position (or a scheme marked it as an authority) -- a plain word
     # here may be a local filename.
-    if _host_is_self(t, dns_fallback=host_position or scheme_seen):
+    if _host_is_self(t, dns_fallback=dns and (host_position or scheme_seen)):
         return True
     if t.startswith("[") or "@[" in t:
         # Bracketed IPv6, optionally behind userinfo: user@[::1]:path
@@ -521,7 +526,7 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
             # whole remainder after it as a bare host first: ``user@::1``
             # names ``::1``, which the plain colon split below would misread
             # as an empty host.  Userinfo marks the remainder as a host.
-            if _host_is_self(t[len(pre_colon.rsplit("@", 1)[0]) + 1 :]):
+            if _host_is_self(t[len(pre_colon.rsplit("@", 1)[0]) + 1 :], dns_fallback=dns):
                 return True
         host = pre_colon
         if "@" in host:
@@ -538,14 +543,14 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
         # no path).  A token with a ``/`` outside a scheme keeps the colon-first
         # order: its ``@`` is path data (``far:/backup/a@b``).
         tail = t.rsplit("@", 1)[1]
-        if _host_is_self(tail, dns_fallback=host_position or scheme_seen):
+        if _host_is_self(tail, dns_fallback=dns and (host_position or scheme_seen)):
             return True
         tail_host = tail.partition(":")[0]
         if tail_host != tail and _host_is_self(
-            tail_host, dns_fallback=host_position or scheme_seen
+            tail_host, dns_fallback=dns and (host_position or scheme_seen)
         ):
             return True
-    return _host_is_self(host, dns_fallback=host_position or scheme_seen or host != t)
+    return _host_is_self(host, dns_fallback=dns and (host_position or scheme_seen or host != t))
 
 
 def _ssh_family_verb(token: str) -> "str | None":
@@ -686,17 +691,18 @@ def _command_value_names_self_endpoint(value: str) -> bool:
     the outer session lands (round-26): ``nc 127.0.0.1 22`` relays the whole
     session to the local sshd with no ssh-family verb for the recursion to
     see.  Each whitespace word is checked as a connection operand, and its
-    bracketed groups and separator-split fragments are checked LITERALLY --
-    fragments never resolve DNS (``dns_fallback=False``), so option words
-    like ``-connect`` or socat's ``TCP`` address prefix cannot fail closed,
-    and a resolvable alias inside a transport (``nc myalias 22``) stays the
-    documented alias residual the interim tier does not close.
+    bracketed groups and separator-split fragments, all LITERALLY (``dns=False``,
+    ``dns_fallback=False``), so option words like ``-connect``, socat's ``TCP``
+    address prefix or an unresolved proxy (``-x proxy.example.com:3128``) cannot
+    fail closed, and a resolvable alias inside a transport (``nc myalias 22``,
+    ``-connect myalias:22``) stays the documented alias residual the interim
+    tier does not close.
     """
     for word in value.split():
         stripped = word.strip("\"'")
         if not stripped or stripped.startswith("-"):
             continue
-        if _operand_targets_self(stripped, host_position=False):
+        if _operand_targets_self(stripped, host_position=False, dns=False):
             return True
         for group in re.findall(r"\[([^\]]*)\]", stripped):
             if _host_is_self(group, dns_fallback=False):
