@@ -541,7 +541,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "compressed_history_replay": (
-        "52ced419172acdf39e95df4137373db1a00ec3e6e0d52a05d91172444ee64b98",
+        "35cfc6439d36cf587ece6909ec5103c286b842dbd97725d965a2616a3167afc8",
         [
             ("agent_instructions", 1479),
             ("session_wrapper", 288),
@@ -551,7 +551,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
             ("docs_pointer", 235),
             ("memory_tools", 425),
             ("unclassified", 26),
-            ("conversation_replay", 170),
+            ("conversation_replay", 415),
             ("reply_format_rules", 1347),
             ("request_header", 53),
         ],
@@ -916,6 +916,15 @@ def test_assembled_prompt_is_byte_identical(rig: _Rig, scenario: str) -> None:
     rendered = _mask_stable_text(rig.normalize(_SCENARIOS[scenario](rig)))
     observed = (_sha(rendered), _outline(rendered))
     assert observed == _GOLDEN.get(scenario), f"{scenario}: {observed!r}"
+
+
+def test_the_replay_header_names_what_a_text_replay_does_not_carry(rig: _Rig) -> None:
+    """A replay is rebuilt from chat text alone, so its header tells the model
+    that tool calls, their results and unwritten work did not come with it."""
+    message = _compressed_history_replay(rig)
+    header = next(line for line in message.splitlines() if line.startswith("[CONVERSATION HISTORY"))
+    assert "not your earlier tool calls or their results" in header
+    assert "nothing you worked out without writing it in a reply" in header
 
 
 # ── Budget boundaries ─────────────────────────────────────────────────────────
