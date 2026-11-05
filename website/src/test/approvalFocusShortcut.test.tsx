@@ -287,58 +287,66 @@ function pressRejectChord(init: KeyboardEventInit = {}): KeyboardEvent {
   return ev
 }
 
+/** The pending card naming its own row (`mid`), as every live native card
+ *  does: the chord decides only that row. A card with no row names no request,
+ *  and nothing is sent for it. */
+function stateWithRow() {
+  const state = stateWithApproval()
+  ;(state.chat as unknown as { messages: Array<{ meta?: Record<string, string> }> }).messages[1].meta!.mid = 'm-1'
+  return state
+}
+const ROW = { origin: 'native', id: 'ap-123', slot: 'slot-1', mid: 'm-1' }
+
 describe('Alt+Shift+R rejects the pending approval once', () => {
   beforeEach(() => { vi.clearAllMocks(); localStorage.clear() })
 
   it('rejects once from inside the composer and approves nothing', () => {
     // Reject ONCE, the narrower refusal: the rest of the batch keeps asking.
-    renderWithProviders(<Harness />, { store: createTestStore(stateWithApproval()) })
+    renderWithProviders(<Harness />, { store: createTestStore(stateWithRow()) })
     act(() => { document.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')!.focus() })
     expect(pressRejectChord().defaultPrevented).toBe(true)
-    expect(api.resolveApproval).toHaveBeenCalledTimes(1)
-    expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'reject_once', undefined, expect.any(String))
+    expect(api.decideApproval).toHaveBeenCalledTimes(1)
+    expect(api.decideApproval).toHaveBeenCalledWith(ROW, 'reject_once', expect.any(String))
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
 
   it('on the slot route, rejects once for its own card row', () => {
-    // A native request carries its card row (`mid`), so the decision goes to the
-    // slot route: the verb there must still be the one-shot rejection.
-    const state = stateWithApproval()
-    ;(state.chat as unknown as { messages: Array<{ meta?: Record<string, string> }> }).messages[1].meta!.mid = 'm-1'
-    renderWithProviders(<Harness />, { store: createTestStore(state) })
+    // A native request carries its card row (`mid`): the decide names that row
+    // (the slot route), and the verb there must still be the one-shot rejection.
+    renderWithProviders(<Harness />, { store: createTestStore(stateWithRow()) })
     pressRejectChord()
-    expect(api.approveChatSlot).toHaveBeenCalledTimes(1)
-    expect(api.approveChatSlot).toHaveBeenCalledWith('slot-1', 'rejected_once', expect.objectContaining({ request_id: 'ap-123', request_mid: 'm-1', origin: 'native' }))
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).toHaveBeenCalledTimes(1)
+    expect(api.decideApproval.mock.calls[0][0]).toEqual(ROW)
+    expect(api.decideApproval.mock.calls[0][1]).toBe('reject_once')
   })
 
   it('is a no-op with no approval pending', () => {
     renderWithProviders(<Harness />, { store: createTestStore(stateWithoutApproval()) })
     pressRejectChord()
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
 
   it('sends nothing on an auto-repeat, which would refuse the next prompt as it arrives', () => {
-    renderWithProviders(<Harness />, { store: createTestStore(stateWithApproval()) })
+    renderWithProviders(<Harness />, { store: createTestStore(stateWithRow()) })
     expect(pressRejectChord({ repeat: true }).defaultPrevented).toBe(true)
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 
   it('sends nothing while a crew window covers the session', () => {
     // This cover and the remote crew below keep the local pane mounted, so its row
     // is still in the DOM: only the guards keep a refusal off a prompt nobody sees.
-    renderWithProviders(<Harness />, { store: createTestStore(stateWithApproval()) })
+    renderWithProviders(<Harness />, { store: createTestStore(stateWithRow()) })
     onTestFinished(markCrewWindowShown(() => {}))
     pressRejectChord()
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 
   it('sends nothing while a remote crew fills the page', () => {
-    const store = createTestStore(stateWithApproval())
+    const store = createTestStore(stateWithRow())
     renderWithProviders(<Harness />, { store })
     act(() => { store.dispatch(setActiveId('remote-1')) })
     pressRejectChord()
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 })

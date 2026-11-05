@@ -59,7 +59,9 @@ const NO_QUESTIONS: readonly CardQuestion[] = []
 /** What the quick reply shows. A send in flight resolves to the one it ends in. */
 type ReplyState = { kind: 'idle' | 'sending' | 'sent' | 'queued' | 'unconfirmed' } | { kind: 'error'; reason?: string }
 
-type Outcome = 'pending' | 'approved' | 'denied' | 'expired' | 'elsewhere_approved' | 'elsewhere_denied' | 'error'
+// `refused`: a press the server refused as no longer pending (404). It is
+// shown as a failure, unlike `expired`, which is an ask that ended with no press.
+type Outcome = 'pending' | 'approved' | 'denied' | 'expired' | 'refused' | 'elsewhere_approved' | 'elsewhere_denied' | 'error'
 
 export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTMLElement | null> }) {
   const [target, setTarget] = useState<{ key: string; row: HTMLElement; focusReply: boolean } | null>(null)
@@ -249,7 +251,7 @@ function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, dra
         set(decisionVerdict(elsewhere) === 'approved' ? 'elsewhere_approved' : 'elsewhere_denied')
         dispatch(resolveApprovalRow({ target: rowTarget, decision: decisionVerdict(elsewhere) }))
       } else if (err instanceof ApiError && err.status === 404) {
-        set('expired')
+        set('refused')
         dispatch(resolveApprovalRow({ target: rowTarget, decision: 'stale' }))
       } else {
         set('error')
@@ -377,6 +379,8 @@ function AskRow({ ask, outcome, decidable, onDecide }: {
           {done === 'approved' && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-ok-text"><Check size={12} aria-hidden />{t('pages.chatSidebar.needsMeCard.approved')}</span>}
           {done === 'denied' && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-danger-text"><X size={12} aria-hidden />{t('pages.chatSidebar.needsMeCard.denied')}</span>}
           {done === 'expired' && <span className="text-[11px] font-semibold text-muted">{t('pages.chatSidebar.needsMeCard.expired')}</span>}
+          {/* No hand-off: the card's quick-reply draft sits below this notice. */}
+          {done === 'refused' && <ErrorNotice variant="inline" message={t('components.approvalCard.approval_no_longer_pending')} className="basis-full min-w-0" />}
           {done === 'elsewhere_approved' && <span className="text-[11px] font-semibold text-muted">{t('pages.chatSidebar.needsMeCard.approved_elsewhere')}</span>}
           {done === 'elsewhere_denied' && <span className="text-[11px] font-semibold text-muted">{t('pages.chatSidebar.needsMeCard.denied_elsewhere')}</span>}
           {!done && ask.requestMid && decidable && (

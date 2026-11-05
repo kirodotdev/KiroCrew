@@ -35,6 +35,7 @@ from kiro_crew.dashboard.chat_handlers import api_chat_mode, api_chat_slot_appro
 from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
 from kiro_crew.dashboard.state import SlotOrigin, row_mid
 from kiro_crew.safety_override import safety_override as real_safety_override
+from kiro_crew.testing.wait import await_until
 
 
 @web.middleware
@@ -656,7 +657,7 @@ async def test_a_task_gate_is_decided_by_its_own_instance_and_no_other(state):
                 json={},
             )
             assert own.status == 200
-        assert await gate_a is True
+        assert await await_until(gate_a, what="request A's approval") is True
         assert not gate_b.done()
     finally:
         for gate in (gate_a, gate_b):
@@ -707,7 +708,7 @@ async def test_a_stale_cards_target_cannot_decide_the_request_that_replaced_it(s
             assert await decide("other", instance_b) == (404, {"error": "not found or expired"})
             assert not request_b.done()
             assert (await decide(slot, instance_b))[0] == 200
-        assert await request_b is True
+        assert await await_until(request_b, what="request B's approval") is True
     finally:
         pending = [t for t in (request_a, request_b) if t is not None]
         for task in pending:

@@ -12,7 +12,7 @@ import { api } from '../api/client'
 import { ALL_UNAVAILABLE } from '../api/sharedCrewUi'
 import { applySharedCrewFrame, sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
 import type { PublicPrincipal, SharedDecision } from '../api/sharedCrew'
-import { resolveByApprovalId, setQuestionCard } from '../store/chatSlice'
+import { resolveApprovalRow, setQuestionCard } from '../store/chatSlice'
 import type { RootState } from '../store'
 
 vi.mock('../api/client', () => {
@@ -22,7 +22,7 @@ vi.mock('../api/client', () => {
     constructor(status: number, message: string, body = '') { super(message); this.status = status; this.body = body }
   }
   return { api: {
-    resolveApproval: vi.fn(), approveChatSlot: vi.fn(),
+    resolveApproval: vi.fn(), decideApproval: vi.fn(), approveChatSlot: vi.fn(),
     sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), sharedCrewPeople: vi.fn(), sharedCrewViewer: vi.fn(), sharedCrewDecisions: vi.fn(),
   }, ApiError: MockApiError }
 })
@@ -37,7 +37,7 @@ const decision = (over: Partial<SharedDecision>): SharedDecision => ({
   decision_id: 'approval:3:slot-1:ap-1', kind: 'approval', session_key: 'slot-1', state: 'pending', revision: 1,
   initiator: alice, responder: null, outcome: '', resolved_at: null, ...over,
 })
-const permission = (id: string) => ({ role: 'permission', content: 'Running: ls', ts: id, meta: { approval_id: id, tool_call_id: `tc-${id}`, tool_input: '{}' } })
+const permission = (id: string) => ({ role: 'permission', content: 'Running: ls', ts: id, meta: { approval_id: id, mid: `mid-${id}`, tool_call_id: `tc-${id}`, tool_input: '{}' } })
 
 function makeStore(rows: unknown[]) {
   return createTestStore({
@@ -106,7 +106,7 @@ describe('a card settled by someone else', () => {
     await screen.findByTestId('raised-by', {}, { timeout: CHAIN_TIMEOUT_MS })
     await act(async () => { qc.setQueryData(sharedCrewKeys.decisions('slot-1'), { schema_version: 1, items: [settled] }) })
     expect(await screen.findByText('Alice Example approved', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
-    await act(async () => { store.dispatch(resolveByApprovalId({ id: 'ap-1', slot: 'slot-1', decision: 'approved' })) })
+    await act(async () => { store.dispatch(resolveApprovalRow({ target: { origin: 'native', id: 'ap-1', slot: 'slot-1', mid: 'mid-ap-1' }, decision: 'approved' })) })
     expect(screen.getByText('Alice Example approved')).toBeInTheDocument()
     await act(async () => { store.dispatch(setQuestionCard({ slot: 'slot-1', ask_id: 'ask-9', questions: [{ question: 'Pick', options: [{ label: 'A' }] }] } as never)) })
     await waitFor(() => expect(screen.queryByText('Alice Example approved')).toBeNull())
@@ -118,7 +118,7 @@ describe('a card settled by someone else', () => {
     await act(async () => { store.dispatch(setQuestionCard({ slot: 'slot-1', ask_id: 'ask-9', questions: [{ question: 'Pick', options: [{ label: 'A' }] }] } as never)) })
     await act(async () => { qc.setQueryData(sharedCrewKeys.decisions('slot-1'), { schema_version: 1, items: [settled] }) })
     expect(await screen.findByText('Alice Example approved', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
-    await act(async () => { store.dispatch(resolveByApprovalId({ id: 'ap-1', slot: 'slot-1', decision: 'approved' })) })
+    await act(async () => { store.dispatch(resolveApprovalRow({ target: { origin: 'native', id: 'ap-1', slot: 'slot-1', mid: 'mid-ap-1' }, decision: 'approved' })) })
     expect(screen.getByText('Alice Example approved')).toBeInTheDocument()
   })
 
@@ -163,7 +163,7 @@ describe('a card settled by someone else', () => {
   it('a click that loses the race shows the line once, and the frame that follows adds no second', async () => {
     const { ApiError } = await import('../api/client')
     const body = JSON.stringify({ code: 'already_resolved', decision: settled })
-    vi.mocked(api.resolveApproval).mockRejectedValue(new (ApiError as unknown as new (s: number, m: string, b: string) => Error)(409, 'conflict', body))
+    vi.mocked(api.decideApproval).mockRejectedValue(new (ApiError as unknown as new (s: number, m: string, b: string) => Error)(409, 'conflict', body))
     const { qc } = mountCard([permission('ap-1')])
     await screen.findByTestId('raised-by', {}, { timeout: CHAIN_TIMEOUT_MS })
     await waitFor(() => expect(qc.getQueryData(sharedCrewKeys.viewer)).toBeDefined())

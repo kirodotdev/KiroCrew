@@ -1183,6 +1183,28 @@ describe('useSceneInteraction — pending approval bar', () => {
     expect(screen.queryByTestId('scene-approval-failure')).not.toBeInTheDocument()
   })
 
+  it('keeps a lost race\'s notice after the winner clears the request, naming the winner, and not over the next one', async () => {
+    // Another collaborator settles the request while this click is in flight:
+    // the winner's frame clears the pending approval before the 409 lands.
+    let reject: (e: unknown) => void = () => {}
+    apiMocks.decideApproval.mockImplementationOnce(() => new Promise((_res, rej) => { reject = rej }))
+    const view = renderScene(withApproval())
+    await clickAt(100, 100)
+    fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
+    view.rerender(<Harness sources={[source({ id: 'slot-a' })]} />)
+    await flush()
+    const winner = { decision_id: 'd1', outcome: 'rejected' }
+    await act(async () => { reject(new ApiError(409, 'already resolved', JSON.stringify({ code: 'already_resolved', decision: winner }))) })
+    await flush()
+    expect(failureNotice()).toHaveAttribute('role', 'alert')
+    expect(failureNotice()).toHaveTextContent(i18nT('sharedCrew.already_rejected') as string)
+    // The next request opens clean.
+    const next = { origin: 'native' as const, id: 'req-10', slot: 'a', mid: 'mid-10' }
+    view.rerender(<Harness sources={[source({ id: 'slot-a', pendingApproval: { tool: 'execute_bash', requestId: 'req-10', target: next } })]} />)
+    await flush()
+    expect(screen.queryByTestId('scene-approval-failure')).not.toBeInTheDocument()
+  })
+
   it('keeps Approve/Deny after a retryable refusal', async () => {
     apiMocks.decideApproval.mockRejectedValue(new ApiError(403, 'slot is read-only'))
     renderScene(withApproval())

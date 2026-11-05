@@ -70,6 +70,16 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
     expect(banners.map(n => n.approval_id)).toEqual(['ap-w1'])
   })
 
+  it("a takeover under a crew member's approval id retires the replaced request's conductor-pointed note", () => {
+    // The note's `slot` is the conductor; the takeover frame names the crew
+    // member's slot. The replaced request's row must still leave the feed.
+    const { result } = renderHook(() => useApprovalRegistry(store.dispatch, new QueryClient()))
+    result.current.onApprovalFrame({ id: 'ap-w1t', instance: 'i-old', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 7 }, false)
+    result.current.onApprovalFrame({ id: 'ap-w1t', instance: 'i-new', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 8 }, false)
+    const rows = store.getState().notifications.items.filter(n => n.approval_id === 'ap-w1t')
+    expect(rows.map(n => [n.approval_instance, n.slot, n.crew_member])).toEqual([['i-new', 'root', 'w1']])
+  })
+
   it("a crew member's native permission row chimes and posts an OS toast in its name", () => {
     const buffers = { flushChunks: vi.fn(), bufferSlotActivity: vi.fn() } as unknown as StreamBuffers
     const voice = { resetForNewTurn: vi.fn() } as unknown as VoicePlayback

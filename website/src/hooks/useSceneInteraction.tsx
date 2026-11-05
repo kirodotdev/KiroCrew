@@ -7,6 +7,7 @@ import { api } from '../api/client'
 import { ApiError, isTerminalApprovalRefusal, noPendingApprovalError } from '../api/apiError'
 import { approvalGoneKey } from '../types/approvalTarget'
 import { reportForError } from '../utils/errorReport'
+import { alreadyResolvedDecision, settledElsewhereLine } from '../components/chat-input/sharedDecision'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import type { AgentSource } from './useAgentSync'
 import { useImeGuard } from './useImeGuard'
@@ -87,6 +88,9 @@ const THREAD_VIEW_MESSAGES = 8
  *  approval that is gone, else the server's own reason, else the hedged copy
  *  for a press that got no response. */
 function approvalFailureText(err: unknown): string {
+  // A click that lost the race to another collaborator says how it ended.
+  const settled = alreadyResolvedDecision(err)
+  if (settled) return settledElsewhereLine(settled)
   if (isTerminalApprovalRefusal(err)) return i18nT('components.approvalCard.approval_no_longer_pending') as string
   if (err instanceof ApiError && err.message) {
     return i18nT('components.approvalCard.decision_not_recorded_error', { error: err.message }) as string
@@ -593,8 +597,12 @@ export function useSceneInteraction(
       })()}
       {(() => {
         const pending = sourceFor(threadView.agent)?.pendingApproval
-        return approvalState === 'failed' && !!pending
-          && failedApprovalKey === approvalGoneKey(pending.requestId, pending.target)
+        if (approvalState !== 'failed' || !failedApprovalKey) return false
+        // A click that lost the race keeps its notice after the winner's frame
+        // clears the pending approval: it is this popover's only word that the
+        // click lost. It still never sits over a later request.
+        if (!pending) return !!alreadyResolvedDecision(approvalError)
+        return failedApprovalKey === approvalGoneKey(pending.requestId, pending.target)
       })() ? (
         // A refused decide is a failed request, the gone refusal included
         // (errors-use-error-notice). No hand-off: the composer below may hold

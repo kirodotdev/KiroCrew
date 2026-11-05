@@ -3,7 +3,6 @@ import { api } from '../api/client'
 import { ApiError, isTerminalApprovalRefusal } from '../api/apiError'
 import type { CoordinatorApprovalTarget, Notification } from '../types'
 import { coordinatorTarget, approvalTargetKey, sameApprovalTarget } from '../types/approvalTarget'
-import { parseTs } from '../utils/notificationTimestamp'
 import { jsonEqual } from '../utils/structuralEqual'
 
 interface NotificationsState {
@@ -37,8 +36,8 @@ interface NotificationsState {
    *  press keeps one, to say why. A retired row is also read: it no longer
    *  asks for anything, so `approvalDecisionSettled` marks it read in this tab and
    *  it leaves the unread badge. Its Approve/Reject are withdrawn. A dismiss that succeeds
-   *  removes it, and so do a clear-all and a reload. A reconnect refetch keeps
-   *  it (`withLocalApprovalRows`).
+   *  removes it, and so does a reload or reconnect, whose refetch does not list
+   *  this tab's own rows.
    *  An approval row is this tab's copy of a pending request (the `approval`
    *  frame and the reconnect reconcile add it; the notification store holds
    *  none), so a reload drops every one and the reconcile adds back only
@@ -185,69 +184,19 @@ const pruneAckStamps = (state: NotificationsState) => {
 }
 
 /** The one ring cap, used by every path that grows the list. It evicts the
- *  oldest rows, except a held row. A row is held while a decision is in
- *  flight on it (that decision's response must still land on it, the same
- *  rule `replaceRows` keeps for a snapshot), and while it is this tab's own
- *  approval row and still undecided: the reader can still decide it, and no
- *  snapshot or push can bring it back. A settled row (retired, or decided
- *  with a failed DELETE) is evicted like any other note. The list can exceed
- *  the cap only by held rows, which only this tab's own approvals and presses
- *  create, and an evicted row's marks leave with it. */
+ *  oldest rows, except a row with a decision in flight: that decision's
+ *  response must still land on it, the same rule `replaceRows` keeps for a
+ *  snapshot. A settled row (retired, or a failed DELETE) is evicted like any
+ *  other note. The list can exceed the cap only by rows this tab is deciding,
+ *  and an evicted row's marks leave with it. */
 const capRows = (state: NotificationsState, items: Notification[]): Notification[] => {
   let excess = items.length - NOTIFICATIONS_RING_CAP
   if (excess <= 0) return items
   const deciding = state.approvalDecisions ?? {}
-  const settled = (ts: string) =>
-    Object.hasOwn(state.retiredApprovals ?? {}, ts) || state.dismissFailed?.[ts] === 'decided'
-  const held = (n: Notification) =>
-    Object.hasOwn(deciding, n.ts) || (isLocalApprovalRow(n) && !settled(n.ts))
   return items.filter(n => {
-    if (excess > 0 && !held(n)) { excess -= 1; return false }
+    if (excess > 0 && !Object.hasOwn(deciding, n.ts)) { excess -= 1; return false }
     return true
   })
-}
-
-/** The key an approval row is matched under across a snapshot: the request it
- *  names (its owner-bound target), or its ts when it names none. */
-const approvalRowKey = (n: Notification): string => {
-  const target = coordinatorTarget(n.approval_id, n.slot || '', n.approval_instance)
-  // A target key opens with its origin, so it never equals a bare ts.
-  return target ? approvalTargetKey(target) : n.ts
-}
-
-/** A row's position in time. Served rows carry an ISO 8601 ts and locally
- *  raised approval rows an epoch, so `Number()` reads every served ts as NaN;
- *  this goes through the feed's own parser, and keeps a bare number for a ts
- *  that parser rejects. */
-const tsOrder = (ts: string): number => {
-  const at = parseTs(ts).getTime()
-  return Number.isNaN(at) ? Number(ts) : at
-}
-
-/** *served* plus the approval rows this tab holds that the snapshot cannot
- *  speak for. Approval rows are raised by the `approval` frame and the
- *  approvals reconcile, never written to the server's notification log, so a
- *  snapshot that lacks one says nothing about it. Replacing membership
- *  wholesale would drop a retired row, and the expiry or refusal it explains,
- *  before the reader dismissed it. Such a row stays until its own Dismiss or a
- *  Clear all removes it, or, once settled, the ring cap evicts it; a served
- *  row naming the same request supersedes it.
- *  Each kept row goes back in ts order. */
-const withLocalApprovalRows = (served: Notification[], local: Notification[]): Notification[] => {
-  const servedTs = new Set(served.map(n => n.ts))
-  const servedKeys = new Set(served.filter(n => n.kind === 'approval' && !!n.approval_id).map(approvalRowKey))
-  const kept = local.filter(n => isLocalApprovalRow(n) && !servedTs.has(n.ts) && !servedKeys.has(approvalRowKey(n)))
-  if (kept.length === 0) return served
-  // An undecided kept row is held in the ring cap, so the cap `replaceRows`
-  // applies after them takes its room from the served rows, oldest first.
-  const out = [...served]
-  for (const row of kept) {
-    const rowAt = tsOrder(row.ts)
-    const at = out.findIndex(n => tsOrder(n.ts) > rowAt)
-    if (at < 0) out.push(row)
-    else out.splice(at, 0, row)
-  }
-  return out
 }
 
 const removeRow = (state: NotificationsState, ts: string) => {
@@ -662,7 +611,7 @@ const notificationsSlice = createSlice({
         const prevByTs = new Map<string, Notification>()
         for (const n of prev) if (!prevByTs.has(n.ts)) prevByTs.set(n.ts, n)
         const membership = withMembershipSince(state, action.payload.items, action.payload.membershipSeq)
-        const served = membership.map(item => {
+        replaceRows(state, membership.map(item => {
           const stamped = stamps[item.ts]
           const local = prevByTs.get(item.ts)
           // A settled approval row (retired, or decided with a failed DELETE)
@@ -675,8 +624,7 @@ const notificationsSlice = createSlice({
           // delivered. Keeping the held object for an equal item keeps every
           // row keyed on it, and every memo over the list, from re-rendering.
           return local && jsonEqual(local, merged) ? local : merged
-        })
-        replaceRows(state, withLocalApprovalRows(served, prev), { endDeciding: false, keepHeld: action.payload.keepHeld })
+        }), { endDeciding: false, keepHeld: action.payload.keepHeld })
         pruneKeyedStamps(state)
       })
       .addCase(clearNotifications.fulfilled, (state, action) => {

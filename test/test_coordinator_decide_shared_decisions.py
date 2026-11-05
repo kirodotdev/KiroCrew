@@ -31,7 +31,7 @@ from kiro_crew.shared_crew.contracts import (
     Transport,
     principal_id_for,
 )
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 SLOT = "selected"
 
@@ -231,7 +231,7 @@ async def test_a_second_click_before_cleanup_keeps_the_winners_decision(state):
         shared_decisions.state_approval_decision_id("spawn:a3")
     )
     assert record is not None and record.responder is not None and record.responder.id == BOB.id
-    assert await task is True
+    assert await await_until(task, what="the approval Bob won") is True
 
 
 @pytest.mark.asyncio
@@ -251,7 +251,7 @@ async def test_a_late_coordinator_click_never_adopts_a_native_decision_under_the
             _url("shared-id", "reject", instance), json={"response_id": "r-b"}
         )
         assert rejected.status == 200
-        assert await task is False
+        assert await await_until(task, what="the rejected coordinator approval") is False
         registry = shared_decisions.decisions_for(state)
         native_id = shared_decisions.approval_decision_id(SLOT, "shared-id")
         registry.open(native_id, shared_decisions.DecisionKind.APPROVAL, SLOT, BOB)

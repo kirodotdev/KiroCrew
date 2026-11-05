@@ -340,10 +340,12 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
         // A request that takes over the id ends the one it replaced, which
         // gets no frame of its own: a live feed row bound to another instance
         // under this id in this slot is that ended request's, so it leaves the
-        // feed.
+        // feed. A crew member's note points `slot` at its conductor and keeps
+        // the raising slot in `crew_member`, which is the slot to compare.
         const { retiredApprovals: retired = {}, dismissFailed: decided = {} } = store.getState().notifications
         for (const row of store.getState().notifications.items) {
-          if (row.kind !== 'approval' || row.approval_id !== target.id || (row.slot || '') !== target.slot) continue
+          const rowSlot = row.crew_member ?? row.slot ?? ''
+          if (row.kind !== 'approval' || row.approval_id !== target.id || rowSlot !== target.slot) continue
           if (!row.approval_instance || row.approval_instance === target.instance) continue
           if (Object.hasOwn(retired, row.ts) || Object.hasOwn(decided, row.ts)) continue
           dispatch(endApprovalRow(row.ts))

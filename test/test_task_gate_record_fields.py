@@ -22,7 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.dashboard.handlers.sessions import api_approvals
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _REPO = Path(__file__).resolve().parents[1]
 _PAGE = _REPO / "website" / "src" / "pages" / "ProjectDetailPage.tsx"
@@ -77,8 +77,8 @@ async def test_a_task_gate_record_and_listing_name_its_run_and_task(tmp_path) ->
     finally:
         for approval_id in ("gate-opaque", "cron-approval"):
             state.resolve_state_approval(approval_id, False)
-        assert await gate is False
-        assert await other is False
+        assert await await_until(gate, what="the task gate's approval") is False
+        assert await await_until(other, what="the cron approval") is False
 
 
 @pytest.mark.parametrize(("run_task_id", "task_index"), [("", 2), ("run-a", None), ("run-a", True)])
@@ -92,7 +92,7 @@ async def test_a_partial_task_identity_names_no_task(tmp_path, run_task_id, task
         assert "task_index" not in record
     finally:
         state.resolve_state_approval("gate", False)
-        assert await gate is False
+        assert await await_until(gate, what="the task gate's approval") is False
 
 
 def test_the_project_page_reads_the_fields_the_record_carries() -> None:
