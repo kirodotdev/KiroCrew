@@ -678,6 +678,7 @@ if _typing.TYPE_CHECKING:
         _clone_origin_matches,
         _clone_origin_url,
         _communicate_with_timeout,
+        _ensure_directory,
         _git_clone_or_pull,
         _git_fetch_branch,
         _git_fetch_commit,

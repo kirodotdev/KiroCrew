@@ -3038,7 +3038,10 @@ traversable. The policy is every file under the data home `0600` and every direc
   workspace root placed there, in the home used as a working directory) keeps the
   modes its own tools gave it, without the sweep having to recognise it; `skills/`,
   whose permission bits the builtin-skill sync fingerprints, and `scratch/` are not on
-  the list either. Within a listed store it removes group/other bits without following
+  the list either. The roots in `STARTUP_SWEEP_ROOTS`, `skills/` and `app-sources/`,
+  are narrowed without being entered, and are created `0700`, so the installed skill
+  trees and the app checkouts below them keep their own modes behind an owner-only
+  root. Within a listed store it removes group/other bits without following
   or modifying a symlink or its target; the directories leading to a store are opened
   `O_NOFOLLOW` at every level, so a store reached through a link is skipped. It skips
   hard-linked files, other owners and other filesystems, stops on `EROFS` or repeated
