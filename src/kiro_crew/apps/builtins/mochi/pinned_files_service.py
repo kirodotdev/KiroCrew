@@ -198,11 +198,17 @@ def pins_mutation(file_path: str) -> Iterator[None]:
 
     A sibling ``.lock`` file, so the lock fd is never the file being atomically
     replaced.
+
+    Creating the sidecar is a write into the data folder, so a write refusal
+    here raises :class:`PinsWriteError`, the same error ``_persist`` raises.
     """
     lock_path = Path(file_path).with_name(Path(file_path).name + ".lock")
     from kiro_crew.platform_compat import open_create_or_existing
 
-    fd = open_create_or_existing(lock_path, os.O_RDWR, 0o600)
+    try:
+        fd = open_create_or_existing(lock_path, os.O_RDWR, 0o600)
+    except OSError as err:
+        raise PinsWriteError("the pin list could not be saved") from err
     try:
         with file_lock(fd, exclusive=True):
             yield
