@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '../i18n/all'
@@ -10,6 +10,7 @@ import AppDetailPage from '../pages/AppDetailPage'
 import BuiltinAppRoute from '../apps/BuiltinAppRoute'
 import { adoptedLegacyNav, appNavTarget, type AppNavRecord } from '../appNav'
 import { useAppIdentity, useTrustedAppId } from '../app-sdk/identity'
+import { ApiError } from '../api/apiError'
 import { withInstalledApps } from './installedAppsTestUtils'
 
 /**
@@ -24,7 +25,7 @@ import { withInstalledApps } from './installedAppsTestUtils'
 type Row = AppNavRecord & { name: string; displayName: string; origin: string }
 const ROWS = JSON.parse(
   readFileSync(join(__dirname, 'fixtures/adoptionApiRows.json'), 'utf8'),
-) as { detail: Record<string, Row>; list: { adopted: Row[] } }
+) as { detail: Record<string, Row>; list: { adopted: Row[] }; missing: Record<string, object> }
 const DISPLAY = ROWS.detail.staged.displayName
 // The fixture app's compiled route, which the wheel pin keeps for its adopted copy.
 const LEGACY_ROUTE = '/fixture-former'
@@ -46,14 +47,18 @@ vi.mock('../apps/builtinRegistry', async () => {
 
 // AppHost dynamic-imports the bundle from the gateway, which a unit test has no
 // server for; the stand-in records what it was handed.
-function AppHostProbe({ app }: { app: { name: string; origin?: string } }) {
+function AppHostProbe({ app, requestedName }: { app: { name: string; origin?: string } | null; requestedName?: string }) {
+  const identity = useAppIdentity()?.origin ?? 'none'
+  const trusted = useTrustedAppId() ?? 'refused'
+  // A null record is AppHost's not-installed state.
+  if (!app) return <div data-testid="app-not-installed" data-name={requestedName ?? ''} />
   return (
     <div
       data-testid="app-host"
       data-name={app.name}
       data-origin={app.origin ?? ''}
-      data-identity={useAppIdentity()?.origin ?? 'none'}
-      data-trusted={useTrustedAppId() ?? 'refused'}
+      data-identity={identity}
+      data-trusted={trusted}
     />
   )
 }
@@ -170,5 +175,64 @@ describe('the legacy route and rail entry follow the adopted row the gateway pro
     )
     expect(await screen.findByTestId('compiled-page', undefined, LOAD_TIMEOUT)).toBeInTheDocument()
     expect(screen.queryByTestId('app-host')).toBeNull()
+  })
+})
+
+describe('the legacy route follows the 404 the gateway produced for a name with no record', () => {
+  /** `GET /api/apps/{name}` answering *body* with a 404, as the transport throws it. */
+  function rejectWith(body: object) {
+    getApp.mockReset()
+    getApp.mockRejectedValue(new ApiError(404, 'not installed', JSON.stringify(body)))
+  }
+
+  function renderLegacyRoute(wrapper = withInstalledApps([])) {
+    return render(
+      <MemoryRouter initialEntries={[LEGACY_ROUTE]}>
+        <Routes>
+          <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
+        </Routes>
+      </MemoryRouter>,
+      { wrapper },
+    )
+  }
+
+  it('shows the not-installed state, not the compiled page, for a name uninstalled after adoption', async () => {
+    rejectWith(ROWS.missing.released)
+    renderLegacyRoute()
+    const gone = await screen.findByTestId('app-not-installed', undefined, LOAD_TIMEOUT)
+    expect(gone.dataset.name).toBe('fixture-former')
+    expect(getApp).toHaveBeenCalledWith('fixture-former')
+    expect(screen.queryByTestId('compiled-page')).toBeNull()
+    expect(listApps).not.toHaveBeenCalled()
+  })
+
+  it('keeps the compiled page for a plain not-installed answer', async () => {
+    rejectWith(ROWS.missing.not_installed)
+    renderLegacyRoute()
+    expect(await screen.findByTestId('compiled-page', undefined, LOAD_TIMEOUT)).toBeInTheDocument()
+    await waitFor(() => expect(getApp).toHaveBeenCalledWith('fixture-former'))
+    // The answer has settled and the compiled page is still the one rendered.
+    await act(async () => { await getApp.mock.results[0].value.catch(() => undefined) })
+    expect(screen.getByTestId('compiled-page')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-not-installed')).toBeNull()
+  })
+
+  it('caches no answer from a failed lookup, so the next visit asks again', async () => {
+    getApp.mockReset()
+    getApp.mockRejectedValueOnce(new ApiError(502, 'bad gateway'))
+    getApp.mockRejectedValue(new ApiError(404, 'not installed', JSON.stringify(ROWS.missing.released)))
+    // One wrapper, so both visits share one query cache.
+    const wrapper = withInstalledApps([])
+    const first = renderLegacyRoute(wrapper)
+    expect(await screen.findByTestId('compiled-page', undefined, LOAD_TIMEOUT)).toBeInTheDocument()
+    await waitFor(() => expect(getApp).toHaveBeenCalledTimes(1))
+    await act(async () => { await getApp.mock.results[0].value.catch(() => undefined) })
+    expect(screen.getByTestId('compiled-page')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+    first.unmount()
+    renderLegacyRoute(wrapper)
+    const gone = await screen.findByTestId('app-not-installed', undefined, LOAD_TIMEOUT)
+    expect(gone.dataset.name).toBe('fixture-former')
+    expect(getApp).toHaveBeenCalledTimes(2)
   })
 })

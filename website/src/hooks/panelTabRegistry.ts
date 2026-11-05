@@ -219,19 +219,19 @@ export function useInstalledApps(): {
  *
  * A disabled observer: it reads whatever answer the shell's own `['apps']` read has
  * put in the cache and re-renders when that answer arrives, but never starts a
- * request, waits on one, or reports one failing. An empty list therefore means
- * "nothing known yet" as much as "nothing installed", which suits a reader whose
- * default render does not depend on the list. It registers the same guarded
- * `queryFn` as `useInstalledApps`, so the key keeps a guarded function whichever
- * observer registered last.
+ * request, waits on one, or reports one failing. `undefined` means "nothing known
+ * yet" (no answer cached, or one that is not a list), so an empty array is a list
+ * that really names no app. It registers the same guarded `queryFn` as
+ * `useInstalledApps`, so the key keeps a guarded function whichever observer
+ * registered last.
  */
-export function useLoadedInstalledApps(): InstalledApp[] {
+export function useLoadedInstalledApps(): InstalledApp[] | undefined {
   const { data } = useQuery({
     queryKey: ['apps'],
     queryFn: () => (typeof api?.listApps === 'function' ? api.listApps() : []),
     enabled: false,
   })
-  return Array.isArray(data) ? (data as InstalledApp[]) : []
+  return Array.isArray(data) ? (data as InstalledApp[]) : undefined
 }
 
 export function usePanelTabDescriptors(): PanelTabDescriptor[] {
