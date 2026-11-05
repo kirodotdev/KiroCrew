@@ -18,7 +18,8 @@ const SPACED = '/x/My Report.pdf'
 const ref = <T,>(current: T) => ({ current }) as MutableRefObject<T>
 
 function setup(opts: { text: string; files: string[] }) {
-  const mutate = vi.fn()
+  // The hook steers through `mutateAsync` so it can return the server's verdict.
+  const mutate = vi.fn(async () => ({ status: 'dispatched' }))
   const dispatch = vi.fn()
   const stores = {
     drafts: ref<Record<string, string>>({ [SLOT]: opts.text }),
@@ -45,7 +46,7 @@ function setup(opts: { text: string; files: string[] }) {
     slotRunning: true,
     messages: [],
     send: vi.fn(async () => true),
-    steerMutation: { mutate },
+    steerMutation: { mutateAsync: mutate } as never,
     messageQuote: { consume: () => ({ quote: null }), recoverInto: (t: string) => t } as never,
     composerRef: ref(null),
     composerSlotRef: ref<string | null>(SLOT),
@@ -66,9 +67,9 @@ function bubbleMeta(dispatch: ReturnType<typeof vi.fn>) {
 }
 
 describe('steering a running turn with an attached file', () => {
-  it('sends meta.files on the bubble and the POST so a spaced path stays whole', () => {
+  it('sends meta.files on the bubble and the POST so a spaced path stays whole', async () => {
     const h = setup({ text: 'read this', files: [SPACED] })
-    act(() => h.result.current.steer())
+    await act(async () => { await h.result.current.steer() })
     expect(h.mutate).toHaveBeenCalledTimes(1)
     const vars = h.mutate.mock.calls[0][0]
     expect(vars.text).toContain(`[attached_file 1] ${SPACED}`)
@@ -76,9 +77,9 @@ describe('steering a running turn with an attached file', () => {
     expect(bubbleMeta(h.dispatch)?.files).toEqual([SPACED])
   })
 
-  it('leaves meta.files off a steer with no attached file', () => {
+  it('leaves meta.files off a steer with no attached file', async () => {
     const h = setup({ text: 'just text', files: [] })
-    act(() => h.result.current.steer())
+    await act(async () => { await h.result.current.steer() })
     expect(h.mutate.mock.calls[0][0].files).toBeUndefined()
     expect(bubbleMeta(h.dispatch)).not.toHaveProperty('files')
   })

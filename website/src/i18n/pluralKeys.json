@@ -505,5 +505,15 @@
   "pages.settings.postureDisclosure.show_more_count",
   "apps.designCritique.designCritiquePage.entry_meta_screens",
   "apps.designCritique.designCritiquePage.findings_count",
-  "apps.designCritique.designCritiquePage.flow_screens_count"
+  "apps.designCritique.designCritiquePage.flow_screens_count",
+  "components.promptStash.badge",
+  "components.promptStash.stashed",
+  "components.promptStash.stashed_touch",
+  "components.promptStash.restored",
+  "components.promptStash.menu_restore_desc",
+  "components.promptStash.menu_restore_desc_touch",
+  "components.promptStash.clear_others",
+  "components.promptStash.clear_others_confirm",
+  "components.promptStash.cleared_others",
+  "components.promptStash.discarded"
 ]
