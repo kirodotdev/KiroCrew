@@ -201,8 +201,12 @@ code.
      `packaging/kiro-cli-version`, and in `packaging/kiro-cli-sha256` the
      manifest's `sha256` for each staged artifact (`<version>/Kiro CLI.dmg`,
      `<version>/kirocli-x86_64-linux.zip`, `<version>/kirocli-aarch64-linux.zip`,
-     and `<version>/kiro-cli-x86_64-pc-windows-msvc.msi`) as
-     `<sha>  <version>/<file>` lines, replacing the previous version's. A
+     `<version>/kiro-cli-x86_64-pc-windows-msvc.msi`, and the two
+     `<version>/kirocli-<arch>-linux-musl.zip`) as
+     `<sha>  <version>/<file>` lines, replacing the previous version's. The
+     EC2 bootstrap (`src/kiro_crew/cloud/templates/kirocrew-ec2.yaml`) carries
+     the version and the two musl sha256s as literals, and
+     `test/test_cloud_ec2.py` fails until they match both files. A
      Linux pin bump must also measure each staged binary's highest `GLIBC_*`
      requirement as described in [desktop-app](desktop-app.md); neither arch
      may exceed the desktop app's documented `GLIBC_2.34` compatibility floor.
