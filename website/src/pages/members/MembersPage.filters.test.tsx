@@ -351,6 +351,21 @@ describe('MembersPage star', () => {
     expect(api.memberThread).not.toHaveBeenCalledWith('pkg-a')
   })
 
+  it('names the Bot by its display name in the star label, never by its internal key', async () => {
+    // The first Bot's key is `mate` and it reads as "Bot" on the row; a label
+    // built from the key said "Star mate" after the Mates to Bots rename.
+    await renderPage([
+      row('pkg-b', { starred: true }),
+      row('mate', { source: 'kirocrew' }),
+      row('pkg-a', { display_name: 'Ada' }),
+    ])
+    const first = screen.getByTestId('member-star-mate')
+    expect(first).toHaveAttribute('aria-label', 'Star Bot')
+    expect(first).toHaveAttribute('title', 'Star Bot')
+    expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-label', 'Star Ada')
+    expect(screen.getByTestId('member-star-pkg-b')).toHaveAttribute('aria-label', 'Unstar pkg-b')
+  })
+
   it('disables the star while its write is pending, so rapid toggles cannot race', async () => {
     let settle: (v: unknown) => void = () => {}
     ;(api.updateKirocrewAgent as ReturnType<typeof vi.fn>).mockImplementationOnce(
