@@ -16,7 +16,7 @@ describe('goalDrafts', () => {
   afterEach(() => { vi.useRealTimers() })
 
   it('roundtrips a per-slot goal draft (survives close/re-open/refresh)', () => {
-    saveGoalDraft('chat-1-100', draft('finish the migration', 120, 5))
+    expect(saveGoalDraft('chat-1-100', draft('finish the migration', 120, 5))).toBe(true)
     // New "page load" / popover re-mount reads it straight back.
     expect(loadGoalDraft('chat-1-100')).toEqual(draft('finish the migration', 120, 5))
   })
@@ -79,11 +79,11 @@ describe('goalDrafts', () => {
     expect(loadGoalDraft('not-object')).toBeNull()
   })
 
-  it('saveGoalDraft swallows QuotaExceededError without throwing', () => {
+  it('saveGoalDraft reports QuotaExceededError as false without throwing', () => {
     const orig = Storage.prototype.setItem
     Storage.prototype.setItem = () => { throw new Error('QuotaExceeded') }
     try {
-      expect(() => saveGoalDraft('chat-1-100', draft('x'))).not.toThrow()
+      expect(saveGoalDraft('chat-1-100', draft('x'))).toBe(false)
     } finally {
       Storage.prototype.setItem = orig
     }

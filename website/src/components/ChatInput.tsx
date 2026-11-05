@@ -43,6 +43,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import PasteHoverLayer from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
+import { useSuggestedGoal } from './chat-input/suggestedGoal'
 import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useComposerDraftText, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
@@ -266,6 +267,7 @@ function ChatInput({
   automationSnapshotFailed,
   sessionMode,
   sendOnEnter: sendOnEnterProp,
+  followUpGoal,
   followUpOptions,
   followUpPicked,
   onFollowUpSelect,
@@ -351,6 +353,9 @@ function ChatInput({
   const project = sessionOnPeer ? undefined : projectProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
+  const {
+    setFailedSuggestedGoal, canReviewSuggestedGoal, displayedFollowUpGoal, displayedFollowUpOptions, goalBarProps,
+  } = useSuggestedGoal({ followUpGoal, followUpOptions, automation, isRunning, sessionMode, onAutomationClick, slotId })
   // The store handle, read at click time (not subscribed) so "Optimize prompt"
   // can pull THIS pane's slot messages without re-rendering every composer on
   // each streamed frame. useAppStore returns the Provider-injected store, the
@@ -496,6 +501,9 @@ function ChatInput({
     setSawSlot(slotId)
     setSawRunning(isRunning)
     setTurnStartProject(projectProp)
+    // A goal card's save failure belongs to the chat that tried to save it; the
+    // next chat may offer the same objective and has not failed anything.
+    setFailedSuggestedGoal(null)
   } else if (isRunning !== sawRunning) {
     setSawRunning(isRunning)
     if (isRunning) setTurnStartProject(projectProp)
@@ -1020,9 +1028,25 @@ function ChatInput({
         </div>
       )}
 
-      {/* Ghost follow-up bubbles floating above input */}
-      {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
+      {/* Autonomous goal card plus ordinary follow-up replies. */}
+      {!showGhost && (
+        (displayedFollowUpOptions.length > 0 && onFollowUpSelect)
+        || (displayedFollowUpGoal && canReviewSuggestedGoal)
+      ) && (
+        <FollowUpBar
+          options={displayedFollowUpOptions}
+          {...goalBarProps}
+          picked={followUpPicked ?? new Set()}
+          onSelect={selectFollowUp}
+          onSend={fireFollowUp}
+          quickSend={quickSend}
+          multi={followUpMulti}
+          layout={followUpLayout}
+          sourceKey={followUpSourceKey}
+          pendingOptions={followUpPendingOptions}
+          refusedOptions={followUpRefusedOptions}
+          error={followUpError}
+        />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always
