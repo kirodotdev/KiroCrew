@@ -1596,6 +1596,22 @@ class TestHoistAgentServersForResume:
         assert array == []
         assert "remote" in agents[0].get("mcpServers", {})
 
+    def test_entry_with_a_relayed_reference_stays_in_the_block(self, relayed_names):
+        # KAS expands ``${NAME}`` in an agent-block entry but not in a
+        # session-level element, so a hoisted copy would start the server with
+        # the literal text and it would list no tools on the resumed session.
+        projected = self._projected(
+            **{"vendor-proxy": {"command": "vendor", "env": {"URL": "${LAUNCHER_BROKER_URL}"}}}
+        )
+        assert projected["mcpServers"]["vendor-proxy"]["env"] == {"URL": "${LAUNCHER_BROKER_URL}"}
+        agents, array = hoist_servers_for_session(
+            [projected], "kirocrew", [], include_user_servers=True
+        )
+        assert [e["name"] for e in array] == ["my-server"]
+        assert agents[0]["mcpServers"] == {
+            "vendor-proxy": {"command": "vendor", "env": {"URL": "${LAUNCHER_BROKER_URL}"}}
+        }
+
     def test_none_and_empty_pass_through(self):
         assert hoist_servers_for_session(None, "kirocrew", [], include_user_servers=True) == (
             None,
