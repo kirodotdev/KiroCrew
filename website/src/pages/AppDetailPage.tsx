@@ -58,6 +58,7 @@ import AppDetailLinks from './AppDetailLinks'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
+import { memoryAccessLabel } from '../components/appstore/memoryAccessLabel'
 // The page's parts live in sibling owners that never import this module:
 // `AppDetailPageArt.tsx` (the hero banner and the screenshot gallery, each with
 // its local-art second chance) and `appDetailPageTypes.ts` (the page's view
@@ -1702,7 +1703,7 @@ export default function AppDetailPage() {
                   {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}
                   {app.manifest.permissions.cron && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.cron_yes')}</span>}
                   {app.manifest.permissions.network && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.network_yes')}</span>}
-                  {app.manifest.permissions.memory && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.memory')} {String(app.manifest.permissions.memory)}</span>}
+                  {app.manifest.permissions.memory && <span className="flex items-center gap-1">{memoryAccessLabel(app.manifest.permissions.memory)}</span>}
                 </div>
               </div>
             </Card>

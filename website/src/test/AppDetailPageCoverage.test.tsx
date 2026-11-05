@@ -1163,3 +1163,46 @@ describe('AppDetailPage — Details rows in other languages', () => {
     expect(screen.getByText('Origin: mirror | Resources: App | Lifecycle: App')).toBeInTheDocument()
   })
 })
+
+// The memory permission row is one catalog sentence per manifest value, not a
+// translated label glued to the raw `permissions.memory` value.
+describe('AppDetailPage — memory permission row', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    system.mockResolvedValue({ hostname: '' })
+    listRegistry.mockResolvedValue({ apps: [], serverPlatform: { os: 'darwin', arch: 'arm64' } })
+  })
+  afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
+
+  const withMemory = (memory: boolean | string) => installedApp({
+    manifest: {
+      displayName: 'Ledger Lens',
+      description: 'Reads your books and explains them.',
+      permissions: { storage: true, memory },
+    },
+  })
+
+  it.each([
+    ['app-scoped', 'Memory: app-scoped'],
+    ['shared', 'Memory: shared'],
+    [true, 'Memory: yes'],
+    ['True', 'Memory: yes'],
+    ['read', 'Memory: read'],
+  ] as const)('words memory %s as one sentence', async (memory, text) => {
+    getApp.mockResolvedValue(withMemory(memory))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText(text)).toBeInTheDocument()
+  })
+
+  it('words the memory row in German with no English value', async () => {
+    await act(async () => { await i18next.changeLanguage('de') })
+    getApp.mockResolvedValue(withMemory('app-scoped'))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('Gedächtnis: nur für diese App')).toBeInTheDocument()
+    expect(screen.queryByText(/app-scoped/)).toBeNull()
+  })
+})
