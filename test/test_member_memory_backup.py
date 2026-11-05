@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -26,6 +27,25 @@ from kiro_crew.config import loader
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 pytestmark = pytest.mark.xdist_group("member_memory_backup")
+
+
+@pytest.fixture
+def cyclic_gc_quiesced():
+    """Keep a cyclic-GC pass (and any finalizer it runs) out of a deep JSON parse.
+
+    The nesting tests drive the parser to the bottom of the stack; a collection
+    firing there could run an inherited finalizer with no stack left. Drain
+    first, disable for the parse, then restore and drain again.
+    """
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+        gc.collect()
 
 
 @pytest.fixture
@@ -336,6 +356,20 @@ def test_a_damaged_compressed_entry_is_refused_as_invalid(env):
     assert (env.home / "memory" / "preferences.md").read_text() == "Use concise answers"
 
 
+def test_a_too_deeply_nested_snapshot_manifest_is_refused(env, cyclic_gc_quiesced):
+    """A crafted manifest nested past the recursion limit is an invalid snapshot."""
+    backup = memory_backup.backup_store(env.paths["alice"])
+    bad = backup.parent / "nested-manifest.zip"
+
+    def mutate(content):
+        content[member_backup.MANIFEST] = b"[" * 15000
+
+    rewrite_bundle(backup, bad, mutate)
+    with pytest.raises(ValueError, match="Snapshot manifest is invalid"):
+        member_backup.stage_restore(bad, env.paths["alice"])
+    assert not (backup.parent / member_backup.PENDING).exists()
+
+
 def test_archive_symlink_is_refused(env):
     backup = memory_backup.backup_store(env.paths["alice"])
     bad = backup.parent / "symlink.zip"
@@ -614,6 +648,21 @@ def test_same_timestamp_snapshots_never_replace_prior_backup(env):
     assert member_backup.snapshot_time(first) == stamp
     assert member_backup.snapshot_time(Path("memory.20260907T123456Z.zip")) == stamp
     assert memory_backup._age_hours(first, stamp + timedelta(hours=2)) == 2
+
+
+def test_a_too_deeply_nested_pending_journal_reads_as_invalid(env, cyclic_gc_quiesced):
+    """Nesting past the recursion limit is refused like any invalid journal."""
+    path = env.paths["alice"]
+    backup = memory_backup.backup_store(path)
+    member_backup.stage_restore(backup, path)
+    env.tiers["alice"].close()
+    before = path.read_bytes()
+    (backup.parent / member_backup.PENDING).write_bytes(b"[" * 15000)
+    status = member_backup.pending_restore_status(path)
+    assert status["pending"] and status["restore_error"]
+    with pytest.raises(ValueError, match="Invalid member snapshot metadata"):
+        member_backup.apply_pending_restore(path)
+    assert path.read_bytes() == before
 
 
 def test_deleted_member_binding_still_allows_inspection_and_untouched_cancel(env):

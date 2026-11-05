@@ -20,6 +20,7 @@ happens to usually work, and each is pinned below:
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
@@ -52,6 +53,25 @@ _CONFIG = {
 
 #: Rows every populated store here holds. Asserted as ``20`` throughout the file.
 _SEED_ROWS = 20
+
+
+@pytest.fixture
+def cyclic_gc_quiesced():
+    """Keep a cyclic-GC pass (and any finalizer it runs) out of a deep JSON parse.
+
+    The nesting test drives the parser to the bottom of the stack; a collection
+    firing there could run an inherited finalizer with no stack left. Drain
+    first, disable for the parse, then restore and drain again.
+    """
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+        gc.collect()
 
 
 def _point_home_at(monkeypatch: pytest.MonkeyPatch, data_home: Path) -> None:
@@ -1052,6 +1072,32 @@ class TestRestoreIsNonDestructive:
             mb.restore_from_backup(snapshot, _FIN)
             out = mb.backup_dir_for(target)
             (out / mb._V1_PENDING).write_bytes(b"unreadable journal")
+            assert mb.cancel_pending_restore(target)
+            assert not mb.pending_restore_status(target)["pending"]
+            assert _rows(target) == 1
+            assert snapshot.is_file()
+        finally:
+            legacy.close()
+
+    def test_named_legacy_restore_can_cancel_a_too_deeply_nested_journal(
+        self, home, cyclic_gc_quiesced
+    ):
+        """Nesting past the recursion limit is refused like any invalid journal."""
+        from kiro_crew.memory_stores import ensure_memory_store_dir
+
+        ensure_memory_store_dir(_FIN)
+        target = resolve_store_path(_FIN)
+        legacy = VectorMemoryStore(db_path=target)
+        legacy.init()
+        try:
+            legacy.set_semantic("project.before", "keep", 1.0, "user_explicit")
+            snapshot = mb.backup_store(target)
+            assert snapshot is not None
+            mb.restore_from_backup(snapshot, _FIN)
+            out = mb.backup_dir_for(target)
+            # Under the 16 KiB journal cap, deeper than the interpreter allows.
+            (out / mb._V1_PENDING).write_bytes(b"[" * 15000)
+            assert mb.pending_restore_status(target)["pending"]
             assert mb.cancel_pending_restore(target)
             assert not mb.pending_restore_status(target)["pending"]
             assert _rows(target) == 1

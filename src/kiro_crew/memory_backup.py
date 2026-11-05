@@ -572,7 +572,12 @@ def _v1_journal(db_path: Path) -> tuple[Path, dict | None]:
         or pending.stat().st_size > 16_384
     ):
         raise ValueError("Invalid pending memory restore journal")
-    journal = json.loads(pending.read_text(encoding="utf-8"))
+    try:
+        journal = json.loads(pending.read_text(encoding="utf-8"))
+    except RecursionError as exc:
+        # Nesting past the interpreter's limit is not a ValueError, so it would
+        # skip every caller's invalid-journal arm and end the run in a traceback.
+        raise ValueError("Invalid pending memory restore journal") from exc
     if not isinstance(journal, dict):
         raise ValueError("Invalid pending memory restore journal")
     for key, pattern in (
