@@ -141,7 +141,7 @@ class TestApiTerminalWs:
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_ws(req)
         assert isinstance(resp, web.Response)
-        assert resp.status == 429
+        assert resp.status == 409
 
     @pytest.mark.asyncio
     async def test_at_the_cap_the_slot_changes_hands_before_any_await(self):
