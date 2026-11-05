@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.preview_text import strip_markdown_preview
 
@@ -120,6 +121,19 @@ class TestStripMarkdownPreview:
 
     def test_options_block_removed(self):
         assert strip_markdown_preview("pick one [OPTIONS: A | B]") == "pick one"
+
+    def test_steer_ack_marker_removed(self):
+        # The chat bubble draws kiro-cli's steer ack as a "Steered" chip, so the
+        # sidebar preview must not print the raw marker; prose naming it stays.
+        reply = "Done with the notes. [STEERING steer-1aa87cfb-9b1c: I re-read the file]"
+        assert strip_markdown_preview(reply) == "Done with the notes."
+        prose = "Read the [STEERING] section first"
+        assert strip_markdown_preview(prose) == prose
+
+        def reject(text: str) -> None:
+            assert "STEERING" in strip_markdown_preview(text)
+
+        assert_rejected_without_backtracking(reject, lambda n: "[STEERING steer-a: " * n)
 
     def test_snake_case_survives(self):
         # Single underscores are NOT emphasis in intra-word positions; the
