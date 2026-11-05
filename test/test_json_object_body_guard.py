@@ -384,6 +384,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/turn_stop.py::api_chat_slot_interrupt": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/prompt_queue.py::api_chat_slot_queue_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "queue_edit_hold.py::api_chat_slot_queue_editing": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_steer_retract": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_repair.py::api_chat_slot_reset_conversation": (
         "<default>",

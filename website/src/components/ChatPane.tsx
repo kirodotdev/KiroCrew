@@ -655,6 +655,7 @@ export default function ChatPane({
     onCancel: onCancelQueued,
     onInterrupt: onInterruptQueued,
     onEdit: onEditQueued,
+    onEditOpen: onEditOpenQueued,
     onReorder: onReorderQueued,
     pendingIds: queuePendingIds,
   } = useQueuedMessageActions({
@@ -1017,7 +1018,7 @@ export default function ChatPane({
         {/* A crewmate's chat draws a queued message as the person's own
             bubble in the thread instead (`withQueuedAsBubbles`). */}
         {!crewmate && queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={crewmate ? undefined : onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} />
+          <QueueStack key={slotKey} messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={crewmate ? undefined : onInterruptQueued} onEdit={onEditQueued} onEditOpen={onEditOpenQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} />
         )}
 
         {/* The pending ask_question card shares the message column's gutter and

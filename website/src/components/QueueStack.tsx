@@ -445,7 +445,7 @@ function EditInput({ initial, onCommit, onCancel, onDraftChange, pastes = [] }: 
   )
 }
 
-function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft, onReorder, fuseBelow = true, pendingIds }: {
+function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, onEditDraft, onReorder, fuseBelow = true, pendingIds }: {
   messages: ChatMessage[]
   onCancel?: (queueId: string) => void
   onInterrupt?: (queueId: string) => void
@@ -453,6 +453,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
    *  tokens the edit kept, in token order (empty when it kept none), for the
    *  row to carry on. Absent when the entry had none to begin with. */
   onEdit?: (queueId: string, content: string, pastes?: PasteBlock[]) => void
+  /** The editor opened (`true`) or closed without a save (`false`), so the host
+   *  can hold the entry meanwhile. A save goes through `onEdit` alone: a release
+   *  sent beside it could reach the server first and drain the old words. */
+  onEditOpen?: (queueId: string, open: boolean) => void
   onEditDraft?: (queueId: string, content: string | undefined) => void
   /** Move a queued message one step toward the front (`next`) or the back
    *  (`later`) of the run order. Index 0 runs first. */
@@ -489,6 +493,8 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
   // an editor holding a token while the live row had lost its blocks would
   // commit the literal token in place of the paste.
   const editingRow = useRef<ChatMessage | null>(null)
+  // The queue id whose editor is open and holds its entry on the server.
+  const openEditRef = useRef<string | null>(null)
 
   // Reset expanded when queue drains to trivial size
   useEffect(() => {
@@ -497,16 +503,40 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
 
   // Drop a stale edit target if its card leaves the queue (e.g. dequeued / cancelled).
   useEffect(() => {
-    if (editingId && !messages.some(m => (m.meta?.queueId as string) === editingId)) setEditingId(null)
+    if (editingId && !messages.some(m => (m.meta?.queueId as string) === editingId)) {
+      // The entry is gone, and its hold with it.
+      openEditRef.current = null
+      setEditingId(null)
+    }
   }, [messages, editingId])
 
+  // The editor still open when the stack unmounts (a slot switch, a closed
+  // pane) has no cancel to release its hold, so the unmount releases it.
+  const onEditOpenRef = useRef(onEditOpen)
+  onEditOpenRef.current = onEditOpen
+  useEffect(() => () => {
+    if (openEditRef.current) onEditOpenRef.current?.(openEditRef.current, false)
+  }, [])
+  const openEdit = (queueId: string) => {
+    if (openEditRef.current && openEditRef.current !== queueId) onEditOpen?.(openEditRef.current, false)
+    openEditRef.current = queueId
+    onEditOpen?.(queueId, true)
+    setEditingId(queueId)
+  }
+
   const commitEdit = (queueId: string, content: string, pastes?: PasteBlock[]) => {
+    openEditRef.current = null
     setEditingId(null)
     if (!onEdit) return
     if (pastes) onEdit(queueId, content, pastes)
     else onEdit(queueId, content)
   }
-  const cancelEdit = () => setEditingId(null)
+  const cancelEdit = () => {
+    const open = openEditRef.current
+    openEditRef.current = null
+    setEditingId(null)
+    if (open) onEditOpen?.(open, false)
+  }
 
   const peekCount = Math.min(MAX_PEEK, Math.max(0, messages.length - 1))
   const collapsedHeight = messages.length > 0 ? CARD_H + peekCount * PEEK : 0
@@ -762,7 +792,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
                           title={i18nT('components.queueStack.edit_queued_message')}
                           aria-label={i18nT('components.queueStack.edit_queued_message')}
                           disabled={isPending}
-                          onClick={(e) => { e.stopPropagation(); editingRow.current = m; setEditingId(queueId!) }}
+                          onClick={(e) => { e.stopPropagation(); editingRow.current = m; openEdit(queueId!) }}
                         >
                           <Pencil size={13} />
                         </button>
@@ -819,6 +849,7 @@ export default memo(QueueStackInner, (prev, next) =>
   prev.onCancel === next.onCancel &&
   prev.onInterrupt === next.onInterrupt &&
   prev.onEdit === next.onEdit &&
+  prev.onEditOpen === next.onEditOpen &&
   prev.onEditDraft === next.onEditDraft &&
   prev.onReorder === next.onReorder
 )
