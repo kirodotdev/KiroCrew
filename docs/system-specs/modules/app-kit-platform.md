@@ -1342,7 +1342,7 @@ first; `_alias_selected` in `skill_runtime/catalog.py` still selects a row liste
 under its flat link when the namespaced link one level under the mapping's literal
 prefix resolves to the same target. The exact read served while the catalog is
 `building` (`skill_runtime/search.py`) and the dashboard's "used by" annotation
-(`_shared_skill_listing.py`) and a crewmate's comes-with and added skill bands
+(`_shared_skill_listing.py`) and a Bot's comes-with and added skill bands
 (`mate_capabilities.worker_summary`) apply the same rule through `_alias_matches`, for a
 path inside the skills roots only. Each link is a
 symlink on POSIX and a **directory junction** on Windows, via
@@ -5239,13 +5239,13 @@ Writers: `apps/routes_proxy.py`, `apps/proxy_auth.py`, `apps/manifest_sections.p
 `test/test_app_proxy_auth_v2_node_reference.py`, `test/test_app_manifest.py`,
 `test/test_gateway_appkit_endpoints_signed_proxy.py`.
 
-## 24a. An app writes a crewmate's Dashboard value through the shared record door
+## 24a. An app writes a Bot's Dashboard value through the shared record door
 
-An installed app has one way to put a value on a crewmate's page:
+An installed app has one way to put a value on a Bot's page:
 `POST /api/member-records/{slug}` (`dashboard/handlers/agent_panel_record_app.py`).
 It is the second caller of the record door a script cron appends through
 (`agent_panel_record.record_through_door`): the same `dashboard/custom_value` entry in
-the crewmate's own DM session log, the same caps and quota, the same `custom` fold a
+the Bot's own DM session log, the same caps and quota, the same `custom` fold a
 page binds. Nothing is added to the crew log, the fold catalogue or the sandbox for it.
 
 Three rules are this route's:
@@ -5273,7 +5273,7 @@ Three rules are this route's:
    contract every admission path runs, so no live app token carries another shape.
 
 The type bound is the fold's, not the door's: `custom` keeps `CUSTOM_TYPE_LIMIT` (64)
-types per crewmate across every writer, and a new type past it evicts the least
+types per Bot across every writer, and a new type past it evicts the least
 recently written one whoever wrote it, counted in `types_omitted`
 (`projection_dashboard._custom_step`). So one granted app writing 64 types can push
 other apps' and crons' values off that page. The door does not refuse a new type at a
@@ -5281,10 +5281,10 @@ full fold, and the app-author docs say so rather than calling this cap a refusal
 
 An app backend with a command entry point runs as a sandboxed gateway child with the
 whole `crew-log` root hidden from it (section 0, `sandbox_leaves._CREW_HIDDEN_LEAVES`),
-so this route is the only way such an app can write a crewmate's log. A
+so this route is the only way such an app can write a Bot's log. A
 `backend.routes` module running inside the gateway process could already append
 anything and gains nothing here. A record is text a page draws; context assembly reads
-no crew-log fold, so it reaches a crewmate's model at most as the one-line
+no crew-log fold, so it reaches a Bot's model at most as the one-line
 `fold_summary` the `dashboard_fields` tool gives every fold-sourced field.
 
 Writers: `dashboard/handlers/agent_panel_record_app.py`,
