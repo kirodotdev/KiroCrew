@@ -218,6 +218,9 @@ def safe_read_file(path: str) -> str:
     def authorize(fd: int) -> None:
         if not _opened_file_matches_validated_path(fd, resolved):
             raise PermissionError(f"Blocked: opened file no longer matches safe path: {resolved!r}")
+        fd_real = _fd_real_path(fd)
+        if fd_real is not None and is_sensitive_path(fd_real):
+            raise PermissionError(f"Blocked: opened sensitive path: {fd_real!r}")
 
     try:
         with jsonl_util.open_regular_nofollow(
