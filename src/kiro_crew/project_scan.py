@@ -413,7 +413,28 @@ def _cargo_members(text: str) -> list[str]:
     if not isinstance(workspace, dict):
         return []
     members = workspace.get("members")
-    return [] if members is None else _string_list(members, where="workspace.members")
+    patterns = [] if members is None else _string_list(members, where="workspace.members")
+    exclude = workspace.get("exclude")
+    if exclude is not None:
+        patterns.extend(_cargo_exclusions(_string_list(exclude, where="workspace.exclude")))
+    return patterns
+
+
+def _cargo_exclusions(paths: Sequence[str]) -> list[str]:
+    """Return Cargo ``exclude`` paths as ``!pattern`` exclusions.
+
+    Cargo reads an exclude entry as a path prefix: the directory and everything
+    beneath it leave the workspace. A trailing ``**`` expands to the directory
+    itself and its whole subtree, so a recursive member glob cannot bring back
+    a crate nested inside an excluded one.
+    """
+
+    exclusions: list[str] = []
+    for path in paths:
+        cleaned = path.strip().rstrip("/\\")
+        if cleaned:
+            exclusions.append(f"!{cleaned}/{_ANY_DEPTH}")
+    return exclusions
 
 
 _TOML_TABLE = re.compile(r"^\s*\[\s*([^\]]+?)\s*\]")
@@ -421,18 +442,18 @@ _TOML_STRING = re.compile(r"\"([^\"]*)\"|'([^']*)'")
 
 
 def _scan_cargo_members(text: str) -> list[str]:
-    """Extract ``[workspace] members`` from Cargo manifest text without a parser.
+    """Extract ``[workspace] members`` and ``exclude`` without a parser.
 
     Deliberately narrow: it recognizes the one shape Cargo itself writes — an
-    array of quoted strings assigned to ``members`` inside the ``[workspace]``
-    table, optionally spread across lines — and ignores everything else,
-    including a ``#`` inside a string. It also cannot detect a malformed file,
+    array of quoted strings assigned to ``members`` or ``exclude`` inside the
+    ``[workspace]`` table, optionally spread across lines — and ignores
+    everything else, including a ``#`` inside a string. It also cannot detect a malformed file,
     which is why a real parser is preferred wherever one is importable.
     """
 
-    members: list[str] = []
+    lists: dict[str, list[str]] = {"members": [], "exclude": []}
     in_workspace = False
-    collecting = False
+    collecting: str | None = None
     for raw_line in text.splitlines():
         line = raw_line.split("#", 1)[0]
         table = _TOML_TABLE.match(line)
@@ -440,22 +461,23 @@ def _scan_cargo_members(text: str) -> list[str]:
             # Any other table ends the workspace table, including a sub-table
             # such as [workspace.dependencies], whose keys are not members.
             in_workspace = table.group(1) == "workspace"
-            collecting = False
+            collecting = None
             continue
         if not in_workspace:
             continue
-        if not collecting:
+        if collecting is None:
             key, separator, remainder = line.partition("=")
-            if not separator or key.strip() != "members":
+            if not separator or key.strip() not in lists:
                 continue
-            collecting = True
+            collecting = key.strip()
             line = remainder
-        members.extend(
+        lists[collecting].extend(
             double or single for double, single in _TOML_STRING.findall(line) if double or single
         )
         if "]" in line:
-            collecting = False
-    return [member.strip() for member in members if member.strip()]
+            collecting = None
+    members = [member.strip() for member in lists["members"] if member.strip()]
+    return members + _cargo_exclusions(lists["exclude"])
 
 
 _GO_USE = re.compile(r"^use\b\s*(.*)$")
@@ -1428,7 +1450,8 @@ def _declared_members(
             )
             continue
 
-        # npm and pnpm both spell an exclusion "!pattern". Honouring it matters
+        # npm and pnpm both spell an exclusion "!pattern", and the Cargo parser
+        # turns each ``workspace.exclude`` entry into one. Honouring it matters
         # because an excluded directory is one the project has already said is
         # not a member; offering it anyway would contradict the file we just
         # read. Exclusions are expanded the same way, then subtracted.
