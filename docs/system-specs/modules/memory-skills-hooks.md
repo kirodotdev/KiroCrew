@@ -4131,7 +4131,7 @@ comment header per owner. The module-level code these owners hold is re-imported
 |---|---|
 | `skills_auto_model` | The `auto/` namespace and its on-disk layout, `AutoSkillProvenance` and the generated `SKILL.md` renderer, `ClaimRefusal`, and the pending-queue observer hooks |
 | `skills_discovery` | The skills directory, the packaged and trusted provider roots, the installed package's RECORD admission of a hardlinked `SKILL.md`, screening and adoption of the configured extra roots (`reconfigure`), the tree walk `_iter_skill_files` with its no-follow traversal of a trusted project, and the bounds on how long a walk's answer is served |
-| `skills_builtin_provenance` | The tree fingerprint, the provenance marker, the ownership check (`_verified_unchanged_fingerprint`), `installed_skill_currency` and the deployed cron-script source verdicts |
+| `skills_builtin_provenance` | The tree fingerprint, the provenance marker, the ownership check (`_verified_unchanged_fingerprint`), `installed_skill_currency`, the released-former-built-in skip it shares with the sync (`_ships_for_released_app`), and the deployed cron-script source verdicts |
 | `skills_builtin_sync` | The packaged-skill sync (`_ensure_builtin_skills`, `sync_builtins`) with its claim, retirement, quarantine and opt-out carry, stale and relocated cleanup (`_RELOCATED_SKILLS`), and `remove_retired_conductor_skill` |
 | `skills_body_reads` | The project trust key and its audit, the enumerated-read choke point (`_read_enumerated_skill_bytes`) and the frontmatter cache, `load_skill` and the global body reader, exact-key reads of the scoped catalog with their paging, and the shapes that mark a tool call as a skill-body read |
 | `skills_selection` | `get_always_skills`, `get_triggered_skills` with its `trigger_score` call and the live per-message cap, the `repo_scope` gate, `scoped_skills`, and the user-first order of the startup index and the bounds it is rendered under |
@@ -4281,9 +4281,11 @@ Every catalog read asks the switch (through `_catalog_scope_key` → `is_key_tru
 several times per turn, so `skill_trust._project_skills_enabled` reads it through
 `config.load_memo` (see config.md, "Derived-value memo"): the last answer is reused
 while the config files are unchanged rather than rebuilding the whole config each
-time. A failed read is never remembered, so it fails closed again on the next ask. In the same spirit `catalog._iter_visible` keeps its disabled-app filtering
+time. A failed read is never remembered, so it fails closed again on the next ask. In the same spirit `catalog._iter_visible` keeps its app filtering
 against the catalog list `_iter` served (the same object until a rebuild) and the
-disabled set: `_owning_app` resolves real paths per skill, and the memo is dropped by
+disabled and released sets (`_hidden_by_app`: a disabled app's skills, and a flat
+packaged copy whose `app:` line names a former built-in released onto its own
+repository, app-kit-platform.md § Former built-in adoption): `_owning_app` resolves real paths per skill, and the memo is dropped by
 `_invalidate_iter_cache` with the rest of the catalog state. It keeps only lists `_iter`
 still serves (a superseded generation is dropped on the next store), at most 16 of
 them and `_VISIBLE_MEMO_MAX_ROWS` (32,768) catalog rows in total; a larger catalog is
@@ -5413,8 +5415,8 @@ back to `_exact_read_while_building`, which composes the candidate from a root t
 loader owns and the COMPLETE key, so `team-b/review` can never resolve
 `team-a/review` and a bare leaf resolves nothing. `_safe_name` rejects anything that
 is not a plain catalog key, so the key is never a path. The mapping must still admit
-the candidate, a disabled app's skill stays hidden, and `repo_scope` is still checked
-by the caller. Two limits are deliberate: it is reachable ONLY while
+the candidate, a disabled app's skill and a released former built-in's packaged copy
+stay hidden, and `repo_scope` is still checked by the caller. Two limits are deliberate: it is reachable ONLY while
 `catalog_status()` is `"building"`, because a complete enumeration is the single
 authority and a second resolution path running beside it is how the two drift apart;
 and it withholds the confined project tier, whose containment is knowable only from
