@@ -13,7 +13,7 @@ import type { CrewModeResponse } from '../api/sharedCrewMode'
 import type { TailscaleInvitesStatus } from '../api/sharedCrewInvites'
 import { sharedCrewKeys as keys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { PeoplePanel } from '../pages/settings/PeoplePanel'
-import { TailscaleInvites, sharedCrewAccessKey, tailscaleInvitesKey } from '../pages/settings/TailscaleInvites'
+import { InviteEntry, sharedCrewAccessKey, tailscaleInvitesKey } from '../pages/settings/TailscaleInvites'
 import { CreatorFilterBar, CreatorFilteredSessions, useSharedCrewListView } from '../pages/chat-sidebar/CreatorFilter'
 import { SessionCollabStrip } from '../pages/chat/shared-crew/SessionCollabStrip'
 import { MessageByline } from '../pages/chat/shared-crew/MessageByline'
@@ -50,7 +50,7 @@ const mode: CrewModeResponse = { schema_version: 1, mode: 'network', crew_id: 'c
 const people = { schema_version: 1, directory: { state: 'unavailable' as const }, people: [{ principal: person('p_other'), sources: ['observed' as const], is_viewer: false }] }
 const invites: TailscaleInvitesStatus = { connected: true, tailnet: 'example.test', key_expires: '', key_expired: false, key_expires_soon: false,
   admin_share_url: '', admin_keys_url: '', members: [], last_sync_at: 0, sync: {},
-  invites: [{ id: 'pending', kind: 'email', email: 'pending@example.test', multi_use: false, alias: '', avatar_id: '', created_at: 0, status: 'pending', accepted_login: '' }],
+  invites: [{ id: 'pending', transport: 'tailscale', kind: 'email', email: 'pending@example.test', multi_use: false, alias: '', avatar_id: '', created_at: 0, status: 'pending', accepted_login: '' }],
 }
 const presence = { schema_version: 1, session_key: 's1', entries: [{ principal: person('p_other'), session_key: 's1', activity: 'typing', connections: 1, expires_at: 0 }] }
 const decisions = { schema_version: 1, session_key: 's1', items: [{ decision_id: 'd1', kind: 'approval', session_key: 's1', state: 'pending', revision: 1, initiator: person('p_other'), responder: null, outcome: '', resolved_at: null }] }
@@ -135,18 +135,18 @@ describe('Shared Crew cached forms', () => {
   it.each([true, false])('keeps the %s-connected invite form on a failed status poll', async connected => {
     const qc = client()
     qc.setQueryData(tailscaleInvitesKey, { ...invites, connected })
-    mount(<TailscaleInvites />, qc)
-    const form = connected ? await enterInviteDraft() : await screen.findByTestId('invite-key-input')
+    mount(<InviteEntry />, qc)
+    const form = connected ? await enterInviteDraft() : (fireEvent.click(await screen.findByTestId('share-hero-invite')), await screen.findByTestId('invite-key-input'))
     if (!connected) fireEvent.change(form, { target: { value: 'tskey-api-unsaved-draft' } })
     vi.mocked(api.tailscaleInvites).mockRejectedValue(new ApiError(500, 'status failed', '{}'))
     await refresh(qc, tailscaleInvitesKey)
-    const error = await screen.findByTestId('invite-load-error')
+    const error = await screen.findByTestId('invite-dialog-error')
     expect(within(error).queryByRole('button', { name: 'Ask the agent' })).toBeNull()
     if (connected) expectDraft(form)
     else expect(screen.getByTestId('invite-key-input')).toBe(form)
     vi.mocked(api.tailscaleInvites).mockResolvedValue({ ...invites, connected })
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
-    await waitFor(() => expect(screen.queryByTestId('invite-load-error')).toBeNull())
+    await waitFor(() => expect(screen.queryByTestId('invite-dialog-error')).toBeNull())
     if (connected) expectDraft(form)
     else expect(form).toHaveValue('tskey-api-unsaved-draft')
   })
