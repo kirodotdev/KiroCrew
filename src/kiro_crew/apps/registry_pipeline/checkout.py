@@ -39,6 +39,7 @@ from kiro_crew.apps.registry_pipeline.subprocess_env import (
     anonymous_git_env,
     minimal_env,
 )
+from kiro_crew.owner_only_files import ensure_directory as _ensure_directory
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -596,7 +597,7 @@ async def _git_fetch_ref(
                 ),
             }
         else:
-            dest.parent.mkdir(parents=True, exist_ok=True)
+            _ensure_directory(dest.parent)
             # Set BEFORE the spawn: `git init` may create the directory and then
             # fail, or the spawn itself may raise, and either way the directory is
             # ours to discard.
@@ -1186,7 +1187,7 @@ async def _git_clone_or_pull(
             return None
 
         log_lines.append(f"Cloning {_strip_git_target_userinfo(git_url)} (branch: {branch})...")
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(dest.parent)
         clone_cmd = [
             "git",
             *_HOOKS_NEUTRALIZER_ARGV,
