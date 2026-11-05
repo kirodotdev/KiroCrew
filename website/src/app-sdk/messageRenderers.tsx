@@ -509,6 +509,11 @@ export interface AssistantBubbleOptions {
    *  system policy notice rather than the user's (`turnHadPolicyBlock`). The
    *  raw marker is stripped from the prose either way. */
   suppressSteerAck?: boolean
+  /** Never draw the "N files changed" chips, whatever `meta.file_changes`
+   *  holds. A host whose replies are not file work the reader reviews (a
+   *  crewmate's chat: its notes, scripts and page writes) sets it. Off
+   *  (default) the chips draw as on every other surface. */
+  hideFileChanges?: boolean
   /** Session routing for the reply's markdown: open a session chip, plus the
    *  roster and the active key the chip resolver needs. All three or none — the
    *  renderer gates on (`onSessionOpen` AND `sessions`), so a half-wired host
@@ -599,8 +604,8 @@ export function renderAssistantBubble(
       variantIdx={m.variant_idx}
       turnStats={(m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined}
       decisionsStrip={decisionStripFieldOf(m)}
-      fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
-      fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
+      fileChanges={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
+      fileChangesOmittedFiles={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
       onRegenerate={opts.onRegenerate}
       redactions={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.redactions : undefined}
       redactionSlot={opts.redactionSlot}
