@@ -422,7 +422,14 @@ class LaunchJobStore:
         return self._read(path)[0]
 
     def _read(self, path: Path) -> "tuple[Optional[LaunchJob], bool]":
-        """The job in *path*, and whether its bytes were not UTF-8.
+        """The job in *path*, and whether the file exists but holds no readable job.
+
+        Unreadable covers every way an existing file yields no job: a read that
+        keeps failing, bytes that are not UTF-8, bad JSON (a file cut short) and
+        JSON that is not an object. Each leaves the record's status unknown, so
+        it may be a launch still running. A file that is gone is absent, not
+        unreadable. Temp files from :func:`atomic_write` end in ``.tmp``, so a
+        save in progress never shows here as a cut-short ``.json``.
 
         One read answers both, so a caller that needs the jobs and the unreadable
         records sees the same bytes for each file rather than two scans a
@@ -444,22 +451,19 @@ class LaunchJobStore:
             except OSError as e:
                 if attempt == 4:
                     logger.warning("Failed to read launch job %s: %s", path, e)
-                    return None, False
+                    return None, True
                 time.sleep(0.02 * (attempt + 1))
-            except UnicodeDecodeError as e:
-                # Bytes that are not UTF-8 are as unusable as bad JSON: skip the job,
-                # and say so, because the record's status is now unknown.
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                # Skip the job, and say so: the record's status is now unknown.
                 logger.warning("Failed to parse launch job %s: %s", path, e)
                 return None, True
-            except json.JSONDecodeError as e:
-                logger.warning("Failed to parse launch job %s: %s", path, e)
-                return None, False
         if not isinstance(raw, dict):
-            return None, False
+            logger.warning("Launch job %s is not a JSON object", path)
+            return None, True
         return LaunchJob.from_dict(raw), False
 
     def snapshot(self) -> "tuple[list, List[str]]":
-        """Every readable job, newest first, and the ids of job files that are not UTF-8.
+        """Every readable job, newest first, and the ids of job files that cannot be read.
 
         Both come from ONE read of each file. A decision that needs both -- launch
         admission, the lane of a crew -- must take them from here: two separate
@@ -469,21 +473,21 @@ class LaunchJobStore:
         if not self._root.exists():
             return [], []
         jobs: list = []
-        undecodable: List[str] = []
+        unreadable: List[str] = []
         for p in self._root.glob("*.json"):
-            job, not_utf8 = self._read(p)
+            job, cannot_read = self._read(p)
             if job is not None:
                 jobs.append(job)
-            elif not_utf8:
-                undecodable.append(p.stem)
+            elif cannot_read:
+                unreadable.append(p.stem)
         jobs.sort(key=lambda j: j.created_at, reverse=True)
-        return jobs, sorted(undecodable)
+        return jobs, sorted(unreadable)
 
     def list(self) -> list:
         return self.snapshot()[0]
 
-    def undecodable_ids(self) -> List[str]:
-        """Ids of job files whose bytes are not UTF-8, which :meth:`list` skips.
+    def unreadable_ids(self) -> List[str]:
+        """Ids of job files that exist but hold no readable job, which :meth:`list` skips.
 
         Launch admission refuses while one exists: such a record may be a launch
         still in progress, and :meth:`list` cannot show its status. A caller that
