@@ -541,7 +541,7 @@ when the manifest declares its endpoint; nothing grants either by default:
 
 Accepting a command puts it in the composer; the send runs it, as in the main
 chat. Each file row shows the folder it sits in, cut from the start, so files
-with the same name stay distinguishable in a narrow embed. The menu leaves out `/side`, `/btw`, `/onboarding` and `/kb`: the main
+with the same name stay distinguishable in a narrow embed. The menu leaves out `/side`, `/btw`, `/fork`, `/onboarding` and `/kb`: the main
 chat runs those in the browser, and the embed has nothing to run them with.
 Accepting a file writes its `@path` token and stages the file like an
 attachment, so the send carries it in `meta.files`; removing the file's chip

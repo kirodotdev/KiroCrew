@@ -56,6 +56,7 @@ const PINNED: Record<string, Counts> = {
   'src/pages/chat-sidebar/CrewGroups.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'the crew header\'s attention button opens a LISTED row the way that row\'s own click does, so it announces' },
   'src/pages/chat-sidebar/SessionRow.tsx': { gesture: 3, announced: 3, keepTarget: 0, plain: 0, reason: 'every site is a gesture on a LISTED session row, so all three announce: the row\'s keyboard activation, its click, and the source chip\'s onActivateSlot' },
   'src/pages/chat-sidebar/folderBlocks.tsx': { gesture: 2, announced: 2, keepTarget: 0, plain: 0, reason: 'every site is a gesture on a LISTED folder, so both announce: the two ways to reach a folder\'s conductor -- the item in both folder menus and the chat button in the folder row\'s own hover cluster' },
+  'src/pages/chat/ChatInput.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: '`/fork` opens the fork it just made (only when forkMayOpen allows), awaited the way the transcript Fork is' },
   'src/pages/chat/SubagentRunCard.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },
   'src/pages/chat/WorkflowRunCard.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },
   'src/pages/chat/command-center/CrewWorkerList.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'opening a Crew Mode worker, or going back to its root, from the side panel is a click on a listed session: it announces and is a gesture' },

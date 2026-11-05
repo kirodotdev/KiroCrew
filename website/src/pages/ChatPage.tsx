@@ -646,10 +646,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     refusedPress, setRefusedPress, showRefusedPress,
   } = useRefusedPress()
+  // The same hosts whose transcript hides Fork: a fork would move the global
+  // active session away from the session the host panel is bound to.
+  const forkUnavailable = !!embedded && !popout
   const {
     send, restoreSentTurn,
   } = useComposerSend({
-    mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef,
+    mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
     setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
     messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks, readPasteBlocks, installPasteBlocks,
     setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason,
@@ -925,6 +928,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     steerMutation,
     composerRef,
     composerSlotRef,
+    composerMountedRef,
+    forkUnavailable,
     inputRef,
     setInput,
     stores: draftStores,
@@ -1174,7 +1179,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             />
             <UltraModeEffect />
             <ComposerDockView
-              embedded={embedded} mode={mode} activeSlot={activeSlot} connected={connected} dispatch={dispatch} isMobile={isMobile} isTouch={isTouch} navigate={navigate} provider={provider}
+              embedded={embedded} forkUnavailable={forkUnavailable} mode={mode} activeSlot={activeSlot} connected={connected} dispatch={dispatch} isMobile={isMobile} isTouch={isTouch} navigate={navigate} provider={provider}
               activityOpen={activityOpen} composerBusy={composerBusy} contextPct={contextPct} contextTokens={contextTokens} knowledgeFetch={knowledgeFetch} messages={messages}
               pendingFollowup={pendingFollowup} pendingQuestion={pendingQuestion} projectLocked={projectLocked} restoredQuestionNotice={restoredQuestionNotice} sentMessages={sentMessages}
               slotRunning={slotRunning} slotStopping={slotStopping} composerDraft={composerDraft} historySuggestions={historySuggestions} showHistorySuggestions={showHistorySuggestions}

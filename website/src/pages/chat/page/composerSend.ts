@@ -29,7 +29,7 @@ import { uniqueNotificationTs } from './notificationTs'
 import { PREFILL_STORAGE_KEY } from '../../../utils/navIntent'
 import { isComposerSendHeld } from '../../../utils/composerSendHolds'
 import type { ComposerHandle } from '../../../chat-core/composer/Composer'
-import { mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
+import { loadDrafts, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
 import { NO_SLOT_TOKEN_KEY } from '../../../utils/chatFileTokenDrafts'
 import { setPasteDraft } from '../../../utils/chatPasteDrafts'
@@ -58,6 +58,8 @@ interface ComposerSendOptions {
   activeSlotRef: MutableRefObject<string | null>
   composerSlotRef: MutableRefObject<string | null>
   composerMountedRef: MutableRefObject<boolean>
+  /** An embedded page (not a popout) refuses `/fork`, as its transcript hides Fork. */
+  forkUnavailable: boolean
   setInput: (next: string | ((prev: string) => string)) => void
   inputRef: MutableRefObject<string>
   sendingRef: MutableRefObject<boolean>
@@ -135,7 +137,7 @@ export function mergeSentTurns(earlier: SentTurnRestore, later: SentTurnRestore)
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useComposerSend({
-  mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef,
+  mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
   setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
   messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks, readPasteBlocks, installPasteBlocks,
   setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason,
@@ -377,8 +379,13 @@ export function useComposerSend({
         // No slot yet: the same pending pick the agent picker makes, and like
         // it, drop a model chosen for the previous agent (#2035).
         onPendingAgent: (name) => { setPendingAgent(name, 'template'); setPendingModel('') },
+        // A page left meanwhile sends nothing: its staging is not the fork's.
+        sendToFork: (key, prompt) => { if (!connected || !composerMountedRef.current) return false; void send(prompt, key); return true },
+        forkUnavailable,
       })
       if (slashResult.intercepted) {
+        // A page left meanwhile re-reads the store, which may hold a `/fork` prompt.
+        if (!composerMountedRef.current) drafts.current = loadDrafts()
         // Not a send either way: the staged quote stays staged for the real one
         // -- while this slot's composer is still the live one. The await above
         // can span a slot switch, and the stage is not per slot, so restaging
@@ -974,7 +981,7 @@ export function useComposerSend({
     // activeSlot is left in deps as a harmless no-op: dropping it churns the
     // array for no behavior change (the ref is always current regardless).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, dispatch, connected, messageQuote.consume, messageQuote.restage, setPendingAgent, setPendingModel])
+  }, [activeSlot, dispatch, connected, forkUnavailable, messageQuote.consume, messageQuote.restage, setPendingAgent, setPendingModel])
   return {
     send, restoreSentTurn,
   }
