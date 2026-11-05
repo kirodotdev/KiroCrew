@@ -58,6 +58,18 @@ def app_dir(name: str) -> Path:
     return apps_dir() / name
 
 
+def _is_sidecar_entry(entry_name: str) -> bool:
+    """Whether an ``apps_dir()`` entry is a gateway sidecar rather than an app.
+
+    No admissible app name starts with a dot, and every working path the gateway
+    puts beside an app directory does (``.<name>-update-old-<pid>-<hex>``,
+    ``.<name>-update-inflight``, ``.<name>-data-tmp``). A retired tree still holds
+    the app's previous ``installed.json``, so a walk that reads every entry's
+    record lists the app twice. Every walk of ``apps_dir()`` skips these.
+    """
+    return entry_name.startswith(".")
+
+
 def app_data_dir(name: str) -> Path:
     """Return the app-scoped data directory: ``~/.kiro/crew/apps/{name}/data/``."""
     d = app_dir(name) / "data"
@@ -921,7 +933,7 @@ def _scan_installed_app_config_keys(root: Path) -> frozenset[str]:
         return frozenset()
     keys: set[str] = set()
     for entry in root.iterdir():
-        if not entry.is_dir():
+        if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
         manifest = get_app_manifest(entry.name)
         try:

@@ -5195,6 +5195,35 @@ the gate turns the tree away before any copy into the app directory is made.
 With a preserved `data/` awaiting, the shipped entry is replaced by the
 directory that is put back, and the same source installs.
 
+**What a killed update leaves.** `update_app` holds a token
+(`<pid>-<8 hex>`) in `.<name>-update-inflight` across the swap, moves the live tree
+to `.<name>-update-old-<pid>-<8 hex>`, writes the new `installed.json`, and only then
+removes the retired tree and its token. A hard kill after the record is durable
+leaves either both or the token alone. No admissible app name starts with a dot,
+so every walk of `apps_dir()` skips a dot-prefixed entry
+(`manager_records._is_sidecar_entry`: `list_apps`, `owning_app_for_agent`,
+`detect_orphaned_builtins`, the config-key scan, the session-approval consent scan
+and the dev-mode scan); otherwise the retired tree's record lists the app twice.
+A retired tree or token is one whose name ends in exactly that generated
+`<pid>-<8 hex>` stem (`manager_adopt._retired_trees`, `swap_leftover_names`): a
+bare prefix match would take the sidecars of an app named
+`<name>-update-old-<digits>` as `<name>`'s.
+`manager.sweep_interrupted_updates`, a tracked task `_kick_interrupted_update_sweep`
+starts after the listener serves, runs `sweep_completed_swap_leftovers` for every
+name that has a marker or a retired tree, under its `app_lifecycle_lock`. Before
+APPLY only the pinned or marked names with no record and a marker are swept
+(`builtin_adoption.apply_builtin_adoptions`), since `builtin_released` reads the
+marker as a swap in flight; with no record the sweep deletes no tree. It unlinks
+each token whose process is gone (`platform_compat.pid_exists`; this process, a
+live pid and any other stem all count as alive), and only when the marker
+directory is then empty removes it and every retired tree of a dead process. A retired tree goes only
+beside a readable live record in an app directory that is not a link, since the
+swap then completed and `data/` and `.app_secret` were already put back. With no
+record the marker goes only when nothing is set aside (no retired tree,
+`.<name>-data-tmp` or `.<name>-secret-tmp`): it is what keeps
+`recover_interrupted_adoption` and `register_builtin_apps` acting on a killed
+swap's files. `.<name>-data-tmp` and `.<name>-secret-tmp` are never touched.
+
 Writers: `apps/manager_install.py::install_app`, `update_app`,
 `apps/manager_tree.py::copy_app_tree_as_installed`, `_remove_any_shape`, `gateway_data_dir_obstruction`;
 `apps/registry.py::_run_app_build`,
@@ -5540,9 +5569,10 @@ which module owns which part, so a change lands in its owner.
 | `manager_external.py` | `register_external_app`, the record of a self-managed app |
 | `manager_uninstall.py` | `uninstall_app` and the `agent.apps_trusted` grant it drops and restores (`trust_grant_removal_blocked`, `_drop_trust_grant`, `_restore_trust_grant`) |
 | `manager_lookup.py` | `list_apps`, `get_app`, the enablement reads (`app_enabled_state`, `is_app_enabled`, `app_disabled`), the source and provenance setters, and which installed app owns an agent (`owning_app_for_agent`, `app_command_agent_refusal`, `missing_agent_reason`) |
+| `manager_adopt.py` | `adopt_builtin_record`, `recover_interrupted_adoption`, and the sweep of what a killed update left (`sweep_interrupted_updates`, `sweep_completed_swap_leftovers`) |
 
 Imports only point down, in the facade's `_OWNERS` order: records, tree, install,
-activation, builtins, external, uninstall, lookup. No owner imports the facade, and
+activation, builtins, external, uninstall, lookup, adopt. No owner imports the facade, and
 each import of `bridges`, `registry`, `backend`, `dev_mode` or `routes` stays inside
 the function that needs it, because those modules import the manager at their own
 import.
@@ -6030,7 +6060,9 @@ hooks, backends and crons) is network-free and consumes only a `staged` ledger: 
 Per pin, under `app_lifecycle_lock`:
 recovery of a hard-killed swap (`manager.recover_interrupted_adoption`, only on an
 unambiguous state: one retired tree, data in one place); finalize when a
-`granting` marker meets an already-swapped record; a record whose data is in two
+`granting` marker meets an already-swapped record (what the kill left after the
+record goes in the sweep after the listener serves, see "What a killed update
+leaves"); a record whose data is in two
 places (`data/` beside a moved-aside `.<name>-data-tmp`) is skipped, since the
 update's stale-copy cleanup would delete what a killed swap preserved; else the
 staged artifact is

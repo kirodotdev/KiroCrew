@@ -386,6 +386,7 @@ _LAZY_IMPORTS = {
         "apply_builtin_adoptions released_builtin_packages stage_builtin_adoptions"
     ),
     "kiro_crew.apps.builtins": "BUILTIN_NAMES",
+    "kiro_crew.apps.manager": "sweep_interrupted_updates",
     "kiro_crew.apps.builtin_adoption_pins": "adoption_pin_names",
     "kiro_crew.apps.default_installs": "reconcile_default_installs",
     "kiro_crew.apps.dev_mode": "init_dev_mode_watcher stop_dev_mode_watcher",
@@ -485,7 +486,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 129
+    assert len(expected) == 130
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

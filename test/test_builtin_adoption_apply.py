@@ -27,6 +27,7 @@ from kiro_crew.apps import builtin_adoption_apply as apply_mod
 from kiro_crew.apps import manager
 from kiro_crew.apps.builtin_adoption_state import read_adoption_markers, read_ledger
 from kiro_crew.config.loader import _invalidate_config_cache, config_local_path
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 pytestmark = [requires_git, pytest.mark.asyncio]
 
@@ -644,16 +645,79 @@ async def test_a_crash_after_the_swap_finalizes_without_a_second_swap(world, mon
     assert read_adoption_markers()[NAME]["state"] == "adopted"
 
 
+async def test_a_kill_before_the_retired_tree_goes_finalizes_and_is_swept_after(world, monkeypatch):
+    """The record is durable, the old tree and the update marker are not yet gone."""
+    from kiro_crew.apps import manager_adopt, manager_records
+
+    await _stage()
+    real_remove = manager._remove_any_shape
+
+    def killed_at_the_retired_tree(path):
+        if "-update-old-" in path.name:
+            raise _HardKill
+        real_remove(path)
+
+    with monkeypatch.context() as kill:
+        kill.setattr(manager, "_remove_any_shape", killed_at_the_retired_tree)
+        kill.setattr(manager_records._UpdateMarker, "__exit__", lambda *_a: None)
+        with pytest.raises(_HardKill):
+            await _boot()
+    # This process stands in for the killed one: give its leftovers a pid that is gone.
+    root = manager.apps_dir()
+    for leftover in [*root.iterdir(), *manager._update_marker_dir(NAME).iterdir()]:
+        if f"{os.getpid()}-" in leftover.name:
+            leftover.rename(
+                leftover.with_name(
+                    leftover.name.replace(f"{os.getpid()}-", f"{UNALLOCATABLE_PID}-")
+                )
+            )
+    monkeypatch.setattr(manager_adopt, "pid_exists", lambda pid: pid != UNALLOCATABLE_PID)
+    assert [row["name"] for row in manager.list_apps()] == [NAME], "one row, not two"
+    assert read_adoption_markers()[NAME]["state"] == "granting"
+
+    assert await _boot() == {NAME: "finalized"}
+    assert manager._retired_trees(NAME), "no retired tree is deleted before the listener"
+    await manager.sweep_interrupted_updates()
+    assert sorted(p.name for p in root.iterdir() if p.name.startswith(f".{NAME}-")) == []
+    assert (manager.app_dir(NAME) / "data" / "store.txt").read_text(encoding="utf-8") == "kept"
+    assert manager.uninstall_app(NAME).ok
+    assert adoption.builtin_released(NAME), "an uninstalled adopted app stays released"
+    monkeypatch.setattr(manager, "discover_builtin_apps", lambda: [_shipped_definition(world)])
+    manager.register_builtin_apps()
+    assert manager._read_installed(NAME) is None
+
+
+async def test_an_uninstall_after_a_killed_update_is_released_at_the_next_boot(world, monkeypatch):
+    """Only the marker is left, and no record: APPLY's own pass clears it first."""
+    from kiro_crew.apps import manager_adopt
+
+    await _stage()
+    assert await _boot() == {NAME: "applied"}
+    assert manager.uninstall_app(NAME).ok
+    manager._update_marker_dir(NAME).mkdir()
+    (manager._update_marker_dir(NAME) / f"{UNALLOCATABLE_PID}-ab12cd34").touch()
+    monkeypatch.setattr(manager_adopt, "pid_exists", lambda pid: pid != UNALLOCATABLE_PID)
+    assert not adoption.builtin_released(NAME), "the marker reads as a swap in flight"
+
+    def listed():
+        raise AssertionError("APPLY listed the apps directory")
+
+    monkeypatch.setattr(manager, "swap_leftover_names", listed)
+    await _boot()
+    assert not manager._update_in_progress(NAME)
+    assert adoption.builtin_released(NAME)
+
+
 def _simulate_kill_mid_swap(world, *, partial: bool) -> None:
     """The state ``update_app`` leaves when killed after moving the old tree aside."""
     dest = manager.app_dir(NAME)
-    retired = dest.parent / f"{manager._update_retired_tree_prefix(NAME)}999-dead"
+    retired = dest.parent / f"{manager._update_retired_tree_prefix(NAME)}999-deadbeef"
     tmp_data = dest.parent / f".{NAME}-data-tmp"
     (dest / "data").rename(tmp_data)
     (dest / ".app_secret").rename(dest.parent / f".{NAME}-secret-tmp")
     dest.rename(retired)
     manager._update_marker_dir(NAME).mkdir()
-    (manager._update_marker_dir(NAME) / "999-dead").touch()
+    (manager._update_marker_dir(NAME) / "999-deadbeef").touch()
     if partial:
         dest.mkdir()
         (dest / "app.json").write_text("{}", encoding="utf-8")
@@ -686,7 +750,7 @@ async def test_an_ambiguous_mid_swap_state_is_left_untouched_and_nothing_registe
     await write_grant_and_marker(NAME, adoption_pin(NAME), plan=GrantPlan(write=True))
     _simulate_kill_mid_swap(world, partial=False)
     dest = manager.app_dir(NAME)
-    second = dest.parent / f"{manager._update_retired_tree_prefix(NAME)}998-dead"
+    second = dest.parent / f"{manager._update_retired_tree_prefix(NAME)}998-deadbeef"
     second.mkdir()
     (second / "installed.json").write_text("{}", encoding="utf-8")
     assert await _boot() == {}
