@@ -2039,6 +2039,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.dynamic_dashboard_cards"
   },
   {
+    "id": "developer.bot-sessions-on-the-bot-s-profile",
+    "label": "Bot sessions on the Bot's profile",
+    "labelKey": "pages.developer.featurePreviewsTab.mate_sessions",
+    "description": "Moves a Bot's chats to its Sessions tab.",
+    "hint": "Moves the chats a Bot opens out of your Sessions list, Recents and grid, onto that Bot's Sessions tab. The Bot's own chat stays where it is, and History and search still find every chat.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.chat-on-a-crew",
     "label": "Chat on a crew",
     "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",

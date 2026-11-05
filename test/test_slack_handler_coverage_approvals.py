@@ -1,13 +1,7 @@
 """Slack approval prompts in :mod:`kiro_crew.slack.handler`, from the request to the click.
 
-Pins ``handle_interaction``'s guards and late-trust paths, the claimed region that always
-answers the wire and releases the waiter, dashboard-linked approvals, the approval block
-builder, and ``_request_approval``'s post, resolve and timeout arms, including the in-band
-notice an expired prompt steers before its reject. The commands live in
-``test_slack_handler_coverage.py``, privacy modifiers and linked-thread routing in
-``test_slack_handler_coverage_inbound.py``, status reactions, review drafts and the safe
-update paths in ``test_slack_handler_coverage_delivery.py``, and the small pure helpers in
-``test_slack_handler_coverage_pure_helpers.py``.
+Pins ``handle_interaction``'s guards, the claimed region, dashboard-linked approvals, the
+approval block builder and ``_request_approval``'s post, resolve and timeout arms.
 """
 
 from __future__ import annotations
@@ -170,11 +164,9 @@ class TestHandleInteractionClaimedRegion:
     """A raise between the claim (``_pending_approvals.pop``) and ``set_result``
     must still answer the wire and release the waiter.
 
-    ``_request_approval``'s timeout arm that lost its claim awaits
-    ``pending.future`` unbounded, justified by "every way the click can end
-    resolves this future". These tests pin that invariant for the synchronous
-    bookkeeping between the claim and the resolution (trust bookkeeping, audit,
-    stats), not just the two wire calls the old per-arm handlers covered.
+    The timeout arm that lost its claim awaits ``pending.future`` unbounded, so every
+    raise in the bookkeeping between claim and resolution (trust, audit, stats) must
+    still resolve it.
     """
 
     @pytest.mark.asyncio

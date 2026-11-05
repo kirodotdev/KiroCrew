@@ -48,6 +48,7 @@ from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
     register_app,
     register_app_crons_with_service,
+    snapshot_app_agent_configs,
 )
 from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
 from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
@@ -341,6 +342,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_while_startup_hook_runs,
         _register_app_off_loop,
         _restore_app_after_failed_update,
+        _snapshot_agent_configs_off_loop,
         _start_backend_after_install,
         _stop_backend_and_observe,
         _suspend_app_for_session_approval_reconsent,
@@ -374,10 +376,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_static import (  # noqa: F401
         _ALLOWED_EXTENSIONS,
         _CONTENT_TYPES,
+        _GZIP_EXTENSIONS,
+        _GZIP_LEVEL,
+        _GZIP_MIN_BYTES,
         _UI_MAX_BYTES,
         _UI_STREAM_CHUNK,
         _UI_STREAM_SEMAPHORE,
         _UI_STREAM_TIMEOUT_DEFAULT,
+        _accepts_gzip,
         _open_ui_file,
         _ui_stream_timeout_secs,
     )

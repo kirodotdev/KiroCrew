@@ -38,15 +38,9 @@ class TestLinkTimeBackfill:
     ):
         """Pins WHY every case below drains: the handler answers before it posts.
 
-        The endpoint returns 200 as soon as the link is persisted and hands the
-        replay to ``asyncio.create_task``, so whether the replay has run by the time
-        the response is read depends only on how the loop was scheduled. Asserting on
-        the replay without awaiting it is a load-dependent coin flip, and it failed
-        as ``'NoneType' object has no attribute 'args'`` on a DIFFERENT test each CI
-        run — which reads as a flaky suite rather than a missing await.
-
-        If this ever fails because the handler became synchronous, delete the drains
-        rather than weakening this.
+        The endpoint returns 200 once the link is persisted and hands the replay to
+        ``asyncio.create_task``, so an undrained assertion is a load-dependent coin flip.
+        If the handler becomes synchronous, delete the drains rather than weakening this.
         """
         state = self._state(tmp_path, monkeypatch)
         slot = state.get_or_create_slot("s1")
@@ -217,17 +211,9 @@ class TestLinkTimeBackfill:
 class TestNonStringKeyIsRefused:
     """A key that is not a real string must never reach slot-key normalization.
 
-    ``_normalize_slot_key`` strips a repeated ``dashboard_`` prefix with an
-    unbounded ``while`` loop, which terminates only for a genuine ``str``.
-    Anything whose ``startswith`` is always truthy -- a MagicMock standing in
-    for a Slack payload field, for instance -- spins forever AND manufactures a
-    fresh child object every iteration. Silent, so no test fails and no timeout
-    trips; it simply eats memory until the process dies. On CI that presented
-    as a runner shutdown at a random point in the shard with zero FAILED lines.
-
-    The click path reaches this lookup with a thread id taken straight off the
-    interaction payload, so the type is not guaranteed at the call site -- the
-    guard belongs here.
+    ``_normalize_slot_key`` strips ``dashboard_`` in an unbounded ``while`` loop, so a
+    MagicMock (``startswith`` always truthy) spins forever and silently eats memory. The
+    click path passes a thread id straight off the payload, so the guard belongs here.
     """
 
     @pytest.mark.timeout(5)
@@ -255,18 +241,9 @@ class TestNonStringKeyIsRefused:
 class TestUnlinkSpendsTheControl:
     """Unlinking must EXPIRE the OPTIONS control, not merely orphan the record.
 
-    Two failure modes, both closed by expiring rather than forgetting:
-
-    1. Forget-only leaves the buttons live in Slack. After the link is gone a
-       click answers a question from a conversation this thread is not
-       attached to, landing that stale answer in a brand-new session.
-    2. Doing nothing leaves the record unreachable once the thread -> slot
-       reverse index is popped, so the next dashboard turn's expiry strikes every
-       choice through — erasing an answer the user had already given.
-
-    Expiry does both halves: it strikes the choices through in Slack AND clears
-    the record. It has to run before the link is torn down, because popping the
-    index is what makes the record unreachable.
+    Forget-only leaves live buttons whose click lands in a brand-new session. Expiry
+    strikes the choices through and clears the record, and must run before the link
+    is torn down, because popping the reverse index makes the record unreachable.
     """
 
     @pytest.mark.asyncio
@@ -325,13 +302,8 @@ class TestUnlinkSpendsTheControl:
     async def test_a_relink_during_the_expiry_await_is_not_clobbered(self, tmp_path, monkeypatch):
         """Unlink must not tear down a link that replaced the one it captured.
 
-        Neither plain ordering is safe. Tearing down BEFORE expiry leaves the
-        buttons live with the reverse index already gone, so a click resolves to
-        nothing and starts a brand-new session with a stale answer. Expiring
-        first, then tearing down unconditionally, lets a relink that landed during
-        the (Slack-bound) await get its in-memory fields wiped while its persisted
-        link survives. Compare-and-clear is the only ordering that closes both, so
-        this test pins the relink half.
+        Expiring first and then tearing down unconditionally wipes the in-memory fields
+        of a relink that landed during the Slack await. This pins the compare-and-clear.
         """
         from kiro_crew.dashboard.chat_slack import api_chat_slot_slack_unlink
 
@@ -422,11 +394,8 @@ class TestUnlinkSpendsTheControl:
 class TestEveryOutstandingControlIsExpired:
     """A newer control must not displace the record of an older live one.
 
-    One turn can post more than one OPTIONS message, and a single slot is
-    reachable from several posting paths. When the record was a single slot the
-    newer post overwrote the older one, so the older control stayed on screen
-    with nothing tracking it — clicking it answered a question the conversation
-    had already moved past, and the answer landed as if it were current.
+    One turn can post several OPTIONS messages. An untracked older control on screen
+    would answer a question the conversation has moved past.
     """
 
     @pytest.mark.asyncio
@@ -461,13 +430,8 @@ class TestEveryOutstandingControlIsExpired:
     async def test_a_cron_control_is_tracked_and_spent_under_its_session_key(self, tmp_path):
         """A cron slot's name is not its session key folded, so it must still resolve.
 
-        A persistent cron runs on ``cron:<id>`` but its slot is named
-        ``cron-<id>``. The filename fold turns the colon into an underscore, so
-        the lookup asked for ``cron_<id>`` and matched nothing: the control was
-        never recorded, and the follow-up turn had nothing to expire — leaving a
-        live control answerable into a question the cron had moved past. The
-        resolver falls back to asking the slots their own identity, so both the
-        record and the expiry reach the same slot.
+        A cron runs on ``cron:<id>`` but its slot is ``cron-<id>``, and the filename fold
+        gives ``cron_<id>``. The resolver falls back to asking the slots their identity.
         """
         from kiro_crew.dashboard.chat_utils import (
             expire_slack_options,
@@ -571,13 +535,9 @@ class TestEveryOutstandingControlIsExpired:
     def test_a_cron_owned_control_is_forgotten_on_selection(self):
         """The forget must cover the key the record actually used.
 
-        The record sites resolve the owner through the PERSISTED thread index, so
-        a control on a cron-linked thread is filed under ``cron:<id>``. The
-        ownership helpers only consulted the dashboard SLOT index (plus the
-        syntactic ``slack:<ts>``), which cannot see a cron link -- so the
-        selection's forget missed the record entirely and the next expiry edited
-        over the user's answer. It also defeats the under-lock skip, which
-        relies on the forget having removed the record.
+        A control on a cron-linked thread is filed under ``cron:<id>`` via the persisted
+        thread index, which the dashboard slot index cannot see. A missed forget lets the
+        next expiry edit over the answer and defeats the under-lock skip.
         """
         from kiro_crew.dashboard.chat_utils import (
             slack_options_owner_key,
@@ -625,12 +585,8 @@ class TestEveryOutstandingControlIsExpired:
     async def test_a_selection_made_under_the_lock_is_not_overwritten(self, tmp_path):
         """A click that wins the race must not have its answer erased.
 
-        Expiry and the Send handler both edit the SAME Slack message, and Slack
-        offers no compare-and-set. They now share ``options_edit_lock`` per
-        message, and the expiry re-reads its record INSIDE that lock -- so a Send
-        that already rewrote the message and dropped the record makes the expiry
-        skip its edit entirely, rather than landing late and replacing the
-        selection with a spent summary.
+        Slack has no compare-and-set, so expiry re-reads its record inside the per-message
+        ``options_edit_lock`` and skips its edit when a Send already dropped the record.
         """
         from kiro_crew.dashboard.chat_utils import (
             expire_slack_options,
@@ -668,12 +624,8 @@ class TestEveryOutstandingControlIsExpired:
     async def test_a_click_during_a_failing_edit_is_not_resurrected(self, tmp_path):
         """A control answered mid-await must stay answered.
 
-        The hazard is specific to retaining transient failures. A click landing
-        while the expiry's edit is being rate-limited renders the SELECTED summary
-        and forgets the record. If the expiry then wrote its unsettled records
-        back, it would resurrect the one just answered, and every later turn would
-        re-edit that message -- replacing the user's visible answer with a spent
-        summary. Only settled records may be removed; nothing is ever re-added.
+        A click during a rate-limited expiry edit forgets the record; writing unsettled
+        records back would resurrect it. Only settled records are removed; none re-added.
         """
         from slack_sdk.errors import SlackApiError
 
@@ -732,13 +684,8 @@ class TestEveryOutstandingControlIsExpired:
 class TestForgettingIsScopedToTheClickedControl:
     """Answering one control must not un-track the others.
 
-    Once several controls can be outstanding at once, clearing the whole
-    collection on a click leaves the other ones on screen with nothing tracking
-    them — so a later click on one answers a superseded question and no expiry
-    can ever reach it. A click spends exactly the control it was made on.
-
-    The unscoped form is still correct for an unlink, where the entire
-    conversation is detaching and every control should stop being tracked.
+    A click spends exactly the control it was made on; the others stay tracked so
+    expiry can reach them. The unscoped form is for an unlink.
     """
 
     def test_a_click_forgets_only_the_control_it_answered(self, tmp_path):

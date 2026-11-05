@@ -973,6 +973,12 @@ class AppManifest:
             # Included only when non-empty so manifests signed before platform was
             # covered keep producing the identical payload.
             body["platform"] = platform_d
+        publish_provider_d = self.publishProvider.to_dict()
+        if publish_provider_d:
+            # `endpoint` is where the artifact page POSTs the reader's artifact, like the
+            # signed `contributes.fileMenuItems[].endpoint`. Non-empty only, so manifests
+            # that never declared it keep producing the identical payload.
+            body["publishProvider"] = publish_provider_d
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------

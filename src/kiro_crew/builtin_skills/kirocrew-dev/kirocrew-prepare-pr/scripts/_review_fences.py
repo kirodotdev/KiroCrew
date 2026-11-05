@@ -15,14 +15,11 @@ import re
 
 # --- Markdown fences: the one reader for every kirocrew-prepare-pr script -------
 #
-# A fenced block opens with three or more backticks or tildes (up to three spaces
-# of indent; a backtick fence's info string cannot hold a backtick, that is inline
-# code) and closes only with the same character, at least as many, up to three
-# spaces of indent and nothing but blanks after. A ``` line inside a ~~~ block is
-# content. Those two rules live in pr_status_issue_links.py, which pr_status.py
-# already loads; this module loads that file the same way and builds the line
-# readers below on them, so pr_findings.py, diff_signals.py and sweep_check.py read
-# fences through the one pair of functions.
+# A fence closes only with its own character, at least as many, up to three spaces
+# of indent and nothing but blanks after, so a ``` line inside a ~~~ block is
+# content. Those rules live in pr_status_issue_links.py; this module loads
+# that file and builds the line readers below on them, so pr_findings.py,
+# diff_signals.py and sweep_check.py read fences through one pair of functions.
 class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
     """Load shipped source normally while suppressing cache writes."""
 

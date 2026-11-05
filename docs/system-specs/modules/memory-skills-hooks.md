@@ -281,7 +281,9 @@ view.
 `MemoryStore()` uses `<home>/memory_index.db`, while an explicitly supplied
 workspace retains its existing workspace-relative path. V1 FTS supports literal
 quoted-token search, incremental file indexing and explicit/periodic rebuilds.
-Its corrupt derived index can be rebuilt from the source files. V2 FTS belongs
+Its corrupt derived index can be rebuilt from the source files: when an open
+finds it corrupt, the index is recreated empty and the next search queues every
+source for re-indexing, so search does not stay empty until a rebuild. V2 FTS belongs
 to its authoritative database and has no delete-and-recreate recovery path.
 
 ### Knowledge library duplicate ownership
@@ -1558,12 +1560,12 @@ raw agent file writes cannot modify managed SQLite state.
 | User flow | Memory behavior |
 |---|---|
 | Ordinary assistant without a selected member | Existing Global Memory V1 behavior |
-| Member DM, without Crew Mode | The owning execution record's member/store IDs; existing V1 bindings stay V1, explicit newly created members use V2 |
-| Crew Mode | Each delegate retains its own binding. A target member is explicit and admitted by ordinary delegation/tool/app policy; omitted targets inherit the parent |
+| Member DM, without Ultra Mode | The owning execution record's member/store IDs; existing V1 bindings stay V1, explicit newly created members use V2 |
+| Ultra Mode | Each delegate retains its own binding. A target member is explicit and admitted by ordinary delegation/tool/app policy; omitted targets inherit the parent |
 | Scheduled work | `member_id` pins the member separately from its provider template. Creation, firing and resumed chat validate the pinned store |
 | Restart or continuation | The owning record retains the same frozen execution context |
 | Unavailable or corrupt memory | Learned-memory operations report unavailability; manual essentials remain usable. No global fallback or replacement empty database |
-| The first mate (`mate`) | An ordinary member, created with its own private V2 store like any explicit creation; never on Global memory ([crew mode](crew-mode.md)) |
+| The first Bot (`mate`) | An ordinary member, created with its own private V2 store like any explicit creation; never on Global memory ([crew mode](crew-mode.md)) |
 
 The Memory tab has separate global and member views. Member links address
 `/settings/overview?view=memory&store=<store>`; every member data request carries
@@ -1913,7 +1915,7 @@ unreadable record omits the block instead of aborting the turn. It carries no
 readings: the essentials ride every turn and are dropped from the wire only
 while byte-identical to the last acknowledged snapshot, so a reading in the
 block would resend the whole section on every `key_result_progress`. The
-mate reads current values with `goal_read`.
+Bot reads current values with `goal_read`.
 
 `ContextBuilder` injects the owner's identity, current permanent rules and
 bound custom-template persona on fresh, warm, resumed, post-compaction and
@@ -4131,7 +4133,7 @@ comment header per owner. The module-level code these owners hold is re-imported
 |---|---|
 | `skills_auto_model` | The `auto/` namespace and its on-disk layout, `AutoSkillProvenance` and the generated `SKILL.md` renderer, `ClaimRefusal`, and the pending-queue observer hooks |
 | `skills_discovery` | The skills directory, the packaged and trusted provider roots, the installed package's RECORD admission of a hardlinked `SKILL.md`, screening and adoption of the configured extra roots (`reconfigure`), the tree walk `_iter_skill_files` with its no-follow traversal of a trusted project, and the bounds on how long a walk's answer is served |
-| `skills_builtin_provenance` | The tree fingerprint, the provenance marker, the ownership check (`_verified_unchanged_fingerprint`), `installed_skill_currency` and the deployed cron-script source verdicts |
+| `skills_builtin_provenance` | The tree fingerprint, the provenance marker, the ownership check (`_verified_unchanged_fingerprint`), `installed_skill_currency`, the released-former-built-in skip it shares with the sync (`_ships_for_released_app`), and the deployed cron-script source verdicts |
 | `skills_builtin_sync` | The packaged-skill sync (`_ensure_builtin_skills`, `sync_builtins`) with its claim, retirement, quarantine and opt-out carry, stale and relocated cleanup (`_RELOCATED_SKILLS`), and `remove_retired_conductor_skill` |
 | `skills_body_reads` | The project trust key and its audit, the enumerated-read choke point (`_read_enumerated_skill_bytes`) and the frontmatter cache, `load_skill` and the global body reader, exact-key reads of the scoped catalog with their paging, and the shapes that mark a tool call as a skill-body read |
 | `skills_selection` | `get_always_skills`, `get_triggered_skills` with its `trigger_score` call and the live per-message cap, the `repo_scope` gate, `scoped_skills`, and the user-first order of the startup index and the bounds it is rendered under |
@@ -4281,9 +4283,11 @@ Every catalog read asks the switch (through `_catalog_scope_key` → `is_key_tru
 several times per turn, so `skill_trust._project_skills_enabled` reads it through
 `config.load_memo` (see config.md, "Derived-value memo"): the last answer is reused
 while the config files are unchanged rather than rebuilding the whole config each
-time. A failed read is never remembered, so it fails closed again on the next ask. In the same spirit `catalog._iter_visible` keeps its disabled-app filtering
+time. A failed read is never remembered, so it fails closed again on the next ask. In the same spirit `catalog._iter_visible` keeps its app filtering
 against the catalog list `_iter` served (the same object until a rebuild) and the
-disabled set: `_owning_app` resolves real paths per skill, and the memo is dropped by
+disabled and released sets (`_hidden_by_app`: a disabled app's skills, and a flat
+packaged copy whose `app:` line names a former built-in released onto its own
+repository, app-kit-platform.md § Former built-in adoption): `_owning_app` resolves real paths per skill, and the memo is dropped by
 `_invalidate_iter_cache` with the rest of the catalog state. It keeps only lists `_iter`
 still serves (a superseded generation is dropped on the next store), at most 16 of
 them and `_VISIBLE_MEMO_MAX_ROWS` (32,768) catalog rows in total; a larger catalog is
@@ -5413,8 +5417,8 @@ back to `_exact_read_while_building`, which composes the candidate from a root t
 loader owns and the COMPLETE key, so `team-b/review` can never resolve
 `team-a/review` and a bare leaf resolves nothing. `_safe_name` rejects anything that
 is not a plain catalog key, so the key is never a path. The mapping must still admit
-the candidate, a disabled app's skill stays hidden, and `repo_scope` is still checked
-by the caller. Two limits are deliberate: it is reachable ONLY while
+the candidate, a disabled app's skill and a released former built-in's packaged copy
+stay hidden, and `repo_scope` is still checked by the caller. Two limits are deliberate: it is reachable ONLY while
 `catalog_status()` is `"building"`, because a complete enumeration is the single
 authority and a second resolution path running beside it is how the two drift apart;
 and it withholds the confined project tier, whose containment is knowable only from
@@ -6305,7 +6309,7 @@ wedged owner frame still reads as a gate stall.
 | `internal_reads` | The edition registration seam, the fixed-path sensitive read and the two SEL audit entry points |
 | `script_validation` | The fail-soft timeout normalization and the raising field validator both store write paths share |
 | `stream_caps` | A hook's bounded output drain, the truncation-marking decode and the concurrent stdin/stdout/stderr exchange |
-| `hook_dispatch` | The global store accessors, the strict on-disk read a store-less process uses, the informational tool-call fire, and the PreToolUse block gate with the names a matcher meets |
+| `hook_dispatch` | The global store accessors, the strict on-disk read a store-less process uses (a snapshot, so its fires never write their status back over a newer save), the informational tool-call fire, and the PreToolUse block gate with the names a matcher meets |
 | `hook_types` | The pipeline's value types: `HookResult`, the tool gate's verdict `ToolHookResult` (its constructors emit the approval-decision counter, which `test/metrics/test_business_counters.py` reads in this file), the rule dataclasses, `UserDeniedPattern`, and `HooksConfig` with its defensive parse of the `hooks` section |
 | `script_hooks` | Running script hooks: a hook process's environment (`_hook_subprocess_env`, the one reader of `_HOOK_BASE_ENV_KEYS`), one hook's sandboxed run (`run_script_hook`) and its `ScriptHookResult`, and `ScriptHookStore`, which persists the Hooks page's hooks, validates every edit and fires the hooks an event matches; `fire` sits beside `run_script_hook`, and `test_hook_events_kas_triggers` reads its source through the object |
 
@@ -7129,6 +7133,8 @@ A spawning parent decides which of three groups its sub-agent inherits, via `inc
 | `project` | `[DOCUMENTATION]` pointer, steering resources (CC backend only), `[PROJECT]` directory line | yes |
 
 The steering row carries a backend caveat: the steering block is injected only on the Claude Code backend (`is_cc`), because on the ACP/kiro backend `kiro-cli --agent` loads the agent's own `resources` natively. `include_project=false` therefore suppresses steering on CC only — an ACP sub-agent still receives it, and nothing in Kiro Crew can prevent that from this call site.
+
+On CC the block mirrors what kiro-cli would load for the same project: `_load_steering_resources(project)` anchors each `file://` entry as kiro-cli does (relative at the project, else `$HOME`; `~/` at `$HOME`; absolute at its glob-free prefix), adds kiro-cli's inherited defaults (global steering under the host `~/.kiro`, the same root `_double_load_roots` skips as delivered, so a relocated `KIRO_HOME` cannot leave a folder-selected global document on neither path; the project's steering and `AGENTS.md` when a project is bound), admits each hit against its own entry's anchor, reads a document two entries match once, and skips only an entry it cannot glob. That is what keeps the `is_claude_code` disjunct of `_project_steering_delivered` true for the project root the folder dedup skips.
 
 conduct is not switchable because it supplies the output contract and capability
 entry points. Default skill discovery is a small name/purpose list plus

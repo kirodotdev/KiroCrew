@@ -1126,3 +1126,32 @@ class TestRunScriptHookShellDenyList:
         # gate did not block it" (exit 2 is the block convention) holds on both.
         assert result.exit_code != 2
         assert hook.last_status != "blocked"
+
+
+def test_the_saved_hooks_snapshot_keeps_a_hook_saved_while_one_ran(tmp_path: Path, monkeypatch):
+    """A process with no hook store fires a snapshot of the saved hooks; a hook the
+    Hooks page saves meanwhile stays saved."""
+    import kiro_crew.hooks as hooks_mod
+    from kiro_crew.config import loader
+    from kiro_crew.hooks import ScriptHookResult
+
+    monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(hooks_mod, "_global_script_hook_store", None)
+    monkeypatch.setattr(hooks_mod, "get_global_hook_store", lambda: None)
+
+    def save(hook_id: str) -> None:
+        page = ScriptHookStore(config_dir=tmp_path)
+        page._hooks[hook_id] = ScriptHook(
+            id=hook_id, event=HOOK_EVENT_PRE_TOOL_USE, matcher="*", command=hook_id
+        )
+        page._save()
+
+    save("saved")
+
+    async def fake_run(hook, context="", hook_event=None, cwd=None):
+        save("new")
+        return ScriptHookResult(hook_id=hook.id, hook_name=hook.name, event=hook.event, exit_code=0)
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", fake_run)
+    assert asyncio.run(hooks_mod.permission_pre_tool_block(None, [], None, "x")) is None
+    assert {h.id for h in ScriptHookStore(config_dir=tmp_path).list_all()} == {"saved", "new"}

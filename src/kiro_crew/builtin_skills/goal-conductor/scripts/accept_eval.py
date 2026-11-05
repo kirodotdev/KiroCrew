@@ -377,25 +377,15 @@ def _evaluate(item):
         if repo:
             argv += ["--repo", str(repo)]
         verdict, evidence = _run(argv)
-        # The draft probe runs HERE, behind a pending verdict, and nowhere else.
+        # The draft probe runs only behind a pending verdict. A draft's checks
+        # can still pass in repos with no check gated on the draft flag, so the
+        # probe must not pre-empt `gh pr checks`, and skipping it on pass/fail
+        # costs nothing.
         #
-        # A draft PR is not unconditionally unsatisfiable, so the probe must not
-        # pre-empt the check: where a repo has no aggregate check gated on the
-        # draft flag, a draft's checks resolve and `gh pr checks` exits 0 - a
-        # `pass` this script keeps returning, since this skill ships to
-        # arbitrary repos. Probing only a pending run also costs nothing on the
-        # pass and fail paths, which is every cycle that was never going to
-        # loop.
-        #
-        # A PENDING draft is refused on the spec, not on a prediction about CI.
-        # The two ways a draft's checks stay pending - a readiness check gated
-        # on the draft flag, which never resolves, and ordinary checks still
-        # running, which do - are indistinguishable to a stateless evaluator,
-        # and this returns the same answer for both ON PURPOSE. A draft is the
-        # author's own "not ready for review", so an unfinished check run on one
-        # is a person's turn; "mark it ready for review" is a step they owe
-        # regardless, and it is bounded. Waiting instead is not: guessing wrong
-        # in that direction is the reported defect, an hour of polling a
+        # A pending draft is refused ON PURPOSE even when its checks are merely
+        # still running: a stateless evaluator cannot tell that apart from a
+        # draft-gated check that never resolves. Marking it ready is a bounded
+        # step the author owes anyway; waiting can poll for an hour on a
         # condition no cycle could change.
         if verdict == "pending" and _pr_is_draft(pr, repo):
             return (

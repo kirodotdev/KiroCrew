@@ -621,7 +621,8 @@ class HookGate:
 
 
 class SpecHooks:
-    """The agent spec's PreToolUse hooks as a floor, on a turn they gate.
+    """The PreToolUse hooks as a floor: the Hooks page's on every turn, with the
+    agent spec's own on a turn whose backend never runs them (``spec.gated``).
 
     A delivered deny, or a gate with no verdict (hooks that cannot be read),
     refuses under the policy cause with the gate's own reason. *pre_tool* is
@@ -643,8 +644,6 @@ class SpecHooks:
         self._identity = identity
 
     async def refuse(self, ask: Ask) -> Refusal | None:
-        if not self._spec.gated:
-            return None
         reason: str | None
         if self._spec.unreadable:
             reason = SPEC_HOOKS_UNREADABLE

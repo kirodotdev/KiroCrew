@@ -27,11 +27,8 @@ _MSG_TS = "1700000000.000100"
 class _CapturingSessions(FakeSessions):
     """FakeSessions that records the ``agent`` passed to get_or_create.
 
-    ``agents`` records TURN acquisitions only. The shared background session is
-    tracked separately in ``background_keys``: a successful turn now also fires
-    the fire-and-forget auto-title, which takes that session, and folding its
-    acquire into ``agents`` would turn every "exactly one acquire, under this
-    agent" assertion into a count of unrelated background work.
+    ``agents`` records turn acquisitions only. The auto-title's background session goes
+    to ``background_keys`` so "exactly one acquire" assertions ignore it.
     """
 
     def __init__(self, provider):

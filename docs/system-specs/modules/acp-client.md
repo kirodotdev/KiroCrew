@@ -2054,10 +2054,10 @@ advertised entry's `_meta.kiro.resource.source.origin`
 (`_dispatch.advertised_mode_origin`). The value `bundled` -- the one stamp
 MEASURED on kiro-cli 2.23.0 for the engine's own agents -- means the engine kept
 its OWN built-in under that id and discarded the `customAgents` definition; a
-`set_mode` would succeed and run the built-in under the mate's name, so the
+`set_mode` would succeed and run the built-in under the Bot's name, so the
 harness answers the refusal text -- the id is reserved for a built-in agent,
 plus the mate-side remedy in the dashboard's own labels (the Agent Template
-tab; on the mate's own copy 'Save as new template…' under another name or
+tab; on the Bot's own copy 'Save as new template…' under another name or
 'Reset my changes'; on a shared template -- one created under a reserved id
 before the refusal existed, where neither control renders -- the template
 picker at the top of the tab), in plain words with no wire vocabulary or
@@ -2066,15 +2066,15 @@ the offline fake, an older engine) is not evidence and never refuses, and a
 positive stamp this code has never measured (an engine that renames `client`)
 is logged at WARNING and let through, because kiro-cli is the operator's own
 install, not pinned by Crew, and an unmeasured value must not become a
-session-start denial of every mate with a rename remedy that cannot help.
+session-start denial of every Bot with a rename remedy that cannot help.
 The ids measured to trip (C) on kiro-cli 2.23.0
 (`agent_files.KAS_RESERVED_AGENT_IDS`) never reach the wire under their own name:
 `attach_kas_custom_agents` sends the batch entry as
 `agent_files.kas_wire_agent_id(id)` (`<id>-crewmate`), and both session-start
 paths read the advertised modes, ask (C) and send `set_mode` with that same wire
-id, so a `default` mate carried over from kiro-cli runs unchanged. Nothing
+id, so a `default` Bot carried over from kiro-cli runs unchanged. Nothing
 else sees the alias: the batch Crew records, `handle.active_agent` and
-`kas_projected_agent` keep the mate's id, and a `current_mode_update` naming
+`kas_projected_agent` keep the Bot's id, and a `current_mode_update` naming
 the alias is mapped back through the registered batch
 (`_dispatch.kas_crew_agent_id`). (C) is the read of the wire itself, so a
 built-in a later engine adds under a new id fails loudly instead of resurrecting
@@ -3610,7 +3610,7 @@ applies it.
   paths pass FOREGROUND unless a trusted bot posted. The CLI chat. **Every
   dashboard claimer reads WHO ASKED**
   (`dashboard/request_priority.owner_start_priority`, which reads
-  `is_owner_dashboard_request`): the composer optimizer, Side Chat, mate
+  `is_owner_dashboard_request`): the composer optimizer, Side Chat, Bot
   reply threads, Task Runner Refine and Plan, workflow authoring, Issue Radar's
   AI routes (`_run_oneshot_model`), and the eager spawn a slot action arms. An
   app token on its own slot is BACKGROUND there, because the person-only
@@ -4280,7 +4280,7 @@ resolver hands it through: on Windows that is its `realpath`, which turns an 8.3
 short name such as `RUNNER~1` into the long one. A kiro-cli
 that cannot run the v3 engine is still the gateway floor's (KAS marked unservable,
 Kiro CLI selected), and rule 2 reads only the installation's `agent.acp_backend`,
-not a mate's own pin; both are tracked in issue 26629.
+not a Bot's own pin; both are tracked in issue 26629.
 The decision is per spawn, so a later kiro-cli install or sign-in moves the next
 process back. It is never silent: `kas_route.note_spawn_route` logs each change
 of route (WARNING when automatic) and keeps the last spawn's route in a process
@@ -4661,32 +4661,37 @@ The Codex spawn environment also sets `CODEX_SQLITE_HOME`, so concurrent
 `codex app-server` processes (Codex Desktop and each Crew runtime) do not share
 one set of SQLite databases and fail new sessions with `database is locked`. The
 harness names the need (`SpawnPlan.private_state_env`) and the runtime points the
-variable at its own per-process scratch directory -- the one `TMPDIR` already
-names, allocated before the sandbox wrap and reclaimed by
-`agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
-lock or slot exists. Only the databases move: config, auth and the thread
+variable at a scratch allocation of its own (`private-state-<token>`), made before
+the sandbox wrap, mounted as a private window of that process alone and reclaimed
+by `agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
+lock or slot exists. It is not the process's own scratch directory (the one
+`TMPDIR` names): when the process starts a session tree, that directory is the
+tree's work directory, and every subagent, companion runtime and successor
+spawned for its sessions mounts it writable. Only the databases move: config,
+auth and the thread
 rollouts stay in `CODEX_HOME`, and a thread resumes from its rollout (measured on
 codex 0.159), so `spawn_continue` works across runtimes. A value the operator
 set, or one a cron or workflow `extra_env` carries, reaches the child as set.
-Without a scratch directory nothing is set and one warning is logged: the child
-gets codex's shared default rather than a refused spawn.
+Without a private-state directory nothing is set and one warning is logged: the
+child gets codex's shared default rather than a refused spawn.
 
-The scratch directory lives and dies with its process, so each new chat, resume,
-subagent, cron run and knowledge worker that starts Codex begins on an empty
-database home. Left empty,
+The private-state directory lives and dies with its process, so each new chat,
+resume, subagent, cron run and knowledge worker that starts Codex begins on an
+empty database home. Left empty,
 codex rebuilds its index from the rollouts in `CODEX_HOME`, and that cost scales
 with the user's Codex history: about 60 s and 400 MB per runtime at 3,200 threads
 on codex 0.159, and past the 90 s `initialize` timeout at about 17,000 rollouts,
 where every retry restarts the same rebuild. So the harness also names a seed
 (`SpawnPlan.private_state_seed`, `acp/codex_sqlite.py`), which the runtime calls
-on the spawn worker before the child exists, once scratch is allocated and only
-when nobody chose a location for the variable. It copies `CODEX_HOME/state_5.sqlite`
-into scratch with SQLite's online backup (committed WAL pages included, the
-source left unchanged) only when that index reports `backfill_state.status =
-'complete'`, inside a 10 s budget, through a staging file renamed into place.
+on the spawn worker before the child exists, once that directory is allocated
+and only when nobody chose a location for the variable. It copies
+`CODEX_HOME/state_5.sqlite` into it with SQLite's online backup (committed WAL
+pages included, the source left unchanged) only when that index reports
+`backfill_state.status = 'complete'`, inside a 10 s budget, through a staging file
+renamed into place.
 Only the state index is copied, never credentials or the log database, and each
 runtime still owns its own copy. A missing, incomplete or unreadable source, an
-existing destination, or any copy error leaves scratch as it was, and codex
+existing destination, or any copy error leaves the directory as it was, and codex
 falls back to its cold initialization. An operator who sets `CODEX_SQLITE_HOME`
 in the gateway's own environment (for a systemd user unit,
 `Environment=CODEX_SQLITE_HOME=%h/.codex` in a drop-in) gets the shared index

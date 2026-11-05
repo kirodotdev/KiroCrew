@@ -588,17 +588,11 @@ class TestOrphanSymlinkSafety:
 
 
 class TestOrphanJunctionSafety:
-    """The same threat as :class:`TestOrphanSymlinkSafety`, in the shape it takes on
-    Windows. A directory symlink there needs SeCreateSymbolicLinkPrivilege, so the
-    only link an unelevated same-user writer can plant under pod_root is a
-    JUNCTION -- which answers True to ``is_dir()`` and False to ``is_symlink()``.
-    Every ``is_symlink()`` guard in the orphan / reclaim path was therefore blind
-    to exactly the link that can occur. Each case runs twice: once
-    through the product's own ``symlink_or_junction`` helper (the real shape on the
-    Windows shards, a symlink elsewhere), once with the junction shape SIMULATED so
-    POSIX shards pin the guard as well -- the OS junction oracle
-    ``platform_compat._ISJUNCTION`` recognises one real directory while every
-    ``pathlib`` predicate keeps its true answer."""
+    """:class:`TestOrphanSymlinkSafety` for Windows junctions.
+
+    An unelevated writer can plant only a JUNCTION, which is ``is_dir()`` and not
+    ``is_symlink()``. Each case runs via ``symlink_or_junction`` and again with
+    ``platform_compat._ISJUNCTION`` simulating one, so POSIX shards pin the guard too."""
 
     @staticmethod
     def _plane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PodConfig:

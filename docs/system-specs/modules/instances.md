@@ -2228,7 +2228,7 @@ Four properties make the filing safe to run on an authenticated write route:
   body.
 - **Placement is resolved only after the slot exists**, as the last `await` before
   the durable save. The handler re-checks the live-slot cap after its own last
-  `await` and can answer `429` there, and a folder written in front of that check
+  `await` and can answer `409` there, and a folder written in front of that check
   is left behind when it fires.
 - **Find-or-create is atomic across both levels**, inside one `mutate_folders`
   transaction — the shape `ensure_channel_folder` already uses (§ chat folders) —

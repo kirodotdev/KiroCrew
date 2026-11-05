@@ -18,7 +18,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
 |------|-------|--------------|
-| `session_create` | `POST /api/session-control/create` | Open a new session in the caller's workspace, empty unless `message` seeds its first turn through `send_to_target` (the `session_send` path), optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted is filled from the dispatching mate's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
+| `session_create` | `POST /api/session-control/create` | Open a new session in the caller's workspace, empty unless `message` seeds its first turn through `send_to_target` (the `session_send` path), optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted is filled from the dispatching Bot's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
 | `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point. The title meets `session_create`'s title rules before any gate (`invalid_title`, 400; scrubbed, cut to 200 characters, a cut result that shows nothing refused, a blank title is no title) |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
@@ -79,7 +79,7 @@ a new row in `_session_tools()` (`kiro_crew.mcp_dashboard_session_tools`), its b
 `MCP_DASHBOARD_SCHEMAS`.
 
 **A conductor's own archived worker is revived on send.** `session_send` from a
-crewmate's conductor (`mate_worker.is_conductor_execution` on its attested record)
+Bot's conductor (`mate_worker.is_conductor_execution` on its attested record)
 to a session that is not open first runs `session_revive` on it, under revive's
 own ownership fence (created by the caller AND named by the gateway-written
 lineage) and with the fence the send was admitted under (`_carried_fence`, as on
@@ -319,9 +319,9 @@ inbound before anything is sent (see [messaging](messaging.md#a-busy-resumed-das
 
 A send whose caller is the target's own creator (`_created_by` equals the
 caller's slot key) also sets the target's in-memory `_reports_to_creator`. With
-`_lineage_minted` it is the live witness the crewmate worker report reads
+`_lineage_minted` it is the live witness the Bot worker report reads
 ([crew-mode](crew-mode.md), "A worker reports back on its own"): a child
-restored after a restart reports to its crewmate again once that crewmate sends
+restored after a restart reports to its Bot again once that Bot sends
 it something. It is never persisted and grants no access.
 
 **`steer: true` asks for a third outcome on a busy target.** Instead of waiting
@@ -525,7 +525,7 @@ does not, since kiro-cli still prompts for them.
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
 segments created, behind the same tree-shaping gate) — and files the slot as
 part of creation (#6118). No dispatcher spec grants a folder verb or passes
-`folder`: conductor and crewmate guidance creates workers without it
+`folder`: conductor and Bot guidance creates workers without it
 (rfc-crewmate-workers-under-the-crewmate.md, Design 6). Filing is
 part of creation rather than a second call (`chat_folder_move_session`), because a
 folder deleted between two calls would leave the session unfiled with the create
@@ -550,9 +550,9 @@ and the workspace default when the caller has none
 with 400 `folder_project_invalid`, and a folder whose project changes while the
 creation is in flight refuses with 409 `folder_target_changed`.
 
-A caller inside a Crew Mode tree — a chat that turned Crew Mode on, or a session
+A caller inside an Ultra Mode tree — a chat that turned Ultra Mode on, or a session
 such a chat dispatched (`crew_mode.slot_in_turned_on_tree`, the rule the slot
-list stamps; see [crew-mode](crew-mode.md) § Crew Mode) — files nothing: the
+list stamps; see [crew-mode](crew-mode.md) § Ultra Mode) — files nothing: the
 chat is the person's one entry for the whole crew. `session_create` with a
 `folder` still resolves it (an unknown or ambiguous reference is refused, no
 path segment is created), gives the child that folder's project directory, and
@@ -560,7 +560,7 @@ leaves the child unfiled; the reply carries `folder_ignored: "crew_mode"` when
 a folder was named and `crew_mode: true` whenever the caller is in such a tree.
 `session_fork` from such a caller clears even the folder the source transcript
 carried before the child's first save and answers the same two fields.
-The MCP tools' replies say "unfiled (this chat is in Crew Mode)"
+The MCP tools' replies say "unfiled (this chat is in Ultra Mode)"
 so the agent does not report a filing that did not happen.
 
 `session_create` also takes an optional `agent_kind`, with one value: `template`.
@@ -626,11 +626,11 @@ opens, and renaming, moving or deleting the person's folders stays refused. A
 member's folder list adds that home folder and its ancestors, the path its own
 `[FOLDER]` line already shows, so the walk resolves `Ops` instead of missing it.
 
-A mate is the exception, and keeps everything it creates in ONE folder of its
+A Bot is the exception, and keeps everything it creates in ONE folder of its
 own (`dashboard/mate_folders.py`, #25935). Its home folder is a top-level folder
 owned by `member:<store>` and marked `mate_home`; it is created on first use under
 the folder-store lock (one per store, however many creates race), named with the
-mate's display name, and renamed when that changes: by the agent-update route on
+Bot's display name, and renamed when that changes: by the agent-update route on
 a saved `display_name`, and by the next `ensure_mate_home` for any other writer.
 The store is the link, so a rename never re-points it. Only a member identity
 (an execution with a `member_id`) has a home; a legacy selection without one
@@ -640,17 +640,17 @@ that home, is filed under the home instead (`home_parent_for_create`); one insid
 the home keeps its parent. A create filed home out of an existing person's folder
 with no `project_dir` of its own takes the project that folder inherits
 (`home_create_target`), the same rule a conductor's re-filed session follows, and the
-MCP folder-path walk reaches it through this route. A session a mate's conductor chat opens
+MCP folder-path walk reaches it through this route. A session a Bot's conductor chat opens
 (`session_create`, `mate_home_filing`; the conductor is told by
 `_conducts_for_a_worker`, the worker hand-off's own test, run off the loop
 so it never schedules an installed-agents rescan) is filed in the folder it named when that
 folder is inside the home, else in the home itself. A person's folder it named
-still supplies the child's project directory, as in Crew Mode (filing dropped,
+still supplies the child's project directory, as in Ultra Mode (filing dropped,
 project kept), and the late folder re-check compares that folder's project; a
-named folder that does not exist, or one in another mate's home, supplies
+named folder that does not exist, or one in another Bot's home, supplies
 nothing and the home is used for both. Any other caller naming a
-folder in a mate's home is refused `mate_home_locked` (403), unless it runs on
-that mate's store (one of the mate's own workers). Moves are fenced the same
+folder in a Bot's home is refused `mate_home_locked` (403), unless it runs on
+that Bot's store (one of the Bot's own workers). Moves are fenced the same
 way, refused `mate_folder_scope` (403) rather than redirected: a member caller
 may not re-parent its home folder, re-parent any folder to outside the home,
 move a folder from outside the home into it, since a person's chats filed there
@@ -659,17 +659,17 @@ would be locked in too (`api_chat_folder_update`), or file a chat outside it
 The home is also closed to everyone else, the person included, refused
 `mate_home_locked` (403): the home itself takes only `collapsed` and `order`
 (no rename, move, recolor, project or delete, from anyone), and nothing outside
-the mate may create a folder or chat in its subtree, file a chat into it or out of it, move a
+the Bot may create a folder or chat in its subtree, file a chat into it or out of it, move a
 folder into it, or edit or delete a folder inside it (`home_owner_of`,
 `refuses_write_into`). Every writer of the folder tree applies this: the shared
 create (`create_folder_record`, so the folder scaffold too) refuses it under the
 folder-store lock (`FolderMateHomeLockedError`), the empty-folder cleanup never
 lists a home or a folder inside one (`mate_home_subtree_ids`), `session_fork`
-and `session_revive` refuse a named folder in another mate's home
+and `session_revive` refuse a named folder in another Bot's home
 (`refuse_foreign_home_filing`), a fork that would inherit its parent's folder
-in a mate's home the forker does not own (the person's Fork, or `session_fork`
-by anyone but that mate) is left unfiled (`inherited_folder`), a scheduled job
-is saved with a chat folder there only when it runs on that mate's store (the
+in a Bot's home the forker does not own (the person's Fork, or `session_fork`
+by anyone but that Bot) is left unfiled (`inherited_folder`), a scheduled job
+is saved with a chat folder there only when it runs on that Bot's store (the
 cron create and update routes refuse it `mate_home_locked` (403) and record the
 denial in the security event log, the Schedule form does not offer such a
 folder, and the tab placement re-checks it at run time and records a refusal
@@ -680,16 +680,16 @@ chat checks both ends of the move with one rule (`refuses_refile`): the slot
 folder PATCH (`api_chat_slot_folder`), a slot create that names an open slot
 (`api_chat_slot_create`), `session_revive` against the archived record's folder,
 and the cron update route against the job's current chat folder (with
-`move_cron_job_tab` re-checking it), so none of them moves a chat out of a mate's
-home it may not write. Deleting the mate releases its home:
+`move_cron_job_tab` re-checking it), so none of them moves a chat out of a Bot's
+home it may not write. Deleting the Bot releases its home:
 after the delete succeeds, the agent-delete route drops the `mate_home` marker
 from the home of the retired store's principal (`release_mate_home`, best-effort), so it becomes
 an ordinary folder the person may rename, move or delete. Agent sync does the
 same for each V2 store it retires (`installed_agents`). Nothing else unlocks a
-home; a config read that finds no mate never does. Accepted gap: a mate removed
+home; a config read that finds no Bot never does. Accepted gap: a Bot removed
 by hand-editing `config.json` leaves its home locked. The sidebar draws the subtree
 the same way: no menu, no new-chat control, no rename, no drag, no drop
-(`isMateManaged`). Folders a mate
+(`isMateManaged`). Folders a Bot
 made before this rule are left where they are. Pinned in
 `test/test_mate_folders.py`.
 
@@ -704,11 +704,11 @@ the whole create with `model_rejected`; a level outside the five fails it with
 the birth metadata line (`model`, `reasoning_effort`) so an idle newborn keeps
 them across a restart.
 
-**Omitted, each takes the dispatching mate's matching explicit pin.** A
-mate with a model or effort pin passes that value to a worker it opens unless
+**Omitted, each takes the dispatching Bot's matching explicit pin.** A
+Bot with a model or effort pin passes that value to a worker it opens unless
 the worker fields say otherwise. The value is copied at creation and pinned on
-the worker's slot the way an explicit one is, so a later edit to the mate's
-profile does not reach a worker already open. An empty mate pin leaves that
+the worker's slot the way an explicit one is, so a later edit to the Bot's
+profile does not reach a worker already open. An empty Bot pin leaves that
 half unpinned, so the worker's selected agent or the global default decides.
 `create_session` resolves the caller's member record
 (`_dispatching_crewmate`: the caller's protected execution record when it names
@@ -717,45 +717,45 @@ record, the slot's agent name as `resolve_crew_identity` reads it) and fills
 what the call left unsaid from `worker_session_defaults(record)`: the record's
 `worker_model` / `worker_reasoning_effort` when set, else its own `model` /
 `reasoning_effort`. `worker_model` is read raw, so `"auto"` is a real pin there
-(workers on the backend default while the mate stays on a costly model),
-where the mate's own `model` folds it to inherit. The mate's own effort
-carries over only while the workers run the mate's own model: with
+(workers on the backend default while the Bot stays on a costly model),
+where the Bot's own `model` folds it to inherit. The Bot's own effort
+carries over only while the workers run the Bot's own model: with
 `worker_model` set, or a `model` named on the call, the only effort a worker
 takes is `worker_reasoning_effort`, so a `max` chosen for an opus conductor never
 reaches an `auto`, haiku or explicitly named worker model. With none pinned the
 child's first turn resolves its effort as any session does
-(`resolve_session_effort`: the child's own crew pin when it runs as a mate,
+(`resolve_session_effort`: the child's own crew pin when it runs as a Bot,
 else `agent.reasoning_effort`, else the model default), which is what the profile
 card's "No level set" names. An inherited pin is also dropped when it cannot
 follow the worker onto its harness (`_inherited_pin_foreign_to_child`): the
-crewmate's thread runs on `agent.member_acp_backend` and its own `model` was
-validated there, while a child that is not the crewmate's own worker runs on
+Bot's thread runs on `agent.member_acp_backend` and its own `model` was
+validated there, while a child that is not the Bot's own worker runs on
 `agent.acp_backend`, so that pin is dropped when the two harnesses disagree on
-model-id namespace. The crewmate's own worker runs on the crewmate's backend
+model-id namespace. The Bot's own worker runs on the Bot's backend
 (`mate_worker.crewmate_worker_backend`; crew-mode.md, "The worker runs on its
-crewmate's backend"), so its pins are judged there; the profile's explicit
+Bot's backend"), so its pins are judged there; the profile's explicit
 `worker_model` is validated for that harness (`PUT /api/agents/{name}`) and
 crosses freely. A conductor's hand-off whose worker backend cannot carry the
 worker's kit is refused `capability_harness_unsupported` before anything is
 allocated. A conductor slot with no execution record (one from before records,
 named only by its slot agent) is refused `conductor_record_missing` the same way:
-its worker would carry no crewmate and run on the shared store. Either pin is dropped when the child's namespace advertises a list it is
+its worker would carry no Bot and run on the shared store. Either pin is dropped when the child's namespace advertises a list it is
 not on while another harness claims it; `"auto"` always passes. When the
-mate's own model is dropped, the mate's own effort that rode along for
+Bot's own model is dropped, the Bot's own effort that rode along for
 it is dropped too; an explicit `worker_reasoning_effort` stays. A caller whose record is a
-template — a dispatched worker running on its mate's store — is not a
-mate and its own children inherit nothing (an id-less member's worker keeps
+template — a dispatched worker running on its Bot's store — is not a
+Bot and its own children inherit nothing (an id-less member's worker keeps
 `member` as its selection, so there the template, read against
-`member_template_id`, is what tells it apart); a caller that is not a mate,
-or a mate with nothing set, leaves the slot on the agent's or the global
-default, exactly as before. Nor does a child that is itself a mate inherit:
+`member_template_id`, is what tells it apart); a caller that is not a Bot,
+or a Bot with nothing set, leaves the slot on the agent's or the global
+default, exactly as before. Nor does a child that is itself a Bot inherit:
 an explicit `agent` that selects a member runs that member's own profile through
 the crew-pin tier, and a copied pin would outrank it as a per-session pick. An
 explicit argument always wins. An inherited model runs the same guard an
 explicit one does (`_model_pin_refusal`, the picker's own), but a refusal there
 is DROPPED rather than raised: a profile pin goes stale (delisted, display-only,
-outside the account's entitlement, or an id only the mate's own harness serves) without
-anyone looking at it, and a hard failure would stop every worker the mate
+outside the account's entitlement, or an id only the Bot's own harness serves) without
+anyone looking at it, and a hard failure would stop every worker the Bot
 opens until someone edited the profile or named a model on every call. The child
 then starts on the default, the reply carries `inherited_model_dropped: true`
 (the tool reply says so in words), and the SEL record names the refused id. An
@@ -765,7 +765,7 @@ does the create's SEL record; the tool reply calls them copied at creation, not
 inherited, since the worker does not follow later profile edits. The decision is
 [rfc-worker-model-inheritance](../../request-for-change/rfc-worker-model-inheritance.md).
 
-The pair is set from the mate's Profile card (**Worker model** / **Worker
+The pair is set from the Bot's Profile card (**Worker model** / **Worker
 reasoning effort**, `CrewProfileSettings`), written through
 `PUT /api/agents/{name}` under the crew pin's own validators and shipped on
 `GET /api/members` (not on `GET /api/agents`: the crew editor never shows them).
@@ -809,7 +809,7 @@ session-control verb calls the same two, so what an agent's fork copies and what
 it inherits — agent, model, memory store and mode bound at birth, project,
 folder, tags, `forked_from` — is by construction what a person's fork copies
 and inherits, except the sidebar pin (last table row) and the folder of a
-Crew Mode caller's child, which is cleared (§ `session_create`'s Crew Mode
+Ultra Mode caller's child, which is cleared (§ `session_create`'s Ultra Mode
 filing rule). The human route's behaviour is unchanged by the split; the core
 takes the request-derived facts as arguments (`request_app`, `origin`,
 `count_user_session`, `jev_route_allowed`, the SEL caller and operation) and the
@@ -890,13 +890,13 @@ stamp. `chat_fork._fork_execution_context` rebuilds the child's carrier the way
 `resolve_session_agent_bindings` resolves the parent's own turns: a stored
 skill-view name is first mapped back to its source agent with `_source_of_view`,
 then `resolve_agent_identity(cfg, agent, selection_kind=agent_kind)` decides
-whether the name is a mate alias. An alias gets the member carrier
-`resolve_member_execution` writes for an owner's create, with that mate's
+whether the name is a Bot alias. An alias gets the member carrier
+`resolve_member_execution` writes for an owner's create, with that Bot's
 template, model pin and store, so `default` launches `kirocrew` rather than a
 template called `default`. Any other name, and any slot stamped `template`, gets
 a template carrier under the name as written, and an empty name falls back to
 `kirocrew`. The fork is refused with `store_unavailable` when the recorded store
-or the mate's resolved store is private V2 memory, because no carrier proves
+or the Bot's resolved store is private V2 memory, because no carrier proves
 the parent ran on it, and when the resolved store differs from a store the
 parent recorded. `agent_kind` is one of the identity fields the fork re-reads
 to detect a parent changed mid-fork.
@@ -908,9 +908,9 @@ Creation copies two different kinds of state, and the split is deliberate.
 **Identity** — the child is created in the caller's workspace (the memory
 boundary; a child left in `default` would be both a boundary crossing and
 unaddressable by its own creator), inherits the caller's agent when none is
-named -- except a crewmate's own chat running on the mate conductor, whose
+named -- except a Bot's own chat running on the Bot conductor, whose
 child is always its WORKER whatever `agent` it passes, opened as the template
-`kirocrew-mate-worker` on the crewmate's own workspace, store and member
+`kirocrew-mate-worker` on the Bot's own workspace, store and member
 identity (`_hands_off_to_own_worker` over `_conducts_for_a_worker`, read from
 the caller's execution record through `_dispatching_crewmate`; the one
 exception is a name-first `agent` naming another `config.agents` row, which
@@ -936,9 +936,9 @@ records (see `crew-log-emitter.md`).
 trusted operator's dispatched worker does not stall on a prompt nobody is
 watching. This is the posture `parent_trusted` already gives a `spawn_run`
 subagent, which reads the parent's stored `"auto"` policy, so the same delegation
-behaves the same whether or not it gets a sidebar tab. A crewmate's own
+behaves the same whether or not it gets a sidebar tab. A Bot's own
 worker (the conductor's hand-off, `_hands_off_to_own_worker`) takes its
-posture from the crewmate's record instead: the Profile Permissions
+posture from the Bot's record instead: the Profile Permissions
 `approval_mode`, seeded through `crewmate_approval.seed_for_turn`, whatever the
 thread itself holds at that moment. It is read once the child's record is on
 disk (`seed_new_worker`), so a Profile change made during the create reaches it.
@@ -965,13 +965,13 @@ Nothing about trust is persisted at birth. The birth metadata carries
 `tab_id`, `origin`, `created_at`, `workspace`, `agent`, `project`, `title`,
 `memory_mode`, and `folder_id` / `created_by` / `model` / `reasoning_effort` when
 set — no trust field — so a restart returns the child to interactive along with
-its creator. A crewmate's conductor chat and its workers are the exception: they
-are seeded again from the crewmate's record at the start of their next turn
+its creator. A Bot's conductor chat and its workers are the exception: they
+are seeded again from the Bot's record at the start of their next turn
 (see crew-mode.md, "Conductor and worker").
 
 The create's SEL record carries `agent`, `folder_id`, `model` and
 `reasoning_effort` (each empty when none was pinned), `inherited` (which of the
-two the dispatching mate's profile supplied, `""` when neither),
+two the dispatching Bot's profile supplied, `""` when neither),
 `inherited_model_dropped` (the profile model the guard refused and the create
 dropped, redacted, `""` when none), and what the
 child was born with: `inherited_trust` and `inherited_trust_reads`, present on both
@@ -1020,7 +1020,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Caller is channel-linked (`linked_session_key` set) | 403 | The exfiltration direction: a linked caller's conversation IS a channel thread, so a read would hand a private dashboard transcript to that channel's readers. `CHANNEL_AGENT_BLOCKED_TOOLS` keys on the agent identity; a linked slot is a second route to the same surface. **Two exceptions:** a `cron:<job_id>` link, which names the job's own run transcript and republishes to nobody; and a 1:1 DM whose only human is the configured owner (`owner_dm_refusal` answering `""`) — see "Owner-DM channel callers" below |
 | Caller's own session is no longer open | 403 | Nothing to attribute the operation to |
 | Caller changed workspace while a creation was in flight | 403 | Creation resolves the workspace's project directory off-loop, so it suspends between authorizing the caller and allocating the slot. Both decisions that read the caller's workspace -- the memory boundary the child inherits, and whether the answering agent is bound to that workspace -- are invalidated by a move, and re-deciding the binding here is not available: it needs a config load, which must not run on the event loop |
-| Agent that would answer is bound to another workspace | 403 | `agent_workspace_mismatch`. The child runs in the caller's workspace, so an agent whose own binding names a different one would carry that workspace's memory into it. Checked on whatever answers, an omitted agent included (it resolves to the default template). **One inheritance:** an explicitly named TEMPLATE (`ResolvedBindings.selection_kind == "template"`, a passthrough or the default template, never a `config.agents` row) passes when the caller has an execution record and is the crew member whose own declared workspace (`config.workspaces`) is the caller slot's workspace (`_caller_member_workspace`), or whose own store the caller runs on: a crewmate's worker, a template record that keeps the crewmate's id and store (`_store_s_crewmate`), so its own child runs where it does. A template has no workspace binding -- `resolve_agent_bindings` files every template session under `default_workspace` -- and the template arm already binds the child to the caller's own store, so the child runs on the caller's workspace, project directory and store, under the template persona. Without it every crew member created on its own `member-<slug>` workspace (#19230) was refused `agent_workspace_mismatch` for `agent="kirocrew-worker"`, while members created before #19230 (workspace `default`) were not. Still refused: a crew MEMBER bound elsewhere (its store would cross), a caller with no record (the child would fall to the default store), and any non-member caller, whose template child has no store of its own in that workspace |
+| Agent that would answer is bound to another workspace | 403 | `agent_workspace_mismatch`. The child runs in the caller's workspace, so an agent whose own binding names a different one would carry that workspace's memory into it. Checked on whatever answers, an omitted agent included (it resolves to the default template). **One inheritance:** an explicitly named TEMPLATE (`ResolvedBindings.selection_kind == "template"`, a passthrough or the default template, never a `config.agents` row) passes when the caller has an execution record and is the crew member whose own declared workspace (`config.workspaces`) is the caller slot's workspace (`_caller_member_workspace`), or whose own store the caller runs on: a Bot's worker, a template record that keeps the Bot's id and store (`_store_s_crewmate`), so its own child runs where it does. A template has no workspace binding -- `resolve_agent_bindings` files every template session under `default_workspace` -- and the template arm already binds the child to the caller's own store, so the child runs on the caller's workspace, project directory and store, under the template persona. Without it every crew member created on its own `member-<slug>` workspace (#19230) was refused `agent_workspace_mismatch` for `agent="kirocrew-worker"`, while members created before #19230 (workspace `default`) were not. Still refused: a crew MEMBER bound elsewhere (its store would cross), a caller with no record (the child would fall to the default store), and any non-member caller, whose template child has no store of its own in that workspace |
 | Named agent does not resolve to a configured one | 403 | The resolver falls back to the default agent, which passes the workspace check because it is the caller's own default -- so no boundary is crossed, but the created session would store and advertise a name that is not what answers. `ResolvedBindings.requested_resolved` states that contract for callers that store the requested name. Refused rather than rewritten to the effective agent: nothing exists yet, so a corrected name costs one retry, whereas an existing slot keeps its stored name verbatim so a momentarily stale resolution cannot permanently rebind it |
 | Caller may not bind a child to the selected member's private store | 403 | `memory_delegation_denied`; one check, on the route every branch of agent resolution has already produced, before slot allocation. Two admissions: the store is the caller's OWN, which requires this process's vouched identity and the caller's durable record to agree, or the caller's delegation lineage is not fenced (`_delegation_lineage_fenced`: an owner-rooted chain is admitted; a cron-, channel- or member-rooted chain, or a broken one, is fenced). Same-store workers remain allowed; unfenced global callers retain member assignment. See "A created worker receives one execution identity" |
 | Caller changes history key, agent or memory store during creation | 400 | `caller_memory_changed`; the live caller must still match the identity checked before awaited preparation |
@@ -1063,7 +1063,7 @@ recipient, directly or up the line). A write that fails is 500 `handoff_write_fa
 with nothing changed.
 
 The same reach rule bounds `session_adopt` and sets what a handoff can and cannot
-undo, for a fenced caller (every agent-created session, crewmate, cron and channel
+undo, for a fenced caller (every agent-created session, Bot, cron and channel
 session, and the owner's Conductor while `agent.session_control` is off, see
 `_conductor_fenced`). Probed with the real gate:
 
@@ -1081,7 +1081,7 @@ session, and the owner's Conductor while `agent.session_control` is off, see
 - A work-ledger `bind` after a handoff is a separate gap: `_refuse_unowned_worker`
   compares `_created_by`, so the new manager is refused `worker_not_owned` while the
   giver can still bind. Tracked in #19103.
-- A fenced caller adopting a crewmate's DM slot is refused `not_creator`, since no
+- A fenced caller adopting a Bot's DM slot is refused `not_creator`, since no
   fenced caller created it; an unfenced agent in a person's own tab can adopt it.
 
 The manager lives in `session_managers.json` under the data home's `crew-log` root
@@ -1186,7 +1186,7 @@ and `session_set_color`, whose creator fence also binds every caller class.
 The shipped Conductor (`kirocrew-conductor`, and its deprecated alias
 `kirocrew-ledger-conductor`) exists to open and drive worker sessions. When the
 person starts it in their own dashboard tab, it gets the member bypass on the
-member's terms, so Crew Mode works on an install whose stored
+member's terms, so Ultra Mode works on an install whose stored
 `agent.session_control` is `false`:
 
 - **Who.** `_owner_tab_conductor` reads positive identity off the caller's own
@@ -1556,7 +1556,7 @@ default backend, so a warm hit would skip both the member backend route and
 the mount. The member backend is `agent.member_acp_backend` (default `kas`),
 and requires a wire-capable backend (`ACP_BACKENDS_MEMBER_DISPATCH`: the
 claude seam, KAS, codex, opencode, goose, deepseek and pi). A stored `kiro`
-there reads as KAS at config load (`_read_backend_choice`), because crewmates
+there reads as KAS at config load (`_read_backend_choice`), because Bots
 run on KAS as their Kiro backend. kiro-cli v2 reads its template from disk and
 exposes no per-session channel, so a member session that still lands on it (the
 selection gate's floor) runs as plain chat — the tools are simply not mounted,
@@ -2283,7 +2283,7 @@ session before closing it. Close waives the self-target refusal
 (`allow_self=True`, as release does) on both its admission gate and its pre-pop
 re-check, so a session that has finished its one job can archive its own tab; the
 self-close cancels the caller's own running turn, which is the turn that asked
-for it, and every other caller and target rule still applies. A crewmate's own
+for it, and every other caller and target rule still applies. A Bot's own
 DM thread (`mode == DM_SLOT_MODE`) is the exception and is refused
 `member_thread_self_close`: only the person dismisses it. It reuses the dashboard's own close path
 (`close_slot`), the same sequence the ✕ button runs: a synchronous tombstone,
@@ -2663,9 +2663,9 @@ goes to its owner, and the owners import each other lowest layer first, in this 
   the deferred model pick.
 - `src/kiro_crew/dashboard/session_control_parts/session_titles.py`: title cleaning,
   `session_rename`, `session_generate_title` and `session_set_color`.
-- `src/kiro_crew/dashboard/session_control_parts/crew_filing.py`: the Crew Mode filing
+- `src/kiro_crew/dashboard/session_control_parts/crew_filing.py`: the Ultra Mode filing
   rule `session_create` and `session_fork` share: whether the caller is in a turned-on
-  Crew Mode tree, and the `folder_ignored` / `crew_mode` reply keys.
+  Ultra Mode tree, and the `folder_ignored` / `crew_mode` reply keys.
 - `src/kiro_crew/dashboard/session_control_parts/session_create.py`: `session_create` and
   the spawn record a created or forked child gets.
 - `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,

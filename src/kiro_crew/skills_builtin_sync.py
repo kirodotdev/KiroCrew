@@ -29,6 +29,8 @@ from kiro_crew.skills_builtin_provenance import (
     _FINGERPRINT_MAX_ENTRIES,
     _PROVENANCE_MARKER,
     _recorded_fingerprint,
+    _released_skill_owners,
+    _ships_for_released_app,
     _skill_tree_fingerprint,
     _tree_entries,
     _verified_unchanged_fingerprint,
@@ -470,6 +472,7 @@ def _ensure_builtin_skills(base: Path) -> None:
     """
     source_names: set[str] = set()
     supplied: set[str] = set()
+    released = _released_skill_owners()
     for src_root in (_project_skills_dir(), _BUILTIN_SKILLS_DIR):
         if not src_root or not src_root.exists():
             continue
@@ -485,6 +488,12 @@ def _ensure_builtin_skills(base: Path) -> None:
             if name in supplied:
                 continue
             supplied.add(name)
+            if _ships_for_released_app(src_file, released):
+                # Neither installed nor updated: the adopted app's own skills
+                # replace it, and an update here would claim, and quarantine,
+                # a directory that app's namespace may share. An installed copy
+                # stays in place; the catalog withholds it.
+                continue
             src_dir = src_file.parent
             dest_dir = base / name
             dest_file = dest_dir / "SKILL.md"

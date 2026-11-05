@@ -133,7 +133,7 @@ graph LR
 6. `_workflow_ready` (`_register_workflow_lifecycle`) answers 503 on `/api/workflows`
    until the workflow service is ready, and `_crewmate_prune_gate`
    (`_register_crewmate_prune_gate`, dashboard only) holds every mutating request,
-   and any request under `/api/members`, until the mate prune settles, 503
+   and any request under `/api/members`, until the Bot prune settles, 503
    past its timeout.
    Both RETURN their refusal, inner to `sel_audit`.
 
@@ -739,8 +739,13 @@ any session's key. To close that gap, both server entrypoints additionally
 bind a `web.UnixSite` on the **same** `AppRunner` at
 `dashboard_socket_path(port)` (`~/.kiro/crew/dashboard-<port>.sock`,
 port-suffixed so multi-instance homes don't collide; see `_start_unix_site` in
-`server_runtime/listener.py`). Windows and any bind failure degrade to TCP-only
-— today's behavior — after one log line. The socket file is unlinked
+`server_runtime/listener.py`). The port is the BOUND one
+(`_resolved_bound_port`, resolved before the site starts), never the requested
+`0` of `--port auto`: clients dial the socket of the port they resolved, and the
+startup unlink of a stale socket is only safe for a name whose TCP port this
+process holds. A bound port that cannot be read leaves the gateway TCP-only
+rather than binding `dashboard-0.sock`. Windows and any bind failure degrade to
+TCP-only — today's behavior — after one log line. The socket file is unlinked
 best-effort at shutdown and self-heals from stale files at startup.
 
 For an internal/mixed-internal request arriving on that socket **and carrying

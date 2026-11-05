@@ -7,19 +7,12 @@ it skips that write and the owner loses the name for every later caller in the
 worker. So such a patch is refused here, by a scan of the test trees, rather than
 emulated in the runtime.
 
-The scan reads every test file that mentions ``patch`` and a package holding a
-binding of the runtime (``pod``, ``dev_fleet``), and resolves each call from its
-syntax tree: which callable is ``mock.patch`` under any import alias, and which module
-and name a target means, through imports, name assignments,
-``importlib.import_module`` and ``pytest.importorskip`` of a known string,
-module-name constants, f-strings and concatenation. The runtime is reached under its
-own name and as the ``rt`` a src module binds it to at module level (the pod CLI's and
-Dev Fleet's), so ``patch.object(pod_cli.rt, ...)`` is the same target. A name is
-first looked up among the enclosing functions' parameters, which are unbound here.
-A target that is a parameter, a call's result, a name bound only from another call
-or subscript, or text it cannot spell is reported as ``<dynamic>`` rather than
-dropped, because a guard that skips what it cannot read passes exactly the patch it
-exists to refuse. A def, a class or a literal is read as not the runtime.
+The scan resolves each ``mock.patch`` call from the syntax tree of test files that
+mention ``patch`` and ``pod`` or ``dev_fleet``, through import aliases, assignments,
+``importlib.import_module``, ``pytest.importorskip``, constants, f-strings and
+concatenation; ``pod_cli.rt`` counts as the runtime. A target it cannot resolve is
+reported as ``<dynamic>`` rather than dropped, or the guard would pass the very
+patch it exists to refuse.
 """
 
 from __future__ import annotations

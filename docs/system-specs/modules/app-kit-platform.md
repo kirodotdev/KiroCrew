@@ -1138,8 +1138,24 @@ The prior file is snapshotted BEFORE the replace (the write path unlinks a legac
 symlink first, so reading afterwards would find nothing). An unreadable prior file
 means "nothing to preserve", never "abort the refresh".
 
+**An update carries the edits across its own deregister.** Both branches of
+`POST /api/apps/{name}/update` deregister the app before re-registering it, and
+deregistering deletes the agent files, so the re-registration would find no prior
+file. The route therefore snapshots the app's agent files first
+(`snapshot_app_agent_configs`, regular files only, keyed by file name) and hands
+the snapshot to `register_app(name, prior_agent_configs)`; an agent with no file
+on disk takes its prior config from it. The failed-update restore uses the same
+snapshot. This is what keeps a user's `model` or `description` across a registry
+update, a pin-follow of an adopted former built-in, or a local update. An agent
+the new version renames or drops gets nothing from the snapshot. Disable and
+re-enable still start from the template: a disabled app keeps no agent file and no
+snapshot, so the same is true when an update newly asks for `sessionApproval` and
+suspends the app.
+
 Writer: `apps/bridges_agents.py::_register_agents`, `_preserve_user_agent_edits`,
-`_read_agent_config`.
+`_read_agent_config`, `snapshot_app_agent_configs`; the update route
+`apps/routes_install.py::handle_update_app` with
+`apps/routes_lifecycle.py::_snapshot_agent_configs_off_loop`.
 
 ## 4. A generated prompt is pinned through the app's policy
 
@@ -1342,7 +1358,7 @@ first; `_alias_selected` in `skill_runtime/catalog.py` still selects a row liste
 under its flat link when the namespaced link one level under the mapping's literal
 prefix resolves to the same target. The exact read served while the catalog is
 `building` (`skill_runtime/search.py`) and the dashboard's "used by" annotation
-(`_shared_skill_listing.py`) and a crewmate's comes-with and added skill bands
+(`_shared_skill_listing.py`) and a Bot's comes-with and added skill bands
 (`mate_capabilities.worker_summary`) apply the same rule through `_alias_matches`, for a
 path inside the skills roots only. Each link is a
 symlink on POSIX and a **directory junction** on Windows, via
@@ -3761,6 +3777,25 @@ It differs in serving the wider `_ALLOWED_EXTENSIONS` set (`.js`/`.json`/`.mjs`/
 and in being UNAUTHENTICATED, which is why it streams in `_UI_STREAM_CHUNK` pieces
 instead of buffering.
 
+**Text files go gzip-encoded.** A `_GZIP_EXTENSIONS` file (`.mjs`/`.js`/`.css`/`.json`/
+`.svg`/`.map`) of at least `_GZIP_MIN_BYTES` is sent `Content-Encoding: gzip` when
+`Accept-Encoding` admits gzip with a non-zero weight (`_accepts_gzip`): an explicit
+`gzip` entry decides, `q=0` included, and `*` counts only when gzip is not named, so
+`gzip;q=0, *` gets identity. Each
+streamed chunk passes through one per-request `zlib` compressor off the event loop, so
+memory stays one chunk plus the compressor's state, and the body goes chunked (its
+length is not known up front); the `remaining` cap still bounds the bytes read. A file
+that hits EOF short of its validated size (truncated under the descriptor) aborts the
+connection instead of finishing the gzip member, since no `Content-Length` would expose
+the short body. The
+encoded bytes are their own representation: their ETag carries a `-gz` suffix, so an
+identity validator never answers 304 for them, and every compressible type answers
+`Vary: Origin, Accept-Encoding`. Images and fonts are already compressed and go as
+they are. Why it matters: a self-bundled link-preview entry can be megabytes, and on a
+slow remote link the raw bytes outlast the frame's `READY_TIMEOUT_MS`; the frame is
+then torn down mid-download, the partial module is never cached, and every later
+hover starts the same download again and fails the same way (§18a).
+
 `/api/apps/blob` (`handle_blob_proxy`) serves registry art, `.svg` included, through
 `web.FileResponse` from a cache the gateway itself wrote, not an app-owned install
 tree. It answers with the same `default-src 'none'; sandbox` policy, because those
@@ -4336,7 +4371,8 @@ The boundary:
   a revision (entry, version, install and update time); when an app-list refresh shows a new
   revision for a key, its frames are disposed, so the next hover loads the current
   entry (app UI files are `no-cache` with an ETag, so the new frame gets the new
-  bytes).
+  bytes; text files are gzip-encoded, §16, so a cold frame on a slow link still
+  loads its module before `READY_TIMEOUT_MS`).
 - **Embedded instances.** The frame request carries no cookie (credentialless,
   auth bypass), so it cannot read the embedding parent's port the way a dashboard
   page does. The mint, on the person's session, reads the validated
@@ -4881,7 +4917,7 @@ change lands in its owner.
 | `registry_pipeline/catalog.py` | The store listing and lookups: seed, catalog and external precedence, install status, trust fields, refresh, and the row and candidate resolution install and consent go through |
 | `registry_pipeline/install_desktop_gate.py` | The desktop build-step verdict (`_desktop_build_refusal`) and its code `DESKTOP_BUILD_STEP_UNSUPPORTED`, judged on the copy the install would produce (`_installed_tree_preview`) with the runtime's own provisioning predicates, and the build step's probe of it (`_desktop_gate_probe`) |
 | `registry_pipeline/install_rollback.py` | Putting a refused checkout back: the rejected-checkout rollback (`_unpoison_rejected_checkout`), the layout snapshot taken before `onInstall` (`_desktop_layout_present`), and the post-script removal or set-aside of the layout files the script created (`_roll_back_post_script_refusal`) |
-| `registry_pipeline/install_clone.py` | Clone and build under the per-app lock: clone or pull, the identity and admission gates before the build (`_refuse_identity_mismatch`), the facade's build step, the restore of a same-origin previous checkout when the build fails, the verb-named refusal lines (`_refusal_line`), and the report of the move-asides the install's exits leave retained (`_report_retained_stale_checkouts`) |
+| `registry_pipeline/install_clone.py` | Clone and build under the per-app lock: clone or pull, the identity, admission and downgrade gates before the build (`_refuse_identity_mismatch`, `_downgrade_refusal`), the facade's build step, the restore of a same-origin previous checkout when the build fails, the verb-named refusal lines (`_refusal_line`), and the report of the move-asides the install's exits leave retained (`_report_retained_stale_checkouts`) |
 | `registry_pipeline/install.py` | The install transaction: every gate before repository bytes run, the clone and build through `install_clone`, the sandboxed `setup.onInstall` run, the checks after the build and after the script, registration, provenance, and the single restore-and-report `finally` |
 
 Imports only point down this order: `subprocess_env`, `git_targets`, `caches`,
@@ -5239,13 +5275,13 @@ Writers: `apps/routes_proxy.py`, `apps/proxy_auth.py`, `apps/manifest_sections.p
 `test/test_app_proxy_auth_v2_node_reference.py`, `test/test_app_manifest.py`,
 `test/test_gateway_appkit_endpoints_signed_proxy.py`.
 
-## 24a. An app writes a crewmate's Dashboard value through the shared record door
+## 24a. An app writes a Bot's Dashboard value through the shared record door
 
-An installed app has one way to put a value on a crewmate's page:
+An installed app has one way to put a value on a Bot's page:
 `POST /api/member-records/{slug}` (`dashboard/handlers/agent_panel_record_app.py`).
 It is the second caller of the record door a script cron appends through
 (`agent_panel_record.record_through_door`): the same `dashboard/custom_value` entry in
-the crewmate's own DM session log, the same caps and quota, the same `custom` fold a
+the Bot's own DM session log, the same caps and quota, the same `custom` fold a
 page binds. Nothing is added to the crew log, the fold catalogue or the sandbox for it.
 
 Three rules are this route's:
@@ -5273,7 +5309,7 @@ Three rules are this route's:
    contract every admission path runs, so no live app token carries another shape.
 
 The type bound is the fold's, not the door's: `custom` keeps `CUSTOM_TYPE_LIMIT` (64)
-types per crewmate across every writer, and a new type past it evicts the least
+types per Bot across every writer, and a new type past it evicts the least
 recently written one whoever wrote it, counted in `types_omitted`
 (`projection_dashboard._custom_step`). So one granted app writing 64 types can push
 other apps' and crons' values off that page. The door does not refuse a new type at a
@@ -5281,10 +5317,10 @@ full fold, and the app-author docs say so rather than calling this cap a refusal
 
 An app backend with a command entry point runs as a sandboxed gateway child with the
 whole `crew-log` root hidden from it (section 0, `sandbox_leaves._CREW_HIDDEN_LEAVES`),
-so this route is the only way such an app can write a crewmate's log. A
+so this route is the only way such an app can write a Bot's log. A
 `backend.routes` module running inside the gateway process could already append
 anything and gains nothing here. A record is text a page draws; context assembly reads
-no crew-log fold, so it reaches a crewmate's model at most as the one-line
+no crew-log fold, so it reaches a Bot's model at most as the one-line
 `fold_summary` the `dashboard_fields` tool gives every fold-sourced field.
 
 Writers: `dashboard/handlers/agent_panel_record_app.py`,
@@ -5797,6 +5833,19 @@ only remove first-party status, never grant it. It gates:
   `backend_runtime.startup`, `cron_sdk`, `backend`) resolves the data-home tree for
   a released name, and `is_builtin_app` and the PreToolUse first-party sets drop
   it;
+- the core's packaged skill copies (`builtin_skills/`, `app: <name>` frontmatter),
+  through `released_builtin_names` (only a pinned or marked name asked):
+  `skills_builtin_sync._ensure_builtin_skills` neither installs nor updates a copy
+  whose `app:` names a released app, so it never rewrites, or quarantines into a
+  `.<name>.user-backup`, a `skills/<name>/` directory the adopted app's namespaced
+  skills share, and `installed_skill_currency` (doctor) skips the same copies;
+  and the skill catalog withholds a flat skill whose owner comes
+  only from that line and names a released app (`skill_runtime/catalog._hidden_by_app`,
+  for `_iter_visible`, mapped `_scoped_entries` and the cold-catalog exact read;
+  adoption state is read only when the catalog lists a key a packaged skill
+  claims for an app, and then once per catalog TTL),
+  so an adopted app shows only its repository's `skills/<name>/<skill>` copies and
+  an uninstalled one none. A copy already installed stays on disk, hidden;
 - `register_builtin_apps`: a released name with no record, or an adopted record,
   gets no directory, record, snapshot or secret. A shadowing user app is not
   released and keeps the stand-down warning. A pinned name with no record while
@@ -5939,6 +5988,24 @@ the record stays adopted, is never re-registered or re-adopted, and a
 `minKiroCrewVersion` newer than the host shows `hostTooOld`. There is no automatic
 revert: rewriting a newer record back to `origin=builtin` would run older code over
 data a newer version may have migrated.
+
+**An update never installs an older version.** The same holds for the app itself,
+for every registry app and not only a former built-in: a catalog row can fall
+behind the installed record (a catalog rollback, or a pin bumped ahead of the
+catalog), and a Sync, an update or a registry re-install would then run older code
+over the same data. `install_clone._downgrade_refusal` compares the cloned
+manifest's `version` with the installed record's after the admission gate and
+before the build or `onInstall` runs. An older one is refused with code
+`would_downgrade` and a sentence naming both versions, the checkout is put back the
+way an admission refusal puts it back, and the update route restores the stopped
+app, so the installed version keeps its tree, record and commit. The comparison is
+`catalog._version_newer`, the one the store's `updateAvailable` uses: a pre-release
+of the installed release is older, a re-sync of the same version passes, and a
+version either side cannot read is never refused. A fresh install has no record
+to compare. A local `kirocrew app update --source DIR` is not compared: it installs
+the tree the operator named. There is no override; whether a deliberate catalog
+rollback gets one is a maintainer decision. Pinned by
+`TestDowngradeGateRefusesAnOlderVersionBeforeTheBuild`.
 
 **Security residual (recorded, not fenced).** Before adoption the app's in-process
 Python lived in the read-only installed package; after it, it lives in

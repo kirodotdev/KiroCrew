@@ -233,15 +233,10 @@ class TestInitCron:
 
     @pytest.mark.asyncio
     async def test_cron_callback_publishes_turn_identity(self):
-        """Regression: the cron turn must publish session_pid_<pid>.txt.
+        """The cron turn must publish session_pid_<pid>.txt.
 
-        The cron path was the one turn-running surface that never called
-        publish_turn_identity. Under session sharing the runtime env carries
-        no KIROCREW_SESSION_KEY and macOS sets no KIROCREW_HOST_PID, so the
-        ancestor PID-walk over session_pid files is the ONLY parent-identity
-        source for spawn_run — without the publish, sub-agents spawned from a
-        cron turn resolved an empty parent ('notification only (parent=)')
-        unless an unrelated surface happened to be mid-turn."""
+        Under session sharing (no KIROCREW_SESSION_KEY, and no KIROCREW_HOST_PID on
+        macOS) that file is spawn_run's ONLY parent-identity source."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
         orch.ctx_builder = _mock_context_builder()
@@ -389,12 +384,9 @@ class TestInitCron:
     async def test_sequence_agent_reset_deferred_while_subagents_pending(self):
         """The sequential finally must mirror the single-agent deferral.
 
-        Now that the sequence path publishes turn identity, a non-final
-        agent's spawn_run resolves a REAL parent key. An unconditional reset
-        at the end of that agent's turn would tear down the session a pending
-        sub-agent completion is about to inject into (cold-starting a
-        context-free replacement) and strip the reaper registration for the
-        NEXT agent's still-in-flight turn."""
+        A non-final agent's spawn_run resolves a REAL parent key, so a reset would tear
+        down the session a pending completion injects into, and the NEXT agent's reaper
+        registration."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
         orch.sessions.reset = AsyncMock()
@@ -566,12 +558,8 @@ class TestInitCron:
     async def test_cron_name_is_redacted_before_delivery(self):
         """A cron NAME is LLM-authored text on its way to Slack.
 
-        The name is interpolated into the ``⏰ *Cron: …*`` header, which stays
-        outside the render pipeline on purpose (it is already Slack mrkdwn, so
-        converting it would re-interpret its ``*bold*``). Skipping conversion also
-        means skipping the pipeline's redaction, so the name needs its own pass --
-        an agent can create a cron via the ``cron_add`` tool, so a credential can
-        land in that field and ride into the channel header.
+        The ``⏰ *Cron: …*`` header is already mrkdwn and skips the render pipeline and
+        its redaction, and an agent names the cron via ``cron_add``.
         """
         secret = "AKIAIOSFODNN7EXAMPLE"
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
@@ -1446,16 +1434,9 @@ class TestDeliverCronResponse:
 
     @pytest.mark.asyncio
     async def test_redacts_before_posting(self):
-        # Defense-in-depth: the helper must redact at the Slack boundary even
-        # if the caller already redacted (security-controls).
-        #
-        # Asserted on the OUTCOME rather than on which redactor got called. The
-        # boundary is now render_for_slack (which runs redact_via_context on both
-        # sides of the mrkdwn conversion), so a mock-call assertion against
-        # gateway.redact_credentials would only prove the old wiring still
-        # existed -- it would pass for a path that redacted nothing and fail for
-        # a correct path that redacts somewhere else. What must be true is that
-        # the secret does not reach Slack.
+        # Defense-in-depth: the helper redacts at the Slack boundary even if the caller
+        # already did (security-controls). Asserted on the OUTCOME: the secret does not
+        # reach Slack, whichever redactor render_for_slack uses.
         orch, slack = self._orch_with_slack()
         orch.sessions.get_channel = MagicMock(return_value="C123")
 
@@ -1471,11 +1452,8 @@ class TestDeliverCronResponse:
     async def test_redacts_a_credential_ansi_escapes_had_split(self):
         """The reassembly hazard, at this call site.
 
-        An escape sequence dropped into the middle of a key hides it from the
-        credential regex, and the ANSI strip inside to_slack_mrkdwn puts it back
-        together -- so a path that redacts BEFORE normalising posts the key
-        intact. This is the case the old redact-then-convert ordering here got
-        wrong, and it is why the shared pipeline strips ANSI first.
+        An escape inside a key hides it from the regex and the ANSI strip in
+        to_slack_mrkdwn rejoins it, so the pipeline strips ANSI before redacting.
         """
         orch, slack = self._orch_with_slack()
         orch.sessions.get_channel = MagicMock(return_value="C123")

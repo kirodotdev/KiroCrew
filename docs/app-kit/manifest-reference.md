@@ -58,13 +58,17 @@ permissions or setting `minKiroCrewVersion`.
 The signature covers `name`, `version`, `signer` and `permissions`, plus each of
 these groups when it is non-empty: `notifications`, `crons`, `contributes`,
 `setup`, `mcpServers`, `backend`, `ui`, `agents`, `skills`, `sops`,
-`dependencies`, `platform` and `config_keys`. An empty group is left out of the signed
-bytes.
+`dependencies`, `platform`, `publishProvider` and `config_keys`. An empty group is left
+out of the signed bytes. `displayName`, `description` and `author` are display text
+and are not signed.
 
 A gateway computes the signed bytes from the groups it knows. A signed manifest
 that declares a group an older gateway does not sign fails verification there.
 It fails closed: the install is refused, not downgraded. Set
 `minKiroCrewVersion` on a signed app so that refusal names the version floor.
+The reverse holds too: a signature issued before a gateway started signing a group
+your manifest declares fails on that gateway. The app is refused at install, at
+enable and at gateway start until you re-sign it and the operator re-installs it.
 
 ## Resources
 
@@ -1663,7 +1667,7 @@ packages at all.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `permissions.api` | string[] | Allowed API path prefixes. `/api/member-records/*` is the one that lets the app put a value on a Dashboard page of ANY crewmate it names by slug; there is no per-crewmate form of the grant ([api-reference](api-reference.md#member-records)) |
+| `permissions.api` | string[] | Allowed API path prefixes. `/api/member-records/*` is the one that lets the app put a value on a Dashboard page of ANY Bot it names by slug; there is no per-crewmate form of the grant ([api-reference](api-reference.md#member-records)) |
 | `permissions.events` | string[] | Allowed WebSocket event types |
 | `permissions.mcpTools` | string[] | Allowed MCP tool names |
 | `permissions.storage` | boolean | Can use app-scoped storage |
@@ -1673,7 +1677,7 @@ packages at all.
 | `permissions.sessionApproval` | boolean | Controls existing local user sessions: send messages (including generated response-option choices, but not a change to the session's agent binding, persona settings, or a harness slash command), approve or deny pending tool requests, and change approval modes within the limits below |
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
 | `permissions.jobs` | boolean | May run durable background work through `ctx.job` and the app-owned `_jobs/*` routes |
-| `permissions.proposeCrewmate` | boolean | **Preview, switched off**: `ctx.crewmate` stays `None` until the owner view that lists the cards lands (#21718). May propose one crewmate from a `.crewmate` bundle through `ctx.crewmate`. Gates a real capability like `spawn`: `ctx.crewmate` is absent unless the value is literally `true`. Each proposal is an owner change card; only the owner's press creates the crewmate ([api-reference](api-reference.md#crewmate-proposals-ctxcrewmate)) |
+| `permissions.proposeCrewmate` | boolean | **Preview, switched off**: `ctx.crewmate` stays `None` until the owner view that lists the cards lands (#21718). May propose one Bot from a `.crewmate` bundle through `ctx.crewmate`. Gates a real capability like `spawn`: `ctx.crewmate` is absent unless the value is literally `true`. Each proposal is an owner change card; only the owner's press creates the Bot ([api-reference](api-reference.md#bot-proposals-ctxcrewmate)) |
 | `permissions.exposeToApps` | string[] | App names (or `"*"`) allowed to request cross-app visibility into this app's slots/subagents |
 
 #### `permissions.spawn` — Background Agents

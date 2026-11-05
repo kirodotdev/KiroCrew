@@ -13,9 +13,7 @@ from kiro_crew.slack import events as events_mod
 from kiro_crew.slack.events import _publish_home_tab
 from kiro_crew.testing.wait import finished
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -76,9 +74,7 @@ def _make_orch(
     return orch
 
 
-# ---------------------------------------------------------------------------
 # Tests
-# ---------------------------------------------------------------------------
 
 
 class TestPublishHomeTabHappyPath:
@@ -391,9 +387,7 @@ class TestPublishHomeTabVectorStore:
         assert "always do X" in text
 
 
-# ---------------------------------------------------------------------------
 # Sessions section
-# ---------------------------------------------------------------------------
 
 
 def _write_session_jsonl(path, *, title="", agent="", messages=None):
@@ -620,11 +614,8 @@ class TestPublishHomeTabSessions:
     async def test_collector_failure_emits_error_sel_audit(self, _mw, _fmt, _yolo, monkeypatch):
         """SEL audit records the data-access attempt on the Home Tab path.
 
-        SEL audit must record the data-access attempt even when the collector
-        raises, so a failure mode can't silently bypass the audit trail. The
-        success-path audit fires INSIDE the try block AFTER the collector,
-        so an exception skips it — the except branch is the only place the
-        audit fires in that case.
+        The success audit fires after the collector inside the try, so when it raises
+        the except branch is the only place the audit fires.
         """
         orch = _make_orch()
         with (
@@ -705,11 +696,8 @@ class TestPublishHomeTabSessions:
     ):
         """Defense-in-depth authorization gate on the Home Tab path.
 
-        Defense-in-depth: even though the dispatcher already gates app_home_opened
-        events via is_allowed_user, the Sessions section must also enforce
-        deny-by-default. An unauthorized user_id (e.g. via a future refactor that
-        bypasses the dispatcher gate) must NOT see session contents and MUST emit
-        a denied SEL audit. Mirrors the slash command's defense-in-depth gate.
+        The dispatcher already gates app_home_opened, but the Sessions section also
+        denies by default: no session contents and a denied SEL audit.
         """
         sess_dir = tmp_path / "sessions"
         sess_dir.mkdir()

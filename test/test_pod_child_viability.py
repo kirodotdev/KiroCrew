@@ -1,15 +1,10 @@
 """The boot-time child-bootstrap probe, and its refusal wiring.
 
-The pod remaps its kiro-cli child's ``HOME`` so grants die with the pod. When that
-broke every ACP spawn, ``/health`` answered 200 the whole time and the only symptom
-was ``agent_unreachable`` on each provider -- which reads as a Connections bug, not
-a boot failure. These tests pin that a pod whose child cannot bootstrap REFUSES at
-``pod up`` with the reason recorded, and that the three viable shapes still boot.
+A pod whose remapped-``HOME`` child cannot bootstrap must REFUSE at ``pod up`` with
+the reason recorded, since ``/health`` still answers 200; the three viable shapes boot.
 
-Every case drives the probe with a FAKE child spawned through ``sys.executable``,
-so nothing here depends on this host having kiro-cli, on being signed in, or on the
-platform being able to exec a ``#!`` script (Windows cannot -- shard 3 failed every
-arm with ``WinError 193`` when these fakes were shell scripts).
+Fakes run through ``sys.executable``, so nothing depends on kiro-cli, a sign-in, or
+exec of a ``#!`` script (Windows raises ``WinError 193`` for one).
 """
 
 from __future__ import annotations
@@ -30,12 +25,9 @@ from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig
 def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PodConfig:
     """A pod plane under ``tmp_path``.
 
-    ``PodConfig.load()`` roots ``pods_dir`` at the DEFAULT data home on purpose
-    (a pod process must find the host's plane, not its own ``KIROCREW_HOME``), so
-    the data-home pin does not reach it. Unpinned, the refusal tests below wrote
-    ``<name>.refused`` notes into the operator's real ``~/.kiro/crew/pods`` -- and
-    failed on a host where that directory did not exist yet, because the note is
-    written best-effort and its absence reads as "no refusal".
+    ``PodConfig.load()`` roots ``pods_dir`` at the DEFAULT data home, which the
+    data-home pin does not reach; unpinned, refusal notes would land in the
+    operator's real ``~/.kiro/crew/pods``.
     """
     monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
     monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "envs"))
@@ -181,12 +173,8 @@ def test_an_unspawnable_child_refuses_rather_than_tracebacks(
 ) -> None:
     """An unspawnable binary is a refusal with a reason, not an escaping exception.
 
-    The wrap seam is FAKED, like every other case in this module. Asserting through
-    the real one made this test's own subject unreachable on a backend-less runner:
-    the sandbox classification fires before the binary is ever exec'd, so the
-    refusal arrived as "could not be sandboxed" and the assertion for the
-    missing-binary spelling failed. Its subject is the missing-binary path, so the
-    sandbox has to be present-and-working for it to be under test at all.
+    The wrap seam is FAKED as working: on a backend-less runner the real one refuses
+    with "could not be sandboxed" before the binary is exec'd.
     """
     from kiro_crew import sandbox
     from kiro_crew.acp import client as acp_client
@@ -218,18 +206,9 @@ def test_a_sandbox_refusal_outranks_a_missing_binary(
 ) -> None:
     """PRECEDENCE, pinned so it cannot flap: sandbox-unavailable wins.
 
-    Both conditions hold at once here -- no sandbox backend AND a binary that
-    cannot be exec'd -- and both would refuse the boot, so the precedence decides
-    only the RECORDED REASON. Sandbox-unavailable is reported because it is a
-    property of the HOST that blocks every spawn regardless of which binary is
-    resolved: an operator told to reinstall kiro-cli would fix the named problem
-    and still get a dead pod, while an operator told the sandbox has no backend
-    fixes the thing that is actually in the way.
-
-    The ordering above it is unchanged and deliberate: a host with NO kiro-cli at
-    all is still ``PROBE_UNAVAILABLE`` (skip, not refuse), because that is a
-    supported configuration rather than a broken one. Full order --
-    unavailable > sandbox-unavailable > dead(binary).
+    With no sandbox backend AND an unexecutable binary, the recorded reason is the
+    sandbox: it blocks every spawn whatever binary is resolved. Full order:
+    unavailable (no kiro-cli, skip) > sandbox-unavailable > dead(binary).
     """
     from kiro_crew import sandbox
     from kiro_crew.acp import client as acp_client
@@ -293,18 +272,12 @@ def test_boot_probes_before_declaring_the_pod_up() -> None:
 class TestTheProbeIsConfined:
     """The probe's confinement legs, and what happens when they cannot be built.
 
-    The probe runs on the BOOT path, so an unconfined child holding the gateway's
-    own AWS material would be a real exposure: it applies the same legs production
-    applies -- ``scrub_agent_subprocess_env`` on the env, ``wrap_argv`` on the argv,
-    a cgroup v2 scope and the rlimit preexec.
+    An unconfined boot-path child holding the gateway's AWS material would be an
+    exposure, so the probe applies production's legs: ``scrub_agent_subprocess_env``,
+    ``wrap_argv``, a cgroup v2 scope and the rlimit preexec.
 
-    Every case here FAKES the wrap seam rather than exercising this host's sandbox.
-    That is the writing-tests floor, and it is not hypothetical: asserting through
-    the real ``wrap_argv`` made these tests pass on a developer box and fail on
-    every CI runner, where ``unshare(CLONE_NEWUSER)`` returns EPERM under the
-    AppArmor userns restriction. A unit test must pin the CONTRACT -- that the wrap
-    was requested with the right arguments, and that each of its outcomes maps to
-    the right verdict -- not the capability of the machine running it.
+    The wrap seam is FAKED: CI runners return EPERM for ``unshare(CLONE_NEWUSER)``
+    under AppArmor. Tests pin the request's arguments and each outcome's verdict.
     """
 
     @staticmethod
@@ -378,14 +351,11 @@ class TestTheProbeIsConfined:
     def test_the_preparation_reads_the_PODS_config_not_the_hosts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The finding, pinned: tier + opt-in must resolve under the POD home.
+        """Tier + opt-in must resolve under the POD home, not the host's.
 
-        Red-first. The probe runs in the process that is about to ``exec`` the pod
-        gateway, so its ambient ``KIROCREW_HOME`` is the HOST's while the real spawn
-        -- inside the pod gateway process -- reads the POD's. Config resolves through
-        that variable at call time, so an operator with ``sandbox_allow_unsandboxed_exec``
-        set in HOST config and not in POD config would get a probe that PASSED
-        and an agent that could never spawn: healthy status, dead pod.
+        The probe's ambient ``KIROCREW_HOME`` is the host's; the real spawn reads the
+        pod's. A host-only ``sandbox_allow_unsandboxed_exec`` would pass the probe and
+        leave a pod whose agent can never spawn.
         """
         from kiro_crew import sandbox
         from kiro_crew.agent_sdk import pod_child_probe as probe_mod

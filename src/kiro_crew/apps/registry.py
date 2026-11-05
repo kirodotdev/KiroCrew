@@ -765,6 +765,7 @@ if _typing.TYPE_CHECKING:
         Literal,
         _clone_build_app,
         _clone_build_app_locked,
+        _downgrade_refusal,
         _refuse_identity_mismatch,
         _report_retained_stale_checkouts,
         app_admission_denied,

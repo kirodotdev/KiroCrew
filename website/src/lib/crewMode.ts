@@ -17,7 +17,7 @@
  *  `crewModeRoot` / `crewRootOf`. Off, this module answers as it does for a
  *  gateway without Crew Mode, and the stamps read as absent.
  */
-import { PREVIEW_CREW_MODE, readPreviewFlag } from '../utils/previewFlags'
+import { PREVIEW_CREW_MODE, PREVIEW_MATE_SESSIONS, readPreviewFlag } from '../utils/previewFlags'
 
 /** Whether the Crew Mode preview is on for this device. The one read of the flag:
  *  `useCrewMode` subscribes to the same key for a re-render. */
@@ -45,6 +45,32 @@ export function crewRootOf(row: { crew_root?: string | null } | null | undefined
  *  (docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md). */
 export function mateRootOf(row: { mate_root?: string | null } | null | undefined): string {
   return row?.mate_root || ''
+}
+
+/** Whether the mate sessions preview is on for this device (`PREVIEW_MATE_SESSIONS`):
+ *  a mate's sessions leave the person's lists for the mate's Sessions tab.
+ *  `useMateSessionsHidden` subscribes to the same key for a re-render. */
+export function mateSessionsHidden(): boolean {
+  return readPreviewFlag(PREVIEW_MATE_SESSIONS)
+}
+
+/** The mate thread whose Sessions tab lists `row` instead of the person's lists:
+ *  its `mate_root`, read through the mate sessions preview (`''` while it is off). */
+export function hiddenMateRootOf(row: { mate_root?: string | null } | null | undefined): string {
+  return mateSessionsHidden() ? mateRootOf(row) : ''
+}
+
+/** Navigation state asking the Mates page to open the named member's Profile
+ *  card on Sessions once that member is active (a mate session's breadcrumb). */
+export interface OpenMateSessionsState { openMateSessions: true }
+export function wantsMateSessions(state: unknown): boolean {
+  return !!state && typeof state === 'object' && (state as Partial<OpenMateSessionsState>).openMateSessions === true
+}
+
+/** The live mate threads among `rows` (slot `mode` `member`). Read over the FULL
+ *  slot store: the chat page's own lists never hold a mate thread. */
+export function liveMateThreads(rows: readonly { key?: string; mode?: string }[]): ReadonlySet<string> {
+  return new Set(rows.filter(r => r.mode === 'member' && r.key).map(r => r.key as string))
 }
 
 /** The conductor Crew Mode runs while the gateway has not said otherwise. */
@@ -178,8 +204,18 @@ export function crewApprovalDecidableHere(
  *  it on. A worker whose root is closed keeps its row: no panel lists it, and its
  *  own approval or question must still reach the person. `rootsOnly` keeps just
  *  the roots, for the session filter's Crew Mode chip. */
-export function crewModeView<T extends { key?: string; crew_root?: string; crew_mode_root?: boolean }>(rows: T[], rootsOnly = false): T[] {
+export function crewModeView<T extends { key?: string; mode?: string; crew_root?: string; crew_mode_root?: boolean; mate_root?: string }>(
+  rows: T[], rootsOnly = false, mateThreads?: ReadonlySet<string>,
+): T[] {
   if (rootsOnly) return rows.filter(r => crewModeRoot(r))
+  // A mate's session leaves the list while its mate thread is live (the mate's
+  // Sessions tab lists it), behind its own preview, before the Crew Mode return so
+  // that branch is unchanged. `mateThreads` is the full store's
+  // (`liveMateThreads`); without it, the mate threads among `rows`.
+  if (mateSessionsHidden()) {
+    const mates = mateThreads ?? liveMateThreads(rows)
+    rows = rows.filter(r => { const mate = mateRootOf(r); return !mate || !mates.has(mate) })
+  }
   if (!crewModeEnabled()) return rows
   const listed = new Set<string>()
   for (const r of rows) if (r.key) listed.add(r.key)
@@ -203,11 +239,12 @@ export function openingHidesSessionList(row: { crew_root?: string } | null | und
 }
 
 /** The rows the page may open on its own (a first visit, or after the open chat
- *  closed): never a crew member, which is its conductor's to show and is opened
+ *  closed): never a mate's session while the mate sessions preview is on, and never
+ *  a crew member, which is its conductor's to show and is opened
  *  from its Crew panel or by the person. A crew member opened on purpose stays
  *  open; only the page's own pick skips it. */
-export function autoOpenRows<T extends { crew_root?: string }>(rows: T[]): T[] {
-  return rows.filter(s => !crewRootOf(s))
+export function autoOpenRows<T extends { crew_root?: string; mate_root?: string }>(rows: T[]): T[] {
+  return rows.filter(s => !crewRootOf(s) && !hiddenMateRootOf(s))
 }
 
 /** The agent the keyboard cycle lands on from `current`, `step` places along

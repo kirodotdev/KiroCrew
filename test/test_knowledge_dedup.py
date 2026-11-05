@@ -1693,3 +1693,24 @@ class TestSweepIsNotQuadratic:
         assert sum(len(index.candidates_after(i)) for i in range(len(docs))) == 0
         assert _action_tuples(dd.find_duplicates(object(), list(docs), 0.95)) == \
             _action_tuples(_find_duplicates_reference(object(), list(docs), 0.95))
+
+
+def test_collapse_audit_names_the_document_not_the_source(monkeypatch) -> None:
+    """An artifact loser has no file path; the audit names it, not a whole source."""
+    from unittest.mock import MagicMock
+
+    import kiro_crew.knowledge.dedup as dedup_mod
+
+    recorder = MagicMock()
+    monkeypatch.setattr(dedup_mod, "sel", lambda: recorder)
+    loser = DocRef(source_id="art", source_type="artifacts", filename="release-notes",
+                   item_ids=["i1"], content_hash="h1", embedding_sig=None,
+                   recency=0.0, resident_since=0.0)
+    winner = DocRef(source_id="fold", source_type="local_folder", filename="notes.md",
+                    item_ids=["i2"], content_hash="h1", embedding_sig=None,
+                    recency=0.0, resident_since=0.0, file_path="/docs/notes.md")
+    action = dedup_mod.DedupAction(winner=winner, loser=loser, reason="exact")
+    dedup_mod._audit_collapse(action)
+    resources = recorder.log_tool_invocation.call_args.kwargs["resources"]
+    assert "loser_file=release-notes " in resources
+    assert "whole-source" not in resources
