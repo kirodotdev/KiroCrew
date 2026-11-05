@@ -71,13 +71,11 @@ PINNED_FIXTURE_ADAPTERS: dict[str, tuple[str, str]] = {
 }
 
 #: Adapters held to a measured release written here instead of the lane manifest.
-#: No lane test drives claude-agent-acp yet, so the lane does not install it; the
-#: claude captures are held to the release they were taken on, and the pin moves
-#: into ``test/real_adapters/package.json`` when a lane test needs the install.
 #: Copilot is held to the one release the harness accepts at the handshake, so
 #: raising ``COPILOT_VERIFIED_VERSION`` reds here until the captures are re-taken.
+#: claude-agent-acp is in the manifest now (the harness probe drives it), pinned at
+#: the release its captures were taken on.
 MEASURED_NOT_INSTALLED: dict[str, str] = {
-    "@agentclientprotocol/claude-agent-acp": "0.94.0",
     COPILOT_PACKAGE: COPILOT_VERIFIED_VERSION,
 }
 

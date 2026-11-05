@@ -257,8 +257,11 @@ jobs:
           # _vendor is third-party code (llama-cpp-python) whose upstream URLs
           # and identifiers must not be rewritten — mirrors the .woke.yml
           # ignore_files entry (file ignores don't apply to a --stdin scan).
+          # package-lock.json mirrors its .woke.yml entry for the same reason: a
+          # lockfile lists third-party package names verbatim, and JSON has no
+          # comment to mark one.
           git diff "$BASE".."$HEAD" --unified=0 --diff-filter=ACMR \
-            -- ':(exclude)THIRD-PARTY-NOTICES' ':(exclude)CHANGELOG.md' ':(exclude)*.lock' ':(exclude).woke.yml' ':(exclude)AUTOSDE.yaml' ':(exclude)website/AUTOSDE.yaml' ':(exclude)src/kiro_crew/_vendor/**' ':(exclude)test/fixtures/denied_commands_golden.json' \
+            -- ':(exclude)THIRD-PARTY-NOTICES' ':(exclude)CHANGELOG.md' ':(exclude)*.lock' ':(exclude)**/package-lock.json' ':(exclude).woke.yml' ':(exclude)AUTOSDE.yaml' ':(exclude)website/AUTOSDE.yaml' ':(exclude)src/kiro_crew/_vendor/**' ':(exclude)test/fixtures/denied_commands_golden.json' \
             | grep '^+[^+]' | sed 's/^+//' > /tmp/diff-added-lines.txt
 
           if [ ! -s /tmp/diff-added-lines.txt ]; then
