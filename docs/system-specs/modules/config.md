@@ -1109,6 +1109,17 @@ such a value exists only here, so the overlay rides
 the dashboard export and the snapshot `config` component next to `config.json`
 (see [Settings import](#settings-import-dashboard-merge)).
 
+A renamed key (`agent.dangerously_skip_permissions`, read also as
+`dangerouslySkipPermissions` and `yolo`; `knowledge.auto_add_documents`, read
+also as `auto_ingest_doc_links`) is matched under its current name on both sides
+(`resolution._canonical_renamed_keys`), with the spelling and value conversion
+its reader uses. When the overlay owns it and `config.json` stores it only
+under an older spelling, `save()` keeps that older spelling and value
+(`resolution._restore_stored_renamed_spellings`) instead of migrating it to the
+current name: the current name would outrank the overlay's older spelling and
+change what loads. The migration to the current name finishes on the first
+save after the overlay stops setting the key.
+
 `config.json` is the persistent settings file, not a generated one: no upgrade
 or restart regenerates or resets it. The routine writers (dashboard PUTs, keyed
 `kirocrew config set`, setup, boot migrations) are locked delta
