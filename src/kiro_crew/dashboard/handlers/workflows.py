@@ -535,7 +535,7 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
                 expected_store=request.get("workflow_expected_store"),
                 budget_total=budget_total,
                 timeout_secs=_opt_int(body.get("timeout_secs")),
-                fallback_title=str(body.get("title") or ""),
+                fallback_title=_opt_title(body.get("title")),
                 fallback_folder_id=folder_id,
             ),
         )
@@ -608,10 +608,26 @@ def _opt_int(value: Any) -> Optional[int]:
 def _opt_str(value: Any) -> str:
     """An optional text body field; anything but a string reads as absent ("").
 
-    ``name`` and ``title`` label a run in the run list and its fallback chat, so
-    an object, list or number must not reach the service as the run's name.
+    ``name`` labels a run in the run list, so an object, list or number must not
+    reach the service as the run's name. The fallback ``title`` has its own
+    reader, :func:`_opt_title`.
     """
     return value if isinstance(value, str) else ""
+
+
+def _opt_title(value: Any) -> str:
+    """The fallback chat title a run asks for; an object, list or boolean reads as absent.
+
+    Passing such a value through ``str()`` would title the chat with its repr
+    (``{'a': 1}``, ``True``). A number becomes its text, since a title such as
+    ``2026`` is a plausible choice.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Zero stays absent, exactly as ``str(0 or "")`` reads it.
+        return str(value or "")
+    return ""
 
 
 def _rerun_from_index(value: Any) -> int:
@@ -740,7 +756,7 @@ async def api_workflow_run(request: web.Request) -> web.Response:
                 expected_store=request.get("workflow_expected_store"),
                 budget_total=budget_total,
                 timeout_secs=_opt_int(body.get("timeout_secs")),
-                fallback_title=str(body.get("title") or ""),
+                fallback_title=_opt_title(body.get("title")),
                 fallback_folder_id=folder_id,
             )
     except Exception:
@@ -819,7 +835,7 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
                 expected_store=request.get("workflow_expected_store"),
                 budget_total=budget_total,
                 timeout_secs=_opt_int(body.get("timeout_secs")),
-                fallback_title=str(body.get("title") or ""),
+                fallback_title=_opt_title(body.get("title")),
                 fallback_folder_id=folder_id,
             ),
         )
