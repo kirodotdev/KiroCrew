@@ -24,10 +24,9 @@ WORK_SLOT = "dashboard:9"
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse home pin moved verbatim; the root conftest floor pins KIROCREW_HOME independently
-def _isolated_home(tmp_path, monkeypatch):
+def _isolated_home(tmp_path, _floor_monkeypatch):
     """Every test writes into its own data home, never the live one."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     eager.stop_for_tests()
     crew_log.forget_slot_folds()
     emit.reset_caches()

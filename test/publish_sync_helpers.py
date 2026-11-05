@@ -230,11 +230,10 @@ def fake_client_fixture():
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the modules that import it calls monkeypatch.undo()
-def wire(monkeypatch, store, fake_client):
+def wire(_floor_monkeypatch, store, fake_client):
     """Point the sync engine at the test store + register the dummy provider
     under the default provider name so ``get_provider`` resolves to it."""
-    monkeypatch.setattr(publish_sync, "get_default_store", lambda: store)
+    _floor_monkeypatch.setattr(publish_sync, "get_default_store", lambda: store)
     publish_provider.reset_providers()
     saved_factories = dict(publish_provider._FACTORIES)
     publish_provider.register_provider(fake_client.name, lambda: fake_client)

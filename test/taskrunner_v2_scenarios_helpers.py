@@ -17,8 +17,7 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the TaskRunner V2 scenario modules' autouse unwrapped-git sandbox stub, moved verbatim; tracked for a de-flake pass
-def _passthrough_sandbox(monkeypatch):
+def _passthrough_sandbox(_floor_monkeypatch):
     """Several scenarios spawn REAL git via ``git_coord._git`` →
     ``sandboxed_spawn_argv`` → ``wrap_argv``, which raises when no OS-level
     sandbox backend is available. These exercise task/git logic, not sandbox
@@ -27,7 +26,7 @@ def _passthrough_sandbox(monkeypatch):
 
     from kiro_crew import git_coord
 
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         git_coord,
         "sandboxed_spawn_argv",
         lambda argv, *a, **k: (list(argv), dict(_os.environ), None),
