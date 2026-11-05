@@ -11,7 +11,7 @@ Orchestrator fields read: ``_adaptive_controller``, ``_auto_migrate_task``,
 ``_memory_repair_stop``, ``_memory_repair_task``, ``_memory_startup``,
 ``_model_download_task``, ``_profile_watch_task``, ``_sign_in_refresher_task``,
 ``_socket_client``, ``_update_check_task``, ``cron_svc``, ``dashboard_state``,
-``heartbeat_svc``, ``sessions``, ``subagent_mgr``.
+``heartbeat_svc``, ``sessions``, ``subagent_mgr``, ``task_runner``.
 Orchestrator fields written: ``_force_exit_claimed`` (by the signal-handler install).
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -56,7 +56,13 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
     # ``_shutdown_and_exit`` runs this whole method under
     # ``wait_for(..., GRACEFUL_SHUTDOWN_SECS)``, so this is that bound's deadline.
     graceful_deadline = asyncio.get_running_loop().time() + GRACEFUL_SHUTDOWN_SECS
-    # First: a stop owns any apply in flight (cancelled here), and its build
+    # Before any service a task run uses is stopped (memory just below, then the
+    # MCP broker and sessions): a step those stops break is the shutdown, not the
+    # run failing, so the runner leaves every active run for the restart to resume.
+    task_runner = getattr(self, "task_runner", None)
+    if task_runner is not None:
+        task_runner.begin_shutdown()
+    # Next: a stop owns any apply in flight (cancelled here), and its build
     # child dies now rather than after the teardown below.
     platform_compat.cancel_wheel_applies_in_flight("shutdown")
     # Then, before anything spends the shutdown budget: start stopping the
