@@ -282,6 +282,9 @@ def host_tree(tmp_path, monkeypatch):
         resources = [] if name == "plain" else [f"skill://catalog/{name}/*/SKILL.md"]
         spec = {"name": name, "tools": ["read"], "resources": ["file://R.md", *resources]}
         (agents / f"{name}.json").write_text(json.dumps(spec), encoding="utf-8")
+    # Freeze the projection clock so the drain budget never expires; the production
+    # budget is left at its real value and only the deadline comparison is held.
+    native_skill_projection_helpers._hold_the_prune_clock(monkeypatch)
     return agents, project
 
 
