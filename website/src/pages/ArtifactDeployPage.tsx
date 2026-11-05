@@ -550,7 +550,7 @@ export default function ArtifactDeployPage() {
             {i18nT('pages.artifactDeployPage.aws_profiles_count', { count: profiles.length })} <InfoTip text={i18nT('pages.artifactDeployPage.aws_profiles_tip')} />
           </CardTitle>
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <Btn onClick={() => setShowNewProfile((v) => !v)}><Plus size={12} /> {i18nT('pages.artifactDeployPage.new_profile')}</Btn>
+            <Btn aria-expanded={showNewProfile} onClick={() => setShowNewProfile((v) => !v)}><Plus size={12} /> {i18nT('pages.artifactDeployPage.new_profile')}</Btn>
             <SimpleSelect
               options={['static', 'fullstack']}
               value={policyTier}
