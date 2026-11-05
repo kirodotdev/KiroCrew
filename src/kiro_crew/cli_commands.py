@@ -773,6 +773,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_session_approval_from_cli,
         _refuse_unsafe_app_name,
         _register_app_crons_to_scheduler,
+        _register_unrecorded_builtin,
         _run_app_action_through_gateway,
         _run_app_mcp_server,
         _warn_backend_not_stopped,
