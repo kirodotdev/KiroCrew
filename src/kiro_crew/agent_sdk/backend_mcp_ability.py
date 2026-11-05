@@ -118,7 +118,7 @@ ON_CARD_CONCERNS: Tuple[str, ...] = (
 #:
 #: Read by the completeness test, so an entry here is a recorded decision rather
 #: than an omission -- the same arrangement as ``backend_cards.OFF_CARD_SETS``, and
-#: it exists because these two would otherwise put a false claim in front of a
+#: it exists because the first two would otherwise put a false claim in front of a
 #: reader: every mirror rules them WITHHELD, and rendering that verbatim would say
 #: the agent never receives its own instructions.
 OFF_CARD_CONCERNS: Mapping[str, str] = {
@@ -136,6 +136,13 @@ OFF_CARD_CONCERNS: Mapping[str, str] = {
         "file:// steering is not loaded from the spec, and that is told where it applies, "
         "as a session-start notice naming the custom agent's entries "
         "(providers.mirrors.base.RESOURCES_NO_READER)"
+    ),
+    "TOOLS_SETTINGS": (
+        "no mirrored harness applies toolsSettings (its subagent.availableAgents aside, "
+        "which Crew's spawn gate reads on every backend), so every mirror line would read "
+        "the same and tell a reader choosing between them nothing; what reaches the "
+        "person who wrote the field is a session-start notice naming what of it goes "
+        "unapplied, on every mirrored backend"
     ),
 }
 
