@@ -20,6 +20,7 @@ import logging
 import os
 import platform as _platform
 import shutil
+import ssl
 import stat
 import sys
 import tempfile
@@ -28,6 +29,8 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from kiro_crew import _ssl_compat
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +201,7 @@ def download_chromium(
     ) as tmp:
         archive = Path(tmp) / "chrome.zip"
         errors: list[str] = []
+        certificate_failed = False
         for template in urls:
             url = template.format(version=CHROMIUM_VERSION, platform=key)
             notify(STAGE_DOWNLOADING, url)
@@ -208,9 +212,14 @@ def download_chromium(
                 raise
             except Exception as exc:  # noqa: BLE001 - the next source is tried
                 errors.append(f"{url}: {exc}")
+                certificate_failed = certificate_failed or _is_certificate_failure(exc)
                 archive.unlink(missing_ok=True)
         else:
-            raise ChromiumDownloadError("; ".join(errors) or "no download source configured")
+            message = "; ".join(errors) or "no download source configured"
+            note = _ssl_compat.system_trust_note() if certificate_failed else None
+            if note:
+                message = f"{message} ({note})"
+            raise ChromiumDownloadError(message)
         notify(STAGE_EXTRACTING, str(target))
         staging = Path(tmp) / "extract"
         _extract(archive, staging)
@@ -315,9 +324,31 @@ def _fetch(
 def _default_opener(url: str, timeout: float) -> object:
     if not url.startswith("https://"):
         raise ChromiumDownloadError(f"refusing a non-HTTPS download: {url}")
+    # An explicit context, so the CAs this download trusts come from the platform
+    # trust store whether or not the startup prelude managed to patch ``ssl``.
+    context = _ssl_compat.system_trust_context()
     # The scheme is checked to be https just above, so no file:// URL reaches here.
     # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-    return urllib.request.urlopen(url, timeout=timeout)  # noqa: S310 - https pinned above
+    return urllib.request.urlopen(
+        url, timeout=timeout, context=context
+    )  # noqa: S310 - https pinned above
+
+
+def _is_certificate_failure(exc: BaseException) -> bool:
+    """Whether *exc*, or what it wraps (urllib's ``URLError.reason``), is a failed certificate check."""
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return True
+        for linked in (getattr(current, "reason", None), current.__cause__, current.__context__):
+            if isinstance(linked, BaseException):
+                stack.append(linked)
+    return False
 
 
 def _extract(archive: Path, dest: Path) -> None:
