@@ -13,6 +13,7 @@ removal in ``test_dev_fleet_server_coverage_untracked_discard.py``.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -20,7 +21,7 @@ from dev_fleet_server_coverage_helpers import (  # noqa: F401 -- the autouse fix
     _pin_module_state,
 )
 
-from kiro_crew.apps.builtins.dev_fleet import fleet_state, repository, worktree_ops
+from kiro_crew.apps.builtins.dev_fleet import fleet_state, repository, runtime, worktree_ops
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -172,6 +173,54 @@ async def test_prunable_closed_unverifiable_head_is_refused(monkeypatch, tmp_pat
     v = await worktree_ops._prunable(str(tmp_path), "feat")
     assert v["ok"] is False
     assert v["code"] == "closed_unverified"
+
+
+@pytest.mark.asyncio
+async def test_prunable_closed_clean_resolves_head_through_real_lookup(monkeypatch, tmp_path):
+    """Issue #30399: with the REAL head-OID lookup (only gh is stubbed), a clean
+    worktree whose gh answer is CLOSED with the local head OID is a `closed`
+    candidate, not `closed_unverified` on every scan."""
+    head = "c" * 40
+    monkeypatch.setattr(
+        fleet_state, "_pr_status_cached", AsyncMock(return_value={"state": "CLOSED"})
+    )
+    monkeypatch.setattr(repository, "_own_commits_count", AsyncMock(return_value=1))
+    monkeypatch.setattr(repository, "_real_dirty", AsyncMock(return_value=False))
+    monkeypatch.setattr(repository, "_git", AsyncMock(return_value=head))
+    monkeypatch.setattr(fleet_state, "_get_owner_repo", AsyncMock(return_value="o/r"))
+    gh_calls: list[list[str]] = []
+
+    async def _gh(cmd, **_kw):
+        gh_calls.append(list(cmd))
+        return 0, json.dumps([{"state": "CLOSED", "headRefOid": head}]), ""
+
+    monkeypatch.setattr(runtime, "_run_cmd", _gh)
+    v = await worktree_ops._prunable(str(tmp_path), "feat")
+    assert v["ok"] is True and v["code"] == "closed"
+    assert v["unmerged_commits"] is True
+    assert gh_calls and gh_calls[0][:3] == ["gh", "pr", "list"]
+
+
+@pytest.mark.asyncio
+async def test_prunable_closed_with_open_pr_on_head_stays_unverified(monkeypatch, tmp_path):
+    """The real lookup still refuses a reused head that carries an OPEN PR next
+    to the CLOSED one: the worktree is kept, never offered."""
+    head = "c" * 40
+    monkeypatch.setattr(
+        fleet_state, "_pr_status_cached", AsyncMock(return_value={"state": "CLOSED"})
+    )
+    monkeypatch.setattr(repository, "_own_commits_count", AsyncMock(return_value=1))
+    monkeypatch.setattr(repository, "_real_dirty", AsyncMock(return_value=False))
+    monkeypatch.setattr(repository, "_git", AsyncMock(return_value=head))
+    monkeypatch.setattr(fleet_state, "_get_owner_repo", AsyncMock(return_value="o/r"))
+    rows = [{"state": "OPEN", "headRefOid": "n" * 40}, {"state": "CLOSED", "headRefOid": head}]
+
+    async def _gh(cmd, **_kw):
+        return 0, json.dumps(rows), ""
+
+    monkeypatch.setattr(runtime, "_run_cmd", _gh)
+    v = await worktree_ops._prunable(str(tmp_path), "feat")
+    assert v["ok"] is False and v["code"] == "closed_unverified"
 
 
 @pytest.mark.asyncio
