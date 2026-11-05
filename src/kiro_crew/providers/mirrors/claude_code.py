@@ -142,14 +142,15 @@ class ClaudeCodeMirror(AgentConfigMirror):
             ),
             Concern.TOOLS_SETTINGS: Ruling(
                 _D.NO_CHANNEL,
-                "kiro-cli's per-tool settings (shell denyByDefault and allowedCommands, the "
-                "write allowlist, deniedPaths, web_fetch.blocked) have no field on "
-                "claude-agent-acp's session/new and no settings.local.json key Crew writes, and "
-                "Crew feeds this session's permission requests no spec allowlist, so the field "
-                "is applied nowhere. Its subagent.availableAgents is the exception: Crew's spawn "
-                "gate reads it from the parent's spec on every backend "
-                "(subagent_parts/agent_policy.py), so no notice names it. A new chat session "
-                "whose spec sets it gets one notice naming what of it goes unapplied "
+                "kiro-cli's per-tool settings have no field on claude-agent-acp's session/new. "
+                "Two are applied on this channel anyway: the shell denyByDefault and write "
+                "fallbackAction deny allowlists are stamped on this session's own permission "
+                "requests (acp/spec_tools_allowlists.py), with permissions.ask rules so those "
+                "calls reach the gate. The rest (deniedPaths, web_fetch.blocked and the other "
+                "entries) is applied nowhere. Its subagent.availableAgents is also applied: "
+                "Crew's spawn gate reads it from the parent's spec on every backend "
+                "(subagent_parts/agent_policy.py). A new chat session whose spec sets anything "
+                "else gets one notice naming what of it goes unapplied "
                 "(dashboard/chat_turn/turn_spec_hooks.py)",
                 channel=TOOLS_SETTINGS_GATE_CHANNEL,
             ),

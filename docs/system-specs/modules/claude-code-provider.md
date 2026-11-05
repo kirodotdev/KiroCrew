@@ -312,6 +312,25 @@ and effort selection, the full `session/request_permission` flow) works. So
   tool on kiro-cli while the array mounts the whole server here, and the set to
   deny is not knowable without connecting to the server — those extra tools still
   reach the host permission gate, so the surface is wider, not ungated.
+- **`toolsSettings` shell and write allowlists are enforced at Crew's gate.**
+  claude reads neither `shell.denyByDefault`/`allowedCommands` nor
+  `fs_write.fallbackAction: "deny"`/`allowedPaths`, so for a backend in
+  `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude only) the client reads
+  them from the spec `_resolve_session_mcp_servers` projected (or reads the spec
+  again when the array is withheld), through `acp/spec_tools_allowlists.py` and the
+  KAS readers it wraps, and `_build_permission_event` stamps them on every request
+  the session's process raises, a native sub-agent's (`parentToolUseId` or a
+  foreign `sessionId`) included: that child runs in the same process under the same
+  spec and has none of its own. The gate's `spec-shell-allowlist` and `spec-write-allowlist` rows
+  then refuse what they do not cover, under `AUTO_APPROVE` too
+  (`docs/system-specs/modules/security.md` § claude spec allowlists). While either
+  is set the seed adds `permissions.ask` rules (`Bash`; `Edit`, `MultiEdit`,
+  `NotebookEdit`, `Write`), and the `session/new` envelope's inline `settings` carry
+  them too, so a project `settings.local.json` Crew declines (and its allow rules)
+  cannot drop them. CC evaluates them ahead of every allow rule, the
+  read-only auto-allow and `acceptEdits`, so those calls raise
+  `session/request_permission` at all. `deniedPaths`, `web_fetch.blocked` and the
+  other `toolsSettings` entries are not carried on this backend.
 
 Both call sites are fed from the one function —
 `_new_session_following_substitution` (`session/new`) and the `session/load`
@@ -358,8 +377,9 @@ own servers. Pinned by `test/test_claude_mcp_identity.py`.
 
 `_write_claude_local_settings` writes `<work_dir>/.claude/settings.local.json` before
 the primary spawn (not only on the model-substitution retry) with
-`permissions.defaultMode` when requested and `permissions.deny` rules derived from
-the spec's `disabledTools`. Once the provider-advertised model cache is warm it
+`permissions.defaultMode` when requested, `permissions.deny` rules derived from
+the spec's `disabledTools`, and the `permissions.ask` rules a `toolsSettings` shell
+or write allowlist needs (above). Once the provider-advertised model cache is warm it
 writes a pinned `model`, and it writes `availableModels` only when another settings
 source (user `settings.json`, project `.claude/settings.json`, or the managed
 `managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines

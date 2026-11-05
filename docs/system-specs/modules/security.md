@@ -2776,6 +2776,32 @@ workspace turns the built-ins into MCP tools these rows do not bind, so
 `_remote_workspace_agents` refuses an agent carrying either allowlist
 (`REMOTE_AGENT_RESTRICTED`), as it refuses one with authored shell or file rules.
 
+**claude spec allowlists** — claude reads neither `toolsSettings` allowlist, so for
+a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude only; kiro-cli
+enforces the field itself and must never join) the direct `AcpClient` records both
+from the spec its session array was projected from (`acp/spec_tools_allowlists.py`:
+`spec_shell_allowlist` with no KAS policy, so an `allowedTools` naming the shell
+lifts `denyByDefault` only when the spec has no `deniedCommands`, and
+`spec_write_allowlist` anchored at the session directory by `anchor_write_allowlist`)
+as `AcpClient._spec_shell_allowlist` / `_spec_write_allowlist` / `_spec_write_cwd`,
+reset per spawn. A withheld array carries no spec, so the spec is read again rather
+than the allowlists dropped. That re-read and the seed's ask rules below both go
+through `session_allowlist_spec`, the mirrored read the array uses, so an untrusted
+checkout's same-named spec yields the user's spec there and cannot drop the user's
+allowlists from either half. `_build_permission_event` stamps them on every request
+the process raises, including one `_is_child_permission_frame` marks as a native
+sub-agent's: unlike a KAS sub-session, that child runs no Crew spec of its own, so
+leaving them off would let one delegation step around the spec. The same two rows
+then refuse, `AUTO_APPROVE` included. The rows only see a call claude asks about, so while either allowlist is set the
+`settings.local.json` seed and the session envelope's inline settings (carried
+whether or not Crew owns that file, so a declined project file's allow rules cannot
+approve those calls unasked; `_claude_session_meta`) add
+`permissions.ask` rules for `Bash` and for `Edit`, `MultiEdit`, `NotebookEdit` and
+`Write`; on claude `ask` outranks an `allow` rule from any settings source, the
+read-only Bash auto-allow and `acceptEdits`. Residuals: a session started in
+`bypassPermissions` skips the ask, and `deniedPaths` and `web_fetch.blocked` are
+not carried on claude.
+
 **Read-only auto-approve** — kiro-cli's `autoAllowReadonly` is not used;
 the tool gate auto-approves read-only tool calls itself, as its `read-only` row —
 the **last** of `GATE_TIERS`, before `judge`'s fall-through `allow()` — after every
