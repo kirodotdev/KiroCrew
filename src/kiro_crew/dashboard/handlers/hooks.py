@@ -66,6 +66,7 @@ from kiro_crew.dashboard.handlers.hooks_webhook_intake import (
     _read_hook_body,
     _verify_hook_signature,
     _verify_hook_token,
+    _with_restored_context,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, clear_session_execution
@@ -1045,12 +1046,7 @@ async def _run_hook_agent(
         # what covers it, and only from inside the try.
         saved_context = await asyncio.to_thread(_load_hook_context, hook_id)
         if saved_context:
-            message = (
-                f"=== Restored Context (from prior session) ===\n"
-                f"{saved_context}\n"
-                f"=== End Restored Context ===\n\n"
-                f"{message}"
-            )
+            message = _with_restored_context(saved_context, message)
 
         # The inner turn's first step opens the session's memory, which the
         # gateway keeps closed from boot until its startup preparation task has
@@ -1265,6 +1261,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.hooks_webhook_intake import (  # noqa: F401
         _HOOK_READ_CHUNK_BYTES,
         _HOOK_STORE_PATH,
+        _RESTORED_CONTEXT_GUIDANCE,
         _hook_store_path,
         _json_object,
         _legacy_hook_token,
