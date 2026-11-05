@@ -780,6 +780,34 @@ class TestHTTPHandler:
         assert responses[0][0] == 200
         assert len(responses[0][1]["results"]) == 1
 
+    def _search_capped(self, root, files):
+        """Search ``root`` for "needle" with the result cap patched to 2."""
+        root.mkdir()
+        for name in files:
+            (root / name).write_text("needle here\n")
+        with (
+            patch.object(server, "_has_rg", lambda: False),
+            patch.object(server, "MAX_SEARCH_RESULTS", 2),
+        ):
+            return self._make_request(f"/search?path={root}&q=needle")
+
+    def test_search_not_truncated_when_matches_exactly_fill_cap(self, tmp_tree):
+        """Exactly MAX_SEARCH_RESULTS matches means nothing was cut off, so the
+        reply must not say ``truncated`` (the UI turns that into "capped")."""
+        responses = self._search_capped(tmp_tree / "exact", ["a.txt", "b.txt"])
+        code, body = responses[0]
+        assert code == 200
+        assert len(body["results"]) == 2
+        assert body["truncated"] is False, body
+
+    def test_search_truncated_and_trimmed_when_matches_exceed_cap(self, tmp_tree):
+        """One match past the cap: the reply is cut to the cap and says so."""
+        responses = self._search_capped(tmp_tree / "over", ["a.txt", "b.txt", "c.txt"])
+        code, body = responses[0]
+        assert code == 200
+        assert len(body["results"]) == 2
+        assert body["truncated"] is True, body
+
     def test_complete_endpoint(self, tmp_tree):
         responses = self._make_request(f"/complete?path={tmp_tree}/")
         assert responses[0][0] == 200
