@@ -283,6 +283,16 @@ class TestCredentialsSection:
         cli_doctor._doctor_credentials([])
         assert "cannot READ credential files" in capsys.readouterr().out
 
+    def test_no_line_promises_aws_cli_calls_are_never_blocked(self, fake_home, capsys):
+        """Only the credential-file block is known to spare `aws`; an overlay may deny it.
+
+        The unconfigured branch prints both the no-config row and the note.
+        """
+        cli_doctor._doctor_credentials([])
+        out = capsys.readouterr().out
+        assert "can still run AWS CLI calls" not in out
+        assert "that rule does not block AWS CLI calls" in out
+
     def test_an_unconfigured_host_is_not_told_the_block_is_the_likelier_cause(
         self, fake_home, capsys
     ):

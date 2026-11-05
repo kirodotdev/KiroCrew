@@ -7,7 +7,7 @@ own credential setup when something looks unavailable.
 
 ## The most common false alarm: "the agent says it has no AWS access"
 
-Reading credential files is blocked. **Running AWS CLI commands is not.**
+Reading credential files is blocked. **Running AWS CLI commands is not blocked by that rule.**
 
 Those two facts are easy to conflate. An agent that tries to read
 `~/.aws/config` to discover your profile names gets refused, and could wrongly
