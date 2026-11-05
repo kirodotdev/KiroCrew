@@ -865,7 +865,12 @@ def operating_mode_block(agent_label: str, *, ledger: bool = False) -> str:
     one a crewmate had before the ledger could be mounted: the worker report is the
     patrol and no loop is armed.
     """
-    block = _fill("conductor.operating_mode", agent_label=agent_label)
+    # The label is the crewmate's config key, a user-written payload: scrub it the
+    # way build_member_section scrubs it for [MEMBER IDENTITY], so both blocks
+    # name the crewmate identically and neither carries a forged marker.
+    block = _fill(
+        "conductor.operating_mode", agent_label=_markers._scrub_member_payload(agent_label)
+    )
     if ledger:
         block += ledger_rules_block("conductor.patrol")
     return block
