@@ -1165,7 +1165,15 @@ Two rules give a member caller its shape:
   rather than granting it.
 - **A member caller may only act on sessions it created.** Slot creation records
   `created_by` (the creator's caller key) in the slot's birth metadata; it is
-  persisted with the session and rehydrated on restart (both restore paths).
+  persisted with the session and rehydrated on restart (both restore paths). A
+  sandboxed shell can write that line, so a restart keeps a creator only when the
+  crew log's creation records name the same one (`metadata_codec._read_created_by`;
+  the restore prefetch folds the tree first, `restore_inputs._seed_session_tree`).
+  Otherwise the slot comes back as `unverified:creator`: fenced and matching no
+  caller. That sentinel is never written over a claim the line holds (whichever
+  path set it: this restore, a revive, a History reopen), so the next restore
+  judges the claim again. A cron's `cron:<job id>` stamp names no session and is
+  kept as written.
   `authorize_target` refuses a member caller whose key does not match the
   target's `created_by` (`not_creator`, 403) — and this ownership boundary binds
   **even when the global switch is enabled**, so a member never widens to the

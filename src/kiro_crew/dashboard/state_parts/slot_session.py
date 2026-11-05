@@ -305,8 +305,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     self._attribution = None
     #: The ``created_by`` the session's saved metadata line names, read on every
     #: hydration (restore, recent, resume). DISPLAY ONLY: the Crew Mode stamp reads
-    #: it to keep a reopened worker under its root (``crew_mode.stamp_rows``). It
-    #: grants nothing: session-control ownership reads ``_created_by`` alone.
+    #: it to keep a reopened worker under its root (``crew_mode.stamp_rows``), and a
+    #: save writes it back in place of ``unverified:creator``. It grants nothing:
+    #: session-control ownership reads ``_created_by`` alone.
     self._saved_created_by = ""
     #: The creator's ACP session id, FROZEN at mint (see ``session_control``).
     #: Read at the child's first turn to stamp ``parent_sid`` on the immutable
