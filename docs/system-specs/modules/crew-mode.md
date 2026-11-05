@@ -763,7 +763,7 @@ per call and is not covered.
 `harness_unsupported` means the backend is outside
 `ACP_BACKENDS_MEMBER_CAPABILITIES`; `tool_limits_unsupported` means the spec
 turns off single MCP tools (`servers` lists them) and the backend is outside
-`ACP_BACKENDS_MEMBER_TOOL_LIMITS`; `servers` is present whenever the spec has
+`ACP_BACKENDS_MEMBER_TOOL_LIMITS` (Kiro, KAS, claude); `servers` is present whenever the spec has
 such servers, a harness refusal included. `member_backend_gap` is the rule, read from
 the same sets as the chat-start refusals, and `tool_limited_servers` is the one
 definition `prepare_member_capabilities` also uses. It is a warning only: the
@@ -4193,8 +4193,12 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   spawn, plus a crewmate whose file turns off single tools (`disabledTools`, or
   a server or native tool its own `excludedTools` names) on a backend outside
   `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS` (`capability_tool_limits_unsupported`;
-  KAS honours the limits as the worker spec's `excludedTools`, so only claude
-  refuses them). The worker's model pin is judged against the same backend
+  KAS honours the limits as the worker spec's `excludedTools`). claude, in
+  `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`, honours the MCP ones as
+  `permissions.deny` rules read from the worker's own spec by its session
+  (`acp.session_mcp_crewmate.crewmate_worker_deny_rules`), so it refuses only a
+  native-tool exclude (`@builtin` included), a wildcard, or a `disabledTools` that is not a list of tool
+  names (`mate_worker.uncarried_tool_limits_of`). The worker's model pin is judged against the same backend
   (`mate_worker.crewmate_worker_backend`).
 
 **The two conductors stay in step.** `kirocrew-conductor` (Crew Mode, Ultra

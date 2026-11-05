@@ -103,26 +103,55 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
 # ``excludedTools`` entry (``@kiro/agent`` 3.0.0 ``dist/server/acp-server.js``:
 # the MCP tool wrapper's ``tags`` and the tool filter ``BM``). The live capture of
 # that field is ``test/fixtures/acp_frames/kas/worker-kit-live.jsonl`` (KAS 0.66.58,
-# a native tool withheld). A saved spec that uses ``disabledTools`` is refused
-# before spawn on a non-member (``capability_tool_limits_unsupported``) rather than
-# run wider than it was saved.
-ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+# a native tool withheld). claude re-expresses each switched-off tool as a
+# ``permissions.deny`` rule in the settings Crew governs (``session_mcp_deny_rules``,
+# spelled the way Claude Code names the tool, ``claude_mcp_names``), and a session
+# whose settings Crew does not govern gets no MCP array at all, so the limit never
+# rides on an ungoverned surface. Captured live on claude-agent-acp 0.94.0:
+# ``test/fixtures/acp_frames/claude/member-tool-limits-live.jsonl`` (the authored
+# seed) and ``member-tool-limits-inline-live.jsonl`` (the rules carried inline beside
+# a project-owned file). Each switched-off tool, a dotted server and tool name
+# included, stayed out of the model's tool list while its sibling asked and ran.
+# A saved spec that uses ``disabledTools`` is refused before spawn on a non-member
+# (``capability_tool_limits_unsupported``) rather than run wider than it was saved.
+ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE})
 
 # Backends that honour a crewmate WORKER's single-tool limits. The worker's spec
 # is built per session (``mate_worker.worker_session_spec``), with every tool the
 # crewmate switches off rewritten into ``excludedTools``. KAS takes that whole
 # definition over the wire (``_meta.kiro.customAgents``) and projects
-# ``excludedTools``, so the limits hold. claude mounts the worker's servers
-# whole and reports ``excludedTools`` as a projection gap, so a worker with
-# single-tool limits is refused there before
-# spawn (``capability_tool_limits_unsupported``); without limits it runs. codex
-# carries the worker kit but not this: its worker capture proves no limit held, so
-# a limited worker is refused there the same way.
+# ``excludedTools``, so the limits hold. claude carries only the MCP half of them
+# (``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`` below), so a worker whose crewmate
+# file excludes a native tool is refused there before spawn
+# (``capability_tool_limits_unsupported``). codex carries the worker kit but not
+# this: its worker capture proves no limit held, so a limited worker is refused
+# there the same way.
 # KAS is captured live on KAS 0.66.58 (kiro-cli 2.33.1):
 # ``test/fixtures/acp_frames/kas/worker-kit-live.jsonl``. A crewmate file's
 # ``excludedTools [shell]``, carried in the worker's customAgents entry, withheld
 # ``shell``: the model listed only the ``read`` tools.
 ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS = frozenset({ACP_BACKEND_KAS})
+
+# Backends that honour the MCP half of a crewmate WORKER's single-tool limits: a
+# tool switched off with ``disabledTools``, and an ``@server/tool`` or ``@server``
+# entry in the crewmate file's ``excludedTools``. A native-tool exclude (``shell``,
+# ``fs_write``) or a wildcard is refused before spawn on a backend here unless it
+# is in ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`` too
+# (``mate_worker.uncarried_tool_limits_of``). KAS carries them as the worker spec's
+# ``excludedTools``, as above (``test/fixtures/acp_frames/kas/worker-kit-live.jsonl``).
+# claude carries them as ``permissions.deny`` rules
+# derived from the worker's own per-session spec, keyed by the session
+# (``session_mcp_crewmate.crewmate_worker_deny_rules``), in the settings Crew
+# governs; a session whose settings Crew does not govern gets no MCP array at all.
+# claude is captured live on claude-agent-acp 0.94.0:
+# ``test/fixtures/acp_frames/claude/worker-tool-limits-live.jsonl``. A worker whose
+# crewmate file switched off one tool by ``disabledTools``, excluded one by
+# ``@server/tool`` and excluded a third server whole by ``@server``: none of those
+# tools reached the model's tool list while their siblings asked and ran.
+# kiro-cli is not here: it never runs a worker (``ACP_BACKENDS_MATE_WORKER_KIT``).
+ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS = ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS | frozenset(
+    {ACP_BACKEND_CLAUDE}
+)
 
 # Backends that carry a crewmate WORKER's per-session spec (its kit): a spec built
 # per session from the worker base plus that crewmate's own file

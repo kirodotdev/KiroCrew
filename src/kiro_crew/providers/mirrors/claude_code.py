@@ -26,7 +26,7 @@ from collections.abc import Collection
 from typing import Any, Mapping
 
 from kiro_crew.acp.session_mcp import session_mcp_projection
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
 from kiro_crew.providers.mirrors.base import (
     RESOURCES_NO_READER,
     TOOLS_SETTINGS_GATE_CHANNEL,
@@ -266,8 +266,12 @@ class ClaudeCodeMirror(AgentConfigMirror):
             agent,
             stub_server_names=stub_server_names,
             work_dir=work_dir,  # type: ignore[arg-type]
-            # A crewmate's worker reads its own spec by its session's record.
+            # A crewmate's worker reads its own spec by its session's record, and its
+            # MCP tool limits ride the seed's deny rules
+            # (``session_mcp_crewmate.crewmate_worker_deny_rules``).
             session_key=str(kwargs.get("session_key") or ""),
+            worker_mcp_tool_limits_honoured=self.backend
+            in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
         )
         if not permission_surface_owned:
             logger.warning(

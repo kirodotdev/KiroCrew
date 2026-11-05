@@ -1123,7 +1123,9 @@ async def _get_or_create_impl(
                 # that cannot carry that spec (``ACP_BACKENDS_MATE_WORKER_KIT``),
                 # and, for a crewmate whose file turns off single tools, one that
                 # cannot honour them for a worker (``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``:
-                # KAS carries them as the worker spec's ``excludedTools``).
+                # KAS carries them as the worker spec's ``excludedTools``). One that
+                # carries only their MCP half (``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS``)
+                # refuses only the rest.
                 from kiro_crew.members import is_crewmate_worker_session
 
                 if is_crewmate_worker_session(key):
@@ -1139,7 +1141,11 @@ async def _get_or_create_impl(
                     )
                     # A fast path: the projection refuses on the spec it builds too.
                     if provider.mate_worker_tool_limits_supported is not True:
-                        limited = await asyncio.to_thread(_worker_tool_limited_servers, key)
+                        limited = await asyncio.to_thread(
+                            _worker_tool_limited_servers,
+                            key,
+                            provider.mate_worker_mcp_tool_limits_supported is True,
+                        )
                         if limited:
                             raise CapabilityStartupError("capability_tool_limits_unsupported")
                 # The key may have been fenced while this call waited for the
@@ -1454,14 +1460,17 @@ async def _get_or_create_impl(
     return result
 
 
-def _worker_tool_limited_servers(key: str) -> tuple[str, ...]:
-    """The servers whose single tools worker *key*'s crewmate file turns off. Blocking."""
+def _worker_tool_limited_servers(key: str, mcp_carried: bool = False) -> tuple[str, ...]:
+    """The servers whose single tools worker *key*'s crewmate file turns off.
+
+    With *mcp_carried*, only the limits no MCP deny carries. Blocking.
+    """
     from kiro_crew.execution_context import read_session_execution
     from kiro_crew.mate_worker import crewmate_tool_limited_servers
 
     execution = read_session_execution(key)
     member_id = str(getattr(execution, "member_id", "") or "") if execution is not None else ""
-    return crewmate_tool_limited_servers(member_id)
+    return crewmate_tool_limited_servers(member_id, mcp_tool_limits_carried=mcp_carried)
 
 
 def _is_crewmate_worker_key(key: str) -> bool:
