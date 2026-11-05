@@ -815,11 +815,22 @@ commands and skills are not listed: nothing records the adapter's
 ### A tool-less session
 
 A session whose agent spec declares `"tools": []` (the mirror's `zero_tools`, which
-covers the `kirocrew-lite` background helpers `_bg` and `_consolidate`) is started
-with `strictMcpConfig`. The adapter otherwise mounts the user's, the project's and
-installed plugins' MCP servers beside the wire array, and each helper call starts a
-fresh session, so those servers would start on every call in a session that runs no
-tool. Only the wire array mounts; nothing else in the envelope changes.
+covers the `kirocrew-lite` background helpers `_bg` and `_consolidate` and the
+knowledge pool's workers) mounts no tool at all, so the inherited-config gap below
+cannot reach it: an allow rule pre-approves only a tool that exists. It is started
+with `tools` empty, so none of Claude Code's built-ins (Bash, Write, WebFetch, ...)
+is mounted, `strictMcpConfig`, so the user's, the project's and installed plugins'
+MCP servers stay out, and bypass off. Its wire array must be empty as well
+(`refuse_claude_zero_tool_mounts`; a non-empty one is not sent). The adapter that
+answered the handshake must be at or above the session-options floor
+(`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, an unreadable version counting as below
+it), or the session is stopped before its first prompt; it is not mode-pinned,
+because it has nothing a mode could approve. This is why claude is in
+`ACP_BACKENDS_HONOR_ZERO_TOOL_BAN` although its routing is not enforced, and why the
+knowledge pool runs on claude instead of falling back to kiro-cli. Measured on
+claude-agent-acp 0.94.0: `test/fixtures/acp_frames/claude/zero-tools-refused-live.jsonl`
+(0.93.0, the installers' pin, behaved the same; a project allow rule for Bash, Write
+and WebFetch in force; no `tool_call`, no permission request, nothing on disk).
 
 ### Known gap: the user's global `~/.claude` is inherited
 

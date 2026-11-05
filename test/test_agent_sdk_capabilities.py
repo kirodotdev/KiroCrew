@@ -694,13 +694,24 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     # session's own directory without asking (measured, see the set's comment), so a
     # total ban cannot be honoured there even though the three facts hold.
     reads_unasked = {sdk_backends.ACP_BACKEND_COPILOT}
+    # A second ground, beside the refusal: a zero-tool session that MOUNTS NO TOOL,
+    # so no call exists for a pre-approval to run. claude's session options carry an
+    # empty ``tools`` with ``strictMcpConfig`` and an empty wire array, measured on
+    # ``claude/zero-tools-refused-live.jsonl`` (``test_claude_zero_tools.py``).
+    mounts_nothing = {sdk_backends.ACP_BACKEND_CLAUDE}
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
         routing = routing_for(backend)
-        expected = routing is sdk_backends.Routing.AGENT_SPEC or (
-            routing in ENFORCED_ROUTINGS
-            and (backend in MIRRORS or projection_for(backend).kind is ProjectionKind.BROKER_ONLY)
-            and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
-            and backend not in reads_unasked
+        expected = (
+            routing is sdk_backends.Routing.AGENT_SPEC
+            or backend in mounts_nothing
+            or (
+                routing in ENFORCED_ROUTINGS
+                and (
+                    backend in MIRRORS or projection_for(backend).kind is ProjectionKind.BROKER_ONLY
+                )
+                and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
+                and backend not in reads_unasked
+            )
         )
         actual = backend in sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
         assert actual == expected, (
@@ -713,6 +724,7 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     assert sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN == {
         sdk_backends.ACP_BACKEND_KIRO,
         sdk_backends.ACP_BACKEND_KAS,
+        sdk_backends.ACP_BACKEND_CLAUDE,
         sdk_backends.ACP_BACKEND_OPENCODE,
         sdk_backends.ACP_BACKEND_GOOSE,
         sdk_backends.ACP_BACKEND_DEEPSEEK,
@@ -725,10 +737,11 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     """Each pool-eligible backend's effort capability answers are checked, not assumed.
 
     ``llm_pool._get_acp_backend`` allows only backends with both ``honors_zero_tool_ban``
-    and ``acp_client_spawnable``. claude is excluded: an inherited ``~/.claude``
-    pre-approval can skip the permission request the refusal needs.
+    and ``acp_client_spawnable``. claude qualifies because its zero-tool session mounts
+    no tool, so an inherited ``~/.claude`` pre-approval has nothing to run.
     """
     from kiro_crew.agent_sdk.backends import (
+        ACP_BACKEND_CLAUDE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_KIRO,
@@ -754,6 +767,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     pool_safe_backends = ACP_BACKENDS_HONOR_ZERO_TOOL_BAN & ACP_BACKENDS_ACP_CLIENT_SPAWNABLE
     assert pool_safe_backends == {
         ACP_BACKEND_KIRO,
+        ACP_BACKEND_CLAUDE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
@@ -765,6 +779,9 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         "update this pin"
     )
     assert capabilities_for(ACP_BACKEND_KIRO).effort_via_config_option is False
+    # claude carries effort as its ``effort`` config option.
+    assert capabilities_for(ACP_BACKEND_CLAUDE).effort_via_config_option is True
+    assert capabilities_for(ACP_BACKEND_CLAUDE).effort_via_slash_command is False
     assert capabilities_for(ACP_BACKEND_OPENCODE).effort_via_config_option is True
     assert capabilities_for(ACP_BACKEND_GOOSE).effort_via_config_option is True
     assert capabilities_for(ACP_BACKEND_KIRO).effort_via_slash_command is True

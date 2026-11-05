@@ -13,7 +13,7 @@ from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401
 
 import kiro_crew.acp.client as acp_client
 from kiro_crew.acp.client import AcpClient
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_OPENCODE
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE
 
 
 class TestAcpClientToolAudit:
@@ -409,9 +409,10 @@ class TestAcpClientZeroTools:
 
     @pytest.mark.asyncio
     async def test_a_backend_that_does_not_honour_the_ban_is_not_refused(self):
-        """claude's routing is not enforced, so the refusal is not applied there and
-        a zero-tool spec does not force the session to judge requests."""
-        client = AcpClient(acp_backend=ACP_BACKEND_CLAUDE)
+        """codex's sessions run on ``AcpRuntime``, which carries no zero-tool refusal,
+        so the refusal is not applied there and a zero-tool spec does not force the
+        session to judge requests."""
+        client = AcpClient(acp_backend=ACP_BACKEND_CODEX)
         client._spec_zero_tools = True
         event = client._build_permission_event(self._permission_request())
         assert event is not None

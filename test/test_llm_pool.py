@@ -510,11 +510,10 @@ class TestReadConfig:
             (None, ACP_BACKEND_KIRO),
             ("no-such-harness", ACP_BACKEND_KIRO),
             (42, ACP_BACKEND_KIRO),
-            # claude's routing (SEEDED_SETTINGS) is declared but not enforced by
-            # this core -- an inherited ~/.claude pre-approval can skip
-            # session/request_permission entirely, so honors_zero_tool_ban answers
-            # False and it degrades to kiro.
-            (ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO),
+            # claude's zero-tool session mounts no tool at all (empty
+            # options.tools, strictMcpConfig, an empty wire array), so an
+            # inherited ~/.claude pre-approval has nothing to run -- passes through.
+            (ACP_BACKEND_CLAUDE, ACP_BACKEND_CLAUDE),
             # Selectable through the gate but outside this pool's zero-tool
             # allowlist -- codex is served by AcpRuntime, which carries no
             # zero-tool refusal -- so it degrades to kiro the same as an

@@ -250,11 +250,11 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
     that already routes by backend). Two capability questions decide whether a
     resolved backend is safe to hand it, asked rather than enumerated so a
     backend that later earns both answers needs no change here:
-    ``SessionCapabilities.honors_zero_tool_ban`` (kiro-cli/KAS natively, plus
-    opencode/goose/deepseek/pi via ``AcpClient._deny_zero_tools``; not claude,
-    whose routing is unenforced so an inherited pre-approval can skip the
-    permission request; not codex, whose sessions run on ``AcpRuntime`` with no
-    such refusal) and ``.acp_client_spawnable`` (not
+    ``SessionCapabilities.honors_zero_tool_ban`` (kiro-cli/KAS natively, claude
+    because a zero-tool session there mounts no tool at all, plus
+    opencode/goose/deepseek/pi via ``AcpClient._deny_zero_tools``; not codex, whose
+    sessions run on ``AcpRuntime`` with no such refusal) and
+    ``.acp_client_spawnable`` (not
     kas/codex, which need ``AcpRuntime`` and have no arm in ``AcpClient._spawn``).
 
     The pool reads raw ``config.json``, which never passed the loader's

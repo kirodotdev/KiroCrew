@@ -408,9 +408,11 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     widening direction.
 
     A session whose spec declares ``"tools": []`` (``_spec_zero_tools``, the
-    background ``kirocrew-lite`` helpers) gets ``strictMcpConfig``, so only the
-    wire array mounts: the harness's own user, project and plugin servers stay
-    out of a session that must run no tool.
+    background ``kirocrew-lite`` helpers) mounts no tool at all: ``tools`` is
+    empty, so no built-in exists for an allow rule in any settings file to
+    pre-approve, ``strictMcpConfig`` keeps the harness's own user, project and
+    plugin servers out, and bypass is off. The wire array it ships beside must be
+    empty too, which :func:`refuse_claude_zero_tool_mounts` checks first.
 
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
@@ -436,9 +438,14 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
             options["settings"] = dict(inline)
     if getattr(self, "_spec_zero_tools", False):
         # The spec declares ``"tools": []`` (the background ``kirocrew-lite``
-        # helpers): without this the harness mounts the user's, the project's and
-        # plugins' servers beside the wire array, and starts them on every call.
+        # helpers). Without ``tools`` the adapter mounts Claude Code's whole
+        # built-in preset, and an allow rule in the user's or the project's
+        # settings runs a call there unasked, so no permission request reaches
+        # Crew. Without ``strictMcpConfig`` it mounts the user's, the project's
+        # and plugins' servers beside the wire array.
+        options["tools"] = []
         options["strictMcpConfig"] = True
+        options["allowDangerouslySkipPermissions"] = False
     if getattr(self, "_side_read_only", False):
         # A Side Chat session: only the read built-ins exist, so no allow rule
         # in the user's settings can pre-approve a write. No MCP server either
@@ -479,6 +486,22 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
             shipped.update((kind, rule) for rule in rules if isinstance(rule, str))
     self._claude_shipped_restrictions = frozenset(shipped)
     return {"claudeCode": {"options": options}}
+
+
+def refuse_claude_zero_tool_mounts(spec_zero_tools: bool, mcp_servers: Any) -> None:
+    """Refuse a zero-tool claude session whose wire array mounts a server.
+
+    On a session whose spec declares ``"tools": []``, :func:`_claude_session_meta`
+    removes every built-in and keeps the harness's own servers out, so the wire
+    array is the one channel left that could mount a tool. The mirror withholds
+    every server such a spec does not reference, so a non-empty array is a
+    composition defect: ``AcpError``, and the session is not started.
+    """
+    if spec_zero_tools and mcp_servers:
+        raise AcpError(
+            'a claude session whose spec declares "tools": [] was composed with '
+            f"{len(mcp_servers)} MCP server(s), so it was not started"
+        )
 
 
 def _claude_session_excludes_local(self: AcpClient) -> bool:
@@ -546,6 +569,9 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     is below :data:`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, and Side Chat
     runs no tools on such an adapter; if the adapter that answered the
     handshake reports a version below it anyway, the session is stopped here.
+    A session whose spec declares ``"tools": []`` is stopped below the same
+    floor, since its empty ``tools`` option is what removes the built-ins, but
+    is not pinned: it mounts no tool, so its mode approves nothing.
     Any other session gains no call (harness-parity H13).
 
     Observed on claude-agent-acp 0.84.0
@@ -560,17 +586,21 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     window between the writer's read and the session's creation.
     """
     excludes_local = self._claude_session_excludes_local()
-    if not (excludes_local or getattr(self, "_side_read_only", False)):
+    side = getattr(self, "_side_read_only", False)
+    if not (excludes_local or side or getattr(self, "_spec_zero_tools", False)):
         return
     if self._claude_adapter_below_setting_sources_floor():
-        # The installed package passed the floor, but the adapter that answered
-        # the handshake did not: it may have ignored the session's options.
+        # The adapter that answered the handshake is below the floor, or named no
+        # version: it may have ignored the session's options.
         await self._kill_process(force=True)
         raise AcpError(
             "the claude-agent-acp that answered the handshake is not verified to "
             "honour settingSources or the other session options, so a session "
             "that depends on them was stopped before its first prompt"
         )
+    if not (excludes_local or side):
+        # A zero-tool session mounts no tool, so its mode has nothing to approve.
+        return
     if excludes_local:
         await self._verify_claude_project_denies_unchanged()
     session_id = resp.get("sessionId") or self._session_id
