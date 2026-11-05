@@ -177,8 +177,7 @@ class TestAffinityRecencyIndependence:
             )
             delta = round(same - diff, 4)
             assert abs(delta - 0.10) < 0.001, (
-                f"At recency_boost={boost}, affinity delta was {delta}, "
-                f"expected 0.10"
+                f"At recency_boost={boost}, affinity delta was {delta}, " f"expected 0.10"
             )
 
 

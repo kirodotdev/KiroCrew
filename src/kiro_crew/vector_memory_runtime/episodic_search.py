@@ -175,7 +175,12 @@ def search_episodic(
             )
     if store.algorithm_version == "v2":
         return store._search_episodic_v2(
-            query_embedding, query_text, limit, mmr, tag_filter, relevance_filter,
+            query_embedding,
+            query_text,
+            limit,
+            mmr,
+            tag_filter,
+            relevance_filter,
             conversation_id=conversation_id,
             session_affinity=session_affinity,
             recency_boost=recency_boost,
