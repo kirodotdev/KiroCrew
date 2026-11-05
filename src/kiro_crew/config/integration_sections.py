@@ -938,7 +938,9 @@ class InstancesConfig:
             "ssh transport as the tunnel, so a host behind a ProxyCommand or "
             "jump host pays the proxy handshake here too. An explicit value "
             "applies to both transports, so size it for the slowest transport "
-            "you use. Clamped to [10, 120].",
+            "you use. A value below 10 is discarded (the transport default is "
+            "used, with a warning); a value above 120 is clamped to 120. A "
+            "non-numeric value is read as 30s for both transports.",
         ),
     )
     max_recovery_attempts: int = field(
