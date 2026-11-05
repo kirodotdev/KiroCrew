@@ -3775,6 +3775,11 @@ jobs:
           I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
           REDUCED: ${{ steps.scope.outputs.reduced }}
           TARGETS_FILE: ${{ runner.temp }}/frontend-targets.txt
+          # The @testing-library/dom prettyDOM default (7000 chars) truncates
+          # inside sidebar SVG icons, before the portal section -- making the
+          # dialog/slot state unreadable in failure dumps.  200 000 chars
+          # captures the full document including portalled modals.
+          DEBUG_PRINT_LIMIT: "200000"
         # `actions/checkout` fetches depth 1, so the base is not present and
         # `git diff`/`git show` against it would fail. Fetch just that one commit, and
         # fail the step if it cannot be fetched — the gates throw on an unresolvable
