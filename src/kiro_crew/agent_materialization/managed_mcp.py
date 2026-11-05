@@ -23,6 +23,7 @@ from kiro_crew import kiro_cli
 from kiro_crew.env import sanitize_spec_env
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.platform.governance import CU_MCP_SERVER
+from kiro_crew.template_mcp_additions import MERGED_MARK
 
 
 def _managed_mcp_env() -> dict[str, str]:
@@ -760,6 +761,13 @@ def refresh_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mo
         else:
             entry["command"] = spec.get("command") or spec["command_fn"]()
             entry["args"] = list(spec["args"])
+        # An opt-in set mounted from the mount-only record carries that record's
+        # stamp (``template_mcp_additions.MERGED_MARK``). The stamp is the only
+        # thing that lets ``reconcile_default_spec`` take the set away again once
+        # its record is gone, so the key strip below must not eat it. Only on an
+        # opt-in entry, the one kind a record can add; the stamp can only ever
+        # REMOVE the entry it sits on.
+        keep_mark = bool(spec.get("opt_in")) and entry.get(MERGED_MARK) is True
         # Strip any stale remote-transport fields from older builds, re-pin the
         # registry marker and data-home env, and seed autoApprove only for a
         # genuinely new entry — all via the same helper the fresh-build loop
@@ -770,6 +778,8 @@ def refresh_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mo
             _registry_marker_for(name, registry_mode),
             auto_approve="seed" if is_new else "preserve",
         )
+        if keep_mark:
+            entry[MERGED_MARK] = True
 
 
 def register_managed_refs(config: dict, *, fresh_install: bool, gated_off: frozenset[str]) -> None:
