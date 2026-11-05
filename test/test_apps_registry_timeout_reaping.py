@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 from unittest.mock import MagicMock
@@ -458,27 +459,19 @@ async def test_install_script_timeout_routes_through_kill_process_group(monkeypa
 class _ExitProc:
     """Fake subprocess that exits at once with a fixed return code."""
 
-    def __init__(self, code: int) -> None:
+    def __init__(self, code: int, output: bytes = b"secret-output") -> None:
         self.pid = None  # skips the post-exit straggler reap
         self.returncode: int | None = None
         self._code = code
+        self._output = output
 
     async def communicate(self) -> tuple[bytes, bytes]:
         self.returncode = self._code
-        return b"secret-output", b""
+        return self._output, b""
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("make_proc", "expected"),
-    [
-        (_TimeoutProc, ("timed_out", " exit=-9")),
-        (lambda: _ExitProc(3), ("failed", " exit=3")),
-        (lambda: _ExitProc(0), ("completed", " exit=0")),
-    ],
-)
-async def test_install_script_emits_terminal_sel_event(monkeypatch, tmp_path, make_proc, expected):
-    """Every onInstall exit records a terminal SEL event after `started`."""
+async def _install_with_fake_script(monkeypatch, tmp_path, proc) -> MagicMock:
+    """Run a registry install whose ``onInstall`` spawn is *proc*; return the SEL mock."""
     entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}
     monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
     monkeypatch.setattr(registry, "_entry_git_url", lambda e: "https://example.com/demo.git")
@@ -503,7 +496,6 @@ async def test_install_script_emits_terminal_sel_event(monkeypatch, tmp_path, ma
         proc.returncode = -9
 
     monkeypatch.setattr(registry, "_kill_process_group", _fake_kpg)
-    proc = make_proc()
 
     async def _fake_exec(*args, **kwargs):
         return proc
@@ -511,6 +503,21 @@ async def test_install_script_emits_terminal_sel_event(monkeypatch, tmp_path, ma
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
 
     await registry.install_from_registry("demoapp")
+    return audit
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("make_proc", "expected"),
+    [
+        (_TimeoutProc, ("timed_out", " exit=-9")),
+        (lambda: _ExitProc(3), ("failed", " exit=3")),
+        (lambda: _ExitProc(0), ("completed", " exit=0")),
+    ],
+)
+async def test_install_script_emits_terminal_sel_event(monkeypatch, tmp_path, make_proc, expected):
+    """Every onInstall exit records a terminal SEL event after `started`."""
+    audit = await _install_with_fake_script(monkeypatch, tmp_path, make_proc())
 
     events = [
         c.kwargs
@@ -521,6 +528,46 @@ async def test_install_script_emits_terminal_sel_event(monkeypatch, tmp_path, ma
     assert events[1]["resources"].endswith(expected[1])
     # Script output is never written into the audit record.
     assert all("secret-output" not in str(e) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_install_script_leaves_its_redacted_output_tail_in_the_gateway_log(
+    monkeypatch, tmp_path, caplog
+):
+    """The reason an onInstall failed outlives the install response: its output
+    tail reaches the gateway log on one line, with a credential in it redacted."""
+    token = "ghp_" + "a" * 36
+    output = f"step one\nnpm ERR! token {token}\n".encode()
+    caplog.set_level(logging.WARNING, logger=registry.__name__)
+
+    await _install_with_fake_script(monkeypatch, tmp_path, _ExitProc(3, output))
+
+    tails = [r.getMessage() for r in caplog.records if "output tail" in r.getMessage()]
+    assert len(tails) == 1
+    assert "exit 3" in tails[0]
+    assert "step one\\nnpm ERR! token [REDACTED" in tails[0]
+    assert token not in tails[0]
+    assert "\n" not in tails[0]
+
+
+@pytest.mark.asyncio
+async def test_the_gateway_log_tail_is_capped_and_cut_after_redaction(
+    monkeypatch, tmp_path, caplog
+):
+    """One huge output line is cut to the cap, and only after redaction: a credential
+    the cut lands inside leaves no fragment of itself in the log."""
+    cap = registry._SCRIPT_LOG_TAIL_CHARS
+    token = "ghp_" + "a" * 36
+    # The raw output's last `cap` characters begin 19 characters into the token.
+    output = ("x" * cap + " " + token + " " + "y" * (cap - 20)).encode()
+    caplog.set_level(logging.WARNING, logger=registry.__name__)
+
+    await _install_with_fake_script(monkeypatch, tmp_path, _ExitProc(3, output))
+
+    (tail,) = [r.getMessage() for r in caplog.records if "output tail" in r.getMessage()]
+    logged = tail.split("output tail: ", 1)[1]
+    assert len(logged) == cap + 2  # the cap, plus the two quotes %r adds
+    assert "a" * 8 not in logged
 
 
 class _CancelledProc:
