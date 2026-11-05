@@ -491,7 +491,12 @@ def _mount_team_lead_dispatch(config: dict) -> None:
 
     The verbs auto-approved on them are the goal conductor's own tuples,
     ``_CONDUCTOR_DASHBOARD_GRANTS`` and ``_LEDGER_CONDUCTOR_WORK_GRANTS``, reused
-    rather than restated. The installer writes the result through the shared tail
+    rather than restated. ``tool_search`` is auto-approved beside them on the
+    conductor's rule (``conductor_agents._conductor_shipped``): with MCP Tool Search
+    active those verbs are deferred, so the load that reaches them must not prompt
+    first. It only reads a tool spec into context and is bounded by the mounted
+    catalog. It is granted only when the inherited ``tools`` mount it, so an
+    operator who removed the loader gets no dead grant. The installer writes the result through the shared tail
     (``auto_approve.write_governed_spec``), which puts the whole ``allowedTools`` list
     back through the governance ceiling, strips every inherited server's ungoverned
     ``autoApprove`` and derives the KAS ``permissions`` block from the filtered list,
@@ -510,7 +515,12 @@ def _mount_team_lead_dispatch(config: dict) -> None:
             tools.append(ref)
     config["tools"] = tools
     allowed = [t for t in config.get("allowedTools") or [] if isinstance(t, str)]
-    grants = (*agent_mod._CONDUCTOR_DASHBOARD_GRANTS, *agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS)
+    loader = ("tool_search",) if {"tool_search", "*"} & set(tools) else ()
+    grants = (
+        *loader,
+        *agent_mod._CONDUCTOR_DASHBOARD_GRANTS,
+        *agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS,
+    )
     config["allowedTools"] = list(dict.fromkeys((*allowed, *grants)))
 
 
@@ -581,12 +591,18 @@ def _install_team_lead_agent() -> None:
         "other one, and patrols that fleet."
     )
     config["prompt"] = agent_mod._TEAM_LEAD_SYSTEM_PROMPT
-    # The three skills this agent is told to read: ``team-lead`` ("read it before
-    # acting on a goal"), ``goal-conductor`` for the patrol procedure the charter
-    # shares with the conductors, and ``dashboard`` because a lead is a crewmate and
-    # the crewmate protocol sends it there to change its own page. Without the
-    # mapping its search scope is empty and none of the three can be found.
-    skill_resources.map_prompt_skills(config, "team-lead", "goal-conductor", "dashboard")
+    # The skills this agent is told to read: ``team-lead`` ("read it before acting on
+    # a goal"), ``goal-conductor`` for the patrol procedure the charter shares with
+    # the conductors, and ``dashboard`` because a lead is a crewmate and the crewmate
+    # protocol sends it there to change its own page. ``widgets`` / ``living-ui`` /
+    # ``artifacts`` are how it draws in the dashboard chat, as the conductor does:
+    # the widget pointer its contract block carries on that surface
+    # (``context_assembly.agent_spec.WIDGET_BLOCK_AGENTS``) names ``widgets`` and
+    # ``artifacts``, and ``widgets`` sends a moving picture on to ``living-ui``.
+    # Without the mapping its search scope is empty and none of them can be found.
+    skill_resources.map_prompt_skills(
+        config, "team-lead", "goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"
+    )
     _mount_team_lead_dispatch(config)
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _TEAM_LEAD_AGENT_FILENAME
