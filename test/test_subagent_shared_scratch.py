@@ -38,8 +38,17 @@ _UNALLOCATABLE_PID = 99_999_999_999
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 
-@pytest.fixture
-def scratch_root(monkeypatch, tmp_path: Path) -> Path:
+@pytest.fixture(autouse=True)
+def isolated_tree_bindings(_floor_monkeypatch) -> None:
+    _floor_monkeypatch.setattr(sc, "_TREE_INDEX_LIVE", {})
+    _floor_monkeypatch.setattr(sc, "_TREE_INDEX_TICKETS", {})
+    _floor_monkeypatch.setattr(sc, "_TREE_INDEX_UNPERSISTED", set(), raising=False)
+    _floor_monkeypatch.setattr(sc, "_TREE_INDEX_RETIRED_TICKET", -1, raising=False)
+    _floor_monkeypatch.setattr(sc, "_TREE_INDEX_DISK_SNAPSHOT", None, raising=False)
+
+
+@pytest.fixture(name="scratch_root")
+def scratch_root_fixture(monkeypatch, tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(sc, "config_dir", lambda: home)

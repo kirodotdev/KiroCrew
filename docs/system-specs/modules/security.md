@@ -4,6 +4,20 @@
 
 Kiro Crew implements defense-in-depth security across multiple layers: OS-level process isolation, credential path protection, input/output validation, authentication, authorization, and audit logging. This document consolidates all security controls and the vulnerabilities they address.
 
+### Scratch tree index
+
+The `.trees.json` file in the data home's `scratch` directory maps session keys
+to work directories. The scratch root is masked from sandboxed agents.
+
+Before publishing a session SID, a failed binding write must leave no persisted
+row for that key. Retirement preserves a matching live binding for same-process
+resumes, but allocation fails closed if the disk row cannot be confirmed absent.
+An index that cannot be opened, or is a link, refuses startup on this path; a
+missing, malformed or oversized index reads as empty. The allocation error names
+the index path. The operator must repair its permissions or storage, or remove
+the index, then retry. Removing it loses persisted scratch bindings for all keys;
+it does not delete their work trees.
+
 ### MCP launch authorization leaves
 
 The `approvals.json` file in the crew-home `mcp-launch-approvals/` directory
