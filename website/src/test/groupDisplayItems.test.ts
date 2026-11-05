@@ -669,3 +669,61 @@ describe('applyRunningState', () => {
     }
   })
 })
+
+describe('groupDisplayItems — turn-dispatching inject rows', () => {
+  const inject = (injectKind: string | undefined, content = `[${injectKind ?? 'note'}]`): ChatMessage =>
+    ({ role: 'inject', content, cls: '', meta: injectKind ? { injectKind } : {} } as unknown as ChatMessage)
+  /** The rows a display item holds, as their content. */
+  const rowsOf = (t: DisplayItem): string[] =>
+    isTurn(t)
+      ? (t as unknown as { items: { kind: string; msg?: ChatMessage; msgs?: ChatMessage[] }[] }).items
+        .flatMap(i => (i.kind === 'group' ? (i.msgs ?? []) : [i.msg as ChatMessage]).map(m => m.content))
+      : [(t as unknown as { msg: ChatMessage }).msg.content]
+
+  it('gives each cron delivery its own turn on a session with no typed prompts', () => {
+    // A patrol session is driven by cron deliveries alone. Grouped as one turn,
+    // every wake after the last typed prompt is a single item the virtualizer
+    // mounts whole.
+    const wakes = 200
+    const messages: ChatMessage[] = [msg('user', 'start the patrol')]
+    for (let w = 0; w < wakes; w++) {
+      messages.push(inject('cron', `wake ${w}`), msg('tool', `check ${w}`), msg('assistant', `report ${w}`))
+    }
+    const { turns } = groupDisplayItems(messages)
+    const largest = Math.max(...turns.map(t => rowsOf(t).length))
+    expect(largest).toBeLessThanOrEqual(2)
+    // Each wake's reply sits right below its own delivery, never with another wake's.
+    for (let w = 0; w < wakes; w++) {
+      const at = turns.findIndex(t => rowsOf(t).includes(`wake ${w}`))
+      expect(rowsOf(turns[at])).toEqual([`wake ${w}`])
+      expect(rowsOf(turns[at + 1])).toEqual([`check ${w}`, `report ${w}`])
+    }
+  })
+
+  it.each(['cron', 'mcp_app', 'automation_notice'])('opens a turn at a %s inject', (kind) => {
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'), ...workingTurn(),
+      inject(kind, 'delivery'), msg('tool', 't2'), msg('assistant', 'reply'),
+    ])
+    const at = turns.findIndex(t => rowsOf(t).includes('delivery'))
+    expect(rowsOf(turns[at])).toEqual(['delivery'])
+    expect(rowsOf(turns[at - 1])).not.toContain('reply')
+    expect(rowsOf(turns[at + 1])).toEqual(['t2', 'reply'])
+  })
+
+  it.each([
+    ['recovery', 'recovery'],
+    ['user_replay', 'user_replay'],
+    ['note', undefined],
+  ])('keeps a %s inject inside the turn it continues', (_label, kind) => {
+    // A recovery or a replayed prompt resumes the turn above it, and a note
+    // (no injectKind) dispatches nothing, so none of them starts a turn.
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'), msg('assistant', 'a'), msg('tool', 't'),
+      inject(kind, 'continuation'), msg('tool', 't2'), msg('assistant', 'b'),
+    ])
+    const holder = turns.find(t => rowsOf(t).includes('continuation'))
+    expect(holder && isTurn(holder)).toBe(true)
+    expect(rowsOf(holder as DisplayItem)).toEqual(['a', 't', 'continuation', 't2', 'b'])
+  })
+})

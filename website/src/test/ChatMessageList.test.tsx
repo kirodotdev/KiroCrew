@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import React, { type ReactNode } from 'react'
 import type { ChatMessage } from '../types'
-import type { TurnItem } from '../pages/chat/types'
+import type { DisplayItem, TurnItem } from '../pages/chat/types'
 
 // ── Mocks for heavy child components ──
 // Each mock types only the props it actually reads.
@@ -461,6 +461,89 @@ describe('ChatMessageList', () => {
       render(<ChatMessageList messages={[handAdded]} running={false} hideCardOwnedOAuth />)
       expect(screen.getByRole('link', { name: /Authorize my-remote/i })).toBeInTheDocument()
     })
+  })
+})
+
+describe('ChatMessageList — turn-dispatching inject rows', () => {
+  const cron = (content: string) => msg('inject', content, { meta: { injectKind: 'cron' } } as Partial<ChatMessage>)
+  const contents = (it: DisplayItem): string[] =>
+    it.kind === 'turn'
+      ? it.items.flatMap(t => (t.kind === 'group' ? t.msgs : [t.msg]).map(m => m.content))
+      : [(it as { msg: ChatMessage }).msg.content]
+
+  it('gives each cron delivery its own turn', () => {
+    const onDisplayItems = vi.fn<(items: DisplayItem[]) => void>()
+    render(
+      <ChatMessageList
+        messages={[
+          msg('user', 'watch it'),
+          cron('wake 1'), msg('tool', 'check 1'), msg('assistant', 'report 1'),
+          cron('wake 2'), msg('tool', 'check 2'), msg('assistant', 'report 2'),
+        ]}
+        running={false}
+        onDisplayItems={onDisplayItems}
+      />,
+    )
+    const items = onDisplayItems.mock.calls.at(-1)?.[0] ?? []
+    const rows = items.map(contents)
+    expect(rows).toContainEqual(['wake 1'])
+    expect(rows).toContainEqual(['check 1', 'report 1'])
+    expect(rows).toContainEqual(['wake 2'])
+    expect(rows).toContainEqual(['check 2', 'report 2'])
+  })
+
+  it('keeps a synthesis row at the head of its answer turn', () => {
+    const onDisplayItems = vi.fn<(items: DisplayItem[]) => void>()
+    render(
+      <ChatMessageList
+        messages={[
+          msg('user', 'q'),
+          msg('inject', 'synthesise', { meta: { injectKind: 'synthesis' } } as Partial<ChatMessage>),
+          msg('tool', 't'), msg('assistant', 'answer'),
+        ]}
+        running={false}
+        onDisplayItems={onDisplayItems}
+      />,
+    )
+    const rows = (onDisplayItems.mock.calls.at(-1)?.[0] ?? []).map(contents)
+    expect(rows).toContainEqual(['synthesise', 't', 'answer'])
+  })
+
+  it('starts a new turn at a synthesis row that follows another reply', () => {
+    // The last completion's reply is still open when the runner appends the
+    // synthesis row; the synthesis turn must not join that reply's turn.
+    const onDisplayItems = vi.fn<(items: DisplayItem[]) => void>()
+    render(
+      <ChatMessageList
+        messages={[
+          msg('user', 'q'), msg('tool', 'spawn'), msg('assistant', 'completion reply'),
+          msg('inject', 'synthesise', { meta: { injectKind: 'synthesis' } } as Partial<ChatMessage>),
+          msg('tool', 't'), msg('assistant', 'answer'),
+        ]}
+        running={false}
+        onDisplayItems={onDisplayItems}
+      />,
+    )
+    const rows = (onDisplayItems.mock.calls.at(-1)?.[0] ?? []).map(contents)
+    expect(rows).toContainEqual(['spawn', 'completion reply'])
+    expect(rows).toContainEqual(['synthesise', 't', 'answer'])
+  })
+
+  it('keeps a recovery inject inside the turn it continues', () => {
+    const onDisplayItems = vi.fn<(items: DisplayItem[]) => void>()
+    render(
+      <ChatMessageList
+        messages={[
+          msg('user', 'q'), msg('tool', 't1'),
+          msg('inject', 'resume', { meta: { injectKind: 'recovery' } } as Partial<ChatMessage>),
+          msg('tool', 't2'), msg('assistant', 'a'),
+        ]}
+        running={false}
+        onDisplayItems={onDisplayItems}
+      />,
+    )
+    const rows = (onDisplayItems.mock.calls.at(-1)?.[0] ?? []).map(contents)
+    expect(rows).toContainEqual(['t1', 'resume', 't2', 'a'])
   })
 })
 
