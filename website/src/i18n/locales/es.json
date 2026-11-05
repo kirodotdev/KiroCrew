@@ -13191,6 +13191,7 @@
         "steer_queue_instead": "Poner en cola",
         "show_full_message": "Mostrar mensaje completo",
         "hide_full_message": "Ocultar mensaje completo",
+        "sent_by_script": "Enviado por un script",
         "steer_take_back_more": "Editar o deshacer el envío",
         "steer_unsend_in_flight": "Anulando el envío…",
         "steer_edit_in_flight": "Devolviéndolo a tu cuadro de mensaje…",

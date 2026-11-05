@@ -12599,6 +12599,7 @@
         "steer_queue_instead": "代わりにキューに追加",
         "show_full_message": "メッセージ全文を表示",
         "hide_full_message": "メッセージ全文を隠す",
+        "sent_by_script": "スクリプトから送信",
         "steer_take_back_more": "編集または送信を取り消す",
         "steer_unsend_in_flight": "送信を取り消しています…",
         "steer_edit_in_flight": "メッセージ欄に戻しています…",

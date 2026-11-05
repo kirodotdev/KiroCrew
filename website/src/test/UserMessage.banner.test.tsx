@@ -48,6 +48,14 @@ describe('UserMessage banner', () => {
     expect(screen.getByTestId('rendered-content').textContent).toBe(FULL)
   })
 
+  it('marks a banner row as sent by a script, above the label', () => {
+    renderRow({ banner: LABEL })
+
+    const marker = screen.getByTestId('user-message-banner-from')
+    expect(marker.textContent).toBe('Sent by a script')
+    expect(marker.compareDocumentPosition(screen.getByTestId('user-message-banner')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it.each([undefined, {}, { banner: '   ' }, { banner: 42 }])(
     'renders the content as before without a usable label (%o)',
     meta => {
@@ -55,6 +63,7 @@ describe('UserMessage banner', () => {
 
       expect(screen.getByTestId('rendered-content').textContent).toBe(FULL)
       expect(screen.queryByTestId('user-message-banner')).toBeNull()
+      expect(screen.queryByTestId('user-message-banner-from')).toBeNull()
     },
   )
 })

@@ -12895,6 +12895,7 @@
         "steer_queue_instead": "Stattdessen einreihen",
         "show_full_message": "Ganze Nachricht anzeigen",
         "hide_full_message": "Ganze Nachricht ausblenden",
+        "sent_by_script": "Von einem Skript gesendet",
         "steer_take_back_more": "Bearbeiten oder zurückholen",
         "steer_unsend_in_flight": "Wird zurückgeholt…",
         "steer_edit_in_flight": "Wird zurück in dein Eingabefeld geholt…",

@@ -13191,6 +13191,7 @@
         "steer_queue_instead": "Metti in coda",
         "show_full_message": "Mostra messaggio completo",
         "hide_full_message": "Nascondi messaggio completo",
+        "sent_by_script": "Inviato da uno script",
         "steer_take_back_more": "Modifica o annulla invio",
         "steer_unsend_in_flight": "Annullamento dell’invio…",
         "steer_edit_in_flight": "Spostamento nella tua casella del messaggio…",
