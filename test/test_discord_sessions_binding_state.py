@@ -961,7 +961,11 @@ class TestPersistenceFailureIsFailClosed:
         """Corruption read as "no records" says never-attached, so the turn runs
         natively -- this bug's fail-open form."""
         path = _store_path()
-        path.write_bytes(payload) if isinstance(payload, bytes) else path.write_text(payload)
+        (
+            path.write_bytes(payload)
+            if isinstance(payload, bytes)
+            else path.write_text(payload, encoding="utf-8")
+        )
         store = resume_expectation.ResumeExpectations("discord")
         if loads:
             record = await store.get("c1")

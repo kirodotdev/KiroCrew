@@ -764,7 +764,7 @@ class TestTheVersionProbeItself:
         from kiro_crew import kiro_cli
 
         binary = tmp_path / "kiro-cli"
-        binary.write_text("")
+        binary.write_text("", encoding="utf-8")
         monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
         monkeypatch.setattr(kiro_cli, "_version_cache", {})
         calls: list[dict] = []

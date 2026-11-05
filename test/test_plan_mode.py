@@ -116,7 +116,7 @@ class TestPlan:
     @pytest.mark.asyncio
     async def test_plan_from_file(self, tmp_path: Path) -> None:
         spec_file = tmp_path / "spec.md"
-        spec_file.write_text("# File Spec\nDo things")
+        spec_file.write_text("# File Spec\nDo things", encoding="utf-8")
         runner = _make_runner(tmp_path, [{"title": "S1"}])
         run = await runner.plan("", source="file", spec_path=str(spec_file))
         assert run.spec_content == "# File Spec\nDo things"

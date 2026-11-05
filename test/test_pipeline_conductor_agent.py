@@ -1168,7 +1168,9 @@ class TestFleetProbe(FleetProbeHarness):
         are rejected as malformed config before any file is touched."""
         mod = self._mod()
         outside = tmp_path / "outside.jsonl"
-        outside.write_text(json.dumps({"role": "assistant", "content": "GREEN: leak"}) + "\n")
+        outside.write_text(
+            json.dumps({"role": "assistant", "content": "GREEN: leak"}) + "\n", encoding="utf-8"
+        )
         for bad in ("../outside", "/etc/hostname", "a/b"):
             cfg = self._config(tmp_path, monkeypatch, [bad])
             assert mod.main(["--config", str(cfg)]) == 2, bad

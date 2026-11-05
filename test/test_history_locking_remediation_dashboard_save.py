@@ -756,7 +756,9 @@ class TestForeignFoldMidIdentity:
 
         def scan(*disk):
             lines = [json.dumps({"_type": "metadata", "created": "2026-01-01T00:00:00Z"})]
-            path.write_text("\n".join(lines + [json.dumps(e) for e in disk]) + "\n")
+            path.write_text(
+                "\n".join(lines + [json.dumps(e) for e in disk]) + "\n", encoding="utf-8"
+            )
             slot._frozen_prefix_cache = None  # what a _MAX_SLOT_MESSAGES trim does
             caplog.clear()
             _p, foreign, _d = _frozen_prefix_and_foreign_appends(

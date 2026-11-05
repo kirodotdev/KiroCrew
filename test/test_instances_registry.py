@@ -192,7 +192,7 @@ class TestValidatorsRejectEmbeddedNewlines:
                 / "instances"
                 / f"{mod}.py"
             )
-            for line in path.read_text().splitlines():
+            for line in path.read_text(encoding="utf-8").splitlines():
                 stripped = line.strip()
                 if stripped.startswith("#"):
                     continue

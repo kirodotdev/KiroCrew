@@ -1203,7 +1203,7 @@ class TestWheelUpdateCommandPropagatesDownloadFailure:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         fake_curl = bin_dir / "curl"
-        fake_curl.write_text("#!/bin/sh\nexit 6\n")
+        fake_curl.write_text("#!/bin/sh\nexit 6\n", encoding="utf-8")
         fake_curl.chmod(0o755)
 
         with patch(
@@ -1700,7 +1700,7 @@ class TestInstallerNeverLandsOnDisk:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         fake_curl = bin_dir / "curl"
-        fake_curl.write_text("#!/bin/sh\nexit 6\n")
+        fake_curl.write_text("#!/bin/sh\nexit 6\n", encoding="utf-8")
         fake_curl.chmod(0o755)
 
         with patch(
@@ -1740,7 +1740,7 @@ class TestPosixOnlyMarkerIsNotForgotten:
         import pathlib as _pathlib
         import re
 
-        lines = _pathlib.Path(__file__).read_text().splitlines()
+        lines = _pathlib.Path(__file__).read_text(encoding="utf-8").splitlines()
         # (line index, name) for every test function, plus the class it sits in.
         current_class = ""
         tests: list[tuple[int, str, str]] = []

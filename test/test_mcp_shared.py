@@ -529,7 +529,7 @@ class TestRespondStdoutFdSnapshot:
     @contextlib.contextmanager
     def _devnull_over_fd1(self):
         """Mimic ``suppress_stdout_stderr``: swap fd 1 AND the sys.stdout object."""
-        devnull = open(os.devnull, "w")
+        devnull = open(os.devnull, "w", encoding="utf-8")
         saved_fd = os.dup(1)
         saved_obj = sys.stdout
         os.dup2(devnull.fileno(), 1)

@@ -100,7 +100,7 @@ def test_user_kiro_hooks_follow_the_policy_in_enterprise(
     monkeypatch.setattr(governance_profiles, "governance_permits", _answer)
     script = tmp_path / "hooks" / "a.sh"
     script.parent.mkdir()
-    script.write_text("#!/bin/sh\nexit 0\n")
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     script.chmod(0o755)
     config: dict = {"hooks": {}}
     mc_cfg = {
