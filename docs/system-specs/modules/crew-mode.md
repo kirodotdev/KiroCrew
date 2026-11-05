@@ -3750,8 +3750,14 @@ is a 1:1 thread with one speaker besides the user, and the DM header's identity
 chip already names that speaker (#16617 retired the per-run author line #15167
 had made redundant); for assistive tech each message row is a `group`
 labelled with the Bot's name, which draws nothing. Every message is its
-own FILLED gray bubble (`.crewmate-bubble`, no border, `max-w-[72ch]`) in the full
-text column, left-aligned; the user's bubble opposite is filled with the theme
+own FILLED gray bubble (`.crewmate-bubble`, no border, `max-w-full`) in the full
+text column, left-aligned; in the transcript the bubble spans that column, which
+the transcript row clamps to `--mc-content-width`, so Settings → Chat → Content
+Width sets its maximum width as it sets the user's bubble's (#30200), and a
+Bot's change card or guide offer takes the same width (the reply-thread panel
+has no Content Width clamp, so its Bot column holds a 72ch reading measure at
+the bubble's 13px, and a long thread reply stops there); the user's bubble
+opposite is filled with the theme
 ACCENT (`bg-accent` / `text-accent-fg`, the `tone="accent"` variant of
 `UserMessage`), the iMessage pairing #17839 chose, so colour tells the two
 speakers apart before alignment does. The `user` entry that carries the tone is

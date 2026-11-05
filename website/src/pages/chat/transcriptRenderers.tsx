@@ -587,8 +587,8 @@ export function createTranscriptRenderers(
         const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscriptOf())
         return ctx.row(
           <CrewmateMessage pos={pos}>
-            {/* Same cap as a crewmate bubble (72ch at the message font size). */}
-            <div className="max-w-[72ch]" style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}>
+            {/* As wide as a crewmate bubble: the content column (--mc-content-width). */}
+            <div className="max-w-full" style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}>
               <CardCornersContext.Provider value={crewmateCornerClass(pos)}>
                 <CardAuthorContext.Provider value={crewmate.label || crewmate.name}>
                   <ConversationCard message={m} slot={o.slot} />
