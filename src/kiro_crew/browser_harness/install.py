@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -302,48 +303,69 @@ def _install_harness(
         raise InstallError(STAGE_PREPARING, f"lock file missing: {LOCK_FILE}")
     # The prefix exists before either spawn: it is the children's working directory.
     prefix.mkdir(parents=True, exist_ok=True)
+    # Interpreters differ in which half of pip they ship: the packaged app has
+    # ``pip`` but no ``ensurepip``; the Toolbox runtime has ``ensurepip`` but no
+    # ``pip``. With the gateway's pip, the venv is made ``--without-pip`` and that
+    # pip installs into it (``--python``). Without it, the venv bootstraps its own
+    # pip through ``ensurepip`` (offline, bundled wheel) and installs with that.
+    gateway_pip = _has_module("pip")
+    if not gateway_pip and not _has_module("ensurepip"):
+        raise InstallError(
+            STAGE_PREPARING,
+            f"{sys.executable} has neither pip nor ensurepip; cannot install packages",
+        )
     state = install_state(prefix.parent)
     python = venv_python(prefix)
-    if not state.python or state.version != HARNESS_VERSION:
+    # Without the gateway's pip the venv must carry its own: a venv left by an
+    # earlier ``--without-pip`` run has none, so it is rebuilt.
+    if (
+        not state.python
+        or state.version != HARNESS_VERSION
+        or (not gateway_pip and not _venv_has_pip(prefix))
+    ):
+        # The marker goes first: a rebuild that fails part-way must read as
+        # "not installed", never as a finished install of a venv now cleared.
+        (prefix / MARKER_FILE).unlink(missing_ok=True)
         notify(STAGE_CREATING_VENV, str(prefix))
         # ``--clear`` empties the venv directory, and only it: Chromium lives in
         # ``<prefix>/chromium``, beside ``<prefix>/venv``, and is not touched.
-        # ``--without-pip``: the packaged interpreter ships pip but not
-        # ``ensurepip``, so a venv that bootstraps its own pip dies. The gateway's
-        # pip installs into the venv instead (``--python`` below).
-        _step(
-            run,
-            [
-                sys.executable,
-                *_ISOLATED,
-                "-m",
-                "venv",
-                "--clear",
-                "--without-pip",
-                str(venv_dir(prefix)),
-            ],
-            _VENV_TIMEOUT_SECS,
-            STAGE_CREATING_VENV,
-        )
+        venv_argv = [sys.executable, *_ISOLATED, "-m", "venv", "--clear"]
+        if gateway_pip:
+            venv_argv.append("--without-pip")
+        venv_argv.append(str(venv_dir(prefix)))
+        _step(run, venv_argv, _VENV_TIMEOUT_SECS, STAGE_CREATING_VENV)
     notify(STAGE_INSTALLING_HARNESS, HARNESS_VERSION)
+    if gateway_pip:
+        pip_argv = [sys.executable, *_ISOLATED, "-m", "pip", "--python", str(python)]
+    else:
+        pip_argv = [str(python), *_ISOLATED, "-m", "pip"]
     _step(
         run,
-        [
-            sys.executable,
-            *_ISOLATED,
-            "-m",
-            "pip",
-            "--python",
-            str(python),
-            *_PIP_ARGS,
-            str(LOCK_FILE),
-        ],
+        [*pip_argv, *_PIP_ARGS, str(LOCK_FILE)],
         _PIP_TIMEOUT_SECS,
         STAGE_INSTALLING_HARNESS,
     )
     _check_stop(stop, STAGE_INSTALLING_HARNESS)
     marker = {"version": HARNESS_VERSION, "lock_sha256": lock_digest(), "python": str(python)}
     (prefix / MARKER_FILE).write_text(json.dumps(marker, indent=2), encoding="utf-8")
+
+
+def _has_module(name: str) -> bool:
+    """Whether the gateway interpreter can import ``name`` (no subprocess)."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _venv_has_pip(prefix: Path) -> bool:
+    """Whether the venv under *prefix* holds its own ``pip`` package (no spawn)."""
+    venv = venv_dir(prefix)
+    pattern = "Lib/site-packages/pip" if IS_WINDOWS else "lib/python*/site-packages/pip"
+    try:
+        return any(p.is_dir() for p in venv.glob(pattern))
+    except OSError:
+        return False
 
 
 def _step(
