@@ -705,6 +705,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // An app-drawn session (contributes.sessionKinds) shows the app's pane in place
   // of the transcript and composer, or its transcript read-only when the app cannot.
   const sessionKindView = useSessionKindView(currentSlot)
+  // A doc, board, codebase or dashboard page opens a session it links to (a session
+  // card, a mention, a worker's reply) as a click on a listed session does.
+  const openPageSession = useCallback((key: string) => {
+    void dispatch(switchSlot({ key, announceOnMissing: true, gesture: true }))
+  }, [dispatch])
   const transcriptProjectDir = useChatProjectDir(currentSlot)
   // The thread header carries the same session colour as the sidebar row, read
   // from the same display roster so a scope switch does not blank it.
@@ -1168,12 +1173,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // A doc session: the pane is the document (or the whiteboard, for a
               // board), with no transcript or composer.
               isBoardId(currentSlot.doc)
-                ? <BoardPane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} />
+                ? <BoardPane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} onOpenSession={openPageSession} />
                 : isDashboardId(currentSlot.doc)
-                ? <DashboardPane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} />
+                ? <DashboardPane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} onOpenSession={openPageSession} />
                 : isCodebaseId(currentSlot.doc)
-                ? <Suspense fallback={<div className="flex-1" />}><CodebasePane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} project={currentSlot.project} /></Suspense>
-                : <DocPane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} />
+                ? <Suspense fallback={<div className="flex-1" />}><CodebasePane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} onOpenSession={openPageSession} project={currentSlot.project} /></Suspense>
+                : <DocPane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} onOpenSession={openPageSession} />
             ) : sessionKindView.state === 'pane' ? (
               <AppSessionPane
                 key={`${sessionKindView.slotKey}:${sessionKindView.binding.object}`}

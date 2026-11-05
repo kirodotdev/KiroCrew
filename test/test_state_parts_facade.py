@@ -453,6 +453,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_dismissed_source_links": ("value", "set()"),
     "_dismissed_txn_depth": ("value", "0"),
     "_dismissed_txn_pending": ("value", "set()"),
+    "_doc": ("value", "''"),
     "_dropped_note_ids": ("value", "set()"),
     "_eager_spawn_failures": ("value", "0"),
     "_eager_spawn_retry_at": ("value", "0.0"),

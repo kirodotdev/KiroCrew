@@ -17,9 +17,8 @@ import CrewApprovalCards from '../../../../components/crew/CrewApprovalCards'
 import ErrorNotice from '../../../../components/ErrorNotice'
 import { sendTurn } from '../../../../chat-core/transport/sendTurn'
 import { i18nT } from '../../../../i18n/t'
-import { useAppDispatch, useAppSelector } from '../../../../store'
-import { switchSlot } from '../../../../store/chatSlice'
-import { selectSlotMessages } from '../../../../store/chat/selectors'
+import { useAppSelector } from '../../../../store'
+import { selectSlotMessages } from '../../../../store/chatSlice'
 import { slotRowByKey } from '../../../../store/slotIndex'
 import { toApiDecision } from '../../../../utils/approvalDecision'
 import DocAnswer from '../DocAnswer'
@@ -84,8 +83,8 @@ function Segmented<T extends string>({ value, options, onChange, testid }: { val
   )
 }
 
-export default function CodebasePane({ docId, slotKey, title, approvalMode, project }: { docId: string; slotKey: string; title?: string; approvalMode?: string; project?: string }) {
-  const dispatch = useAppDispatch()
+/** `onOpenSession` opens a session the model links to; the page switches slots, never a pane. */
+export default function CodebasePane({ docId, slotKey, title, approvalMode, project, onOpenSession }: { docId: string; slotKey: string; title?: string; approvalMode?: string; project?: string; onOpenSession: (key: string) => void }) {
   const [sessionOpen, setSessionOpen] = useState(false)
   const [load, setLoad] = useState<'loading' | 'ready' | { failed: string }>('loading')
   const [doc, setDoc] = useState<CodebaseDoc>(() => parseCodebaseDoc(''))
@@ -200,7 +199,7 @@ export default function CodebasePane({ docId, slotKey, title, approvalMode, proj
     const replies = threads[id]?.messages.filter(m => m.who === 'conductor').length ?? 0
     if ((readCounts[id] ?? 0) !== replies) setReadCounts({ ...readCounts, [id]: replies })
   }
-  const openSession = (key: string) => { void dispatch(switchSlot({ key, announceOnMissing: true, gesture: true })) }
+  const openSession = onOpenSession
 
   const send = (id: string, request: string, nodeIds: string[], followUp: boolean) => {
     if (!modelRef.current) return

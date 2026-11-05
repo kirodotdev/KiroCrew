@@ -17,9 +17,8 @@ import CrewApprovalCards from '../../../../components/crew/CrewApprovalCards'
 import ErrorNotice from '../../../../components/ErrorNotice'
 import { sendTurn } from '../../../../chat-core/transport/sendTurn'
 import { i18nT } from '../../../../i18n/t'
-import { useAppDispatch, useAppSelector } from '../../../../store'
-import { switchSlot } from '../../../../store/chatSlice'
-import { selectSlotMessages } from '../../../../store/chat/selectors'
+import { useAppSelector } from '../../../../store'
+import { selectSlotMessages } from '../../../../store/chatSlice'
 import { slotRowByKey } from '../../../../store/slotIndex'
 import { runsCrewMode } from '../../../../lib/crewMode'
 import { toApiDecision } from '../../../../utils/approvalDecision'
@@ -73,8 +72,8 @@ function useLocalRecord<T>(key: string, empty: T): [T, (next: T) => void] {
   return [value, write]
 }
 
-export default function BoardPane({ docId, slotKey, title, approvalMode }: { docId: string; slotKey: string; title?: string; approvalMode?: string }) {
-  const dispatch = useAppDispatch()
+/** `onOpenSession` opens a session the board links to; the page switches slots, never a pane. */
+export default function BoardPane({ docId, slotKey, title, approvalMode, onOpenSession }: { docId: string; slotKey: string; title?: string; approvalMode?: string; onOpenSession: (key: string) => void }) {
   const [sessionOpen, setSessionOpen] = useState(false)
   const [load, setLoad] = useState<'loading' | 'ready' | { failed: string }>('loading')
   const [board, setBoard] = useState<Board>(() => parseBoard(''))
@@ -171,7 +170,7 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
       else if (r.status === 'transport-error') setSendError(i18nT('pages.chatPage.send_failed'))
     })
   }
-  const openSession = (key: string) => { void dispatch(switchSlot({ key, announceOnMissing: true, gesture: true })) }
+  const openSession = onOpenSession
   const markRead = (id: string) => {
     const replies = threads[id]?.messages.filter(m => m.who === 'conductor').length ?? 0
     if ((readCounts[id] ?? 0) !== replies) setReadCounts({ ...readCounts, [id]: replies })

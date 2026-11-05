@@ -14,6 +14,7 @@
  * - Graph: folders as spheres, joined where their files import each other, laid
  *   out by a small force simulation.
  */
+import type { CodebaseScanResponse } from '../../../../api/client/chat'
 
 export const CODEBASE_ID_PREFIX = 'c0deb'
 export const isCodebaseId = (docId: string) => docId.startsWith(CODEBASE_ID_PREFIX)
@@ -54,18 +55,8 @@ export const serializeCodebaseDoc = (d: CodebaseDoc) => JSON.stringify(d, null, 
 
 // ---- the scan ------------------------------------------------------------------------
 
-export interface CodebaseScanResponse {
-  unchanged?: boolean
-  sig: string
-  root?: string
-  branch?: string
-  head?: string
-  langs?: string[]
-  /** `[path, lines, lang index, mtime ms]` */
-  files?: [string, number, number, number][]
-  edges?: [number, number][]
-  truncated?: boolean
-}
+// The scan's wire shape lives with its endpoint; re-exported for the model's readers.
+export type { CodebaseScanResponse }
 
 export interface FileNode { index: number; path: string; dir: string; lines: number; lang: string; mtime: number }
 export interface DirInfo { path: string; files: number; lines: number }

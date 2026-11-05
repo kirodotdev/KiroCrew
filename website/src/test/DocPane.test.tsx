@@ -27,6 +27,7 @@ import { parseMarkers } from '../pages/chat/page/docConductor'
 import { cycleDirection, shortLabel, stepId } from '../pages/chat/page/ConversationBar'
 import { DOC_ICONS } from '../pages/chat/page/docMeta'
 import { resetCrewModeCatalog, setCrewModeCatalog } from '../lib/crewMode'
+import { turnOnCrewModePreview } from './crewModePreview'
 
 const getDoc = api.getDoc as unknown as ReturnType<typeof vi.fn>
 const saveDoc = api.saveDoc as unknown as ReturnType<typeof vi.fn>
@@ -550,6 +551,8 @@ describe('DocPane', () => {
 
   it('the page picks Plain or Crew before it is asked anything, and the choice is fixed after', async () => {
     getDoc.mockResolvedValue({ content: '# Plan\n', version: 'v1' })
+    // Crew Mode is a feature preview, default off: a page reads Crew only with it on.
+    turnOnCrewModePreview()
     // The gateway's catalog names its conductors; the page reads Crew Mode from it.
     setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
     onTestFinished(() => resetCrewModeCatalog())

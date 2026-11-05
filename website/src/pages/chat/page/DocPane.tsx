@@ -19,9 +19,8 @@ import CrewApprovalCards from '../../../components/crew/CrewApprovalCards'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { i18nT } from '../../../i18n/t'
-import { useAppDispatch, useAppSelector } from '../../../store'
-import { switchSlot } from '../../../store/chatSlice'
-import { selectSlotMessages } from '../../../store/chat/selectors'
+import { useAppSelector } from '../../../store'
+import { selectSlotMessages } from '../../../store/chatSlice'
 import { slotRowByKey } from '../../../store/slotIndex'
 import { toApiDecision } from '../../../utils/approvalDecision'
 import DocEditor from './DocEditor'
@@ -74,8 +73,8 @@ function useLocalRecord<T>(key: string, empty: T): [T, (next: T) => void] {
   return [value, write]
 }
 
-export default function DocPane({ docId, slotKey, title, approvalMode }: { docId: string; slotKey: string; title?: string; approvalMode?: string }) {
-  const dispatch = useAppDispatch()
+/** `onOpenSession` opens a session the page links to; the page switches slots, never a pane. */
+export default function DocPane({ docId, slotKey, title, approvalMode, onOpenSession }: { docId: string; slotKey: string; title?: string; approvalMode?: string; onOpenSession: (key: string) => void }) {
   const [load, setLoad] = useState<Load>({ state: 'loading' })
   // The text the editor is seeded with, and a counter that remounts it when the
   // text is replaced from outside (load, "use the other version").
@@ -348,7 +347,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
         else lastSent.current = { title: name, copy: text }
       })
     },
-    openSession: key => { void dispatch(switchSlot({ key, announceOnMissing: true, gesture: true })) },
+    openSession: onOpenSession,
     markRead: id => {
       const replies = threads[id]?.messages.filter(m => m.who === 'conductor').length ?? 0
       if ((readCounts[id] ?? 0) !== replies) setReadCounts({ ...readCounts, [id]: replies })

@@ -12,7 +12,7 @@ import { ChevronDown, ChevronRight, Lock, ScrollText, User, Users, X } from 'luc
 import ApprovalModePicker from '../../../components/ApprovalModePicker'
 import { Btn } from '../../../components/ui'
 import { useAppDispatch, useAppSelector } from '../../../store'
-import { selectSlotMessages } from '../../../store/chat/selectors'
+import { selectSlotMessages } from '../../../store/chatSlice'
 import type { ChatMessage } from '../../../types'
 import { openedThread } from './docThreads'
 import ErrorNotice from '../../../components/ErrorNotice'

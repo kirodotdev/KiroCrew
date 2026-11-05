@@ -21,9 +21,8 @@ import { sendTurn } from '../../../../chat-core/transport/sendTurn'
 import { useSandboxDoc } from '../../../../hooks/useSandboxDoc'
 import { i18nT } from '../../../../i18n/t'
 import { AGENT_PAGE_SANDBOX, readThemeVars } from '../../../../lib/widgetSrcdoc'
-import { useAppDispatch, useAppSelector } from '../../../../store'
-import { switchSlot } from '../../../../store/chatSlice'
-import { selectSlotMessages } from '../../../../store/chat/selectors'
+import { useAppSelector } from '../../../../store'
+import { selectSlotMessages } from '../../../../store/chatSlice'
 import { slotRowByKey } from '../../../../store/slotIndex'
 import { toApiDecision } from '../../../../utils/approvalDecision'
 import ConversationBar, { cycleDirection, stepId, type ConversationItem } from '../ConversationBar'
@@ -81,8 +80,8 @@ const anchorTarget = (anchor: string) => (/^(el|css):/.test(anchor) ? anchor : `
 
 const newAskId = () => Math.random().toString(36).slice(2, 10)
 
-export default function DashboardPane({ docId, slotKey, title, approvalMode }: { docId: string; slotKey: string; title?: string; approvalMode?: string }) {
-  const dispatch = useAppDispatch()
+/** `onOpenSession` opens a session the dashboard links to; the page switches slots, never a pane. */
+export default function DashboardPane({ docId, slotKey, title, approvalMode, onOpenSession }: { docId: string; slotKey: string; title?: string; approvalMode?: string; onOpenSession: (key: string) => void }) {
   const [sessionOpen, setSessionOpen] = useState(false)
   const [load, setLoad] = useState<'loading' | 'ready' | { failed: string }>('loading')
   const [dash, setDash] = useState<Dashboard>(() => parseDashboard(''))
@@ -200,7 +199,7 @@ export default function DashboardPane({ docId, slotKey, title, approvalMode }: {
     const entry = dashRef.current.asks.find(a => a.id === id)
     if (entry) sendFor(entry, text, true)
   }
-  const openSession = (key: string) => { void dispatch(switchSlot({ key, announceOnMissing: true, gesture: true })) }
+  const openSession = onOpenSession
   const markRead = (id: string) => {
     const replies = threads[id]?.messages.filter(m => m.who === 'conductor').length ?? 0
     if ((readCounts[id] ?? 0) !== replies) setReadCounts({ ...readCounts, [id]: replies })

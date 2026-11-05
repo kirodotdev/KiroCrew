@@ -8,7 +8,6 @@
 import type { ChatSlot, ChatSlotDetailResponse, CrewTimeline, CrewWorker, CrewWorkerRecap, SideSnapshot } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
-import type { CodebaseScanResponse } from '../../pages/chat/page/codebase/codebaseModel'
 import { getStoredConsent } from '../../utils/themeConsent'
 import { chatSlotDetailPath } from '../chatSlotPaths'
 import { isLookPreviewFrame } from '../../utils/lookPreview'
@@ -19,6 +18,21 @@ import { takeSessionFolderNotice } from '../../lib/sessionFolderNotice'
 import { noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 import { activeLocale } from '../../i18n/format'
 import type { ClientTransport } from './transport'
+
+/** A codebase session's model, as `GET /api/codebase/scan` sends it
+ *  (`dashboard/codebase_scan.py`), or `{unchanged: true}` while `since` holds. */
+export interface CodebaseScanResponse {
+  unchanged?: boolean
+  sig: string
+  root?: string
+  branch?: string
+  head?: string
+  langs?: string[]
+  /** `[path, lines, lang index, mtime ms]` */
+  files?: [string, number, number, number][]
+  edges?: [number, number][]
+  truncated?: boolean
+}
 
 /** Shared Crew first-submit-wins fields of one send (see `api/sendRace.ts`). */
 export interface SendRaceFields {
