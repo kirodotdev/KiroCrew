@@ -19,6 +19,7 @@ import hmac
 import logging
 import threading
 from dataclasses import dataclass
+from typing import Any
 
 from aiohttp import web
 
@@ -276,6 +277,30 @@ def effective_session_key(slot: _ChatSlot) -> str:
     :func:`session_key_for` for the ones that have no slot YET.
     """
     return session_key_for(slot.key, getattr(slot, "linked_session_key", "") or "")
+
+
+def revoke_slot_trust(state: Any, slot: Any) -> None:
+    """Clear *slot*'s trust and the ``approval_policy`` turn admission cached from it.
+
+    The spawn gate and child tool approval read the policy, not the flag. Slots
+    sharing the session are cleared too, or their next turn writes ``"auto"``
+    back. ``""`` even under yolo: both readers check yolo live. Never raises.
+    """
+    slot._trust = False
+    try:
+        key = effective_session_key(slot)
+        for sibling in list((getattr(state, "_slots", None) or {}).values()):
+            if sibling is not slot and effective_session_key(sibling) == key:
+                sibling._trust = False
+        sessions = getattr(state, "sessions", None)
+        if sessions is not None:
+            sessions.set_approval_policy(key, "")
+    except Exception:
+        logger.warning(
+            "could not clear the shared trust or cached approval policy for %s",
+            getattr(slot, "key", "?"),
+            exc_info=True,
+        )
 
 
 def replacement_shares_transcript(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
