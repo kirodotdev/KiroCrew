@@ -1192,11 +1192,18 @@ class TranscriptReadProjection:
         recent = self._log._recent_cache.get(recent_key)
         if recent is not None and recent[0] == identity and recent[1] == self._log._cache_gen(key):
             return [dict(message) for message in recent[2]]
-        tail = self._log._read_tail_messages(path, max_messages, roles)
+        # Brief rows are dropped before the window is cut, as on the full-read
+        # path, so each one in the tail asks the reader for one more row.
+        wanted = max_messages
+        while True:
+            tail = self._log._read_tail_messages(path, wanted, roles)
+            kept = [message for message in tail if not is_warm_task_brief_message(message)]
+            if len(kept) >= max_messages or len(tail) < wanted:
+                break
+            wanted += max_messages - len(kept)
         formatted = [
             {"role": message["role"], "content": message["content"]}
-            for message in tail
-            if not is_warm_task_brief_message(message)
+            for message in kept[-max_messages:]
         ]
         self._log._publish_if_current(
             self._log._recent_cache,
