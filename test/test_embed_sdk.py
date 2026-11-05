@@ -165,3 +165,180 @@ async def test_run_does_not_forward_a_keyword_to_the_pool(
     )
     assert out == {"_admission_held": "x"}
     assert received == [{}]
+
+
+# ── Batch embed ──
+
+
+class _FakeBatchBackend:
+    def __init__(
+        self,
+        *,
+        ready: bool = True,
+        loadable: bool = False,
+        result: Any = "echo",
+        model_id: str = "fake-model",
+    ) -> None:
+        self._ready = ready
+        self._loadable = loadable
+        self._result = result
+        self.model_id = model_id
+        self.dim = 3
+        self.batches: list[tuple[list[str], int]] = []
+
+    def is_ready(self) -> bool:
+        return self._ready
+
+    def can_load_on_demand(self) -> bool:
+        return self._loadable
+
+    def embed_batch(self, texts: list[str], *, priority: int) -> Any:
+        self.batches.append((list(texts), priority))
+        if self._result == "echo":
+            return [[1.0, 0.0, float(len(t))] for t in texts]
+        if isinstance(self._result, Exception):
+            raise self._result
+        return self._result
+
+
+def test_batch_embed_returns_vectors_with_the_space_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeBatchBackend()
+    _use(monkeypatch, backend)
+    out = EmbedSDK().embed_batch_sync(["ab", "abc"])
+    assert out.ready is True and out.reason == ""
+    assert out.vectors == [[1.0, 0.0, 2.0], [1.0, 0.0, 3.0]]
+    assert out.model_id == "fake-model"
+    assert out.dim == 3
+    assert out.space_signature == embeddings_shared.embedding_space_signature("fake-model", 3)
+    assert out.to_dict()["space_signature"] == out.space_signature
+
+
+def test_batch_embed_runs_behind_memory_recall(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew.embeddings_settings import PRIORITY_BULK, PRIORITY_INTERACTIVE
+
+    backend = _FakeBatchBackend()
+    _use(monkeypatch, backend)
+    EmbedSDK().embed_batch_sync(["x"])
+    assert backend.batches[0][1] == PRIORITY_BULK
+    assert backend.batches[0][1] > PRIORITY_INTERACTIVE
+
+
+def test_every_app_context_can_batch_embed_without_a_grant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # Fair use comes from bulk priority and the batch cap, not a manifest key:
+    # a grant would only gate the path that yields to the host's memory work.
+    from kiro_crew.apps.context import AppContext, build_app_context
+    from kiro_crew.apps.manifest_sections import Permissions
+
+    backend = _FakeBatchBackend()
+    _use(monkeypatch, backend)
+    for ctx in (
+        build_app_context("a", tmp_path, permissions={}),
+        AppContext(name="a", data_dir=tmp_path),
+    ):
+        assert ctx.embed.embed_batch_sync(["x"]).ready is True
+    assert len(backend.batches) == 2
+    assert not hasattr(Permissions(), "embeddings")
+    assert not hasattr(embed_sdk, "REASON_NOT_PERMITTED")
+
+
+def test_batch_embed_caps_the_batch_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _FakeBatchBackend()
+    _use(monkeypatch, backend)
+    sdk = EmbedSDK()
+    assert sdk.embed_batch_sync(["x"] * embed_sdk.MAX_BATCH_TEXTS).ready is True
+    over = sdk.embed_batch_sync(["x"] * (embed_sdk.MAX_BATCH_TEXTS + 1))
+    assert over.reason == embed_sdk.REASON_TOO_MANY_TEXTS
+    assert len(backend.batches) == 1
+
+
+@pytest.mark.parametrize(
+    ("texts", "instruction"),
+    [([], None), ("abc", None), (["ok", ""], None), (["ok", 3], None), (["ok"], "  ")],
+)
+def test_batch_embed_refuses_malformed_input(
+    monkeypatch: pytest.MonkeyPatch, texts: Any, instruction: Any
+) -> None:
+    backend = _FakeBatchBackend()
+    _use(monkeypatch, backend)
+    out = EmbedSDK().embed_batch_sync(texts, instruction=instruction)
+    assert out.reason == embed_sdk.REASON_INVALID_INPUT
+    assert backend.batches == []
+
+
+def test_batch_embed_applies_the_instruction_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _FakeBatchBackend()
+    _use(monkeypatch, backend)
+    EmbedSDK().embed_batch_sync(["a", "b"], instruction="Group tickets")
+    assert backend.batches[0][0] == [
+        "Instruct: Group tickets\nQuery:a",
+        "Instruct: Group tickets\nQuery:b",
+    ]
+    too_long = "x" * (embed_sdk.MAX_INSTRUCTION_CHARS + 1)
+    out = EmbedSDK().embed_batch_sync(["a"], instruction=too_long)
+    assert out.reason == embed_sdk.REASON_INVALID_INPUT
+
+
+def test_batch_embed_reports_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    absent = _FakeBatchBackend(ready=False, loadable=False)
+    _use(monkeypatch, absent)
+    assert EmbedSDK().embed_batch_sync(["x"]).reason == "not_ready"
+    assert absent.batches == []
+
+    # Loadable but cold: the backend answers None while its load runs.
+    cold = _FakeBatchBackend(ready=False, loadable=True, result=None)
+    _use(monkeypatch, cold)
+    assert EmbedSDK().embed_batch_sync(["x"]).reason == "not_ready"
+
+    def _broken() -> Any:
+        raise RuntimeError("no embedding runtime")
+
+    monkeypatch.setattr(embeddings_shared, "get_shared_embedder", _broken)
+    assert EmbedSDK().embed_batch_sync(["x"]).reason == "not_ready"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [None, RuntimeError("boom"), [[1.0, 2.0, 3.0]], [[1.0], [1.0, 2.0]], [[], []]],
+)
+def test_batch_embed_failures_never_raise(monkeypatch: pytest.MonkeyPatch, result: Any) -> None:
+    _use(monkeypatch, _FakeBatchBackend(result=result))
+    out = EmbedSDK().embed_batch_sync(["a", "b"])
+    assert out.ready is False and out.reason == embed_sdk.REASON_FAILED
+    assert out.vectors == []
+
+
+@pytest.mark.asyncio
+async def test_batch_embed_sync_on_the_event_loop_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeBatchBackend()
+    _use(monkeypatch, backend)
+    out = EmbedSDK().embed_batch_sync(["x"])
+    assert out.reason == embed_sdk.REASON_ON_EVENT_LOOP
+    assert backend.batches == []
+
+
+@pytest.mark.asyncio
+async def test_async_batch_embed_runs_on_the_embed_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeBatchBackend()
+    _use(monkeypatch, backend)
+    pooled: list[Any] = []
+    real_pool = executors.run_in_embed_pool
+
+    async def _spy(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        pooled.append(func)
+        return await real_pool(func, *args, **kwargs)
+
+    monkeypatch.setattr(executors, "run_in_embed_pool", _spy)
+    out = await asyncio.wait_for(
+        EmbedSDK().embed_batch(["ab"], instruction="q"),
+        timeout=default_timeout(),
+    )
+    assert out.ready is True and len(pooled) == 1
+    assert backend.batches[0][0] == ["Instruct: q\nQuery:ab"]

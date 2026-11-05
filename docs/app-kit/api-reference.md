@@ -1282,6 +1282,29 @@ async def add_item(request, ctx):
 | `model_id` | The vector space's model id, or `""` with no backend. Store it with each vector; a different value later means old vectors are not comparable. |
 | `embed_sync(text)` | A `list[float]`, or `None` when no model can serve or the embed failed. **Blocking**: call it only inside `run()` or another worker. Called on the event loop it returns `None`. |
 | `await run(func, *args, **kwargs)` | `func(*args, **kwargs)`, run on the host's bounded embed pool. |
+| `await embed_batch(texts, instruction=None)` | An `EmbedBatchResult` for up to 64 texts, embedded on the embed pool. |
+| `embed_batch_sync(texts, instruction=None)` | The same, **blocking**: call it only inside `run()` or another worker. |
+
+The batch members answer with an `EmbedBatchResult` (`to_dict()` gives its JSON form):
+`ready`, `vectors` (one per text, in input order), `model_id`, `dim`,
+`space_signature` and `reason`. Store `space_signature` with your vectors: a model
+change or a custom model gives a different signature, and vectors from different
+signatures are not comparable, so re-embed. When `ready` is `False`, `vectors` is
+empty and `reason` says why:
+
+| `reason` | Meaning |
+|---|---|
+| `invalid_input` | `texts` is not a non-empty list of non-blank strings, or `instruction` is blank or over 512 characters. |
+| `too_many_texts` | More than 64 texts. Split the work across calls. |
+| `on_event_loop` | `embed_batch_sync` was called on the event loop. Use `await embed_batch(...)`. |
+| `not_ready` | The model is downloading, loading or absent. Fall back (keyword search) and retry later. |
+| `failed` | The embed failed. Logged once per process. |
+
+Batch work needs no manifest permission. It runs at the shared model's bulk
+priority, so the host's memory recall and memory writes are served first. Each text
+is cut at the host's per-text limit. `instruction` is prefixed to every text as `Instruct: <instruction>\nQuery:`, the form
+the bundled instruction-tuned model expects; embed stored documents without it and
+queries with it.
 
 It never raises into your code: a missing embedding extra, a model that cannot load
 and a failing embed all read as `None`, and the first failure is logged once per
