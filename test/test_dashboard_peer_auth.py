@@ -34,6 +34,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
+from loopback_servers import LoopbackThreadingHTTPServer
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 import kiro_crew.dashboard.token_auth as ta
@@ -1441,7 +1442,7 @@ def test_loopback_urlopen_stale_socket_falls_back_to_tcp(short_sock_dir: Path) -
         def log_message(self, *a):
             pass
 
-    tcp = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    tcp = LoopbackThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     port = tcp.server_address[1]
     t = threading.Thread(target=tcp.serve_forever, daemon=True)
     t.start()
