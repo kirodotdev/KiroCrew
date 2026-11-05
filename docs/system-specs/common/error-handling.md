@@ -332,7 +332,14 @@ Retry hints are the other wording-only signal, and they are **provider-scoped**:
 for Kiro/Bedrock, "try your request again" for the claude-agent-acp seam's
 generic upstream 500, whose frame has no named exception and no HTTP status, so
 the hint is its only transient marker). Onboarding a backend means auditing that
-alternation. The kiro-cli mid-stream envelope ("Encountered an error in the
+alternation. The status and named-token patterns carry provider spellings too:
+`_RE_5XX_STATUS` reads a status after `HTTP`, `status` or the claude-agent-acp
+seam's `API Error:` prefix, so Anthropic's overload answer (`API Error: 529
+{...overloaded_error...}`) is a retryable `http_5xx`, and `_RE_5XX_NAMED`'s
+`overloaded error` token covers Claude Code's summary once its own retries are
+spent (`API Error: Repeated 529 Overloaded errors`). A bare `529` without a prefix
+stays prose, and the adapter's `API Error: NNN Input is too long` size verdict is
+checked ahead of the 5xx family, so it stays terminal. The kiro-cli mid-stream envelope ("Encountered an error in the
 response stream: …") is deliberately NOT a hint — matching it would make the
 branch a catch-all that discards the real cause.
 

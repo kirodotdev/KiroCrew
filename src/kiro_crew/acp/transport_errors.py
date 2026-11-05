@@ -578,10 +578,17 @@ _5XX_SEP = r"[ \t_-]?"
 _RE_5XX_NAMED = re.compile(
     rf"\b(internal{_5XX_SEP}server{_5XX_SEP}error|internal{_5XX_SEP}failure"
     rf"|service{_5XX_SEP}unavailable(?:{_5XX_SEP}exception)?"
-    rf"|dispatch{_5XX_SEP}failure|connection{_5XX_SEP}reset(?:{_5XX_SEP}error)?)\b",
+    rf"|dispatch{_5XX_SEP}failure|connection{_5XX_SEP}reset(?:{_5XX_SEP}error)?"
+    rf"|overloaded{_5XX_SEP}errors?)\b",
     re.IGNORECASE,
 )
-_RE_5XX_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:50[0234]|529)\b", re.IGNORECASE)
+# "API Error:" is the claude-agent-acp seam's status prefix: Anthropic's overload
+# answer arrives as "API Error: 529 {...overloaded_error...}", and once Claude
+# Code's own retries are spent as "API Error: Repeated 529 Overloaded errors",
+# which the named "overloaded error" token above catches.
+_RE_5XX_STATUS = re.compile(
+    r"(?:HTTP|status|API\s+Error:)\s*(?:code\s*)?(?:50[0234]|529)\b", re.IGNORECASE
+)
 _RE_CONNECTION = re.compile(
     r"\bE(?:CONNREFUSED|CONNRESET|CONNABORTED|TIMEDOUT|PIPE|HOSTUNREACH|AI_AGAIN)\b"
     r"|\bsocket hang ?up\b"
@@ -1668,7 +1675,7 @@ def _format_acp_error_worded(
             # Match the combined `data + message` haystack so a 5xx token in
             # either field is caught. Scanning `message` is safe
             # here precisely because we require a real transient *token* (named
-            # exception, HTTP/status-50[0234]/529, or an explicit retry hint):
+            # exception, a 50[0234]/529 status after HTTP/status/API Error:, or a retry hint):
             # -32603's canonical message is literally "Internal error", which
             # carries no such token, so a bare uncaught -32603 (malformed-
             # request, context-length, deterministic backend bug) still falls
