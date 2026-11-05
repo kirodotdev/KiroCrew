@@ -408,7 +408,7 @@ a reader at the end of the transcript, and decides "is the reader still at the
 end" by position alone. A reader resting on follow's own last write — the pixel a
 pin, a layout clamp, or the reader's own return to the bottom left them on — is
 carried to the new bottom whenever content opens a gap under them, whether or not
-a turn is running: a complete message landing in an idle chat (a mate's or
+a turn is running: a complete message landing in an idle chat (a Bot's or
 worker's report arriving in a DM, a notice, a cron row) follows without the
 reader touching anything. Hardware input on its own never counts as leaving; a
 wheel at the end that moves nothing is not a move. The one exception is scroll
@@ -435,11 +435,11 @@ lands at the end: a tail row streaming, and the host's chrome below the rows
 watches, so the working footer mounting under a reply that went quiet carries a
 followed reader down to it instead of leaving them its height short of the end).
 
-**Re-entering a crewmate's chat lands on the last message the reader saw.** The
+**Re-entering a Bot's chat lands on the last message the reader saw.** The
 persisted reading position above answers a reader who left mid-transcript and is
-cleared at the bottom on purpose, so on its own the common crewmate return -- caught
-up, left, the crewmate kept talking -- opened at the live end with every new message
-above the fold. The crewmate thread (`ChatPane` with a `crewmate` identity; a split
+cleared at the bottom on purpose, so on its own the common Bot return -- caught
+up, left, the Bot kept talking -- opened at the live end with every new message
+above the fold. The Bot thread (`ChatPane` with a `crewmate` identity; a split
 pane is not) adds the missing fact as a HOST-level layer over the virtualizer,
 `components/chat/useUnreadLanding.ts`, which never touches the hook's own entry
 placement:
@@ -457,7 +457,7 @@ placement:
   the slot's HYDRATED transcript (`findUnreadRun`, after the pane's slot-detail page has
   landed in the store -- a live frame can seed a partial list first, whose missing marker
   row would otherwise lock in "no run"), then held for the visit. The hydrated page is
-  bounded (`PANE_HYDRATE_LIMIT`), and a crewmate that spoke more than a page since the
+  bounded (`PANE_HYDRATE_LIMIT`), and a Bot that spoke more than a page since the
   last visit is the long absence this exists for: a marker row not on hand while older
   history remains is PAGED BACK TO, one page at a time through the pane's own
   older-history loader, up to `MARKER_WALK_MAX_PAGES`, and the decision waits for the
@@ -502,7 +502,7 @@ placement:
   streaming is renamed when the server's copy lands, so a marker saved from one would
   match nothing on the next visit, and a client-only row with no `ts` (a local
   send-failure notice) is passed over rather than blocking the row before it. It is written only while a person can SEE the thread
-  (`crewmateShown`: the Crewmates page's "window visible and focused" read condition
+  (`crewmateShown`: the Bots page's "window visible and focused" read condition
   AND nothing floating over the chat -- an overlay side panel, a floating Profile card or
   the phone roster drawer covers it, the docked placements sit beside it) -- a reply landing at the bottom of a parked or covered window is not
   read, and the window coming back or the overlay closing is what reads it -- and from
@@ -552,7 +552,7 @@ walked window leave the tab and are one page-back away.
 
 `loadOlderMessages` stays in the facade. The chat host answers the hook's
 older-page request with it; it reads the page before `slotOldestIndex` and lands
-it only while the slot it was read for is still active. A BACKGROUND pane (a mate DM on the Members page, a split pane) pages its OWN older history with the separate `loadOlderSlotMessages` thunk, which reads from that pane's own cursor (`slotPaneNextBefore`, written beside the page by `writeSlotPage`) and tracks its in-flight / failed state per slot in `slotPaneLoadingOlder` / `slotPaneOlderError`, so one pane's walk never blocks or reddens another's; `loadOlderMessages` walks only the active slot. Either thunk reaches a pane through the `earlier` model `ChatPane` hands `VirtualTranscript`, and supplying that model arms the automatic walk as well as the bar: `chat-core/transcript/useEarlierHistoryWalk.ts` polls the host's `onLoad` in under the main page's gates (the bar on screen, a real gesture on the scroller within `REAL_GESTURE_AUTH_MS` buying `OLDER_WALK_MAX_PAGES_PER_INPUT` pages, the scroller settled but the reader recently scrolling or gesturing, not bottom-followed, every mounted row measured, the no-gesture fill only for a transcript too short to scroll and within the same page budget). Those predicates and tunings are the ones `pages/chat/pagination.ts` exports and the page's `transcriptPaging.ts` reads, so a crewmate DM pages back exactly as the main page does, and the bar remains the visible affordance, the control for a scroll method the walk cannot see, and the retry after a failed page (#23541). None of these owners filters rows by memory
+it only while the slot it was read for is still active. A BACKGROUND pane (a Bot DM on the Members page, a split pane) pages its OWN older history with the separate `loadOlderSlotMessages` thunk, which reads from that pane's own cursor (`slotPaneNextBefore`, written beside the page by `writeSlotPage`) and tracks its in-flight / failed state per slot in `slotPaneLoadingOlder` / `slotPaneOlderError`, so one pane's walk never blocks or reddens another's; `loadOlderMessages` walks only the active slot. Either thunk reaches a pane through the `earlier` model `ChatPane` hands `VirtualTranscript`, and supplying that model arms the automatic walk as well as the bar: `chat-core/transcript/useEarlierHistoryWalk.ts` polls the host's `onLoad` in under the main page's gates (the bar on screen, a real gesture on the scroller within `REAL_GESTURE_AUTH_MS` buying `OLDER_WALK_MAX_PAGES_PER_INPUT` pages, the scroller settled but the reader recently scrolling or gesturing, not bottom-followed, every mounted row measured, the no-gesture fill only for a transcript too short to scroll and within the same page budget). Those predicates and tunings are the ones `pages/chat/pagination.ts` exports and the page's `transcriptPaging.ts` reads, so a Bot DM pages back exactly as the main page does, and the bar remains the visible affordance, the control for a scroll method the walk cannot see, and the retry after a failed page (#23541). None of these owners filters rows by memory
 mode, so a restricted transcript is cached and paged like any other.
 
 ### Warm task brief rows
@@ -562,7 +562,7 @@ ordinary `assistant` rows. `warm_task_brief_claim` contains only the fingerprint
 and is suppressed by transcript renderers. Its `ts` also counts as owner
 presence when the next return measures time away. The one result row (the
 model-written brief, the fixed quiet line, or the fixed failure line) carries
-normal mate message roles and classes; older builds also wrote a deterministic
+normal Bot message roles and classes; older builds also wrote a deterministic
 opener row (`warm_task_brief_preparing`), which still reads as a brief row. The
 result row's `meta.brief` holds the validated, redacted fields (`status`,
 `headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, `body`,
@@ -603,7 +603,7 @@ still drawn in its final state after the store prunes it. The same step writes t
 "Cards and guides").
 
 Two surfaces record a change the agent already made, so they have no store
-behind them and the row itself is the record. `self` is a mate's own
+behind them and the row itself is the record. `self` is a Bot's own
 `update_self` (see [mcp](../../architecture/mcp.md)). `lesson` is a lesson
 `learn_add` wrote: one row per write that changed the store, carrying the redacted
 `rule` and the write `status` (`inserted` / `enriched`), appended by
@@ -658,7 +658,7 @@ auto-title error notice (`chat-sidebar/rename.ts`). A bulk "Delete all" refusal 
 name several untitled sessions, so each named line keeps the key beside the label.
 A session chip's tooltip (`utils/sessionRoster.ts`) names an untitled session
 "Untitled session"; the chip's own text already shows the key. The chat page and a
-crewmate DM rebuild that roster on a language switch, so the label follows the
+Bot DM rebuild that roster on a language switch, so the label follows the
 active language. The editable session
 title in a split-view pane header and in the main chat header
 (`pages/chat/SessionTitleControl.tsx`) shows and announces "Untitled session" for an
@@ -695,7 +695,7 @@ The live session list follows the same rule: a sidebar row
 (`chat-sidebar/SessionRow.tsx`) and its drag preview (`chat-sidebar/dnd/targets.tsx`)
 read "Untitled session", and so does a session tab (`components/SessionTabStrip.tsx`).
 A row or tab has no second line, so its hover title carries the key instead
-(`Untitled session · <key>`); a crewmate's own thread keeps the crewmate's name.
+(`Untitled session · <key>`); a Bot's own thread keeps the Bot's name.
 The System → Sessions table names an untitled row "Untitled session" beside its
 slot key (`pages/system/sessionRows.ts`), in place of the backend's
 `New Session…` placeholder. A single-session message names it "Untitled session"
@@ -740,7 +740,7 @@ order, and pins that no owner imports the facade:
 | `folders.ts` | folder sort mode, visibility (including the pinned-folder subtree the filters step over), the subtree index and ancestor expansion, the filter-menu rows, the tree's root folders, and folder writes |
 | `board.ts` | the tag-column board: columns, the column popover, column writes, lane seeding (it widens the sidebar through `resize.ts`), per-column collapse and membership |
 | `stale.ts`, `pinnedOrder.ts`, `hoverHold.ts` | the dormant-session collapse state and exemptions, the manual pinned order, and the hover hold |
-| `kindSections.tsx` | the filter menu's **Group by kind** view option (`mc-session-group-by-kind`, off by default): each row's kind (Crew Mode: `crew_mode_root` or `crew_root`; From Mates: `agent_kind`/`surface` `member`, or opened by such a session up the local `parent.key` chain; Normal: the rest), the per-list split (pinned rows first, then Crew Mode, Normal, From Mates, each in lane order; no headers in a list with one kind; off while a search ranks the list, and on the tag board), the section headers, the hover hold's section rank (a captured row is counted in the section it was last drawn in), and the roster it reads (`rowAgents`, kept across a session switch). While it applies in a list lane, the unpinned rows are no manual-order targets (`RowShell.manualReorderOff`: no drop target, no Alt+Arrow), as under a ranked search; the pinned band keeps its order. Applied by the tree root, folder bodies, their expanded sleeping rows, the flat lane and the conductor lane's top level |
+| `kindSections.tsx` | the filter menu's **Group by kind** view option (`mc-session-group-by-kind`, off by default): each row's kind (Ultra Mode: `crew_mode_root` or `crew_root`; From Bots: `agent_kind`/`surface` `member`, or opened by such a session up the local `parent.key` chain; Normal: the rest), the per-list split (pinned rows first, then Ultra Mode, Normal, From Bots, each in lane order; no headers in a list with one kind; off while a search ranks the list, and on the tag board), the section headers, the hover hold's section rank (a captured row is counted in the section it was last drawn in), and the roster it reads (`rowAgents`, kept across a session switch). While it applies in a list lane, the unpinned rows are no manual-order targets (`RowShell.manualReorderOff`: no drop target, no Alt+Arrow), as under a ranked search; the pinned band keeps its order. Applied by the tree root, folder bodies, their expanded sleeping rows, the flat lane and the conductor lane's top level |
 | `manualOrder.ts` | the manual order of the unpinned rows (sort "Manual"): their places from each row's `manual_rank` (the latest queued gesture outranks them, as for the pinned order), the order drawn now, the drop between two rows in any sort (switching the sort to Manual) and, under Manual, the Alt+Arrow move, the seed, move and clear writes to `POST /api/chat/manual-order` queued one at a time per store, and the "Sorted by hand" Undo offer, which shares the move-undo bar's slot |
 | `rowAnimSettle.ts` | when the lane may start animating its rows: until the slot, folder and tag-column reads settle and the rows have painted once, rows mount with their layout projection but snap instead of springing and skip their slide-in, so the first load does not collapse and re-expand; no time cap, so a slow read is never cut off (the slot read counts as settled once any slot list has landed, `slotsGeneration`, which a socket connect does not reset); mirrored on the sidebar root as `data-row-anim` |
 | `sessionSort.ts` | the session sort key: read from the gateway config (`dashboard.session_sort`, through `hooks/useSessionSortKey.ts`), written by the sort menu as an optimistic config save, and the one-time carry-over of the retired browser key `mc-session-sort` |
@@ -2300,19 +2300,19 @@ and a caller deleting "the session" removes one half and leaves the other behind
 
 - `set_title(key, title)` — persists a title into the session's metadata line (first line of JSONL)
 
-### A mate's own DM thread is never auto-titled
+### A Bot's own DM thread is never auto-titled
 
 A slot with `mode == "member"` is one long-lived conversation with one
-mate, and the sidebar names its row after the mate (its display name,
+Bot, and the sidebar names its row after the Bot (its display name,
 else its name), derived from the member binding at render time
 (`lib/memberThreadTitle.ts`). `chat_title.py` therefore skips it on
 every background path: `_maybe_auto_title`, the refresh (`_refresh_blocked`) and
 `generate_manual_title`, which answers `""`. Opening the thread
-(`POST /api/members/{slug}/thread`) stores the mate's display name as its
-title with origin `member` (`name_member_thread`; a title a person set, origin `user`, is kept, and a stored name follows a renamed mate on the next open),
+(`POST /api/members/{slug}/thread`) stores the Bot's display name as its
+title with origin `member` (`name_member_thread`; a title a person set, origin `user`, is kept, and a stored name follows a renamed Bot on the next open),
 so the tab title and command palette read the same name. The Members page
 header and the chat page never draw a member thread's title row, so no rename
-or regenerate control exists for it there. Sessions a mate opens for its workers are
+or regenerate control exists for it there. Sessions a Bot opens for its workers are
 ordinary slots and are titled as usual.
 
 ### Session titling is independent of `memory_mode`
@@ -3099,12 +3099,12 @@ inner JSONL fallback; only an absent replay requests fallback construction.
 5. User returns → new session with history re-injected
 6. After the message count crosses `_CONSOLIDATION_THRESHOLD` (30) past the last offset → background consolidation → structured memory updated
 
-## Reply Threads on Mate Chat Messages (`dashboard/chat_threads.py`)
+## Reply Threads on Bot Chat Messages (`dashboard/chat_threads.py`)
 
-A **thread** is the set of replies attached to ONE message of a mate's chat --
+A **thread** is the set of replies attached to ONE message of a Bot's chat --
 a member-mode slot (`slot.mode == members.DM_SLOT_MODE`) -- addressed by that
 message's durable `meta.mid`. "Thread" is only ever this reply thread; the main
-conversation is the chat. Any message, the user's or the mate's, can carry
+conversation is the chat. Any message, the user's or the Bot's, can carry
 one.
 
 **Flag.** The feature ships behind `dashboard.crewmate_threads` (`config/sections_dashboard.py`,
@@ -3163,7 +3163,7 @@ an agent put there never reaches the dashboard through the detail response,
 whose `_redacted_reply` likewise emits only those four fields. One
 thread holds at most 500 replies (`thread_full`), one chat's sidecar at most
 5 000 across every thread (`threads_full` -- the whole-file bound, since the
-panel reads the file whole), and the mate's stored reply is clipped at
+panel reads the file whole), and the Bot's stored reply is clipped at
 64 000 characters with a `[reply clipped]` marker (the streamed frames carried
 the whole text). The reader holds the same line whatever the file says
 (`THREAD_REPLY_CONTENT_MAX_CHARS`, `THREAD_MID_RE`,
@@ -3215,7 +3215,7 @@ their previews.
 
 **API.** All three answer 404 `slot_not_found` for a missing slot or a foreign
 app caller (anti-enumeration, App Kit §5.2) and 409 `not_crewmate_chat` for a
-slot that is not a mate's chat.
+slot that is not a Bot's chat.
 
 - `GET /api/chat/threads?slot=<key>` -- `{"threads": {<mid>: {"count",
   "last_reply_ts", "participants": [roles, first-appearance order]}}}`, the
@@ -3229,7 +3229,7 @@ slot that is not a mate's chat.
   detail and resume handlers run, not a copy of it). Reading finds a parent the
   window holds; writing a reply to it additionally needs the row on disk.
 - `POST /api/chat/threads/{mid}/reply` `{slot_key, text, reply_id?}` -- stores
-  the user's reply, broadcasts it, starts the mate's turn and answers
+  the user's reply, broadcasts it, starts the Bot's turn and answers
   **202** `{reply, run_id}` at once. `reply_id` (32 hex, minted by the panel
   per send and reused for a retry of the same text) makes the send idempotent:
   a re-send of an id the thread already holds -- the 202 lost on the wire --
@@ -3241,7 +3241,7 @@ slot that is not a mate's chat.
   shape. 400 `empty_reply`, 400 `invalid_text` (a lone
   surrogate JSON admits and UTF-8 cannot carry -- a validation answer, never a
   500), 413 `reply_too_long` (32 KiB),
-  409 `thread_turn_in_flight` while the mate is still replying in THAT
+  409 `thread_turn_in_flight` while the Bot is still replying in THAT
   thread (a reply landing mid-turn would be answered by nothing; the panel
   disables its send meanwhile), 409 `thread_full`, 409 `threads_full`, 409
   `transcript_missing` (no transcript yet, or the parent row not flushed yet),
@@ -3253,7 +3253,7 @@ slot that is not a mate's chat.
   was stored but not answered, so a reopened thread never shows a question
   with no answer. The user's reply is
   admitted one seat BELOW each cap (499 / 4 999): it is stored only while the
-  mate's answer to it still fits, so the answer -- written under the full
+  Bot's answer to it still fits, so the answer -- written under the full
   caps -- is never the reply that finds the thread full after a whole turn ran. The in-flight reservation is taken with no await between the
   check and the mark -- BEFORE the store write suspends -- so two replies racing
   through it (a double-click) run one turn; one `finally` releases it on every
@@ -3263,7 +3263,7 @@ slot that is not a mate's chat.
   `thread_full` / `threads_full` texts each end in the next step ("Ask in the
   main chat instead." / "Start a new chat to keep discussing.").
 
-**The mate's turn.** `_run_thread_turn` is the side turn's shape
+**The Bot's turn.** `_run_thread_turn` is the side turn's shape
 ([side](side.md)) without its steer/queue ledger: resolve the slot's agent
 through `resolve_agent_bindings`, run in the thread's own isolated session
 `thread:<slot>:<mid>` (a `_STATELESS_PREFIXES` member, so it never resumes
@@ -3289,8 +3289,8 @@ chat's resolvers: the validation opens the member's SQLite database
 synchronously on the loop), and a slot whose project or agent changed between two replies is never
 served by a session bound to the old ones. The parent lookup reads the
 transcript by `api_chat_slot_detail`'s rule -- `_reconcile_slot_window` first,
-then disk prefix plus window -- so a parent only disk holds is found. The mate's memory is not injected into a thread turn (not done;
-the mate's agent spec is). The answer is redacted, clipped, appended to the sidecar as
+then disk prefix plus window -- so a parent only disk holds is found. The Bot's memory is not injected into a thread turn (not done;
+the Bot's agent spec is). The answer is redacted, clipped, appended to the sidecar as
 an `assistant` reply and broadcast; an empty answer becomes the same visible
 read-only boundary line the side chat shows. A refused read-only spec is audited as a
 denied SEL API access (`operation=thread_reply`, `source=read_only_spec`),
@@ -3311,9 +3311,9 @@ class name (the ACP type lives behind the agent-SDK import boundary) and
 answered with `host_auth.signed_out_message`, latching the readiness service
 signed-out as the main chat does.
 
-**Dashboard.** Only a mate's chat (the Members page) offers threads: it
+**Dashboard.** Only a Bot's chat (the Members page) offers threads: it
 hands `ChatPane` a `threads` hook set (`app-sdk/messageRenderers.ThreadHooks`:
-`summaryOf(mid)`, `onOpen(mid)`, the mate's name), which the assistant and
+`summaryOf(mid)`, `onOpen(mid)`, the Bot's name), which the assistant and
 user rows read off `MessageRenderContext.threads`; every other surface has none
 and draws neither footer nor action. The page reads the flag through
 `hooks/useCrewmateThreadsFlag` (the shared `['kirocrewConfig']` query): `on`
@@ -3322,17 +3322,17 @@ said beside the chat through `ErrorNotice` with a Retry while the last known
 value stands -- never rendered as the flag being off, which would make an
 enabled feature vanish under a config blip. A bubble whose `mid` has replies gets a
 `ThreadFooter` under it (faces of who took part, "N replies" in accent, "Last
-reply 2h ago" muted); every user bubble's hover action row and every finished mate reply's footer row
-carry "Reply in thread" (`MessageSquare`); a mid-turn mate row that runs on into
+reply 2h ago" muted); every user bubble's hover action row and every finished Bot reply's footer row
+carry "Reply in thread" (`MessageSquare`); a mid-turn Bot row that runs on into
 a tool call has no footer, so no Reply until the turn's last reply. The footer is a SIBLING of its bubble, not a
 child, and states its own side as `align-self` (`self-end` under the user's
-right-aligned bubble, `self-start` under the mate's), which beats the row
+right-aligned bubble, `self-start` under the Bot's), which beats the row
 wrapper's `align-items`. An appearance that re-aligns or indents the ROW must
 therefore re-state the footer too: CLI UI mode moves the user's bubble
 full-width to the left and indents both bubbles with a bar and padding on the
 message root, so it carries its own footer rules in `styles/cli-mode.css` --
 without them the user's footer stays pinned to the far right of a left-aligned
-bubble and the mate's sits 16px left of its own. Those rules are measured in
+bubble and the Bot's sits 16px left of its own. Those rules are measured in
 a real engine by `scripts/capture-thread-footer-cli-align.mjs`, which asserts
 each footer's first mark against its bubble's edge on both appearances and
 requires the pre-fix state to reproduce; `src/test/cliModeThreadFooter.test.ts`
@@ -3345,19 +3345,19 @@ is on screen (slides in; `prefers-reduced-motion` fades) and hands them back on
 close, so the main chat stays visible beside it. The panel shows the parent
 quoted as one bubble, a hairline reply count, the replies as small bubbles on
 the main chat's run and corner rule (`components/chat/crewmateBubbles.ts`:
-the mate's consecutive replies group on the left, the user's right-aligned
-bubbles are always singles), a typing row while the mate replies (an ordinary item, never a
+the Bot's consecutive replies group on the left, the user's right-aligned
+bubbles are always singles), a typing row while the Bot replies (an ordinary item, never a
 notice) and a one-line "Reply…" composer with the real `SendBtn`, disabled
 while a reply is in flight. Stored replies and the per-slot summary are React
 Query reads (`api/threads.ts`); the reply in progress streams through
 `state/threadLiveStore` from `chat.thread_reply` frames, and a stored frame
-(the user's reply, the mate's `final`) invalidates both queries. Failures
+(the user's reply, the Bot's `final`) invalidates both queries. Failures
 render through `ErrorNotice` in the panel with one plain sentence picked by the
 backend `code`; a failed send keeps the draft.
 
 **Wire.** `ws.broadcast_thread_reply` emits owner-only `chat.thread_reply`
 frames `{slot, mid, run_id, role, content, ts, final?, is_error?, reply?}`: the
-user's reply once, the mate's reply as streamed deltas grouped by `run_id`
+user's reply once, the Bot's reply as streamed deltas grouped by `run_id`
 and a terminal `final` frame carrying the stored `reply` record. A frame with a
 `slot` field is a tier-1 slot-scoped WS event. Failure arms (the signed-out
 harness, `ReadOnlySpecError`, an unreadable sidecar, prompt-busy, anything else)

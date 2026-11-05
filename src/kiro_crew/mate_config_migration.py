@@ -1,7 +1,7 @@
 """Startup migration: move every EXISTING crewmate onto its worker and its own file.
 
 RFC *mate-owned-agent-config* §6; the steps are in ``crew-mode.md``, "Existing
-crewmates move at startup". Per crewmate whose ``kiro_agent`` does not yet name
+Bots move at startup". Per crewmate whose ``kiro_agent`` does not yet name
 its own file: read and govern the agent it runs on, build the file from what that
 agent adds to the worker base (:func:`kiro_crew.mate_worker.worker_additions`),
 dry-run the merge (:func:`plan_move`: nothing gained and no limit loosened; a
