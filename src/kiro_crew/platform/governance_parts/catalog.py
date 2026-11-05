@@ -449,7 +449,7 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # outranks ``dashboard.milestones_enabled``. Read through ``policy_permits``
     # by ``GET /api/milestones``; a denial answers ``enabled: false``. Default
     # True keeps the feature for the standalone user; the enterprise baseline
-    # keeps it off until a policy names it, like every other capability row.
+    # leaves it open (``BASELINE_UNGATED``, RFC D3).
     # Data row only.
     "capabilities.milestones": ScopeSpec(CAPABILITY, capability_default=True),
     # The Jev decision seam: an enabled, sampled session sends message excerpts and

@@ -31,6 +31,7 @@ from governance_distribution_helpers import (
 from kiro_crew.platform import governance
 from kiro_crew.platform import policy_distribution as pd
 from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.enterprise_policy_translate import TRANSLATION_TAG
 
 _ELSEWHERE = "https://elsewhere.example.invalid/policy.json"
 
@@ -46,7 +47,7 @@ _LOCAL_ENV = {
 
 
 #: What the gateway records an enterprise copy against: the source plus the profile.
-_EE_CACHE_SOURCE = f"{pd.ENTERPRISE_POLICY_URL}?profile=one-profile"
+_EE_CACHE_SOURCE = f"{pd.ENTERPRISE_POLICY_URL}?profile=one-profile&translation={TRANSLATION_TAG}"
 
 
 @pytest.fixture(autouse=True)
