@@ -424,11 +424,11 @@ class Routing(str, Enum):
     does not exist. ``AcpClient._write_claude_local_settings`` does seed
     ``permissions.defaultMode``, but it is a CONDITIONAL write: it touches only the
     file Crew owns (created this session, bytes still Crew's) and otherwise leaves
-    the path alone, and nothing confirms the adapter honoured the mode afterwards.
-    So a ``bypassPermissions`` already present in a user's own
-    ``settings.local.json`` or ``~/.claude`` is neither detected nor stripped, and
-    the guarantee cannot be asserted. Recorded as a known gap rather than papered
-    over with a ``ROUTED`` this core cannot earn -- see
+    the path alone. Only the STARTING mode is read back, per session, and not
+    on every session (``AcpClient._pin_claude_starting_mode`` names which).
+    Nothing is stripped, and an inherited ``permissions.allow`` is not read back
+    at all, so the guarantee cannot be asserted. Recorded as a known gap rather
+    than papered over with a ``ROUTED`` this core cannot earn -- see
     ``docs/system-specs/modules/harness-onboarding.md``.
 
     ``VERIFIED_SEEDED_SETTINGS`` -- the harness is made to ask by a setting Kiro
@@ -487,9 +487,10 @@ class Routing(str, Enum):
 ACP_BACKEND_ROUTING: dict = {
     ACP_BACKEND_KIRO: Routing.AGENT_SPEC,
     ACP_BACKEND_KAS: Routing.AGENT_SPEC,
-    # Declared, not enforced: nothing reads back whether the seeded settings took
-    # effect, and ``SEEDED_SETTINGS`` is outside ``tool_gate.ENFORCED_ROUTINGS``, so
-    # a claude session is not refused for it.
+    # Declared, not enforced: only the starting mode is read back
+    # (``_pin_claude_starting_mode``), never the rest of the seeded settings, and
+    # ``SEEDED_SETTINGS`` is outside ``tool_gate.ENFORCED_ROUTINGS``, so a claude
+    # session is not refused for it.
     ACP_BACKEND_CLAUDE: Routing.SEEDED_SETTINGS,
     ACP_BACKEND_CODEX: Routing.SESSION_CONFIG,
     ACP_BACKEND_OPENCODE: Routing.VERIFIED_SEEDED_SETTINGS,
