@@ -1144,7 +1144,7 @@ def test_run_aws_passes_the_widened_spawn_env_to_the_child(monkeypatch, tmp_path
     the child's PATH. AWS Control's drive and backup calls and ``aws configure
     list-profiles`` spawn the CLI through this chokepoint, and a desktop-app
     gateway's PATH is the minimal launchd one, so the child needs
-    ``aws_spawn_env(argv[0])``, the env ``cloud.aws.run_aws`` passes too.
+    ``aws_spawn_env(argv[0])``, the env ``cloud.aws.run_aws`` builds on too.
     ``run_limited`` forwards kwargs untouched to ``subprocess.run`` and sets no
     PATH of its own, so the env captured here is the one the child gets.
     """
