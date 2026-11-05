@@ -286,25 +286,10 @@ class TestProvisionBuildPaths:
     ) -> None:
         """A DANGLING link at `static/dist` must be replaced, not tripped over.
 
-        `static/dist` is a link on a source install, and Kiro Crew makes
-        it itself: `frontend._ensure_tree_dist` publishes exactly this path via
-        `platform_compat.symlink_or_junction`, which falls back to a directory
-        JUNCTION on Windows because a directory symlink there needs
-        SeCreateSymbolicLinkPrivilege. So on an ordinary unelevated box the link
-        is a junction.
-
-        The staging block already handles a dangling link — that is what
-        `dst.is_symlink()` is doing ahead of `is_dir()`, mirroring the same
-        ordering in `frontend._stage_dist`. It handles the dangling SYMLINK. A
-        dangling JUNCTION answers False to `is_symlink()`, `is_file()` AND
-        `is_dir()` (measured), so every branch is skipped and
-        `shutil.copytree` lands on a directory entry that still exists:
-        `FileExistsError [WinError 183]`, with no handler up the provisioning
-        chain.
-
-        The link is created with the product's own `symlink_or_junction` rather
-        than a bare `os.symlink`, so this exercises whichever shape the running
-        platform actually produces.
+        `frontend._ensure_tree_dist` makes it with `platform_compat.symlink_or_junction`,
+        a junction on unelevated Windows. A dangling junction is False for
+        `is_symlink()`, `is_file()` and `is_dir()`, so `shutil.copytree` would raise
+        `FileExistsError [WinError 183]`. The test uses the same helper.
         """
         co = tmp_path / "wt"
         (co / "website").mkdir(parents=True)
@@ -697,7 +682,7 @@ class TestProvisionDependencyInstall:
 
         return fake_run
 
-    # ---- #229: website npm deps ----
+    # website npm deps
 
     def test_npm_ci_when_node_modules_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -762,7 +747,7 @@ class TestProvisionDependencyInstall:
         assert prov.build_dist(co) is True
         assert calls.index(_npm("ci")) < calls.index(_npm("run", "build"))
 
-    # ---- #230: venv dev extras ----
+    # venv dev extras
 
     def test_pip_group_dev_attempted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         co = tmp_path / "wt"

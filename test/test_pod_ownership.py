@@ -135,12 +135,8 @@ class TestPortOwner:
     def _recorded_pid(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
         """Stand in for a pid record that PROVED fresh.
 
-        This deliberately does NOT pin ``rt.IS_POSIX``, because ``port_owner``
-        returned ``OWNER_UNPROVEN`` on a non-POSIX host before consulting any
-        helper — so on Windows the decision cases FAILED and the ones expecting
-        ``OWNER_UNPROVEN`` passed VACUOUSLY. That platform gate is gone: both facts
-        the proof needs now answer on win32, so every case below exercises the
-        real branch on every platform and there is nothing left to pin.
+        ``rt.IS_POSIX`` is not pinned: both facts the proof needs answer on win32, so
+        every case below runs the real branch on every platform.
         """
         # Every positive ownership verdict requires the gateway's pid sidecar to
         # agree with the service manager's MainPID. Patching the reader stands in
@@ -177,12 +173,8 @@ class TestPortOwner:
     ) -> None:
         """The pod existing elsewhere on the port must not vouch for a squatter.
 
-        A port NUMBER can carry several LISTEN sockets on different local
-        addresses. Here the pod holds one specific non-loopback address while a
-        foreign process holds 127.0.0.1 -- the address the probe dialled -- so the
-        foreign pid is the responder. Taking every pid on the port number instead
-        would find the pod's own and trust the squatter BECAUSE the real pod
-        exists.
+        One port number can carry LISTEN sockets on several addresses. The pod holds a
+        non-loopback one; a foreign pid holds 127.0.0.1, the address the probe dialled.
         """
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: True)
         monkeypatch.setattr(
@@ -232,14 +224,10 @@ class TestPortOwner:
     def test_windows_can_prove_ownership_because_both_facts_now_answer(
         self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A blanket ``not IS_POSIX`` return would refuse Windows here outright.
+        """Ownership is provable on Windows, or every Windows pod is refused its token.
 
-        That was unsatisfiable rather than strict: ``pod up`` mints a token and
-        ``mint_token`` requires positive proof, so every healthy Windows pod
-        would have been refused its own credential forever. The proof needs
-        exactly two facts and both answer on win32 now — ``pid_start_token`` reads
-        the process creation FILETIME, and ``main_pid`` reads the pid the Task
-        Scheduler wrapper's ``supervise_gateway`` records.
+        ``pid_start_token`` reads the process creation FILETIME; ``main_pid`` reads the
+        pid the Task Scheduler wrapper's ``supervise_gateway`` records.
         """
         monkeypatch.setattr(rt, "IS_WINDOWS", True)
         monkeypatch.setattr(rt, "_pod_recorded_pid", lambda c, n, p: 4242)
@@ -593,15 +581,9 @@ class TestRuntimeHelpers:
     ) -> None:
         """The X-Local-Secret request rides the pod's AF_UNIX socket, never TCP.
 
-        A TCP transport would attest ownership and then open a
-        SEPARATE loopback connection carrying the secret: a pod exiting inside
-        that window frees the port for any local user, and loopback TCP has no
-        peer-credential API to tell the squatter from the gateway. The socket
-        lives inside the pod's owner-only home, so delivery there cannot reach
-        another user -- and `unix_socket_urlopen` has no TCP handler, making
-        "no fallback" structural. This test pins both properties: the TCP
-        opener is never consulted, and the secret-bearing request lands on
-        exactly the pod's own socket path.
+        Over TCP, a pod exiting between attestation and send frees the port to any
+        local user, and loopback TCP has no peer-credential API. The socket lives in
+        the pod's owner-only home. Pins: no TCP opener, and exactly the pod's socket.
         """
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
         c = PodConfig.load()
@@ -674,11 +656,8 @@ class TestRuntimeHelpers:
     ) -> None:
         """The credential path needs POSITIVE proof, unlike the health readout.
 
-        The two ways of being wrong are not symmetrical. Refusing a live pod costs
-        an error message; proceeding on an unproven port hands a different local
-        user -- who can bind 127.0.0.1 but cannot read this 0600 secret -- a
-        credential for this pod. ``_gateway_owns_port`` fails closed on the same
-        path for the same reason, including when the listener lookup is missing.
+        Refusing a live pod costs an error message; proceeding on an unproven port
+        hands another local user, who can bind 127.0.0.1, this pod's credential.
         """
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
         c = PodConfig.load()
@@ -717,14 +696,8 @@ class TestRuntimeHelpers:
 class TestMintRefusalNamesTheGateThatRefused:
     """A 403 from ``/api/token/local`` must report the gate that actually refused.
 
-    The endpoint refuses at three independent gates and says which one in the body it
-    already sends. Listing candidates instead sends the operator to a remedy for a gate
-    that did not refuse, and the remedy those candidates want is a recreate, whose
-    ``down`` half reclaims the pod's HOME. No gate this endpoint names is repaired by
-    one: transport admission and owner provenance both judge who connected, and a
-    credential mismatch can come from a live second gateway in the same pod home
-    rather than from the pod's state. Any message that still carries a recreate must
-    state what it costs.
+    The body names one of three gates. None is repaired by a recreate, whose ``down``
+    half reclaims the pod's HOME, so any message that still offers one states that cost.
     """
 
     def _refused(self, body: bytes | None) -> object:
@@ -821,12 +794,8 @@ class TestMintRefusalNamesTheGateThatRefused:
     ) -> None:
         """A code-bearing transport refusal cannot be an outdated gateway.
 
-        The codes ship with the same handler that admits this socket, so a gateway able
-        to say `loopback_only` is not one that predates that admission. What it means is
-        that the kernel did not positively confirm the connecting peer as the gateway's
-        own principal. Blaming a stale worktree there would re-offer the HOME-deleting
-        recreate for a refusal it cannot repair, which is this issue's defect moved one
-        gate over.
+        The codes ship with the handler that admits this socket. `loopback_only` means
+        the kernel did not confirm the peer, which a HOME-deleting recreate cannot fix.
         """
         body = json.dumps({"error": "loopback only", "code": "loopback_only"}).encode()
         message = self._mint(tmp_path, monkeypatch, body)
@@ -845,11 +814,8 @@ class TestMintRefusalNamesTheGateThatRefused:
     ) -> None:
         """A credential mismatch is two causes, and neither is repaired by a recreate.
 
-        A gateway that starts while a sibling serves another port in the same pod home
-        publishes its credential only to the per-listener file, so the shared slot
-        keeps pointing at the sibling. A caller reading that slot is refused here with
-        the pod's state perfectly healthy, which makes a recreate both useless and
-        destructive.
+        A sibling gateway in the same pod home can leave the shared slot pointing at
+        itself, so the refusal comes with the pod perfectly healthy.
         """
         body = json.dumps({"error": "invalid secret", "code": "invalid_secret"}).encode()
         message = self._mint(tmp_path, monkeypatch, body)
@@ -998,13 +964,10 @@ class TestMintRefusalNamesTheGateThatRefused:
     def test_the_owner_remedy_states_the_condition_of_the_running_platform(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The owner gate is not one condition, so the remedy may not name only one.
+        """The owner remedy names the running platform's condition, not only namespaces.
 
-        ``local_owner_bootstrap_allowed`` accepts an ordinary host process by the
-        running platform's own measure: matching user and mount namespaces on Linux,
-        and the absence of a sandbox profile on macOS. A remedy naming namespaces
-        alone tells a sandboxed macOS caller to fix something that is not the gate it
-        failed.
+        ``local_owner_bootstrap_allowed`` checks user and mount namespaces on Linux and
+        the absence of a sandbox profile on macOS.
         """
         body = json.dumps({"error": "x", "code": "member_owner_token_refused"}).encode()
         message = self._mint(tmp_path, monkeypatch, body)
@@ -1017,12 +980,8 @@ class TestMintRefusalNamesTheGateThatRefused:
 class TestMintSendsTheCredentialOfTheGatewayItDials:
     """The mint must authenticate as the generation that owns the port it dials.
 
-    The shared ``.local_secret`` holds one slot per data home. A gateway starting
-    while a sibling still serves another port in that home publishes its credential
-    only to the per-listener file, deliberately leaving the shared slot pointing at
-    the sibling. A mint reading the slot then presents one generation's credential to
-    another and is refused with nothing wrong with the pod, and the refusal is
-    indistinguishable at the wire from a credential left behind by an earlier run.
+    The shared ``.local_secret`` slot can point at a sibling still serving another
+    port; the dialled gateway's credential is in its per-listener file.
     """
 
     @staticmethod

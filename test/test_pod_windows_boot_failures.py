@@ -1,10 +1,8 @@
 """Three ways the Windows pod boot answered wrongly about its own gateway.
 
-Each is a fact the canary proved on windows-latest and no fake could: the pid
-that binds the port is not the pid the supervisor records, a POSIX shell script
-reached ``bash`` and got WSL, and the agent-backend pin never left the plane.
-All three fixes are platform-neutral Python, so these run everywhere with the
-platform flag pinned.
+On windows-latest the port's pid is not the supervisor's pid, ``bash`` can be WSL,
+and the agent-backend pin must reach the plane. The code is platform-neutral, so these
+run everywhere with the platform flag pinned.
 """
 
 from __future__ import annotations
@@ -42,9 +40,7 @@ def _listener(pid: int):
     return platform_compat.PortListener(pid=pid, address="127.0.0.1", family="4")
 
 
-# --------------------------------------------------------------------------
 # 1. The binding pid is a CHILD of the recorded pid on Windows
-# --------------------------------------------------------------------------
 def test_a_descendant_holding_the_port_is_this_pod_on_windows(cfg, monkeypatch):
     """The canary's HEALTH_FOREIGN: both pids are the pod.
 
@@ -75,17 +71,10 @@ def test_a_descendant_holding_the_port_is_this_pod_on_windows(cfg, monkeypatch):
 def test_a_listener_in_a_phantom_subtree_is_not_this_pod_on_windows(cfg, monkeypatch):
     """A recycled pid must not let a FOREIGN listener attest as the pod's own.
 
-    Windows never invalidates ``th32ParentProcessID`` when a parent dies, so once
-    that number is recycled to the launcher stub, processes the stub never
-    spawned appear beneath it. Accepting them would widen ownership in the wrong
-    direction — the listener below is unrelated and PREDATES the stub, which is
-    what tells it apart — and `port_owner`'s whole job is to decide exactly this.
-
-    Which of the two it is is decided by
-    `platform_compat.attributed_descendants`, whose own tests pin the exclusion
-    against a parent map. What is pinned HERE is the pod half: the walk reports
-    nothing, and `port_owner` must therefore call the listener FOREIGN rather than
-    reach past the walk to a raw descendant list and claim it.
+    Windows keeps ``th32ParentProcessID`` after a parent dies, so a recycled pid
+    gains children it never spawned; this listener predates the stub.
+    `platform_compat.attributed_descendants` has its own tests; here the walk reports
+    nothing, so `port_owner` must call the listener FOREIGN.
     """
     monkeypatch.setattr(rt, "IS_WINDOWS", True)
     monkeypatch.setattr(rt, "_pod_recorded_pid", lambda c, n, p: 4242)
@@ -195,9 +184,7 @@ def test_posix_does_not_accept_a_descendant(cfg, monkeypatch):
     assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_FOREIGN
 
 
-# --------------------------------------------------------------------------
 # 2. No POSIX shell on the Windows gateway boot path
-# --------------------------------------------------------------------------
 def test_ensure_node_spawns_no_shell_on_windows(monkeypatch, tmp_path):
     """``bash`` on Windows is WSL's launcher, so this spawn printed a WSL banner.
 
@@ -231,14 +218,9 @@ def test_ensure_node_reports_the_hosts_own_node_answer_on_windows(monkeypatch, t
 def test_node_ok_probes_the_resolved_path_not_the_bare_name(monkeypatch):
     """`_node_ok` must spawn what `shutil.which` FOUND, not the name it searched for.
 
-    The two tests above stub `_node_ok` itself, so neither executes the thing it
-    exists to defend. `shutil.which` is PATHEXT-aware and can answer `node.CMD` on
-    Windows (nvm-windows, volta and corepack all install shims), while
-    `CreateProcess` extends a bare name with `.exe` only -- so a probe that discards
-    the resolved path and spawns "node" raises FileNotFoundError and reports NO NODE
-    on a host where node works perfectly. Invisible on a machine whose node is a
-    real `node.EXE`, total on one whose node is a shim, which is exactly the shape
-    that survives review.
+    `shutil.which` honours PATHEXT and can find a `node.CMD` shim (nvm-windows, volta,
+    corepack), while `CreateProcess` adds only `.exe` to a bare name, so spawning
+    "node" raises FileNotFoundError. The two tests above stub `_node_ok` itself.
     """
     resolved = r"C:\Users\dev\AppData\Roaming\npm\node.CMD"
     monkeypatch.setattr(kc_cli.shutil, "which", lambda name: resolved if name == "node" else None)
@@ -284,9 +266,7 @@ def test_the_pod_wrapper_spawns_no_posix_shell(cfg):
         assert shell not in lowered, f"the wrapper must not name {shell!r}"
 
 
-# --------------------------------------------------------------------------
 # 3. The agent-backend pin reaches the pod gateway on Windows
-# --------------------------------------------------------------------------
 def test_the_plane_translates_the_pod_pin_to_the_gateway_variable(monkeypatch, tmp_path):
     """The knob is `KIROCREW_POD_KIRO_BIN`; the gateway reads `KIROCREW_KIRO_BIN`."""
     fake = tmp_path / "fake-kiro.cmd"
@@ -357,9 +337,7 @@ def test_the_canary_pins_a_fake_backend(monkeypatch):
     assert "fake_acp_backend_launcher" in text
 
 
-# --------------------------------------------------------------------------
 # The port probe and the pid record on Windows
-# --------------------------------------------------------------------------
 def test_the_windows_port_probe_asks_for_exclusive_use_not_reuseaddr(monkeypatch):
     """On Windows SO_REUSEADDR lets a bind succeed over a LIVE listener, which
     would read an occupied port as free and hand it to a gateway that then fails
