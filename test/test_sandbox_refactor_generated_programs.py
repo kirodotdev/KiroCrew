@@ -655,6 +655,10 @@ _PROFILE_GOLDEN = """\
 (deny file-link (require-all (subpath "<ROOT>/crew/apps") (require-not (subpath "<ROOT>/crew/apps/alpha/data"))))
 (allow file-read-metadata (literal "<ROOT>/crew/apps/alpha"))
 (allow file-read-metadata (literal "<ROOT>/crew/apps"))
+(deny network-outbound (remote unix-socket (path-regex #"^/(private/)?tmp/mcs-[^/]*\\.sock$")))
+(deny network-outbound (remote unix-socket (path-regex #"^<ROOT>/crew/run/tunnel-sidecar-[^/]*\\.sock$")))
+(deny file-write* (regex #"^/(private/)?tmp/mcs-[^/]*\\.sock$"))
+(deny file-link (regex #"^/(private/)?tmp/mcs-[^/]*\\.sock$"))
 """
 
 
