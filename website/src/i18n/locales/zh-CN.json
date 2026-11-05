@@ -9029,6 +9029,7 @@
       "make_a_status_tag": "将 {{name}} 设为状态标签",
       "make_status_tag": "设为状态标签",
       "new_tag": "新标签… ↵",
+      "new_tag_label": "新标签名称",
       "remove_status_flag_from": "移除 {{name}} 的状态标记",
       "rename_tag": "重命名标签 {{name}}",
       "set_color_to_name": "将颜色设为{{name}}",
