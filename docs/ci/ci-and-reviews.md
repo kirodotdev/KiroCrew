@@ -4907,7 +4907,10 @@ Nothing the fork controls can influence these reviews:
   pass. The boundary holds only while codex's read-only sandbox blocks the job
   user's passwordless `sudo`, so "Verify the review sandbox fails closed" probes
   `sudo -n true` and a read of the credential file through `codex sandbox` and
-  fails the job if either succeeds. The lane's Opus adjudication pass is
+  fails the job if either succeeds. The uid boundary does not cover another job
+  process's `/proc/<pid>/environ`, so the same step fails the job when the
+  sandbox can read a marked sibling's environment (or cannot read the checkout,
+  which would make that refusal meaningless). The lane's Opus adjudication pass is
   shell-less and keeps the scrub step and its own Bedrock credential.
 
 **`fork-workflow-guard.yml`** blocks a fork PR that modifies anything under
