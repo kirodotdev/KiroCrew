@@ -181,7 +181,6 @@
   "pages.appsPage.app",
   "pages.appsPage.cron_job",
   "pages.appsPage.skill",
-  "pages.appsPage.update",
   "pages.appsPage.updated_app",
   "pages.appsPage.updates_hint",
   "pages.artifactDeployPage.more_count",
