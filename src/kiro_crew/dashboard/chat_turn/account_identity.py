@@ -190,3 +190,22 @@ def _mark_kiro_signed_out(state: Any) -> None:
         service.mark_signed_out()
     except Exception:
         logger.debug("Could not latch Kiro signed-out state", exc_info=True)
+
+
+def _mark_kiro_cli_too_old(state: Any) -> None:
+    """Latch the prerequisite service to CLI-too-old after a rejected ``--auth-method``.
+
+    The counterpart of :func:`_mark_kiro_signed_out` for an old kiro-cli: the spawn,
+    not a probe, is what proves the installed kiro-cli is older than the option
+    every KAS relay session passes. Latching it makes the dashboard show the setup
+    screen's Update Kiro CLI card. Best-effort: never disrupt the turn's teardown.
+    """
+
+    service = getattr(state, "kiro_prerequisite_service", None)
+    mark = getattr(service, "mark_cli_too_old", None)
+    if mark is None:
+        return
+    try:
+        mark()
+    except Exception:
+        logger.debug("Could not latch Kiro CLI-too-old state", exc_info=True)

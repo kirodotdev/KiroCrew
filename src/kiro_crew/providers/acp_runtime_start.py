@@ -403,7 +403,13 @@ def _delegate_launch_failure(runtime: AcpRuntime) -> AcpDelegateLaunchFailed | N
     """
     if not runtime.saw_delegate_launch_failure():
         return None
-    return AcpDelegateLaunchFailed()
+    failure = AcpDelegateLaunchFailed(runtime.delegate_launch_failure_text())
+    if failure.kiro_cli_too_old:
+        # circular import: the prerequisite service sits above the provider layer.
+        from kiro_crew.kiro_prerequisite import mark_registered_cli_too_old
+
+        mark_registered_cli_too_old()
+    return failure
 
 
 def _member_session_key(self: AcpProvider) -> str:

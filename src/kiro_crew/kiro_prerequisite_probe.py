@@ -570,7 +570,9 @@ async def _probe(
             rejected, rejection_detail = await self._probe_kas_spec_loading()
         # KAS needs ACP support but not a kiro-cli login, so the probe must
         # check for a too-old relay binary even when signed out.
-        acp_supported = await self._probe_acp_support(self._viable_binary)
+        # A spawn-proven too-old verdict (``mark_cli_too_old``) stays until an
+        # update or a human Check again clears it: ``acp --help`` cannot see it.
+        acp_supported = await self._probe_acp_support(self._viable_binary) and not self._cli_too_old
         login_cmd, sso_cmd, bundled = login_commands_for(self._viable_binary, self._environ)
         self._status = PrerequisiteStatus(
             platform=_platform_label(self._platform),
@@ -746,6 +748,7 @@ async def update_cli(self: KiroPrerequisiteService, caller: str = "") -> dict[st
     if not error:
         # Re-probe so a successful update flips ``acp_supported`` / ``ready``
         # and the card clears. Explicit-action half of the probe budget.
+        self._cli_too_old = False
         try:
             await self._probe(force=True)
         except Exception:  # noqa: BLE001 — stale state beats a 500

@@ -32,7 +32,10 @@ if TYPE_CHECKING:
         logger,
         run_bg_oneliner,
     )
-    from kiro_crew.dashboard.chat_turn.account_identity import _mark_kiro_signed_out
+    from kiro_crew.dashboard.chat_turn.account_identity import (
+        _mark_kiro_cli_too_old,
+        _mark_kiro_signed_out,
+    )
     from kiro_crew.dashboard.chat_turn.eager_spawn import _is_pre_spawn_refusal
     from kiro_crew.dashboard.chat_turn.recipient import _deliver_linked_slack_message
     from kiro_crew.dashboard.chat_turn.recovery import (
@@ -207,6 +210,10 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
     slot = turn.slot
     state = turn.state
     await _persist_partial_reply(turn, "error: terminal")
+    if getattr(exc, "kiro_cli_too_old", False):
+        # The spawn proved the CLI too old for --auth-method; the probe
+        # cannot see it, so latch it and the dashboard offers Update Kiro CLI.
+        _mark_kiro_cli_too_old(state)
     # ── Poisoned-conversation escalation ────────────────────────────
     # A transient-classified error that reaches this terminal branch
     # with ZERO output means a full retry ladder was exhausted

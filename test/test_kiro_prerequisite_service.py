@@ -171,6 +171,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "initial_setup_complete": ("property", False, "(self) -> 'bool'"),
     "login_verified": ("function", True, "(self, *, max_age_secs: 'float') -> 'bool'"),
     "mark_signed_out": ("function", False, "(self) -> 'None'"),
+    "mark_cli_too_old": ("function", False, "(self) -> 'None'"),
     "note_absence_swept": ("function", False, "(self, run: 'int') -> 'None'"),
     "note_sessions_reconciled": (
         "function",

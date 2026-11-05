@@ -60,7 +60,7 @@ from kiro_crew.acp.transport_errors import (
     AcpDelegateLaunchFailed,
     AcpError,
     AcpSandboxInitFailed,
-    is_delegate_launch_failure_output,
+    delegate_launch_failure_message,
     is_sandbox_init_failure_output,
     registration_throttle_line,
     sandbox_init_failure,
@@ -878,7 +878,7 @@ async def _delegate_launch_failure(self: AcpClient) -> AcpDelegateLaunchFailed |
     """The delegate-launch error for this child's stderr, or ``None``.
 
     The ``AcpClient`` side of the classification ``AcpRuntime`` latches per
-    stderr line: the same shared :func:`is_delegate_launch_failure_output`
+    stderr line: the same shared :func:`delegate_launch_failure_message`
     signature, read off the ring buffer the way :meth:`_sandbox_init_failure`
     reads it, so the two transports cannot disagree about what a
     ``kiro-cli-chat`` launch failure is. ``None`` when nothing was retained (a
@@ -889,9 +889,16 @@ async def _delegate_launch_failure(self: AcpClient) -> AcpDelegateLaunchFailed |
     await self._settle_stderr()
     if not self._stderr_lines:
         return None
-    if not is_delegate_launch_failure_output("\n".join(self._stderr_lines)):
+    message = delegate_launch_failure_message("\n".join(self._stderr_lines))
+    if message is None:
         return None
-    return AcpDelegateLaunchFailed()
+    failure = AcpDelegateLaunchFailed(message)
+    if failure.kiro_cli_too_old:
+        # circular import: the prerequisite service sits above the ACP layer.
+        from kiro_crew.kiro_prerequisite import mark_registered_cli_too_old
+
+        mark_registered_cli_too_old()
+    return failure
 
 
 async def _registration_throttle_line(self: AcpClient) -> str | None:

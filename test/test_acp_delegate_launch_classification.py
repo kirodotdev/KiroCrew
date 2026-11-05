@@ -181,6 +181,7 @@ def test_the_translation_is_non_retryable_and_names_the_fix():
 
     runtime = MagicMock()
     runtime.saw_delegate_launch_failure.return_value = True
+    runtime.delegate_launch_failure_text.return_value = DELEGATE_LAUNCH_FAILURE_MESSAGE
     exc = _delegate_launch_failure(runtime)
     assert isinstance(exc, AcpDelegateLaunchFailed)
     assert isinstance(exc, AcpError)

@@ -259,6 +259,9 @@ class KiroPrerequisiteService:
         self._turn_auth_lock = asyncio.Lock()
         self._turn_auth_checked_at: float | None = None
         self._turn_auth_signed_out = False
+        # Set by :meth:`mark_cli_too_old`; ANDed into every probe's
+        # ``acp_supported`` until an update or a human Check again clears it.
+        self._cli_too_old = False
         # Which account the store named when the latch was last written.
         # Comparing it against a fresh read is how an out-of-band `kiro-cli
         # logout` (or a switch to another account) is noticed at all: nothing
@@ -542,6 +545,10 @@ class KiroPrerequisiteService:
         freshness bound.
         """
 
+        if force and not coalesce:
+            # A human Check again is the one probe allowed to retry a spawn-proven
+            # too-old verdict; the next session spawn re-latches it if it holds.
+            self._cli_too_old = False
         if force and coalesce and self._clock() - self._last_probe_at < _FORCED_PROBE_FLOOR_SECS:
             force = False
         if force and coalesce and self._has_probed and self._probe_lock.locked():
@@ -614,6 +621,34 @@ class KiroPrerequisiteService:
         # than being served by the short cache off this synthetic transition.
         self._last_probe_at = 0.0
         logger.info("Kiro readiness latched to signed-out after an ACP auth failure")
+
+    def mark_cli_too_old(self) -> None:
+        """Latch ``acp_supported`` off after a spawn proved kiro-cli too old.
+
+        The ``acp --help`` probe cannot see this case: the CLI has ``acp`` but
+        rejects the ``--auth-method`` option every KAS relay session passes, so
+        the probe reports it supported and only the spawn's own
+        ``unexpected argument '--auth-method'`` line proves otherwise. Feeding
+        that back here turns the next status poll into the setup screen's
+        Update Kiro CLI card, the one dashboard control that updates the CLI, so
+        a user with no terminal has a way out.
+
+        Only ever narrows readiness, like :meth:`mark_signed_out`. The verdict
+        is sticky: ``_probe`` ANDs it into ``acp_supported``, so a machine-driven
+        probe (a stale-status poll, the gate's auto-poll) cannot clear the card
+        before the user sees it. Only a successful ``update_cli`` or a human
+        Check again clears it; if the CLI is still too old, the next session's
+        spawn latches it again.
+        """
+
+        if self._assume_ready:
+            return
+        self._cli_too_old = True
+        if not self._status.acp_supported and not self._status.ready:
+            return
+        self._status = replace(self._status, acp_supported=False, ready=False)
+        self._last_probe_at = 0.0
+        logger.info("Kiro readiness latched to CLI-too-old after a rejected --auth-method")
 
     @property
     def identity_absence_is_definitive(self) -> bool:
@@ -875,3 +910,20 @@ async def kiro_signed_out_confirmed() -> bool:
     except Exception:
         logger.debug("Kiro sign-in check failed", exc_info=True)
         return False
+
+
+def mark_registered_cli_too_old() -> None:
+    """Latch the registered service to CLI-too-old, from any surface.
+
+    Called where the ACP layer builds the too-old error, so a Slack, cron or
+    side-chat turn shows the setup screen's Update Kiro CLI card too, not only
+    the main dashboard turn. Never raises; a no-op with no registered service.
+    """
+    ref = _turn_auth_service
+    service = ref() if ref is not None else None
+    if service is None:
+        return
+    try:
+        service.mark_cli_too_old()
+    except Exception:
+        logger.debug("Could not latch Kiro CLI-too-old state", exc_info=True)

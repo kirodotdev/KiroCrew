@@ -210,6 +210,7 @@ class AcpRuntime:
     settle_stderr = _rt_liveness.settle_stderr
     saw_sandbox_init_failure = _rt_liveness.saw_sandbox_init_failure
     saw_delegate_launch_failure = _rt_liveness.saw_delegate_launch_failure
+    delegate_launch_failure_text = _rt_liveness.delegate_launch_failure_text
     redacted_stderr_tail = _rt_liveness.redacted_stderr_tail
     _exit_watch_loop = _rt_liveness._exit_watch_loop
     _reader_has_buffered_input = _rt_liveness._reader_has_buffered_input
@@ -619,6 +620,7 @@ class AcpRuntime:
         # fails before ``initialize`` completes, so the pre-``_first_session_ready``
         # window is where it is caught; see the arming guard in ``_drain_stderr``.
         self._saw_delegate_launch_failure = False
+        self._delegate_launch_failure_message: str | None = None
         # Whether a session handle has ever been produced on this runtime. The
         # startup window the two latches above arm in, and the reason it is a separate
         # flag from ``_initialized``: the handshake is the middle of startup, not
