@@ -29,3 +29,8 @@ def claude_mcp_tool_name(server: str, tool: str) -> str:
         f"mcp__{_CLAUDE_UNSAFE_NAME_CHARS.sub('_', server)}"
         f"__{_CLAUDE_UNSAFE_NAME_CHARS.sub('_', tool)}"
     )
+
+
+def claude_mcp_server_rule(server: str) -> str:
+    """``mcp__<server>``, the rule naming every tool of *server*, spelled the same way."""
+    return f"mcp__{_CLAUDE_UNSAFE_NAME_CHARS.sub('_', server)}"

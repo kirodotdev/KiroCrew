@@ -1122,6 +1122,7 @@ def session_mcp_projection(
     session_key: str = "",
     worker_tool_limits_honoured: bool = False,
     spec_policy_honoured: bool = False,
+    worker_mcp_tool_limits_honoured: bool = False,
 ) -> SessionMcpProjection:
     """The array, the withhold set AND the per-tool restrictions, from ONE parse.
 
@@ -1151,6 +1152,7 @@ def session_mcp_projection(
         session_key,
         tool_limits_honoured=worker_tool_limits_honoured,
         spec_policy_honoured=spec_policy_honoured,
+        mcp_tool_limits_honoured=worker_mcp_tool_limits_honoured,
     )
     settings = _global_settings()
     disabled_tools = session_mcp_disabled_tools(

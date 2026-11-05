@@ -533,6 +533,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "the fix, so it never runs wider than its Bot saved; a worker without "
         "them runs, and the card's saved-agent line already says whether it loads"
     ),
+    "ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS": (
+        "whether the MCP half of a Bot worker's single-tool switch-offs is honoured. "
+        "A worker with such limits on a non-member is refused before spawn with an "
+        "error naming the fix, so it never runs wider than its Bot saved; the "
+        "single-tool line above already covers a native-tool switch-off"
+    ),
     "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": (
         "which channel carries the agent spec's own servers to the session, read by the "
         "unresolved-ref detector. The servers arrive either way; a wrong membership is a "

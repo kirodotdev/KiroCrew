@@ -306,7 +306,20 @@ and effort selection, the full `session/request_permission` flow) works. So
   what the dashboard writes that key to prevent. `session_mcp_deny_rules` turns
   each entry into `mcp__<server>__<tool>` and the settings writer merges those
   into `permissions.deny`, which CC evaluates ahead of every allow rule and of the
-  host callback. One asymmetry remains open: a `@server/tool` reference grants ONE
+  host callback. A crewmate's worker takes its rules from the spec built for its
+  session, not the base on disk by name
+  (`session_mcp_crewmate.crewmate_worker_deny_rules`): each `disabledTools` entry,
+  each `@server/tool` in its `excludedTools` and each whole `@server`
+  (`mcp__<server>`); a worker whose crewmate file excludes a native tool (`@builtin` included), or sets a
+  `disabledTools` that is not a list of tool names, is refused before spawn, since
+  no deny here carries it. The seed and the array read that spec in turn, so the
+  array is held to the settings the session ships (the inline settings, or the
+  `settings.local.json` on disk, read only as Crew's own seed, never through a link): when the spec the array reads asks for a rule
+  they lack (the crewmate file was narrowed in between, or a re-seed was
+  declined), the whole array is withheld
+  (`session_mcp_crewmate.worker_array_outruns_seed`). One asymmetry
+  remains open: a
+  `@server/tool` reference grants ONE
   tool on kiro-cli while the array mounts the whole server here, and the set to
   deny is not knowable without connecting to the server — those extra tools still
   reach the host permission gate, so the surface is wider, not ungated.

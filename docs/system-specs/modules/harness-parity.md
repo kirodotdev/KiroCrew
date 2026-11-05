@@ -179,16 +179,24 @@ outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`
 (`capability_tool_limits_unsupported`, before spawn). That set is the worker's
 own because the worker's limits travel differently from a member chat's: the
 worker spec rewrites every switched-off tool into `excludedTools`, which KAS
-projects, so KAS (the default backend) honours them and is in the set; claude
-mounts the worker's servers whole and reports `excludedTools` as a gap, so it
-is not, and neither is codex, whose worker capture shows no single-tool limit
-held. codex is in the kit set on its own live capture
+projects, so KAS (the default backend) honours them and is in the set. claude
+honours only their MCP half, so it is in `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`
+(KAS, claude) and not in the whole set: a `disabledTools` entry, an
+`@server/tool` and a whole `@server` become `permissions.deny` rules derived from
+the worker's own spec, keyed by the session
+(`acp.session_mcp_crewmate.crewmate_worker_deny_rules`, the read its array is
+built from), while a native-tool exclude (`@builtin` included), a wildcard, or a `disabledTools` that is
+not a list of tool names (`mate_worker.uncarried_tool_limits_of`) is still refused. The capture is
+`claude/worker-tool-limits-live.jsonl`: each of the three limits kept its tools out
+of the model's list while their siblings asked and ran. codex is in neither set:
+its worker capture shows no single-tool limit held. codex is in the kit set on its own live capture
 (`codex/worker-kit-live.jsonl`): its mirror hands the session key to the
 projection, so the worker's array carried the crewmate's server and the worker
 called it. deepseek builds its array through the same projection but is outside
 `ACP_BACKENDS_MATE_WORKER_KIT` until a live capture of a worker session lands, so
-a worker there is refused. Both providers answer `mate_worker_kit_supported` and
-`mate_worker_tool_limits_supported` from the two sets. The worker's prompt (its
+a worker there is refused. Both providers answer `mate_worker_kit_supported`,
+`mate_worker_tool_limits_supported` and `mate_worker_mcp_tool_limits_supported`
+from the three sets. The worker's prompt (its
 principles, then its crewmate's) rides the `[AGENT SYSTEM PROMPT]` block only on
 `ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT` (claude, codex), the kit
 hosts whose mirror rules `Concern.PROMPT` `WITHHELD`; KAS's wire spec carries it.

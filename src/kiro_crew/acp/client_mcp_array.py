@@ -31,6 +31,7 @@ Instance fields read: ``_agent``, ``_channel_id``, ``_claude_inline_settings``,
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Collection
@@ -44,7 +45,9 @@ from kiro_crew.acp.mcp_session_report import NAME_CAP as MCP_REPORT_NAME_CAP
 from kiro_crew.acp.mcp_session_report import McpSessionReport, sanitize_sink_text
 from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable
 from kiro_crew.acp.session_mcp import ToolsAllowlist, agent_spec_snapshot
+from kiro_crew.acp.session_mcp_crewmate import worker_array_outruns_seed
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_DISPATCH,
@@ -368,6 +371,14 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     self._session_agent_spec = projection.agent_spec
     servers = projection.params.get("mcpServers") or []
     out = list(servers) if isinstance(servers, list) else []
+    if _claude_worker_settings_lag(self, projection.agent_spec):
+        logger.warning(
+            "session MCP: withholding the whole mcpServers array -- the claude settings "
+            "this worker ships lack a deny rule its crewmate file asks for (the file "
+            "changed after they were written, or the re-seed was declined). The worker "
+            "runs without MCP tools; the next start reads the file again.",
+        )
+        return []
     # The restriction half of the projection's withhold set, from the SAME parse the
     # array came out of: the member append must not re-add a name this projection
     # refused on a transport where the withhold is the whole of the enforcement.
@@ -378,6 +389,31 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         projection.restricted_servers,
         projection.disabled_servers,
     )
+
+
+def _claude_worker_settings_lag(client: AcpClient, spec: dict[str, Any] | None) -> bool:
+    """Whether *client*, a claude worker session, ships settings missing a rule *spec* asks for.
+
+    Judged on what Claude Code will read: the inline settings when the project's
+    file is excluded, else ``settings.local.json`` on disk, read only as the bytes
+    Crew's durable seed record names (no link followed, bounded); a file that is
+    not that seed counts as no rules. No spec, or any other session, is never held.
+    """
+    from kiro_crew.acp import seed_provenance
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+
+    is_worker = client._agent == MATE_WORKER_AGENT and bool(client._session_key)
+    if not (client.backend == ACP_BACKEND_CLAUDE and is_worker) or not isinstance(spec, dict):
+        return False
+    in_force: Any = client._session_mcp_inline_settings
+    if not client._session_mcp_excludes_local:
+        path = client._claude_local_settings_path()
+        raw = client._settings_path_bytes(path, seed_provenance.recorded_durable(path))
+        try:
+            in_force = json.loads(raw.decode("utf-8")) if raw is not None else None
+        except ValueError:
+            in_force = None
+    return worker_array_outruns_seed(in_force, spec)
 
 
 def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list[dict[str, Any]]:

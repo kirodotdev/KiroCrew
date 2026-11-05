@@ -21,6 +21,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
 )
 from kiro_crew.mate_worker import MATE_WORKER_AGENT
@@ -394,6 +395,10 @@ def _claude_worker_provider(key, backend=ACP_BACKEND_CLAUDE, **_kwargs):
         def mate_worker_tool_limits_supported(self):
             return backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS
 
+        @property
+        def mate_worker_mcp_tool_limits_supported(self):
+            return backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
+
     return _ClaudeWorker()
 
 
@@ -412,8 +417,10 @@ async def test_the_allocation_refuses_a_tool_limited_worker_on_a_mirror(
     pixel_worker, tmp_path, monkeypatch, limits, backend
 ):
     """The allocation itself, not only its source: a worker whose crewmate's file
-    turns off single tools is refused on claude and codex before anything starts,
-    and the same worker with no limits starts there."""
+    turns off single tools is refused on codex before anything starts, and on
+    claude when a limit is a native tool, which no MCP deny carries; claude starts
+    a worker whose limits are all MCP tools, and the same worker with no limits
+    starts on both."""
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.members_parts import member_sessions
     from kiro_crew.session import SessionManager
@@ -438,7 +445,12 @@ async def test_the_allocation_refuses_a_tool_limited_worker_on_a_mirror(
         return provider
 
     manager = SessionManager(KiroCrewConfig.load(), provider_factory=factory)
+    native = any(not ref.startswith("@") for ref in limits.get("excludedTools", []))
     try:
+        if backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS and not native:
+            await manager.get_or_create(key, agent=MATE_WORKER_AGENT, cwd=str(tmp_path))
+            assert made and made[0].starts == 1
+            return
         with pytest.raises(CapabilityStartupError) as refused:
             await manager.get_or_create(key, agent=MATE_WORKER_AGENT, cwd=str(tmp_path))
         assert str(refused.value) == "capability_tool_limits_unsupported"

@@ -409,6 +409,7 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_UNMARKED_COMPACTION_PAIR": None,
     "ACP_BACKENDS_MCP_WIRE_REINJECT": None,
     "ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS": None,
+    "ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS": None,
     # kiro-cli 2.35.1 / KAS 0.66.70 / codex-acp 2.2.2: each member's teardown
     # verb is captured live, the same id answered before and 'not found' after.
     "ACP_BACKENDS_SESSION_EVICTION": None,
