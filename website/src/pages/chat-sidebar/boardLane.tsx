@@ -158,7 +158,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
         {/* Only the header opens the folder menu; body rows keep their own
          * menus and the rename input keeps its native editing menu. */}
         <ContextMenu>
-          <ContextMenuTrigger asChild disabled={mateManaged || (editingId === folder.id && editScope === columnId)}>
+          <ContextMenuTrigger asChild disabled={!!forceCollapsed || mateManaged || (editingId === folder.id && editScope === columnId)}>
         {/* Same rule as the tree row: a column copy with no body has nothing to
          *  toggle, so it is not a control - no button role, no tab stop, no
          *  pointer cursor, no expanded state and no handler. It stays draggable,
