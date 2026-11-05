@@ -333,11 +333,14 @@ def _doctor_claude_backend(issues: list[str], *, required: bool) -> None:
         # whether the deployment may select the backend is a separate answer that
         # ``apply_selectable_denials`` can say no to. Calling an install "selectable"
         # would print the opposite of the truth on a policy-denied deployment.
+        version = _claude_adapter_version()
+        shown = f" {version}" if version else ""
         where = shutil.which(_CLAUDE_ACP_BIN)
         if where:
-            print(f"  claude-acp:  ✅ {where} (Claude Code installed)")
+            print(f"  claude-acp:  ✅ {where}{shown} (Claude Code installed)")
         else:
-            print("  claude-acp:  ✅ resolved off PATH (Claude Code installed)")
+            print(f"  claude-acp:  ✅ resolved off PATH{shown} (Claude Code installed)")
+        _warn_old_claude_adapter(version)
     elif claude_state.installed == MISSING:
         missing = ", ".join(claude_state.missing_components) or "components"
         if required:
@@ -353,6 +356,43 @@ def _doctor_claude_backend(issues: list[str], *, required: bool) -> None:
         # probe's three-valued verdict exists to prevent, and which the dashboard
         # also refuses to make.
         print("  claude-acp:  ⚠️  could not check")
+
+
+def _claude_adapter_version() -> str:
+    """The installed adapter's npm package version, or ``""`` when unreadable.
+
+    Never ``claude-agent-acp --version``: old releases ignore the flag and wait on
+    stdin, which would hang doctor.
+    """
+    try:
+        from kiro_crew.agent_sdk.drivers.acp import claude_adapter_disk_version
+
+        return claude_adapter_disk_version()
+    except Exception:
+        return ""
+
+
+def _warn_old_claude_adapter(version: str) -> None:
+    """A warning row when *version* is below the floor; never an issue.
+
+    Below the floor sessions still start (Crew withholds what that adapter cannot
+    honour), so this informs rather than fails doctor.
+    """
+    try:
+        from kiro_crew.agent_sdk.drivers.acp import (
+            claude_adapter_install_command,
+            claude_adapter_min_version,
+            claude_adapter_version_is_below_floor,
+        )
+
+        if not claude_adapter_version_is_below_floor(version):
+            return
+        floor = claude_adapter_min_version()
+        command = claude_adapter_install_command()
+    except Exception:
+        return
+    print(f"               ⚠️  claude-agent-acp {version} is older than {floor}; update it:")
+    print(f"               {command}")
 
 
 def _backend_policy_label(backend: str) -> str:
