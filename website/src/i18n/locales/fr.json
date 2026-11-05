@@ -16259,7 +16259,7 @@
       "cleanup_failed": "Échec du nettoyage",
       "coming_soon_this_app_is_not_yet_available_in_app": "Bientôt disponible — cette app n'est pas encore proposée dans Apps. Revenez après la prochaine mise à jour.",
       "failed_to_load_app_info": "Échec du chargement des informations de l’application",
-      "has_moved_to_a_standalone_app": "a été migré vers une app autonome",
+      "name_has_moved_to_a_standalone_app": "{{name}} a été migré vers une app autonome",
       "install_from_apps": "Installer depuis Apps",
       "install_the_standalone_version_to_continue_using": "Installez la version autonome pour continuer à utiliser cette fonctionnalité.",
       "migration_complete": "Migration terminée",

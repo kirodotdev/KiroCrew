@@ -16259,7 +16259,7 @@
       "cleanup_failed": "Pulizia non riuscita",
       "coming_soon_this_app_is_not_yet_available_in_app": "Prossimamente — questa app non è ancora disponibile in App. Ricontrolla dopo il prossimo aggiornamento.",
       "failed_to_load_app_info": "Caricamento delle informazioni dell'app non riuscito",
-      "has_moved_to_a_standalone_app": "è passato a un'app standalone",
+      "name_has_moved_to_a_standalone_app": "{{name}} è passato a un'app standalone",
       "install_from_apps": "Installa da App",
       "install_the_standalone_version_to_continue_using": "Installa la versione standalone per continuare a usare questa funzionalità.",
       "migration_complete": "Migrazione completata",
