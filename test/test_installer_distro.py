@@ -345,7 +345,10 @@ def test_cli_never_drives_the_system_package_manager() -> None:
     # Provisioning Python is a user-directory download, never a system
     # mutation: no branch of the installer may invoke a package manager or
     # sudo. (Package-manager names inside err() guidance strings are fine —
-    # text the user chooses to run themselves.)
+    # text the user chooses to run themselves — and so is a line that only
+    # echoes one fixed double-quoted string with no expansion, which prints a
+    # command and runs nothing.)
+    printed_only = re.compile(r'echo "[^"$`\\]*"( >&2)?')
     for lineno, line in enumerate(CLI_SH.read_text().splitlines(), start=1):
         stripped = line.lstrip()
         if stripped.startswith("#"):
@@ -353,7 +356,9 @@ def test_cli_never_drives_the_system_package_manager() -> None:
         for needle in ("sudo ", "apt-get ", "dnf ", "yum "):
             if needle in stripped:
                 assert (
-                    stripped.startswith("err ") or "|| err " in stripped
+                    stripped.startswith("err ")
+                    or "|| err " in stripped
+                    or printed_only.fullmatch(stripped) is not None
                 ), f"cli.sh:{lineno} drives the system package manager: {line!r}"
 
 
