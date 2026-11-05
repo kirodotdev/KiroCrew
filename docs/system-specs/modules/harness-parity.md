@@ -365,14 +365,20 @@ The heartbeat agent has no approver behind it, so `_heartbeat_approval`
 never on the title the model wrote (`slack/gateway_runtime/tool_policy.py`,
 `_is_heartbeat_safe_tool`). kiro-cli stamps `_meta.kiro.toolName` on every tool
 call, goose writes `_meta.goose.toolCall`, codex-acp marks MCP calls with
-`_meta.is_mcp_tool_call`. claude-agent-acp stamps `_meta.claudeCode.toolName` on its
-built-ins, but Crew reads that key only on a Side Chat session the harness itself
-launched read-only (`claude-code-provider.md`, "A Side Chat session"); it is not a row
-of `_MCP_IDENTITY_META_CHANNELS`, so a heartbeat event on claude-agent-acp carries no
-trusted identity. opencode sends `kind="other"` and no identity (`acp/_dispatch_parts/tool_call_identity.py`,
-`classify_tool_call`). On those two, every heartbeat tool call is denied and audited
-`reason=no_trusted_identity`, with one gateway warning per denied call naming the
-backend condition, and the heartbeat cycle runs as a text-only poller. The signal is
+`_meta.is_mcp_tool_call`. claude-agent-acp names an MCP call's server on its
+permission request (`_meta.claudeCode.mcpServer`), and Crew adopts that pair only for a
+server it placed on the session array (`permission_requests.claude_mcp_identity`:
+`source` is `dynamic`, the name is a placed one, and `toolName` is exactly
+`mcp__<server>__<tool>` as the tool_call frame stamped it), so a heartbeat core read
+such as `kirocrew-core` `spawn_list` is approved there. Its built-ins and the servers of
+the user's own `~/.claude` config still carry no trusted name: the built-in stamp is
+read for the read-only proof only on a Side Chat session (`claude-code-provider.md`,
+"A Side Chat session"), and neither is a row of `_MCP_IDENTITY_META_CHANNELS`.
+opencode sends `kind="other"` and no identity (`acp/_dispatch_parts/tool_call_identity.py`,
+`classify_tool_call`). On opencode, and for those claude calls, every heartbeat tool
+call is denied and audited `reason=no_trusted_identity`, with one gateway warning per
+denied call naming the backend condition, so an opencode heartbeat runs as a
+text-only poller. The signal is
 per call on purpose: each row is derived from the event itself, so it cannot drift
 from what the gate decided, and the positive set a start-time warning would key on
 (`ACP_BACKENDS_META_IDENTITY`) deliberately omits kiro-cli -- it lists harnesses whose

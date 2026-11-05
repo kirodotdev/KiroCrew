@@ -285,6 +285,26 @@ The kiro-cli path is unchanged: it receives the same servers via `--agent`, and 
 duplicate array here would shadow the spec's own entries, so that backend passes
 none.
 
+**A call on a placed server carries its identity to the gate.** The adapter's
+`tool_call` frame names an MCP tool only in its fused `_meta.claudeCode.toolName`
+(`mcp__crew-probe__crew_probe_echo`), and its `session/request_permission` adds
+`_meta.claudeCode.mcpServer` `{name, source}` (captured live in
+`test/fixtures/acp_frames/claude/mcp-stdio-mount-live.jsonl`). On a claude session
+`build_permission_event` reads that pair through
+`permission_requests.claude_mcp_identity`, and only when all of these hold: `source`
+is `dynamic` (a server the client handed over on the array), the name is one Crew
+placed there (`_harness_mcp_server_names`), `toolName` is exactly
+`mcp__<server>__<tool>` and equals the name the preceding `tool_call` frame stamped,
+and both halves pass `mcp_identity_name`. The title is never read. Such a call then
+reaches every tier keyed on a trusted `(server, tool)` exactly as a kiro-cli MCP call
+does: `@server` operator grants and denies, the Reads-mode own-tool proof, the
+`MCP_DOCUMENT_BODY_FIELDS` exemption and the heartbeat core reads. Like a kiro-cli
+MCP call's, its `command` argument leaves the raw-command tier (it names its server);
+its arguments are scanned as any trusted MCP call's are. Any other frame (a user, project or plugin server of the
+harness's own config, a server Crew did not place, a mismatched name) keeps the empty
+identity, so it stays title-only and `_foreign_mcp_identity` never refuses the user's
+own servers. Pinned by `test/test_claude_mcp_identity.py`.
+
 ### Session-scoped Claude settings
 
 `_write_claude_local_settings` writes `<work_dir>/.claude/settings.local.json` before
