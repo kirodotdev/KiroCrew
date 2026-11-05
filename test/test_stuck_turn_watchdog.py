@@ -33,6 +33,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_TOOL_STALL,
     JsonRpcMessage,
 )
+from kiro_crew.testing.wait import default_timeout
 
 # Windows tight enough that a park of a few hundred ms is many multiples of the
 # suspect window: without the correction the arm would act well inside the test.
@@ -235,18 +236,20 @@ async def test_backend_silence_without_a_park_still_trips_the_arm(monkeypatch):
     """The correction must not disarm the watchdog: with no park, an idle tool
     clock past the suspect window still ends the turn. Guards against "fixing"
     the misattribution by simply never acting."""
-    # The arm runs only when a queue wait times out. Tick it every 20 ms under a
-    # turn budget the arm must beat by a wide margin: with a short budget and the
-    # default poll, the arm's single look landed on the turn's own deadline, so
-    # a host stall of ~0.35 s before the tool frame was handled ended the turn
-    # with the tool idle under the suspect window and nothing to catch.
-    monkeypatch.setattr(session_handle_dispatch, "QUEUE_POLL_SECS", 0.02)
+    # The arm runs only when a queue wait times out. Tick it at the watchdog's
+    # own check window, under the lost-run bound (half the running test's
+    # timeout) as the turn budget: with a short literal budget and the default
+    # poll, the arm's single look landed on the turn's own deadline, so a host
+    # stall of ~0.35 s before the tool frame was handled ended the turn with the
+    # tool idle under the suspect window and nothing to catch. The budget is
+    # never the barrier: the turn ends as soon as the arm acts.
+    monkeypatch.setattr(session_handle_dispatch, "QUEUE_POLL_SECS", _FAST_WD.check_after_secs)
     handle = _make_handle()
     handle._queue.put_nowait(_tool_call_frame())
 
     # Drive the generator directly: no consumer park is recorded, so the idle
     # interval is pure backend silence.
-    events = [ev async for ev in handle._dispatch_events(1, timeout=30.0)]
+    events = [ev async for ev in handle._dispatch_events(1, timeout=default_timeout())]
 
     assert any(ev.stop_reason == STOP_REASON_TOOL_STALL for ev in events), (
         "a genuine tool stall must still be caught"
