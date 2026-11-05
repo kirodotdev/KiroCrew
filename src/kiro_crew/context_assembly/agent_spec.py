@@ -81,9 +81,13 @@ def _load_steering_resources() -> str:
     kiro-cli injects these automatically for its sessions; the dashboard
     must do it explicitly so that dashboard chat sessions also benefit
     from project-specific steering conventions.
-    Only loads ``file://`` resources matching ``*.md``.
+    Only loads ``file://`` resources matching ``*.md``, and of those only the
+    documents :func:`kiro_crew.folder_steering.every_session_body` keeps: one
+    declaring ``inclusion`` ``manual``, ``auto`` or ``fileMatch`` is withheld,
+    and the front matter is stripped from the rest.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.folder_steering import every_session_body
 
     try:
         cfg_path = ctx.kiro_agents_dir() / "kirocrew.json"
@@ -117,9 +121,11 @@ def _load_steering_resources() -> str:
             for p in sorted(base.glob(raw_pattern)):
                 if p.suffix == ".md" and steering_target_admissible(p.resolve()):
                     try:
-                        parts.append(ctx.safe_read_file(str(p)))
+                        body = every_session_body(ctx.safe_read_file(str(p)))
                     except PermissionError:
-                        pass
+                        continue
+                    if body is not None:
+                        parts.append(body)
         if parts:
             logger.debug(
                 "loaded %d steering bytes from %d files", sum(len(p) for p in parts), len(parts)

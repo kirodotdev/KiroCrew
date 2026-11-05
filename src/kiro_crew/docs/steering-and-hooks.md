@@ -67,10 +67,14 @@ description: How this service names endpoints and shapes errors
 Endpoints are plural nouns. Errors carry a stable `code` field.
 ```
 
-**Kiro Crew reports and edits the declaration; it does not decide delivery from
-it.** What a mode causes is kiro-cli's behaviour, it differs from the Kiro IDE,
-and it has changed between releases — so this page does not restate a
-per-version measurement. The one row every measurement agrees on is `manual`:
+**On kiro-cli, Kiro Crew reports and edits the declaration; it does not decide
+delivery from it.** The two loads Kiro Crew runs itself, folder steering and the
+Claude Code backend's global-root load, apply one rule
+(`every_session_body` in `src/kiro_crew/folder_steering.py`): a document
+declaring `manual`, `auto` or `fileMatch` is withheld, and the front matter is
+stripped from every document they deliver. What a mode causes on kiro-cli is the
+harness's behaviour, it differs from the Kiro IDE, and it has changed between
+releases — so this page does not restate a per-version measurement. The one row every measurement agrees on is `manual`:
 there is no way to bring such a document into a turn over ACP. For the rest,
 read the harness's own steering documentation rather than trusting a mode name to
 mean what it sounds like.
