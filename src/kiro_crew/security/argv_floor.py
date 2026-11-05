@@ -152,6 +152,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _hosts_file_verdict,
         _hosts_file_warm_worker,
         _HostsKey,
+        _kernel_says_own_address,
         _note_netlink_result,
         _own_host_names,
         _own_host_seed,
