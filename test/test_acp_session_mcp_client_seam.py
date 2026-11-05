@@ -42,6 +42,8 @@ from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
 
 #: What a claude session asks for beside its options (``acp.raw_sdk_tasks``).
 _RAW_SDK_FILTER = list(RAW_SDK_MESSAGE_FILTER)
+#: The ask rules every Crew seed carries for Claude Code's own scheduler tools.
+_SCHEDULER_ASKS = ("CronCreate", "CronDelete", "ScheduleWakeup")
 
 
 class TestClientSeam:
@@ -420,7 +422,7 @@ class TestClientSeam:
         ask = client._claude_session_meta()["claudeCode"]["options"]["settings"]["permissions"][
             "ask"
         ]
-        assert ask == ["Bash(git push:*)", "mcp__foo__write"]
+        assert ask == [*_SCHEDULER_ASKS, "Bash(git push:*)", "mcp__foo__write"]
 
     @pytest.mark.asyncio
     async def test_an_ask_rule_gained_before_the_first_prompt_stops_the_session(
@@ -1119,9 +1121,8 @@ class TestClientSeam:
         work = tmp_path / "work"
         work.mkdir()
         client = self._seeded(work, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
-        assert "permissions" not in json.loads(
-            (work / ".claude" / "settings.local.json").read_text()
-        )
+        seed = json.loads((work / ".claude" / "settings.local.json").read_text())
+        assert "defaultMode" not in seed["permissions"]
         if path == "load":
             client._resume_session_id = "s-old"
         sent, killed = self._adapter_transport(
@@ -1318,7 +1319,14 @@ class TestClientSeam:
         assert options["settingSources"] == ["user"]
         permissions = options["settings"]["permissions"]
         assert "Read(./secrets/**)" in permissions["deny"]
-        assert permissions["ask"] == ["WebFetch", "Read", "Grep", "Glob", "WebSearch"]
+        assert permissions["ask"] == [
+            *_SCHEDULER_ASKS,
+            "WebFetch",
+            "Read",
+            "Grep",
+            "Glob",
+            "WebSearch",
+        ]
         assert options["tools"] == ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
 
     @pytest.mark.parametrize(("side_read_only", "builtin"), [(True, "fs_read"), (False, "")])
