@@ -8112,6 +8112,7 @@
       "tooltip": "Cet agent ne démarrera pas ici. Il est défini en Markdown, et {{current}} n'exécute que des agents JSON. Utilise {{backends}} ou ajoute un fichier JSON pour lui."
     },
     "markdownPanel": {
+      "partial_copy_cannot_save": "Seule une partie de ce fichier a été chargée (il a été tronqué ou des identifiants ont été masqués) : il ne peut donc pas remplacer le fichier sur le disque.",
       "add_to_artifact_library": "Ajouter à la bibliothèque d'artefacts",
       "add_to_artifacts": "Ajouter aux artefacts",
       "add_to_knowledge": "Ajouter aux connaissances",

@@ -201,6 +201,11 @@ const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 
  */
 const BYTE_BACKED_FILE_TYPES = new Set(['image', 'pdf', 'sheet', 'office', 'video', 'audio'])
 
+/** The content-backed rich types a path can open as (`detectFileType` never
+ *  returns `svg` for a path). They open in their viewer, and an explicit Edit
+ *  toggle swaps the viewer for the text editor, as markdown's does. */
+const TEXT_EDITABLE_RICH_TYPES = new Set(['csv', 'json', 'jsonl', 'html', 'excalidraw'])
+
 /** Below this panel width the browser rail overlays the content instead of
  *  splitting it: a 240-300px rail inside a ~320px panel leaves the editor a few
  *  dozen pixels, which is not a usable file view. */
@@ -238,17 +243,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // line-count correspondence anyway). So `README.md:42` opens the raw markdown at
   // line 42 rather than a paragraph that may contain it.
   //
-  // Rich types are excluded, and that is a deliberate scope line rather than an
-  // oversight. They have exactly ONE renderer by design — `isRichType` gates the
-  // source/preview toggle, the line-number controls,
-  // and the Cmd+S handler — so forcing one into an editor creates a file that is in
-  // source mode with none of the chrome that makes source mode usable, including no
-  // way back to its own viewer and no visible Save for a buffer the user has
-  // edited. Making that coherent means teaching every one of those gates about a
-  // rich-file-in-source-mode state, i.e. making rich files editable as text, which
-  // is a larger feature than a citation jump. So `data.json:42` opens the JSON
-  // viewer and drops the line: strictly better than the inert chip it used to be,
-  // and it strands nothing.
+  // Rich types are excluded. The text-backed ones (json, csv, ...) are editable,
+  // but only through their explicit Edit toggle: a citation does not switch a
+  // viewer the user opened into an editor. So `data.json:42` opens the JSON
+  // viewer and drops the line.
   const revealTargetsSource = !RICH_FILE_TYPES.includes(detectFileType(filePath))
   // Markdown (and other preview-capable types) opens in its viewer; everything
   // else editable opens straight in the Pierre editor — there is no separate
@@ -394,6 +392,21 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const fileType = detectFileType(filePath)
   const isMarkdown = MD_EXTS.has(ext)
   const isRichType = RICH_FILE_TYPES.includes(fileType)
+  const canEditRich = TEXT_EDITABLE_RICH_TYPES.has(fileType) && !readOnly
+  // The editor is on screen: a code or markdown buffer in source mode, or a
+  // text-backed rich type the user toggled to Edit. Wrap, line numbers and Save
+  // follow this, not the file type.
+  const showsEditor = editing && (!isRichType || canEditRich)
+  // A capped, redacted or lossily decoded read is not the file: saving it would
+  // replace the real bytes with the cut-short or placeholder text.
+  const partialSaveBlocked = !!partial && showsEditor
+  // A rich type in source mode keeps wrap and line numbers in the ⋯ menu, so its
+  // header gains only Preview and Save.
+  const richSourceShown = canEditRich && editing
+  // The json/csv/html/excalidraw header adds an Edit toggle (and, full screen,
+  // Preview + Save), so Refresh, the library icons and the file-browser toggle
+  // move into the ⋯ menu to keep each row within its two-control cap.
+  const compactHeader = canEditRich
   // A text diff needs the file as text. The content-backed rich types (json,
   // csv, html, ...) are text with a viewer on top, so they diff like code; only
   // the byte-backed ones have no text to diff. A wtdiff tab opens locked to
@@ -446,8 +459,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // lose, and a failed gateway read or write is what the agent can diagnose).
   // The save failure itself is always OFF: by definition the buffer holds the
   // edits that were NOT persisted.
-  const panelNotices = (saveError || actionError || knowledge.queryError || artifactState.queryError || diffQueryError) ? (
+  const panelNotices = (partialSaveBlocked || saveError || actionError || knowledge.queryError || artifactState.queryError || diffQueryError) ? (
     <div className="flex flex-col gap-1.5">
+      {partialSaveBlocked && <div role="status" className="text-[12px] text-muted" data-testid="markdown-panel-partial-notice">{i18nT('components.markdownPanel.partial_copy_cannot_save')}</div>}
       {/* No hand-off: the editor buffer holds the unsaved edits this save failed to write. */}
       <ErrorNotice message={saveError} onDismiss={() => setSaveError(null)} testId="markdown-panel-save-error" />
       <ErrorNotice message={actionError} askAgent={!dirty} onDismiss={() => setActionError(null)} testId="markdown-panel-action-error" />
@@ -499,7 +513,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // return to; code files stay in source mode (Cancel just discards edits).
   // Also gates Cancel's "return to preview" — there is no preview to return
   // to, and no buffer to discard.
-  const canPreview = isMarkdown && !showBinaryCard
+  const canPreview = (isMarkdown || canEditRich) && !showBinaryCard
+  // A partial buffer may leave the editor (back to its preview) but not enter it.
+  const showEditToggle = canPreview && !readOnly && (editing || !partial)
   const handleCancel = useCallback(async () => {
     if (!dirty) { if (canPreview) setEditing(false); return }
     if (!(await confirm({
@@ -1037,6 +1053,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
    *  read that puts the just-written text back over it. */
   const editGenRef = useRef(0)
   const handleSave = useCallback(async () => {
+    // Every path to a save (button, Cmd+S, Snapshot) lands here.
+    if (partial) { setSaveError(i18nT('components.markdownPanel.partial_copy_cannot_save')); return }
     setSaving(true); setSaveError(null)
     const editGen = editGenRef.current
     try {
@@ -1052,7 +1070,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     catch (err) { setSaveError(err instanceof Error ? err.message : i18nT('components.markdownPanel.save_failed')) }
     finally { setSaving(false) }
-  }, [filePath, content, onSave, qc, evictFileRead])
+  }, [filePath, content, partial, onSave, qc, evictFileRead])
 
   const handleSaveRef = useRef(handleSave)
   useEffect(() => { handleSaveRef.current = handleSave }, [handleSave])
@@ -1279,14 +1297,14 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     {!isRichType && editing && (
       <button className={`p-1.5 rounded-md border cursor-pointer transition-all ${lineNums ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => setLineNums(!lineNums)} title={i18nT('components.markdownPanel.toggle_line_numbers')} aria-label={i18nT('components.markdownPanel.toggle_line_numbers')} aria-pressed={lineNums}><Hash size={14} /></button>
     )}
-    {canPreview && !readOnly && (
+    {showEditToggle && (
       <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { void guardDraft(() => setEditing(!editing)) }}>{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
     )}
     {readOnly && (
       <span className="px-2 py-1 text-[12px] font-medium text-muted select-none" aria-label={i18nT('components.markdownPanel.read_only')}>{i18nT('components.markdownPanel.read_only')}</span>
     )}
-    {!isRichType && editing && (
-      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`} disabled={saving || !dirty} onClick={handleSave}>{saving ? i18nT('components.markdownPanel.saving') : i18nT('components.markdownPanel.save')}</button>
+    {showsEditor && (
+      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`} disabled={saving || !dirty || !!partial} onClick={handleSave}>{saving ? i18nT('components.markdownPanel.saving') : i18nT('components.markdownPanel.save')}</button>
     )}
   </>)
 
@@ -1359,14 +1377,14 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             {richDiffChip}
             <span className="flex-1 min-w-[8px]" />
-            {!showBinaryCard && <FileArtifactActionButton state={artifactState} />}
-            {(() => {
+            {!showBinaryCard && !compactHeader && <FileArtifactActionButton state={artifactState} />}
+            {!compactHeader && (() => {
               const kExt = '.' + (filePath.split('.').pop() || '').toLowerCase()
               const canK = knowledge.formats && knowledge.formats.includes(kExt)
               if (!canK) return null
               return <KnowledgeToggleIconButton state={knowledge} />
             })()}
-            {canPreview && !readOnly && (
+            {showEditToggle && (
               <button
                 className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors shrink-0"
                 onClick={() => { void guardDraft(() => setEditing(!editing)) }}
@@ -1378,7 +1396,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {!isRichType && !showBinaryCard && !readOnly && (
               <button className={barIconBtn(diffMode)} onClick={toggleDiffMode} title={i18nT('components.markdownPanel.toggle_diff_view')} aria-label={i18nT('components.markdownPanel.toggle_diff_view')} aria-pressed={diffMode}><FileDiff size={14} /></button>
             )}
-            {onRailToggle && (
+            {onRailToggle && !compactHeader && (
               <button
                 className={barIconBtn(!!railOpen)}
                 onClick={onRailToggle}
@@ -1396,6 +1414,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               collapseUnchanged={collapseUnchanged} onToggleCollapseUnchanged={() => setCollapseUnchanged(!collapseUnchanged)}
               diffSplit={diffSplit} onToggleDiffSplit={diffMode ? () => setDiffSplit(!diffSplit) : undefined}
               diffView={diffMode} onToggleDiffView={canToggleRichDiff ? toggleDiffMode : undefined}
+              {...(compactHeader && onRailToggle ? { railOpen: !!railOpen, onToggleRail: onRailToggle } : {})}
             />
           </div>
         </div>
@@ -1426,7 +1445,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
                 <span className="text-[12px] text-text truncate">{i18nT('components.markdownPanel.unsaved_changes')}</span>
                 <span className="flex-1" />
                 <button className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text border border-border bg-transparent cursor-pointer transition-colors disabled:opacity-40 shrink-0" onClick={handleCancel} disabled={refreshing} title={i18nT('components.markdownPanel.cancel_discard_unsaved_edits')} tabIndex={dirty ? 0 : -1}>{i18nT('components.markdownPanel.cancel')}</button>
-                <button className="px-3 h-[26px] rounded-md text-[11.5px] font-semibold border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover transition-all disabled:opacity-40 shrink-0" disabled={saving} onClick={handleSave} tabIndex={dirty ? 0 : -1}>{saving ? i18nT('components.markdownPanel.saving') : i18nT('components.markdownPanel.save')}</button>
+                <button className="px-3 h-[26px] rounded-md text-[11.5px] font-semibold border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover transition-all disabled:opacity-40 shrink-0" disabled={saving || !!partial} onClick={handleSave} tabIndex={dirty ? 0 : -1}>{saving ? i18nT('components.markdownPanel.saving') : i18nT('components.markdownPanel.save')}</button>
               </div>
             </div>
           </div>
@@ -1445,7 +1464,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && (
               <DiffViewBlock flush sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />
             )}
-            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer flush isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer flush isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
               previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>
@@ -1512,9 +1531,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {richDiffChip}
           </div>
           <div className="flex items-center gap-1.5">
-            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : refreshing ? i18nT('components.markdownPanel.refreshing_file') : i18nT('components.markdownPanel.refresh_file')} aria-label={refreshing ? i18nT('components.markdownPanel.refreshing_file') : i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
-            {!showBinaryCard && <FileArtifactActionButton state={artifactState} />}
-            {(() => {
+            {!compactHeader && <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : refreshing ? i18nT('components.markdownPanel.refreshing_file') : i18nT('components.markdownPanel.refresh_file')} aria-label={refreshing ? i18nT('components.markdownPanel.refreshing_file') : i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>}
+            {!showBinaryCard && !compactHeader && <FileArtifactActionButton state={artifactState} />}
+            {!compactHeader && (() => {
               const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
               const canK = knowledge.formats && knowledge.formats.includes(ext)
               if (!canK) return null
@@ -1522,7 +1541,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             })()}
             {editorToolbarButtons}
             <OverflowMenu filePath={filePath} content={content} onError={reportActionError} onDownload={lastCopy ? downloadLastCopy : undefined}
-              diffView={diffMode} onToggleDiffView={canToggleRichDiff ? toggleDiffMode : undefined} />
+              diffView={diffMode} onToggleDiffView={canToggleRichDiff ? toggleDiffMode : undefined}
+              {...(compactHeader ? { onRefresh: handleRefresh, refreshDisabled: refreshing || dirty, refreshTitle: dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk') } : {})}
+              {...(richSourceShown ? { wordWrap, onToggleWordWrap: () => setWordWrap(!wordWrap), lineNums, onToggleLineNums: () => setLineNums(!lineNums) } : {})} />
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => { void guardDraft(() => setFullscreen(false)) }} title={i18nT('components.markdownPanel.exit_full_screen_esc')} aria-label={i18nT('components.markdownPanel.exit_full_screen')}><Minimize2 size={14} /></button>
           </div>
         </div>
@@ -1540,7 +1561,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             {!showBinaryCard && diffNoBaselineText && !editing && <ZeroDiffNotice message={diffNoBaselineText} onExitDiff={readOnly ? undefined : toggleDiffMode} />}
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && <DiffViewBlock sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />}
-            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
               previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={fullscreenFileOpen} onFolderOpen={fullscreenFolderOpen} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>

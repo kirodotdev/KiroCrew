@@ -7716,6 +7716,7 @@
       "tooltip": "이 에이전트는 여기서 시작되지 않습니다. Markdown으로 정의되어 있고 {{current}}은(는) JSON 에이전트만 실행합니다. {{backends}}을(를) 사용하거나 JSON 파일을 추가하세요."
     },
     "markdownPanel": {
+      "partial_copy_cannot_save": "이 파일은 일부만 불러왔습니다(잘렸거나 자격 증명이 가려졌습니다). 따라서 디스크의 파일에 덮어써 저장할 수 없습니다.",
       "add_to_artifact_library": "아티팩트 라이브러리에 추가",
       "add_to_artifacts": "아티팩트에 추가",
       "add_to_knowledge": "지식에 추가",

@@ -61,13 +61,16 @@ export function langFor(ext: string): string {
  * the Pierre editor work entirely from `content` and don't need a path.
  */
 export const ContentRenderer = memo(function ContentRenderer({
-  isRichType, fileType, filePath, content, editing,
+  isRichType, richSource = false, fileType, filePath, content, editing,
   lang, lineNums, wordWrap, onChange, onSave,
   previewRef, displayContent, isMarkdown,
   markdownClassName, previewStyle, flush, editorRef, diffBase, diffSplit, diffExpandUnchanged,
   onFileOpen, onFolderOpen,
 }: {
   isRichType: boolean
+  /** A text-backed rich type (json, csv, ...) shown as its source: the code
+   *  editor replaces its viewer. Only meaningful with `editing`. */
+  richSource?: boolean
   fileType: string
   /** Required for `image` / `pdf` (URL construction). Optional otherwise. */
   filePath?: string
@@ -114,6 +117,7 @@ export const ContentRenderer = memo(function ContentRenderer({
     }),
     [lineNums, wordWrap],
   )
+  const viewer = isRichType && !(richSource && editing)
   const inner = (
     <>
       {isRichType && fileType === 'image' && filePath && <ImageViewer filePath={filePath} />}
@@ -170,17 +174,17 @@ export const ContentRenderer = memo(function ContentRenderer({
           </div>
         ) : <SvgViewer content={content} />
       )}
-      {isRichType && fileType === 'csv' && <CsvViewer content={content} filePath={filePath ?? ''} />}
-      {isRichType && fileType === 'json' && <JsonViewer content={content} />}
-      {isRichType && fileType === 'jsonl' && <JsonlViewer content={content} />}
-      {isRichType && fileType === 'html' && <HtmlViewer content={content} />}
+      {viewer && fileType === 'csv' && <CsvViewer content={content} filePath={filePath ?? ''} />}
+      {viewer && fileType === 'json' && <JsonViewer content={content} />}
+      {viewer && fileType === 'jsonl' && <JsonlViewer content={content} />}
+      {viewer && fileType === 'html' && <HtmlViewer content={content} />}
       {isRichType && fileType === 'pdf' && filePath && <PdfViewer filePath={filePath} />}
       {isRichType && fileType === 'sheet' && filePath && <SheetViewer filePath={filePath} />}
       {isRichType && fileType === 'office' && filePath && <OfficeViewer filePath={filePath} />}
       {isRichType && fileType === 'video' && filePath && <MediaPlayer filePath={filePath} kind="video" />}
       {isRichType && fileType === 'audio' && filePath && <MediaPlayer filePath={filePath} kind="audio" />}
-      {isRichType && fileType === 'excalidraw' && <ExcalidrawViewer content={content} />}
-      {!isRichType && editing && (
+      {viewer && fileType === 'excalidraw' && <ExcalidrawViewer content={content} />}
+      {(!isRichType || richSource) && editing && (
         <CodeEditor
           content={content}
           lang={lang}

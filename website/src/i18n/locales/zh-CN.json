@@ -7716,6 +7716,7 @@
       "tooltip": "此代理在这里无法启动。它用 Markdown 定义，而 {{current}} 只运行 JSON 代理。改用 {{backends}}，或为它添加一个 JSON 文件。"
     },
     "markdownPanel": {
+      "partial_copy_cannot_save": "此文件只加载了一部分（内容被截断或凭据已隐去），因此无法保存覆盖磁盘上的文件。",
       "add_to_artifact_library": "添加到产物库",
       "add_to_artifacts": "添加到产物",
       "add_to_knowledge": "添加到知识库",

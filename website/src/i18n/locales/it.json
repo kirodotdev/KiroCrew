@@ -8112,6 +8112,7 @@
       "tooltip": "Questo agente qui non si avvia. È definito in Markdown e {{current}} esegue solo agenti JSON. Usa {{backends}} oppure aggiungi un file JSON per lui."
     },
     "markdownPanel": {
+      "partial_copy_cannot_save": "È stata caricata solo una parte di questo file (è stato troncato o sono state oscurate delle credenziali), quindi non può essere salvato sopra il file su disco.",
       "add_to_artifact_library": "Aggiungi alla libreria degli artefatti",
       "add_to_artifacts": "Aggiungi agli artefatti",
       "add_to_knowledge": "Aggiungi alle conoscenze",
