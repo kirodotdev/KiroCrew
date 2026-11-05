@@ -196,6 +196,18 @@ def _remote_flat_launches(self: AcpSessionHandle) -> dict[str, tuple[tuple[str, 
     return self._mcp_launches
 
 
+def _mcp_attribution_launches(
+    self: AcpSessionHandle,
+) -> dict[str, tuple[tuple[str, ...], ...]]:
+    """The launch roster the oracle reads to sample only the in-flight tool's
+    own MCP server, with no ``remote_flat`` gate.
+
+    Read per call, like :func:`_remote_flat_launches`, so a resumed session's
+    re-declared servers govern the next probe.
+    """
+    return self._mcp_launches
+
+
 def record_mcp_launches(self: AcpSessionHandle, spec: Any, wire_servers: Any) -> None:
     """Record how this session launched its stdio MCP servers.
 
