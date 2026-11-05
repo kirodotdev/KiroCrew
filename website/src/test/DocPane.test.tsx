@@ -177,42 +177,84 @@ describe('DocPane', () => {
     expect(holder.querySelector('button[aria-label]')?.getAttribute('aria-label')).toMatch(/Trust/)
   })
 
-  it('the bar lists the conversations in doc order, and ⌃⌥→ / a chip open each in turn', async () => {
+  it('the bar lists the conversations in doc order, and ⌃⌥→ / a chip open each in turn in the side panel', async () => {
     getDoc.mockResolvedValue({ content: 'intro\n<!-- ask:q1 -->Pricing tiers<!-- /ask:q1 -->\nmiddle\n<!-- ask:q2 -->Launch date<!-- /ask:q2 -->\n', version: 'v1' })
     renderPane()
     await editor()
-    // Hidden until the shortcut is used.
+    // Hidden until the shortcut is used, and nothing opens inline.
     expect(screen.queryAllByTestId('conversation-chip')).toEqual([])
-    const answers = () => screen.getAllByTestId('doc-answer').map(a => a.getAttribute('data-open'))
-    expect(answers()).toEqual(['false', 'false'])
+    const shown = () => screen.queryByTestId('doc-thread-about')?.textContent ?? null
+    expect(shown()).toBeNull()
+    expect(screen.getAllByTestId('doc-answer').map(a => a.getAttribute('data-open'))).toEqual(['false', 'false'])
     const frame = () => act(() => new Promise<void>(r => requestAnimationFrame(() => r())))
 
     act(() => { fireEvent.keyDown(window, { key: 'ArrowRight', ctrlKey: true, altKey: true }) })
     await frame()
     expect(screen.getAllByTestId('conversation-chip').map(c => c.textContent)).toEqual(['Pricing tiers', 'Launch date'])
-    expect(answers()).toEqual(['true', 'false'])
-    expect(document.activeElement).toBe(screen.getAllByTestId('doc-answer-input')[0])
+    expect(shown()).toBe('Pricing tiers')
+    expect(document.activeElement).toBe(screen.getByTestId('doc-thread-input'))
     expect(screen.getAllByTestId('conversation-chip')[0].getAttribute('data-active')).toBe('true')
+    // The thread is in the panel, never under its highlight.
+    expect(screen.getAllByTestId('doc-answer').map(a => a.getAttribute('data-open'))).toEqual(['false', 'false'])
 
-    // The next one opens, and the one before it closes.
+    // The next one takes the panel.
     act(() => { fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight', ctrlKey: true, altKey: true }) })
     await frame()
-    expect(answers()).toEqual(['false', 'true'])
+    expect(shown()).toBe('Launch date')
 
-    // Past the last one is "none": everything folds and the caret is back in the doc.
+    // Past the last one is "none": the panel closes and the caret is back in the doc.
     act(() => { fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight', ctrlKey: true, altKey: true }) })
     await frame()
-    expect(answers()).toEqual(['false', 'false'])
+    expect(shown()).toBeNull()
     expect(screen.getAllByTestId('conversation-chip').map(c => c.getAttribute('data-active'))).toEqual(['false', 'false'])
     expect(document.activeElement?.closest('.cm-editor')).toBeTruthy()
 
     fireEvent.click(screen.getAllByTestId('conversation-chip')[0])
     await frame()
-    expect(answers()).toEqual(['true', 'false'])
+    expect(shown()).toBe('Pricing tiers')
     // Clicking the current chip again puts it away.
     fireEvent.click(screen.getAllByTestId('conversation-chip')[0])
     await frame()
-    expect(answers()).toEqual(['false', 'false'])
+    expect(shown()).toBeNull()
+  })
+
+  it('a pin opens its thread in the side panel; a reply goes to that thread, and Escape closes it', async () => {
+    getDoc.mockResolvedValue({ content: 'intro\n<!-- ask:q1 -->Pricing tiers<!-- /ask:q1 -->\n', version: 'v1' })
+    saveDoc.mockResolvedValue({ content: '', version: 'v2' })
+    send.mockReset()
+    send.mockResolvedValue({ status: 'dispatched' })
+    act(() => {
+      store.dispatch(setActiveSlot('doc-slot'))
+      store.dispatch(replaceMessages([
+        { role: 'user', content: '[Doc ask q1]\nwhy three tiers?\n\n---\nrest', cls: '' },
+        { role: 'assistant', content: 'Because **three** reads at a glance.', cls: '' },
+      ]))
+    })
+    renderPane()
+    await editor()
+    fireEvent.click(screen.getByTestId('doc-answer-pin'))
+    expect(screen.getByTestId('doc-thread-about').textContent).toBe('Pricing tiers')
+    expect(screen.getAllByTestId('doc-thread-message').map(m => m.getAttribute('data-who'))).toEqual(['you', 'conductor'])
+    expect(screen.getByTestId('doc-thread-panel').querySelector('strong')?.textContent).toBe('three')
+    expect(screen.getByTestId('doc-answer-pin').getAttribute('aria-expanded')).toBe('true')
+    const input = screen.getByTestId('doc-thread-input')
+    fireEvent.change(input, { target: { value: 'and the price?' } })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    const { message } = send.mock.calls.at(-1)![0] as { message: string }
+    expect(message).toMatch(/^\[Doc ask q1\]\nand the price\?/)
+    expect(message).toContain('Highlighted:\n"""\nPricing tiers\n"""')
+    // The grip on the panel's left edge widens it as it moves left, and the width is kept.
+    const panel = screen.getByTestId('doc-thread-panel')
+    const grip = screen.getByRole('separator')
+    const before = parseInt(panel.style.width, 10)
+    fireEvent.pointerDown(grip, { clientX: 800, pointerId: 1 })
+    fireEvent.pointerMove(grip, { clientX: 740, pointerId: 1 })
+    fireEvent.pointerUp(grip, { clientX: 740, pointerId: 1 })
+    expect(panel.style.width).toBe(`${before + 60}px`)
+    expect(localStorage.getItem('kc:doc-thread-panel:width')).toBe(String(before + 60))
+    fireEvent.keyDown(screen.getByTestId('doc-thread-input'), { key: 'Escape' })
+    expect(screen.queryByTestId('doc-thread-panel')).toBeNull()
+    act(() => { store.dispatch(replaceMessages([])); store.dispatch(setActiveSlot(null)) })
   })
 
   it('reports a doc it could not open', async () => {

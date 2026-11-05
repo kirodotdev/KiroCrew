@@ -116,6 +116,20 @@ export interface ConductorHost {
   markRead: (id: string) => void
   /** A click opened this conversation: it becomes the page's current one. */
   activate?: (id: string) => void
+  /** Threads open in the page's side panel, not inline under their highlight. */
+  threadsInSidePanel?: boolean
+}
+
+/** What thread *id* is about, as its next turn quotes it: a goal's section as it
+ *  stands now, or the text between the ask's markers ("" for an empty spot). */
+export function threadQuote(state: EditorState, id: string): string {
+  if (id.startsWith('goal-')) {
+    const sec = headingSections(state).find(s => s.goal && goalIdOf(s) === id.slice(5))
+    return sec ? state.doc.sliceString(state.doc.line(sec.line).from, state.doc.line(sec.endLine).to) : ''
+  }
+  const doc = state.doc.toString()
+  const marker = parseMarkers(doc).find(m => m.kind === 'ask' && m.id === id)
+  return marker ? markerContent(doc, marker) : ''
 }
 
 export const setDocData = StateEffect.define<DocData>()
@@ -235,19 +249,8 @@ class AnswerWidget extends WidgetType {
       onOpen: () => host.current.markRead(id),
       onOpenSession: (key: string) => host.current.openSession(key),
       ...(this.goal ? { lift: GOAL_PIN_LIFT[this.goal.level] ?? GOAL_PIN_LIFT[0], inset: GOAL_PIN_INSET, emptyLabel: 'Not checked yet' } : {}),
-      onSend: (text: string) => {
-        const doc = view.state.doc.toString()
-        if (this.goal) {
-          // A reply on a goal's pin is about its section as it stands now.
-          const { goalId } = this.goal
-          const sec = headingSections(view.state).find(s => s.goal && goalIdOf(s) === goalId)
-          const quote = sec ? view.state.doc.sliceString(view.state.doc.line(sec.line).from, view.state.doc.line(sec.endLine).to) : ''
-          host.current.send(id, text, quote, doc, true)
-          return
-        }
-        const marker = parseMarkers(doc).find(m => m.kind === 'ask' && m.id === id)
-        host.current.send(id, text, marker ? markerContent(doc, marker) : '', doc, true)
-      },
+      inline: !host.current.threadsInSidePanel,
+      onSend: (text: string) => host.current.send(id, text, threadQuote(view.state, id), view.state.doc.toString(), true),
     }))
   }
   destroy(dom: HTMLElement) {

@@ -26,8 +26,11 @@ function firstLine(text: string): string {
 }
 
 export default function DocAnswer({
-  thread, onOpen, onSend, onOpenSession, compact = false, gutter = false, stack = 0, onTable = false, lift, inset = 0, emptyLabel = 'No reply yet', active = false, focusSignal = 0, onActivate,
+  thread, onOpen, onSend, onOpenSession, compact = false, gutter = false, stack = 0, onTable = false, lift, inset = 0, emptyLabel = 'No reply yet', active = false, focusSignal = 0, onActivate, inline = true,
 }: {
+  /** With *gutter*: the thread opens here, under its highlight. Off, the pin only
+   *  makes the thread the page's current one, and the page shows it elsewhere. */
+  inline?: boolean
   thread: ThreadView | undefined
   onOpen: () => void
   onSend: (text: string) => void
@@ -67,6 +70,11 @@ export default function DocAnswer({
 
   useEffect(() => {
     if (!focusSignal) return
+    if (!inline) {
+      // The thread shows elsewhere; bring its highlight into view.
+      rootRef.current?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+      return
+    }
     setOpen(true)
     onOpenRef.current()
     // After the body renders, so the reply box exists and the scroll lands on it.
@@ -75,7 +83,7 @@ export default function DocAnswer({
       inputRef.current?.focus({ preventScroll: true })
     })
     return () => cancelAnimationFrame(raf)
-  }, [focusSignal])
+  }, [focusSignal, inline])
 
   useEffect(() => { if (!active) setOpen(false) }, [active])
   const messages = thread?.messages ?? []
@@ -87,7 +95,12 @@ export default function DocAnswer({
   const dotState = pending ? 'pending' : thread?.unread ? 'unread' : 'read'
   const pinLabel = pending ? 'Thinking…' : thread?.unread ? 'New reply' : latest ? 'Reply' : 'No reply'
   const [hover, setHover] = useState(false)
-  const toggle = () => { setHover(false); setOpen(o => !o); if (!open) { onOpen(); onActivate?.() } }
+  const toggle = () => {
+    setHover(false)
+    if (!inline) { onOpen(); onActivate?.(); return }
+    setOpen(o => !o)
+    if (!open) { onOpen(); onActivate?.() }
+  }
   // The pin centres on the line above the widget: a text line, or a table's last
   // row (the grid's footer and padding sit between that row and the widget).
   const pinTop = lift !== undefined ? -lift : onTable ? -80 : -27
@@ -102,7 +115,7 @@ export default function DocAnswer({
           data-da="pin"
           data-testid="doc-answer-pin"
           data-stack={stack}
-          aria-expanded={open}
+          aria-expanded={inline ? open : active}
           aria-label={`Conversation with the conductor: ${summary}${workerCount ? `, ${workerCount}` : ''}`}
           style={{ right: `calc(100% + 14px + ${stack * PIN_STEP + inset}px)`, top: pinTop }}
           onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)} onFocus={() => setHover(true)} onBlur={() => setHover(false)}

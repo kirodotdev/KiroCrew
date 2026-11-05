@@ -33,7 +33,8 @@ import type { EmbedTheme } from './DocHtmlFrame'
 import { useOptionalTheme } from '../../../hooks/useTheme'
 import { readThemeVars } from '../../../lib/widgetSrcdoc'
 import ConversationBar, { cycleDirection, shortLabel, stepId, type ConversationItem } from './ConversationBar'
-import { changeForWrite, markerContent, parseMarkers, type ConductorHost, type DocData } from './docConductor'
+import { changeForWrite, markerContent, parseMarkers, threadQuote, type ConductorHost, type DocData } from './docConductor'
+import DocThreadPanel from './DocThreadPanel'
 import { rowQuoteLabel } from './docAskRows'
 import { OVERLAY_KEYFRAMES, findAnchor, overlaySlug, parseOverlay, type OverlayItem } from './docOverlay'
 import { buildAskTurn, deriveThreads, docTextForCopy, goalCheckPending } from './docThreads'
@@ -319,11 +320,15 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
   // The conductor layer calls back through a ref, so the editor never rebuilds.
   const hostRef = useRef<ConductorHost>({ send: () => {}, openSession: () => {}, markRead: () => {} })
   hostRef.current = {
+    // Threads open in the side panel, as a Slack thread does beside its channel.
+    threadsInSidePanel: true,
     activate: id => setActive(a => (a?.id === id ? a : { id, focus: 0 })),
     send: (id, request, quote, doc, followUp) => {
       setSendError('')
       const rowLabel = followUp ? null : rowQuoteLabel(quote)
       if (rowLabel) setRowLabels({ ...rowLabels, [id]: rowLabel })
+      // A new ask opens its thread beside the doc, so the answer is seen arriving.
+      if (!followUp) setActive({ id, focus: 0 })
       // The markers just went in: write them now, not after the debounce.
       void save()
       const name = title || ''
@@ -348,6 +353,12 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
       if ((readCounts[id] ?? 0) !== replies) setReadCounts({ ...readCounts, [id]: replies })
     },
   }
+
+  // The thread in the side panel is being read: its replies count as seen as they arrive.
+  const shownReplies = activeId ? (threads[activeId]?.messages.filter(m => m.who === 'conductor').length ?? 0) : 0
+  useEffect(() => {
+    if (activeId) hostRef.current.markRead(activeId)
+  }, [activeId, shownReplies])
 
   // Add what the conductor's finished replies asked to write, once each. A write
   // whose text is already in the doc is skipped, so a reload or a second browser
@@ -392,6 +403,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     {sessionOpen && <SessionMessagesPanel slotKey={slotKey} onClose={() => setSessionOpen(false)} />}
     <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)} crewSwitch
       className="absolute bottom-5 left-5 z-[25] rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" testid="doc-approval-mode" />
+    <div className="flex min-h-0 flex-1">
     <div className="flex-1 min-h-0 overflow-y-auto relative" data-testid="doc-pane">
       {/* The overlay's animations; the board mounts the same copy. */}
       <style>{OVERLAY_KEYFRAMES}</style>
@@ -472,6 +484,23 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
           })}
         </div>
       )}
+    </div>
+    {activeId && (
+      <DocThreadPanel
+        key={activeId}
+        thread={data.threads[activeId]}
+        about={viewRef.current ? threadQuote(viewRef.current.state, activeId) : ''}
+        isGoal={activeId.startsWith('goal-')}
+        title={title}
+        focusSignal={active?.focus ?? 0}
+        onSend={text => {
+          const view = viewRef.current
+          if (view) hostRef.current.send(activeId, text, threadQuote(view.state, activeId), view.state.doc.toString(), true)
+        }}
+        onClose={() => focusConversation(null)}
+        onOpenSession={key => hostRef.current.openSession(key)}
+      />
+    )}
     </div>
     {/* The workers' tool approvals: Crew Mode decides those only on their
         conductor's page, and this doc is that page. Stacked above the approval

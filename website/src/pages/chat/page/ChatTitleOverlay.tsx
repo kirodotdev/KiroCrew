@@ -20,6 +20,8 @@ import Clickable from '../../../components/Clickable'
 import type { useLabelTip } from '../../../components/InstantTip'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
+import { isCodebaseId } from './codebase/codebaseModel'
+import { isDashboardId } from './dashboard/dashboardModel'
 
 interface ChatTitleOverlayProps {
   embedMode?: 'chat' | 'sessions'
@@ -79,6 +81,9 @@ export default function ChatTitleOverlay({
 }: ChatTitleOverlayProps) {
   // A doc, board, codebase or dashboard session: a page, not a transcript.
   const pageSession = !!currentSlot?.doc
+  // A doc or board page has no fade under the title row, so a rule marks where the
+  // row ends and the page (and a doc's thread panel) begins.
+  const ruledTitle = pageSession && !isCodebaseId(currentSlot!.doc!) && !isDashboardId(currentSlot!.doc!)
   return (
     <>
       {/* Claude-style title row — absolute overlay, solid top fading to transparent.
@@ -125,7 +130,7 @@ export default function ChatTitleOverlay({
           </div>
         )}
         {!titleInTopbar && !currentSlot?.crew_root && (
-        <div className={`@container/chathead relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
+        <div className={`@container/chathead relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none${ruledTitle ? ' border-b border-border' : ''} transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
           {/* Divider between toggle and title — ALWAYS mounted and
               absolute (zero width, no flex-gap participation) so it can
               never change the row's layout; it rides the row (title
