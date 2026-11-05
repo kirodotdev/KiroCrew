@@ -84,6 +84,15 @@ Both operator-facing surfaces read that one verdict:
   `keeps the current backend listed even if it reads as unselectable` and
   `saves the Claude Code selection the shipped build offers`.
 
+### The default agent's prompt
+
+A default-agent session on this harness gets the same `prompt.md` contract as a
+Kiro one (`ContextBuilder._resolve_agent_prompt`), with one respelling: `kiro-cli`
+reads `claude code`. Nothing else is renamed. "Kiro Crew" is the product on every
+harness, and the `~/.kiro/crew/...` paths the prompt names are the real data home
+(`KIROCREW_HOME`), which no `~/.claude/...` path stands in for. Pinned by
+`test/test_cc_prompt_branding.py`.
+
 ### Stale cloud credentials
 
 When the adapter answers a prompt with `data.errorKind: cloud_credential_error`

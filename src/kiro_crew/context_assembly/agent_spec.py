@@ -29,7 +29,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import re
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -627,14 +626,14 @@ def _resolve_agent_prompt(
         # CC gets the same Kiro Crew persona prompt as kiro — including
         # the Output Format rules (diff blocks, image embeds, OPTIONS)
         # which are dashboard UI contracts, not kiro-specific. Only the
-        # kiro-cli *branding* references are rewritten to claude code.
+        # ``kiro-cli`` transport name is respelled ``claude code``; the
+        # product name and the ``~/.kiro/...`` data-home paths stay, because
+        # they are the same on every backend.
         # A custom agent keeps its own prompt on every provider.
         try:
             pp = ctx._prompt_path()
             agent_prompt = _read_prompt_file(pp)
             agent_prompt = agent_prompt.replace("kiro-cli", "claude code")
-            agent_prompt = re.sub(r"\bKiro\b", "Claude", agent_prompt)
-            agent_prompt = re.sub(r"\bkiro\b", "claude", agent_prompt)
             agent_prompt = agent_prompt.strip()
         except Exception:
             agent_prompt = ""
