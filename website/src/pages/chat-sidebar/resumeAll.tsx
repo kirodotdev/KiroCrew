@@ -343,8 +343,12 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
   }
   const titles = useMemo(() => new Map(localSlots.map(s => [s.key, s.title || s.key])), [localSlots])
   const titleOf = (key: string) => titles.get(key) ?? key
+  // The sessions a press would resume, by name, in the order the count counts
+  // them, so the row says which ones before a click restarts any of them.
+  const candidateTitles = useMemo(() => candidates.map(s => ({ key: s.key, title: s.title || s.key })), [candidates])
   return {
     count,
+    candidateTitles,
     result,
     error,
     setError,
@@ -404,7 +408,7 @@ function ResumeAllProblemsNotice({ text, onDismiss }: { text: string; onDismiss:
  *  status region would announce it twice. */
 export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
   const {
-    count, result, error, setError, problems, dismissProblems, titleOf, pending, alreadyRunning, run, connected, confirmDialog,
+    count, candidateTitles, result, error, setError, problems, dismissProblems, titleOf, pending, alreadyRunning, run, connected, confirmDialog,
   } = shell.resumeAll
   if (count === 0 && !result && !error && !pending && problems.length === 0) return confirmDialog
   const label = i18nT('pages.chatSidebar.resume_all_sessions', { count })
@@ -428,6 +432,16 @@ export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
                   : i18nT('pages.chatSidebar.resume_all_interrupted', { count })}
             </span>
           </div>
+          {/* Which sessions a press restarts, named before it does. Only up to
+              the count a press resumes without asking: above it the
+              confirmation stands between the click and the restart. */}
+          {!result && !alreadyRunning && !pending && count > 0 && count <= RESUME_ALL_CONFIRM_ABOVE && (
+            <ul className="mt-1 ml-[22px] min-w-0 text-text" data-testid="resume-all-names">
+              {candidateTitles.map(({ key, title }) => (
+                <li key={key} className="truncate" title={title}>{title}</li>
+              ))}
+            </ul>
+          )}
           {/* On its own line, aligned with the sentence, like the folder-reorder
               hint beside it: beside the text the two fight for the sidebar's width.
               Withheld offline: the press is a request, and a disabled button says
