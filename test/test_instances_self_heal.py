@@ -1422,6 +1422,7 @@ class TestSelfHealRefreshRestart:
             stdout_tail=False,
         ):
             calls["a"] = (host, sub, marker_port, connect_timeout_secs)
+            calls["stdout_tail"] = stdout_tail
             return (0, "")
 
         monkeypatch.setattr(stm, "run_remote_kirocrew", fake_run)
@@ -1438,6 +1439,7 @@ class TestSelfHealRefreshRestart:
             5476,
             30.0,
         )
+        assert calls["stdout_tail"] is True
         # validation failure
         r = asyncio.run(mgr.restart_remote("bad"))
         assert not r["ok"] and "invalid ssh settings" in r["message"]
