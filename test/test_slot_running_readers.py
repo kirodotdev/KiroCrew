@@ -196,6 +196,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # Stop settlement wakes retained priority only on an unreserved slot.
                 ("chat_api/turn_stop.py", "_make_stop_resolver"),
                 ("chat_rewind.py", "api_chat_slot_rewind"),
+                # A turn the agent started claims the slot only when no send
+                # has reserved it: a reserved slot's turn reads those frames.
+                ("chat_turn/agent_started.py", "_on_agent_turn"),
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.
                 ("chat_turn/queue_drain.py", "_drain_parked_queues"),
@@ -312,6 +315,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_regenerate.py", "api_chat_slot_edit_resend"),
         ("chat_regenerate.py", "api_chat_slot_regenerate"),
         ("chat_rewind.py", "api_chat_slot_rewind"),
+        # A turn the agent started between prompts, claimed like a drained one.
+        ("chat_turn/agent_started.py", "_on_agent_turn"),
         ("chat_turn/queue_cycle.py", "_launch_synthesis"),
         # The cycle end of a dispatch that never ran a turn's tail holds the
         # floor the way the synthesis launch does.

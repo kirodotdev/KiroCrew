@@ -95,6 +95,15 @@ def _queue_recovery(
     admitted; a row found by scanning the transcript may have been restored
     from disk, and a write target is never taken from there.
     """
+    if turn._agent_started:
+        # Every recovery replays or continues the prompt a turn answered, and a
+        # turn the agent started answered none: queueing one would send the
+        # agent a prompt no one wrote. Returns no queue id. The arms that
+        # announce a retry skip such a turn before they reach here (they take
+        # their nested-turn give-up), so a caller that still asks is one that
+        # announced nothing, such as a Stop hook's block.
+        logger.info("No recovery queued for agent-started turn on slot %s", turn.slot.key)
+        return ""
     _commands_off = turn._commands_off
     _crew_log_actor = turn._crew_log_actor
     _current_message = turn._current_message

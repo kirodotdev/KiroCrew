@@ -15,6 +15,7 @@ from kiro_crew.dashboard.chat_runner import (
     RegenerateTarget,
     _run_chat,
     _start_next_queued_turn,
+    is_agent_started_row,
     release_regenerate_on_done,
 )
 from kiro_crew.dashboard.chat_utils import (
@@ -184,6 +185,18 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         if u_idx < 0:
             return web.json_response(
                 {"error": "no preceding user message", "code": "no_user_message"}, status=400
+            )
+
+        # A reply the agent started answers no prompt, so re-running the prompt
+        # before it would retire that reply, and any reply between them, for a
+        # variant of only the newest one.
+        if any(is_agent_started_row(m) for m in msgs[u_idx + 1 :]):
+            return web.json_response(
+                {
+                    "error": "a reply the agent started cannot be regenerated",
+                    "code": "agent_started_reply",
+                },
+                status=400,
             )
 
         user_msg = msgs[u_idx].get("content", "")

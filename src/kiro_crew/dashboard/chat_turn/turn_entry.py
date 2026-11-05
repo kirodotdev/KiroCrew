@@ -253,6 +253,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         # `_turn_owner_sent` is overwritten here. Adopted only for a turn the
         # person sent.
         slot._turn_owner_sent = turn._directive_owner_origin is True and slot._turn_user_sent
+        # The assistant rows this turn writes say the agent started it
+        # (`_segment_row_meta`); every outermost turn sets it, so no turn inherits it.
+        slot._turn_agent_started = turn._agent_started
     # Dispatch appends the triggering row before entering this runner. Freeze
     # that row now, before await points, prompt expansion or new deliveries.
     _current_replay_message = _current_message

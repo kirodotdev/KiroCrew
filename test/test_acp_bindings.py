@@ -71,6 +71,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "accepts_effort_level": ("function", False, "581451d2b011", "acp_model_effort"),
     "accepts_elicitation": ("property", False, "a6632a57e602", "acp"),
     "agent_prompt_upgrade_notice": ("property", False, "bb418bb7ece8", "acp"),
+    "agent_turn_pending": ("function", False, "a6632a57e602", "acp_turns"),
     "agent_version": ("property", False, "bb418bb7ece8", "acp"),
     "answer_elicitation": ("function", True, "2fcb1ac189fa", "acp"),
     "approval_withdrawable": ("data", False, "", ""),
@@ -154,6 +155,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "reports_effort_support": ("data", False, "", ""),
     "reports_turn_usage": ("property", False, "a6632a57e602", "acp"),
     "served_model": ("property", False, "bb418bb7ece8", "acp"),
+    "stream_unsolicited": ("function", "agen", "0bdd19141cbc", "acp_turns"),
     "switches_by_relaunch": ("property", False, "a6632a57e602", "acp"),
     "session_activity_at": ("property", False, "c2eec8a41739", "acp"),
     "session_id": ("property", False, "bb418bb7ece8", "acp"),
@@ -180,6 +182,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "acp_turns"),
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "acp"),
     "wait_turn_done": ("function", True, "48da118c69ff", "acp"),
+    "watch_agent_turns": ("function", False, "42d751137554", "acp_turns"),
     "withheld_credentials_notice": ("property", False, "bb418bb7ece8", "acp"),
     "work_scratch_dir": ("property", False, "d921fd8d443d", "acp"),
 }

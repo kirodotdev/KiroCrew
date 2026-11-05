@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         teardown_hold_active,
         title_then_refresh,
     )
+    from kiro_crew.dashboard.chat_turn.agent_started import AGENT_STARTED_ACTOR
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
     from kiro_crew.dashboard.chat_turn.queue_drain import (
         _arm_parked_queue_drain,
@@ -737,7 +738,10 @@ async def _end_turn_tail(
         slot._last_turn_auth_required = outcome.auth_required
     # (Re)arm the AutoNudge idle timer on EVERY exit: a turn that ends via
     # timeout, AcpProcessDied, AcpError or a cancel would otherwise orphan it.
-    _notify_autonudge_turn_end(slot, **(outcome.nudge_facts if outcome is not None else {}))
+    # Not for a turn the agent started: no loop sent its prompt, so it is none of
+    # a loop's cycles, and the fire path cleared no due time for it.
+    if turn_exit.actor != AGENT_STARTED_ACTOR:
+        _notify_autonudge_turn_end(slot, **(outcome.nudge_facts if outcome is not None else {}))
     if turn_exit.depth == 0:
         # A crewmate's worker reports back to the crewmate's thread on its own.
         _note_mate_wakes(state, slot, outcome.nudge_facts["reply_text"] if outcome else None)

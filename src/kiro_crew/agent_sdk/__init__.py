@@ -119,6 +119,8 @@ from kiro_crew.agent_sdk.host_auth import (
 from kiro_crew.agent_sdk.native_commands import NativeCommandBatch, run_kiro_native_commands
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.acp.managed_agent_shadow import AgentNameClaim
 
 
@@ -175,6 +177,19 @@ def batch_guard_refusal_outcome(reason: str | None) -> tuple[str, dict[str, str]
     return refusal_outcome(reason)
 
 
+def watch_agent_turns(provider: object, callback: Callable[[], None] | None) -> bool:
+    """Call *callback* when *provider*'s agent starts a turn between prompts; ``None`` stops it.
+
+    False, with nothing registered, when *provider* is not an ACP session or its
+    backend starts no such turn (``AcpProvider.watch_agent_turns``).
+    """
+    from kiro_crew.providers.acp import AcpProvider
+
+    if not isinstance(provider, AcpProvider):
+        return False
+    return provider.watch_agent_turns(callback)
+
+
 TURN_STOP_REASON_CANCELLED = "cancelled"
 TURN_STOP_REASON_END_TURN = "end_turn"
 
@@ -190,6 +205,7 @@ __all__ = [
     "session_start_concurrency",
     "take_batch_guard_refusal",
     "batch_guard_refusal_outcome",
+    "watch_agent_turns",
     "tool_row_text",
     "agents_dir_competing_claim",
     "ContextPromptProvider",

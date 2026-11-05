@@ -58,6 +58,7 @@ _OWNER_MODULES = frozenset(
     {
         "account_identity",
         "acp_recovery",
+        "agent_started",
         "app_agent_binding",
         "context_cap",
         "crew_log_attribution",
@@ -540,6 +541,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_commands_off",
         "_recovery_echo_owed",
         "_turn_actor",
+        "_agent_started",
         "regenerate_hint",
         "_on_consumed",
         "_on_irreversibly_consumed",
@@ -1359,6 +1361,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/tool_approval.py",
     ),
     r"spawn_guarded_turn\(": (
+        "dashboard/chat_turn/agent_started.py",
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",
     ),
@@ -1377,10 +1380,12 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/queue_drain.py",
     ),
     r"\bslot\.task = ": (
+        "dashboard/chat_turn/agent_started.py",
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",
     ),
     r"\.(?:turn_)?running\b": (
+        "dashboard/chat_turn/agent_started.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",
