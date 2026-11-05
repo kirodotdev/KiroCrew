@@ -66,6 +66,22 @@ def _retry_after_secs(exc: BaseException) -> float | None:
     return None
 
 
+#: Slack's own "try again" answers. Slack sends them as an ``ok: false`` body,
+#: usually on an HTTP 200, so the status alone would call them final.
+_TRANSIENT_ERROR_CODES = frozenset(
+    {"internal_error", "fatal_error", "request_timeout", "service_unavailable", "ratelimited"}
+)
+
+
+def _error_code(response: Any) -> str:
+    """The ``error`` field of a Slack response body, or ``""``."""
+    try:
+        code = response.get("error") if response is not None else None
+    except Exception:
+        return ""
+    return code if isinstance(code, str) else ""
+
+
 def is_retryable_slack_error(exc: BaseException) -> bool:
     """True when *exc* is worth another attempt rather than treating as final.
 
@@ -74,8 +90,10 @@ def is_retryable_slack_error(exc: BaseException) -> bool:
     429 is the caller's own fault — a deleted message, a channel we are not in,
     a malformed payload — and will fail identically forever, so retrying it only
     burns quota. Everything else (429, 5xx, DNS/connector blips, timeouts) is
-    transient. Anything outside the retryable classes is not a transport failure
-    at all and is likewise final.
+    transient, and so are Slack's own transient answers
+    (:data:`_TRANSIENT_ERROR_CODES`: ``internal_error``, ``fatal_error``,
+    ``request_timeout`` …), whatever status they arrive on. Anything outside the
+    retryable classes is not a transport failure at all and is likewise final.
 
     A ``SlackApiError`` whose response carries no integer status is treated as
     final: without a status there is nothing to suggest the next attempt would
@@ -84,6 +102,8 @@ def is_retryable_slack_error(exc: BaseException) -> bool:
     if not isinstance(exc, _RETRYABLE_EXCEPTIONS):
         return False
     if not isinstance(exc, SlackApiError):
+        return True
+    if _error_code(getattr(exc, "response", None)) in _TRANSIENT_ERROR_CODES:
         return True
     status = getattr(getattr(exc, "response", None), "status_code", None)
     if not isinstance(status, int):

@@ -104,6 +104,7 @@ _TO_DICT_KEYS = (
     "created_by",
     "lineage_minted",
     "attribution",
+    "work_aggregate",
 )
 
 
