@@ -1,6 +1,6 @@
 """The gateway arms a doc or board session's goal loop from the saved file.
 
-The page used to do it, so goals ran only while the page was open. These cover what
+Arming it on the server is what lets goals run with the page closed. These cover what
 the file says (``scan_goals``), what a goal wake asks (``goal_instruction``), and
 how the session's one loop is brought in line (``sync_goal_loop``): armed with a
 first check, rewritten on a change, revived when paused, deleted with the last goal,

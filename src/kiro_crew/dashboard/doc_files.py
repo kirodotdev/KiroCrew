@@ -120,7 +120,7 @@ def read_doc(doc_id: str) -> DocFile:
 
 
 def write_doc(doc_id: str, content: str, *, expected_version: str | None) -> DocFile:
-    """Save *content*, refusing when the file is no longer *expected_version*.
+    """Save *content*, refusing when the file on disk is not *expected_version*.
 
     ``expected_version=None`` skips the check; ``""`` expects no file yet. A save
     over an edit made elsewhere raises :class:`DocConflictError` carrying the file as

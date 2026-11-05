@@ -3,8 +3,8 @@
 A heading in a doc, or a section on a board, can carry a goal (``docGoals.ts``,
 ``boardModel.ts``). Every goal on a page is checked by ONE loop on the page's
 conductor, at the page's one rate. The loop belongs to the session, so it runs with
-the page closed; what used to need the page open was arming it. This module does
-that on the server: a save of the doc's file (and a read of it, which covers a doc
+the page closed; arming it is what would otherwise need the page open. This module
+does that on the server: a save of the doc's file (and a read of it, which covers a doc
 written before this existed) brings the session's loop in line with the file.
 
 * goals in the file, no loop: arm one and run its first check now;

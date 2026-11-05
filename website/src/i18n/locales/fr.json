@@ -13887,8 +13887,8 @@
         "starting": "Ouverture d’une nouvelle session brouillon…"
       },
       "appSessionPane": {
-        "apps_load_failed": "Impossible de vérifier l’application à laquelle appartient cette session : son chat est donc en lecture seule",
-        "unavailable_read_only": "Cette session appartient à {{app}}, qui est désactivée ou n’est plus installée : son chat est donc en lecture seule."
+        "apps_load_failed": "Impossible de vérifier l’application à laquelle appartient cette session : son chat est donc en lecture seule",
+        "unavailable_read_only": "Cette session appartient à {{app}}, qui est désactivée ou n’est plus installée : son chat est donc en lecture seule."
       }
     },
     "chatPage": {
