@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew import git_coord, shutdown_event
+from kiro_crew import git_coord
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.task_executor import build_task_prompt, execute_single_task
 from kiro_crew.task_executor import self_review as self_review_fn
@@ -129,13 +129,12 @@ async def _execute_tasks(self: TaskRunner, run: Project, history_key: str) -> No
     }
     groups = group_parallel_tasks(pending, already_done)
     for group in groups:
-        if run.status != "running" or shutdown_event.is_set():
-            if shutdown_event.is_set():
-                if run.status == "pausing":
-                    run.status = "paused"
-                else:
-                    run.status = "cancelled"
-                    run.error = "Shutdown signal received"
+        stopping = self._stopping()
+        if run.status != "running" or stopping:
+            if stopping and run.status == "pausing":
+                run.status = "paused"
+            # A run still ``running`` is left so: the process is stopping, and
+            # the restart resumes it from its checkpoint (``begin_shutdown``).
             break
         if self._global_timeout > 0 and run_age.age(run.started_at) >= self._global_timeout:
             run.status = "failed"
@@ -202,8 +201,12 @@ async def _execute_tasks(self: TaskRunner, run: Project, history_key: str) -> No
                     failed_task = task
                     break
         if failed_task is not None:
+            if self._stopping():
+                # The step most likely failed because the gateway is stopping
+                # the services it used; the restart resumes it (begin_shutdown).
+                return
             revised = await self._try_replan(run, failed_task)
-            if not revised and run.status == "running":
+            if not revised and run.status == "running" and not self._stopping():
                 run.status = "failed"
                 clean_err, _ = redact_exfiltration_urls(failed_task.error or "")
                 clean_err, _ = redact_credentials(clean_err)
@@ -404,9 +407,23 @@ async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool
     )
     new_tasks = await self._decompose(replan_spec, run.work_dir, run.task_id)
     if not new_tasks:
+        if self._stopping():
+            # The stop most likely took the planning session away; resumed on restart.
+            return False
         run.status = "failed"
         run.error = f"Re-plan failed after task {failed_task.index}"
         return False
+    # The revised plan replaces every step that failed (a parallel group can
+    # fail more than the one passed here) and the original's remaining work.
+    # They are marked superseded (and a step that never started is skipped),
+    # so a resume (``execute_plan`` after a restart) runs only the revised
+    # plan; a failed step keeps its FAILED status and error.
+    for task in run.tasks:
+        if task is failed_task or task.status == TaskStatus.FAILED:
+            task.superseded = True
+        elif task.status == TaskStatus.PENDING:
+            task.status = TaskStatus.SKIPPED
+            task.superseded = True
     base_idx = len(run.tasks)
     for i, task in enumerate(new_tasks, 1):
         task.depends_on = [d + base_idx for d in task.depends_on]
@@ -419,7 +436,7 @@ async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool
     )
     history_key = await self._bound_history_key(run, f"taskrunner:run:{Path(run.spec_path).stem}")
     for task in new_tasks:
-        if run.status != "running" or shutdown_event.is_set():
+        if run.status != "running" or self._stopping():
             break
         if self._token_budget > 0 and run.tokens_used >= self._token_budget:
             run.status = "failed"
@@ -439,6 +456,9 @@ async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool
             except (asyncio.CancelledError, Exception):
                 pass
         if not success:
+            if self._stopping():
+                # Same as the first replan: a shutdown failure is resumed, not re-planned.
+                return False
             return await self._try_replan(run, task)
     return True
 
