@@ -37,6 +37,45 @@ _SKIP_DIRS = frozenset(
     }
 )
 
+# The dot-prefixed directories the @-mention walks DO descend into, keyed by
+# the dot directory's name, each mapped to the only children of it that are
+# opened. Every other dot directory (.github, .vscode, .ssh, .aws, ...) stays
+# offered as a candidate but closed. Inside an opened dot directory only the
+# listed children are offered or entered, and its own files are not offered,
+# so ``.kiro/settings`` and the files directly in ``.kiro`` stay out. Matching
+# is on whole path segments: the walked directory's own name and the child
+# name, never a prefix of a joined path. Shared by both search paths through
+# :func:`_dot_dir_walk_plan`.
+_OPEN_DOT_DIRS: dict[str, frozenset[str]] = {
+    ".kiro": frozenset({"specs", "steering"}),
+}
+
+
+def _dot_dir_walk_plan(
+    root: str, dirpath: str, candidate_dirs: list[str]
+) -> tuple[list[str], list[str], bool]:
+    """Say what one ``os.walk`` level offers and enters, for both search paths.
+
+    *candidate_dirs* is the level's directory list with ``_SKIP_DIRS`` (and any
+    TCC prune) already applied. Returns ``(offered_dirs, descend_dirs,
+    offer_files)``:
+
+    * At an opened dot directory below *root* (``.kiro``), only its listed
+      children are offered and entered, and none of its files are offered.
+    * Everywhere else every candidate is offered and its files are offered, but
+      a dot-prefixed child is entered only when it is an opened dot directory.
+
+    *root* itself is never treated as an opened dot directory, so a search
+    rooted at a ``.kiro`` folder lists that folder in full.
+    """
+    opened = _OPEN_DOT_DIRS.get(os.path.basename(dirpath)) if dirpath != root else None
+    if opened is not None:
+        kept = [d for d in candidate_dirs if d in opened]
+        return kept, list(kept), False
+    descend = [d for d in candidate_dirs if not d.startswith(".") or d in _OPEN_DOT_DIRS]
+    return candidate_dirs, descend, True
+
+
 # How long a built index is trusted before a search triggers a background
 # rebuild. The index refreshes on demand -- when a search finds it older than
 # this -- rather than on a timer, so a root nobody searches never costs a walk.
@@ -296,14 +335,18 @@ class FileIndex:
             #     candidates too: merely offering one means os.stat-ing it, which
             #     pops a consent modal. So it is applied to candidate_dirs.
             # Only the leading-dot rule differs: a dot-dir is a valid candidate
-            # but must not be descended into, so it is removed from the descent
-            # list alone.
-            candidate_dirs = platform_compat.tcc_prune_walk_dirs(
+            # but is not descended into, except the _OPEN_DOT_DIRS children
+            # (.kiro/specs, .kiro/steering) that _dot_dir_walk_plan opens.
+            candidate_dirs, descend_dirs, offer_files = _dot_dir_walk_plan(
                 self.root,
                 dirpath,
-                [d for d in dirnames if d not in _SKIP_DIRS],
+                platform_compat.tcc_prune_walk_dirs(
+                    self.root,
+                    dirpath,
+                    [d for d in dirnames if d not in _SKIP_DIRS],
+                ),
             )
-            dirnames[:] = [d for d in candidate_dirs if not d.startswith(".")]
+            dirnames[:] = descend_dirs
             for dname in candidate_dirs:
                 if len(entries) >= _MAX_ENTRIES:
                     truncated = True
@@ -327,7 +370,7 @@ class FileIndex:
                 ))
             if truncated:
                 break
-            for fname in filenames:
+            for fname in filenames if offer_files else ():
                 if len(entries) >= _MAX_ENTRIES:
                     truncated = True
                     break
