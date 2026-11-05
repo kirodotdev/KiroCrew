@@ -270,6 +270,21 @@ class TestSettings:
         ]
         assert spec.metadata.get("sensitive") is True
 
+    def test_the_lease_token_type_setting_reaches_the_lease_client(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        config_file = tmp_path / "config.json"
+        tunnel = {
+            "relay_enabled": True,
+            "relay_lease_url": "https://lease.example.com",
+            "relay_lease_credential": "secret://lease",
+            "relay_lease_token_type": "API_KEY",
+        }
+        config_file.write_text(json.dumps({"tunnel": tunnel}), encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: config_file)
+        provider = public_tunnel_provider(KiroCrewConfig.load())
+        assert provider._tokens._token_type == "API_KEY"
+
     @pytest.mark.asyncio
     async def test_a_cancelled_stop_still_closes_the_token_source_and_the_ingress(self) -> None:
         # The gateway bounds the tunnel stop and cancels it past the bound. The

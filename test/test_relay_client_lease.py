@@ -58,6 +58,7 @@ from kiro_crew.relay_client.lease import (
 from kiro_crew.relay_client.provider import (
     RelaySettings,
     RelaySettingsError,
+    lease_token_source,
     public_tunnel_provider,
 )
 from kiro_crew.relay_client.token_source import (
@@ -1168,7 +1169,7 @@ async def test_an_external_idp_credential_sends_its_token_type(
     finally:
         await source.aclose()
     assert lease.requests[0]["token_type"] == "EXTERNAL_IDP"
-    for refused in ("API_KEY", "SSO_OIDC", "external_idp", ""):
+    for refused in ("BEARER", "SSO_OIDC", "external_idp", ""):
         with pytest.raises(ValueError):
             make_source(lease, tmp_path, clock, token_type=refused)
 
@@ -1310,3 +1311,68 @@ async def test_a_client_stopped_by_its_lease_gives_up_its_relay_url(
         finally:
             await stop(client, ingress)
             await source.aclose()
+
+
+@pytest.mark.parametrize("token_type", ["EXTERNAL_IDP", "API_KEY", ""])
+async def test_the_token_type_setting_names_the_lease_calls_header(
+    lease: FakeLeaseService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    token_type: str,
+) -> None:
+    monkeypatch.setattr("kiro_crew.relay_client.lease._data_home", lambda: tmp_path)
+    lease.queue(200, answer(0))
+    settings = RelaySettings.from_config(
+        _cfg(
+            lease_url=lease.url,
+            lease_credential=str(credential_file(tmp_path)),
+            lease_token_type=token_type,
+        )
+    )
+    settings.validate()
+    assert settings.lease_token_type == token_type
+    source = lease_token_source(settings)
+    assert source is not None
+    try:
+        await source.current()
+    finally:
+        await source.aclose()
+    # Empty sends no header at all.
+    assert lease.requests[0]["token_type"] == (token_type or None)
+
+
+async def test_an_unknown_token_type_setting_keeps_the_relay_from_starting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("kiro_crew.edition_locks.local_enable_locked", lambda _section: False)
+    # KIRO_MACHINE_TOKEN: the lease service refuses it with a crew key.
+    for refused in ("KIRO_MACHINE_TOKEN", "SSO_OIDC", "api_key", "kiro_machine_token", CREDENTIAL):
+        cfg = _cfg(
+            lease_url="https://lease.example.com",
+            lease_credential="secret://x",
+            lease_token_type=refused,
+        )
+        with pytest.raises(RelaySettingsError, match="relay_lease_token_type") as error:
+            RelaySettings.from_config(cfg).validate()
+        assert refused not in str(error.value)
+        # Composition does no checking and must not raise; start() refuses it.
+        assert isinstance(public_tunnel_provider(cfg)._tokens, LeaseHostTokenSource)
+
+
+async def test_a_refused_credential_stop_names_both_settings_and_no_credential(
+    lease: FakeLeaseService, tmp_path: Path, clock: StepClock
+) -> None:
+    lease.queue(401, {"__type": "UnauthorizedException"})
+    lease.queue(401, {"__type": "UnauthorizedException"})
+    source = make_source(lease, tmp_path, clock)
+    try:
+        with pytest.raises(HostTokenUnavailable) as stopped:
+            await source.current()
+        reason = source.stopped_reason
+    finally:
+        await source.aclose()
+    for message in (str(stopped.value), reason):
+        assert "tunnel.relay_lease_credential" in message
+        assert "tunnel.relay_lease_token_type" in message
+        assert "needs API_KEY" in message
+        assert CREDENTIAL not in message

@@ -83,13 +83,13 @@ RENEW_TARGET = f"{SERVICE_NAME}.RenewCrewLease"
 AWS_JSON_CONTENT_TYPE = "application/x-amz-json-1.0"
 #: The ``TokenType`` header values this client may send. IAM Identity Center,
 #: Builder ID and Kiro social sign-ins send none; a token straight from an outside
-#: identity provider (Okta, Entra ID) sends ``EXTERNAL_IDP``.
-#: ``KIRO_MACHINE_TOKEN``, for a Kiro-issued credential, is not here on purpose:
-#: team Crews on a machine token are out of scope for this client until the team
-#: Crew credentials work adds them and sends that type. Until then a team Crew on
-#: one is refused with HTTP 401.
+#: identity provider (Okta, Entra ID) sends ``EXTERNAL_IDP``. A team Crew on a
+#: Kiro-issued crew API key sends ``API_KEY``. The lease service refuses any other
+#: type with a crew key, so the client accepts no other. It never guesses the type
+#: from the credential: ``tunnel.relay_lease_token_type`` names it.
 TOKEN_TYPE_EXTERNAL_IDP = "EXTERNAL_IDP"
-TOKEN_TYPES = frozenset({TOKEN_TYPE_EXTERNAL_IDP})
+TOKEN_TYPE_API_KEY = "API_KEY"
+TOKEN_TYPES = frozenset({TOKEN_TYPE_EXTERNAL_IDP, TOKEN_TYPE_API_KEY})
 #: How long one call may take, connecting included.
 CALL_TIMEOUT_SECONDS = 15.0
 #: The largest answer read; a lease answer is well under a kilobyte.
@@ -706,8 +706,10 @@ class LeaseHostTokenSource:
                 )
                 return
             self._stop(
-                "the lease service refused the Crew's credential (HTTP 401): update "
-                "tunnel.relay_lease_credential's credential and restart Remote Control"
+                "the lease service refused the Crew's credential (HTTP 401): check "
+                "tunnel.relay_lease_credential's credential and that "
+                "tunnel.relay_lease_token_type matches it (a team Crew on a crew API key "
+                "needs API_KEY), then restart Remote Control"
             )
         kind, reason = refusal_of(payload, answered.error_type)
         named = f"{kind} {reason}" if kind and reason else (kind or f"HTTP {status}")
