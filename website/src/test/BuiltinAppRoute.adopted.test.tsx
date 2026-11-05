@@ -44,9 +44,12 @@ function AppHostProbe({ app }: { app: { name: string; origin?: string } }) {
 vi.mock('../components/AppHost', () => ({ default: AppHostProbe }))
 
 const listApps = vi.fn()
+// A loaded list naming no record for the page's app asks the gateway about that
+// name; here it answers the plain not-installed 404.
+const getApp = vi.fn(() => Promise.reject(Object.assign(new Error('not installed'), { status: 404 })))
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
-  return { ...actual, api: { ...actual.api, listApps: () => listApps() } }
+  return { ...actual, api: { ...actual.api, listApps: () => listApps(), getApp: (name: string) => getApp(name) } }
 })
 
 const ADOPTED = {
@@ -108,6 +111,8 @@ describe('BuiltinAppRoute for an adopted former built-in', () => {
     expect(await screen.findByTestId('compiled-page', undefined, LAZY_PAGE_TIMEOUT)).toBeInTheDocument()
     // A list that loaded is not a lookup failure.
     expect(screen.queryByRole('alert')).toBeNull()
+    // The plain 404 keeps the compiled page: only a released name swaps it.
+    expect(getApp).toHaveBeenCalledWith('former-app')
   })
 
   it('switches to the adopted copy once the shell\'s list arrives after the compiled page', async () => {
@@ -126,18 +131,22 @@ describe('BuiltinAppRoute for an adopted former built-in', () => {
 describe('BuiltinAppRoute for a built-in with no adoption', () => {
   it('renders the compiled page at once while the shell\'s list is still loading, and never asks for it', async () => {
     listApps.mockClear()
+    getApp.mockClear()
     const client = installedAppsClient()
     client.removeQueries({ queryKey: ['apps'], exact: true })
     // The shell's list read is in flight and never answers inside this test.
     void client.prefetchQuery({ queryKey: ['apps'], queryFn: () => new Promise(() => {}) })
     renderAt('/former-app', ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>)
     expect(await screen.findByTestId('compiled-page', undefined, LAZY_PAGE_TIMEOUT)).toBeInTheDocument()
-    // No extra round trip: the route only reads what the shell's read caches.
+    // No extra round trip: the route only reads what the shell's read caches,
+    // and asks about no single app before that list has loaded.
     expect(listApps).not.toHaveBeenCalled()
+    expect(getApp).not.toHaveBeenCalled()
   })
 
   it('renders the compiled page with no error notice when the shell\'s list load failed', async () => {
     listApps.mockClear()
+    getApp.mockClear()
     const client = installedAppsClient()
     client.removeQueries({ queryKey: ['apps'], exact: true })
     await client.prefetchQuery({ queryKey: ['apps'], queryFn: () => Promise.reject(new Error('offline')) })
@@ -147,5 +156,6 @@ describe('BuiltinAppRoute for a built-in with no adoption', () => {
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByText(/offline/)).toBeNull()
     expect(listApps).not.toHaveBeenCalled()
+    expect(getApp).not.toHaveBeenCalled()
   })
 })

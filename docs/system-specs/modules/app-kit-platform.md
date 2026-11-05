@@ -6164,7 +6164,18 @@ observer: it never fetches, waits for or reports the list, so a built-in with no
 adoption row renders its compiled page at once, exactly as before. Only once the
 shell's own read has cached an adopted record for that route does the route swap in
 the copy, under a boundary keyed apart from the compiled page's. A list not loaded
-yet, a failed load, a builtin-owned record or no record keeps the compiled page. The
+yet, a failed load or a builtin-owned record keeps the compiled page. A name
+uninstalled after adoption has no record and no wheel route, so its compiled page
+would render against nothing: when a LOADED list holds no record for the page's app,
+the route asks `GET /api/apps/{name}` once (`useReleasedWithNoRecord`), and only a 404
+carrying `code: "app_released"` (`routes_listing.APP_RELEASED_CODE`, sent when
+`manager_builtins._wheel_copy_released` is True for a name with no record) swaps in
+AppHost's not-installed state, which points at Apps, under its own boundary key. Any
+other answer, including a plain 404 or a server-side check that raised, keeps the
+compiled page, and the reinstall is an ordinary registry install. A lookup that
+failed (no 404 came back) is not cached as an answer: it takes the shared retry
+ladder, keeps the compiled page with no notice, and is asked again on the next
+mount. The
 app detail page shows the adoption state (`AppDetailAdoptionNotice`): a blocked or
 retrying move with its remedy, a staged move, or an installed copy that needs a newer
 host. A blocked or retrying move is a persisted failure, so it renders through the
@@ -6178,11 +6189,12 @@ Writers: `apps/builtin_adoption.py`, `apps/builtin_adoption_apply.py`,
 `apps/builtin_adoption_checks.py`, `apps/builtin_adoption_fetch.py`,
 `apps/builtin_adoption_pins.py`, `apps/builtin_adoption_state.py`,
 `apps/builtin_adoption_markers.py`, `apps/manager_adopt.py`,
-`apps/agent_config_writer.py`, `apps/adoption-pins.json`, `testing/harness.py`,
+`apps/agent_config_writer.py`, `apps/routes_listing.py` (the released 404), `apps/adoption-pins.json`, `testing/harness.py`,
 `scripts/adoption_pin.py`. Tests: `test/test_builtin_adoption_*.py`,
 `test/integration/test_builtin_adoption_boot.py`. The rows the
 dashboard reads are pinned end to end: `test_builtin_adoption_dashboard_rows.py` builds
-them through the `/api/apps` handlers and compares them with
+them (and the 404 bodies for a name with no record) through the `/api/apps`
+handlers and compares them with
 `website/src/test/fixtures/adoptionApiRows.json`, which `adoptionApiRows.test.tsx`
 renders as the notice and the legacy route.
 
