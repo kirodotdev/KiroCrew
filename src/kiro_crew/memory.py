@@ -280,6 +280,9 @@ class MemoryStore:
         self._index_lock = threading.Lock()
         # Whether the current failure streak has already been logged at WARNING.
         self._index_failure_warned = False
+        # Set when ``_get_db`` replaced a corrupt index with an empty one, so the
+        # next drift scan re-queues every source instead of leaving search empty.
+        self._index_healed = False
         # TTL cache for read_recent_history, keyed by `days` so callers using
         # different windows (context build=14, suggestions=2, dashboard=30) don't
         # evict each other. Value: (monotonic_deadline, day_iso, result).
@@ -1182,7 +1185,9 @@ class MemoryStore:
                 p = Path(str(self._index_db) + suffix)
                 p.unlink(missing_ok=True)
             self._index_owner_only = False
-            return self._try_create_db()
+            conn = self._try_create_db()
+            self._index_healed = True
+            return conn
 
     def _try_create_db(self) -> sqlite3.Connection:
         restrict = not self._index_owner_only
@@ -1350,12 +1355,23 @@ class MemoryStore:
             # ``rebuild_index``'s job, and search reports an unbuilt index as such
             # rather than silently populating it. Reconciliation only re-aligns an
             # index already in use with a file edited out of band under it.
-            if (conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone() or (0,))[0] == 0:
+            # The one exception is an index ``_get_db`` just recreated after
+            # corruption: it was in use, so every source is missing its row and
+            # is queued below for the catch-up to re-index under the writers' locks.
+            healed = self._index_healed
+            if (
+                not healed
+                and (conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone() or (0,))[0] == 0
+            ):
                 return
             paths = [self._preferences_file, self._projects_file]
+            # A healed index stays flagged until a scan has read every source, so
+            # a source unreadable now is re-queued by a later search, not lost.
+            unread = False
             try:
                 paths.extend(self._files.glob(self._history_dir, "*.md"))
             except Exception:
+                unread = True
                 logger.debug("FTS drift scan: history glob failed; fixed only", exc_info=True)
             for path in paths:
                 path_str = str(path)
@@ -1369,6 +1385,7 @@ class MemoryStore:
                     # which keeps the existing index rather than erasing it).
                     on_disk = self._files.read_entry(path, require_readable=True).content
                 except Exception:
+                    unread = True
                     logger.debug("FTS drift scan: %s unreadable; kept", path_str, exc_info=True)
                     continue
                 # "" from the capped reader means absent-but-admitted for the fixed
@@ -1387,6 +1404,8 @@ class MemoryStore:
                 ):
                     with self._index_lock:
                         self._index_stale.add(path_str)
+            if healed and not unread:
+                self._index_healed = False
         except Exception:
             # An unreadable index is the self-heal / rebuild path's problem, not
             # this reconciliation's; leave the stale set untouched.

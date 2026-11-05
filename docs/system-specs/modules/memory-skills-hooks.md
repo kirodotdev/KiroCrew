@@ -281,7 +281,9 @@ view.
 `MemoryStore()` uses `<home>/memory_index.db`, while an explicitly supplied
 workspace retains its existing workspace-relative path. V1 FTS supports literal
 quoted-token search, incremental file indexing and explicit/periodic rebuilds.
-Its corrupt derived index can be rebuilt from the source files. V2 FTS belongs
+Its corrupt derived index can be rebuilt from the source files: when an open
+finds it corrupt, the index is recreated empty and the next search queues every
+source for re-indexing, so search does not stay empty until a rebuild. V2 FTS belongs
 to its authoritative database and has no delete-and-recreate recovery path.
 
 ### Knowledge library duplicate ownership
