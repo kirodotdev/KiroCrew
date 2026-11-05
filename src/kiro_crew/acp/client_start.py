@@ -340,7 +340,11 @@ async def _spawn(self: AcpClient) -> None:
         # element-withholding question does not arise, and a ``disabledTools``
         # naming other tools must not refuse this agent's view.
         self._native_skill_projection = await asyncio.to_thread(
-            prepare_native_skill_projection, self._work_dir, per_session_element=False
+            prepare_native_skill_projection,
+            self._work_dir,
+            per_session_element=False,
+            # One session, one agent: only its view needs holding on disk.
+            lease_agents=(self._agent,),
         )
         if self._native_skill_projection is not None:
             # The agent this process is launched as: its own FIRST ``set_mode``

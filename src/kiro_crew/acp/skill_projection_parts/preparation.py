@@ -364,6 +364,7 @@ def prepare_native_skill_projection(
     enabled: bool | None = None,
     per_session_element: bool = True,
     on_lock_unavailable: Callable[[OSError], None] | None = None,
+    lease_agents: tuple[str, ...] | None = None,
 ) -> NativeSkillProjection | None:
     """Prepare native views after spec freshness admission, before spawning.
 
@@ -389,6 +390,13 @@ def prepare_native_skill_projection(
     :class:`InProcessProjectionWaitTimeout` is this process's own queue, a
     :class:`CrossProcessProjectionLockTimeout` another process holding the file
     lock, any other ``OSError`` a problem with the lock file itself.
+
+    ``lease_agents`` names the agents this projection's caller will hand kiro-cli
+    (by authored name or by view name). Only their views are leased, and only they
+    stay in this process's active set. Every agent still gets a published view and
+    a translation, so an edited agent's old view is pinned only by a session that
+    runs that agent, and the prune can reclaim it otherwise. ``None`` leases every
+    view.
     """
     directory = kiro_agents_dir()
     crew_home_id = data_home().absolute().as_posix()
@@ -672,7 +680,16 @@ def prepare_native_skill_projection(
                     }
 
                 metadata_dir = _ensure_projection_metadata_directory() if aliases else None
-                lease_stack = _acquire_projection_lease(directory, set(aliases.values()))
+                if lease_agents is None:
+                    leased = set(aliases.values())
+                else:
+                    wanted = set(lease_agents)
+                    leased = {
+                        alias
+                        for name, alias in aliases.items()
+                        if name in wanted or alias in wanted
+                    }
+                lease_stack = _acquire_projection_lease(directory, leased)
                 try:
                     for agent_name, alias in aliases.items():
                         alias_raw = json.dumps(specs[agent_name], ensure_ascii=False)
@@ -712,6 +729,7 @@ def prepare_native_skill_projection(
                         errors,
                         search_agents,
                     )
+                    prepared.leased_aliases = frozenset(leased)
                     _remember_view_sources(aliases)
                     # Releases the lease and prunes this home's unleased views
                     # as soon as the projection ends -- explicitly through
