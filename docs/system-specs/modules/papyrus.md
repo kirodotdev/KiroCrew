@@ -797,7 +797,11 @@ skill matching the request. Each is trigger-loaded on LaTeX vocabulary rather th
 The manifest deliberately declares **no** `skills` entry: a builtin app's
 directory receives only `app.json` at registration, so a manifest-declared path
 would log a "skill directory not found" warning on every boot while the bundled
-copy is what actually reaches users.
+copy is what actually reaches users. Once the app is adopted onto its own
+repository (app-kit-platform.md § Former built-in adoption), that repository ships
+the five skills as `papyrus/<skill>`: the sync stops installing or updating the
+packaged copies and the catalog hides them, so each skill shows once, from the
+repository, and none after an uninstall.
 
 ## Platform
 

@@ -5813,6 +5813,19 @@ only remove first-party status, never grant it. It gates:
   `backend_runtime.startup`, `cron_sdk`, `backend`) resolves the data-home tree for
   a released name, and `is_builtin_app` and the PreToolUse first-party sets drop
   it;
+- the core's packaged skill copies (`builtin_skills/`, `app: <name>` frontmatter),
+  through `released_builtin_names` (only a pinned or marked name asked):
+  `skills_builtin_sync._ensure_builtin_skills` neither installs nor updates a copy
+  whose `app:` names a released app, so it never rewrites, or quarantines into a
+  `.<name>.user-backup`, a `skills/<name>/` directory the adopted app's namespaced
+  skills share, and `installed_skill_currency` (doctor) skips the same copies;
+  and the skill catalog withholds a flat skill whose owner comes
+  only from that line and names a released app (`skill_runtime/catalog._hidden_by_app`,
+  for `_iter_visible`, mapped `_scoped_entries` and the cold-catalog exact read;
+  adoption state is read only when the catalog lists a key a packaged skill
+  claims for an app, and then once per catalog TTL),
+  so an adopted app shows only its repository's `skills/<name>/<skill>` copies and
+  an uninstalled one none. A copy already installed stays on disk, hidden;
 - `register_builtin_apps`: a released name with no record, or an adopted record,
   gets no directory, record, snapshot or secret. A shadowing user app is not
   released and keeps the stand-down warning. A pinned name with no record while
