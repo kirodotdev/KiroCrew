@@ -1,5 +1,37 @@
 # Config Module
 
+## Native Windows publication
+
+`windows_settings.py` guards every supported publication of `config.json`,
+`config.local.json`, and `agent_model_state.json`. Both the central atomic replace
+and the config-document writer (including supported aliases) take the same
+owner-only OS gate. A native launcher holds a read lease for its lifetime and
+keeps its existing no-delete-sharing governance pins. Ordinary writers fail
+before replacement while readers or an unactivated generation remain; unrelated
+requests cannot borrow an activation permit from a global flag.
+
+The routing dashboard returns an unsaved restart requirement before changing
+approvals or files. Its expiring, bounded consent token binds the exact endpoint,
+body and three document versions. Confirmation fences physical process admission,
+then uses the existing restart lifecycle to stop all owned runtime trees and
+advance pending cleanup receipts. Only confirmed retirement permits an exclusive
+writer lease, version check, atomic save, normal agent rebuild and broker boot.
+Admission resumes only after the effective routed set and sharing state activate.
+
+The run-directory status distinguishes saved, active, restart required and failed
+activation. Effective routing includes roster, `stub_overrides`, local layers and
+environment overrides; `enabled` remains the separate backend-sharing choice.
+A short OS lock serializes transition claims across processes. PID/start identity
+and transition-ID compare-and-set prevent an old completion from replacing a
+successor's status. A retry preserves a predecessor's durable starts-blocked state.
+Cancellation drains mutating workers before leases close or final hashes publish.
+
+Failed stops and activation keep native admission closed. A failed save reports
+the actual persisted state (or unknown), without inventing rollback. Explicit
+restart recovery rebuilds CURRENT saved files and never replays an unsaved body.
+If startup cannot validate that generation, it refuses bootstrap; the stopped-app
+recovery command in the Windows guide establishes a fresh validated generation.
+
 ## Overview
 
 The config package loads runtime configuration from `~/.kiro/crew/config.json`

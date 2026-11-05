@@ -283,6 +283,19 @@ async def _handle_connection(
 
     conn = await _resolve_register_identity(register, writer, stub_uuid, pool_key)
     caller = conn.caller
+    if register.get("native_session") is True and (
+        caller is None or not caller.session_key or not conn.stub_session_token
+    ):
+        _conn_index_discard(conn)
+        await _write_json_line(
+            writer,
+            {
+                "type": "rejected",
+                "class": "identity_unattested",
+                "reason": "Native MCP session identity was rejected",
+            },
+        )
+        return
 
     # Register this connection for the keepalive probe. Scoped to the handler's
     # own task so a dead transport can cancel exactly the coroutine that is

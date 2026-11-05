@@ -48,6 +48,12 @@ def _small_default_host(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_native_windows_runner(_floor_monkeypatch):
+    """A unit test opts into the native process probe explicitly."""
+    _floor_monkeypatch.delenv("KIROCREW_WINDOWS_SANDBOX_EXE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_reexec_environment(_floor_monkeypatch):
     """Start every test with nothing kept for an exec successor.
 

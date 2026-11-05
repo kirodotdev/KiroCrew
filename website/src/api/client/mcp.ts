@@ -32,8 +32,8 @@ export type McpShareReason = {
  */
 export type McpShareRecommendation = {
   strength: string
-  // Two axes, not one verdict. `recommendStub` is the safe half — Kiro Crew's
-  // stub in the path, backend still 1:1 with the session — while
+  // Two axes, not one verdict. `recommendStub` is the safe half â€” Kiro Crew's
+  // stub in the path, backend still 1:1 with the session â€” while
   // `recommendShare` is the one that introduces co-tenancy. A bulk action has to
   // consult whichever one the global sharing switch makes true of a click.
   recommendStub: boolean
@@ -64,9 +64,9 @@ export type McpMeasureProgress = {
 export type McpManagedServer = {
   name: string
   stub: boolean            // effective: can_stub AND in_allowlist
-  can_stub: boolean       // stdio AND not denylisted — a property of the server, not a choice
+  can_stub: boolean       // stdio AND not denylisted â€” a property of the server, not a choice
   in_allowlist: boolean    // present in config mcp_gateway.stub_servers
-  entry_poolable: boolean  // some agent entry sets poolable:true — RETIRED, informational only
+  entry_poolable: boolean  // some agent entry sets poolable:true â€” RETIRED, informational only
   agents: string[]         // agent configs that declare this server
   transport: string        // "stdio" (stubbable) or "http" (no stdio pipe to interpose on)
   denylisted: boolean      // in UNPOOLABLE_SERVERS — can never be pooled
@@ -77,7 +77,7 @@ export type McpManagedServer = {
   // True when stubbing this server cannot produce a SHARED backend anyway: the
   // rewriter leaves an env-declaring entry unwrapped rather than spawn a pooled
   // backend without a declared key. Optional for the same reason as
-  // `recommendation` — an older gateway does not send it, and its absence must
+  // `recommendation` â€” an older gateway does not send it, and its absence must
   // read as "no obstacle known", not as an obstacle.
   pooling_blocked_by_env?: boolean
   // True when, with page-wide sharing on, the env would leave this server with
@@ -102,6 +102,23 @@ export type McpGatewayFootprint = {
   open_chats: number
   /** Chat slot names whose agent still runs its own copy of a server shared now. */
   stale_chats: string[]
+}
+
+export type NativeSettingsConsent = {
+  restart_native_sessions: true
+  native_settings_confirmation_token: string
+}
+
+export type NativeRoutingStatus = {
+  saved?: boolean | null
+  active?: boolean
+  status?: string
+  active_stub?: string[]
+  restart_required?: boolean
+  failed_step?: string | null
+  action?: string | null
+  transition_id?: string | null
+  starts_blocked?: boolean
 }
 
 export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientTransport) {
@@ -152,8 +169,8 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
 
   const gateway = {
     // MCP Gateway (shared pool)
-    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; share_refused?: Record<string, string>; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string }> }>,
-    mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,
+    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; share_refused?: Record<string, string>; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string }> } & NativeRoutingStatus>,
+    mcpGatewayEnable: (enabled: boolean, consent?: NativeSettingsConsent) => post('/api/mcp-gateway/enable', { enabled, ...consent }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean } & NativeRoutingStatus>,
     /** What the open chats' MCP servers cost this host now, and with sharing
      *  (PSS read from /proc; null when not every process could be read), and
      *  which chats still run their own copy of a server shared now. */
@@ -165,7 +182,7 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
     // is written against and is present only when every command could be shown.
     mcpGatewayLaunchPreview: (name: string) => fetch(`/api/mcp-gateway/servers/launch?name=${encodeURIComponent(name)}`).then(j) as Promise<{ name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>,
     mcpGatewayLaunchPreviews: (names: string[]) => post('/api/mcp-gateway/servers/launch', { names }).then(j) as Promise<{ launches: Record<string, { name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>; errors: Record<string, string> }>,
-    mcpGatewaySetStub: (name: string, stub: boolean, expectedLaunch?: string, resolveEligibility = false) => post('/api/mcp-gateway/servers/stub', { name, stub, ...(expectedLaunch ? { expected_launch: expectedLaunch } : {}), ...(resolveEligibility ? { resolve_eligibility: true } : {}) }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; stubbed?: string[]; skipped?: Array<{ name: string; reason: string }>; sharing_on?: boolean; enabled?: boolean; applied?: boolean; restart_required?: boolean; stub_servers?: string[] }>,
+    mcpGatewaySetStub: (name: string, stub: boolean, expectedLaunch?: string, resolveEligibility = false, consent?: NativeSettingsConsent) => post('/api/mcp-gateway/servers/stub', { name, stub, ...(expectedLaunch ? { expected_launch: expectedLaunch } : {}), ...(resolveEligibility ? { resolve_eligibility: true } : {}), ...consent }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; stubbed?: string[]; skipped?: Array<{ name: string; reason: string }>; sharing_on?: boolean; enabled?: boolean; applied?: boolean; restart_required?: boolean; stub_servers?: string[] } & NativeRoutingStatus>,
     mcpResolveRefresh: () => post('/api/mcp-gateway/resolve-refresh', {}).then(j) as Promise<{ ok: boolean; reason?: string; resolved: Record<string, 'ready' | 'unresolved' | 'error'>; ready?: string[] }>,
     // Starting a measurement pass returns immediately: it spawns two processes per
     // unmeasured server, so the answer arrives through the progress read, not here.

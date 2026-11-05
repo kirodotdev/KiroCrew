@@ -424,6 +424,17 @@ def on_event_loop() -> bool:
 
 
 def replace_with_retry(src: Path | str, dst: Path | str, *, budget_s: float | None = None) -> None:
+    """Publish under the native settings fence, retaining ordinary retry semantics."""
+    if platform_compat.IS_WINDOWS:
+        from kiro_crew.windows_settings import guarded_replace
+
+        with guarded_replace(src, dst):
+            _replace_with_retry(src, dst, budget_s=budget_s)
+    else:
+        _replace_with_retry(src, dst, budget_s=budget_s)
+
+
+def _replace_with_retry(src: Path | str, dst: Path | str, *, budget_s: float | None = None) -> None:
     """``os.replace(src, dst)``, retrying the Windows sharing-violation window.
 
     Atomic replacement is the last step of every tmp-file-plus-rename writer. On

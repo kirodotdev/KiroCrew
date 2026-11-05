@@ -60,6 +60,7 @@ import { ApprovalCard, ConfirmReload, type ReviewItem, ReviewApprovalsDialog, Sh
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 import { isPermanentRefusal } from '../overview/McpShareRefusedNotice'
 import { retryPolicy } from '../../api/queryClient'
+import { NativeRoutingState, useNativeRoutingRestart } from './McpNativeRoutingRestart'
 
 /**
  * MCP Management, top to bottom: the hero (title, Learn more, the page-wide
@@ -104,6 +105,8 @@ export function McpManagement({
   // outside the Customize → Connections panel's provider.
   const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
   const handoffHint = useMcpHandoffHint()
+  const nativeRestart = useNativeRoutingRestart()
+  const [confirmSharing, setConfirmSharing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // A change that waits for a restart is information, not a failure.
@@ -116,6 +119,7 @@ export function McpManagement({
   const statusQ = useQuery<GatewayStatus>({
     queryKey: ['mcpGatewayStatus'],
     queryFn: () => api.mcpGatewayStatus(),
+    refetchInterval: query => nativeRestart.shouldPoll(query.state.data) ? 1500 : false,
   })
   const serversQ = useQuery<{ servers: McpManagedServer[] }>({
     queryKey: ['mcpGatewayServers'],
@@ -235,6 +239,43 @@ export function McpManagement({
     },
   })
 
+  const setStub = useMutation({
+    mutationFn: ({ name, stub, expectedLaunch }: { name: string; stub: boolean; expectedLaunch?: string }) =>
+      api.mcpGatewaySetStub(name, stub, expectedLaunch),
+    onSuccess: (res, vars) => {
+      invalidate()
+      if (vars.stub) {
+        setBulkIssues(issues => issues.filter(issue => issue.name !== vars.name))
+        setNotice(null)
+      }
+      if (res && res.restart_required) {
+        setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
+      } else if (res && res.applied === false) {
+        setError(i18nT('pages.mcpManagement.stub_not_live'))
+      }
+    },
+    onError: (error, vars) => {
+      if (nativeRestart.capture(error, consent => api.mcpGatewaySetStub(vars.name, vars.stub, vars.expectedLaunch, false, consent))) return
+      invalidate()
+      setError(i18nT(stubErrorKey(error), { name: vars.name }))
+    },
+  })
+
+  const setSharing = useMutation({
+    mutationFn: (enabled: boolean) => api.mcpGatewayEnable(enabled),
+    onSuccess: (res, enabled) => {
+      invalidate()
+      if (enabled && !res.ping_ok) {
+        setError(i18nT('pages.mcpManagement.sharing_not_live'))
+      }
+    },
+    onError: (error, enabled) => {
+      if (nativeRestart.capture(error, consent => api.mcpGatewayEnable(enabled, consent))) return
+      onApplyError('pages.mcpManagement.sharing_failed')()
+    },
+  })
+
+
   const resolveRefresh = useMutation({
     mutationFn: () => api.mcpResolveRefresh(),
     onSuccess: res => {
@@ -274,6 +315,12 @@ export function McpManagement({
     },
   })
 
+  const busy = setStub.isPending || setSharing.isPending || previewLaunch.isPending || nativeRestart.shouldPoll(status)
+  // An unsupported platform must never TRAP an operator in a state they cannot
+  // leave: a config carried over from another machine can arrive with sharing on
+  // or servers stubbed, so turning things OFF stays available and only turning
+  // them ON is blocked. Enabling sharing over an empty stub set is blocked for
+  // the same reason it no longer exists as a state: it would do nothing.
   // One count shared by the tab badge and the assessment banner.
   const unsupportedCount = useMemo(
     () =>
@@ -688,7 +735,168 @@ export function McpManagement({
         />
       </TabsContent>
       <TabsContent value="servers" className="min-w-0 space-y-4">
-      {/* Per server: one labelled button is the decision. */}
+      {/* No <h2> here: the Developer tab header already names this surface, and a
+          second copy of the title read as two stacked headings. */}
+      <header>
+        <p className="max-w-[76ch] text-[13px] leading-relaxed text-[var(--muted)]">
+          {/*
+           * One key holds the whole sentence with a {{link}} placeholder, rather
+           * than joining a lede key and a link-label key side by side. Halves
+           * that each end mid-sentence cannot be reordered by a translator, and
+           * plenty of languages need the link somewhere other than the end.
+           */}
+          {splitOnPlaceholder(i18nT('pages.mcpManagement.lede'), 'link').map((part, i) =>
+            part === null ? (
+              <a
+                key="link"
+                href={DOCS_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline"
+              >
+                {i18nT('pages.mcpManagement.learn_more')}
+                <ExternalLink size={12} />
+              </a>
+            ) : (
+              <span key={i}>{part}</span>
+            ),
+          )}
+        </p>
+      </header>
+
+      {/* Hand-off is safe here: this page is switches only, every input is
+          already persisted before any of these errors can show. */}
+      <ErrorNotice message={error} askAgent onDismiss={() => setError(null)} />
+      {nativeRestart.dialog}
+      <NativeRoutingState status={status} onRestart={nativeRestart.recovery}
+        pending={nativeRestart.recoveryPending} requestError={nativeRestart.recoveryError} />
+
+      {restartNotice && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-lg border border-[var(--accent)] bg-[var(--accent-subtle,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--text)]"
+        >
+          <RefreshCw size={14} className="mt-0.5 shrink-0 text-[var(--accent)]" aria-hidden="true" />
+          <span>{restartNotice}</span>
+        </div>
+      )}
+
+      {/* Global: route every stub to one shared backend. */}
+      <section className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-5 py-4">
+        <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-start md:gap-5">
+          <div className="min-w-0 flex-1">
+            <div className="text-[15px] font-semibold text-[var(--text)]">
+              {i18nT('pages.mcpManagement.sharing_label')}
+            </div>
+            <p
+              id="mcp-sharing-desc"
+              className="mt-1.5 max-w-[64ch] break-words text-[13px] leading-relaxed text-[var(--muted)] [overflow-wrap:anywhere]"
+            >
+              {i18nT('pages.mcpManagement.sharing_description')}
+            </p>
+            {!supported && (
+              <p className="mt-2 text-[12.5px] text-[var(--muted)]">
+                {i18nT('pages.mcpManagement.unsupported_platform')}
+              </p>
+            )}
+            {/* A disabled control has to say why. This is the page's headline
+                switch, so with nothing stubbed a first-time user's very first
+                click silently did nothing and only the lede's last clause
+                hinted at the gate. */}
+            {supported && !status?.enabled && stubCount === 0 && (
+              <p className="mt-2 text-[12.5px] text-[var(--muted)]">
+                {i18nT('pages.mcpManagement.sharing_needs_a_stub')}
+              </p>
+            )}
+            {/* Sharing left ON over an empty stub set is the exact "switch with
+                no observable effect" state this page exists to eliminate —
+                reachable by unstubbing the last server. Name it instead of
+                showing a live switch that governs nothing. */}
+            {supported && status?.enabled && stubCount === 0 && (
+              <p className="mt-2 text-[12.5px] text-[var(--muted)]">
+                {i18nT('pages.mcpManagement.sharing_on_but_nothing_stubbed')}
+              </p>
+            )}
+          </div>
+          <div className="flex min-w-0 items-start justify-between gap-3 md:shrink-0 md:gap-5">
+            <span className="min-w-0 break-words font-mono text-[12px] text-[var(--muted)] [overflow-wrap:anywhere] md:whitespace-nowrap md:pt-1">
+              {i18nT('pages.mcpManagement.stubbed_of_total', {
+                stubbed: switchedOnCount,
+                total: eligibleCount,
+              })}
+              {waitingCount > 0
+                && ` · ${i18nT('pages.mcpManagement.stub_count_waiting', { count: waitingCount })}`}
+            </span>
+            <Switch
+              on={!!status?.enabled}
+              disabled={
+                busy || statusQ.isLoading || (!status?.enabled && !canEnableSharing)
+              }
+              label={i18nT('pages.mcpManagement.sharing_label')}
+              describedBy="mcp-sharing-desc"
+              onClick={() => {
+                setError(null)
+                // Turning sharing ON changes the topology of every stubbed server
+                // at once, so it asks first. Turning it OFF only ever narrows,
+                // and a confirm on the safe direction trains people to click
+                // through the dangerous one.
+                if (!status?.enabled) setConfirmSharing(true)
+                else setSharing.mutate(false)
+              }}
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* Global: pre-resolve npm-launcher servers so launches skip resolution. */}
+      <section className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-5 py-4">
+        <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-start md:gap-5">
+          <div className="min-w-0 flex-1">
+            <div className="text-[15px] font-semibold text-[var(--text)]">
+              {i18nT('pages.mcpManagement.resolve_label')}
+            </div>
+            <p
+              id="mcp-resolve-desc"
+              className="mt-1.5 max-w-[64ch] break-words text-[13px] leading-relaxed text-[var(--muted)] [overflow-wrap:anywhere]"
+            >
+              {i18nT('pages.mcpManagement.resolve_description')}
+            </p>
+            {/* A control that can do nothing has to say so BEFORE it is pressed.
+                Pre-resolving acts on the routed set, and routing is what a stub
+                creates, so with nothing stubbed there is nothing to resolve --
+                the same gate the sharing card states in plain text above. */}
+            {stubCount === 0 && (
+              <p className="mt-2 text-[12.5px] text-[var(--muted)]">
+                {i18nT('pages.mcpManagement.resolve_needs_a_stub')}
+              </p>
+            )}
+            {resolveNotice && (
+              <p className="mt-2 text-[12.5px] text-[var(--text)]" role="status">
+                {resolveNotice}
+              </p>
+            )}
+            <ErrorNotice variant="inline" className="mt-2" message={resolveError} askAgent />
+          </div>
+          <button
+            type="button"
+            aria-describedby="mcp-resolve-desc"
+            disabled={resolveRefresh.isPending}
+            onClick={() => {
+              setError(null)
+              setResolveNotice(null)
+              setResolveError(null)
+              resolveRefresh.mutate()
+            }}
+            className="self-start shrink-0 rounded-lg border border-[var(--border)] px-3 py-1.5 text-[13px] text-[var(--text)] transition-colors hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {resolveRefresh.isPending
+              ? i18nT('pages.mcpManagement.resolve_updating')
+              : i18nT('pages.mcpManagement.resolve_update_now')}
+          </button>
+        </div>
+      </section>
+
+      {/* Per server: interpose the stub. */}
       <section className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-[var(--border)] px-4 py-2.5">
           <span className="text-[12.5px] text-[var(--muted)]">

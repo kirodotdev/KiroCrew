@@ -86,6 +86,12 @@ active YOLO grant can never route around a hard deny.
 
 ## Layer 0: OS-level sandbox (`sandbox.py`)
 
+A source-only Windows MXC integration with a dedicated SDK runner can be explicitly selected with
+`KIROCREW_WINDOWS_SANDBOX_EXE`. Its native launcher starts no workload until the policy is applied and never
+falls back to an unconfined process. Admission checks the synthetic filesystem
+and descendant-confinement probe; Codex still requires an enforced backend. It remains experimental pending native
+ACP, approval and process-lifecycle validation; see the security module spec.
+
 Confines the `kiro-cli` subprocess tree with platform-native isolation, hiding
 credential directories by bind-mount (Linux user + mount namespaces) or file-read
 denial (macOS Seatbelt), and scrubbing credential-bearing environment variables

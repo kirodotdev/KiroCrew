@@ -23,8 +23,17 @@ export type GatewayStatus = {
   running: boolean
   ping_ok: boolean
   supported: boolean
-  // Stubbed servers whose launch the gateway has not recorded yet, keyed by
-  // name. Optional: an older gateway does not send it.
+  saved?: boolean | null
+  active?: boolean
+  status?: string
+  active_stub?: string[]
+  restart_required?: boolean
+  failed_step?: string | null
+  action?: string | null
+  transition_id?: string | null
+  starts_blocked?: boolean
+  // Stubbed servers whose launch the gateway has not recorded yet / refused to
+  // run outside the session sandbox, keyed by name. Optional: older gateway.
   launch_refused?: Record<string, LaunchRefusal>
   // Share-list names, as configured, whose launch is refused, with the reason.
   // Matched by the gateway, which knows the alias a refusal is recorded under.

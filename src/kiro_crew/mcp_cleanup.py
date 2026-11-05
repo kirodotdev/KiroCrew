@@ -268,10 +268,12 @@ ALWAYS_ON_BIN_MCP_SERVERS = (
     "kirocrew-guide",
     "kirocrew-mate",
 )
+WORK_LEDGER_SERVER = "kirocrew-work"
+
 OPT_IN_BIN_MCP_SERVERS = (
     "kirocrew-secrets",
     "kirocrew-dashboard",
-    "kirocrew-work",
+    WORK_LEDGER_SERVER,
     "kirocrew-crew-log",
     "kirocrew-debug",
     "kirocrew-panel",

@@ -188,6 +188,9 @@ _ROUTED_TOKENS = (
     "sandboxed_spawn_argv",
     "wrap_argv",
     "_prepare_sandboxed_spawn",
+    # Lower-level renderer: validates a pinned profile and reconstructs the
+    # fixed native sandbox argv. Regression tests pin its policy-file and digest flags.
+    "windows_native_spawn_argv(",
 )
 
 # Token marking a routed function as also applying a kernel resource ceiling
@@ -241,6 +244,10 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
         # futex, never exec'd, never exited, and pinned every fd it inherited --
         # including gateway.lock and the dashboard listener.
         "kiro_prerequisite_process.py::_run_process",
+        # Native Windows launcher is below the resource-limited spawn boundary.
+        # It inherits that Windows job and does not request job breakaway.
+        # ACP assigns the job before resuming the outer Python launcher.
+        "sandbox_windows_launcher.py::main",
         # Spawns NOTHING. It PATCHES `sandboxed_spawn_argv` and raises from the
         # replacement, so the argv is captured at the boundary and no child is ever
         # created -- but the name appears in the function body, which is what this scan

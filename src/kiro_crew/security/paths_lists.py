@@ -162,6 +162,10 @@ _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 
 
 _CREW_SECRET_LEAVES: list[str] = [
+    # The private Windows Codex profile includes its independently refreshed
+    # authentication and rollouts. Other agents must not read either, including
+    # temporary credential files written beside auth.json.
+    host_auth.CREW_CODEX_HOME_LEAF,
     # Gateway diagnostics, for the reason the sandbox mask gives: the rows carry
     # frame labels, folded stacks and process detail, and the owner-gated read
     # routes redact them on the way out while the files themselves do not. A file
