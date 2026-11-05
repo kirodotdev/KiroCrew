@@ -1142,11 +1142,16 @@ class TestDedupeJudge:
     @pytest.mark.asyncio
     async def test_returns_text_and_releases_session(self) -> None:
         sessions = _fake_sessions()
+        client = MagicMock(new_conversation=AsyncMock(return_value=None))
+        sessions.get_or_create = AsyncMock(return_value=(client, False, False))
+        sessions.end_children_for = AsyncMock(return_value=None)
         c = _consolidator(sessions=sessions)
         with patch("kiro_crew.history.stream_and_collect", AsyncMock(return_value="DUP")):
             assert await c._dedupe_judge("prompt") == "DUP"
         sessions.release.assert_called_once_with(BACKGROUND_KEY)
-        sessions.recycle_background.assert_awaited_once()
+        # The judge leaves ``_bg`` on an empty conversation instead of recycling.
+        client.new_conversation.assert_awaited_once()
+        sessions.recycle_background.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_text_becomes_empty_string(self) -> None:
@@ -1183,6 +1188,9 @@ class TestMergeSkillUpdate:
     @pytest.mark.asyncio
     async def test_returns_merged_body_and_prompts_with_all_inputs(self) -> None:
         sessions = _fake_sessions()
+        client = MagicMock(new_conversation=AsyncMock(return_value=None))
+        sessions.get_or_create = AsyncMock(return_value=(client, False, False))
+        sessions.end_children_for = AsyncMock(return_value=None)
         c = _consolidator(sessions=sessions)
         collector = AsyncMock(return_value="## When to use\nmerged\n")
         with patch("kiro_crew.history.stream_and_collect", collector):
@@ -1194,7 +1202,8 @@ class TestMergeSkillUpdate:
         for needle in ("EXISTING BODY", "the description", "trig1, trig2", "1. do it"):
             assert needle in prompt
         sessions.release.assert_called_once_with(BACKGROUND_KEY)
-        sessions.recycle_background.assert_awaited_once()
+        client.new_conversation.assert_awaited_once()
+        sessions.recycle_background.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_text_returns_none(self) -> None:
