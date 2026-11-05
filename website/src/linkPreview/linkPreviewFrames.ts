@@ -188,6 +188,12 @@ export class FrameHost {
     }
   }
 
+  /** The provider's card-mode hover card is on screen. */
+  isShown(key: string): boolean {
+    const frame = this.hover.get(key)
+    return Boolean(frame && frame.visible && !frame.overlay)
+  }
+
   /** A once-pinned card the app unpinned is still on screen: it belongs to an
    *  earlier hover, not the latest one. */
   hasUnpinnedDetached(): boolean {
