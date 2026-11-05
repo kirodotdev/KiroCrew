@@ -14,6 +14,10 @@ import pytest
 
 from kiro_crew.channel_history import ChannelHistory, HistoryEntry
 
+# Tests here assert the SHAPE of a built turn, so the host's own free memory
+# must not be an input: see the fixture for the advisory it pins off.
+pytestmark = pytest.mark.usefixtures("ample_host_resources")
+
 # ── Phase 0: ChannelHistory thread-aware ──
 
 
