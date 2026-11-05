@@ -86,6 +86,7 @@ export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => v
         value={text}
         rows={2}
         placeholder={i18nT('components.commentsSidebar.reply')}
+        aria-label={i18nT('components.commentsSidebar.reply_2')}
         onChange={e => setText(e.target.value)}
         {...ime.bindComposition()}
         onKeyDown={e => {
@@ -132,6 +133,7 @@ export function EditBox({ initial, onSubmit, onCancel }: { initial: string; onSu
         value={text}
         rows={2}
         placeholder={i18nT('components.commentsSidebar.edit_comment')}
+        aria-label={i18nT('components.commentsSidebar.edit_comment_2')}
         onChange={e => setText(e.target.value)}
         {...ime.bindComposition()}
         onKeyDown={e => {
@@ -675,6 +677,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
               value={addText}
               rows={2}
               placeholder={i18nT('components.commentsSidebar.add_a_comment_on_the_whole_artifact')}
+              aria-label={i18nT('components.commentsSidebar.add_comment')}
               onChange={e => setAddText(e.target.value)}
               {...ime.bindComposition()}
               onKeyDown={e => {
