@@ -1638,8 +1638,13 @@ representative rather than exhaustive.
   - `SlackEnterpriseGate.intercept_message(orch, *, channel, sender_id,
     clean_text, thread_ts, msg_ts) -> InterceptDecision` — wired in
     `slack/events.py::_route_message`. Default `PROCESS` (inline, OSS-identical).
-    **Ordering is security-critical:** the call site is placed immediately after
-    the user-allowlist check and BEFORE any content is recorded or processed
+    **Ordering is security-critical:** the call site is placed after the
+    user-allowlist check and the two activation drops that record nothing
+    (`activation=off` without a `!channel` command; an unmentioned message in a
+    `mention`/`review` channel that thread-follow does not admit; a bound
+    Slack code channel answers without a mention, so there that drop waits for
+    the code-channel gate), and BEFORE
+    any content is recorded or processed
     (observe-mode `channel_history.push`, audio transcription, image/file
     download, and the non-observe history push all follow it), so an unverified
     sender's content can never be persisted to channel history where a later
@@ -1667,9 +1672,13 @@ representative rather than exhaustive.
     (never the warning strings, which embed a truncated credential prefix).
 
   Interceptor ordering + dedup + audit (security-critical, all in `_route_message`):
-  the `intercept_message` call runs after the user-allowlist check and after the
-  interceptor-specific retry-dedup guard, but BEFORE any content recording/
-  processing. A non-`PROCESS` decision (1) records an `intercept:<msg_ts>` key in
+  the `intercept_message` call runs after the user-allowlist check, the
+  activation drops above, and the interceptor-specific retry-dedup guard, but
+  BEFORE any content recording/processing. A message the bot ignores anyway is
+  dropped with its usual `slack.message` SEL denial and never reaches the
+  interceptor, so an edition's challenge is not posted on unaddressed messages
+  in shared channels. Observe mode records history, so its push stays after the
+  interceptor. A non-`PROCESS` decision (1) records an `intercept:<msg_ts>` key in
   the `SeenCache` so a Slack ack-timeout re-delivery does not re-mint the challenge
   (PROCESS never records, preserving the paired `app_mention`/`message` dual-event
   and the standalone inline path), and (2) emits a

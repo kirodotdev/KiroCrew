@@ -429,6 +429,87 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
     return result
 
 
+#: Renamed keys a reader still accepts, per section: each canonical key and its
+#: older spellings, in the order the reader tries them
+#: (``sections_agent._read_dangerously_skip_permissions``,
+#: ``memory_sections._read_auto_add_documents``).
+_RENAMED_KEY_SPELLINGS: dict[str, dict[str, tuple[str, ...]]] = {
+    "agent": {"dangerously_skip_permissions": ("dangerouslySkipPermissions", "yolo")},
+    "knowledge": {"auto_add_documents": ("auto_ingest_doc_links",)},
+}
+
+#: Renamed keys whose reader skips any spelling that is not a real bool and
+#: moves on to the next one.
+_RENAMED_KEYS_READ_AS_REAL_BOOL: frozenset[tuple[str, str]] = frozenset(
+    {("agent", "dangerously_skip_permissions")}
+)
+
+
+def _reader_uses(body: dict, spelling: str, real_bool: bool) -> bool:
+    """True when a reader would take *spelling*'s value from *body*."""
+    return spelling in body and (not real_bool or isinstance(body[spelling], bool))
+
+
+def _canonical_renamed_keys(doc: dict) -> dict:
+    """*doc* with each older spelling of a renamed key under its current name.
+
+    ``save()`` emits only the current name, in the form the reader produced, so
+    :func:`_subtract_overlay` can match a renamed key only when the overlay and
+    the stored base carry it the same way. The spelling the reader would use
+    wins, as at load: the first one present, or for a key in
+    :data:`_RENAMED_KEYS_READ_AS_REAL_BOOL` the first one holding a real bool.
+    An older spelling's value is converted as its reader converts it. A current
+    name the reader would use is left alone.
+    """
+    result = dict(doc)
+    for section, renames in _RENAMED_KEY_SPELLINGS.items():
+        body = result.get(section)
+        if not isinstance(body, dict):
+            continue
+        body = dict(body)
+        for canonical, older in renames.items():
+            real_bool = (section, canonical) in _RENAMED_KEYS_READ_AS_REAL_BOOL
+            if _reader_uses(body, canonical, real_bool):
+                continue
+            for spelling in older:
+                if _reader_uses(body, spelling, real_bool):
+                    # The real-bool reader returns the value as is; the other
+                    # reader returns ``bool(value)``.
+                    body[canonical] = body[spelling] if real_bool else bool(body[spelling])
+                    break
+        result[section] = body
+    return result
+
+
+def _restore_stored_renamed_spellings(saved: dict, stored: dict, overlay: dict) -> None:
+    """Put back, under its own spelling, a renamed key the base file stores.
+
+    :func:`_subtract_overlay` drops a renamed key's current name from *saved*
+    when the overlay owns it and *stored* (``config.json``) holds it only under
+    an older spelling. The base value is written back under the spelling the
+    base used, never under the current name: the current name would outrank an
+    older spelling the overlay still uses and flip what loads.
+    """
+    for section, renames in _RENAMED_KEY_SPELLINGS.items():
+        ov_body = overlay.get(section)
+        base_body = stored.get(section)
+        if not isinstance(ov_body, dict) or not isinstance(base_body, dict):
+            continue
+        out = saved.get(section)
+        for canonical, older in renames.items():
+            real_bool = (section, canonical) in _RENAMED_KEYS_READ_AS_REAL_BOOL
+            if canonical not in ov_body or (
+                isinstance(out, dict) and _reader_uses(out, canonical, real_bool)
+            ):
+                continue
+            for spelling in (canonical, *older):
+                if _reader_uses(base_body, spelling, real_bool):
+                    if not isinstance(out, dict):
+                        out = saved[section] = {}
+                    out[spelling] = base_body[spelling]
+                    break
+
+
 def _subtract_overlay(merged: dict, overlay: dict, base: dict | None = None) -> dict:
     """Remove leaf values from *merged* that are owned by the overlay.
 

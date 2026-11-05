@@ -783,6 +783,13 @@ class TestTheUsageRowOfARoutedStart:
             ),
         ):
             await manager._run_inner(info, "subagent:routed01")
+            # The usage row is appended by a task the manager holds, off the
+            # run's own path, so the run can return before the row lands. Wait
+            # for it (bounded) before reading the shard.
+            pending = [t for t in set(manager._report_tasks) if not t.done()]
+            if pending:
+                _done, unfinished = await asyncio.wait(pending, timeout=30)
+                assert not unfinished, "the usage row write did not finish in 30s"
 
         rows = [json.loads(line) for line in shard.read_text().splitlines() if line.strip()]
         assert len(rows) == 1

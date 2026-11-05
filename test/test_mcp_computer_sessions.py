@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 from mcp_computer_helpers import home_fixture  # noqa: F401
 from mcp_computer_helpers import keystone_fixture  # noqa: F401
 from mcp_computer_helpers import _enable
@@ -275,7 +276,7 @@ class TestTheInvokeCallIsNeverProxied:
             def log_message(self, fmt, *args):
                 pass  # keep pytest output clean
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
         _serve_in_background(server)
         return server, server.server_address[1]
 
@@ -389,7 +390,7 @@ class TestUnresolvedKeysAreNeverDeclared:
             def log_message(self, fmt, *args):
                 pass
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
         _serve_in_background(server)
         return server, server.server_address[1]
 

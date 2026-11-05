@@ -1940,6 +1940,25 @@ carries one: the record holds `int(raw)`. Each clamp logs a warning naming the a
 and the seconds used. It fires once per script run, not per listing, so it needs
 no memory of what it already said.
 
+The update's stop → deregister → swap → re-register → restart chain has one
+terminal entry point besides the dashboard's Sync: `kirocrew app update <name>
+[--source DIR]`, which is `POST /api/apps/{name}/update` sent through the
+owner-only socket the way `enable`, `disable` and `uninstall` are. It is the one app
+verb with NO gateway-less path. Only the gateway's process can run that chain; a
+file-only `update_app` would leave a running gateway serving the old manifest over
+new files — the half-updated state the route exists to prevent — and on Windows the
+swap fails under the backend's open files anyway. So when the lifecycle client
+reports "no gateway", including on the AF_UNIX-less platforms where one may well be
+running, the CLI changes nothing, exits 1 and points at the app's page in the dashboard. The CLI
+makes a given `--source` absolute (the gateway resolves paths against its own
+working directory), refuses an empty one rather than reading it as the current
+directory, and sends no body without the flag, so the gateway uses the app's
+recorded source. The route records the directory it updated from, so a
+`--source` update also moves the recorded source and later bare updates use
+it. A version that newly declares `permissions.sessionApproval`
+comes back disabled with a message saying so; the CLI prints it and offers no
+`enable` step, since that consent is the dashboard's alone.
+
 Writers: `apps/routes_uninstall.py::handle_uninstall_app`, `_run_lifecycle_script`,
 `apps/routes_uninstall.py::_deregister_crons_with_retry`; `apps/manager_uninstall.py::uninstall_app`.
 
@@ -4861,9 +4880,8 @@ that binds that name, and each owner reads its own bindings, so a
 reaches the call site in whichever owner makes the call. The mutable state is one
 object per name, defined once in its owner and imported by the owners that act on it,
 so `bmod._processes.clear()` empties the table every owner reads and replacing it
-through the facade reaches every holder. The two flags rebound with `global` each have
-one holder: `_warned_unconfined_cache` in `backend.py` and `_DEFERRED_BOUND_PORT_APPS` in
-`startup.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
+through the facade reaches every holder. The one flag rebound with `global` has one
+holder: `_warned_unconfined_cache` in `backend.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
 `importlib.reload(backend)` reloads each owner in layer order.
 `mock.patch(..., create=True)` on a forwarded name is the one spelling the facade
 cannot undo, and a guard refuses it. The lock order is unchanged: `_health_reconcile_lock`
@@ -5888,8 +5906,9 @@ through one seam that is empty by default:
 - **Host grants** (`apps/builtin_host_grants.py`). A package in `BUILTIN_NAMES` may ship
   a `host_grants.py` data module holding one `HOST_GRANTS` mapping: `build_rlimit` (the
   backend spawns with `RLIMIT_PROFILE_BUILD`), `bound_port` (the backend receives
-  `KIROCREW_BOUND_PORT` and `backend_runtime/startup.py` defers its spawn to
-  `start_deferred_app_backends`), `backend_env_names` / `backend_env_prefixes`
+  `KIROCREW_BOUND_PORT` at spawn; it starts in the one boot wave, which runs after
+  `start_dashboard` has reserved the port and exported that value),
+  `backend_env_names` / `backend_env_prefixes`
   (operator-set `KIROCREW_*` variables `apps/backend.py` forwards to every backend),
   `config_top_keys` (`config/validation._APP_OWNED_TOP_KEYS`), `strict_internal_paths`
   (folded into `server._STRICT_INTERNAL_API_PATHS`) and `relay_credential_paths`

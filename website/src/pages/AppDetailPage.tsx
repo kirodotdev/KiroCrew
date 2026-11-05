@@ -63,6 +63,32 @@ import { actionGrant } from '../composerActions/composerActionRegistry'
 // model). Callers import the two art components from this module.
 export { HeroBanner, ScreenshotGallery }
 
+// Display words for the installed record's origin, resources and lifecycle
+// values. A value outside these maps is shown as it is.
+const ORIGIN_LABEL_KEYS = {
+  builtin: 'pages.appDetailPage.origin_builtin',
+  registry: 'pages.appDetailPage.origin_registry',
+  local: 'pages.appDetailPage.origin_local',
+  external: 'pages.appDetailPage.origin_external',
+} as const
+const MANAGER_LABEL_KEYS = {
+  gateway: 'pages.appDetailPage.managed_by_gateway',
+  app: 'pages.appDetailPage.managed_by_app',
+  locked: 'pages.appDetailPage.lifecycle_locked',
+} as const
+
+function originLabel(value: string): string {
+  return Object.hasOwn(ORIGIN_LABEL_KEYS, value)
+    ? i18nT(ORIGIN_LABEL_KEYS[value as keyof typeof ORIGIN_LABEL_KEYS])
+    : value
+}
+
+function managerLabel(value: string): string {
+  return Object.hasOwn(MANAGER_LABEL_KEYS, value)
+    ? i18nT(MANAGER_LABEL_KEYS[value as keyof typeof MANAGER_LABEL_KEYS])
+    : value
+}
+
 export default function AppDetailPage() {
   const { name } = useParams<{ name: string }>()
   const [app, setApp] = useState<AppInfo | null>(null)
@@ -1833,10 +1859,18 @@ export default function AppDetailPage() {
                   )}
                 </div>
               )}
-              {app.installedAt && <div>{i18nT('pages.appDetailPage.installed')} {fmtDateNumeric(app.installedAt)}</div>}
-              {app.origin && <div>{i18nT('pages.appDetailPage.origin')} {app.origin} {i18nT('pages.appDetailPage.resources_2')} {app.resources || 'gateway'} {i18nT('pages.appDetailPage.lifecycle')} {app.lifecycle || 'gateway'}</div>}
-              {app.manifest?.minKiroCrewVersion && <div>{i18nT('pages.appDetailPage.min_kirocrew_v')}{app.manifest.minKiroCrewVersion}</div>}
-              {app.platform?.os && <div>{i18nT('pages.appDetailPage.platform')} {app.platform.os.join(', ')}</div>}
+              {app.installedAt && <div>{i18nT('pages.appDetailPage.installed_on', { date: fmtDateNumeric(app.installedAt) })}</div>}
+              {app.origin && (
+                <div>
+                  {i18nT('pages.appDetailPage.origin_resources_lifecycle', {
+                    origin: originLabel(app.origin),
+                    resources: managerLabel(app.resources || 'gateway'),
+                    lifecycle: managerLabel(app.lifecycle || 'gateway'),
+                  })}
+                </div>
+              )}
+              {app.manifest?.minKiroCrewVersion && <div>{i18nT('pages.appDetailPage.min_product_version', { version: app.manifest.minKiroCrewVersion })}</div>}
+              {app.platform?.os && <div>{i18nT('pages.appDetailPage.platform_list', { os: app.platform.os.join(', ') })}</div>}
             </div>
           </Card>
         </div>

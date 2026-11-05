@@ -66,7 +66,8 @@ export function RemoteDispatchCard() {
         <SettingsToggle
           configKey="work_ledger.remote_dispatch"
           label={i18nT('pages.developer.featurePreviewsTab.remote_dispatch')}
-          description={i18nT('pages.developer.featurePreviewsTab.remote_dispatch_desc')}
+          description={i18nT('pages.developer.featurePreviewsTab.remote_dispatch_desc_summary')}
+          hint={i18nT('pages.developer.featurePreviewsTab.remote_dispatch_desc')}
           checked={shown}
           onChange={value => toggleMut.mutate(value)}
           disabled={toggleMut.isPending}

@@ -450,7 +450,9 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 event.tool_name or "",
             )
         from kiro_crew import undelivered_call_watch
+        from kiro_crew.dashboard import session_send_receipts
 
+        session_send_receipts.note_call(turn._send_receipt_selectors, event, initial=True)
         if turn._undelivered_watch is None:
             turn._undelivered_watch = undelivered_call_watch.UndeliveredCallWatch(
                 session_key or "", turn.client
@@ -581,6 +583,9 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
         )
         if _dir_refresh:
             _pending_dir_for_digest[event.tool_call_id] = _dir_refresh
+    from kiro_crew.dashboard import session_send_receipts
+
+    session_send_receipts.note_call(turn._send_receipt_selectors, event, initial=False)
     if _dir_refresh and event.raw_tool_params is not None:
         # The refinement carries the COMPLETE params; the initial
         # tool_call may have streamed none. Same digest the tool took.

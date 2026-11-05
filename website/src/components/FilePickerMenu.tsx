@@ -17,6 +17,10 @@ import { fmtBytes, fmtDateFields, fmtRelative } from '../i18n/format'
 
 export type { FileKind } from '../chat-core/composer/pickerSource'
 
+/** A search payload stamped with the `project` it was asked for, so a
+ *  placeholder can tell whether its rows belong to the current project. */
+type PickerPayload = FileSearchResponse & { project: string }
+
 interface Props {
   /** @-mention query, or the whole `./`-token in `pathMode`. */
   query: string
@@ -159,21 +163,24 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // to empty.
   const source = usePickerSource()
   const load = pathMode ? source.pathComplete : source.fileSearch
-  const { data, isFetching, isError, isPlaceholderData, error, refetch } = useQuery<FileSearchResponse>({
+  const { data, isFetching, isError, isPlaceholderData, error, refetch } = useQuery<PickerPayload>({
     queryKey: pickerQueryKey(source, pathMode
       ? ['path-complete', project, scope.dir, scope.partial]
       : ['file-search', debounced, project]),
     queryFn: async ({ signal }) => pathMode
       // Stamped with the prefix it was asked for, which is what makes a
       // placeholder payload self-describing rather than merely stale.
-      ? { ...(await source.pathComplete!(project ?? '', scope.dir, scope.partial, signal)), dir: scope.dir }
-      : source.fileSearch!(debounced, project, signal),
+      ? { ...(await source.pathComplete!(project ?? '', scope.dir, scope.partial, signal)), dir: scope.dir, project: project ?? '' }
+      : { ...(await source.fileSearch!(debounced, project, signal)), project: project ?? '' },
     // An empty `scope.dir` means the debounced token is not a path token yet —
     // the tick right after the menu opens. Fetching there would ask for the
     // project root under a token that names something else.
     enabled: open && !!load && (pathMode ? scope.dir !== '' : debounced.length >= 2),
     // The one bounded read that keeps the shared throttle ladder: a 429 here must recover.
-    placeholderData: prev => prev,
+    // Only rows from the SAME project stand in. A row is relativized against
+    // its payload's root, so another project's rows (the previous chat's, after
+    // a session switch) would insert a token that names a different file here.
+    placeholderData: prev => (prev?.project === (project ?? '') ? prev : undefined),
     staleTime: 10_000,
   })
   rootRef.current = data?.root || ''

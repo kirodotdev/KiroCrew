@@ -209,6 +209,7 @@ class _ChatTurn:
     _saw_terminal_event: "bool"
     _saw_text_chunk: "bool"
     _seen_tool_identity: "dict[str, tuple[str, str]]"
+    _send_receipt_selectors: "dict[str, str]"
     _session_deny_waivers: "frozenset[str]"
     #: Built on the turn's first tool call (the provider is known by then).
     _undelivered_watch: "Any"

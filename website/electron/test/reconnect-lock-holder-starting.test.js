@@ -67,7 +67,7 @@ function harness({
       if (startAt !== null && servesAfterMs !== null && clock - startAt >= servesAfterMs) return;
       throw new Error("ECONNREFUSED");
     },
-    startGateway: async () => { events.push("spawn"); },
+    respawnGateway: async () => { events.push("spawn"); },
     showLoadingThenConnect: async () => { events.push("connect"); },
     showUnrecoverableGatewayError: async (_w, _p, kind) => { events.push(`error ${JSON.stringify(kind)}`); },
     waitForPortFree: async () => { events.push("port-free-check"); return portFree; },

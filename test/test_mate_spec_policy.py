@@ -615,19 +615,41 @@ def test_a_template_holding_only_the_bases_hooks_is_added_off_kas(home, monkeypa
 # --- an allow KAS would drop beside allowedTools ------------------------------------
 
 
-@pytest.mark.parametrize(
-    "rule",
-    [
-        {"capability": "mcp", "match": ["jira/search"], "effect": "allow"},
-        {"capability": "web_fetch", "effect": "allow"},
-    ],
-)
-def test_an_allow_the_workers_allowed_tools_would_override_is_refused(rule):
+def test_a_builtin_allow_the_workers_allowed_tools_would_override_is_refused():
     """KAS's projection drops an allow an ``allowedTools`` list could express."""
+    rule = {"capability": "web_fetch", "effect": "allow"}
     spec = {"allowedTools": ["fs_read"]}
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [DENY, rule]}}, worker=True)
-    assert caught.value.fields == [f"permissions rule 1 (allow {rule['capability']})"]
+    assert caught.value.fields == ["permissions rule 1 (allow web_fetch)"]
+
+
+@pytest.mark.parametrize(
+    ("match", "refs"),
+    [
+        (["jira/*"], ["@jira"]),
+        (["jira/search"], ["@jira/search"]),
+        (["jira/search", "notes/*"], ["@jira/search", "@notes"]),
+    ],
+)
+def test_an_mcp_allow_the_workers_list_lacks_is_carried_as_its_refs(match, refs):
+    """The allow lands as exactly the refs KAS derives it back from, no wider."""
+    from kiro_crew.agent_sdk.kas_tool_view import allow_granted_by_spec
+
+    rule = {"capability": "mcp", "match": match, "effect": "allow"}
+    spec = {"allowedTools": ["fs_read"]}
+    mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [rule]}}, worker=True)
+    assert spec["allowedTools"] == ["fs_read", *refs]
+    assert allow_granted_by_spec(rule, spec)
+
+
+def test_an_mcp_allow_whose_refs_cannot_grant_it_is_still_refused():
+    """A bracket glob has no ``allowedTools`` ref, so nothing is written."""
+    rule = {"capability": "mcp", "match": ["jira/search", "jira/re[ad]"], "effect": "allow"}
+    spec = {"allowedTools": ["fs_read"]}
+    with pytest.raises(SpecPolicyUncarried):
+        mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [rule]}}, worker=True)
+    assert spec["allowedTools"] == ["fs_read"]
 
 
 def test_a_carried_allow_survives_the_workers_kas_projection():
@@ -815,3 +837,117 @@ def test_an_mcp_allow_counts_as_granted_only_when_coverage_is_proved(granted, wa
 
     rule = {"capability": "mcp", "match": [wanted], "effect": "allow"}
     assert allow_granted_by_spec(rule, {"allowedTools": [granted]}) is covered
+
+
+def test_an_allow_for_a_server_the_worker_base_also_declares_does_not_block_the_worker():
+    """A crewmate file's allow for a server the worker base declares too (one from
+    the user's own MCP config) starts the worker instead of refusing it, and the
+    worker auto-approves no more than the file declares."""
+    rule = {"capability": "mcp", "match": ["notes/*"], "effect": "allow"}
+    base = {**WORKER_BASE, "mcpServers": {"notes": {"command": "notes-mcp"}}}
+    mate_file = {
+        **TEMPLATE,
+        "mcpServers": {"notes": {"command": "notes-mcp"}},
+        "allowedTools": ["@notes"],
+        "permissions": {"rules": [rule]},
+    }
+    del mate_file["hooks"], mate_file["toolsSettings"]
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate_file))
+    from kiro_crew.agent_sdk.kas_tool_view import allow_granted_by_spec
+
+    assert allow_granted_by_spec(rule, merged)
+    assert merged["allowedTools"] == [*WORKER_BASE["allowedTools"], "@notes"]
+
+
+def test_a_tool_scoped_allow_for_a_base_declared_server_grants_only_that_tool():
+    rule = {"capability": "mcp", "match": ["notes/search"], "effect": "allow"}
+    base = {**WORKER_BASE, "mcpServers": {"notes": {"command": "notes-mcp"}}}
+    mate_file = {
+        "name": "x",
+        "prompt": "",
+        "mcpServers": {"notes": {"command": "notes-mcp"}},
+        "permissions": {"rules": [rule]},
+    }
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate_file))
+    assert merged["allowedTools"] == [*WORKER_BASE["allowedTools"], "@notes/search"]
+    assert merged["permissions"]["rules"] == [rule]
+
+
+def test_an_allow_for_a_server_the_file_adds_keeps_the_files_own_refs():
+    """A server the base does not declare carries the file's list, as before."""
+    rule = {"capability": "mcp", "match": ["jira/search"], "effect": "allow"}
+    mate_file = {
+        "name": "x",
+        "prompt": "",
+        "mcpServers": {"jira": {"command": "jira-mcp"}},
+        "allowedTools": ["@jira/search"],
+        "permissions": {"rules": [rule]},
+    }
+    merged = mate_worker.merge_worker_spec(
+        WORKER_BASE, mate_worker.worker_additions(WORKER_BASE, mate_file)
+    )
+    assert merged["allowedTools"] == [*WORKER_BASE["allowedTools"], "@jira/search"]
+
+
+def test_the_ceiling_still_withholds_a_carried_allow(_floor_monkeypatch):
+    """The carried ref goes through the governance ceiling like any other grant:
+    a ceiling that withholds the server leaves the worker no auto-approval for it."""
+    from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions, merge_user_permissions
+    from kiro_crew.platform import governance
+
+    def ceiling(ref: str) -> bool:
+        return not ref.startswith("@notes")
+
+    _floor_monkeypatch.setattr(governance, "may_skip_gate_now", ceiling)
+    _floor_monkeypatch.setattr(
+        governance,
+        "sanitize_agent_config_governance",
+        lambda spec, **_k: spec.update(
+            allowedTools=[r for r in spec["allowedTools"] if ceiling(r)]
+        ),
+    )
+    rule = {"capability": "mcp", "match": ["notes/*"], "effect": "allow"}
+    base = {**WORKER_BASE, "mcpServers": {"notes": {"command": "notes-mcp"}}}
+    mate_file = {
+        "name": "x",
+        "prompt": "",
+        "mcpServers": {"notes": {"command": "notes-mcp"}},
+        "permissions": {"rules": [rule]},
+    }
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate_file))
+    assert merged["allowedTools"] == WORKER_BASE["allowedTools"]
+    projected = merge_user_permissions(
+        allowed_tools_to_permissions(merged["allowedTools"]),
+        merged["permissions"],
+        ceiling_permits=ceiling,
+        allowlist_present=True,
+    )
+    mcp_allows = [
+        r
+        for r in (projected or {}).get("rules", [])
+        if r["capability"] == "mcp" and r["effect"] == "allow"
+    ]
+    assert mcp_allows == []
+
+
+@pytest.mark.parametrize(
+    ("file_entry", "excluded"),
+    [
+        ({"command": "notes-mcp"}, ["@notes/search"]),
+        ({"command": "notes-mcp", "disabled": True}, []),
+    ],
+    ids=["excluded-tool", "muted-server"],
+)
+def test_a_carried_allow_does_not_restore_a_grant_the_merge_took_away(file_entry, excluded):
+    """An excluded tool or a muted server keeps no auto-approval, and the worker starts."""
+    rule = {"capability": "mcp", "match": ["notes/search"], "effect": "allow"}
+    base = {**WORKER_BASE, "mcpServers": {"notes": {"command": "notes-mcp"}}}
+    mate_file = {
+        "name": "x",
+        "prompt": "",
+        "mcpServers": {"notes": file_entry},
+        "excludedTools": excluded,
+        "permissions": {"rules": [rule]},
+    }
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate_file))
+    assert merged["allowedTools"] == WORKER_BASE["allowedTools"]

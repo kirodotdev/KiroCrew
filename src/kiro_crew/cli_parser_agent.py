@@ -901,6 +901,7 @@ Examples:
   kirocrew app list
   kirocrew app enable oncall-watchtower
   kirocrew app update oncall-watchtower
+  kirocrew app update oncall-watchtower --source /path/to/oncall-watchtower
   kirocrew app disable oncall-watchtower
   kirocrew app info oncall-watchtower
   kirocrew app uninstall oncall-watchtower
@@ -936,6 +937,13 @@ Examples:
         help="Update an installed app to its newest published version (needs a running gateway)",
     )
     app_update.add_argument("name", help="App name")
+    app_update.add_argument(
+        "--source",
+        help=(
+            "App directory to update from; it becomes the app's recorded source "
+            "(default: the recorded source, where it was installed or last updated from)"
+        ),
+    )
     app_disable = app_sub.add_parser("disable", help="Disable an installed app")
     app_disable.add_argument("name", help="App name to disable")
     app_mcp = app_sub.add_parser(

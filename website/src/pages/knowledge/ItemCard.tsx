@@ -50,10 +50,10 @@ export function FileSubGroup({ filePath, items, onItemClick, selectedItems, onSe
 
   return (
     <div className="ml-2 border-l-2 border-border pl-2">
-      <button onClick={() => setOpen(!open)}
+      <button onClick={() => setOpen(!open)} aria-expanded={open}
         className="flex items-center gap-1.5 py-1 text-left bg-transparent border-none cursor-pointer w-full">
-        {open ? <ChevronDown size={12} className="text-muted" /> : <ChevronRight size={12} className="text-muted" />}
-        <FileText size={12} className="text-muted" />
+        {open ? <ChevronDown size={12} className="text-muted" aria-hidden="true" /> : <ChevronRight size={12} className="text-muted" aria-hidden="true" />}
+        <FileText size={12} className="text-muted" aria-hidden="true" />
         <span className="text-[12px] text-text truncate">{fileName}</span>
         <span className="text-[10px] text-muted">({items.length})</span>
       </button>

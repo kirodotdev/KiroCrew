@@ -115,7 +115,6 @@ _PHASE_OWNERS: dict[str, tuple[str, ...]] = {
     "app_platform": (
         "_reconcile_app_resources",
         "_start_app_backends",
-        "_start_bound_port_app_backends",
         "_warm_builtin_app_names",
         "_warm_materialized_agents",
     ),
