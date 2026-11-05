@@ -251,3 +251,18 @@ describe('MembersPage — on-watch loop indicator', () => {
     expect(within(betaRow).getByTestId('crew-patrol-toggle')).toBeEnabled()
   })
 })
+
+describe('MembersPage — a mate session breadcrumb lands on Sessions', () => {
+  it('opens the named crewmate\'s Profile on Sessions, once', async () => {
+    await renderPage({ pathname: '/members', search: '?member=beta', state: { openMateSessions: true } } as never)
+    const card = await screen.findByTestId('crew-profile-panel')
+    expect(card).toHaveAttribute('data-tab', 'sessions')
+    expect(within(card).getByTestId('crew-profile-name')).toHaveTextContent('beta')
+  })
+
+  it('a plain member link leaves the Profile closed', async () => {
+    await renderPage('/members?member=beta')
+    await screen.findByTestId('chat-pane-stub')
+    expect(screen.queryByTestId('crew-profile-panel')).toBeNull()
+  })
+})

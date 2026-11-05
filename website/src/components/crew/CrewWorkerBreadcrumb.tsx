@@ -1,8 +1,11 @@
 import { useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
+import { type OpenMateSessionsState } from '../../lib/crewMode'
 import { crewSubDispatcher, crewWorkerGroup, crewWorkerGroupOfRow, type CrewWorkerGroup, type CrewWorkerRowLike } from '../../lib/crewWorkers'
-import { useAppDispatch, useAppStore } from '../../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
+import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { openCrewSession, reopenCrewWorker } from '../../pages/chat/command-center/CrewWorkerList'
 import { useCrewRoot } from './useCrewRoot'
 import { useCrewBack } from './useCrewBack'
@@ -23,14 +26,29 @@ const crumbLink = 'truncate text-left cursor-pointer rounded-sm py-3 -my-3 md:py
  * the main chat, the same action as the Crew tab's Back bar (`useCrewBack`); a
  * sub-conductor crumb opens that member like its row in the Crew tab. The
  * current member and its status stay plain text.
+ *
+ * `mate`: *root* is a crewmate thread and *worker* one of the sessions it
+ * dispatched (its `mate_root`), opened from History, search or a link while the
+ * mate sessions preview keeps it out of the person's lists. The root crumb is the
+ * crewmate's name and opens its Profile card on Sessions on the Mates page,
+ * where the session is listed.
  */
-export function CrewWorkerBreadcrumb({ root, worker }: { root: string; worker: CrewWorkerRowLike & { key: string; title?: string } }) {
+export function CrewWorkerBreadcrumb({ root, worker, mate = false }: { root: string; worker: CrewWorkerRowLike & { key: string; title?: string }; mate?: boolean }) {
   // Closed, not deleted: the root's tab is gone but its saved transcript stays,
   // so Back reopens it rather than switching to a session that is not listed.
   // Its name and the worker list come from saved data then, so a reload under
   // a closed root keeps both (edge review R2 Y3).
-  const { workers, failed, rootClosed, rootTitle } = useCrewRoot(root)
+  const { workers, failed, rootClosed, rootTitle: crewRootTitle } = useCrewRoot(root)
   const back = useCrewBack(root)
+  const navigate = useNavigate()
+  const mateRow = useAppSelector(state => mate ? state.dashboard.slots.find(row => row.key === root) : undefined)
+  // The crewmate's name, as its thread's own row reads with no roster at hand.
+  const rootTitle = (mateRow && memberThreadTitle(mateRow, [])) || crewRootTitle
+  // Back to the crewmate's Profile on Sessions, where this session is listed.
+  const mateState: OpenMateSessionsState = { openMateSessions: true }
+  const goBack = mate
+    ? () => navigate(mateRow?.agent ? `/members?member=${encodeURIComponent(mateRow.agent)}` : '/members', mateRow?.agent ? { state: mateState } : undefined)
+    : back.back
   const dispatch = useAppDispatch()
   const store = useAppStore()
   const isMobile = useIsMobile()
@@ -61,7 +79,7 @@ export function CrewWorkerBreadcrumb({ root, worker }: { root: string; worker: C
       <nav aria-label={i18nT('components.crewMode.breadcrumb_nav_label')} data-testid="crew-worker-breadcrumb" className="@container/crumb flex items-center gap-2 min-w-0 w-full pointer-events-auto">
         {/* A phone keeps a readable root prefix. A narrower split pane lets the
             names share the remaining room; tooltips retain each full name. */}
-        <button type="button" onClick={back.back} aria-label={i18nT('components.crewMode.breadcrumb_back_to', { t: rootTitle })} title={rootTitle}
+        <button type="button" onClick={goBack} aria-label={i18nT('components.crewMode.breadcrumb_back_to', { t: rootTitle })} title={rootTitle}
           className={`${crumbLink} min-w-0 @[18rem]/crumb:min-w-[5.5rem] max-w-[45%] shrink text-[13px] text-muted`} data-testid="crew-breadcrumb-root">{rootTitle}</button>
         <ChevronRight size={14} aria-hidden="true" className="text-muted shrink-0" />
         {/* A dispatcher the list does not hold yet has nothing to open: it stays a label. */}
@@ -83,7 +101,7 @@ export function CrewWorkerBreadcrumb({ root, worker }: { root: string; worker: C
       {/* A closed root is said once, by the composer's own line; its list cannot
           be read until it is reopened, which is not a failed read. */}
       {!rootClosed && failed && <ErrorNotice variant="inline" className="pointer-events-auto" message={i18nT('commandCenter.workers_error')} askAgent />}
-      {(back.reopenFailed || viaReopenFailed) && <ErrorNotice variant="inline" className="pointer-events-auto" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
+      {((!mate && back.reopenFailed) || viaReopenFailed) && <ErrorNotice variant="inline" className="pointer-events-auto" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
     </div>
   )
 }

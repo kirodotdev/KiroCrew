@@ -26,8 +26,8 @@ import { useComposerDraftState, ComposerDraftSync, useComposerIntakeRefs, useMai
 import { useModelPickerModels, useNewSessionPicks, useSessionChoices, useSlotSelectionCapabilitiesQuery } from './chat/page/sessionPicks'
 import { useCrewModeSwitch } from './chat/page/crewModeSwitch'
 import UltraModeEffect from '../components/crew/UltraModeEffect'
-import { crewModeRoot, crewRootOf, runsCrewMode } from '../lib/crewMode'
-import { useCrewMode } from '../hooks/usePreviewFlag'
+import { crewModeRoot, crewRootOf, mateRootOf, runsCrewMode } from '../lib/crewMode'
+import { useCrewMode, useMateSessionsHidden } from '../hooks/usePreviewFlag'
 import { useCrewRoot } from '../components/crew/useCrewRoot'
 import { useSteerDelivery, useRefusedPress, useRegenerate } from './chat/page/turnActions'
 import { useTranscriptScrollRefs, useTranscriptPaging } from './chat/page/transcriptPaging'
@@ -711,6 +711,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // A crew member's message box sends nothing while its conductor is closed
   // (ComposerDockView's gate); the voice auto-submit below honours it too.
   const currentCrewRoot = crewRootOf(currentSlot)
+  // ChatTitleOverlay shows the worker breadcrumb for a Crew worker and for a
+  // crewmate's session the mate sessions preview hides.
+  const mateSessionsHidden = useMateSessionsHidden()
+  const workerBreadcrumb = !!currentCrewRoot || (mateSessionsHidden && !!mateRootOf(currentSlot))
   const { rootClosed: crewRootClosedRaw } = useCrewRoot(currentCrewRoot)
   const crewRootClosed = !!currentCrewRoot && crewRootClosedRaw
   // From the chip press to the first message the transcript shows the Crew Mode
@@ -1152,7 +1156,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             />
             <ChatDropOverlay active={dragOver} />
             <ChatTranscriptView
-              embedded={embedded} popout={popout} activeSlot={activeSlot} appToolCallIds={appToolCallIds} titleInTopbar={titleInTopbar} activityOpen={activityOpen}
+              embedded={embedded} popout={popout} activeSlot={activeSlot} appToolCallIds={appToolCallIds} titleInTopbar={titleInTopbar} workerBreadcrumb={workerBreadcrumb} activityOpen={activityOpen}
               completedTurnCount={completedTurnCount} cursorIsForActiveSlot={cursorIsForActiveSlot} kiroCrewVersion={kiroCrewVersion} loadingOlder={loadingOlder} olderFailed={olderFailed}
               setTurnDisclosureFor={setTurnDisclosureFor} slotHasMore={slotHasMore} slotLoading={slotLoading} slotRunning={slotRunning} slotState={slotState} environmentStart={environmentStart} slotStopping={slotStopping}
               slotSwitchTarget={slotSwitchTarget} turnDisclosure={turnDisclosure} turnRowMayBeLive={turnRowMayBeLive} setInput={setInput} isWelcomeState={transcriptWelcome} crewModeOn={crewModeOn || crewWelcomeHeld} openTaskBoard={openTaskBoard} chatConfig={chatConfig}

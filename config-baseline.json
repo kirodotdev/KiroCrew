@@ -9344,6 +9344,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.mate_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: mate_sessions",
+      "help": "Turn on the 'mate_sessions' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.remote_crew_chat",
       "kind": "core",
       "type": "boolean",

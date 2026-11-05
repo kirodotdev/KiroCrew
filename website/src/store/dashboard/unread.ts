@@ -1,7 +1,7 @@
 import { safeSetItem, safeSetSessionItem } from '../../utils/safeStorage'
 import { newerTs } from '../../lib/slotReadRelay'
 import { slotListHoldTest } from '../../utils/slotListHold'
-import { crewRootOf } from '../../lib/crewMode'
+import { crewRootOf, hiddenMateRootOf } from '../../lib/crewMode'
 import { isEmbeddableHubOrigin } from '../../lib/tunnelOrigin'
 import type { DashboardState } from '../dashboardSlice'
 
@@ -312,14 +312,21 @@ const statusHeldOrphanTest = (state: DashboardState): ((key: string) => boolean)
   state.slotsListPartial === true,
 )
 
-/** The keys of the Crew Mode crew members among *slots* that the person's lists
- *  leave out (`crewModeView`): those whose root is a row too, since that root's
- *  Crew panel lists them. Counts shown to the person skip them; their unread
- *  entries stay for that panel. A crew member whose root is closed is a row
- *  again, so it counts. */
-export const crewMemberKeys = (slots: readonly { key: string; crew_root?: string }[]): ReadonlySet<string> => {
+/** The keys among *slots* that the person's lists leave out (`crewModeView`):
+ *  Crew Mode crew members whose root is a row too, since that root's Crew panel
+ *  lists them, and, with the mate sessions preview on, sessions whose mate thread
+ *  is live (`mode` `member`), since its Sessions tab lists them. Counts shown to
+ *  the person skip them; their unread entries stay for those views. One whose
+ *  root is closed is a row again, so it counts. */
+export const crewMemberKeys = (slots: readonly { key: string; mode?: string; crew_root?: string; mate_root?: string }[]): ReadonlySet<string> => {
   const keys = new Set(slots.map(s => s.key))
-  return new Set(slots.filter(s => { const root = crewRootOf(s); return !!root && keys.has(root) }).map(s => s.key))
+  const mates = new Set(slots.filter(s => s.mode === 'member').map(s => s.key))
+  return new Set(slots.filter(s => {
+    const root = crewRootOf(s)
+    if (root && keys.has(root)) return true
+    const mate = hiddenMateRootOf(s)
+    return !!mate && mates.has(mate)
+  }).map(s => s.key))
 }
 
 /** The unread keys an embedded instance reports to the Instances hub. */
