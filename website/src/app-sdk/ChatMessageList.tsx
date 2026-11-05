@@ -24,8 +24,9 @@ import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVer
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
-import { createDisplayItemReconciler, hasToolStep, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
+import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { injectOpensTurn } from '../pages/chat/RecoveryCard'
 import {
   type MessageRenderer,
   type MessageRenderContext,
@@ -282,7 +283,14 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     for (const item of raw) {
       // A sub-agent completion is the next turn's input, so it opens a turn the
       // same way a user message does — the agent's reply belongs below the card.
-      if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'subagent')) {
+      // A turn-dispatching inject (a cron delivery, an app message) is the
+      // prompt of the turn below it too; without it a cron-driven session is one
+      // turn the list mounts whole. A synthesis row also starts a new turn, but
+      // it leads the batch that carries its answer, where the main chat draws it.
+      if (item.kind === 'single' && isSynthesisInjection(item.msg)) {
+        flushTurn(true)
+        turnItems.push(item)
+      } else if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'subagent' || injectOpensTurn(item.msg))) {
         flushTurn(true)
         turns.push(item)
       } else {
