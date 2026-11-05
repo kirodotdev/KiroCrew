@@ -520,6 +520,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
             # flag. A new dispatch retires the oracle so its tracked child
             # and counter samples never bleed across tools — including from a
             # walk still running against the previous tool's command.
+            _server, _tool_name = ToolCallState.identity_of(ev)
             inflight_tool = ToolCallState(
                 title=ev.title,
                 command=ev.tool_input,
@@ -528,10 +529,11 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 dispatch_steady_ts=steady_now(),
                 dispatch_parked_secs=self._parked_total,
                 is_shell=ev.is_shell,
-                tool_name=ev.tool_name,
-                # Only a provenance-verified identity names the server, so
-                # an unverified frame cannot select the wait contract.
-                mcp_server_name=(ev.mcp_server_name if ev.mcp_identity_trusted else ""),
+                # Only a provenance-verified identity, or KAS's half-identity
+                # for a kirocrew-core call, names the server, so an unverified
+                # frame cannot select the wait contract.
+                mcp_server_name=_server,
+                tool_name=_tool_name,
                 interactive_risk=(interactive.risk if interactive else INTERACTIVE_NONE),
             )
             # The shared hand-off rule stores the call by id and makes it the
