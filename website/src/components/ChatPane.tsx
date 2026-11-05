@@ -17,7 +17,9 @@ import { DeliveryWarningStrip } from './DeliveryWarningStrip'
 import { useDeliveryWarningStrip } from './useDeliveryWarningStrip'
 import { mergePaneSends, type PaneSentRestore } from './useChatPaneSend'
 import { busySteerFlag } from './chat-input/busySend'
-import { filterCrewmateChat, withQueuedAsBubbles } from './chat/crewmateBubbles'
+import { withQueuedAsBubbles } from './chat/crewmateBubbles'
+import { filterCrewmateChatWithBrowser } from './chat/crewmateBrowserLive'
+import { BROWSER_HANDBACK_CHAT_EVENT } from '../api/client/browserLive'
 import { crewmateFollowUps } from './chat/crewmateChips'
 import { AWAITING_REPLY_ACTIVITY, useCrewmateAwaitingReply } from './chat/useCrewmateAwaitingReply'
 import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
@@ -345,7 +347,7 @@ export default function ChatPane({
   // Queued rows are drawn in place from the slot's full row list, so a parked
   // message sits where it was sent (`withQueuedAsBubbles`).
   const messages = useMemo(
-    () => (crewmate ? filterCrewmateChat(withQueuedAsBubbles(allMessages, queuedMessages)) : paneMessages),
+    () => (crewmate ? filterCrewmateChatWithBrowser(withQueuedAsBubbles(allMessages, queuedMessages)) : paneMessages),
     [crewmate, allMessages, paneMessages, queuedMessages],
   )
   // This pane shows the chat's transcript once it has rows; a bell note for a
@@ -604,6 +606,19 @@ export default function ChatPane({
     slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent,
   })
   const { recoverInto: recoverQuoteInto } = messageQuote
+  // A browser hand-back note no agent op was waiting for is the person's next
+  // message to this crewmate. The chat page sends it for its own chats; a
+  // crewmate's pane is on the Members page, where that listener is not mounted.
+  useEffect(() => {
+    if (!crewmate) return
+    const handler = (e: Event) => {
+      const d = (e as CustomEvent<{ slotKey?: unknown; text?: unknown }>).detail
+      if (d?.slotKey !== slotKey || typeof d.text !== 'string' || !d.text.trim() || paneCrewRootClosed) return
+      doSend(d.text)
+    }
+    window.addEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
+    return () => window.removeEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
+  }, [crewmate, slotKey, doSend, paneCrewRootClosed])
 
   const { stopError, stopErrorDetail, dismissStopError, paneStopState, onStop } = useChatPaneStop({ slotKey, busy: composerBusy, paneSlot, dispatch })
   // The endpointer auto-submit (handed to the Voice atom above) is an Enter

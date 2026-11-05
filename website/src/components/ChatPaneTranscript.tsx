@@ -6,6 +6,7 @@ import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
 import { i18nT } from '../i18n/t'
 import { earlierConversationRenderer, foldEarlierConversation } from './EarlierConversation'
+import { crewmateBrowserLiveRenderer } from './chat/crewmateBrowserLive'
 import type { ChatPaneProps } from './ChatPaneProps'
 
 /**
@@ -87,12 +88,13 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onOpenCrew
     }),
     [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue],
   )
-  const renderers = useMemo(
-    () => (foldBefore
-      ? [earlierConversationRenderer(foldOpen, () => setOpenFold(foldOpen ? undefined : foldBefore)), ...baseRenderers]
-      : baseRenderers),
-    [baseRenderers, foldBefore, foldOpen],
-  )
+  const renderers = useMemo(() => {
+    // A crewmate's chat keeps each turn's browser call as a card row (crewmateBrowserLive).
+    const rows = crewmate ? [crewmateBrowserLiveRenderer(slotKey), ...baseRenderers] : baseRenderers
+    return foldBefore
+      ? [earlierConversationRenderer(foldOpen, () => setOpenFold(foldOpen ? undefined : foldBefore)), ...rows]
+      : rows
+  }, [baseRenderers, foldBefore, foldOpen, crewmate, slotKey])
 
   return { listMessages, renderers }
 }
