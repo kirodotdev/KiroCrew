@@ -472,6 +472,8 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # the two counters around it, not home state.
     ("kiro_crew.agent", "_rebuild_answer_generation"): "counter",
     ("kiro_crew.platform.context", "_GOVERNANCE_GENERATION"): "counter",
+    # The trust verdict's install counter: monotonic, no home state.
+    ("kiro_crew.approval_mode_policy", "_ceiling_gen"): "counter",
     ("kiro_crew.platform.governance_profiles", "_PROFILE_GENERATION"): "counter",
     # Host facts re-probed on their own TTL or backoff: the user login session
     # behind cgroup scopes and the machine's own host names. A boot that

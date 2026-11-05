@@ -3,8 +3,8 @@
 The ``yolo_duration`` scope's ``permanent`` and ``until_shutdown`` members decide
 whether a declared grant may stand without expiry and whether an ad-hoc grant may
 last until shutdown (``declared_grant_permitted``, ``until_shutdown_permitted``);
-the ``approval_modes`` scope decides whether ``yolo`` may be selected at all
-(``approval_mode_permitted``). Each question is asked of the HOST profile, fail
+the ``approval_modes`` scope decides whether a mode (``yolo``, ``trust``,
+``trust_reads``) may be selected at all (``approval_mode_permitted``). Each question is asked of the HOST profile, fail
 closed, through governance imports deferred to the call.
 
 :mod:`kiro_crew.safety_override` stays the import path and the patch surface for every
@@ -139,13 +139,18 @@ def approval_mode_permitted(mode: str) -> bool:
     and this stops a governance-evaluation error from producing one anyway. Without
     it the ``fail_closed=True`` below could deny ``trust`` on a resolve error --
     refusing a mode whose enforcement this scope does not even implement, which
-    surfaced as an unrelated trust grant silently failing.
+    surfaced as an unrelated trust grant silently failing. Only ``normal`` is
+    non-deniable; a mode id Crew does not know is refused.
 
     Everything else is evaluated against the HOST profile with ``fail_closed=True``,
     so a governance-evaluation error denies the riskier auto-approve mode rather than
     silently granting it. With no policy configured the scope is ungoverned and
     permits every mode, so a solo operator's picker is unchanged.
     """
+    from kiro_crew.approval_mode_policy import KNOWN_APPROVAL_MODES
+
+    if mode not in KNOWN_APPROVAL_MODES:
+        return False
     if mode in _non_deniable_approval_modes():
         return True
     try:

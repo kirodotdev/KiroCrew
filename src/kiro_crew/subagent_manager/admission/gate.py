@@ -1597,6 +1597,11 @@ class _GateMixin(ManagerComponent):
             except RuntimeError:
                 pass  # no running loop (sync/test context)
 
+        # A spawn's own ``approval_mode="auto"`` is a session Trust: a ``permission_mode``
+        # deny of ``trust`` refuses it, and the spawn takes the approval path below.
+        from kiro_crew.approval_mode_policy import session_mode_permitted
+
+        spawn_auto = approval_mode == "auto" and session_mode_permitted("trust")
         # Check parent session trust (approval_policy="auto") set by dashboard trust toggle.
         from kiro_crew.subagent_manager.turn_session import approval_policy_of
 
@@ -1610,7 +1615,7 @@ class _GateMixin(ManagerComponent):
         if self._manager._is_yolo and self._manager._is_yolo():
             self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
             self._manager._log_spawned(info)
-        elif approval_mode == "auto":
+        elif spawn_auto:
             self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
             self._manager._log_spawned(info)
             sel().log_tool_invocation(

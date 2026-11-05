@@ -93,9 +93,16 @@ async def _apply_member_approval_to_live_thread(request: web.Request, name: str,
     if slot is None:
         # No live thread: the next thread open seeds from the record.
         return
-    await apply_approval_mode(
+    from kiro_crew.approval_mode_policy import clamp_session_mode, ensure_resolved
+    from kiro_crew.config.sections import MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
+
+    # A final policy answer first: a passing deny must not refuse the saved choice.
+    await asyncio.to_thread(ensure_resolved)
+    # The thread lands on what the policy allows, as its workers and the open-time
+    # seed do (``clamp_session_mode``); a stored mode it now denies is not refused.
+    resp = await apply_approval_mode(
         state,
-        mode=mode,
+        mode=clamp_session_mode(mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE),
         slot=slot,
         slot_key=slot.key,
         request_app="",
@@ -103,7 +110,9 @@ async def _apply_member_approval_to_live_thread(request: web.Request, name: str,
         audit_caller=lambda label: "dashboard:member_profile",
     )
     # The thread now holds the record's choice; the open-time seed must not redo it.
-    slot._member_approval_seeded = True
+    # A refused apply leaves it unseeded, so a later open or turn seeds it.
+    if resp.status < 400:
+        slot._member_approval_seeded = True
 
 
 async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
@@ -607,6 +616,22 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                         "approval_mode": agent.approval_mode,
                     },
                     status=409,
+                )
+            from kiro_crew.approval_mode_policy import session_mode_permitted
+
+            # A NEW mode the ``permission_mode`` policy denies is refused; resending
+            # the stored one saves, and its live grant is clamped where it is seeded.
+            if body["approval_mode"] != agent.approval_mode and not session_mode_permitted(
+                body["approval_mode"]
+            ):
+                return web.json_response(
+                    {
+                        "error": f"approval mode {body['approval_mode']!r} is disabled by "
+                        "your organization's policy",
+                        "code": "mode_disabled_by_policy",
+                        "mode": body["approval_mode"],
+                    },
+                    status=403,
                 )
             # Validated above. Only ever a real choice: the profile never sends
             # "" back, so a pinned mode cannot fall back to the trust default.

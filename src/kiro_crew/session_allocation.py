@@ -1406,7 +1406,13 @@ class SessionAllocationService:
 
     def get_approval_policy(self, key: str) -> str:
         session = self._sessions.get(self._owner._fold_key(key))
-        return session.approval_policy if session else ""
+        policy = session.approval_policy if session else ""
+        if policy == "auto":
+            from kiro_crew.approval_mode_policy import stored_auto_permitted
+
+            if not stored_auto_permitted():
+                return ""
+        return policy
 
     def approval_revocation(self, key: str) -> int:
         """The stamp of *key*'s outstanding revocation, ``0`` when none is."""
