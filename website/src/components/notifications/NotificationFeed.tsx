@@ -923,7 +923,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                               aria-expanded={!!stackExpanded}
                               className="px-2 py-0.5 rounded-full text-[11px] font-medium cursor-pointer bg-bg-hover text-muted border border-border hover:text-text hover:border-border-strong transition-colors font-body whitespace-nowrap"
                               onClick={e => { e.stopPropagation(); toggleStack(stackKey) }}
-                            ><Layers className="lucide-inline" /> {stackExpanded ? i18nT('components.notifications.notificationFeed.show_less') : `${stackCount - 1} more`}</button>
+                            ><Layers className="lucide-inline" /> {stackExpanded ? i18nT('components.notifications.notificationFeed.show_less') : i18nT('app.n_more', { count: stackCount - 1 })}</button>
                           )}
                         </div>
                       )}
