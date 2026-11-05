@@ -18,6 +18,7 @@ import socket
 import stat
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.pod import runtime
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.pod.runtime import PodError
@@ -263,9 +264,12 @@ def _read_peer_env(path: Path) -> dict[str, str] | None:
     the trusted CLI, outside the hooks gate that governs an agent's own reads. A
     symlink planted there would therefore make a privileged process read its target.
 
-    So the open carries ``O_NOFOLLOW`` (a symlink raises ``ELOOP`` and is skipped)
-    rather than an ``is_symlink()`` pre-check, which would leave a window between the
-    check and the open -- AND ``O_NONBLOCK``, because ``O_NOFOLLOW`` does nothing
+    So the open refuses a link at the name in the same operation
+    (:func:`kiro_crew.platform_compat.open_file_no_reparse`: ``O_NOFOLLOW`` on POSIX,
+    ``FILE_FLAG_OPEN_REPARSE_POINT`` on Windows, where ``O_NOFOLLOW`` does not exist
+    and a ``getattr`` fallback of 0 would follow the link) rather than an
+    ``is_symlink()`` pre-check, which would leave a window between the check and the
+    open -- AND ``O_NONBLOCK``, because ``O_NOFOLLOW`` does nothing
     about a FIFO: a named pipe is not a symlink, and a plain ``O_RDONLY`` open of one
     BLOCKS until a writer appears, which would hang every ``pod up`` on the plane
     indefinitely rather than merely reading the wrong bytes. Measured: the blocking
@@ -285,9 +289,8 @@ def _read_peer_env(path: Path) -> dict[str, str] | None:
     caller, :func:`_peer_effective_port`, reads ``PORT`` through
     :func:`_port_from_env`, so every crash guard lives in one place.
     """
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        fd = os.open(path, flags)
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     except OSError:
         return None
     try:
