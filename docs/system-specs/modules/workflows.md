@@ -1391,7 +1391,11 @@ never spawns `kiro-cli` in tests. Two production adapters:
   restarts at `:0`), released with `cleanup=True` afterwards. A `session=<key>`
   call reuses the named session, which persists so a stateful chain keeps its
   history. Each step runs through `llm_helpers.stream_and_collect` with
-  `AUTO_APPROVE` and `max_turns=_MAX_TURNS_PER_STEP`, then the output passes
+  `AUTO_APPROVE` and `max_turns=_MAX_TURNS_PER_STEP`. A turn that ends `cancelled`
+  or `error: cancel unacked` (a gateway stop or session reset cancelled it; a run
+  cancel or step timeout cancels the task instead) raises `WorkflowStepInterrupted`
+  through `StepStopWatch`, in both executors, so its cut-off text never becomes the
+  step's result and the run does not read `finished`. Otherwise the output passes
   through `redact_credentials` and `redact_exfiltration_urls` before it can reach a
   run record, history, or parent chat. A per-turn usage row is persisted with
   `surface="workflow"` on a best-effort basis, with deliberately **narrow** guards:
