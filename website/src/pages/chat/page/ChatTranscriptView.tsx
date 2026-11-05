@@ -23,6 +23,7 @@ import { ChatProjectDirCtx } from '../../../components/markdown/contexts'
 import CrewModeWelcome from '../../../components/CrewModeWelcome'
 import SessionPulseSurveyCard from '../../../components/SessionPulseSurveyCard'
 import { ChatFooter } from '..'
+import { preparingCaption } from '../../../components/chat/preparingCaption'
 import type { ChatConfig } from '../ChatSettings'
 import TurnBlock from '../TurnBlock'
 
@@ -225,6 +226,13 @@ export default function ChatTranscriptView({
         />
         {/* Footer */}
         <ChatFooter statusLabel={environmentStart} running={slotRunning || !!currentSlot?.preparing} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} />
+        {/* The warm catch-up being prepared outside a turn says what it checks
+            (the gateway's caption); the brief then lands where this was. */}
+        {currentSlot?.preparing && !slotRunning && (
+          <div className="px-4 mx-auto w-full text-[12px] text-muted" style={{ maxWidth: 'var(--mc-content-width, 900px)' }} data-testid="chat-preparing-catch-up" role="status">
+            {preparingCaption(currentSlot)}
+          </div>
+        )}
         {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (
           <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
             <SessionPulseSurveyCard

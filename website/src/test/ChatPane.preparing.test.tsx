@@ -122,6 +122,20 @@ describe('a message prepared outside a turn', () => {
     expect(view.queryByTestId('chat-pane-preparing-catch-up')).toBeNull()
   })
 
+  it("shows the gateway's caption naming what is checked, in both pane kinds", async () => {
+    const caption = 'Checking 2 PRs on GitHub, 3 tasks for “Ship the fix”.'
+    const withCaption = () => {
+      const store = makeStore(true)
+      store.dispatch(sseSlots([{ ...row(true), preparing_text: caption, preparing_lang: 'en' }] as Parameters<typeof sseSlots>[0]))
+      return store
+    }
+    const mate = renderPane(withCaption(), true)
+    expect(await mate.findByTestId('crewmate-live-activity')).toHaveTextContent(caption)
+    mate.unmount()
+    const pane = renderPane(withCaption(), false)
+    expect(await pane.findByTestId('chat-pane-preparing-catch-up')).toHaveTextContent(caption)
+  })
+
   it('a pane opened on a slot that is not preparing shows no indicator', async () => {
     // A reload or reconnect reads the current frame: no stuck spinner from
     // work that already ended.

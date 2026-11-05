@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew.dashboard import slot_retention, warm_task_brief
+from kiro_crew.dashboard.slot_preparing import preparing_caption
 from kiro_crew.session_summary import TranscriptTurn
 
 
@@ -1427,9 +1428,11 @@ async def test_indicator_spans_the_model_call_to_the_result(monkeypatch):
     slot = _foreground_slot(state)
     base = _snapshot()
     running_during_model: list[bool] = []
+    captions: list[tuple[str, str]] = []
 
     async def run_model(*args, **kwargs):
         running_during_model.append(slot.running)
+        captions.append(preparing_caption(slot))
         return '{"message":"Here is where we are."}'
 
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
@@ -1445,7 +1448,53 @@ async def test_indicator_spans_the_model_call_to_the_result(monkeypatch):
     ]
     # The indicator is not a turn: the brief's own deferral still sees idle.
     assert running_during_model == [False]
+    # The caption is built by the gateway from the brief's own inputs: the
+    # goal and the one open work item (no PR named, no worker running).
+    assert captions == [("Checking 1 task for “Fix the test”.", "en")]
+    assert preparing_caption(slot) == ("", "")
     assert state.preparing_pushes == [{slot.key: True}, {slot.key: False}]
+
+
+@pytest.mark.asyncio
+async def test_a_credential_in_the_goal_never_reaches_the_caption(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    base = replace(_snapshot(), conductor={"goal": "Rotate AKIAIOSFODNN7EXAMPLE then redeploy"})
+    captions: list[tuple[str, str]] = []
+
+    async def run_model(*args, **kwargs):
+        captions.append(preparing_caption(slot))
+        return '{"message":"Here is where we are."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+
+    assert len(captions) == 1 and "Rotate" in captions[0][0]
+    assert "AKIAIOSFODNN7EXAMPLE" not in captions[0][0]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_github_read_is_not_counted_in_the_caption(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    base = _snapshot()
+    captions: list[tuple[str, str]] = []
+
+    async def failed_reads(refs, *args, **kwargs):
+        return [{"pr": "#1", "checked": False}, {"pr": "#2", "checked": False}]
+
+    async def run_model(*args, **kwargs):
+        captions.append(preparing_caption(slot))
+        return '{"message":"Here is where we are."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    monkeypatch.setattr(warm_task_brief.inputs, "read_live_prs", failed_reads)
+
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+
+    # Both reads failed, so the caption names no PR, only the open task.
+    assert captions == [("Checking 1 task for “Fix the test”.", "en")]
 
 
 @pytest.mark.asyncio

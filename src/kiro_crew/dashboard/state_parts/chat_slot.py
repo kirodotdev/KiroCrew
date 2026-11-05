@@ -166,6 +166,7 @@ class _ChatSlot:
         "_has_reader_flag",
         "_compacting",
         "_preparing_count",
+        "_preparing_texts",
         "_stop_declined_at",
         "_stop_state_raw",
         "_stop_generation",
@@ -519,6 +520,7 @@ class _ChatSlot:
     _has_reader_flag: bool
     _compacting: bool
     _preparing_count: int
+    _preparing_texts: list[tuple[str, str]]
     _stop_declined_at: float
     _stop_state_raw: str
     _stop_generation: int

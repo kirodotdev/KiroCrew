@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_message
+from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption, preparing_message
 
 
 class _State:
@@ -86,3 +86,19 @@ def test_a_new_slot_after_a_gateway_restart_reads_not_preparing():
     with preparing_message(_State(slot), slot):
         reborn = _slot()
         assert reborn.to_dict()["preparing"] is False
+
+
+def test_the_caption_rides_the_frame_and_clears_with_the_flag():
+    slot = _slot()
+    state = _State(slot)
+    frame = slot.to_dict()
+    assert (frame["preparing_text"], frame["preparing_lang"]) == ("", "")
+    with preparing_message(state, slot, "Checking 2 PRs", "en"):
+        frame = slot.to_dict()
+        assert (frame["preparing_text"], frame["preparing_lang"]) == ("Checking 2 PRs", "en")
+        with preparing_message(state, slot):
+            # A span without a caption keeps the outer one's.
+            assert preparing_caption(slot) == ("Checking 2 PRs", "en")
+        assert preparing_caption(slot) == ("Checking 2 PRs", "en")
+    frame = slot.to_dict()
+    assert (frame["preparing_text"], frame["preparing_lang"]) == ("", "")

@@ -19,7 +19,7 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_last_turn_awaiting_permission``, ``_last_turn_children_announced``,
 ``_linked_session_busy``, ``_lock``,
 ``_member_approval_seeded``, ``_on_card_event``, ``_on_message``,
-``_on_question_retired``, ``_on_row``, ``_pending``, ``_preparing_count``, ``_pending_consumers``,
+``_on_question_retired``, ``_on_row``, ``_pending``, ``_preparing_count``, ``_preparing_texts``, ``_pending_consumers``,
 ``_pending_context``, ``_pending_release_deferred``, ``_pending_variants``,
 ``_question_pending``, ``_queue``, ``_queue_persist_inflight``, ``_queue_persist_owed``,
 ``_queue_persisted_sig``, ``_queue_repository``, ``_regenerate_target``,
@@ -375,6 +375,8 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # slot cannot clear each other's indicator. Not a turn and not persisted:
     # the work it marks dies with the gateway process.
     self._preparing_count = 0
+    # Each open span's (caption, language), newest last (empty: the client's own).
+    self._preparing_texts = []
     # Monotonic time of the last cooperative Stop this slot DECLINED because
     # its session was compacting; 0.0 when none. Kept apart from
     # ``_stop_state`` on purpose: that machine is read by the queue drain as
