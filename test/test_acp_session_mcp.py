@@ -961,7 +961,7 @@ class TestLocalSettingsSeed:
         client = self._client(tmp_path)
         client._write_claude_local_settings()
         data = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
-        assert "permissions" not in data
+        assert "defaultMode" not in data["permissions"]
 
     def test_permission_mode_is_written_when_requested(self, tmp_path):
         client = self._client(tmp_path, permission_mode="default")

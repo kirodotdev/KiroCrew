@@ -44,6 +44,22 @@ if TYPE_CHECKING:
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
 
+#: The ``permissions.ask`` rules every seed carries for Claude Code's own scheduler
+#: tools. In ``default`` and ``auto`` mode these calls run without asking the host,
+#: so Crew's approval path would never see them. ``CronCreate`` and
+#: ``ScheduleWakeup`` start work later that Crew's cron service has no record of (a
+#: ``durable`` cron is written to ``<work dir>/.claude/scheduled_tasks.json`` and can
+#: later fire in another Claude Code session in that project); ``CronDelete``
+#: removes such work. ``CronList`` only reads Claude's own job list, so it is left out.
+_CLAUDE_SCHEDULER_ASK_RULES: tuple[str, ...] = ("CronCreate", "CronDelete", "ScheduleWakeup")
+
+#: What a session runs without when Crew's seed does not apply to it, named by every
+#: log line that says so.
+_CLAUDE_NO_SEED_LOSSES = (
+    "Crew's availableModels allowlist, the permissions.deny rules from the agent spec, "
+    "or the ask rules for Claude's own cron and wake-up tools"
+)
+
 
 def _claude_settings_usable(path: Path) -> bool:
     """Whether Crew may create *path* at all.
@@ -66,9 +82,10 @@ def _claude_settings_usable(path: Path) -> bool:
 
     The residual is stated in the caller's warning rather than papered over: a
     session on a refused path runs without Crew's seed, so it gets no
-    ``availableModels`` allowlist and no ``permissions.deny`` rules from
-    ``disabledTools``. Replacing the link instead would close that at the cost of
-    deleting a user's own configuration, which is not this seam's call to make.
+    ``availableModels`` allowlist, no ``permissions.deny`` rules from
+    ``disabledTools`` and no ask rules for Claude's own cron and wake-up tools.
+    Replacing the link instead would close that at the cost of deleting a user's
+    own configuration, which is not this seam's call to make.
     """
     for candidate in (path, path.parent):
         try:
@@ -253,11 +270,10 @@ def _retract_reseed(
 def _log_declined_share(self: AcpClient, local_settings: Path) -> None:
     """Log that an existing settings file was left authoritative."""
     logger.info(
-        "%s already exists and %s; leaving it as it is. This "
-        "session therefore runs without Crew's availableModels allowlist and without "
-        "the permissions.deny rules from the agent spec.",
+        "%s already exists and %s; leaving it as it is. This session therefore runs without %s.",
         local_settings,
         self._foreign_settings_owner(local_settings),
+        _CLAUDE_NO_SEED_LOSSES,
     )
 
 
@@ -293,12 +309,14 @@ def _render_claude_settings_payload(self: AcpClient) -> str:
     # The spec's `toolsSettings` shell and write allowlists are refused at Crew's
     # gate, which sees only a call claude asks about; these rules make the shell and
     # the file-write tools ask while either is set (`spec_tools_allowlists`).
+    ask_rules: list[str] = []
     if self.backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS and self._agent:
-        ask_rules = claude_ask_rules(session_allowlist_spec(self._agent, self._work_dir))
-        if ask_rules:
-            perms["ask"] = ask_rules
-    if perms:
-        data["permissions"] = perms
+        ask_rules = list(claude_ask_rules(session_allowlist_spec(self._agent, self._work_dir)))
+    # Every seed also makes Claude's own scheduler tools ask, after the toolsSettings
+    # rules so those keep their order.
+    ask_rules.extend(rule for rule in _CLAUDE_SCHEDULER_ASK_RULES if rule not in ask_rules)
+    perms["ask"] = ask_rules
+    data["permissions"] = perms
     # Namespace-keyed (claude_code here), the registry index this backend's ids
     # live in — see _model_registry_namespace. Provider-ONLY: the ids the
     # backend actually advertised (cached from a prior session/new), so the seed
@@ -381,7 +399,9 @@ def _write_claude_local_settings(self: AcpClient) -> None:
        :func:`~kiro_crew.acp.session_mcp.session_mcp_deny_rules`: the agent
        spec's ``disabledTools`` cannot ride along in the ``mcpServers`` array,
        and silently dropping a restriction while forwarding the server it
-       narrows would widen the tool surface.
+       narrows would widen the tool surface. ``permissions.ask`` carries
+       :data:`_CLAUDE_SCHEDULER_ASK_RULES`, so Claude Code's own cron and
+       wake-up calls reach the host as ``session/request_permission``.
     3. The resolved ``model`` once the backend has actually advertised a list,
        and ``availableModels`` only when, in addition, another settings source
        (user, project or managed) defines ``availableModels``. The adapter
@@ -427,8 +447,9 @@ def _write_claude_local_settings(self: AcpClient) -> None:
 
     The cost is stated rather than hidden: a project that already carries its
     own ``settings.local.json`` gets NO seed, so that session runs without the
-    ``availableModels`` allowlist and without the ``permissions.deny`` rules
-    derived from ``disabledTools``, and an inherited ``bypassPermissions``
+    ``availableModels`` allowlist, without the ``permissions.deny`` rules
+    derived from ``disabledTools`` and without the ask rules for Claude's own
+    cron and wake-up tools, and an inherited ``bypassPermissions``
     there is not stripped. Those tool calls still reach the host gate unless
     the user's own file pre-approves them, which is the same disclosed
     boundary the inherited-``~/.claude`` gap already documents. Preserving
@@ -448,10 +469,10 @@ def _write_claude_local_settings(self: AcpClient) -> None:
         # rather than degrade quietly.
         logger.warning(
             "%s is a symlink or resolves to a sensitive path; leaving it untouched, so "
-            "this session runs without Crew's availableModels allowlist and without the "
-            "permissions.deny rules from the agent spec. Remove the link to restore the "
+            "this session runs without %s. Remove the link to restore the "
             "session-scoped settings.",
             local_settings,
+            _CLAUDE_NO_SEED_LOSSES,
         )
         self._permission_surface_share_validated = False
         self._invalidate_session_mcp_projection()
@@ -471,10 +492,9 @@ def _write_claude_local_settings(self: AcpClient) -> None:
         # claim so reset never deletes it either.
         logger.info(
             "%s was replaced after Crew created it; leaving the replacement in place and "
-            "dropping Crew's claim on it. This session therefore runs without Crew's "
-            "availableModels allowlist and without the permissions.deny rules from the "
-            "agent spec.",
+            "dropping Crew's claim on it. This session therefore runs without %s.",
             local_settings,
+            _CLAUDE_NO_SEED_LOSSES,
         )
         # The file is now foreign; drop the projection unconditionally.
         self._invalidate_session_mcp_projection()
@@ -653,9 +673,9 @@ def _write_claude_local_settings(self: AcpClient) -> None:
                 logger.info(
                     "%s was replaced just before the re-seed; leaving it in place and "
                     "dropping Crew's claim rather than clobbering it. This session runs "
-                    "without Crew's availableModels allowlist and without the "
-                    "permissions.deny rules from the agent spec.",
+                    "without %s.",
                     local_settings,
+                    _CLAUDE_NO_SEED_LOSSES,
                 )
                 # Adopted this session -> only the live slot is ours to hand back;
                 # a file Crew already owned but that is now the user's -> forget the
@@ -705,9 +725,9 @@ def _write_claude_local_settings(self: AcpClient) -> None:
                     logger.info(
                         "%s gained a live sharer while this session was adopting it; "
                         "restoring the seed it validated and standing down. This session "
-                        "runs without Crew's availableModels allowlist and without the "
-                        "permissions.deny rules from the agent spec.",
+                        "runs without %s.",
                         local_settings,
+                        _CLAUDE_NO_SEED_LOSSES,
                     )
                     if not seed_provenance.release(local_settings, self._seed_owner):
                         logger.warning(
@@ -837,9 +857,9 @@ def _write_claude_local_settings(self: AcpClient) -> None:
         logger.warning(
             "could not durably record Crew's claim on %s; withdrawing the seed just "
             "written rather than leaving a permission mode no later session is allowed "
-            "to clean up. This session runs without Crew's availableModels allowlist "
-            "and without the permissions.deny rules from the agent spec.",
+            "to clean up. This session runs without %s.",
             local_settings,
+            _CLAUDE_NO_SEED_LOSSES,
         )
         if reseed_aside is not None:
             # A re-seed: the prior bytes are still the ones the durable record

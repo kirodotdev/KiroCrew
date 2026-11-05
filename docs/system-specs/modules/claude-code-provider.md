@@ -130,6 +130,19 @@ arrives as a `permission_request` event and runs Crew's own approval path:
 checks, and its SEL decision record. A Claude session is governed like any other on
 that path.
 
+Claude Code's own scheduler tools would skip that path, so Crew makes them ask.
+`CronCreate`, `CronDelete` and `ScheduleWakeup` run in `default` and `auto` mode
+without asking, and Crew's cron service has no record of the work they schedule. So
+every settings payload Crew renders carries a `permissions.ask` rule for each
+(`_CLAUDE_SCHEDULER_ASK_RULES` in `acp/client_claude_seed.py`), merged with any ask
+rules already there; the call then arrives as `session/request_permission`, and a
+rejected one schedules or deletes nothing (measured on claude-agent-acp 0.100.0 with
+Claude Code 2.1.318). A `CronCreate` with `durable: true` writes
+`<work dir>/.claude/scheduled_tasks.json`, which outlives the session and can later
+fire in another Claude Code session in that project. `CronList` only reads Claude's own
+job list and carries no rule. A session with no seed and no exclusion gets none of
+these rules, the same gap its deny rules have.
+
 **What escapes is a call that was already pre-approved, because it never asks.** The
 SDK evaluates permissions in a fixed order and `allow` rules sit at step 5, ahead of
 the callback at step 6. Anthropic's documentation states the consequence in bold:
@@ -147,7 +160,8 @@ own `settings.local.json`, it loads the `user` source alone (see "A project-owne
 settings file" below). What Crew does write is a session-scoped
 `.claude/settings.local.json`, and only while it can prove the file still holds the
 bytes it wrote; that seed carries deny rules translated from the spec's
-`disabledTools` and never merges into a foreign project settings file.
+`disabledTools` and the scheduler ask rules above, and never merges into a foreign
+project settings file.
 
 A session can OPEN it further, and only on purpose. `KIROCREW_CC_PERMISSION_MODE=auto`
 resolves through `agent_sdk.backends.resolve_cc_permission_mode` and is seeded as
@@ -399,9 +413,10 @@ own servers. Pinned by `test/test_claude_mcp_identity.py`.
 the primary spawn (not only on the model-substitution retry) with
 `permissions.defaultMode` when requested, `permissions.deny` rules derived from
 the spec's `disabledTools`, and the `permissions.ask` rules a `toolsSettings` shell
-or write allowlist needs (above). Once the provider-advertised model cache is warm it
-writes a pinned `model`, and it writes `availableModels` only when another settings
-source (user `settings.json`, project `.claude/settings.json`, or the managed
+or write allowlist needs (above) together with the scheduler rules. Once the
+provider-advertised model cache is warm it writes a pinned `model`, and it writes
+`availableModels` only when another settings source (user `settings.json`, project
+`.claude/settings.json`, or the managed
 `managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines
 one; on a cold cache both keys are omitted. Claude Code's rule is that an allowlist
 entry naming a specific id disables that family's alias wildcard, so Crew's own list
@@ -611,11 +626,11 @@ puts it on the wire for `session/new` and `session/load`:
 
 The claude CLI then loads neither project tier: not the project's local file, and not
 a checked-in `.claude/settings.json`. No `permissions.allow` a repository carries can
-pre-approve a tool, so every call still reaches Crew's gate. Crew's deny rules, and
-its model allowlist when the seed carries one, ride the inline settings. That makes
-the permission surface governed (`_permission_surface_governed`), so the session gets
-the full `mcpServers` array: `send_message`, `cron_add`, `spawn_run` and the spec's
-servers. A cron job on such a project delivers its result. The cost is that
+pre-approve a tool, so every call still reaches Crew's gate. Crew's deny and ask
+rules, and its model allowlist when the seed carries one, ride the inline settings.
+That makes the permission surface governed (`_permission_surface_governed`), so the
+session gets the full `mcpServers` array: `send_message`, `cron_add`, `spawn_run` and
+the spec's servers. A cron job on such a project delivers its result. The cost is that
 project-scope config does not load on this path either: its `settings.json` env and
 plugins, and its `CLAUDE.md` memory files, which the SDK loads only with the
 `project` source. The runtime warning names the same list.
