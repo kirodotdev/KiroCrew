@@ -545,22 +545,15 @@ class LaunchJobStore:
                     if step.state == STEP_ACTIVE:
                         step.state = STEP_SKIPPED
                 job.status = DONE
-                # The device code is KEPT. The remote login is `nohup`'d on the box
-                # and outlives a gateway restart, so the code it is polling for is
-                # still live -- and a live poller with no local record is one whose
-                # approval signs the crew in with nothing tracking it. With the
-                # record kept, this job lands in the stale-code shape: the card
-                # offers "I approved it -- check now", the re-probe clears the badge
-                # when the approval landed, and "Start over with a new code" replaces the login
-                # (which kills the old poller) when it did not. A confirmed sign-in
-                # has no code to keep; ``run_launch`` clears it before this point.
+                # The device code is KEPT: the remote login is `nohup`'d and outlives a
+                # gateway restart, so its code is still live. The card then offers
+                # "I approved it -- check now" or "Start over with a new code". A
+                # confirmed sign-in has no code; ``run_launch`` clears it earlier.
                 #
-                # Only mark unconfirmed a sign-in that was never confirmed.
-                # ``run_launch`` saves the connect step BEFORE the terminal status,
-                # so a restart landing in that window reaches here with
-                # signin_detected already True -- and overwriting it would badge a
-                # working crew "Needs sign-in" and offer a "new code" that signs it
-                # out of the session it has.
+                # Only mark unconfirmed a sign-in never confirmed: a restart between
+                # ``run_launch`` saving the connect step and the terminal status reaches
+                # here with signin_detected True, and a working crew must not be badged
+                # "Needs sign-in".
                 job.error = (
                     ""
                     if job.signin_detected
@@ -861,22 +854,14 @@ def _rollback_cancelled_stack(
 ) -> None:
     """Delete the stack a cancelled launch had already created.
 
-    Cancellation is only observed *between* steps, so a cancel during
-    provisioning — or during the sign-in wait, which is the likeliest moment for a
-    human to give up — would otherwise leave a running, billing instance that
-    never appears in the crew list: invisible to the very dashboard that offered
-    the Cancel button, and removable only from the CLI or the AWS console.
+    Cancellation is only observed *between* steps, so a cancel during provisioning
+    or the sign-in wait would otherwise leave a billing instance missing from the
+    crew list. A cancel after the registration step is left to the engine's
+    ``teardown``, which knows which resources it stopped.
 
-    A cancel observed just after the registration step is the other way round: the
-    record exists and the resource is about to stop. Removing it belongs to the
-    engine's ``teardown``, which knows which resources it actually stopped, rather
-    than here, where the registry needle would have to be guessed from the tag.
-
-    Ack, then confirm. The cancelled state is persisted BEFORE the delete is awaited
-    so the card stops saying "running" immediately, and the outcome is only written
-    as removed once AWS confirms — an accepted delete request that later reaches
-    DELETE_FAILED must not be reported as "Removed", or the user believes the
-    billing stopped when the instance is still up.
+    Ack, then confirm: the cancelled state is saved BEFORE the delete is awaited,
+    and "removed" is written only once AWS confirms, so a delete that later reaches
+    DELETE_FAILED is never reported as "Removed".
 
     Best-effort and never raises: this runs while unwinding a cancellation.
     """
@@ -1111,22 +1096,13 @@ def run_launch(
                 instance_id=job.instance_id, tag=job.tag, profile=job.profile, region=job.region
             )
         except RegistrationUnavailable as exc:
-            # The engine has said the launch itself is sound and only the registry
-            # row is missing. Recording it on the step and continuing is the whole
-            # point: the compute exists and is billing, so reporting the LAUNCH as
-            # failed would put a red card over a running crew and leave its owner
-            # with nothing to act on, while the real remedy — add it under Remote
-            # crew, or tear it down — needs the launch to be reported as it is.
-            # Every other exception propagates and fails the launch, unchanged.
+            # The launch is sound and only the registry row is missing: record it on
+            # the step and continue, since the compute is billing and failing the
+            # LAUNCH would put a red card over a running crew. Other exceptions fail it.
             #
-            # NOT saved here, unlike the branch below. A failed connect step with a
-            # non-terminal status is the one combination ``reap_orphans`` reads as an
-            # interrupted launch, and it rewrites the status to FAILED -- so a
-            # restart between this point and the terminal save would turn the DONE
-            # this path is heading for into a red card over a running crew, the exact
-            # outcome the paragraph above rejects. Both exits below save, so the
-            # step, its reason and the terminal status land in ONE write and no
-            # window persists one without the others.
+            # NOT saved here: ``reap_orphans`` reads a failed connect step with a
+            # non-terminal status as an interrupted launch and marks it FAILED. Both
+            # exits below save the step and the terminal status in ONE write.
             registration_error = str(exc)
             s.state = STEP_FAILED
             s.detail = registration_error[:400]
