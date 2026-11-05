@@ -458,6 +458,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _install_research_agent,
         _install_team_lead_agent,
         knowledge_agent_model,
+        knowledge_view_without_registered_injection,
         repair_knowledge_agent_spec,
     )
     from kiro_crew.agent_materialization.shared_template_view import (  # noqa: F401
@@ -1069,6 +1070,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_install_team_lead_agent",
         "_install_dashboard_manager_agent",
         "repair_knowledge_agent_spec",
+        "knowledge_view_without_registered_injection",
         "_DASHBOARD_MANAGER_AGENT_FILENAME",
         "_GUEST_AGENT_FILENAME",
         "_KNOWLEDGE_AGENT_FILENAME",

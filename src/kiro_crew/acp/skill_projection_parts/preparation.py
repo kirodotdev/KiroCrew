@@ -499,6 +499,11 @@ def prepare_native_skill_projection(
             continue
         display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
         if agent.scope != SCOPE_PROJECT:
+            # The knowledge agent must run with zero tools. When the only change to its
+            # file is an injection a filter registered by the edition removes exactly
+            # (the tool writes it back on every launch), the view is built from the
+            # template instead of the file being rewritten.
+            spec = agent_mod.knowledge_view_without_registered_injection(agent.name, spec, source)
             # A user-level custom agent gets Crew's default servers in its view; the
             # KAS projection applies the same helper (acp/default_crew_servers.py).
             spec = with_default_crew_servers(agent.name, spec)

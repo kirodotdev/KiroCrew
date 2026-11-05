@@ -1609,6 +1609,12 @@ representative rather than exhaustive.
 - `hooks.register_internal_read_path(read_id, rel_path)` — guarded seam adding a
   fixed-path entry to `_INTERNAL_READ_ALLOWLIST` (rejects `..`/absolute/
   non-sensitive/repoint).
+- `agent_spec_injections.register_spec_injection_filter(name, filter)` — names one
+  exact entry another tool injects into every agent spec, so the knowledge spec
+  repair leaves a file carrying only that injection alone and its view is built from
+  the template. A filter's answer counts only when its output equals the template
+  exactly, and the view is the template, so a filter grants nothing. The public core
+  registers none.
 - `security._SENSITIVE_HOME_DIRS` gains the SSO cookie directory (live SSO
   bearer cookie; inert on a host without it).
 - `config.knowledge.doc_ingest_hosts` (list) — SSRF-safe allowlist for the
