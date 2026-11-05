@@ -242,7 +242,7 @@ there; the responsibilities below live in private owners under
 | `slack/gateway_runtime/memory_lifecycle.py` | Memory preparation behind `MemoryStartup`, the paced member-store repair, embeddings and the model download, the legacy migration and re-embed sweep |
 | `slack/gateway_runtime/admission.py` | Opening subagent dispatch and the dashboard workers after the memory fence, child liveness, the adaptive controller and its overload-health sources, the dependency coordinator, runner task admission |
 | `slack/gateway_runtime/install_repair.py` | Repairing the install at boot: missing pip dependencies, the console script, the kiro-cli version check, the bounded kill and reap of those children, the pinned kiro-cli path an unattended spawn execs |
-| `slack/gateway_runtime/update_schedule.py` | When an available update applies: the scheduled provider and legacy checks, the update's effect, the in-flight-work census, the pause, drain and settle around an apply, the update restart (`_restart_after_update_body`), the claimed restart and its re-exec |
+| `slack/gateway_runtime/update_schedule.py` | When an available update applies: the scheduled provider and legacy checks, the update's effect, the in-flight-work census, the pause, drain and settle around an apply, the restart idle gate (`_restart_gate_when_idle`), the update restart (`_restart_after_update_body`), the claimed restart and its re-exec |
 | `slack/gateway_runtime/update_apply.py` | Applying an update unattended: the git checkout path (fetch, reset, rebuild, dependency sync) and the managed-venv wheel |
 | `slack/gateway_runtime/nudge_wiring.py` | Building and starting AutoNudge: the fire and monitor dispatchers, the observer that persists and publishes loop transitions, the wake judge's evidence readers, the held and expired notices |
 | `slack/gateway_runtime/nudge_dashboard_fire.py` | One nudge or monitor wake into a dashboard slot: the slot turn, the work-ledger wake steer, the fire-time mode and crew-boundary refusals |
@@ -608,6 +608,34 @@ take the hold in `cli.main` after argument parsing.
   old version, find the same update and restart again for ever. The coordinator
   sends one notice naming the installer re-run instead; the approve route pushes
   it as its `failed` step.
+- **The restart idle gate.** `_restart_gate_when_idle` (`update_schedule.py`) is
+  the same pause and census for a restart someone else runs:
+  `kirocrew restart --when-idle` asks it through the host-only
+  `POST /api/restart/when-idle` (`dashboard/handlers/restart_gate.py`, wired as
+  `DashboardState._restart_idle_gate` at dashboard boot). It pauses admission
+  and counts `_in_flight_work_counts`, plus any policy installer a dashboard
+  update started (`_dashboard_policy_applies`), which the restart's shutdown
+  would cancel mid-install. Busy reopens admission and returns the
+  counts. Idle keeps admission paused for the caller's restart, and
+  `_release_restart_gate_hold` reopens it after `_RESTART_GATE_HOLD_SECS` (60s)
+  if no restart came, unless an update restart fenced the pause first. While
+  that hold is live every further ask answers busy and leaves the hold and the
+  pause alone, so a second caller can never reopen admission under the restart
+  the first was approved for. The
+  pause is re-entrant, so `_update_pause_holder` records whose it is
+  (`"restart_gate"` or `"auto_update"`), set right after each pause returns
+  with no await between, and cleared only once the resume that reopens
+  admission has returned, again with no await between. The pause is one owned
+  flag, not a count, so that single resume reopens it however many re-entrant
+  pauses returned on it; a pause queued behind the resume still sees whose it
+  is and stands aside, rather than taking a pause about to be reopened. An apply that
+  finds the gate's holder defers (`_update_apply_deferred`) without releasing
+  it, so it is never cut off by the restart the gate approved. A gate ask that
+  finds any holder (the apply's, or another gate ask's whose resume is
+  queued behind it) answers busy without releasing it. A pause someone
+  else holds (`admission_closed`) or a signalled stop answers busy without
+  touching admission. The Remote Crew Update and Restart actions run
+  that command on the remote ([instances](instances.md)).
 - **Outcomes** (`wheel_apply.classify`, shared with the CLI): `busy`, `deferred`
   (memory is still being prepared) and `cancelled` retry on the short cadence,
   with nothing pushed onto another apply's progress feed. `incompatible` comes

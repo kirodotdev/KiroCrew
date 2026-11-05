@@ -10990,7 +10990,13 @@
       "failed_next_step": "Corrija a causa em {{name}} (por exemplo, a rede ou o login) e selecione Tentar novamente.",
       "try_again": "Tentar novamente",
       "failed_restart_next_step": "{{name}} continua executando a versão antiga até reiniciar. Execute {{command}} nessa equipe ou selecione Tentar novamente para reiniciá-la daqui.",
-      "status_read_failed": "Não foi possível ler o status da atualização de {{name}}: {{error}}"
+      "status_read_failed": "Não foi possível ler o status da atualização de {{name}}: {{error}}",
+      "waiting_for_idle": "Aguardando {{name}} terminar o trabalho em andamento antes de reiniciar (turnos de chat: {{turns}}, tarefas em segundo plano: {{background}})…",
+      "failed_still_busy": "A nova versão está instalada em {{name}}, mas ainda havia trabalho em execução após {{minutes}} minutos, então ele não foi reiniciado. Selecione Tentar novamente para continuar aguardando, ou Reiniciar agora para interromper esse trabalho.",
+      "failed_cannot_wait": "{{name}} executa uma versão que não consegue informar o trabalho em andamento, então ele não foi reiniciado. Atualize-o pelo próprio painel dele, ou selecione Reiniciar agora para reiniciá-lo e interromper todo o trabalho em andamento.",
+      "failed_idle_check": "A nova versão está instalada em {{name}}, mas ele não conseguiu verificar o trabalho em andamento, então não foi reiniciado ({{error}}). Selecione Reiniciar agora para reiniciá-lo mesmo assim e interromper todo o trabalho em andamento.",
+      "restart_now": "Reiniciar agora",
+      "restart_now_confirm": "Reiniciar “{{name}}” e interromper o trabalho"
     },
     "remoteUpdateOffer": {
       "title": "Algumas equipes remotas executam uma versão mais antiga",

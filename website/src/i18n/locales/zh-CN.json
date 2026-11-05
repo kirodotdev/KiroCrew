@@ -10518,7 +10518,13 @@
       "failed_next_step": "请先解决 {{name}} 上的问题（例如网络或登录），然后选择“重试”。",
       "try_again": "重试",
       "failed_restart_next_step": "{{name}} 在重启前会继续运行旧版本。请在该团队上运行 {{command}}，或选择“重试”从这里重启它。",
-      "status_read_failed": "无法读取 {{name}} 的更新状态：{{error}}"
+      "status_read_failed": "无法读取 {{name}} 的更新状态：{{error}}",
+      "waiting_for_idle": "正在等待 {{name}} 完成运行中的工作后再重启（聊天轮次：{{turns}}，后台任务：{{background}}）…",
+      "failed_still_busy": "新版本已安装到 {{name}}，但 {{minutes}} 分钟后它仍在运行工作，因此没有重启。选择“重试”继续等待，或选择“立即重启”停止这些工作。",
+      "failed_cannot_wait": "{{name}} 运行的版本无法报告正在运行的工作，因此没有重启。请在它自己的仪表板上更新它，或选择“立即重启”重启它并停止所有运行中的工作。",
+      "failed_idle_check": "新版本已安装到 {{name}}，但它无法检查正在运行的工作，因此没有重启（{{error}}）。选择“立即重启”仍要重启它并停止所有运行中的工作。",
+      "restart_now": "立即重启",
+      "restart_now_confirm": "重启“{{name}}”并停止其工作"
     },
     "remoteUpdateOffer": {
       "title": "部分远程团队运行的是较旧的版本",

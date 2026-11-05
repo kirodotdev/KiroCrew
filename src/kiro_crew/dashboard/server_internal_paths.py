@@ -100,6 +100,10 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # boundary, and the handler re-asserts host-locality itself because a
         # local_only=False deployment reclassifies strict paths as mixed.
         "/api/update/approve",
+        # The idle check before a restart. STRICT: its only caller is
+        # `kirocrew restart --when-idle` on the gateway host with the local
+        # secret; no browser posts to it. The handler re-asserts host locality.
+        "/api/restart/when-idle",
         "/api/session-tool-policy",
         # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
         # webhook for EXTERNAL callers (CI runners, review bots) that hold no

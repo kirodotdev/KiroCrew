@@ -348,6 +348,9 @@ class DashboardState:
         # Read by the restart handler: stops the broker this gateway owns before
         # the exec, so a successor never meets a daemon still owned by this pid.
         self._mcp_gateway_stop: Any = None  # async () -> None
+        # Read by POST /api/restart/when-idle: the gateway's idle check before
+        # a restart, async () -> (idle, turns, background). None until wired.
+        self._restart_idle_gate: Any = None
         # Secretary subsystem removed; kept as permanent None for apps/routes_enable.py
         # builtin-service restart lookup (getattr-based, no-op when None).
         self._secretary_restart: Any = None  # restart callback (always None — service removed)

@@ -577,6 +577,14 @@ class TestRunMarkerClauseRestart:
         assert 'KIROCREW_HOME="$__kh" exec "$__kp" restart --port 7879;' in cmd
         assert 'exec "$__kb" restart;' in cmd
 
+    def test_the_idle_gated_restart_through_the_pointer_targets_the_port_too(self):
+        from kiro_crew.instances.token_mint import build_candidate_command
+
+        cmd = build_candidate_command("restart --when-idle --max-wait 0", marker_port=7879)
+
+        assert 'exec "$__kp" restart --port 7879 --when-idle --max-wait 0;' in cmd
+        assert 'exec "$__kb" restart --when-idle --max-wait 0;' in cmd
+
     def test_token_through_the_pointer_gains_no_port_flag(self):
         from kiro_crew.instances.token_mint import _run_marker_clause
 

@@ -10754,7 +10754,13 @@
       "failed_next_step": "Behebe die Ursache auf {{name}} (zum Beispiel Netzwerk oder Anmeldung) und wähle dann Erneut versuchen.",
       "try_again": "Erneut versuchen",
       "failed_restart_next_step": "{{name}} nutzt die alte Version weiter, bis es neu startet. Führe {{command}} auf dieser Crew aus oder wähle „Erneut versuchen“, um es von hier neu zu starten.",
-      "status_read_failed": "Der Update-Status von {{name}} konnte nicht gelesen werden: {{error}}"
+      "status_read_failed": "Der Update-Status von {{name}} konnte nicht gelesen werden: {{error}}",
+      "waiting_for_idle": "Warte, bis „{{name}}“ seine laufende Arbeit beendet hat, bevor es neu startet (Chat-Runden: {{turns}}, Hintergrundaufgaben: {{background}})…",
+      "failed_still_busy": "Die neue Version ist auf „{{name}}“ installiert, aber nach {{minutes}} Minuten lief dort noch Arbeit, daher wurde es nicht neu gestartet. Wähle „Erneut versuchen“, um weiter zu warten, oder „Jetzt neu starten“, um diese Arbeit zu beenden.",
+      "failed_cannot_wait": "„{{name}}“ läuft mit einer Version, die ihre laufende Arbeit nicht melden kann, daher wurde es nicht neu gestartet. Aktualisiere es über sein eigenes Dashboard oder wähle „Jetzt neu starten“, um es neu zu starten und alle laufende Arbeit zu beenden.",
+      "failed_idle_check": "Die neue Version ist auf „{{name}}“ installiert, aber es konnte seine laufende Arbeit nicht prüfen, daher wurde es nicht neu gestartet ({{error}}). Wähle „Jetzt neu starten“, um es trotzdem neu zu starten und alle laufende Arbeit zu beenden.",
+      "restart_now": "Jetzt neu starten",
+      "restart_now_confirm": "„{{name}}“ neu starten und seine Arbeit beenden"
     },
     "remoteUpdateOffer": {
       "title": "Einige Remote-Crews nutzen eine ältere Version",
