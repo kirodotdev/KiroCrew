@@ -58,7 +58,7 @@ logger = logging.getLogger("kiro_crew.acp.runtime")
 # LAST non-empty stderr line the drain captured, truncated to this many
 # characters -- roughly one card line. The 20-line ring itself is unchanged.
 _STDERR_REASON_TAIL_CHARS = 200
-# The one stderr signature that names a host fault rather than a kiro-cli
+# A stderr signature that names a host fault rather than a kiro-cli
 # fault: every sandboxed spawn fails with it once the runtime tmpfs the
 # launcher stages mount sources on runs out of space or inodes. Point the
 # operator at the doctor check that measures that filesystem.
@@ -66,6 +66,15 @@ _ENOSPC_MARKER = "no space left on device"
 _ENOSPC_HINT = (
     "the runtime tmp filesystem is out of space or inodes; run `kirocrew doctor` "
     "(Runtime tmpfs section)"
+)
+# The other host fault: EAGAIN as libc words it. A child that unwraps a refused
+# thread or process spawn (kiro-cli's thread pool does) dies on it, usually under
+# a task limit: `ulimit -u`, or a cgroup pids.max the doctor's Task ceilings rows
+# print (Linux only).
+_EAGAIN_MARKER = "resource temporarily unavailable"
+_EAGAIN_HINT = (
+    "EAGAIN, usually a task limit refusing a new thread or process: check `ulimit -u`; "
+    "on Linux `kirocrew doctor` (Task ceilings section) shows the cgroup ceilings"
 )
 
 
@@ -88,17 +97,18 @@ def _proven_death_cause(tail: str) -> tuple[str, str] | None:
     describes a death, and an unexplained one is reported as the exit status it
     is, with the tail kept for whoever asks the log for it.
 
-    Both signatures are matched per LINE by their own helpers and searched over
-    the WHOLE retained tail rather than only its last line, because which line a
-    child printed last is a race with its own flushing and says nothing about
-    which line matters.
+    Every signature is matched per LINE and searched over the WHOLE retained
+    tail rather than only its last line, because which line a child printed last
+    is a race with its own flushing and says nothing about which line matters.
     """
     throttled = registration_throttle_line(tail)
     if throttled:
         return throttled, ""
-    for line in tail.splitlines():
-        if _ENOSPC_MARKER in line.lower():
-            return line.strip(), _ENOSPC_HINT
+    lines = tail.splitlines()
+    for marker, hint in ((_ENOSPC_MARKER, _ENOSPC_HINT), (_EAGAIN_MARKER, _EAGAIN_HINT)):
+        for line in lines:
+            if marker in line.lower():
+                return line.strip(), hint
     return None
 
 
