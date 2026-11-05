@@ -241,6 +241,8 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
 
     if not orch._owner_id:
         logger.error("KIROCREW_OWNER_ID is not set — Slack disabled for security")
+        # The status surfaces show this reason instead of a bare "Not connected".
+        orch._slack_connect_error = "KIROCREW_OWNER_ID is not set"
         orch._slack_enabled = False
         orch.slack = None
         return
@@ -282,6 +284,7 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     _validate = current_context().slack_gate.validate_enterprise
     if not await asyncio.to_thread(_validate, orch._bot_token, extra_ids=extra_ids):
         logger.error("Slack workspace failed enterprise validation — Slack disabled")
+        orch._slack_connect_error = "workspace failed enterprise validation"
         orch._slack_enabled = False
         orch.slack = None
         return
