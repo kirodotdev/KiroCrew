@@ -18482,6 +18482,7 @@
         "and_cannot_be_changed_here": "また、ここで変更することはできません。",
         "and_per_surface": "および表面ごと",
         "block_list_rules": "ブロックリスト · {{rules}}",
+        "rule_count_other": "{{count}} 件のルール",
         "built_in_rules_enforced_note": "オプトアウトとポリシーの固定を反映した結果、現在 {{total}} 件の組み込みルールのうち {{enabled}} 件が適用されています。",
         "cancel": "キャンセル",
         "click_any_control_to_see_exactly_what_it_covers": "任意のコントロールをクリックして、その対象を正確に確認します。",
