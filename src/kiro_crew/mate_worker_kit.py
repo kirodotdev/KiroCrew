@@ -22,6 +22,7 @@ from kiro_crew.agent_sdk.mcp_refs import entry_reaches
 from kiro_crew.mate_worker import (
     ADDITION_KEYS,
     _server_of,
+    base_server_selections,
     collapse_selectors,
     covered_by,
     server_selectors,
@@ -168,6 +169,12 @@ def _added(
     for ref in server_selectors(new_spec, retained):
         if ref not in existing and not covered_by(ref, existing):
             rows.append({"section": "tools", "id": ref, "change": "added"})
+    # Tools the add selects on a server the base declares, so the owner sees them.
+    if base is not None:
+        before = set(base_server_selections(base, spec, "tools"))
+        for ref in base_server_selections(base, new_spec, "tools"):
+            if ref not in before and not covered_by(ref, before):
+                rows.append({"section": "tools", "id": ref, "change": "added"})
     for key in ("resources", "skills"):
         have = _present_items(spec, base, key)
         for item in sorted(set(tkit[key]) - have):
@@ -206,14 +213,32 @@ def _approval_changes(before: dict[str, Any], after: dict[str, Any]) -> list[dic
     ]
 
 
-def _runs_unasked(before: dict[str, Any], after: dict[str, Any]) -> bool:
-    """Whether a newly selected tool intersects an approval in the resulting file."""
+def _runs_unasked(
+    before: dict[str, Any], after: dict[str, Any], base: dict[str, Any] | None = None
+) -> bool:
+    """Whether a newly selected tool intersects an approval the worker will hold.
+
+    A selector on a server the worker *base* declares counts too, against the
+    file's approvals and the base's own, since the worker inherits both.
+    """
     existing = set(_kit_of(before)["tools"])
     grants = _approval_refs(after)
-    return any(
-        any(entry_reaches(grant, ref) or entry_reaches(ref, grant) for grant in grants)
+    new = [
+        ref
         for ref in _kit_of(after)["tools"]
         if ref not in existing and not any(entry_reaches(entry, ref) for entry in existing)
+    ]
+    if base is not None:
+        grants |= _approval_refs(base)
+        had = set(base_server_selections(base, before, "tools"))
+        new += [
+            ref
+            for ref in base_server_selections(base, after, "tools")
+            if ref not in had and not any(entry_reaches(entry, ref) for entry in had)
+        ]
+    return any(
+        any(entry_reaches(grant, ref) or entry_reaches(ref, grant) for grant in grants)
+        for ref in new
     )
 
 
@@ -284,13 +309,23 @@ def _merged_selectors(
     explicit = (
         [ref for ref in raw if isinstance(ref, str) and ref != "*"] if isinstance(raw, list) else []
     )
+    base_names = set(_kit_of(base or {})["mcpServers"])
+    # The file's ``*`` is expanded over its own servers only: written out as an
+    # explicit ``@name`` for a server the base declares, it would select that
+    # whole server on the worker (``mate_worker.base_server_selections``).
     existing = _without_orphan_selectors(
-        [*explicit, *server_selectors(spec, existing_servers)], added_server_names
+        [*explicit, *server_selectors(spec, set(existing_servers) - base_names)],
+        added_server_names,
     )
-    retained = set(existing_servers) - set(_kit_of(base or {})["mcpServers"])
+    retained = set(existing_servers) - base_names
     added = [ref for ref in tkit["tools"] if _server_of(ref) in added_server_names]
     restored = [ref for ref in tkit["tools"] if _server_of(ref) in retained]
-    return collapse_selectors([*existing, *added, *restored])
+    # The template's selectors on a server the base declares: the add skips that
+    # server's entry (the base's wins), not what the template selects on it.
+    on_base = (
+        base_server_selections(base, {**spec, "tools": tkit["tools"]}, "tools") if base else []
+    )
+    return collapse_selectors([*existing, *added, *restored, *on_base])
 
 
 def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any], str, dict]:
@@ -308,11 +343,7 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
     refused, naming the field, when one cannot be kept exactly or when the
     crewmate's backend cannot apply them.
     """
-    from kiro_crew.mate_config import (
-        MateConfigError,
-        _carried_restrictions,
-        _resolved_source_spec,
-    )
+    from kiro_crew.mate_config import MateConfigError, _carried_restrictions, _resolved_source_spec
     from kiro_crew.mate_config_migration import uncarried_restrictions
     from kiro_crew.platform.governance import sanitize_agent_config_governance
 
@@ -354,9 +385,19 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
         if existing or added:
             new_spec[key] = list(dict.fromkeys([*existing, *added]))
 
-    # Approvals ride only with servers the add writes; retained servers keep theirs.
+    # Approvals ride with servers the add writes, and with the template's selectors
+    # on a server the base declares; retained servers keep theirs.
     existing_allowed = _without_orphan_selectors(spec.get("allowedTools"), added_server_names)
-    added_allowed = [ref for ref in tkit["allowedTools"] if _server_of(ref) in added_server_names]
+    added_allowed = [
+        *(ref for ref in tkit["allowedTools"] if _server_of(ref) in added_server_names),
+        *(
+            base_server_selections(
+                base, {**spec, "allowedTools": tkit["allowedTools"]}, "allowedTools"
+            )
+            if base
+            else []
+        ),
+    ]
     if "allowedTools" in spec or added_allowed:
         new_spec["allowedTools"] = list(dict.fromkeys([*existing_allowed, *added_allowed]))
 
@@ -622,7 +663,7 @@ def preview(member: str, body: Any) -> dict[str, Any]:
         "member": member,
         "template": template,
         "revision": _plan_revision(spec, new_spec),
-        "runs_unasked": _runs_unasked(spec, new_spec),
+        "runs_unasked": _runs_unasked(spec, new_spec, base),
         # The behaviour directions the add writes ("" when the agent has none),
         # so the preview can show the text it fills the slot with.
         "directions": tkit.get("prompt") or "",
