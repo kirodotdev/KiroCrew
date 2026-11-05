@@ -160,6 +160,11 @@ def _running_scopes() -> list[bool]:
     return [user for user in (False, True) if _unit_state(user=user).acts_on]
 
 
+def running_scope_count() -> int:
+    """How many systemd scopes run OUR unit: the scopes :func:`restart` would restart."""
+    return len(_running_scopes())
+
+
 def is_active() -> bool:
     """Return True if OUR unit is running in EITHER systemd scope — the REACH
     predicate.

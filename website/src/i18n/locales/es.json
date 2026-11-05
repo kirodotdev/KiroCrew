@@ -11032,7 +11032,13 @@
       "failed_next_step": "Corrige la causa en {{name}} (por ejemplo, su red o su inicio de sesión) y luego selecciona Reintentar.",
       "try_again": "Reintentar",
       "failed_restart_next_step": "{{name}} sigue ejecutando su versión anterior hasta que se reinicie. Ejecuta {{command}} en esa tripulación o selecciona Reintentar para reiniciarla desde aquí.",
-      "status_read_failed": "No se pudo leer el estado de la actualización de {{name}}: {{error}}"
+      "status_read_failed": "No se pudo leer el estado de la actualización de {{name}}: {{error}}",
+      "waiting_for_idle": "Esperando a que {{name}} termine el trabajo en curso antes de reiniciarse (turnos de chat: {{turns}}, tareas en segundo plano: {{background}})…",
+      "failed_still_busy": "La nueva versión está instalada en {{name}}, pero seguía ejecutando trabajo después de {{minutes}} minutos, así que no se reinició. Selecciona Reintentar para seguir esperando, o Reiniciar ahora para detener ese trabajo.",
+      "failed_cannot_wait": "{{name}} ejecuta una versión que no puede informar de su trabajo en curso, así que no se reinició. Actualízalo desde su propio panel, o selecciona Reiniciar ahora para reiniciarlo y detener el trabajo en curso.",
+      "failed_idle_check": "La nueva versión está instalada en {{name}}, pero no pudo comprobar su trabajo en curso, así que no se reinició ({{error}}). Selecciona Reiniciar ahora para reiniciarlo de todos modos y detener el trabajo en curso.",
+      "restart_now": "Reiniciar ahora",
+      "restart_now_confirm": "Reiniciar “{{name}}” y detener su trabajo"
     },
     "remoteUpdateOffer": {
       "title": "Algunas tripulaciones remotas ejecutan una versión más antigua",

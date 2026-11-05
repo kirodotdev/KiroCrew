@@ -180,6 +180,25 @@ def register_restart_parser(sub: _Commands) -> None:
             "non-default port."
         ),
     )
+    restart_parser.add_argument(
+        "--when-idle",
+        action="store_true",
+        help=(
+            "Restart only once the gateway has no chat turns, subagents, "
+            "workflows or other work in flight; until then, wait and check "
+            "again. Without it, restart stops whatever is running."
+        ),
+    )
+    restart_parser.add_argument(
+        "--max-wait",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "With --when-idle: how long to wait for the gateway to go idle "
+            "before giving up without restarting (default 600; 0 checks once)."
+        ),
+    )
 
 
 def register_gateway_pid_parser(sub: _Commands) -> None:

@@ -1122,9 +1122,17 @@ def main() -> None:
 
         _stop(args.port, expect_pid=args.expect_pid)
     elif args.command == "restart":
-        from kiro_crew.cli_server import _restart
+        if args.max_wait is not None and not args.when_idle:
+            print("❌ --max-wait applies only with --when-idle.", file=sys.stderr)
+            sys.exit(2)
+        if args.when_idle:
+            from kiro_crew.cli_restart_idle import _restart_when_idle
 
-        _restart(args.port)
+            _restart_when_idle(args.port, max_wait_secs=args.max_wait)
+        else:
+            from kiro_crew.cli_server import _restart
+
+            _restart(args.port)
     elif args.command == "gateway-pid":
         from kiro_crew.cli_server import _gateway_pid
 

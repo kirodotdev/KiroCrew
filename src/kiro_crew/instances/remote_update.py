@@ -15,6 +15,7 @@ What the job runs, and on which transport, is
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -46,9 +47,132 @@ STATE_UNVERIFIED = "unverified"
 STATE_FAILED = "failed"
 
 PHASE_UPDATING = "updating"
+#: The update is installed and the crew still runs work a restart would stop:
+#: the job asks again until it is idle. ``waiting`` carries the last counts.
+PHASE_WAITING_FOR_IDLE = "waiting_for_idle"
 PHASE_RESTARTING = "restarting"
 PHASE_VERIFYING = "verifying"
 PHASE_DONE = "done"
+
+#: How long a job waits for the crew to go idle before it gives up without
+#: restarting: the ceiling the crew's own gateway gives a mandatory update it
+#: holds back for in-flight work (``_MANDATORY_UPDATE_MAX_DEFER_SECS``). A test
+#: pins the two equal.
+REMOTE_UPDATE_IDLE_WAIT_SECS = 600.0
+#: How often a busy crew is asked again. Each ask is one remote command.
+REMOTE_UPDATE_IDLE_POLL_SECS = 15.0
+
+#: ``code`` of a failed job that stopped short of the restart. ``still_busy``:
+#: the crew was still running work when the wait ran out. ``peer_cannot_wait``:
+#: the crew runs a build with no idle check. Both are retried with ``force``.
+FAIL_STILL_BUSY = "still_busy"
+FAIL_PEER_CANNOT_WAIT = "peer_cannot_wait"
+#: The crew could not establish that it is idle (its check failed, or a restart
+#: there would reach more than the gateway it checked). Retried with ``force``.
+FAIL_IDLE_CHECK_FAILED = "idle_check_failed"
+
+#: The ``code`` values with which ``restart_remote`` refuses without restarting;
+#: the route answers them 409, each retried with ``force``.
+RESTART_REFUSAL_CODES = frozenset({"busy", FAIL_PEER_CANNOT_WAIT, FAIL_IDLE_CHECK_FAILED})
+
+#: The remote command that checks once and restarts only if the crew is idle.
+RESTART_WHEN_IDLE_SUBCOMMAND = "restart --when-idle --max-wait 0"
+
+#: What ``kirocrew restart --when-idle`` reports on the crew
+#: (``kiro_crew.cli_restart_idle``; a test pins these to its own).
+_GATE_EXIT_BUSY = 75
+_GATE_EXIT_UNSUPPORTED = 69
+_GATE_EXIT_REFUSED = 78
+_GATE_REFUSED_MARKER = "kirocrew-restart-gate-refused"
+#: The busy marker is this prefix, one space, then a JSON object with the
+#: counts: ``kirocrew-restart-busy {"turns":2,"background":1}``.
+_GATE_BUSY_MARKER = "kirocrew-restart-busy"
+#: Where the runner joins the stdout tail onto the stderr head
+#: (``token_mint._with_stdout_tail``).
+_STDOUT_TAIL_JOIN = " | stdout tail: "
+#: argparse's exit status for an unknown flag: a crew whose CLI predates
+#: ``--when-idle``. Nothing else ``kirocrew restart`` does exits 2.
+_ARGPARSE_USAGE_EXIT = 2
+
+
+@dataclass(frozen=True)
+class GateAnswer:
+    """What one ``restart --when-idle --max-wait 0`` on the crew came back with."""
+
+    #: ``restarted``, ``busy``, ``unsupported``, ``refused`` or ``failed``.
+    outcome: str
+    turns: int = 0
+    background: int = 0
+
+
+def _read_busy_counts(err: str) -> tuple[int, int] | None:
+    """The ``(turns, background)`` of the busy marker ending *err*, or ``None``.
+
+    The marker is the CLI's last line: the last stdout line when the runner
+    added a stdout tail, else the last stderr line. That line must be exactly
+    the marker, a space and a JSON object whose ``turns`` and ``background``
+    are non-negative integers; anything else is unreadable.
+    """
+    lines = (err or "").strip().splitlines()
+    if not lines:
+        return None
+    last = lines[-1].rpartition(_STDOUT_TAIL_JOIN)[2].strip()
+    prefix = _GATE_BUSY_MARKER + " "
+    if not last.startswith(prefix):
+        return None
+    try:
+        body = json.loads(last[len(prefix) :])
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    turns = body.get("turns")
+    background = body.get("background")
+    # ``type(...) is int`` and not ``isinstance``: JSON ``true`` reads as a bool,
+    # which is an int subclass and no count.
+    if type(turns) is not int or type(background) is not int:
+        return None
+    if turns < 0 or background < 0:
+        return None
+    return turns, background
+
+
+def read_gate_answer(rc: int, err: str) -> GateAnswer:
+    """Classify the exit status and message of a remote idle-gated restart.
+
+    *err* is the runner's message with its stdout tail (``stdout_tail=True``):
+    the marker is the CLI's last stdout line, so an SSH banner that fills the
+    head of stderr cannot hide it. A busy exit whose marker cannot be read is
+    ``refused``: the crew restarted nothing, and its counts are unknown.
+    """
+    if rc == 0:
+        return GateAnswer("restarted")
+    if rc == _GATE_EXIT_BUSY:
+        counts = _read_busy_counts(err)
+        if counts is None:
+            return GateAnswer("refused")
+        return GateAnswer("busy", counts[0], counts[1])
+    if rc in (_GATE_EXIT_UNSUPPORTED, _ARGPARSE_USAGE_EXIT):
+        return GateAnswer("unsupported")
+    if rc == _GATE_EXIT_REFUSED and _GATE_REFUSED_MARKER in (err or ""):
+        return GateAnswer("refused")
+    return GateAnswer("failed")
+
+
+def read_force_flag(body: object) -> bool | None:
+    """``force`` from an update or restart request body, or ``None`` if malformed.
+
+    No body (``None``) and ``{}`` both mean ``False``. Only a JSON object with an
+    optional boolean ``force`` is accepted; nothing in it reaches the remote
+    command beyond choosing between two fixed literals.
+    """
+    if body is None:
+        return False
+    if not isinstance(body, dict) or set(body) - {"force"}:
+        return None
+    force = body.get("force", False)
+    return force if isinstance(force, bool) else None
+
 
 #: Longest error tail a job keeps. The runners already cap and redact their
 #: own tails; this bounds the combined stderr + stdout message.
@@ -77,6 +201,13 @@ class RemoteUpdateJob:
     error: str = ""
     version_before: str = ""
     version_after: str = ""
+    #: Why a failed job stopped (``FAIL_*``), or ``""``.
+    code: str = ""
+    #: The crew's last in-flight counts while ``waiting_for_idle``.
+    waiting_turns: int = 0
+    waiting_background: int = 0
+    #: Whether this job restarts without waiting for the crew to go idle.
+    force: bool = False
 
     @property
     def running(self) -> bool:
@@ -86,6 +217,13 @@ class RemoteUpdateJob:
         if self.running:
             self.phase = phase
 
+    def wait_for_idle(self, turns: int, background: int) -> None:
+        """Record that the crew is still busy, with what it reported."""
+        if self.running:
+            self.phase = PHASE_WAITING_FOR_IDLE
+            self.waiting_turns = max(0, turns)
+            self.waiting_background = max(0, background)
+
     def finish(self, state: str, *, version_after: str = "") -> None:
         """End the job in a non-failed outcome (succeeded/unchanged/unverified)."""
         if self.running:
@@ -94,7 +232,7 @@ class RemoteUpdateJob:
             self.version_after = version_after
             self.finished_at = time.time()
 
-    def fail(self, error: str) -> None:
+    def fail(self, error: str, *, code: str = "") -> None:
         """End the job failed, keeping a clamped error tail.
 
         Every *error* is a literal from the job body or a tail the transport
@@ -106,6 +244,7 @@ class RemoteUpdateJob:
         if self.running:
             self.state = STATE_FAILED
             self.error = (error or "")[-_ERROR_MAX_CHARS:]
+            self.code = code
             self.finished_at = time.time()
 
     def to_dict(self) -> dict:
@@ -119,6 +258,9 @@ class RemoteUpdateJob:
             "error": self.error,
             "version_before": self.version_before,
             "version_after": self.version_after,
+            "code": self.code,
+            "waiting": {"turns": self.waiting_turns, "background": self.waiting_background},
+            "force": self.force,
         }
 
 
