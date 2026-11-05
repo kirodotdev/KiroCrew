@@ -118,6 +118,7 @@ from kiro_crew.computer_use.types import (
     ERR_UNKNOWN_KEY,
     ERROR_PREFIX,
     GOVERNED_VALUE_PLACEHOLDER,
+    IMAGE_MIME_JPEG,
     OBS_A11Y_TREE,
     OBS_ELEMENT_VALUES,
     OBS_SCREENSHOT,
@@ -141,6 +142,7 @@ from kiro_crew.computer_use.types import (
     AppRef,
     ClickRequest,
     ComputerUseError,
+    DispatchResult,
     DragRequest,
     ElementRec,
     KeyParseError,
@@ -281,7 +283,7 @@ _SECURE_TARGET_TOOLS: frozenset[str] = frozenset(
 )
 
 
-def dispatch_tool(
+def dispatch_tool_result(
     tool_name: str,
     args: Mapping[str, Any],
     *,
@@ -289,7 +291,7 @@ def dispatch_tool(
     agent: str = "",
     app: str = "",
     approval_recorded: bool = False,
-) -> str:
+) -> DispatchResult:
     """Run one computer-use tool and return its final, already-shaped text.
 
     **BLOCKING.** The single entry point the gateway handler calls, from a worker
@@ -318,7 +320,7 @@ def dispatch_tool(
     the caller's request handler.
     """
     try:
-        return _dispatch(
+        out = _dispatch(
             tool_name,
             args,
             session_key=session_key,
@@ -326,28 +328,60 @@ def dispatch_tool(
             app=app,
             approval_recorded=approval_recorded,
         )
+        return out if isinstance(out, DispatchResult) else DispatchResult(text=out)
     except PlatformCompositionError:
         raise
     except ValidationError as exc:
-        return _refusal(
-            str(exc), session_key=session_key, agent=agent, app=app, tool_name=tool_name
+        return DispatchResult(
+            text=_refusal(
+                str(exc), session_key=session_key, agent=agent, app=app, tool_name=tool_name
+            )
         )
     except (StaleIndex, KeyParseError, PolicyStateError, ComputerUseError) as exc:
         # The package's own typed failures are already model-facing PROSE (a stale
         # index names the age, a drift names both identities) — but prose ABOUT the
         # desktop, so it goes through the same exit as every rendered result rather
         # than being surfaced verbatim. See :func:`_refusal`.
-        return _refusal(
-            str(exc), session_key=session_key, agent=agent, app=app, tool_name=tool_name
+        return DispatchResult(
+            text=_refusal(
+                str(exc), session_key=session_key, agent=agent, app=app, tool_name=tool_name
+            )
         )
     except Exception:
         # Never leak an internal traceback or an arbitrary exception string to
         # the model: it can carry filesystem paths and, from a driver, raw
         # accessibility values.
         logger.exception("computer-use tool %s failed", tool_name)
-        return _refusal(
-            ERR_INTERNAL, session_key=session_key, agent=agent, app=app, tool_name=tool_name
+        return DispatchResult(
+            text=_refusal(
+                ERR_INTERNAL, session_key=session_key, agent=agent, app=app, tool_name=tool_name
+            )
         )
+
+
+def dispatch_tool(
+    tool_name: str,
+    args: Mapping[str, Any],
+    *,
+    session_key: str,
+    agent: str = "",
+    app: str = "",
+    approval_recorded: bool = False,
+) -> str:
+    """:func:`dispatch_tool_result`'s text: the reply every text-only caller relays.
+
+    The CLI harness, the async :func:`dispatch` and any caller that cannot carry an
+    image block use this; it returns exactly the text the structured result holds,
+    so their output is the same whether or not a screenshot was captured.
+    """
+    return dispatch_tool_result(
+        tool_name,
+        args,
+        session_key=session_key,
+        agent=agent,
+        app=app,
+        approval_recorded=approval_recorded,
+    ).text
 
 
 async def dispatch(
@@ -394,7 +428,7 @@ def _dispatch(
     agent: str,
     app: str,
     approval_recorded: bool,
-) -> str:
+) -> "str | DispatchResult":
     """The ordered chokepoint. See the module docstring for why the order is fixed."""
     if tool_name not in MCP_COMPUTER_SCHEMAS:
         # Refused before anything else: an unregistered tool would pass RAW
@@ -569,7 +603,7 @@ def _run(
     agent: str,
     app: str,
     request: "ClickRequest | DragRequest | None" = None,
-) -> str:
+) -> "str | DispatchResult":
     """Execute an authorized tool. Never reached before the gate has said yes."""
     if tool_name == TOOL_END_TURN:
         # Scoped to the calling session: a model ending ITS turn must not drop
@@ -696,7 +730,7 @@ def _run(
         if req.want_image and OBS_SCREENSHOT not in channels:
             req = replace(req, want_image=False)
             notes.append(OBS_SUPPRESSED_NOTE)
-        return _render_snapshot(
+        return _render_snapshot_result(
             svc.snapshot(target, req, session_key=session_key),
             req,
             session_key=session_key,
@@ -1111,7 +1145,7 @@ def _render_apps(apps: Sequence[AppRef], *, session_key: str, agent: str, app: s
     return _with_notes(render.render_apps(rebuilt), shaped)
 
 
-def _render_snapshot(
+def _render_snapshot_result(
     snap: Snapshot,
     req: SnapshotRequest,
     *,
@@ -1120,7 +1154,7 @@ def _render_snapshot(
     app: str,
     extra_notes: tuple[str, ...] = (),
     screenshot_suppressed: bool = False,
-) -> str:
+) -> DispatchResult:
     """Shape and render one snapshot through the observation ceiling.
 
     The snapshot is flattened into the structured payload the ceiling understands,
@@ -1156,7 +1190,36 @@ def _render_snapshot(
         image_width=snap.image_width if kept_image else 0,
         image_height=snap.image_height if kept_image else 0,
     )
-    return _with_notes(render.render_tree(rebuilt, text_limit=req.text_limit), shaped)
+    # The image bytes travel beside the text only when the shaped payload kept the
+    # screenshot, so the bytes and the path note always describe the same capture
+    # and a suppressed screenshot cannot ride along as pixels.
+    return DispatchResult(
+        text=_with_notes(render.render_tree(rebuilt, text_limit=req.text_limit), shaped),
+        image=rebuilt.image_jpeg,
+        image_mime=IMAGE_MIME_JPEG if rebuilt.image_jpeg else "",
+    )
+
+
+def _render_snapshot(
+    snap: Snapshot,
+    req: SnapshotRequest,
+    *,
+    session_key: str,
+    agent: str,
+    app: str,
+    extra_notes: tuple[str, ...] = (),
+    screenshot_suppressed: bool = False,
+) -> str:
+    """:func:`_render_snapshot_result`'s text, for the replies that carry no image."""
+    return _render_snapshot_result(
+        snap,
+        req,
+        session_key=session_key,
+        agent=agent,
+        app=app,
+        extra_notes=extra_notes,
+        screenshot_suppressed=screenshot_suppressed,
+    ).text
 
 
 def _element_payload(elem: ElementRec) -> dict[str, Any]:

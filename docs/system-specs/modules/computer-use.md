@@ -413,7 +413,7 @@ gone the function survives as a shape check: an app with neither a bundle id nor
 display name is dropped because there is nothing to show. Terminals and password
 managers now appear in the list like everything else.
 
-### Result shape: text only, by construction
+### Result shape: text, plus an image only when the operator allows it
 
 Exactly what `validation.build_tool_response` emits:
 
@@ -421,12 +421,37 @@ Exactly what `validation.build_tool_response` emits:
 {"content": [{"type": "text", "text": "…"}]}
 ```
 
-Text only, capped at `MAX_RESPONSE_LEN`. **There is no `isError` field and no
-image block** — an image block is not expressible on this transport, so
-"tree-first, relay the screenshot as a path" is a property of the transport
-rather than a policy someone can regress. An error is the literal string
-`"Error: …"`; `mcp_shared.call_tool_with_logging` classifies that prefix as SEL
-`outcome="failed"`, so the prefix is load-bearing.
+or, for a `computer_get_state` whose screenshot may be shown:
+
+```json
+{"content": [{"type": "text", "text": "…"}, {"type": "image", "data": "<base64>", "mimeType": "image/jpeg"}]}
+```
+
+Text, capped at `MAX_RESPONSE_LEN`, plus at most one image block. **There is no
+`isError` field.** An error is the literal string `"Error: …"`;
+`mcp_shared.call_tool_with_logging` classifies that prefix as SEL
+`outcome="failed"`, so the prefix is load-bearing. The text half always names the
+spooled screenshot path, so the reply reads the same with or without the image.
+
+**The image block is attached only when four conditions hold** (`_inline_image` in
+`dashboard/handlers/computer_use.py`): the tool is `computer_get_state` and its
+screenshot survived every capture floor (`tools.DispatchResult.image` is set only
+then); the shim sent `accept_images: true`; the keystone `computer_use.json` sets
+`inline_screenshots: true` (`enable_state.inline_screenshots_enabled`, strict
+`True`, absent = off — on the keystone because the agent can write `config.json`,
+and `attach_screenshot` there is only the default for a call that omits
+`screenshot`, so it cannot be an off switch); and the configured harness is in
+`ACP_BACKENDS_TOOL_RESULT_IMAGES`. That set holds only the harnesses measured to
+show a tool-result image to the model on a real screenshot: KAS. The Kiro (v2)
+engine of kiro-cli 2.34.0 read a small text-free PNG but guessed the content of a
+real screenshot in every run, so it keeps the path-only reply. The bytes are fitted
+to `imaging.downscale_image_block`'s budget before they leave the gateway; one that
+cannot be fitted is dropped and the text keeps its path note. The shim frames the
+image as a `mcp_shared.ToolReply`, which `build_tool_response` turns into a second
+content block, and appends `INLINE_IMAGE_NOTE` to the text. The harness check reads
+the configured `agent.acp_backend`, not the calling session's harness, so a session
+started on another harness by a per-member or per-spawn override is not
+distinguished.
 
 Rendered body:
 

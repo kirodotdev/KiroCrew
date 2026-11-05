@@ -49,7 +49,7 @@ from kiro_crew.mcp_caller import (
     tenant_nonce_from_meta,
 )
 from kiro_crew.mcp_cleanup import STALE_MANAGED_MCP_SERVERS
-from kiro_crew.mcp_shared_calls import DeferredTool
+from kiro_crew.mcp_shared_calls import DeferredTool, ToolReply
 from kiro_crew.mcp_shared_dispatch import _run_stdio_dispatch_loop
 from kiro_crew.mcp_shared_wire import release_stdout_fd, snapshot_stdout_fd
 from kiro_crew.port_resolution import resolve_client_port_src
@@ -132,7 +132,7 @@ def run_mcp_stdio_loop(
     server_name: str,
     server_version: str,
     list_tools_fn: Callable[[], list[dict[str, Any]]],
-    call_tool_fn: Callable[[str, dict[str, Any]], "str | DeferredTool"],
+    call_tool_fn: Callable[[str, dict[str, Any]], "str | DeferredTool | ToolReply"],
     *,
     advertise_caller_identity: bool = False,
     error_prefix_is_error: bool = False,

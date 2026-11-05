@@ -67,8 +67,9 @@ computer_get_state(app="Finder", screenshot=True)
 
 Request a screenshot on the first snapshot of each turn: do not pass
 `screenshot=false` while the user is watching. The capture opens the floating live
-view. You receive a file path, not an image; keep using the outline unless the
-pixels are needed.
+view. You receive the file path, and the image itself only when the result ends
+with "The screenshot is attached to this result as an image." (the operator turns
+that on). Without the image, keep using the outline unless the pixels are needed.
 
 Optional: `text_limit` (per-element text cap), `max_tree_nodes`, `max_tree_depth`,
 `screenshot` (bool). You get a numbered outline:
