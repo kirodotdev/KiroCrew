@@ -210,6 +210,7 @@ from kiro_crew.kiro_cli import (
     PATH_ONLY_INSTALL_NOTE,
     SPEC_PERMISSIONS_MIN_VERSION,
     installed_kiro_cli_version,
+    kas_auth_client_flag_supported,
     kas_relay_help,
     kiro_cli_installed,
     mcp_governance_may_apply,

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         build_kas_argv,
         installed_kiro_cli_version,
+        kas_auth_client_flag_supported,
         kas_engine_gap,
         kas_relay_help,
         kas_verified_releases,
@@ -334,7 +335,10 @@ def _report_kas_backend(issues: list[str]) -> None:
         host_auth = False
         identity_line = None
 
-    print(f"  relay:       ✅ {' '.join(build_kas_argv(binary, host_auth=host_auth))}")
+    # The release gate the runtime applies to a Crew-owned spawn's flag.
+    client_flag = host_auth and kas_auth_client_flag_supported(installed_kiro_cli_version())
+    relay_argv = build_kas_argv(binary, host_auth=host_auth, client_flag=client_flag)
+    print(f"  relay:       ✅ {' '.join(relay_argv)}")
     print(
         "  auth owner:  "
         + (

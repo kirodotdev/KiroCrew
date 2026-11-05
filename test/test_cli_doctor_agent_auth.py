@@ -699,10 +699,23 @@ class TestDoctorKas:
         assert "token:       ➖ kiro-cli's own sign-in" in out
         assert issues == []
 
-    def test_crew_sign_in_prints_the_crew_owned_argv(self, monkeypatch, capsys) -> None:
-        """With an identity in Crew's vault the reported argv drops the flag and
-        names Crew as the auth owner -- the same decision the runtime makes."""
+    @pytest.mark.parametrize(
+        ("version", "auth_tail"),
+        [
+            ((3, 0, 0), " --auth-method client\n"),
+            (None, " --auth-method client\n"),
+            ((2, 35, 1), "\n"),
+        ],
+        ids=["at-or-above-floor", "unknown", "below-floor"],
+    )
+    def test_crew_sign_in_prints_the_crew_owned_argv(
+        self, monkeypatch, capsys, version, auth_tail
+    ) -> None:
+        """With an identity in Crew's vault the reported argv carries the flag the
+        runtime would pass for that release and names Crew as the auth owner --
+        the same decision the runtime makes."""
         self._patch_cfg(monkeypatch, "kas")
+        monkeypatch.setattr(cli_doctor, "installed_kiro_cli_version", lambda: version)
         monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
         monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: True)
         monkeypatch.setattr(
@@ -717,8 +730,8 @@ class TestDoctorKas:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "acp --agent-engine v3\n" in out
-        assert "--auth-method" not in out
+        assert "acp --agent-engine v3" + auth_tail in out
+        assert "--auth-method cli\n" not in out
         assert "auth owner:  Kiro Crew vault" in out
         assert "crew vault:  social/Google" in out
         # The token line agrees with its own auth owner line: vault-owned spawn,
@@ -726,7 +739,9 @@ class TestDoctorKas:
         # contradict the owner line two rows up.
         assert "token:       ➖ Kiro Crew vault sign-in (see the auth owner line above)" in out
         assert "kiro-cli's own sign-in" not in out
-        assert issues == []
+        # An unknown version also withholds the spec permissions block, which
+        # the doctor reports as its own issue; nothing else is raised.
+        assert [i for i in issues if "permissions` block" not in i] == []
 
     def test_engine_missing_appends_issue(self, monkeypatch, capsys) -> None:
         """A kiro-cli that offers engines but not ours cannot serve KAS."""
