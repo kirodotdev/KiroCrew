@@ -15,7 +15,11 @@ import {
   ALL_UNAVAILABLE,
   principalInitials,
   principalName,
+  heldLinks,
+  waitingInvites,
+  type PeopleRow,
 } from './sharedCrewUi'
+import type { TailscaleInvite } from './sharedCrewInvites'
 
 const work = (over: Partial<AcceptedWork> = {}): AcceptedWork => ({
   work_id: 'w1', session_key: 's1', operation: 'chat_turn', state: 'queued', revision: 1,
@@ -162,5 +166,76 @@ describe('shared-access setup paths', () => {
     })
     expect(sharedAccessConfigured(paths('available'))).toBe(true)
     expect(sharedAccessConfigured(paths('degraded'))).toBe(false)
+  })
+})
+
+describe('waitingInvites: each person is one row', () => {
+  const seen = (login: string): PeopleRow => ({ principal: person('Kyle', login), sources: ['observed'] })
+  const member = (login: string): PeopleRow => ({
+    ...seen(login),
+    member: { alias: '', avatar_id: '', profile_pic_url: '', invite_id: 'i0' },
+  })
+  const invite = (over: Partial<TailscaleInvite> = {}): TailscaleInvite => ({
+    id: 'i1', transport: 'tailscale', kind: 'email', email: 'kyle@example.test', multi_use: false, alias: '', avatar_id: '',
+    created_at: 1, status: 'pending', accepted_login: '', ...over,
+  })
+
+  it('keeps a pending invite for someone who is not in the list', () => {
+    expect(waitingInvites([member('other@example.test')], [invite()]).map(i => i.id)).toEqual(['i1'])
+  })
+
+  it('lists every pending email invite the server returns, even for a current member', () => {
+    expect(waitingInvites([member('Kyle@Example.test')], [invite({ email: ' kyle@example.test ' })]).map(i => i.id)).toEqual(['i1'])
+  })
+
+  it('keeps the invite of a row that is only seen or named, which is not a member', () => {
+    expect(waitingInvites([seen('kyle@example.test')], [invite()]).map(i => i.id)).toEqual(['i1'])
+    expect(waitingInvites([{ ...seen('kyle@example.test'), sources: ['tailscale_share'] }], [invite()]).map(i => i.id)).toEqual(['i1'])
+  })
+
+  it('lists an accepted invite until its accepting login is a current member, so a share outliving a removal stays removable', () => {
+    const accepted = invite({ status: 'accepted', accepted_login: 'Kyle@Example.test' })
+    expect(waitingInvites([], [accepted]).map(i => i.id)).toEqual(['i1'])
+    expect(waitingInvites([seen('other@example.test')], [accepted]).map(i => i.id)).toEqual(['i1'])
+    // A person removed through another invite is seen but no member: this share is still live.
+    expect(waitingInvites([seen('kyle@example.test')], [accepted]).map(i => i.id)).toEqual(['i1'])
+    expect(waitingInvites([member('kyle@example.test')], [accepted])).toEqual([])
+  })
+
+  it('leaves a link invite to the invite dialog, since it names nobody', () => {
+    expect(waitingInvites([member('kyle@example.test')], [invite({ id: 'l1', kind: 'link', email: '' })])).toEqual([])
+  })
+
+  it('takes invites from any sharing path', () => {
+    const other = { ...invite({ id: 's1' }), transport: 'ssm' } as unknown as TailscaleInvite
+    expect(waitingInvites([], [invite(), other]).map(i => i.id)).toEqual(['i1', 's1'])
+  })
+
+  it('a member row with no login matches no invite', () => {
+    expect(waitingInvites([member('')], [invite()]).map(i => i.id)).toEqual(['i1'])
+  })
+})
+
+describe('heldLinks: a link stays removable until its person is a member', () => {
+  const member = (login: string): PeopleRow => ({
+    principal: person('Kyle', login), sources: ['observed'], member: { alias: '', avatar_id: '', profile_pic_url: '', invite_id: 'l1' },
+  })
+  const link = (over: Partial<TailscaleInvite> = {}): TailscaleInvite => ({
+    id: 'l1', transport: 'tailscale', kind: 'link', email: '', multi_use: false, alias: '', avatar_id: '', created_at: 1,
+    status: 'pending', accepted_login: '', ...over,
+  })
+
+  it('keeps a reusable link and a single-use link nobody used', () => {
+    expect(heldLinks([], [link({ multi_use: true, status: 'accepted' }), link({ id: 'l2' })]).map(i => i.id)).toEqual(['l1', 'l2'])
+  })
+
+  it('keeps an accepted single-use link until its accepting login is a member', () => {
+    const accepted = link({ status: 'accepted', accepted_login: 'Kyle@Example.test' })
+    expect(heldLinks([], [accepted]).map(i => i.id)).toEqual(['l1'])
+    expect(heldLinks([member('kyle@example.test')], [accepted])).toEqual([])
+  })
+
+  it('never lists an email invite', () => {
+    expect(heldLinks([], [link({ kind: 'email', email: 'a@example.test' })])).toEqual([])
   })
 })

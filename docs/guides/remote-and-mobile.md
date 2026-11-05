@@ -1058,7 +1058,7 @@ a setting (3 to 60 seconds). A new value applies after a restart:
 kirocrew config set dashboard.shared_crew.typing_idle_seconds 15
 ```
 
-Direct-link access follows Tailscale's rules. The owner-only invite card shares
+Direct-link access follows Tailscale's rules. The owner-only Invite… dialog shares
 the machine through Tailscale. There are no approval or collaborator role
 controls. Teammates who
 reach a cloud-hosted Crew through AWS Systems Manager are governed by IAM and
