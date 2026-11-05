@@ -1831,7 +1831,17 @@
         "screens": "화면",
         "start_over": "처음부터 다시",
         "suggested_flows": "제안된 플로",
-        "what_should_i_audit": "무엇을 점검할까요?"
+        "what_should_i_audit": "무엇을 점검할까요?",
+        "screens_found_count_other": "화면 {{n}}개 발견 · 렌더링 가능 {{m}}개",
+        "flow_n": "흐름 {{n}}",
+        "picked_count_other": "{{n}}개 선택됨",
+        "hint_order": "숫자는 확인할 순서입니다 — 행을 끌어 순서를 바꾸거나 키보드의 ‹ ›를 사용하세요.",
+        "hint_pick": "화면을 클릭해 선택하세요. 여러 개를 고르면 흐름으로 비평합니다.",
+        "cant_render_title": "이 화면은 렌더링할 수 없습니다",
+        "cant_render_short": "렌더링 불가",
+        "group_fallback": "화면",
+        "tag_from_links": "링크 기반",
+        "tag_guess": "추측"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "캡처해서 실제 대비와 크기를 측정합니다.",
@@ -1844,7 +1854,16 @@
       },
       "waitingScreen": {
         "cancel_this_run": "이 실행 취소",
-        "stop_this_run_and_discard_it": "이 실행을 중지하고 버리기"
+        "stop_this_run_and_discard_it": "이 실행을 중지하고 버리기",
+        "getting_screens_ready": "화면을 준비하는 중…",
+        "title_scanning": "점검할 화면을 찾는 중",
+        "title_uploading_screens_other": "화면 {{n}}개 업로드 중…",
+        "title_uploading_one": "스크린샷 업로드 중…",
+        "title_reading_flow_other": "흐름 읽는 중 · 화면 {{n}}개",
+        "title_reading_screen": "화면 읽는 중",
+        "title_getting_pixels": "먼저 실제 픽셀을 가져오는 중",
+        "foot_still_going": "아직 진행 중입니다 — 화면이 많은 흐름은 몇 분 걸릴 수 있습니다. 이 페이지를 떠나도 비평은 계속되며, 돌아오면 여기에 있습니다.",
+        "foot_navigate_away": "이 페이지를 떠나도 비평은 계속됩니다."
       }
     },
     "designTweak": {

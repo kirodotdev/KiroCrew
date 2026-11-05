@@ -5,6 +5,7 @@ import { S } from './styles'
 import type { Phase, Screen } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 interface Props {
   phase: Phase
   elapsed: number
@@ -41,16 +42,17 @@ export default function WaitingScreen({ phase, elapsed, writing, reduceMotion, s
     : (
       <div style={S.waitPlaceholder}>
         <Spinner size={18} reduceMotion={reduceMotion} />
-        <span>{(pendingKind && KIND_WAIT[pendingKind]) || 'Getting the screens ready…'}</span>
+        <span>{(pendingKind && KIND_WAIT[pendingKind]) || i18nT('apps.designCritique.waitingScreen.getting_screens_ready')}</span>
       </div>
     )
 
-  const title = phase === 'scanning' ? 'Looking for screens to audit'
+  const count = { count: screens.length, n: fmtNumber(screens.length) }
+  const title = phase === 'scanning' ? i18nT('apps.designCritique.waitingScreen.title_scanning')
     : phase === 'uploading'
-    ? (many ? 'Uploading ' + screens.length + ' screens…' : 'Uploading your screenshot…')
-    : many ? 'Reading your flow · ' + screens.length + ' screens'
-    : screens.length ? 'Reading your screen'
-    : 'Getting real pixels first'
+    ? (many ? i18nT('apps.designCritique.waitingScreen.title_uploading_screens', count) : i18nT('apps.designCritique.waitingScreen.title_uploading_one'))
+    : many ? i18nT('apps.designCritique.waitingScreen.title_reading_flow', count)
+    : screens.length ? i18nT('apps.designCritique.waitingScreen.title_reading_screen')
+    : i18nT('apps.designCritique.waitingScreen.title_getting_pixels')
 
   return (
     <div style={S.waitWrap}>
@@ -79,8 +81,8 @@ export default function WaitingScreen({ phase, elapsed, writing, reduceMotion, s
         </button>
         <div style={S.waitFoot}>
           {elapsed > 90
-            ? 'Still going — a dense flow can take a couple of minutes. You can navigate away; the critique keeps running and will be here when you come back.'
-            : 'You can navigate away — the critique keeps running.'}
+            ? i18nT('apps.designCritique.waitingScreen.foot_still_going')
+            : i18nT('apps.designCritique.waitingScreen.foot_navigate_away')}
         </div>
       </div>
     </div>

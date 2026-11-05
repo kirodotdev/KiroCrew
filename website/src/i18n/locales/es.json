@@ -1887,7 +1887,21 @@
         "screens": "Pantallas",
         "start_over": "Empezar de nuevo",
         "suggested_flows": "Flujos sugeridos",
-        "what_should_i_audit": "¿Qué debo revisar?"
+        "what_should_i_audit": "¿Qué debo revisar?",
+        "screens_found_count_one": "{{n}} pantalla encontrada · {{m}} que puedo renderizar",
+        "screens_found_count_many": "{{n}} pantallas encontradas · {{m}} que puedo renderizar",
+        "screens_found_count_other": "{{n}} pantallas encontradas · {{m}} que puedo renderizar",
+        "flow_n": "Flujo {{n}}",
+        "picked_count_one": "{{n}} elegida",
+        "picked_count_many": "{{n}} elegidas",
+        "picked_count_other": "{{n}} elegidas",
+        "hint_order": "Los números son el orden en que las recorreré: arrastra una fila para reordenar o usa ‹ › con el teclado.",
+        "hint_pick": "Haz clic en una pantalla para elegirla. Elige varias para criticarlas como un flujo.",
+        "cant_render_title": "No puedo renderizar esta",
+        "cant_render_short": "no se puede renderizar",
+        "group_fallback": "Pantallas",
+        "tag_from_links": "Según enlaces",
+        "tag_guess": "Suposición"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "Lo capturaré y mediré el contraste y los tamaños reales.",
@@ -1900,7 +1914,20 @@
       },
       "waitingScreen": {
         "cancel_this_run": "Cancelar esta ejecución",
-        "stop_this_run_and_discard_it": "Detener esta ejecución y descartarla"
+        "stop_this_run_and_discard_it": "Detener esta ejecución y descartarla",
+        "getting_screens_ready": "Preparando las pantallas…",
+        "title_scanning": "Buscando pantallas para revisar",
+        "title_uploading_screens_one": "Subiendo {{n}} pantalla…",
+        "title_uploading_screens_many": "Subiendo {{n}} pantallas…",
+        "title_uploading_screens_other": "Subiendo {{n}} pantallas…",
+        "title_uploading_one": "Subiendo tu captura…",
+        "title_reading_flow_one": "Leyendo tu flujo · {{n}} pantalla",
+        "title_reading_flow_many": "Leyendo tu flujo · {{n}} pantallas",
+        "title_reading_flow_other": "Leyendo tu flujo · {{n}} pantallas",
+        "title_reading_screen": "Leyendo tu pantalla",
+        "title_getting_pixels": "Primero obtengo píxeles reales",
+        "foot_still_going": "Sigue en marcha: un flujo denso puede tardar un par de minutos. Puedes salir de aquí; la crítica sigue y estará lista cuando vuelvas.",
+        "foot_navigate_away": "Puedes salir de aquí: la crítica sigue en marcha."
       }
     },
     "devFleet": {
