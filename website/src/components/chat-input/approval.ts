@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, type useAppDispatch } from '../../store'
-import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, selectSlotSubagents, isSpawnApprovalGone, markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, sseSubagentDone } from '../../store/chatSlice'
+import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingApprovals, selectSlotPendingSpawnApprovals, selectSlotSubagents, isSpawnApprovalGone, markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, sseSubagentDone } from '../../store/chatSlice'
 import { useToolPillVisible } from '../../store/toolPillRegistry'
 import { api, ApiError } from '../../api/client'
 import { isTerminalApprovalRefusal } from '../../api/apiError'
@@ -53,6 +53,21 @@ const APPROVAL_NUDGE_THRESHOLD = 3
 
 /** Stable empty result for suppressed spawn-approval reads — a fresh [] per render would churn every dependent memo. */
 const EMPTY_SPAWN_APPROVALS: ReturnType<typeof selectSlotPendingSpawnApprovals> = []
+/** Stable empty result for suppressed/absent batch tool-approval reads. */
+const EMPTY_PENDING_APPROVALS: ReturnType<typeof selectSlotPendingApprovals> = []
+/** One pending call's preview row for the batch bar. */
+export type BatchApprovalPreview = { approvalId: string; label: string; input: string }
+/** Stable empty preview list — the batch bar is absent below N=2. */
+const EMPTY_BATCH_PREVIEWS: BatchApprovalPreview[] = []
+/** The one-shot endpoint action for each verb the batch bar can send. The bar
+ *  never offers a trust verb (#5434), so this handles only the three one-shot
+ *  decisions directly and leaves the shared fail-closed `toApiDecision` mapping
+ *  to its single audited call site in the single-approval path (#5486 / #8193). */
+const BATCH_ONE_SHOT_ACTION: Record<'approved' | 'rejected' | 'rejected_once', 'approve' | 'reject' | 'reject_once'> = {
+  approved: 'approve',
+  rejected: 'reject',
+  rejected_once: 'reject_once',
+}
 
 export const approvalBtnClass = 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border text-text text-[12px] cursor-pointer font-body hover:bg-[color-mix(in_srgb,var(--warn)_25%,transparent)] hover:text-text hover:border-border-strong transition-colors disabled:opacity-50'
 
@@ -67,6 +82,15 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   // class) follows one judgment instead of each render site re-deciding.
   const pendingApproval = slotApprovalChrome ? pendingApprovalRaw : null
   const hasApproval = !!pendingApproval
+  // The FULL set of this slot's unresolved tool approvals (#29747). When one
+  // agent turn raises several, this holds all N while `pendingApproval` above
+  // holds only the newest. It drives the ApprovalBar's "Approve all N / Reject
+  // all N" batch control, which the bar renders ONLY when N >= 2 — a single
+  // pending approval keeps the existing single path untouched. Suppressed at
+  // the read for the same reason as `pendingApproval`.
+  const pendingApprovalsRaw = useAppSelector(s => selectSlotPendingApprovals(s, slotId), shallowEqual)
+  const pendingApprovals = slotApprovalChrome ? pendingApprovalsRaw : EMPTY_PENDING_APPROVALS
+  const pendingApprovalCount = pendingApprovals.length
   const [approvalSubmitting, setApprovalSubmitting] = useState(false)
   // A2: bumping this opens the footer ApprovalModePicker with a spotlight
   // ring, so the approval bar's hint lands the user on the real control.
@@ -351,8 +375,77 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     }
   }, [approvalId, approvalMid, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch, teamAttribution, viewerId])
 
+  // One preview line per pending call so "Approve all N / Reject all N" names
+  // every call it will resolve, not just the newest (#29747). The label uses
+  // the SAME derivation as the single bar (deriveToolCallTitle + pickToolLabel),
+  // and the full tool input rides along so the preview row can show the bytes a
+  // reviewer vets. Built only when batching (N >= 2); a single approval keeps
+  // the existing single-bar preview path untouched.
+  const batchPreviews = pendingApprovalCount < 2 ? EMPTY_BATCH_PREVIEWS : pendingApprovals.map(m => {
+    const meta = m.meta as Record<string, unknown> | undefined
+    const rawLabel = sanitizeLlmOutput(m.content || '').replace(/^🔧\s*/, '')
+    const derived = deriveToolCallTitle({
+      title: rawLabel,
+      kind: (meta?.tool_kind as string) || '',
+      rawInput: meta?.tool_input,
+      isShell: meta?.is_shell === '1' || meta?.is_shell === true,
+      toolName: (meta?.tool_name as string) || '',
+      mcpServer: (meta?.mcp_server as string) || '',
+    })
+    return {
+      approvalId: meta?.approval_id as string,
+      label: pickToolLabel({ simplified, purpose: '', rawLabel, derivedTitle: derived.title, uiLang }),
+      input: (meta?.tool_input as string) || '',
+    }
+  })
+
+  // Apply ONE decision to EVERY pending approval in the slot's batch (#29747).
+  // Only the one-shot verbs are batchable: a standing Trust grant stays
+  // id-scoped and single-only (#5434), so the batch bar offers Approve all /
+  // Reject all alone and routes each id through the same `api.resolveApproval`
+  // the single non-trust path uses. allSettled, not a fail-fast loop: an id
+  // whose verdict changed between surfacing and this click is reconciled
+  // per-id (the single path's `fail` handles a 404/already-resolved) instead of
+  // aborting the batch with earlier ids already resolved. Each settle dispatches
+  // `resolveByApprovalId` so the row clears without waiting on the WS frame.
+  const handleApprovalBatch = useCallback((decision: 'approved' | 'rejected' | 'rejected_once') => {
+    const ids = pendingApprovals.map(m => (m.meta as Record<string, unknown> | undefined)?.approval_id as string | undefined).filter((x): x is string => !!x)
+    if (ids.length < 2) return
+    setApprovalSubmitting(true)
+    setApprovalNotice(null)
+    // The batch bar offers only the one-shot verbs (Approve all / Reject all);
+    // Trust is single-only (#5434), so no trust verb ever reaches here and the
+    // shared fail-closed `toApiDecision` mapping is not needed. Map the three
+    // literals this handler can receive straight onto the one-shot endpoint's
+    // actions, keeping `toApiDecision` to its single audited call site in the
+    // single path (#5486 / #8193 contract).
+    const action = BATCH_ONE_SHOT_ACTION[decision]
+    void Promise.allSettled(ids.map(id =>
+      api.resolveApproval(id, action, undefined, mintResponseId())
+        .then(() => dispatch(resolveByApprovalId({ id, slot: activeSlot || undefined, decision })))
+        .catch((err: unknown) => {
+          // A per-id miss (another collaborator answered, or the turn expired)
+          // is reconciled for that id, never aborts the batch: adopt a settled
+          // verdict, clear a stale row, and surface anything else once.
+          const settled = alreadyResolvedDecision(err)
+          if (settled) { dispatch(resolveByApprovalId({ id, slot: activeSlot || undefined, decision: decisionVerdict(settled) })); return }
+          if (err instanceof ApiError && err.status === 404) { dispatch(resolveByApprovalId({ id, slot: activeSlot || undefined, decision: 'stale' })); return }
+          throw err
+        }),
+    )).then(results => {
+      setApprovalSubmitting(false)
+      if (results.some(r => r.status === 'rejected')) {
+        // eslint-disable-next-line no-console -- surface real batch-resolution failures to the dev console
+        console.error('Batch approval failed:', (results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined)?.reason)
+        setApprovalNoticeKind('error')
+        setApprovalNotice(i18nT('components.chatInput.could_not_submit_that_decision_see_the_console_f'))
+      }
+    })
+  }, [pendingApprovals, activeSlot, dispatch])
+
   return {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
+    pendingApprovalCount, batchPreviews, handleApprovalBatch,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,

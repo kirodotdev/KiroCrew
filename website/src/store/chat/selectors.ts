@@ -85,6 +85,31 @@ export const selectSlotPendingApproval = (state: RootState, slot: string | null)
   return null
 }
 
+const EMPTY_PENDING_APPROVALS: ChatMessage[] = []
+/** Every unresolved chat tool-approval for `slot` raised AFTER the slot's last
+ *  non-steer user message, in transcript order (oldest first). This is the SET
+ *  the single `selectSlotPendingApproval` picks the last of — so when one agent
+ *  turn raises several approvals, this returns all N while the single selector
+ *  returns only the newest. It feeds the ApprovalBar's "Approve all N / Reject
+ *  all N" batch control (#29747), which renders only when N >= 2; for a single
+ *  pending approval the bar stays on its existing single path unchanged.
+ *
+ *  Scoped to the chat-permission kind only (same predicate as the single
+ *  selector's `i > lastUserIdx` branch): a coordinator-registry approval is a
+ *  distinct single-card surface and never joins this batch. Returns a stable
+ *  empty array so a consumer can memo it with `shallowEqual`. */
+export const selectSlotPendingApprovals = (state: RootState, slot: string | null): ChatMessage[] => {
+  const msgs = slot ? selectSlotMessages(state, slot) : state.chat.messages
+  let lastUserIdx = -1
+  for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === 'user' && !msgs[i].meta?.steer && !msgs[i].meta?.responsiveSend) { lastUserIdx = i; break } }
+  const out: ChatMessage[] = []
+  for (let i = lastUserIdx + 1; i < msgs.length; i++) {
+    const m = msgs[i]
+    if (m.role === 'permission' && !m.meta?.resolved && m.meta?.approval_id) out.push(m)
+  }
+  return out.length ? out : EMPTY_PENDING_APPROVALS
+}
+
 /**
  * Single source of truth for "is this slot's composer busy" — the signal that
  * queues the next message (busy affordance) and skips the optimistic user

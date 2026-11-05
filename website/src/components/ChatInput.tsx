@@ -2,7 +2,7 @@ import { useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, useSta
 import { GUIDE_KEEP_CLEAR } from '../guide/trustRoot'
 import { useGuidePredicate } from '../guide/guidePredicates'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal, Terminal, Clock, X } from 'lucide-react'
+import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal, Terminal, Clock, X, Ban, AlertTriangle } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
@@ -373,6 +373,7 @@ function ChatInput({
             : terminalRefusal === 'empty' ? i18nT('components.chatInput.terminal_empty') : null
   const {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
+    pendingApprovalCount, batchPreviews, handleApprovalBatch,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
@@ -1145,6 +1146,40 @@ function ChatInput({
                       </motion.div>
                   )}
               </AnimatePresence>
+              {/* Batch control (#29747): when one agent turn raised several
+                  approvals, offer "Approve all N / Reject all N" with a preview
+                  of every pending call, so a reviewer is not forced to answer
+                  them one at a time (and a single Reject no longer leaves the
+                  other N-1 prompting). Rendered ONLY for N >= 2; a single
+                  pending approval never mounts this and keeps the existing
+                  single-row path below byte-for-byte unchanged. Trust is not
+                  offered here — a standing grant stays id-scoped and single-only
+                  (#5434); the batch verbs are the one-shot approve/reject. */}
+              {pendingApprovalCount >= 2 && (
+                  <div data-testid="approval-batch" className="px-3.5 pt-2.5 pb-1 select-none">
+                      <div className="flex items-center gap-1 text-[12px] leading-5 text-muted mb-1.5">
+                          <AlertTriangle size={12} className="text-warn shrink-0" />
+                          <span>{i18nT('pages.chat.collapsibleToolGroup.approvals_pending_count', { count: pendingApprovalCount })}</span>
+                      </div>
+                      <div className="text-[12px] leading-5 text-muted mb-1">{i18nT('pages.chat.collapsibleToolGroup.batch_preview_all', { count: pendingApprovalCount })}</div>
+                      <div className="max-h-[15em] overflow-y-auto mb-2">
+                          {batchPreviews.map((p, i) => (
+                              p.input
+                                  ? <pre key={p.approvalId || i} className="bg-bg-hover rounded-md px-3 py-2 text-[13px] leading-5 font-mono overflow-x-auto whitespace-pre-wrap break-all mb-2 last:mb-0" title={p.label}>{p.input}</pre>
+                                  : <div key={p.approvalId || i} className="bg-bg-hover rounded-md px-3 py-2 text-[13px] leading-5 italic text-muted mb-2 last:mb-0">{p.label || i18nT('pages.chat.collapsibleToolGroup.batch_preview_none')}</div>
+                          ))}
+                      </div>
+                      <div data-approval-batch-actions className="flex gap-1.5 flex-wrap items-center">
+                          <button type="button" disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalBatch('approved')}>
+                              <CheckCircle size={12} className="shrink-0" />{i18nT('pages.chat.collapsibleToolGroup.approve_all', { count: pendingApprovalCount })}
+                          </button>
+                          <button type="button" disabled={approvalSubmitting} className={`${approvalBtnClass} hover:!text-danger hover:!border-danger`} onClick={() => handleApprovalBatch('rejected')}>
+                              <Ban size={12} className="shrink-0" />{i18nT('pages.chat.collapsibleToolGroup.reject_all', { count: pendingApprovalCount })}
+                          </button>
+                      </div>
+                      <div className="mx-0 mt-2.5 mb-0 h-px bg-[color-mix(in_srgb,var(--warn)_25%,transparent)]" />
+                  </div>
+              )}
               <div className="flex items-center gap-1.5 px-3.5 py-2.5 select-none flex-wrap">
                   {!showGhost && <>
                       <Lock size={12} className="text-warn shrink-0" />

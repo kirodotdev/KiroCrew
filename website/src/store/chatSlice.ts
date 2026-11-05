@@ -1273,7 +1273,7 @@ export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './c
 export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
 export {
   selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
-  selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
+  selectSlotPendingApproval, selectSlotPendingApprovals, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
   selectSlotTurnFromWake, selectTurnInterrupted,
   QUIET_END_SERVER, QUIET_END_TOOL,
 } from './chat/selectors'
