@@ -79,6 +79,14 @@ export interface Source {
   last_synced?: string
   item_count?: number
   properties?: string | Record<string, unknown>
+  /** bedrock_kb rows only: whether a search would query this row now. False
+   *  when its registration was made under an account the current grant no
+   *  longer confirms; absent on every other type. */
+  searchable?: boolean
+  /** bedrock_kb rows only, when `searchable` is false: `other_account` when the
+   *  gateway's own registration of this row names another AWS account than
+   *  the current grant (remove and add again fixes it); `unknown` otherwise. */
+  searchable_reason?: 'other_account' | 'unknown'
   summary_topic?: string
   summary_themes?: string
   spend?: SourceSpend

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe, Database } from 'lucide-react'
 import { api, type AwsConsentStatus } from '../../api/client'
 import AwsConsentGate from '../../components/AwsConsentGate'
+import BedrockKbLiveChip from './BedrockKbLiveChip'
 import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
@@ -396,12 +397,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // grants, so a later blocked click can raise it again.
   const [consentNudge, setConsentNudge] = useState(false)
   const consentCardRef = useRef<HTMLDivElement>(null)
+  // Bumped by each "Not enabled · Review AWS account" click, so a repeat click (the nudge
+  // already raised) still scrolls to and focuses the card.
+  const [consentFocusTick, setConsentFocusTick] = useState(0)
   useEffect(() => {
     if (!consentNudge) return
     const el = consentCardRef.current
     el?.scrollIntoView?.({ block: 'nearest' })
     el?.focus({ preventScroll: true })
-  }, [consentNudge])
+  }, [consentNudge, consentFocusTick])
   // Submit gates on the SAME consent query the card polls (identical key =
   // react-query dedupes to one fetch): saving refuses server-side without a
   // grant for exactly this (profile, region), so an enabled submit before
@@ -417,6 +421,18 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   })
   const addKbConsentGranted = addKbConsentQ.data?.granted === true
   useEffect(() => { if (addKbConsentGranted) setConsentNudge(false) }, [addKbConsentGranted])
+  // A row whose grant is gone ("Not enabled · Review AWS account") leads back to the one
+  // consent card there is: the Bedrock KB add form, targeted at that row's
+  // (profile, region), with the card focused.
+  const openKbConsent = (target: { profile: string; region: string }) => {
+    setAddType('bedrock_kb')
+    setAddKbRegion(target.region)
+    setAddKbProfile(target.profile)
+    setAddKbProfileCommitted(target.profile)
+    setShowAdd(true)
+    setConsentNudge(true)
+    setConsentFocusTick(n => n + 1)
+  }
   const [pendingConfirm, setPendingConfirm] = useState<{ id: string; uri: string; fileCount: number } | null>(null)
   const [expandedSource, setExpandedSource] = useState<string | null>(null)
   // The global staleTime is Infinity, so a reopened expanded view would serve the
@@ -843,7 +859,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                       That row uses no target data and offers no Confirm, so it
                       cannot name or approve the old profile. Blur re-targets
                       the query to the profile the field shows. */}
+                  {/* A grant or revoke changes which rows search queries
+                      (each row's `searchable`), so the list reads it again. */}
                   <AwsConsentGate service="bedrock-kb" compact
+                    onConsentChange={() => queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })}
                     targetPending={addKbProfile.trim() !== addKbProfileCommitted}
                     target={{ profile: addKbProfileCommitted, region: addKbRegion.trim() }} />
                 </div>
@@ -1028,7 +1047,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     : isFolderType
                     ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}>● {isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
                     : isLiveSource
-                    ? <span className="text-muted shrink-0">{/* No dot: a grey dot read as a status ("off"), and "Live" is a kind, not a state. */}{i18nT('pages.knowledge.sourcesList.live_query')}</span>
+                    ? <BedrockKbLiveChip source={s} onReviewConsent={openKbConsent} />
                     : s.source_type === 'agent'
                     // Like "auto" and "folder", the label names how the row updates,
                     // so it comes from the row's type; "manual" would point at a Sync

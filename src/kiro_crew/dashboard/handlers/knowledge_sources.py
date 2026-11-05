@@ -160,6 +160,62 @@ def _source_rows(store, uri_filter: str | None) -> list:
     ).fetchall()
 
 
+def _mark_bedrock_searchable(sources: list[dict]) -> None:
+    """Set ``searchable`` on each ``bedrock_kb`` row: would a search query it now?
+
+    The same registration check the search enumeration applies
+    (``attested_sources`` + ``source_matches_attestation``), read once.
+    Read-only, no audit line, and fail-closed: any error marks every row
+    unsearchable.
+
+    An unsearchable row also gets ``searchable_reason``. ``other_account``
+    only when the gateway's own registration of exactly this row exists and
+    names an account other than the one the current grant confirms (the
+    profile was re-pointed): removing and adding the row again is the
+    recovery. Every other cause is ``unknown`` and the dashboard offers no
+    recovery for it, because ``knowledge.db`` is agent-writable and a row the
+    gateway never registered must not be presented as one to add again.
+    """
+    rows = [s for s in sources if s.get("source_type") == "bedrock_kb"]
+    if not rows:
+        return
+    from kiro_crew import aws_consent as consent_mod
+
+    try:
+        grant, attested = consent_mod.bedrock_authorization_snapshot()
+    except Exception:
+        logger.warning("bedrock_kb: could not read source attestations", exc_info=True)
+        grant, attested = None, {}
+    try:
+        recorded = consent_mod.recorded_source_attestations()
+    except Exception:
+        recorded = {}
+    for source in rows:
+        try:
+            props = source.get("properties")
+            if isinstance(props, str):
+                props = json.loads(props or "{}")
+            if not isinstance(props, dict):
+                props = {}
+            sid, uri = str(source.get("id") or ""), str(source.get("uri") or "")
+            source["searchable"] = bool(
+                consent_mod.source_matches_attestation(attested, sid, uri, props)
+            )
+            if not source["searchable"]:
+                entry = recorded.get(sid)
+                other_account = (
+                    grant is not None
+                    and bool(grant.account)
+                    and isinstance(entry, dict)
+                    and consent_mod.source_matches_attestation(recorded, sid, uri, props)
+                    and str(entry.get("account") or "") not in ("", grant.account)
+                )
+                source["searchable_reason"] = "other_account" if other_account else "unknown"
+        except Exception:
+            source["searchable"] = False
+            source["searchable_reason"] = "unknown"
+
+
 async def list_sources(request: web.Request) -> web.Response:
     """GET /api/knowledge/sources.
 
@@ -184,6 +240,8 @@ async def list_sources(request: web.Request) -> web.Response:
     # this list while a source is syncing -- offloaded so a large folder cannot stall
     # chat and heartbeat processing on the event loop.
     spend = await asyncio.to_thread(source_spend, store, sources)
+    # Reads the consent store from disk, so off the loop like the spend scan.
+    await asyncio.to_thread(_mark_bedrock_searchable, sources)
     for source in sources:
         source["scanning"] = source["id"] in scanning
         source["spend"] = spend.get(source["id"], {})
