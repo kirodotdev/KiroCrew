@@ -17,6 +17,7 @@ import { EmbeddingStatus } from './EmbeddingStatus'
 import { SettingsTab } from './SettingsTab'
 import { useIngestionJobs } from './useIngestionJobs'
 import type { KnowledgeItem, Entity, Source, NamespaceInfo, IngestionJob } from './types'
+import { displaySyncStatus } from './knowledgeUtils'
 import { fmtNumber } from '../../i18n/format'
 import { itemTypeLabel } from './helpers'
 
@@ -350,7 +351,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
     queryFn: () => knowledgeApi<Source[]>('/sources'),
     refetchInterval: (query) => {
       const data = query.state.data
-      if (data?.some(s => s.sync_status === 'syncing' || s.sync_status === 'active')) return 5000
+      if (data?.some(s => displaySyncStatus(s) === 'syncing' || s.sync_status === 'active')) return 5000
       return false
     },
   })
@@ -358,7 +359,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   // Invalidate items when any source finishes scanning
   const wasSyncingRef = useRef(false)
   useEffect(() => {
-    const isSyncing = sources.some(s => s.sync_status === 'syncing' || s.sync_status === 'active')
+    const isSyncing = sources.some(s => displaySyncStatus(s) === 'syncing' || s.sync_status === 'active')
     if (wasSyncingRef.current && !isSyncing) {
       queryClient.invalidateQueries({ queryKey: ['knowledge-items'] })
       queryClient.invalidateQueries({ queryKey: ['knowledge-stats'] })
