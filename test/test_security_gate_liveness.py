@@ -691,7 +691,12 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 34, from 34,699, to the package's measured size on main: the 175 above
 #: were counted on a base without the security fixes that merged before it, so main
 #: landed over budget. No code changes; nothing is relaxed. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_733
+#: Raised by 20, from 34,733, to the package's measured size on main, for the
+#: 20 lines ``argv_floor_git`` grew by. No code changes; nothing is relaxed.
+#: Raised by 31, from 34,753, for ``text_redaction.ends_plain_sentence``:
+#: the dashboard's sentence-end check moved here unchanged so the Slack stream
+#: shares it; the dashboard copy was deleted. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_784
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
