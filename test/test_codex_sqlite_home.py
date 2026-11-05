@@ -3,9 +3,9 @@
 Every ``codex app-server`` opens the same SQLite files by default and they lock
 each other out: Codex Desktop plus a Crew runtime fail new sessions with
 ``database is locked``. The harness names the need (``SpawnPlan.private_state_env``)
-and the runtime points the variable at its own per-process scratch directory. Two
-seams, asserted separately: what the harness asks for, and what the runtime does
-with the ask.
+and the runtime points the variable at a per-process directory no other process is
+handed. Two seams, asserted separately: what the harness asks for, and what the
+runtime does with the ask.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import agent_scratch
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import runtime as runtime_mod
@@ -90,7 +91,7 @@ async def test_kiro_asks_for_no_private_state(kiro_spawn_stubbed, tmp_path):
     assert plan.private_state_seed is None
 
 
-# ── The runtime answers it with its scratch directory ──
+# ── The runtime answers it with a directory of its own ──
 
 
 def test_the_variable_points_at_the_scratch_dir(tmp_path):
@@ -128,6 +129,35 @@ def test_no_scratch_sets_nothing_and_warns_once(caplog):
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert SQLITE_HOME in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_the_sqlite_home_is_not_the_session_trees_work_dir(
+    codex_spawn_stubbed, tmp_path, monkeypatch
+):
+    """Every process spawned for this runtime's sessions mounts its work directory
+    writable, so the databases sit in a window this codex process alone is handed."""
+    from test_subagent_shared_scratch import TestSpawnersMountTheTreeWindow
+
+    monkeypatch.delenv(SQLITE_HOME, raising=False)  # a host value would be the operator's
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(agent_scratch, "config_dir", lambda: home)
+    seeded: list[Path] = []
+    monkeypatch.setattr(codex_mod, "seed_private_state", lambda env, path: seeded.append(path))
+    wrapped, stop = TestSpawnersMountTheTreeWindow._install_capture(
+        monkeypatch, runtime_mod, tmp_path, "create_subprocess_limited"
+    )
+    runtime = runtime_mod.AcpRuntime(work_dir=tmp_path / "workspace", acp_backend=ACP_BACKEND_CODEX)
+    with pytest.raises(stop):
+        await runtime.spawn()
+
+    sqlite_home = Path(wrapped["spawn_kwargs"]["env"][SQLITE_HOME])  # type: ignore[index]
+    assert sqlite_home.parent == home / "scratch"
+    assert str(sqlite_home) in wrapped["kwargs"]["extra_private_dirs"]  # type: ignore[index]
+    assert seeded == [sqlite_home]
+    assert runtime.work_scratch_dir is not None
+    assert sqlite_home != runtime.work_scratch_dir
 
 
 # ── The runtime lets the host seed that directory first ──
