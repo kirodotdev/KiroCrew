@@ -5,6 +5,7 @@ import { api } from '../../api/client'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { memoryQueryRetry } from './MemoryStoreCard'
 import { esc } from '../../api/helpers'
 import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, enableEmbeddingsErrorMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
@@ -276,6 +277,18 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
   const events = useMemo(() => audit.data?.pages.flatMap(page => page.events) ?? [], [audit.data])
   const [inspectorQuery, setInspectorQuery] = useState(''); const [preview, setPreview] = useState<ContextPreview | null>(null)
   const [writeError, setWriteError] = useState('')
+  const { confirm, confirmDialog } = useConfirm()
+  // A semantic row's Delete asks first, through the shared themed dialog
+  // whose body names the key: the row is gone the moment the request lands,
+  // and the browser has no undo for it.
+  const deleteSemantic = async (key: string) => {
+    if (!(await confirm({
+      title: i18nT('pages.overview.vectorMemoryCard.delete_entry_title'),
+      body: i18nT('pages.overview.vectorMemoryCard.delete_entry_body', { key }),
+      confirmLabel: i18nT('pages.overview.vectorMemoryCard.delete_entry_button'),
+    }))) return
+    try { await api.vectorSemanticDelete(key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) }
+  }
   const [embeddingStartError, setEmbeddingStartError] = useState('')
   const [semFilter, setSemFilter] = useState(initialSemanticFilter ?? '')
 
@@ -678,7 +691,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">{confidenceBadge(e.confidence)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={e.source === 'user_explicit' ? 'aim' : 'ok'}>{e.source}</Badge></td>
-                <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { try { await api.vectorSemanticDelete(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }}>{i18nT('pages.overview.vectorMemoryCard.delete')}</Btn></td>
+                <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={() => deleteSemantic(e.key)}>{i18nT('pages.overview.vectorMemoryCard.delete')}</Btn></td>
               </tr>
             )
           })}
@@ -829,5 +842,6 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         {!preview && !previewRead.isFetching && !previewRead.isError && <p className="text-muted text-sm italic">{i18nT('pages.overview.vectorMemoryCard.click_preview_to_see_what_gets_injected_into_pro')}</p>}
       </Card>
     )}
+    {confirmDialog}
   </>)
 }
