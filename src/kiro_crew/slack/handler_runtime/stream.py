@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         SlackClientOps,
         StreamRedactor,
         _convert_tables,
+        ends_plain_sentence,
         is_control_tag_tail,
         is_wait_identity,
         logger,
@@ -426,6 +427,31 @@ class _AnswerStream:
         if not tail or not self.stream_ts or self.channel_activation == ACTIVATION_REVIEW:
             return
         await self._deliver(tail)
+
+    async def release_sentence_end(self) -> None:
+        """Send the held run now when it is one plain word ending a sentence.
+
+        Called before a tool card or an approval prompt. The run there is
+        usually the sentence's last word, and holding it left the message
+        without that word until the model wrote again, often minutes later. No
+        text after the boundary can make such a word part of a credential
+        (``ends_plain_sentence``), so it goes out before the card. A run carried
+        across a ``wait`` stays held: it may join text from the closed message,
+        and ``_give_back`` settles it.
+        """
+        held = self.redactor.held
+        if (
+            not held
+            or self.carried
+            or self.move_back is not None
+            or not self.stream_ts
+            or self.channel_activation == ACTIVATION_REVIEW
+            or not ends_plain_sentence(held)
+        ):
+            return
+        tail = self.redactor.flush()
+        if tail:
+            await self._deliver(tail)
 
     async def _deliver(self, safe: str) -> bool:
         """Put already-redacted text on the stream, rotating once on a refusal."""
@@ -817,6 +843,7 @@ class _AnswerStream:
         if self.use_slack_stream:
             # Flush any buffered text before the tool status
             await self.flush()
+            await self.release_sentence_end()
             # Mark previous task complete, start new one
             if self.active_task_id:
                 _elapsed = self.tool_elapsed_str()
@@ -942,6 +969,7 @@ class _AnswerStream:
             self.status_dirty = True
             # Flush buffered text before approval pause
             await self.flush()
+            await self.release_sentence_end()
 
     async def resume_after_approval(self) -> None:
         """The decision is in: an agent session goes back to ``processing``.

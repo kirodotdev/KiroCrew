@@ -5,7 +5,8 @@ where it ends. These tests drive the native handler and pin what happens to that
 held run when the turn ends: clean text is sent, so the last word is not lost;
 text that redacts differently as a whole is dropped and replaced by the final
 copy. A run held before a tool call stays held until the text after it shows
-where the run ends. After a ``wait``, once the joined text is cleared, the run
+where the run ends, unless it is one plain word ending a sentence, which goes
+out before the tool card or approval prompt. After a ``wait``, once the joined text is cleared, the run
 goes back to the end of the message it ended, in that message's own blocks.
 """
 
@@ -514,3 +515,102 @@ def test_a_key_split_by_a_wait_and_another_tool_call_is_filtered_as_one():
     )
 
     assert "IOSFODNN7EXAMPLE" not in _every_text(slack)
+
+
+# A sentence's last word before a tool card or an approval prompt.
+
+
+def _read_call() -> LLMEvent:
+    return LLMEvent(
+        kind=EVENT_TOOL_CALL, title="Running: read", tool_name="read", tool_call_id="t1"
+    )
+
+
+def _streamed_before_first_card(slack: _StreamingSlack) -> str:
+    before: list[str] = []
+    for name, payload in slack.actions:
+        if name == "append_task":
+            break
+        if name == "append_stream":
+            before.append(payload["text"])
+    return "".join(before)
+
+
+@pytest.mark.parametrize("sentence", ["whether they've settled.", "that it is Done."])
+def test_the_last_word_of_a_sentence_reaches_the_stream_before_the_tool_card(sentence):
+    slack, sessions = _run(
+        [_text(f"I'll take a reading to see {sentence}"), _read_call(), _text(" ok")]
+    )
+
+    assert _streamed_before_first_card(slack) == f"I'll take a reading to see {sentence}"
+    assert "".join(text for _ts, text in _appends(slack)).count(sentence.split()[-1]) == 1
+    assert sessions.calls == {"success": 1, "failure": 0}
+
+
+@pytest.mark.parametrize("tail", ["build 42.", "AKIA.", "v2.", "hostname.example."])
+def test_a_run_that_is_not_one_plain_sentence_word_stays_held_at_the_tool_card(tail):
+    slack, _sessions = _run([_text(f"Checking the {tail}"), _read_call(), _text(" ok")])
+
+    held = tail.split()[-1]
+    assert not _streamed_before_first_card(slack).endswith(held)
+    assert held in "".join(text for _ts, text in _appends(slack))
+
+
+def test_a_value_split_around_a_tool_card_after_a_sentence_is_still_filtered_as_one():
+    slack, _sessions = _run(
+        [
+            _text("Looks fine. Header: Authorization: Bearer "),
+            _read_call(),
+            _text(f"{_OPAQUE} then more"),
+        ]
+    )
+
+    streamed = "".join(text for _ts, text in _appends(slack))
+    assert _OPAQUE not in streamed
+    assert "[REDACTED: credential]" in streamed
+
+
+def test_a_word_carried_across_a_wait_still_goes_back_to_its_message_at_a_tool_card():
+    slack = _StoredSlack()
+    _run_on(
+        slack,
+        [_text("Now checking"), _wait_call(), _text("."), _read_call(), _text(" ok")],
+    )
+
+    # The run the wait carried ("checking") is settled by the give-back, not
+    # released at the tool card, so the message the wait ended gets it back.
+    [edit] = _updates(slack)
+    assert edit["text"] == "Now checking"
+
+
+def test_the_last_word_of_a_sentence_is_sent_before_an_approval_prompt():
+    slack = _StreamingSlack()
+    answer = slack_handler._AnswerStream(
+        slack,
+        "C1",
+        "1700000000.000100",
+        team_id="T1",
+        user_id="U1",
+        channel_activation=None,
+        show_thinking=False,
+    )
+    answer.use_slack_stream = True
+    answer.stream_ts = "1700000000.000200"
+
+    async def _drive() -> None:
+        await answer.append("I need to write the file now.")
+        await answer.prepare_for_approval()
+
+    asyncio.run(_drive())
+
+    assert "".join(text for _ts, text in _appends(slack)) == "I need to write the file now."
+    assert answer.redactor.held == ""
+
+
+def test_the_last_word_of_a_sentence_stays_on_the_message_a_wait_ends():
+    slack = _StoredSlack()
+    _run_on(slack, [_text("Checking now."), _wait_call(), _text("Results are in.")])
+
+    assert _messages(slack) == ["Checking now.", "Results are in."]
+    # Nothing was held across the wait, so no message is edited afterwards.
+    assert _updates(slack) == []
