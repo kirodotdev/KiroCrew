@@ -66,6 +66,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
@@ -920,6 +921,10 @@ class AcpClient:
         return self.backend == ACP_BACKEND_GOOSE
 
     @property
+    def _is_vibe(self) -> bool:
+        return self.backend == ACP_BACKEND_VIBE
+
+    @property
     def _is_deepseek(self) -> bool:
         return self.backend == ACP_BACKEND_DEEPSEEK
 
@@ -1348,6 +1353,7 @@ class AcpClient:
     # Answer an ``AcpClient`` session's permission requests and enforce its tool restrictions: ``kiro_crew.acp.client_permissions``.
     _apply_session_permission_routing = _client_permissions._apply_session_permission_routing
     _verify_goose_routing = _client_permissions._verify_goose_routing
+    _verify_vibe_routing = _client_permissions._verify_vibe_routing
     approve_tool = _client_permissions.approve_tool
 
     def take_batch_refusal(self, request_id: str | int) -> str | None:

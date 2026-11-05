@@ -8,6 +8,45 @@ using stdlib dataclasses with sensible defaults. `config/sections.py` and
 modules below and re-exports their names as the same objects, so an existing
 `config.loader.X` or `config.sections.X` import keeps resolving.
 
+The provider factory also accepts a session-local `acp_backend_override` for
+ordinary dashboard chats, independent of the existing `backend_override` used
+by explicit spawn requests. It validates the chat override against the live
+selectable registry before choosing the model namespace; it never writes the
+global `agent.acp_backend` setting. Mistral Vibe remains known but not selectable
+while its permission routing is unverified.
+
+`agents.<name>.acp_backend` is an optional member default. Missing or `null`
+retains the existing routing (`agent.member_acp_backend` for member DMs and
+their workers; `agent.acp_backend` elsewhere). A string is a runtime backend
+id from the selectable registry, including `""` for Kiro CLI. Explicit chat
+and spawn overrides take precedence. Invalid or newly denied member pins
+refuse allocation rather than silently selecting a different harness.
+
+The Profile settings picker and owner-only agent create/update endpoints write
+this field through the existing member persistence path. Loading an older record
+needs no document rewrite: the dataclass default is `None`. Template adoption,
+forking and rebinding leave the member's backend choice on its roster record;
+it is not a field injected into a harness-native agent specification.
+
+The factory resolves the backend before model scoping. Allocation bypasses the
+generic warm pool for a pinned member; a profile change refreshes factory defaults
+without ending live sessions. A crewmate's worker reads its member through the
+attested execution identity, so the default survives restore and does not become
+an explicit chat override. Worker-kit capability refusals remain authoritative.
+Regression coverage: `test/test_agent_backend_selection.py`,
+`test/test_chat_backend.py`, `test/test_mate_worker_dispatch.py` and
+`website/src/pages/members/CrewProfileSettings.test.tsx`.
+
+Backend probe rows intentionally use configuration ids (`kiro` for Kiro CLI),
+whereas chat and member overrides use runtime ids (`""` for explicit Kiro CLI,
+`null` for inheritance). Both pickers translate probe ids before submitting.
+The chat/profile validators and models query also accept the exact `kiro` alias
+for version compatibility, normalize it to `""`, then check the runtime registry.
+Config defaulting is not applied at this boundary: it would turn explicit Kiro
+into the installation default. Unknown aliases such as `default` stay invalid.
+Clearing a chat override resolves the same agent/member/global inheritance as
+allocation, rather than jumping directly to the global backend.
+
 A patch reaches the code that looks the name up in the patched module, and only
 that code. `config/loader.py` is a mirrored facade (`kiro_crew._facade_mirror`):
 its code lives in the `config/loader_*.py` owners listed below, and a write or

@@ -22,6 +22,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_VIBE,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     effort_config_option_id,
     effort_config_option_value,
@@ -40,6 +41,9 @@ BACKEND_CASES = {
     ACP_BACKEND_KAS: ("claude-opus-5", "claude-opus-5.5", True),
     ACP_BACKEND_OPENCODE: ("stub/think-1", "stub/think-2", True),
     ACP_BACKEND_PI: ("pi-model-a", "pi-model-b", True),
+    # vibe's ``model`` select carries the aliases its own catalog resolved and its
+    # ``thinking`` option the effort (captured on mistral-vibe 3.0.3).
+    ACP_BACKEND_VIBE: ("vibe-model-a", "vibe-model-b", True),
 }
 
 
