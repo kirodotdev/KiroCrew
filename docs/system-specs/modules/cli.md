@@ -536,8 +536,11 @@ exposed through the xattr API, `atomic_write.ACCESS_CONTROL_XATTRS_SUPPORTED` is
 rewrite that same validated inode instead, after the same identity re-check, so a
 hand-set ACL survives exactly as it did when the merge wrote by name. Residual, macOS
 only: that rewrite is not atomic, so a crash or a full disk mid-write can leave a torn
-`crons.json`. The memory merge's `ATTACH` of the
-staged database is not covered: SQLite accepts only a path, so it needs its own decision.
+`crons.json`. The memory merge (`_merge_memory`) opens the staged `memory.db` once,
+through its `ATTACH`, and runs `PRAGMA src.integrity_check` on that attached database, so
+a database swapped in at the name after the check is not the one imported. SQLite takes
+only a path, so that open is by name: unlike the core-file installs it does not judge the
+file's type or link count, and it reads only the four allowlisted memory tables.
 
 The dashboard's import path (`portability.apply_import_zip`) is the **exception**, and
 deliberately: it has no flag and no consent surface, so refusing there would not mean
