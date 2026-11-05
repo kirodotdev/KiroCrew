@@ -4186,9 +4186,13 @@ minus kiro-cli. There is no `--auth-method` on this route, so the plan carries
 The spawn is labelled `kas-bundle` (a Node program names no engine). Every seam
 after the spawn is unchanged — measured: `initialize`, the
 `_kiro/auth/getAccessToken` callback answered from the vault, and the
-`AcpRuntime` cold start behave as on the relay. `pin_mandatory_mcps_env` sees a
-non-kiro-cli program and keeps every Crew server resident, the conservative
-answer. The `engines` leaf is `READONLY` in every sandbox mode and on the
+`AcpRuntime` cold start behave as on the relay. The KAS harness sees a program
+under `<data home>/engines/kas` or the desktop app's staged copy
+(`bundled_kas_root()`) and calls `defer_mandatory_mcps_env` instead of
+the engine-version gate: that engine keeps its `tools` array fixed when a
+deferred tool loads (measured on 0.66.33 with thinking models), so every Crew
+server defers and only an operator's ambient `ASBX_KIRO_MANDATORY_MCPS` is
+passed. The relay keeps `pin_mandatory_mcps_env`. The `engines` leaf is `READONLY` in every sandbox mode and on the
 file-tool floor ([security.md](security.md)): a sandboxed KAS process reads and
 executes its engine, and nothing in a sandbox rewrites the code the next session
 runs. `kirocrew doctor` reports the route when selected (`_report_kas_bundle`:
