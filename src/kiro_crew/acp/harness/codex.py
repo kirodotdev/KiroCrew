@@ -282,8 +282,8 @@ class CodexHarness(MembershipHarness):
         # Every ``codex app-server`` opens the same SQLite files by default and
         # they lock each other out: Codex Desktop plus a Crew runtime fail new
         # sessions with ``database is locked``. So each runtime gets its own
-        # CODEX_SQLITE_HOME (the runtime's per-process scratch dir). Only the
-        # databases move: config, auth and the thread rollouts stay in CODEX_HOME,
+        # CODEX_SQLITE_HOME (a per-process directory no other process is handed).
+        # Only the databases move: config, auth and the thread rollouts stay in CODEX_HOME,
         # and a thread resumes from its rollout (measured on codex 0.159), so
         # spawn_continue still works across runtimes. Seed the private index
         # from a completed SQLite snapshot so a large rollout history does not

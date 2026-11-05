@@ -4661,32 +4661,37 @@ The Codex spawn environment also sets `CODEX_SQLITE_HOME`, so concurrent
 `codex app-server` processes (Codex Desktop and each Crew runtime) do not share
 one set of SQLite databases and fail new sessions with `database is locked`. The
 harness names the need (`SpawnPlan.private_state_env`) and the runtime points the
-variable at its own per-process scratch directory -- the one `TMPDIR` already
-names, allocated before the sandbox wrap and reclaimed by
-`agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
-lock or slot exists. Only the databases move: config, auth and the thread
+variable at a scratch allocation of its own (`private-state-<token>`), made before
+the sandbox wrap, mounted as a private window of that process alone and reclaimed
+by `agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
+lock or slot exists. It is not the process's own scratch directory (the one
+`TMPDIR` names): when the process starts a session tree, that directory is the
+tree's work directory, and every subagent, companion runtime and successor
+spawned for its sessions mounts it writable. Only the databases move: config,
+auth and the thread
 rollouts stay in `CODEX_HOME`, and a thread resumes from its rollout (measured on
 codex 0.159), so `spawn_continue` works across runtimes. A value the operator
 set, or one a cron or workflow `extra_env` carries, reaches the child as set.
-Without a scratch directory nothing is set and one warning is logged: the child
-gets codex's shared default rather than a refused spawn.
+Without a private-state directory nothing is set and one warning is logged: the
+child gets codex's shared default rather than a refused spawn.
 
-The scratch directory lives and dies with its process, so each new chat, resume,
-subagent, cron run and knowledge worker that starts Codex begins on an empty
-database home. Left empty,
+The private-state directory lives and dies with its process, so each new chat,
+resume, subagent, cron run and knowledge worker that starts Codex begins on an
+empty database home. Left empty,
 codex rebuilds its index from the rollouts in `CODEX_HOME`, and that cost scales
 with the user's Codex history: about 60 s and 400 MB per runtime at 3,200 threads
 on codex 0.159, and past the 90 s `initialize` timeout at about 17,000 rollouts,
 where every retry restarts the same rebuild. So the harness also names a seed
 (`SpawnPlan.private_state_seed`, `acp/codex_sqlite.py`), which the runtime calls
-on the spawn worker before the child exists, once scratch is allocated and only
-when nobody chose a location for the variable. It copies `CODEX_HOME/state_5.sqlite`
-into scratch with SQLite's online backup (committed WAL pages included, the
-source left unchanged) only when that index reports `backfill_state.status =
-'complete'`, inside a 10 s budget, through a staging file renamed into place.
+on the spawn worker before the child exists, once that directory is allocated
+and only when nobody chose a location for the variable. It copies
+`CODEX_HOME/state_5.sqlite` into it with SQLite's online backup (committed WAL
+pages included, the source left unchanged) only when that index reports
+`backfill_state.status = 'complete'`, inside a 10 s budget, through a staging file
+renamed into place.
 Only the state index is copied, never credentials or the log database, and each
 runtime still owns its own copy. A missing, incomplete or unreadable source, an
-existing destination, or any copy error leaves scratch as it was, and codex
+existing destination, or any copy error leaves the directory as it was, and codex
 falls back to its cold initialization. An operator who sets `CODEX_SQLITE_HOME`
 in the gateway's own environment (for a systemd user unit,
 `Environment=CODEX_SQLITE_HOME=%h/.codex` in a drop-in) gets the shared index
