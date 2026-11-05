@@ -594,7 +594,12 @@ depth-guarded, `MAX_FOLDER_DEPTH` 20)/reorder/delete, breadcrumb, item counts,
 and id-or-path resolution with mkdir -p semantics (`resolve_path`, all-or-nothing
 rollback). Folder delete is an explicit choice: keep (re-parent direct children
 to the parent) vs cascade (permanently delete the whole subtree, incl.
-descendant artifacts) — never silent.
+descendant artifacts) — never silent. The file is tolerant-loaded: an entry
+with no id, or a list/object id, is dropped, and an `order` that `int()` cannot
+read (`null`, a word, a list, `Infinity`) sorts as 0, so one hand-edited row
+never takes down the folder list. The folder routes' `_serialize_folder` sends
+a non-finite number as `null` (a non-finite `order` as 0) so the response stays
+valid JSON; the stored file is not rewritten.
 
 **Auth note (fork adaptation):** `"/api/artifact-folders"` is registered in
 `token_auth`'s `mixed_internal_paths` in `dashboard/server_internal_paths.py` — the 5 folder MCP tools

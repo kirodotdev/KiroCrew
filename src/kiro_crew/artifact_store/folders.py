@@ -51,6 +51,19 @@ FOLDER_PATH_SEP = "/"
 MAX_FOLDER_DEPTH = 20
 
 
+def _stored_order(folder: Mapping[str, Any]) -> int:
+    """A folder's stored ``order`` as a sort key; one ``int()`` cannot read is 0.
+
+    The file is loaded verbatim apart from the id check, so ``null``, a word,
+    a list or ``Infinity`` from a hand edit reach here. Every value ``int()``
+    reads (``"3"``, ``2.5``, ``true``) keeps the position it sorts to today.
+    """
+    try:
+        return int(folder.get("order", 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 class ArtifactFolderStore:
     """Filesystem-backed store for the nested artifact-library folder tree.
 
@@ -140,8 +153,15 @@ class ArtifactFolderStore:
                 raw = json.loads(self._path.read_text(encoding="utf-8"))
                 if isinstance(raw, list):
                     # Drop entries lacking an id (legacy/corrupt) so downstream
-                    # walks never KeyError on a missing "id".
-                    self._folders = [f for f in raw if isinstance(f, dict) and f.get("id")]
+                    # walks never KeyError on a missing "id", and entries whose
+                    # id is a list or object, which no dict can key on.
+                    self._folders = [
+                        f
+                        for f in raw
+                        if isinstance(f, dict)
+                        and f.get("id")
+                        and not isinstance(f.get("id"), (list, dict))
+                    ]
         except Exception:  # noqa: BLE001 — a corrupt file must not crash boot
             logger.warning("Failed to load artifact folders", exc_info=True)
 
@@ -217,7 +237,7 @@ class ArtifactFolderStore:
         # and folders at the same depth sort by (order, name) whatever their parent.
         return sorted(
             self._folders,
-            key=lambda f: (self._depth(f["id"]), int(f.get("order", 0)), str(f.get("name", ""))),
+            key=lambda f: (self._depth(f["id"]), _stored_order(f), str(f.get("name", ""))),
         )
 
     def _next_order(self) -> int:
