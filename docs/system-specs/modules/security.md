@@ -2385,7 +2385,11 @@ gate (variable-indirection, symlinks, `KIROCREW_HOME`, interpreters, casefold,
 realpath), at the same protection level as `security_policy.json`. This is why
 NO bespoke bash write-matcher is needed (an earlier config.json-based approach
 plus such a matcher was removed: a matcher over shell text can never be provably
-complete, and the keystone floor closes the whole class).
+complete, and the keystone floor closes the whole class). The OS sandbox seals it
+read-only at spawn, and because the Linux seal can only bind a file that exists, an
+absent one is pre-created as `{}` before each namespace spawn
+(`sandbox_precreate._CREW_PRECREATE_READONLY_FILE_LEAVES`): `{}` reads exactly like
+no file, and a sandboxed process cannot create the file first with `disable_all` set.
 
 - **Read (boot / cron):** `hooks_config_from_config_dict` parses the flat hook
   keys from config.json's `hooks` section, then OVERLAYS the opt-out state from

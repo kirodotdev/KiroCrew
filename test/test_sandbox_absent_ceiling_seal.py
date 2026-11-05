@@ -18,9 +18,8 @@ off the confinement plan (``sandbox._spawn_plan``), or off the plan line of the 
 ``namespace_argv`` wrote when the spawn path itself is under test.
 
 :class:`TestCeilingsThatMustNotBeMaterialized` is the fence in the opposite direction,
-and it is the one to read before adding a leaf: three ceilings read a present-but-empty
-file as something other than absent, and a fourth would be pinned stale in the dangerous
-direction by the bind mount itself.
+and it is the one to read before adding a leaf: two ceilings read a present-but-empty
+file as something other than absent, and a third is seeded at first run.
 
 The alias decision over the no-alias and masked leaves, with the shapes it tolerates, has
 a module of its own, ``test_sandbox_absent_ceiling_seal_symlinks.py``; a second hard link on
@@ -125,6 +124,19 @@ def test_run_authority_root_is_sealed_before_its_first_record(
         (str(target), _MS_BIND),
         (str(target), _MS_REMOUNT | _MS_BIND | _MS_RDONLY),
     ]
+
+
+@_POSIX_ONLY
+def test_deny_ceiling_is_primed_before_the_operator_first_saves_it(crew_home, monkeypatch):
+    """An absent deny ceiling is created for the seal, and the deny set it yields is unchanged."""
+    from kiro_crew.config import loader
+    from kiro_crew.hooks import effective_denied_regexes_from_config
+
+    target = crew_home / "denied_commands.json"
+    monkeypatch.setattr(loader, "denied_commands_path", lambda: target)
+    before = effective_denied_regexes_from_config()
+    assert str(target) in sandbox._materialize_sealable_ceilings()
+    assert effective_denied_regexes_from_config() == before
 
 
 @_POSIX_ONLY
@@ -894,20 +906,16 @@ class TestAnAliasBackedCeilingIsReported:
 
 @_POSIX_ONLY
 class TestCeilingsThatMustNotBeMaterialized:
-    """Four ceilings the seal deliberately does not reach, for two distinct reasons.
+    """Three ceilings the seal deliberately does not create.
 
-    ``denied_commands.json`` reads ``{}`` as its absent default, but a bind mount pins
-    the INODE while every dashboard writer publishes a NEW one through ``atomic_write``,
-    so a sealed stub would report "nothing is denied" to in-sandbox ``mcp_cron`` for the
-    rest of the sandbox's life. The other three read a present-but-empty file as
-    something other than absent: ``security_policy.json`` raises
-    ``PlatformCompositionError`` out of ``governance.load_security_policy`` (which reruns
-    at boot and per app callback), ``app_admission.json`` flips ``open_default()`` into
-    deny-all, and ``admission_policy.json`` is already seeded at first run.
+    Two read a present-but-empty file as something other than absent:
+    ``security_policy.json`` raises ``PlatformCompositionError`` out of
+    ``governance.load_security_policy`` (which reruns at boot and per app callback), and
+    ``app_admission.json`` flips ``open_default()`` into deny-all. The third,
+    ``admission_policy.json``, is already seeded at first run.
     """
 
     EXCLUDED = (
-        "denied_commands.json",
         "security_policy.json",
         "app_admission.json",
         "admission_policy.json",
