@@ -32,7 +32,9 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from kiro_crew.agent import SharedAgentHomeRefused
+from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_spec_format import (
+    NATIVE_SKILL_ALIAS_PREFIX,
     is_agent_spec_name,
     is_markdown_spec,
     opens_frontmatter_fence,
@@ -43,7 +45,21 @@ from kiro_crew.platform import PlatformCompositionError
 logger = logging.getLogger(__name__)
 
 _MIRROR_PREFIX = "mirror:"
-_RENDERED_AGENT_FILE = "kirocrew.json"
+_CREW_RENDERED_AGENT_FILES = frozenset(name.casefold() for name in OWNED_KIRO_AGENT_FILES)
+
+
+def _is_crew_rendered_spec(name: str) -> bool:
+    """Whether ``name`` in the user-level agents dir is a spec Kiro Crew renders.
+
+    ``kirocrew.json`` and every other ``OWNED_KIRO_AGENT_FILES`` spec (the worker,
+    the conductors, ...) plus the ``kirocrew-skill-view-*`` views are derived from
+    the default agent, which the Disconnect purge strips and then rebuilds in the
+    same transaction. Their entries are reflections of the scopes being purged,
+    never a user's independent grant holder.
+    """
+    folded = name.casefold()
+    return folded in _CREW_RENDERED_AGENT_FILES or folded.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+
 
 # Never a sha256 hexdigest and never None, so the comparisons that read it cannot
 # confuse it with either real answer of :func:`_module_artifact_key`.
@@ -221,7 +237,7 @@ def agent_spec_sources(project_dirs: tuple[Path, ...] = ()) -> list[tuple[str, P
     # Disconnect count its own reflection as a sharer and never revoke anything.
     sources.extend(
         (
-            f"{_MIRROR_PREFIX}{name}" if name == _RENDERED_AGENT_FILE else f"agent:{name}",
+            f"{_MIRROR_PREFIX}{name}" if _is_crew_rendered_spec(name) else f"agent:{name}",
             agents_dir / name,
         )
         for name in names
