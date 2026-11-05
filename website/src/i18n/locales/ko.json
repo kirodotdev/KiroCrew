@@ -15418,7 +15418,7 @@
       "cleanup_failed": "정리 실패",
       "coming_soon_this_app_is_not_yet_available_in_app": "출시 예정 — 이 앱은 아직 앱에서 사용할 수 없습니다. 다음 업데이트 후에 다시 확인하세요.",
       "failed_to_load_app_info": "앱 정보를 불러오지 못했습니다",
-      "has_moved_to_a_standalone_app": "독립 실행형 앱으로 이전되었습니다",
+      "name_has_moved_to_a_standalone_app": "{{name}}은(는) 독립 실행형 앱으로 이전되었습니다",
       "install_from_apps": "앱에서 설치",
       "install_the_standalone_version_to_continue_using": "이 기능을 계속 사용하려면 독립 실행형 버전을 설치하세요.",
       "migration_complete": "마이그레이션 완료",
