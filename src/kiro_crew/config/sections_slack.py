@@ -75,6 +75,67 @@ class CodeChannelDefaultsConfig:
     )
 
 
+_SLACK_ID_TAIL = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+
+def is_slack_user_id(value: object) -> bool:
+    """A Slack member id: ``U`` or ``W`` then 1 to 19 upper-case letters or digits.
+
+    The same shape as ``validation.USER_ID_RE``, checked character by character.
+    A bot id (``B...``) and a workspace id (``T...``) never match.
+    """
+    if not isinstance(value, str) or not 2 <= len(value) <= 20 or value[0] not in "UW":
+        return False
+    return all(ch in _SLACK_ID_TAIL for ch in value[1:])
+
+
+def shared_user_ids(raw: object) -> list[str]:
+    """``slack.shared_access.user_ids`` as stored ids: trimmed, well-formed, deduped.
+
+    A non-list reads as empty and a malformed entry is dropped, so a hand edit can
+    never admit an id the gateway would not have accepted.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        value = item.strip() if isinstance(item, str) else ""
+        if is_slack_user_id(value) and value not in out:
+            out.append(value)
+    return out
+
+
+@dataclass
+class SlackSharedAccessConfig:
+    """The owner's opt-in to let named Slack users drive this Crew as the owner.
+
+    Read on every Slack event, so a removal or a switch-off applies to the next one.
+    Separate from ``allowed_users``, which stays inert: turning this on never admits
+    a stale allowlist entry.
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Share Slack Access",
+            "Let the Slack users listed in user_ids use this Crew's Slack bot. They act "
+            "as you: with your files, git and cloud credentials and connected tools. "
+            "Off by default; applies to the next Slack event.",
+            tags=["slack"],
+        ),
+    )
+    user_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Shared Slack Users",
+            "Slack member IDs (U... or W...) allowed to use the bot while shared access "
+            "is on. Each is checked with Slack before it is used: same workspace as the "
+            "bot, a person, not deactivated, not the owner.",
+            tags=["slack"],
+        ),
+    )
+
+
 @dataclass
 class SlackConfig:
     allowed_users: list[dict] = field(
@@ -289,6 +350,14 @@ class SlackConfig:
             "Code Channel Defaults",
             "Folder, agent, model and reasoning effort a new code-channel session "
             "starts with. Takes effect on the next new code channel; no restart.",
+            tags=["slack"],
+        ),
+    )
+    shared_access: SlackSharedAccessConfig = field(
+        default_factory=SlackSharedAccessConfig,
+        metadata=_meta(
+            "Shared Access",
+            "Let other Slack users drive this Crew as you. Off by default.",
             tags=["slack"],
         ),
     )

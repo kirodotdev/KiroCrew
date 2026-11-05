@@ -60,6 +60,7 @@ from kiro_crew.slack.agent_sessions import fence
 from kiro_crew.slack.agent_sessions.status import clearing_driver, driver_of
 from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.events_inbound import SeenCache
+from kiro_crew.slack.shared_access import prime_shared_user
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -232,7 +233,20 @@ def _first_delivery(channel: str, thread_ts: str, event_ts: str) -> bool:
 def _may_use_bot(user: str) -> bool:
     from kiro_crew.slack import events as _events
 
-    return bool(user) and (_events.is_owner(user) or _events.is_allowed_user(user))
+    return bool(user) and (
+        _events.is_owner(user) or _events.is_allowed_user(user) or _events.is_shared_user(user)
+    )
+
+
+async def _shared_user_in_code_channel(user: str, channel: str) -> bool:
+    """Whether *user* is a shared user (slack.shared_access) and *channel* is the owner's
+    code channel, with Slack Code on or off."""
+    from kiro_crew.slack import handler
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_in
+
+    return handler.is_shared_listed(user) and await asyncio.to_thread(
+        shared_user_refused_in, channel
+    )
 
 
 def _entry_thread(kwargs: Any) -> str:
@@ -325,6 +339,7 @@ async def handle_stopped(orch: GatewayOrchestrator, event: dict) -> str | None:
     if not _first_delivery(channel, thread_ts or "", str(event.get("event_ts") or "")):
         logger.debug("agent_session_stopped redelivered for %s/%s; ignored", channel, thread_ts)
         return "duplicate"
+    await prime_shared_user(user, orch)
     if not _may_use_bot(user):
         _audit(
             user,
@@ -336,6 +351,16 @@ async def handle_stopped(orch: GatewayOrchestrator, event: dict) -> str | None:
         return "denied"
     if not channel or orch.sessions is None:
         return None
+    if thread_ts is not None and await _shared_user_in_code_channel(user, channel):
+        # A thread there leads to the owner's code-channel session (slack.shared_access).
+        _audit(
+            user,
+            "slack.agent_session_stopped",
+            "denied",
+            resources=f"{channel}:{thread_ts}",
+            error="code channel is owner-only",
+        )
+        return "denied"
     if thread_ts is None:
         for claim in list(_channel_stop_handlers):
             try:
@@ -611,6 +636,7 @@ async def _apply_title_change(
         # A retried rename Slack sent before one already applied here: the newer
         # title stands.
         return "stale"
+    await prime_shared_user(user, orch)
     if not _may_use_bot(user):
         _audit(
             user,

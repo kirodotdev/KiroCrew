@@ -84,6 +84,7 @@ from kiro_crew.slack.renderer import SlackApprovalDecider
 from kiro_crew.slack.renderer import SlackApprovalDecider as _APPROVAL_REGISTRY
 from kiro_crew.slack.renderer import SlackRenderer, _display_safe
 from kiro_crew.slack.script_hooks import runs_script_hooks
+from kiro_crew.slack.shared_access import SHARED_OWNER_ONLY_TEXT, shared_command_refused
 from kiro_crew.slack.thread_parent import (
     ThreadParent,
     fetch_thread_parent,
@@ -488,6 +489,19 @@ async def handle_message_transport(
     # Shared with native handle_message so a thread linked via
     # /kirocrew link-to-dashboard routes into its dashboard slot (with the same
     # auth recheck + bang fall-through) instead of spawning a fresh session.
+    # A shared user (slack.shared_access) sends no harness `/` command and no
+    # privacy modifier; refused before the linked-thread hand-off, as on native.
+    if shared_command_refused(user_id, text):
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.owner_command",
+            outcome="denied",
+            source="slack",
+            resources=channel,
+            error="shared user command",
+        )
+        await slack.post_message(channel, SHARED_OWNER_ONLY_TEXT, reply_ts)
+        return
     if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
         return
 
@@ -635,7 +649,7 @@ async def handle_message_transport(
         # kiro-cli to warm up. on_turn_start is idempotent (the driver's later
         # call no-ops). ──
         decider = (
-            SlackApprovalDecider(session_key=session_key)
+            SlackApprovalDecider(session_key=session_key, requester=user_id)
             if approval_mode == APPROVAL_INTERACTIVE
             else None
         )

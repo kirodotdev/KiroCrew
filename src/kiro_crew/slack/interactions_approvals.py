@@ -29,7 +29,9 @@ from kiro_crew.slack.handler import (
     APPROVAL_INTERACTIVE,
     handle_interaction,
     handle_message,
+    is_allowed_user,
     is_owner,
+    is_shared_user,
 )
 from kiro_crew.slack.interactions_context import _orch, register_view_handler
 from kiro_crew.start_priority import StartPriority
@@ -145,8 +147,15 @@ def _parse_draft_key(meta: str) -> tuple[str, str, str] | None:
 
 
 def _can_act_on_review_draft(caller: str, requester: str) -> bool:
-    """Authorize a review-mode action: bot owner OR the requester who triggered the draft."""
-    return bool(caller) and (caller == requester or is_owner(caller))
+    """Authorize a review-mode action: bot owner OR the requester who triggered the draft.
+
+    The requester must still be admitted (``is_allowed_user``): a shared user removed
+    while their draft's modal was open posts nothing.
+    """
+    return bool(caller) and (
+        is_owner(caller)
+        or (caller == requester and (is_allowed_user(caller) or is_shared_user(caller)))
+    )
 
 
 async def _handle_review_approve(payload: dict, action: dict) -> None:

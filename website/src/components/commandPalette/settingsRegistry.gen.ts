@@ -711,6 +711,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.share-slack-access-slack",
+    "label": "Share Slack access (Slack)",
+    "labelKey": "pages.settings.slackSharedAccess.toggle_label",
+    "labelSuffix": "Slack",
+    "description": "Let the people listed below use this Crew from Slack.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.shared_access.enabled"
+  },
+  {
     "id": "channels.show-thinking-slack",
     "label": "Show thinking (Slack)",
     "labelKey": "pages.settings.slackPanel.show_thinking",

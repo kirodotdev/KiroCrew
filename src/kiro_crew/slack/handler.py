@@ -252,6 +252,8 @@ from kiro_crew.slack.handler_runtime.access import (  # noqa: F401
     is_allowed_user,
     is_open_channel,
     is_owner,
+    is_shared_listed,
+    is_shared_user,
     is_slack_session_trusted,
     is_tracked_channel,
     is_yolo_mode,
@@ -397,6 +399,10 @@ from kiro_crew.slack.sessions_view import (  # noqa: F401 - read by the owners
     _collect_recent_sessions_off_loop,
     _message_surface_limit,
     sessions_include_ended,
+)
+from kiro_crew.slack.shared_access import (  # noqa: F401 - read by the owners
+    SHARED_OWNER_ONLY_TEXT,
+    shared_command_refused,
 )
 from kiro_crew.slack.thread_parent import (  # noqa: F401 - read by the owners
     fetch_thread_parent,

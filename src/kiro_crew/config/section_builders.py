@@ -84,6 +84,7 @@ from kiro_crew.config.sections import (
     IMessageConfig,
     SectionReader,
     SlackConfig,
+    SlackSharedAccessConfig,
     SttConfig,
     TeamsConfig,
     TelegramConfig,
@@ -105,6 +106,7 @@ from kiro_crew.config.sections import (
     _validated_stt_model,
     _validated_stt_provider,
     coerce_effort,
+    shared_user_ids,
 )
 from kiro_crew.config.service_sections import (
     CronHistoryConfig,
@@ -708,6 +710,16 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         agent_sessions=section.read("agent_sessions", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
+        shared_access=_build_shared_access(slack_data.get("shared_access")),
+    )
+
+
+def _build_shared_access(raw: object) -> SlackSharedAccessConfig:
+    """``slack.shared_access``: on only for a literal ``true``, ids well-formed."""
+    data = _safe_dict(raw)
+    return SlackSharedAccessConfig(
+        enabled=data.get("enabled") is True,
+        user_ids=shared_user_ids(data.get("user_ids")),
     )
 
 

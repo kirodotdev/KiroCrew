@@ -409,7 +409,9 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `slack.allowed_users` | Ignored for access (Slack is owner-only); a name is only a display-name fallback | `[]` |
+| `slack.allowed_users` | Ignored for access; a name is only a display-name fallback. Never read by shared access | `[]` |
+| `slack.shared_access.enabled` | Let the Slack users in `slack.shared_access.user_ids` drive this Crew **as you**, with your files, Git and cloud credentials and connected tools. Only a literal `true` turns it on. See [Sharing Slack access](slack-integration.md#sharing-slack-access) | `false` |
+| `slack.shared_access.user_ids` | Slack member IDs (`U…` or `W…`) allowed while shared access is on. Each is checked with Slack before it counts: same workspace as the bot, a person, not deactivated, not the owner. Malformed entries are ignored | `[]` |
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
 | `slack.open_channels` | Ignored for access (Slack is owner-only); an entry is only a record kept in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |
@@ -417,9 +419,10 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `slack.reactions_enabled` | Show the status reaction (ack / error) on Slack messages | `true` |
 | `slack.dm_single_session` | Treat each 1:1 DM as one continuous session, threaded replies included, instead of one per message. Applies only on the default messaging transport (`messaging.use_transport`, on by default) and never in a DM set to `review` mode | `false` |
 
-Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.
-Multi-user access and open channels are refused regardless of what these lists
-contain, so treat them as bookkeeping rather than an access grant.
+By default only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over
+Slack. `slack.allowed_users` and open channels are refused regardless of what these
+lists contain, so treat them as bookkeeping rather than an access grant. The one
+way to let someone else in is `slack.shared_access`.
 
 Every other messaging channel is configured from the dashboard — the roster is in
 [the documentation index](index.md#chat-channels), and each channel's own doc

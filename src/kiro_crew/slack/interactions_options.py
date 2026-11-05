@@ -42,7 +42,14 @@ from kiro_crew.slack.format import (
     escape_mrkdwn,
     replace_options_blocks,
 )
-from kiro_crew.slack.handler import APPROVAL_INTERACTIVE, handle_message, is_allowed_user
+from kiro_crew.slack.handler import (
+    APPROVAL_INTERACTIVE,
+    SHARED_OWNER_ONLY_TEXT,
+    handle_message,
+    is_allowed_user,
+    is_shared_user,
+    shared_command_refused,
+)
 from kiro_crew.slack.interactions_context import _orch, register_view_handler
 from kiro_crew.slack.outbound import (
     OptionsSeveralRequest,
@@ -150,6 +157,31 @@ def _extract_selected_value(action: dict) -> tuple[str, str]:
 _ACTION_PAYLOAD_CAP = 4000
 
 
+async def _shared_answer_refused(
+    channel: str, user_id: str, thread_ts: str, text: str, tool_name: str
+) -> bool:
+    """Refuse a shared user's card answer that is a harness ``/`` command or carries a
+    privacy modifier (``slack.shared_access``), BEFORE the card is claimed.
+
+    The agent's harness reads a prompt that starts with ``/`` as its own command
+    whatever Kiro Crew's ``interpret_commands`` says, so such an answer stays the
+    owner's. Refused here, not later in dispatch, so the card stays answerable.
+    """
+    if not shared_command_refused(user_id, text):
+        return False
+    sel().log_tool_invocation(
+        session_key=thread_ts,
+        agent="kirocrew",
+        source="slack",
+        tool_name=tool_name,
+        tool_kind="interaction",
+        outcome="denied",
+        metadata={"reason": "shared_user_command", "channel": channel},
+    )
+    await _tell_user(channel, user_id, thread_ts, SHARED_OWNER_ONLY_TEXT)
+    return True
+
+
 async def _route_action_to_session(
     channel: str,
     msg_ts: str,
@@ -171,6 +203,9 @@ async def _route_action_to_session(
     there, and its label posts top-level like every other post in the channel.
     """
     assert _orch and _orch.slack  # caller already checked  # noqa: S101
+
+    if await _shared_answer_refused(channel, user_id, thread_ts, label, context_tag):
+        return
 
     # Redact label before any Slack surface
     label, _ = redact_exfiltration_urls(label)
@@ -526,6 +561,8 @@ async def _answer_options(
     # Redact LLM-generated content before any external use.
     selected = [redact_credentials(redact_exfiltration_urls(all_choices[i])[0])[0] for i in picked]
     combined = ", ".join(selected)
+    if await _shared_answer_refused(channel, user_id, thread_ts, combined, tool_name):
+        return
     # The Slack-facing FALLBACK TEXT, escaped. Slack parses entities in a
     # message's top-level `text` too, not just in mrkdwn blocks -- and `text` is
     # what notifications and block-less clients render, so an unescaped
@@ -770,7 +807,7 @@ async def _handle_options_several_submission(payload: dict) -> None:
         return
     # The same gate every OPTIONS click passes in ``dispatch``: an allowed user,
     # then the channels governance policy -- both before anything is edited or sent.
-    if user_id != request.user_id or not is_allowed_user(user_id):
+    if user_id != request.user_id or not (is_allowed_user(user_id) or is_shared_user(user_id)):
         sel().log_tool_invocation(
             session_key=request.thread_ts,
             agent="kirocrew",

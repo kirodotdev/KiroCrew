@@ -6561,6 +6561,10 @@
           "agent": null,
           "model": null,
           "reasoning_effort": null
+        },
+        "shared_access": {
+          "enabled": false,
+          "user_ids": []
         }
       }
     },
@@ -7020,6 +7024,71 @@
       "enumValues": null,
       "defaultValue": null,
       "nullable": true
+    },
+    {
+      "path": "slack.shared_access",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Shared Access",
+      "help": "Let other Slack users drive this Crew as you. Off by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "user_ids": []
+      }
+    },
+    {
+      "path": "slack.shared_access.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Share Slack Access",
+      "help": "Let the Slack users listed in user_ids use this Crew's Slack bot. They act as you: with your files, git and cloud credentials and connected tools. Off by default; applies to the next Slack event.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.shared_access.user_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Shared Slack Users",
+      "help": "Slack member IDs (U... or W...) allowed to use the bot while shared access is on. Each is checked with Slack before it is used: same workspace as the bot, a person, not deactivated, not the owner.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "slack.shared_access.user_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "publish",

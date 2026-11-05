@@ -59,6 +59,8 @@ if TYPE_CHECKING:
         is_allowed_user,
         is_owner,
         is_sensitive_path,
+        is_shared_listed,
+        is_shared_user,
         is_yolo_mode,
         logger,
         note_user_stop,
@@ -1429,7 +1431,7 @@ async def _route_bang_command(
     dispatcher did not claim).
     """
     if cmd_text.strip().lower() == "!compact":
-        if is_owner(user_id) or is_allowed_user(user_id):
+        if is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id):
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.compact_command",
@@ -1485,10 +1487,13 @@ async def _route_bang_command(
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
     if _is_bang_command(cmd_text):
-        # !dashboard and !stop are available to any allowed user
+        # !stop and !title are available to any allowed user; !dashboard mints a
+        # full-dashboard link, so it stays the owner's.
         _cmd_word = cmd_text.split()[0]
         if _cmd_word in ("!dashboard", "!stop", "!title"):
-            if is_owner(user_id) or is_allowed_user(user_id):
+            if (is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id)) and not (
+                _cmd_word == "!dashboard" and is_shared_listed(user_id)
+            ):
                 reply = await _handle_slash_command(
                     cmd_text,
                     slack,

@@ -246,11 +246,42 @@ def is_allowed_user(user_id: str) -> bool:
     """Check if user_id is the owner.
 
     Multi-user access is disabled for security — only the owner
-    (KIROCREW_OWNER_ID) is authorized to interact via Slack.
+    (KIROCREW_OWNER_ID) is authorized to interact via Slack. A shared user
+    (``slack.shared_access``) is admitted only where a site asks
+    :func:`is_shared_user` on purpose, never here.
     """
     if not user_id:
         return False
     return is_owner(user_id)
+
+
+def is_shared_user(user_id: str) -> bool:
+    """Whether *user_id* is admitted only as a shared user (never the owner).
+
+    The owner-only gates refuse exactly these people; see
+    :mod:`kiro_crew.slack.shared_access`.
+    """
+    if not user_id or is_owner(user_id):
+        return False
+    from kiro_crew.slack import shared_access
+
+    return shared_access.is_shared_user(slack_cfg(), user_id, owner=False)
+
+
+def is_shared_listed(user_id: str) -> bool:
+    """Whether the owner-only gates must treat *user_id* as a shared user (never the owner).
+
+    True while the switch is on and the id is listed, and also for anyone admitted
+    as a shared user earlier in this process. Unlike :func:`is_shared_user` it needs
+    no fresh Slack confirmation, and a removal or a switch-off does not clear it, so
+    neither a confirmation ageing out nor the owner removing the person while their
+    message is in flight lets that message past a gate that refuses shared users.
+    """
+    if not user_id or is_owner(user_id):
+        return False
+    from kiro_crew.slack import shared_access
+
+    return shared_access.listed(slack_cfg(), user_id) or shared_access.was_shared(user_id)
 
 
 def set_tracking_channels(channel_ids: set[str]) -> None:

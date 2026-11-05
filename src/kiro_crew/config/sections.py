@@ -413,6 +413,7 @@ from kiro_crew.config.sections_shared_crew import (  # noqa: F401
     shared_crew_config_from,
 )
 from kiro_crew.config.sections_slack import (  # noqa: F401
+    _SLACK_ID_TAIL,
     _VALID_ACTIVATIONS,
     _VALID_CHANNEL_PREFIXES,
     ACTIVATION_ALWAYS,
@@ -424,9 +425,12 @@ from kiro_crew.config.sections_slack import (  # noqa: F401
     ChannelConfig,
     CodeChannelDefaultsConfig,
     SlackConfig,
+    SlackSharedAccessConfig,
     _validate_activation,
     _validate_allowed_users,
     _validate_tracking_channels,
+    is_slack_user_id,
+    shared_user_ids,
 )
 from kiro_crew.config.sections_stt import (  # noqa: F401
     _DEFERRED_STT_PROVIDERS,

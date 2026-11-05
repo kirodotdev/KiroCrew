@@ -240,9 +240,11 @@ class SlackApprovalDecider:
     #: Retired with the window, so a nonce never outlives the prompt it authorizes.
     _NONCES: dict[str, str] = {}
 
-    def __init__(self, session_key: str = "") -> None:
+    def __init__(self, session_key: str = "", requester: str = "") -> None:
         self._futures: dict[str, asyncio.Future[bool]] = {}
         self.session_key = session_key
+        #: The Slack user whose turn asks; besides the owner, the only one who may answer.
+        self.requester = requester
         #: Why the LAST call denied -- see ``messaging.driver.ApprovalDecider``.
         self.last_deny_cause = ""
 
@@ -464,6 +466,12 @@ class SlackApprovalDecider:
         # per-turn _futures lookup (rsplit is safe: the rid never contains ':').
         rid = str(registry_key).rsplit(":", 1)[-1]
         return dec.resolve(rid, approved)
+
+    @classmethod
+    def requester_for(cls, registry_key: str | int) -> str:
+        """The requester of the decider awaiting *registry_key*, or ``""``."""
+        dec = cls._REGISTRY.get(str(registry_key))
+        return dec.requester if dec is not None else ""
 
     @classmethod
     def session_for(cls, registry_key: str | int, *, nonce: str = "") -> str:

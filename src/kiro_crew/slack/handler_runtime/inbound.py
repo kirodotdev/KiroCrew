@@ -37,6 +37,8 @@ if TYPE_CHECKING:
         config_path,
         is_allowed_user,
         is_sensitive_path,
+        is_shared_listed,
+        is_shared_user,
         load_window_off_loop,
         logger,
         privacy_mode,
@@ -603,7 +605,7 @@ async def closed_dashboard_owner_refused(
     if channel_pinned_agent(channel) is None:
         return False
     # Normal handling answers an unauthorized sender; nothing is said here.
-    if not is_allowed_user(user_id):
+    if not (is_allowed_user(user_id) or is_shared_user(user_id)):
         return False
     if owner is None:
         _first_word = text.strip().split(maxsplit=1)[0] if text.strip() else ""
@@ -711,6 +713,22 @@ async def route_linked_thread(
     *interpret_commands* off (an OPTIONS answer) hands *text* over with commands
     off, so the slot reads it as content, never as a ``/`` command.
     """
+    # Code channels are the owner's (slack.shared_access): a shared user's message
+    # in one never reaches its session, whatever the feature or the slot says.
+    # First, before the no-slot fall-through hands the thread to plain routing.
+    if is_shared_listed(user_id):
+        from kiro_crew.slack.code_channels.routing import shared_user_refused_in
+
+        if await asyncio.to_thread(shared_user_refused_in, channel):
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.message",
+                outcome="denied",
+                source="slack",
+                resources=f"channel={channel}",
+                error="code channel is owner-only",
+            )
+            return LinkedRoute.REFUSED
     if not (_dashboard_state and hasattr(_dashboard_state, "get_linked_slot")):
         return LinkedRoute.UNROUTED
     if route_pinned:
@@ -741,7 +759,7 @@ async def route_linked_thread(
         return LinkedRoute.UNROUTED
 
     # Auth check FIRST — deny all messages from unauthorized users.
-    if not is_allowed_user(user_id):
+    if not (is_allowed_user(user_id) or is_shared_user(user_id)):
         logger.warning("Unauthorized user %s in linked thread %s", user_id, session_key)
         sel().log_tool_invocation(
             session_key=session_key,
