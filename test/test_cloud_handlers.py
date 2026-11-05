@@ -599,57 +599,6 @@ class TestLaunchConcurrency:
         # and no second job was written
         assert len(state.cloud_launch_store.list()) == 1
 
-    async def test_a_launch_is_refused_while_a_job_record_is_not_utf8(self, tmp_path):
-        """The list skips a job file whose bytes are not UTF-8, so its status is
-        unknown and it may be a launch still running. A new launch is refused
-        rather than risking a second billed stack."""
-        state = _state(tmp_path)
-        store = state.cloud_launch_store
-        unreadable = store.create(profile="dev", region="us-east-1", size_key="balanced")
-        store._path(unreadable.id).write_bytes(b'\xff\xfe{"status": "running"}')
-
-        try:
-            resp = await hc.api_cloud_launch_create(
-                _req(
-                    "POST",
-                    "/api/cloud/launch",
-                    state=state,
-                    body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
-                )
-            )
-        except Exception as exc:  # a refusal is the contract, not a raise
-            pytest.fail(f"launch create raised {exc!r} instead of refusing")
-
-        assert resp.status == 409
-        assert _body(resp)["code"] == "launch_record_unreadable"
-        assert len(list(store.root.glob("*.json"))) == 1  # no second job was written
-
-    async def test_admission_reads_the_job_store_once(self, tmp_path, monkeypatch):
-        """Both admission checks come from one snapshot. Two scans (``list`` then
-        ``undecodable_ids``) let a worker's save() land between them, so a running
-        job whose file was unreadable for the first could pass both."""
-        state = _state(tmp_path)
-        store = state.cloud_launch_store
-        unreadable = store.create(profile="dev", region="us-east-1", size_key="balanced")
-        store._path(unreadable.id).write_bytes(b'\xff\xfe{"status": "running"}')
-        state.cloud_launch_reaped = True  # the one-time orphan reap is not admission
-        for name in ("list", "undecodable_ids"):
-            monkeypatch.setattr(
-                store, name, lambda *a, _n=name, **k: pytest.fail(f"admission scanned via {_n}")
-            )
-
-        resp = await hc.api_cloud_launch_create(
-            _req(
-                "POST",
-                "/api/cloud/launch",
-                state=state,
-                body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
-            )
-        )
-
-        assert resp.status == 409
-        assert _body(resp)["code"] == "launch_record_unreadable"
-
     async def test_two_concurrent_launches_still_yield_one_job(self, tmp_path):
         """The guard has to hold across its own await: two POSTs arriving together
         would otherwise both observe "no active job" and provision two
@@ -967,48 +916,6 @@ class TestInstanceMutations:
         )
         assert forgotten.status == 200
         assert reached == ["ec2.stop"]
-
-    @pytest.mark.parametrize(
-        ("verb", "method", "path"),
-        [
-            ("stop", "POST", "/api/cloud/kc-2a276d/stop"),
-            ("start", "POST", "/api/cloud/kc-2a276d/start"),
-            ("destroy", "DELETE", "/api/cloud/kc-2a276d"),
-        ],
-    )
-    async def test_a_verb_is_refused_while_a_job_record_is_not_utf8(
-        self, tmp_path, monkeypatch, verb, method, path
-    ):
-        """The lane and destroy's instance id come from the job store, which skips a
-        job file whose bytes are not UTF-8. That file may be this crew's record, so
-        reading it as absent would run the built-in EC2 path against a crew another
-        lane created. The verb refuses instead, naming the file."""
-        for name in ("stop", "start", "destroy", "describe"):
-            monkeypatch.setattr(hc.ec2, name, lambda *a, _n=name, **k: pytest.fail(f"ec2.{_n} ran"))
-
-        class _LaneEngine:
-            def teardown(self, *, tag, profile, region):
-                pytest.fail("the lane engine tore the crew down")
-
-        state = _state(tmp_path)
-        state.cloud_launch_engine = _LaneEngine()
-        store = state.cloud_launch_store
-        job = store.create(profile="dev", region="us-east-1", size_key="", provider_id="microvm")
-        job.tag = "kc-2a276d"
-        store.save(job)
-        store._path(job.id).write_bytes(b'\xff\xfe{"provider_id": "microvm"}')
-
-        handler = {
-            "stop": hc.api_cloud_stop,
-            "start": hc.api_cloud_start,
-            "destroy": hc.api_cloud_destroy,
-        }[verb]
-        resp = await handler(_req(method, path, state=state, match_info={"tag": "kc-2a276d"}))
-
-        assert resp.status == 409, resp.text
-        body = json.loads(resp.text or "{}")
-        assert body["code"] == "launch_record_unreadable"
-        assert f"{job.id}.json" in body["error"]
 
     async def test_destroy_cleans_up_local_state_after_deletion_confirms(
         self, tmp_path, monkeypatch

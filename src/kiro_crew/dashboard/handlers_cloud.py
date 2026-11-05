@@ -807,17 +807,17 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
         store = await _astore(state)
         # One read of each job file answers both checks: two scans would let a
         # worker's save() land between them, so a running job could be missed by both.
-        existing, undecodable = await _in_executor(store.snapshot)
-        if undecodable:
+        existing, unreadable = await _in_executor(store.snapshot)
+        if unreadable:
             # A record the list skips may be a launch still running: refuse, as
             # a launch already running is refused, rather than risk a second one.
-            _audit("launch_create", "denied", request_id=undecodable[0], error="unreadable job")
+            _audit("launch_create", "denied", request_id=unreadable[0], error="unreadable job")
             return web.json_response(
                 {
                     "error": (
                         "a crew setup record cannot be read, so a setup may still be "
                         "running; remove the launch job file "
-                        f"{undecodable[0]}.json before starting another"
+                        f"{unreadable[0]}.json before starting another"
                     ),
                     "code": "launch_record_unreadable",
                 },
@@ -1234,8 +1234,8 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
-        existing, undecodable = await _in_executor(store.snapshot)
-        if undecodable:
+        existing, unreadable = await _in_executor(store.snapshot)
+        if unreadable:
             # A job file the list skips may be a launch or sign-in still running on
             # this instance; refuse, as launch create does, rather than race it.
             _audit("launch_signin_restart", "denied", request_id=job_id, error="unreadable job")
@@ -1244,7 +1244,7 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
                     "error": (
                         "a crew setup record cannot be read, so a setup or sign-in may "
                         "still be running; remove the launch job file "
-                        f"{undecodable[0]}.json before trying again"
+                        f"{unreadable[0]}.json before trying again"
                     ),
                     "code": "launch_record_unreadable",
                 },
@@ -1393,15 +1393,15 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
     # run the built-in EC2 path against a crew another lane created, so refuse, as
     # launch create does, until the file is removed. The lane and the instance-id
     # fallback below read the same snapshot, so no save() lands between the checks.
-    jobs, undecodable = await _in_executor(store.snapshot)
-    if undecodable:
+    jobs, unreadable = await _in_executor(store.snapshot)
+    if unreadable:
         _audit(op, "denied", request_id=tag, error="unreadable job")
         return web.json_response(
             {
                 "error": (
                     "a crew setup record cannot be read, so which lane runs this crew "
                     "is unknown; remove the launch job file "
-                    f"{undecodable[0]}.json before trying again"
+                    f"{unreadable[0]}.json before trying again"
                 ),
                 "code": "launch_record_unreadable",
             },
