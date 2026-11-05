@@ -373,5 +373,14 @@
         "version": "0.1.0"
       }
     ]
+  },
+  "missing": {
+    "not_installed": {
+      "error": "app 'fixture-former' not installed"
+    },
+    "released": {
+      "code": "app_released",
+      "error": "app 'fixture-former' not installed"
+    }
   }
 }

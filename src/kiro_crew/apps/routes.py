@@ -352,6 +352,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _unregister_notification_channels,
     )
     from kiro_crew.apps.routes_listing import (  # noqa: F401
+        APP_RELEASED_CODE,
         _installed_app_detail,
         _listed_apps_with_trust,
         _provider_is_configured,
