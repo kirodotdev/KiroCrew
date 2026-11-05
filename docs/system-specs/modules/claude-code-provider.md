@@ -927,6 +927,15 @@ consolidation pass (`_start_fresh_conversation`, which logs the path it took at
 INFO). No context crosses either reset; the cost is a spawn and `initialize` per
 reuse.
 
+### A Bot's worker session
+
+A Bot's worker (`members.is_crewmate_worker_session`) is started with
+`strictMcpConfig` as well. Its per-session spec names the servers the Bot grants,
+and the wire array carries them. Without the option every worker also started each
+server in the user's own Claude config, the project's `.mcp.json` and installed
+plugins, once per worker, so a host with many such servers and several workers ran
+out of memory. Ordinary and member chats keep the adapter's default.
+
 ### An incognito or temporary chat
 
 Claude Code's auto-memory reads `<config dir>/projects/<project key>/memory/MEMORY.md`

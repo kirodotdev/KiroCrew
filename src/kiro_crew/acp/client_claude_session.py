@@ -14,9 +14,9 @@ Instance fields written: ``_claude_inline_settings``,
 ``_claude_side_read_denies``.
 
 Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_permission_mode``,
-``_session_id``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
-``_side_read_only``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
-``_spec_zero_tools``, ``memory_mode``.
+``_session_id``, ``_session_key``, ``_session_mcp_excludes_local``,
+``_session_mcp_inline_settings``, ``_side_read_only``, ``_spec_shell_allowlist``,
+``_spec_write_allowlist``, ``_spec_zero_tools``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -424,6 +424,9 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     plugin servers out, and bypass is off. The wire array it ships beside must be
     empty too, which :func:`refuse_claude_zero_tool_mounts` checks first.
 
+    A Bot's worker session (``members.is_crewmate_worker_session``) gets
+    ``strictMcpConfig`` too, so a worker runs only the servers its spec grants.
+
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
     and inline settings that add an ``ask`` rule per read built-in, deny the host's
@@ -480,6 +483,14 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
         options["tools"] = []
         options["strictMcpConfig"] = True
         options["allowDangerouslySkipPermissions"] = False
+    from kiro_crew.members import is_crewmate_worker_session
+
+    if is_crewmate_worker_session(getattr(self, "_session_key", None)):
+        # A Bot's worker runs the servers its per-session spec grants, which the
+        # wire array already carries. Without this the harness also starts every
+        # server in the user's own config, the project's ``.mcp.json`` and
+        # plugins, once per worker.
+        options["strictMcpConfig"] = True
     if getattr(self, "_side_read_only", False):
         # A Side Chat session: only the read built-ins exist, so no allow rule
         # in the user's settings can pre-approve a write. No MCP server either

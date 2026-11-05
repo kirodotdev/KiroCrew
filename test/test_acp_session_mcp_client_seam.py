@@ -1188,6 +1188,42 @@ class TestClientSeam:
         assert client.spec_zero_tools is strict
         assert killed == []
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["new", "load"])
+    @pytest.mark.parametrize("worker", [True, False], ids=["worker", "chat"])
+    async def test_a_bot_worker_mounts_only_the_wire_array(
+        self, tmp_path, agents_dir, monkeypatch, path, worker
+    ):
+        """A Bot's worker keeps the user's, the project's and plugins' servers out.
+
+        Its spec's servers ride the wire array. Without ``strictMcpConfig`` every
+        worker also starts each server in the user's own Claude config. An
+        ordinary chat on the same spec keeps the adapter's default.
+        """
+        from kiro_crew import members
+
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        key = "dashboard_chat-worker-1"
+        if worker:
+            members.note_crewmate_worker_session(key, "m-1")
+        try:
+            client = self._seeded(
+                tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, session_key=key
+            )
+            if path == "load":
+                client._resume_session_id = "s-old"
+            sent, killed = self._adapter_transport(client, monkeypatch, started_mode="default")
+
+            await client._initialize_session()
+        finally:
+            members.forget_crewmate_worker_session(key)
+
+        params = dict(sent)["session/load" if path == "load" else "session/new"]
+        assert "foo" in _by_name(params["mcpServers"])
+        options = params["_meta"]["claudeCode"]["options"]
+        assert options.get("strictMcpConfig", False) is worker
+        assert killed == []
+
     def test_a_side_read_only_session_keeps_the_exclusions_restrictions(self, tmp_path, agents_dir):
         """On the exclusion path the side shape is added to, never swapped for,
         the inline settings: the project's deny rules still ride along and only
