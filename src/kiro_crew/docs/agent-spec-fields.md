@@ -171,13 +171,17 @@ routing, `tool_gate.ENFORCED_ROUTINGS`, plus something that computes
 (`AcpClient._mirrorless_member_mounts`), which reads `zero_tools` from the same
 spec parse; and pi's gate extension raises `session/request_permission` for
 every tool call, so the same refusal closes the gap there. `claude`'s
-routing (`Routing.SEEDED_SETTINGS`) is declared but not enforced by this core, so
+routing (`Routing.SEEDED_SETTINGS`) is declared but not enforced by this core, and
 an inherited `~/.claude` pre-approval can skip `session/request_permission`
-entirely; the refusal is not applied there. `codex` is served by `AcpRuntime` /
-`AcpSessionHandle` rather than `AcpClient`, which carries `spec_denied_tools`
-but no `zero_tools` and no equivalent refusal, so nothing closes the gap on a
-codex session either. An agent spec relying on `tools: []` on claude or codex is
-not enforced at all.
+entirely, so claude closes the gap before any call exists: a session whose
+`zero_tools` holds is started with `_meta.claudeCode.options.tools` empty (no
+built-in is mounted), `strictMcpConfig` (no user, project or plugin server) and
+bypass off, an empty wire array is required, and an adapter below the
+session-options floor is stopped before its first prompt. `codex` is served by
+`AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`, which carries
+`spec_denied_tools` but no `zero_tools` and no equivalent refusal, so nothing
+closes the gap on a codex session. An agent spec relying on `tools: []` on codex
+is not enforced at all.
 
 The knowledge and research pool spawns zero-tool agents and does not rely on the
 native ban alone. On kiro-cli, `--agent` resolves against the project checkout
