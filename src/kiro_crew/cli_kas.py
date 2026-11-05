@@ -302,6 +302,9 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
         on_progress = _bounded_progress(on_progress, deadline)
 
     try:
+        # Before any "Fetching"/"Installing" line, so a host that cannot run the
+        # engine is refused first (install_bundle repeats the same check).
+        kas_bundle.require_loadable_host()
         if args.from_dir:
             source_dir = Path(args.from_dir).expanduser().resolve()
             manifest_path = source_dir / kas_bundle.KAS_BUNDLE_MANIFEST_NAME
