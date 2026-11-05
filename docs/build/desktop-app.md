@@ -674,6 +674,12 @@ same way). Key details:
   one, which fails the whole macOS release (see
   [stt-streaming](../system-specs/modules/stt-streaming.md) for how the runtime
   then authenticates a decoder whose bytes signing rewrote).
+- **Feishu SDK bundled** — every backend installs the `[feishu]` extra
+  (`lark-oapi` and its dependencies). Settings shows no `pip` command for a
+  bundled interpreter and each update replaces the whole bundle, so a channel
+  SDK the build leaves out cannot be added later. Windows ships bytecode only
+  for traced import closures, so its build traces `lark_oapi` too: the channel
+  imports it on the gateway loop.
 - **Dashboard bundled** — the SPA is staged into
   `lib/python3.12/site-packages/kiro_crew/static/dist/` inside the bundle.
 - **Pruned** — `__pycache__`, test dirs, and unused stdlib (tkinter, idlelib,

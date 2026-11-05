@@ -6882,7 +6882,8 @@ and closes its loop before the daemon thread exits.
 `lark-oapi` is an OPTIONAL dependency declared as the
 `[feishu]` extra in `setup.cfg` and lazily imported inside the client module;
 `maybe_start_feishu` catches `ImportError` and logs a skip so a missing
-library never takes down the gateway. No public webhook endpoint is required.
+library never takes down the gateway. The desktop app's bundled backend ships
+the extra (`packaging/build-desktop.sh`). No public webhook endpoint is required.
 
 **Optional-SDK card (Feishu, Teams, WhatsApp).** Every channel whose client
 library ships as an optional extra is one `_CHANNEL_SDK_EXTRA` entry in
