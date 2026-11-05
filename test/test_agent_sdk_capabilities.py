@@ -81,6 +81,7 @@ CAPABILITY_FIELDS = (
     "crew_fires_spec_hooks",
     "crew_fires_spec_observer_hooks",
     "supports_native_todos",
+    "runs_own_slash_commands",
     "honors_zero_tool_ban",
     "acp_client_spawnable",
     "honors_remote_mcp_oauth",

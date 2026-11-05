@@ -226,8 +226,9 @@ from kiro_crew.dashboard.chat_turn.session_reset import (
     _turn_release_session,
     _wake_pending_reset_retry,
 )
-from kiro_crew.dashboard.chat_turn.slash_commands import (
+from kiro_crew.dashboard.chat_turn.slash_commands import (  # noqa: F401
     _answer_slash_without_channel,
+    _forwards_harness_command,
     _turn_compact_command,
     _turn_slash_gate,
 )

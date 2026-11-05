@@ -656,6 +656,20 @@ ACP_BACKENDS_KIRO_FAMILY = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # it may interpret as an ordinary user request.
 ACP_BACKENDS_NATIVE_TODOS = frozenset({ACP_BACKEND_CLAUDE})
 
+# Backends whose adapter runs ANY leading-slash ``session/prompt`` as one of its own
+# commands, so the dashboard forwards every leading-slash word raw (no context
+# prefix) rather than only the kiro-cli names in ``_SLASH_COMMANDS``. claude is the
+# member: claude-agent-acp hands the prompt to the Agent SDK, which resolves
+# ``/review``, ``/init``, ``/security-review``, ``.claude/commands`` and skills by
+# name. Its ``/compact`` capture, ``test/fixtures/acp_frames/claude/compact-live.jsonl``,
+# shows a leading-slash prompt run as a command inside ``session/prompt``.
+#
+# kiro and KAS are not members: kiro-cli runs only its own command names over
+# ``_kiro.dev/commands/execute``, and KAS answers its commands through the
+# dashboard. Every other harness stays out until its adapter is shown to run an
+# arbitrary slash name, because a word forwarded raw loses the turn's context.
+ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS = frozenset({ACP_BACKEND_CLAUDE})
+
 # Backends where the dashboard answers ``/clear`` itself, by dropping the
 # conversation the way ``reset_conversation`` does, instead of sending it on.
 #

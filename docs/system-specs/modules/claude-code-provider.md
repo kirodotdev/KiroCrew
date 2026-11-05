@@ -756,6 +756,24 @@ opens a sensitive path, since a deny rule outranks both from any source. A launc
 does not start the session.
 Detail: [side.md](side.md), "On claude the confinement is the session's own options".
 
+### Claude Code's own slash commands
+
+On a claude session a leading-slash word reaches the adapter raw, as
+`session/prompt` text with no Crew context in front of it, whether or not kiro-cli
+knows the name: claude is in `ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS`, so
+`/review`, `/init`, `/security-review`, a `.claude/commands` file or a skill run as
+Claude Code commands (`claude/compact-live.jsonl` shows the SDK running a
+`/compact` prompt as its own command). The dashboard's own commands (`/agent`,
+`/goal`, `/workflow`, `/prompts`, `/side`) and a quick-prompt macro such as
+`/plain` still win first. The cost is that a message which merely opens with a
+slash (a pasted `/etc/hosts` line) is forwarded without context too. The slash
+gate and the app-grant send refusal read the same predicate
+(`_forwards_harness_command`). Such a command answers like a prompt, so its echo
+and reply still reach a linked Slack thread and proactive channel, and the Slack
+auto-link opens a thread for it; only a kiro-cli command name (or a word the
+`claude_code` label forwards) keeps off them (`_slash_withholds_mirror`). Pinned by
+`test/test_claude_slash_forwarding.py`.
+
 ### A tool-less session
 
 A session whose agent spec declares `"tools": []` (the mirror's `zero_tools`, which
