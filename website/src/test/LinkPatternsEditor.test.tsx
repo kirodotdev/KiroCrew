@@ -118,6 +118,8 @@ describe('LinkPatternsEditor server-value adoption', () => {
     // rail) — the second is what tells a user whose edit was on a DIFFERENT
     // row why their change did not save.
     expect(screen.getAllByText(/Incomplete row/)).toHaveLength(2)
+    // Nothing saved, so both hints keep FieldHint's default warn colour.
+    for (const hint of screen.getAllByText(/Incomplete row/)) expect(hint).toHaveClass('text-warn')
     // And the commit really was withheld while the row is half-filled.
     expect(saves).toEqual([])
   })

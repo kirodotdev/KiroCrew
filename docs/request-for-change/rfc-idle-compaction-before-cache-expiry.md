@@ -3,17 +3,17 @@ title: Idle compaction before prompt-cache expiry, an opt-in session setting
 status: in-progress
 author: Pearcekieser, with Kiro
 created: 2026-10-19
-last-audited: 2026-10-26
-audited-at: 5483f68961
+last-audited: 2026-11-05
+audited-at: ec2e1a1609
 doc-pr: 22149
-implementation-prs: []
+implementation-prs: [24384]
 tracking-issues: [22148]
 supersedes: []
 superseded-by: []
 ---
 # RFC: Idle compaction before prompt-cache expiry, an opt-in session setting
 
-- Status: in-progress. Phase 1 is in flight in its implementation pull request; nothing is on main.
+- Status: in-progress. Phase 1 is on main. Phase 2, the Settings control, is in flight in its implementation pull request.
 - Author: Pearcekieser, with Kiro
 - Created: 2026-10-19
 - Measured at: `cea787cbd5`
@@ -157,7 +157,7 @@ high bound is still open (section 10, question 5).
 idle_compaction: bool = field(
     default=False,
     metadata=_meta(
-        "Compact Idle Chats Before Cache Expiry",
+        "Summarize Idle Chats to Save Credits",
         "When a dashboard chat has been idle for slightly less than its "
         "backend's prompt-cache lifetime, compact it once so your next turn "
         "re-sends a summary instead of the full history. It saves credits only "
@@ -166,14 +166,14 @@ idle_compaction: bool = field(
         "just after it starts you wait for it to finish, up to the compaction "
         "wait limit plus about 20 seconds (5 minutes by default), "
         "and the summary loses detail from earlier in the conversation. Only "
-        "chats whose context is at least Idle Compaction Minimum Context full "
+        "chats whose context is at least Minimum Context to Summarize full "
         "are compacted. Backends with an unknown cache lifetime are skipped.",
     ),
 )
 idle_compaction_min_context_pct: float = field(
     default=50.0,
     metadata=_meta(
-        "Idle Compaction Minimum Context",
+        "Minimum Context to Summarize",
         "Context usage percentage below which an idle chat is left alone. "
         "Below about 40% a compaction costs more than re-sending the history "
         "it replaces, so values below 40 are raised to 40 (40-90).",
