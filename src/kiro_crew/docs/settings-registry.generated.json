@@ -1994,6 +1994,14 @@
       "route": "/settings/voice?highlight=voice.shortcut-key"
     },
     {
+      "id": "voice.slide-up-and-right-to-send",
+      "label": "Slide up and right to send",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.slide_to_send",
+      "hint": "On the phone's hold-to-talk bar, slide up and to the right before letting go to send, or to steer the agent while it works. Sliding straight up still cancels. Only while 'Send when I stop recording' is off.",
+      "configKey": "stt.slide_to_send"
+    },
+    {
       "id": "voice.speed",
       "label": "Speed",
       "tab": "voice",
