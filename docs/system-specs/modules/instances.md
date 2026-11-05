@@ -235,6 +235,12 @@ origin and mints its own port-scoped cookie.
 **Platform note.** The hub side of this feature assumes a POSIX host with an
 OpenSSH `ssh` client on `PATH`, and run-marker port discovery refuses outright on
 non-POSIX (§12). Treat a Windows hub as unverified.
+On a Windows gateway the ssh transport is not yet supported
+(`docs/guides/windows-install.md`), so the Remote Crew form's connection-method
+list badges "SSH tunnel" as not supported on Windows and its hint points to AWS
+SSM instead (`InstanceFormFields.tsx`, keyed on `useGatewayPlatform()`). The
+option stays selectable: a host whose OpenSSH client is on `PATH` can still
+connect, and a spawn that fails names the platform constraint.
 
 **Frameless-window drag.** Under the desktop app's frameless macOS shell the
 window is dragged solely by `-webkit-app-region: drag` `.host-drag-strip`

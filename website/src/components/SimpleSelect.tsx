@@ -208,7 +208,7 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
               <SelectItem key={opt} value={toRadix(opt)} textValue={label(opt, i)}>
                 {badge ? (
                   <span className="inline-flex items-center gap-1.5">
-                    {opt}
+                    {optionLabels?.[i] ?? opt}
                     {/* aria-hidden: the option's accessible name must stay the bare
                         template name — the badge text otherwise joins it and breaks
                         exact-name lookups (locators, SR "select kirocrew"). */}

@@ -15,6 +15,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 
 // Re-exported so the form's existing consumers keep one import site, while the
 // shapes themselves live in a neutral module the store can read without
@@ -523,6 +524,12 @@ export function InstanceFormFields({
   const { values, set, isSsm, isFargate, ssmFields, portValid, ttlValid } = form
   // Machine-identity fields freeze when the caller locks the transport.
   const identityFrozen = lockTransport
+  // The ssh transport is not yet supported when the gateway runs on native
+  // Windows (docs/guides/windows-install.md). It stays selectable, because a host
+  // whose OpenSSH client is on PATH can still connect, but the list and the hint
+  // say so up front instead of only after a failed connect.
+  const sshUnsupported = useGatewayPlatform() === 'windows'
+  const sshUnsupportedLabel = i18nT('pages.settings.instancesPanel.ssh_tunnel_not_supported_windows')
   const onMethodChange = (v: string) => {
     const method = v as InstanceFormValues['method']
     set('method', method)
@@ -553,6 +560,7 @@ export function InstanceFormFields({
             i18nT('pages.settings.instancesPanel.aws_ssm_session_manager'),
             i18nT('pages.settings.instancesPanel.aws_fargate_task'),
           ]}
+          optionBadges={sshUnsupported ? [{ label: sshUnsupportedLabel, source: 'warning' }, undefined, undefined] : undefined}
           value={values.method}
           onChange={onMethodChange}
           aria-label={i18nT('pages.settings.instancesPanel.connection_method')}
@@ -563,7 +571,9 @@ export function InstanceFormFields({
             ? i18nT('pages.settings.instancesPanel.fargate_method_hint')
             : isSsm
               ? i18nT('pages.settings.instancesPanel.tunnels_via_aws_ssm_start_session_no_inbound_ssh')
-              : i18nT('pages.settings.instancesPanel.opens_ssh_n_l_to_the_host_requires_non_interacti')}
+              : sshUnsupported
+                ? i18nT('pages.settings.instancesPanel.ssh_tunnel_not_supported_windows_hint')
+                : i18nT('pages.settings.instancesPanel.opens_ssh_n_l_to_the_host_requires_non_interacti')}
         </span>
       </div>
       {ssmFields ? (
