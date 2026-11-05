@@ -160,6 +160,49 @@ class TestStripMarkdownPreview:
         src = "  > quoted\n\t- item\n   2. two\n  ---  \nend"
         assert strip_markdown_preview(src) == "quoted item two end"
 
+    def test_cron_row_identity_marker_is_stripped(self):
+        # The invisible run marker under a scheduled run's header printed
+        # as raw "<!-- cron-run:<id>:<ts> -->" text in the sidebar preview.
+        row = (
+            "# Cron Job Result: smoke | 2026-11-05 05:52:37 UTC\n\n"
+            "<!-- cron-run:d50d65be:1793836357.123456 -->\n\nPONG"
+        )
+        assert (
+            strip_markdown_preview(row) == "Cron Job Result: smoke | 2026-11-05 05:52:37 UTC PONG"
+        )
+
+    def test_cron_row_marker_written_by_run_marker_is_stripped(self):
+        # Built by the writer itself, so a respelled marker cannot drift
+        # from what the preview strips.
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.cron_inject import run_marker
+
+        job = SimpleNamespace(id="d50d65be", last_result_ts=1793836357.123456)
+        marker = run_marker(job)
+        assert "cron-run:" in marker
+        for head in ("# Cron Job Result", "# Cron Run"):
+            row = f"{head}: smoke | stamp{marker}\n\nPONG"
+            preview = strip_markdown_preview(row)
+            assert "<!--" not in preview
+            assert "cron-run" not in preview
+            assert preview.endswith("PONG")
+
+    def test_cron_reference_marker_is_stripped_with_the_run_marker(self):
+        row = (
+            "# Cron Run: smoke | stamp\n\n<!-- cron-run:abc:1.000000 --><!-- cron-ref -->\n\n"
+            "Same instruction as the previous run"
+        )
+        assert (
+            strip_markdown_preview(row)
+            == "Cron Run: smoke | stamp Same instruction as the previous run"
+        )
+
+    def test_cron_marker_quoted_in_an_ordinary_message_is_left_alone(self):
+        # Only the marker under a cron row's own header is internal.
+        text = "The row looks like <!-- cron-run:abc:1.000000 --> in the file"
+        assert strip_markdown_preview(text) == text
+
     def test_blank_line_runs_do_not_backtrack(self):
         # CWE-1333 / py/polynomial-redos regression: with MULTILINE ^\s*,
         # every line-start anchor in a run of blank lines rescanned the
@@ -187,6 +230,18 @@ class TestSlotLastMessageStripsMarkdown:
             ("assistant", "Compacted the **GitHub Triage** rail header"),
         )
         assert s.to_dict()["last_message"] == "Compacted the GitHub Triage rail header"
+
+    def test_sidebar_preview_of_a_cron_result_has_no_identity_marker(self):
+        s = self._slot_with(
+            (
+                "assistant",
+                "# Cron Job Result: smoke | 2026-11-05 05:52:37 UTC\n\n"
+                "<!-- cron-run:d50d65be:1793836357.123456 -->\n\nPONG",
+            ),
+        )
+        assert (
+            s.to_dict()["last_message"] == "Cron Job Result: smoke | 2026-11-05 05:52:37 UTC PONG"
+        )
 
     def test_sidebar_preview_replaces_diff_fence(self):
         s = self._slot_with(
@@ -265,6 +320,27 @@ class TestHistoryLastMessagePreviewStripsMarkdown:
         ]
         log._path(key).write_text("\n".join(lines) + "\n")
         assert log.last_message_preview(key) == "Compacted the GitHub Triage rail"
+
+    def test_cron_result_session_preview_has_no_identity_marker(self, tmp_path):
+        import json
+
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog(base_dir=tmp_path)
+        log.init()
+        key = "cron-test"
+        content = (
+            "# Cron Job Result: smoke | 2026-11-05 05:52:37 UTC\n\n"
+            "<!-- cron-run:d50d65be:1793836357.123456 -->\n\nPONG"
+        )
+        lines = [
+            json.dumps({"_type": "metadata", "title": "Cron: smoke"}),
+            json.dumps({"role": "assistant", "content": content}),
+        ]
+        log._path(key).write_text("\n".join(lines) + "\n")
+        assert (
+            log.last_message_preview(key) == "Cron Job Result: smoke | 2026-11-05 05:52:37 UTC PONG"
+        )
 
     def test_last_message_info_falls_back_past_zwsp_only_row(self, tmp_path):
         import json
