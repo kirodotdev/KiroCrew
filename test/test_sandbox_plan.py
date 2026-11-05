@@ -282,6 +282,100 @@ def test_seatbelt_cc_profile_denies_aws_except_config() -> None:
         assert f"{aws}/{leaf}" not in profile
 
 
+def test_seatbelt_required_mask_target_seals_its_ancestors_against_rename() -> None:
+    """A cron secret's Seatbelt mask is a path rule; without an ancestor write-deny a
+    child could rename the bundle (or ``apps``) and read the secret at a path no rule
+    names. The planner seals every ancestor directory up to (not including) the home
+    root with a literal ``file-write*`` deny, and seals the predictable staging sibling.
+    """
+    secret = f"{CREW}/apps/other-app/.app_secret"
+    profile = sandbox_seatbelt.render_seatbelt_profile(
+        _plan("cc", BACKEND_SEATBELT, extra_hidden_dirs=(secret,), required_mask_targets=(secret,))
+    ).splitlines()
+    bundle = f"{CREW}/apps/other-app"
+    apps = f"{CREW}/apps"
+    staging = f"{CREW}/apps/.other-app-secret-tmp"
+    # The secret leaf itself stays read/write/link-denied (the caller mask).
+    assert f'(deny file-read* (literal "{secret}"))' in profile
+    # The rename-around guard: a literal write-deny on every ancestor up to the home root.
+    assert f'(deny file-write* (literal "{bundle}"))' in profile
+    assert f'(deny file-write* (literal "{apps}"))' in profile
+    assert f'(deny file-write* (literal "{CREW}"))' in profile
+    # The update-staging sibling is sealed in EVERY direction (read, write, link), not
+    # only write: a cron child running while another app updates could otherwise read the
+    # live credential the update parks at that predictable path. The deny is emitted even
+    # though the staging path does not exist at plan time (a Seatbelt path rule holds for a
+    # name that does not exist yet), so it is in force the moment the update creates it.
+    assert f'(deny file-write* (literal "{staging}"))' in profile
+    assert f'(deny file-read* (literal "{staging}"))' in profile
+    assert f'(deny file-link (literal "{staging}"))' in profile
+
+
+def test_seatbelt_mask_guard_target_is_sealed_though_not_required() -> None:
+    """A credential that exists only under its staging name (an interrupted ``update_app``)
+    is masked but NOT required -- requiring an absent path would refuse the run. It must
+    still get the rename/ancestor seal and the staging read-deny, or a macOS child could
+    rename ``apps`` and read the staged credential at a path no rule names. The guard is
+    derived from ``mask_guard_targets``, with ``required_mask_targets`` empty.
+    """
+    live = f"{CREW}/apps/other-app/.app_secret"
+    profile = sandbox_seatbelt.render_seatbelt_profile(
+        _plan(
+            "cc",
+            BACKEND_SEATBELT,
+            extra_hidden_dirs=(live,),
+            required_mask_targets=(),
+            mask_guard_targets=(live,),
+        )
+    ).splitlines()
+    bundle = f"{CREW}/apps/other-app"
+    apps = f"{CREW}/apps"
+    staging = f"{CREW}/apps/.other-app-secret-tmp"
+    # The ancestor rename-around seal is emitted even though nothing is REQUIRED.
+    assert f'(deny file-write* (literal "{bundle}"))' in profile
+    assert f'(deny file-write* (literal "{apps}"))' in profile
+    assert f'(deny file-write* (literal "{CREW}"))' in profile
+    # And the staging sibling is read/write/link-denied, so the staged credential cannot
+    # be read even after a rename of an ancestor.
+    assert f'(deny file-read* (literal "{staging}"))' in profile
+    assert f'(deny file-write* (literal "{staging}"))' in profile
+    assert f'(deny file-link (literal "{staging}"))' in profile
+
+
+def test_seatbelt_seals_resolved_ancestors_of_a_symlinked_bundle(tmp_path) -> None:
+    """When a DIRECTORY COMPONENT of the secret is a symlink (an app bundle symlinked to
+    an external directory), sealing only the LEXICAL ancestors leaves the canonical
+    (resolved) directories renameable, so a macOS child could rename a resolved parent
+    and read ``.app_secret`` beneath the new name past the leaf's literal deny. The seal
+    must cover the ancestors of BOTH the lexical and the resolved secret path.
+    """
+    home = str(tmp_path)
+    external = tmp_path / "external-bundle"
+    external.mkdir()
+    (external / ".app_secret").write_text("live")
+    apps = tmp_path / ".kiro" / "crew" / "apps"
+    apps.mkdir(parents=True)
+    (apps / "linked-app").symlink_to(external)  # bundle is a symlink to an external dir
+    lexical = str(apps / "linked-app" / ".app_secret")
+    resolved = os.path.realpath(lexical)
+    profile = sandbox_seatbelt.render_seatbelt_profile(
+        _plan(
+            "cc",
+            BACKEND_SEATBELT,
+            host=_host(home=home),
+            extra_hidden_dirs=(lexical,),
+            required_mask_targets=(lexical,),
+        )
+    ).splitlines()
+    # The resolved leaf is read/link-denied (a deny on the link name misses the referent).
+    assert f'(deny file-read* (literal "{resolved}"))' in profile
+    # The CANONICAL ancestors (the real external bundle and its parent) are write-sealed,
+    # not just the lexical ones under apps/.
+    assert f'(deny file-write* (literal "{str(external)}"))' in profile
+    # The lexical bundle name is sealed too.
+    assert f'(deny file-write* (literal "{str(apps)}/linked-app"))' in profile
+
+
 #: For each declared capability: the tier and request that exercise it, and a value it
 #: takes on each backend that is not that backend's own.
 _CAPABILITY_FLIPS: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = {
