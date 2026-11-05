@@ -72,7 +72,7 @@ def claude_session_dir(session_id: str, cwd: str) -> Path | None:
     if not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
         return None
     project_name = claude_project_dir_name(cwd)
-    root = claude_config_dir()
+    root = claude_config_dir(os.environ)
     if project_name is None or root is None:
         return None
     return root / "projects" / project_name / session_id
@@ -101,7 +101,7 @@ def _session_targets(session_id: str, cwd: str, action: str) -> tuple[_Target, .
     if not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
         return None
     project_name = claude_project_dir_name(cwd)
-    root = claude_config_dir()
+    root = claude_config_dir(os.environ)
     if project_name is None or root is None:
         return None
     projects = root / "projects"
