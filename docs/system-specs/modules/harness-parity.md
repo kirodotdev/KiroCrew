@@ -126,10 +126,12 @@ activates it by `session/set_mode`). Claude, Codex and DeepSeek confirm the
 exact spec consumed by their MCP projection after session creation or load
 (Claude's projection must also be governed). pi confirms the same way with no
 mirror: the consumed spec is the parse its member mounts and zero-tool answer
-come from (`AcpClient._mirrorless_member_mounts`), and since its projection is
-`BROKER_ONLY` a declared server that is not pooled never reaches pi and leaves
-the session unverified rather than applied. On a member session pi's pooled stubs
-pass the spec's `tools` allowlist, as a mirror's do. strands is outside every
+come from (`AcpClient._mirrorless_member_mounts`). A pi crewmate DM session
+carries its spec's own MCP servers too, the same set a mirrored harness builds
+from the same spec, held to the spec's `tools` allowlist; a server with a
+switched-off tool is withheld whole, because pi has no per-call deny channel to
+refuse the switched-off tool while keeping the server. On a member session pi's
+pooled stubs pass the spec's `tools` allowlist, as a mirror's do. strands is outside every
 member-facing set (`ACP_BACKENDS_MEMBER_CAPABILITIES`, `ACP_BACKENDS_MEMBER_DISPATCH`,
 `ACP_BACKENDS_MEMBER_PANEL`, `ACP_BACKENDS_MATE_WORKER_KIT`): a member or worker
 session's Crew servers (`kirocrew-core`, the dashboard and panel mounts) are stdio

@@ -132,6 +132,8 @@ class TestTheSpecParse:
         ],
     )
     def test_an_ordinary_spec_leaves_it_off(self, agents_dir, tmp_path, body):
+        # Non-member key: spec-server delivery is member-only, so an ordinary pi
+        # session composes the empty array regardless of the spec's own servers.
         _write_spec(agents_dir, "pi-normal", body)
         client = _client(tmp_path, "dashboard_abc123", backend=ACP_BACKEND_PI)
         client._agent = "pi-normal"
