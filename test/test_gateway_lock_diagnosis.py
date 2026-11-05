@@ -645,6 +645,44 @@ def test_a_live_acquirer_without_the_port_is_not_a_live_holder(monkeypatch, refu
     assert _refusal(refused_lock).live_holder is False
 
 
+@pytest.mark.parametrize(
+    ("command_line", "names_a_gateway"),
+    [
+        ("flock -x /home/u/.kiro/crew/gateway.lock sleep 3000", False),
+        ("/venv/bin/python3 -m kiro_crew gateway", True),
+        ("/venv/bin/kirocrew -v gateway", True),
+        ("/venv/bin/kirocrew --no-jail gateway", True),
+        ("/venv/bin/python3 -m kiro_crew -v gateway", True),
+        ("/venv/bin/python3 -mkiro_crew gateway --slack-only", True),
+        ("", True),  # unreadable: no evidence the holder is something else
+    ],
+)
+def test_a_portless_acquirer_is_called_a_gateway_only_when_it_may_be_one(
+    monkeypatch, refused_lock, command_line, names_a_gateway
+):
+    """A holder without the port is a gateway starting or stopping -- or a
+    stray process that took the lock. Only a command line read and recognised
+    as not a Kiro Crew server earns the second wording; the exit stays
+    restartable either way."""
+    from kiro_crew import gateway_lock, platform_compat
+
+    monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: 16968)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: True)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [16968])
+    monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 1)
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: [])
+    monkeypatch.setattr(platform_compat, "process_command_line", lambda _p: command_line)
+    monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: False)
+
+    for port in (5477, None):
+        err = _refusal(refused_lock, port=port)
+        text = str(err)
+        assert err.holder_pid == 16968
+        assert err.live_holder is False
+        assert ("another gateway already owns" in text) is names_a_gateway
+        assert ("which is not a Kiro Crew gateway" in text) is not names_a_gateway
+
+
 def test_a_live_acquirer_listening_but_not_answering_http_is_not_a_live_holder(
     monkeypatch, refused_lock
 ):
