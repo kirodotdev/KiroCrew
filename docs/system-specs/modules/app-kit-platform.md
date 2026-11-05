@@ -1733,7 +1733,16 @@ lifecycle lock and the one step that can safely refuse runs FIRST:
    is itself a store mutation needing the very lock that is contended.
 2. `onUninstall` script, reached only once cron cleanup succeeded, so a
    non-idempotent teardown never runs on an uninstall that will be retried.
-3. Backend stop (every app), then resource deregistration (gateway-managed only).
+3. In-process teardown (every app), then backend stop (every app), then resource
+   deregistration (gateway-managed only). The in-process half is the one disable
+   reaches through `teardown_app_runtime`, run by
+   `teardown.stop_app_hooks_for_uninstall`: the app's disable hook is told, its
+   `backend.hooks` routes leave the route registry (so they answer 404 once the
+   uninstall returns, not at the hook reconciler's next tick), its `on_shutdown`
+   runs from the manifest the hooks were LOADED from and only when one is retained,
+   and its job runs, SDK entry, hook health and loaded-hook record are dropped. A
+   failed `on_shutdown` or incomplete job or cron cleanup is reported in both
+   `warnings` and the uninstall log; none of it aborts the uninstall.
    The stop is ungated for the same reason as step 1, and the port recorded for
    the app is observed after it: a port still accepting connections is REPORTED,
    because the stop's own boolean answers `False` both for "there was nothing to
