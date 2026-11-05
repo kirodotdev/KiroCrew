@@ -21123,6 +21123,7 @@
   "store": {
     "chatSlice": {
       "session_gone_open_failed": "আপনি যে সেশনে ক্লিক করেছেন সেটি মুছে ফেলা হয়েছে এবং খোলা যাবে না।",
+      "session_closed_find_in_older_sessions": "সেই সেশনটি বন্ধ করা হয়েছে। এর প্রতিলিপি পুরোনো সেশনে খুঁজুন।",
       "session_open_error_named": "“{{name}}” খোলা যায়নি।",
       "session_open_error": "সেশনটি খোলা যায়নি।",
       "session_gone_open_failed_named": "“{{name}}” মুছে ফেলা হয়েছে, তাই এটি খোলা যাবে না।",
