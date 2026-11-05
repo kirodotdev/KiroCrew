@@ -832,6 +832,18 @@ claude-agent-acp 0.94.0: `test/fixtures/acp_frames/claude/zero-tools-refused-liv
 (0.93.0, the installers' pin, behaved the same; a project allow rule for Bash, Write
 and WebFetch in force; no `tool_call`, no permission request, nothing on disk).
 
+### A fresh conversation is a cold start
+
+The adapter runs on a dedicated `AcpClient`, and `AcpClient` has no reset that
+starts a new conversation on its live process; only `AcpSessionProvider` (the
+shared-runtime path of kiro, KAS and Codex) has one. `AcpProvider.new_conversation`
+on a Claude session therefore raises `NotImplementedError` naming the backend, and
+both of its callers take their kill-and-respawn fallback: a reused workflow-pool
+worker (`WorkerPool.reset`, which logs the cold start at INFO) and a history
+consolidation pass (`_start_fresh_conversation`, which logs the path it took at
+INFO). No context crosses either reset; the cost is a spawn and `initialize` per
+reuse.
+
 ### Known gap: the user's global `~/.claude` is inherited
 
 With no `CLAUDE_CONFIG_DIR` set by the core, the adapter and the SDK read the
