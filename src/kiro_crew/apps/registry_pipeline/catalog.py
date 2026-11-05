@@ -1323,6 +1323,12 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
                 candidates.insert(0, row)
             else:
                 candidates.append(row)
+    except official_catalog.CatalogUnavailable:
+        # Raised, not swallowed into an empty set: the caller must be able to tell
+        # "the catalog could not be asked" from "no candidate offers this source",
+        # or an outage reads as a source mismatch. Raising still offers nothing and
+        # still reaches no external cache below.
+        raise
     except Exception:  # noqa: BLE001 - a failed lookup is not "no pin"; see below
         # A seed candidate names the SAME repository as the catalog row it shadows,
         # so provenance-pinned resolution would accept it and deliver a branch-tip
@@ -1359,7 +1365,8 @@ def _pinned_registry_entry(name: str, meta: dict[str, Any]) -> dict[str, Any] | 
     equal what was recorded at install time, so neither a row that reuses the
     name on a different repo nor a different registry publishing the same
     name/URL pair can stand in for the pinned source.  Returns None when no
-    candidate matches.
+    candidate matches; raises :class:`official_catalog.CatalogUnavailable` when
+    the official catalog could not be consulted to build the candidate set.
     """
     want_url = str(meta.get("sourceUrl", "") or "")
     want_registry = str(meta.get("sourceRegistry", "") or "")
@@ -1404,7 +1411,25 @@ def _resolve_install_entry(name: str) -> tuple[dict[str, Any] | None, str]:
             # A refusal, not an absence: report the cause so the user is not sent
             # looking for a missing app during a catalog outage.
             return None, str(exc)
-    entry = _pinned_registry_entry(name, meta)
+    try:
+        # The update itself, so the same real-fetch rule as the install above.
+        with official_catalog.install_attempt():
+            entry = _pinned_registry_entry(name, meta)
+    except official_catalog.CatalogNoInstallSource:
+        return None, (
+            "the official catalog lists the requested app but gives it no "
+            "install source, so it cannot be updated from the registry yet "
+            "— refusing to update it from another source."
+        )
+    except official_catalog.CatalogUnavailable:
+        # Fixed text, as in `_resolve_registry_row`: the exception can quote the
+        # name and the fetched document, and this reason is returned and SEL-logged.
+        logger.warning("official catalog lookup for a pinned update is unavailable")
+        return None, (
+            "the official catalog could not be reached to confirm the requested "
+            "app's recorded source — refusing to update it from another source. "
+            "Retry when the catalog is reachable."
+        )
     if entry is None:
         # ``pinned_url`` can contain clone credentials. It is comparison state,
         # never API/audit text: the caller returns and SEL-logs this reason.
