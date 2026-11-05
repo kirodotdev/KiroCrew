@@ -58,6 +58,7 @@ export function useStagedProject(
   slotId: string | null | undefined,
   turnKey?: string,
   projectLocked = false,
+  turnProject?: string | null,
 ): StagedProject {
   const project = projectProp || ''
   // The start project of each busy chat, keyed by slot. The composer is not
@@ -82,6 +83,10 @@ export function useStagedProject(
       held.turnKey = turnKey
     } else baselines.current.set(key, { start: project, turnKey })
   }
+  // The server's own reading of the running turn's directory wins once the
+  // turn has claimed its session (#20352): a composer mounted after a reload
+  // would otherwise capture the already-picked project as the start.
+  if (typeof turnProject === 'string') start = turnProject
   const pending = isRunning && !!project && stripTrailingSeparators(project) !== stripTrailingSeparators(start || '')
   if (!isRunning) return { turnStartProject: start, pending: false, midTurnNote: '', pendingNote: '' }
   const startName = start ? folderName(start) : i18nT('components.chatInput.project')
