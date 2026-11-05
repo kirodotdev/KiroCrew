@@ -2890,7 +2890,9 @@ pins that every apply branch reads it before pausing admission.
 **`POST /api/update` refuses before it moves the tree, and fast-forwards to a
 pinned commit rather than pulling.** In order: a dirty tracked tree is 409
 `dirty_tree`; a pre-apply `git fetch` that fails is 409 `git_fetch_failed`
-(500 on timeout); a divergence count it cannot read is 409 `git_read_failed`;
+(a fetch that runs past its 60s bound — matching the fast-forward's own bound —
+is the same 409 `git_fetch_failed`, retryable); a divergence count it cannot
+read is 409 `git_read_failed`;
 a diverged checkout is 409 `checkout_diverged`; then `@{u}` is resolved ONCE to
 a commit OID (`git rev-parse --verify @{u}^{commit}` — unresolvable is 409
 `git_read_failed`, a timeout 500 `git_read_failed`); then the interpreter floor
