@@ -17896,7 +17896,7 @@
       },
       "chatPanel": {
         "advanced": "Erweitert",
-        "agent_model_pin_overrides_default": "Neue Chats mit dem Agenten <agent/> verwenden dessen eigenes angeheftetes Modell <model/>, nicht diese Einstellung. Du kannst später in der Modellauswahl im Chat wieder ein Modell anheften.",
+        "agent_model_pin_overrides_default": "Der Agent <agent/> heftet sein eigenes Modell <model/> an. Nur Chats, die als dieser Agent und ohne eigene Modellwahl laufen, verwenden diesen Pin. Die Schaltfläche „Neuer Chat“ nicht. Du kannst später in der Modellauswahl im Chat wieder ein Modell anheften.",
         "agent_template_pin_overrides_default": "Neue Chats mit dem Agenten <agent/> verwenden <model/>, das aus seiner Agentenvorlage oder dem Backend-Standard stammt, nicht diese Einstellung. Dieser Agent heftet selbst kein Modell an, daher gibt es hier nichts zu entfernen. Um eines zu wählen, öffne die Modellauswahl im Chat und hefte ein Modell an diesen Agenten an.",
         "discovery": "Entdecken",
         "rail_label": "Chat-Einstellungen",
