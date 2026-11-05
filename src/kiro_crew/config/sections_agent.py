@@ -721,7 +721,7 @@ class AgentConfig:
             "Session Sharing",
             "Subagents reuse a shared ACP runtime instead of spawning a fresh "
             "backend process per subagent. Reduces startup from ~3-5s to ~200ms "
-            "and memory from ~400MB to near-zero per subagent. Default ON for the "
+            "and memory from about 0.55 GB to near-zero per subagent. Default ON for the "
             "eligible backends (kiro-cli and codex); every other ACP backend "
             "ignores it and runs a dedicated process per subagent. Set false to "
             "opt an eligible backend back onto per-subagent processes.",
