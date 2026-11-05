@@ -1777,7 +1777,22 @@
         "rail_pending_local": "ローカルのコード — 判断する前にレンダリングしています。",
         "rail_pending_url": "実行中のアプリ — 判断する前にレンダリングしています。",
         "rail_pending_design": "デザイン — 判断する前にレンダリングしています。",
-        "rail_getting_ready": "画面を準備しています。"
+        "rail_getting_ready": "画面を準備しています。",
+        "critique_ready_fallback": "講評の準備ができました",
+        "ask_too_long": "時間がかかりすぎました — もう一度質問してください。",
+        "ask_went_wrong": "問題が発生しました。",
+        "entry_meta_screens_other": "{{n}} 画面 · {{when}}",
+        "findings_count_other": "指摘 {{n}} 件",
+        "nothing_flagged": "指摘なし",
+        "design_critique_fallback": "デザイン講評",
+        "flow_screens_count_other": "{{n}} 画面",
+        "screen_n": "画面 {{n}}",
+        "get_overall_read": "全体としての出来ばえの評価",
+        "get_whats_working": "うまくいっている点 (次の修正でも残すために)",
+        "get_top_things": "直すべき主な点 (画面上のピン付き)",
+        "no_critiques_narrow": "まだ講評はありません。下にスクリーンショットをドロップしてください。",
+        "no_critiques_wide": "まだ講評はありません。パネルにスクリーンショットをドロップしてください →",
+        "the_design_alt": "デザイン"
       },
       "findingRow": {
         "based_on": "基づく",

@@ -1777,7 +1777,22 @@
         "rail_pending_local": "로컬 코드 — 판단하기 전에 렌더링하는 중입니다.",
         "rail_pending_url": "실행 중인 앱 — 판단하기 전에 렌더링하는 중입니다.",
         "rail_pending_design": "디자인 — 판단하기 전에 렌더링하는 중입니다.",
-        "rail_getting_ready": "화면을 준비하는 중입니다."
+        "rail_getting_ready": "화면을 준비하는 중입니다.",
+        "critique_ready_fallback": "비평 준비됨",
+        "ask_too_long": "너무 오래 걸렸습니다 — 다시 물어보세요.",
+        "ask_went_wrong": "문제가 발생했습니다.",
+        "entry_meta_screens_other": "화면 {{n}}개 · {{when}}",
+        "findings_count_other": "지적 {{n}}건",
+        "nothing_flagged": "지적 없음",
+        "design_critique_fallback": "디자인 비평",
+        "flow_screens_count_other": "화면 {{n}}개",
+        "screen_n": "화면 {{n}}",
+        "get_overall_read": "전반적인 상태에 대한 평가",
+        "get_whats_working": "잘 되는 점 (다음 수정에서도 살리도록)",
+        "get_top_things": "다듬을 주요 사항 (화면에 핀 표시)",
+        "no_critiques_narrow": "아직 비평이 없습니다. 아래에 스크린샷을 놓으세요.",
+        "no_critiques_wide": "아직 비평이 없습니다. 패널에 스크린샷을 놓으세요 →",
+        "the_design_alt": "디자인"
       },
       "findingRow": {
         "based_on": "근거",
