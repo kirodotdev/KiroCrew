@@ -4307,8 +4307,12 @@ deterministic. It is the single reader for both transports; matching literals
 drops the purpose for every paraphrased spelling, and the concise pill silently
 falls back to the raw command line while the unrecognized key leaks into the
 arguments view as if it were a real parameter. The dunder prefix is what keeps a
-tool's own functional `purpose` argument out of the match.
-`website/src/utils/toolPurpose.ts` is the frontend mirror, used by the
+tool's own functional `purpose` argument out of the match. A Tool Search
+deferred call's `{tool_id, arguments}` envelope is read through to the tool's
+own arguments (`session_directive.py::deferred_call_arguments`, also used by the
+session-directive digest and the workspace-call gate), so a KAS deferred call
+keeps its purpose.
+`website/src/utils/toolPurpose.ts` is the frontend mirror of the key match, used by the
 pending-approval preview and the Mochi approval bubble.
 
 Three properties are load-bearing:
