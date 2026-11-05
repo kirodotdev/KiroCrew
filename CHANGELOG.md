@@ -10,7 +10,7 @@ Bots (the new name for Mates) are now on for everyone, the agent can drive a bro
 
 - **Bots without a preview switch**: Mates are now called Bots in every screen, prompt and language, the Bots row in the left rail, the `/members` page and the Bot rows in the command bar are always shown, and starred Bots gather in a Bots group in the rail that you can drag to reorder.
 - **A desk of its own**: each Bot keeps the chats and folders it opens in one sidebar folder named after it, and works in its own git worktree per repository, so two Bots on one repo no longer commit each other's edits.
-- **Take a Bot with you**: the Bot profile card's "Export as file" writes a `.crewjam` file with an editable lessons draft, and Bots > Import from file reads it back (older `.crewmate` files still import).
+- **Take a Bot with you**: the Bot profile card's "Export as file" writes a `.kirobot` file with an editable lessons draft, and Bots > Import from file reads it back (older `.crewjam` and `.crewmate` files still import).
 
 ### Bots that keep track of their work
 
@@ -22,7 +22,7 @@ Bots (the new name for Mates) are now on for everyone, the agent can drive a bro
 
 - **Live view**: when the agent uses the browser, the chat shows the page live in the transcript, and you can take it over at any time.
 - **Sign in without the agent seeing**: a sign-in sheet types a secret into the page for you, and nothing typed is saved.
-- **Settings**: Settings > Browser controls which browser is used, the live view and its quality, and recording, and the old playwright-cli browser tool is gone, while browser setup no longer fails on installs that ship pip without ensurepip.
+- **Settings**: Settings > Browser controls which browser is used, the live view and its quality, and recording, and the old browser tool is gone, while browser setup no longer fails on some Python installs.
 
 ### More coding agents
 
@@ -45,6 +45,7 @@ Bots (the new name for Mates) are now on for everyone, the agent can drive a bro
 - **Developer settings for everyone**: Developer Mode is gone, so Settings > Developer always shows Feature Previews, Logs, System, Telemetry, Storage, Memory, Config and Debug tools, and Feature Previews switches are saved on the gateway, so they follow you to every browser and the desktop app.
 - **MCP Management with its servers**: it now sits below the MCP Servers list on the Connections page, and old links to its former Developer page land there.
 - **Themes and thresholds**: "👁 Color-blind safe" and "💜 Amethyst OLED" are under Settings > Display > Theme, and Settings > Chat > Advanced > Auto-compact threshold gains a Custom option for any percent from 5 to 90.
+- **Shorter Settings rows**: each row keeps one short line about its effect in view and moves the longer explanation behind its info tip, and a section's introduction now sits in a tip beside its heading.
 
 ### Chat you can handle more ways
 
@@ -57,6 +58,7 @@ Bots (the new name for Mates) are now on for everyone, the agent can drive a bro
 - **Easier to read replies**: rendered markdown spaces paragraphs, lists and sections more clearly and tables lose the grey header fill, all following the chat font size setting.
 - **Keys and slash helpers**: Cmd+O (Ctrl+O on Windows and Linux) pops the current session out to its own window, Tab fills the message box with the first follow-up option, typing `/workflow ` opens a menu of your saved workflows, and Up-arrow recalls a prompt whose send never reached the transcript.
 - **Search the terminal**: the dock terminal can search its scrollback and go fullscreen, with Cmd+F on macOS and Ctrl+Shift+F on Linux and Windows.
+- **Session messages as cards**: a message one session sends to another shows as a card naming the sender, with a link to open that session, and the sender's chat shows a "Sent to @name" card once the message is delivered.
 
 ### A sidebar that sorts itself
 
@@ -86,18 +88,18 @@ Bots (the new name for Mates) are now on for everyone, the agent can drive a bro
 
 - **Slack code channels**: with `slack.code_channels` on (it is off by default, and needs your workspace's Slack code channels feature, an updated app manifest and a reinstall), mentioning Kiro Crew in a thread with multi-step work opens a code channel backed by a dashboard session that you can stop with its button or `!stop`.
 - **Feishu commands**: Feishu gains `/stop` (alias `/cancel`) and `/help`, like the other channels.
-- **Discord choices**: pressing a long [OPTIONS] choice answers with its full text instead of the cut label.
+- **Discord choices**: pressing a long choice answers with its full text instead of the cut label.
 
 ### Hooks and what agents can do
 
 - **Your hook files on KAS**: the hook files in your Kiro hooks folder now run on KAS turns as they do on the Kiro CLI engine, a pre-tool hook that exits with 2 blocks the tool, and script hooks saved on the Hooks page also run on messaging channel turns and in 1:1 Slack DMs with the bot.
-- **Reveal a removed credential**: when redaction removes a credential from a reply, the owner can Show, Copy or Hide it from the lock-tag card, and every reveal is audited.
+- **Reveal a removed credential**: when redaction removes a credential from a reply, the owner can Show, Copy or Hide it in the reply, and every reveal is audited.
 - **Refuse guessed writes**: setting `hooks.batch_write_guard` refuses a write sent in the same parallel batch as a read, because its arguments would be guesses, and it is off by default.
 
 ### Schedules and apps
 
 - **Quieter failures**: the job dialog's "Send the failure message after N failures in a row" (and `kirocrew cron add --alert-after N`) rings only the bell for earlier failures, and a run the security gate partly refused shows "Partial" (creating a job over the REST API now keeps the limits you send).
-- **More ways to say when**: one-shot times accept days and weeks ("in 2 days", "in 1 week"), a cron job with no zone follows the computer's current time zone shown as "Local" in the job form, and `kirocrew cron add --project-path <dir>` runs the job's agent session in that directory so the repo's steering files load.
+- **More ways to say when**: one-shot times accept days and weeks ("in 2 days", "in 1 week"), a cron job with no zone follows the default time zone setting, which is the computer's current zone shown as "Local" unless you chose another, and `kirocrew cron add --project-path <dir>` runs the job's agent session in that directory so the repo's steering files load.
 - **Apps in their own window**: an app page's "Pop out app to its own window" control opens it separately, right-clicking an app row in the sidebar opens Details or Unpin with an update badge, and Apps > Library lists enabled apps first.
 
 ### Apps that reach into chat
@@ -111,12 +113,14 @@ Bots (the new name for Mates) are now on for everyone, the agent can drive a bro
 - **Close means quit if you want**: Settings > Display > View > Desktop app turns off "Keep running in the background after closing the window".
 - **Links that open the app**: `kirocrew://chat?sid=<key>` opens a session in the desktop app, and `kirocrew open` does the same from the terminal.
 - **Phone sign-in**: the session-expired banner can scan the sign-in QR with the phone camera in the page, and Connect your phone shows a QR for any external address.
+- **Update an app from a folder**: `kirocrew app update <name> --source <dir>` updates an installed app from another directory and remembers it as the app's source, and the command now prints how many agents and skills it re-registered.
 
 ### Updates and scripts
 
-- **Safer updates**: if the dashboard build fails, an update stops before restarting and names `logs/frontend-build.log`, every update path installs the KAS engine the release pins, and `kirocrew doctor` names the installed and needed engine versions.
+- **Safer updates**: if the dashboard build fails, an update stops before restarting and tells you why, every update path installs the KAS engine the release pins, and `kirocrew doctor` names the installed and needed engine versions.
 - **Scripts can trust exit codes**: `kirocrew knowledge stats` and `dedup`, `kirocrew app`, `agent` and `workspace` with a missing or unknown sub-action, and `cron update` with nothing to write now exit non-zero.
 - **Platform touches**: the Linux AppImage adds its own launcher entry and icons the first time it starts, a Windows desktop build with managed updates shows a "Kiro Crew update ready" notice at shutdown, and the installers say so when a host cannot run the built-in KAS engine instead of telling you to retry.
+- **Starting twice is safe**: a second gateway started while the first is still booting no longer shuts it down; it reports that the port is held by a starting gateway and tells you to run `kirocrew stop` or pick another port, and in the desktop app an update install no longer races a gateway restart.
 
 ### Lighter and faster
 
@@ -124,7 +128,7 @@ The dashboard stays responsive while many sessions stream, the gateway no longer
 
 ### Previews you can turn on (Preview)
 
-These are not generally available yet. Each is a switch under Settings > Developer > Feature Previews and is off until you turn it on.
+These are off until you turn each one on under Settings > Developer > Feature Previews.
 
 - **Ultra Mode**: the "Ultra Mode" chip on a new chat, or on an ongoing plain chat, runs it on a conductor that hands each task to its own worker chat, and the side panel's Board tab shows the crew by what needs you, stalled or running, with a catch-up message when you come back.
 - **Explore**: the "Explore" pill in the top bar opens one panel that lists features you have tried and not yet tried and is the only place feature videos show, and a new chat shows a "Try today" card; once the preview is on, turn both off at Settings > Display > Explore.
@@ -134,23 +138,25 @@ These are not generally available yet. Each is a switch under Settings > Develop
 
 - **Session Environments**: Settings > Session Environments connects Coder, Fly.io Sprites or boxd workspaces, with an environment chip in the composer and a remote Files panel, Git panel and terminal; the gateway also needs `KIROCREW_DEV_MODE` set.
 - **Shared Crew**: the Shared Crew card (owner only, applied after a gateway restart) turns on People, where a two-step card shares this machine over Tailscale and copies an invite message, and teammates appear from your Tailscale peers.
-- **Remote dispatch**: the Remote dispatch switch lets an Ultra Mode chat run tasks on machines connected under Remote Crew, and moves a task to another machine when the first stays unreachable for 30 minutes.
+- **Remote dispatch**: the Remote dispatch switch lets an Ultra Mode chat run tasks on machines connected under Remote Crew, and a task whose machine stays unreachable for 30 minutes is released and shown as due for redispatch, which you start with a new message.
 
 ### Notable fixes
 
-**Chat and sessions.** A message sent while nothing is running is queued instead of leaving the chat stuck on thinking, and a reply keeps its footer however the turn ends. Regenerate that ends empty keeps the previous reply, a message sent while a session is still starting joins that start, and sessions with only sub-agents running stay under the In progress filter.
+**Chat and sessions.** A message sent while nothing is running is queued instead of leaving the chat stuck on thinking, and a reply keeps its footer however the turn ends. Regenerate that ends empty keeps the previous reply, a message sent while a session is still starting joins that start, and sessions with only sub-agents running stay under the In progress filter. On the default KAS backend, a hung MCP tool call is judged by its own server's activity instead of the engine's background work, turns are recorded with the model they ran on (an Auto turn is named in the reply footer), and the wait countdown and its End button now show. Page shortcuts no longer act behind the open command bar, a session with no title yet is named "Untitled session", the @-mention file picker no longer shows the previous project's files after you switch chats, a failed workflow counts as blocked in the Command Center for 24 hours and then shows as stopped, and continuing a sub-agent that was started without a project directory works.
 
-**Bots and channels.** Bots you created are listed even with an empty chat, and a Bot stays silent when it has nothing to say. Slack replies post only the final answer, Slack Socket Mode works behind a SOCKS proxy, and the Atlassian connection's Jira and Confluence tools work again. A Bot bound to a shared agent spec starts on Kiro CLI even when the spec lists a tool your policy denies, and a Bot whose template allows an MCP server that is also in your own MCP config starts workers again instead of refusing every one.
+**Bots and channels.** Bots you created are listed even with an empty chat, and a Bot stays silent when it has nothing to say. Slack replies post only the final answer, Slack Socket Mode works behind a SOCKS proxy, and the Atlassian connection's Jira and Confluence tools work again. A Bot bound to a shared agent spec starts on Kiro CLI even when the spec lists a tool your policy denies, and a Bot whose template allows an MCP server that is also in your own MCP config starts workers again instead of refusing every one. A sub-agent's finished report is no longer sent a second time to a channel conversation whose first attempt timed out after the report had already arrived.
 
-**Schedules, memory and desktop.** A cron's wall-clock time holds across a daylight saving change, and a memory backup folder with an extra file no longer deletes real backups. Memory search finds markdown you edited directly on disk, an update you put off is never installed behind your back, and fewer ordinary commands are wrongly denied. The job form's schedule fields now have labels, and a selected weekday is announced as pressed.
+**Schedules, memory and desktop.** A cron's wall-clock time holds across a daylight saving change, and a memory backup folder with an extra file no longer deletes real backups. Memory search finds markdown you edited directly on disk, an update you put off is never installed behind your back, and fewer ordinary commands are wrongly denied. The job form's schedule fields now have labels, and a selected weekday is announced as pressed. Screen readers also hear whether the cron run history rows, review comment collapse buttons and Knowledge file groups are open, and the Vector Memory card's text boxes have labels. An agent adding a schedule into a folder that does not exist yet creates the folder instead of failing, and one corrupt line in a job's run history no longer breaks the history pages.
 
-**Your files stay put.** A settings or data file that cannot be read is kept aside instead of being overwritten with defaults, including the notifications, tips, folders, pins, tags, global MCP list and meeting task files. Files saved with a leading byte order mark by some Windows editors load again.
+**Your files stay put.** A settings or data file that cannot be read is kept aside instead of being overwritten with defaults, including the notifications, tips, folders, pins, tags, global MCP list and meeting task files. Files saved with a leading byte order mark by some Windows editors load again, and `kirocrew setup` leaves a global MCP list that is not valid UTF-8 untouched instead of stopping with an error.
 
-**Windows and Linux.** On Windows the gateway no longer freezes on slow process starts, Claude Code starts from its real `claude.exe` instead of the npm shim, and files saved while another program holds them are retried. On Linux the background service finds Node versions installed by mise, and the installer raises a distro Node below the supported floor.
+**Windows and Linux.** On Windows the gateway no longer freezes on slow process starts, Claude Code starts reliably, and files saved while another program holds them are retried. On Linux the background service finds Node versions installed by mise, and the installer raises a distro Node below the supported floor.
 
-**Sign-in and tools.** A Builder ID sign-in made in Kiro Crew works for model calls and shows its email and type in the account panel, and a hook naming one MCP tool asks only for that tool. `kirocrew doctor` stops asking for Node on the bundled KAS route, a mistake in the security policy file prints one clear line with a doctor hint instead of a traceback, the Task Runner page runs one action per run at a time, and skills that a second package also ships are found again.
+**Sign-in and tools.** A Builder ID sign-in made in Kiro Crew works for model calls and shows its email and type in the account panel, and a hook naming one MCP tool asks only for that tool. `kirocrew doctor` stops asking for Node on the bundled KAS route, a mistake in the security policy file prints one clear line with a doctor hint instead of a traceback, the Task Runner page runs one action per run at a time, and skills that a second package also ships are found again. `kirocrew doctor` also accepts a standalone kiro-cli 3.0.0 install, a stdio MCP server whose command or environment value uses `${HOME}` now starts instead of timing out, and with Kiro CLI 3.0.0 a usage-limit error shows the provider's own sentence and a temporarily unavailable model is retried again.
 
-**Security.** This release includes several security hardening fixes, covering the session-wide deny-rule override, governance for cron and unattended runs, Salesforce sign-in endpoints, redaction rules and command allow-list parsing.
+**Apps.** In an app's embedded chat, a message the app's page posts to the chat shows at once instead of after the next refresh, and the message box keeps keyboard focus after you send.
+
+**Security.** This release includes several security hardening fixes, covering deny rules that could be overridden for a whole session, governance for cron and unattended runs, Salesforce sign-in endpoints, redaction rules, command allow-list parsing and app registry cloning.
 
 ## [0.11.1] - 2026-10-31
 
