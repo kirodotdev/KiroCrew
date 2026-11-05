@@ -194,6 +194,7 @@ def steering_resources_part(
     is_cc: bool,
     essentials: str,
     context_groups: frozenset[str] | None,
+    project: str | None = None,
 ) -> str:
     """The agent config's ``file://`` steering text for this session, or ``""``.
 
@@ -207,7 +208,10 @@ def steering_resources_part(
     ``resources``, needs the explicit load (*is_cc*, a positive identity).
     A custom agent loads its own prompt, a member chat (*essentials* non-empty)
     carries its steering inside the essentials envelope, and the ``project``
-    context group decides whether steering is in scope at all.
+    context group decides whether steering is in scope at all. *project* is the
+    session's project: relative entries anchor there, as kiro-cli anchors them
+    at its working directory, and it adds the project's steering and
+    ``AGENTS.md`` that kiro-cli inherits.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
@@ -218,4 +222,4 @@ def steering_resources_part(
         return ""
     if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):
         return ""
-    return ctx._load_steering_resources()
+    return ctx._load_steering_resources(project)
