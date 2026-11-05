@@ -458,6 +458,26 @@ async def test_kas_projects_the_agent_spec(kas_projection_stubbed, monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_kas_reads_workspace_mcp_settings_beside_the_session(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """A session opened in another checkout is finished from THAT checkout's files."""
+    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "absent-global.json")
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "a"}])
+    for name in ("runtime", "session"):
+        settings = tmp_path / name / ".kiro" / "settings"
+        settings.mkdir(parents=True)
+        (settings / "mcp.json").write_text(json.dumps({"mcpServers": {name: {}}}))
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras(
+        "a", work_dir=str(tmp_path / "runtime"), session_cwd=str(tmp_path / "session")
+    )
+    (entry,) = extras.custom_agents
+    assert list(entry[CREW_SETTINGS_MCP_KEY]["fileServers"]) == ["session"]
+
+
+@pytest.mark.asyncio
 async def test_kas_projects_nothing_without_an_agent(tmp_path):
     """No agent means nothing to register, not an empty registration."""
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("", work_dir=str(tmp_path))

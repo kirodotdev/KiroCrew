@@ -261,6 +261,26 @@ async def test_a_session_that_withholds_nothing_has_no_notice(kas_spec_on_disk, 
     assert extras.withheld_credentials_notice == ""
 
 
+@pytest.mark.asyncio
+async def test_the_payload_names_the_mcp_json_servers_kas_is_told_not_to_start(
+    kas_spec_on_disk, tmp_path, monkeypatch
+):
+    """Only the file server the spec does not list is named; a switched-off one
+    and one the spec declares are excluded silently."""
+    monkeypatch.delenv("ASBX_KIRO_MANDATORY_MCPS", raising=False)
+    mcp_json = tmp_path / "settings" / "mcp.json"
+    mcp_json.parent.mkdir()
+    servers = {"extra": {"command": "e"}, "off": {"command": "o", "disabled": True}, "bare": {}}
+    mcp_json.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", mcp_json)
+    spec = {"name": "a", "prompt": "p", "tools": ["*"], "mcpServers": {"bare": {"command": "b"}}}
+    (tmp_path / "a.json").write_text(json.dumps(spec), encoding="utf-8")
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+    assert "did not start, because this agent does not list them: extra." in (
+        extras.withheld_credentials_notice
+    )
+
+
 def test_the_notice_reaches_the_provider():
     notice = withheld_credentials_notice(_GITLAB_NOTICE)
     session = AcpSessionProvider.__new__(AcpSessionProvider)

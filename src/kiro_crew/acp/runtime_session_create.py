@@ -334,6 +334,7 @@ async def create_session(
         # the mount and the grant together so the two cannot disagree.
         crew_panel=panel_mounted,
         session_key=session_key,
+        session_cwd=session_work_dir,
         **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
     )
     kas_agents = kas_extras.custom_agents
