@@ -45,7 +45,7 @@ rules:
     effect: deny
     exclude: ["slack"]
   - id: other-client
-    capability: shell
+    capability: power
     effect: deny
 """
 
@@ -736,21 +736,27 @@ class TestTranslation:
         from kiro_crew.platform import enterprise_policy_translate as t
 
         rules = [
-            {"capability": "messaging_channel", "effect": "deny", "exclude": ["t*"]},
-            {"capability": "messaging_channel", "effect": "deny", "match": ["s*"]},
+            {"capability": "messaging_channel", "effect": "deny", "exclude": ["s*"]},
+            {"capability": "messaging_channel", "effect": "deny", "match": ["sl*"]},
         ]
         with pytest.raises(t.Unrepresentable):
             t.ruleset(rules, "messaging_channel")
 
-    def test_a_lone_deny_match_leaves_the_capability_unnamed(self):
-        """A deny-list would replace the enterprise baseline and open every other channel."""
+    def test_a_denied_glob_that_cannot_meet_an_allowed_glob_is_dropped(self):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        rules = [
+            {"capability": "messaging_channel", "effect": "deny", "exclude": ["t*"]},
+            {"capability": "messaging_channel", "effect": "deny", "match": ["s*"]},
+        ]
+        assert t.ruleset(rules, "messaging_channel") == {"mode": "allow", "allow": ["t*"]}
+
+    def test_a_lone_deny_match_grants_nothing(self):
+        """Named by a rule, nothing granted: no channel is allowed, not every other one."""
         from kiro_crew.platform import enterprise_policy_translate as t
 
         rules = [{"capability": "messaging_channel", "effect": "deny", "match": ["discord"]}]
-        assert t.ruleset(rules, "messaging_channel") is None
-        assert "channels" not in t.translate(
-            "rules:\n  - {capability: messaging_channel, effect: deny, match: [discord]}\n"
-        )
+        assert t.ruleset(rules, "messaging_channel") == {"mode": "allow", "allow": []}
 
     def test_two_different_globs_are_refused(self):
         from kiro_crew.platform import enterprise_policy_translate as t
