@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../types'
-import { stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
+import { stripMarkersForDisplay } from '../app-sdk/protocol/optionMarker'
 import { stripKeepVisibleMarker } from '../app-sdk/protocol/keepVisibleMarker'
 import { warmBriefOf, warmBriefVisibleText } from '../components/chat/WarmBriefCard'
 
@@ -20,6 +20,11 @@ const MCWIDGET_RE = /<mcwidget\b[^>]*>[\s\S]*?<\/mcwidget>/gi
  * highlighted marks all stay consistent. Searching raw content would surface
  * "phantom" matches (inside OPTIONS buttons or widget iframes) the user can
  * never see highlighted.
+ *
+ * It is the DISPLAY helper rather than `stripOptionMarkers` so this index cannot drift
+ * from what the transcript shows: a marker the transcript keeps (one that offers no
+ * choice) is kept here too. Markers go FIRST, because the transcript passes the WHOLE
+ * message, widget included, to `parseOptions`.
  */
 export function searchableText(m: ChatMessage): string {
   // A structured warm brief draws a card, not its plain-text `content` (whose
@@ -29,7 +34,7 @@ export function searchableText(m: ChatMessage): string {
   if (m.role === 'assistant' || m.role === 'streaming') {
     // stripKeepVisibleMarker: the marker is an HTML comment the renderer never
     // shows (#7948), so a search hit inside it would be a phantom match.
-    return stripKeepVisibleMarker(stripOptionMarkers(m.content.replace(MCWIDGET_RE, ''))).trimEnd()
+    return stripKeepVisibleMarker(stripMarkersForDisplay(m.content).replace(MCWIDGET_RE, '')).trimEnd()
   }
   return m.content
 }

@@ -4,7 +4,7 @@ import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
 import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
-import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
+import { findLastOptionMarker, stripMarkersForDisplay, optionsOf } from './optionMarker'
 
 /** A message split into the prose the user reads and the choices offered alongside it. */
 export interface ParsedOptions {
@@ -29,15 +29,16 @@ export function parseOptions(content: string): ParsedOptions {
   // exactly one pair is defined per match. `??` (not `||`) so an empty label
   // string from the matched branch is kept rather than falling through.
   const multi = !!(last[1] ?? last[3]) // [OPTIONS:] is the multi-select syntax; [OPTION:] is single
-  const labels = (last[2] ?? last[4]) ?? ''
-  const sep = labels.includes('|') ? '|' : ','
-  const options = labels.split(sep).map(o => o.trim()).filter(Boolean)
+  // `optionsOf`, not a local split: `stripMarkersForDisplay` asks the SAME question to
+  // decide whether this marker renders anything, and two copies of the split are how a
+  // marker that offers nothing was treated as its own renderer.
+  const options = optionsOf(last)
   // Strip ALL accepted markers from the displayed text (not just the last) so a stray
   // earlier marker can't leak as raw "[OPTION: …]" syntax to the user; options still
-  // come from the LAST marker (computed above). A REFUSED candidate is deliberately
-  // left in place — it is prose the user should still see, and removing it is the
-  // defect the check exists to prevent.
-  const text = stripOptionMarkers(content).trim()
+  // come from the LAST marker. A REFUSED candidate is deliberately left in place — it is
+  // prose the user should still see, and removing it is the defect the check exists to
+  // prevent. `searchableText` uses the same helper so screen and search agree.
+  const text = stripMarkersForDisplay(content).trim()
   return { text, options, multi }
 }
 
