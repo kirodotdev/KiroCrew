@@ -21,7 +21,6 @@ from kiro_crew import platform_compat
 from kiro_crew.computer_use import backend as backend_mod
 from kiro_crew.computer_use import index as index_mod
 from kiro_crew.computer_use.backend import (
-    LINUX_REASON,
     UNKNOWN_PLATFORM_REASON,
     ComputerUseBackend,
     UnsupportedBackend,
@@ -319,11 +318,35 @@ class TestPlatformSelection:
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_WINDOWS
 
-    def test_linux_degradation_on_any_runner(self, monkeypatch):
+    def test_linux_selection_on_any_runner(self, monkeypatch):
+        """Same shape as the Windows case: selection only, ``status`` not asserted.
+
+        The AT-SPI/X11 driver's answer depends on whether a display and an
+        accessibility bus are reachable, which a CI runner cannot promise. Its own
+        behaviour is pinned in ``test_computer_use_linux_driver.py``.
+        """
         self._pin(monkeypatch, linux=True)
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_LINUX
-        assert driver.status().reason == LINUX_REASON
+        assert not isinstance(driver, UnsupportedBackend)
+
+    def test_linux_driver_import_failure_degrades_instead_of_raising(self, monkeypatch):
+        """A missing jeepney (or libX11) disables computer use, not the process."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _fail(name, *args, **kwargs):
+            if name == "kiro_crew.computer_use.linux_driver":
+                raise ImportError("No module named 'jeepney'")
+            return real_import(name, *args, **kwargs)
+
+        self._pin(monkeypatch, linux=True)
+        monkeypatch.setattr(builtins, "__import__", _fail)
+        driver = select_default_backend()
+        assert driver.platform_id == PLATFORM_LINUX
+        assert driver.status().supported is False
+        assert "jeepney" in driver.status().reason
 
     def test_unknown_platform_degrades(self, monkeypatch):
         self._pin(monkeypatch)
