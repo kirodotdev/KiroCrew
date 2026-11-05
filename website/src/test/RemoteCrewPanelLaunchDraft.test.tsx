@@ -339,3 +339,19 @@ describe('instancesSlice launch draft', () => {
     expect(reducer(reducer(undefined, setCrewLaunchDraft(null)), dropLaunchedCrewDraft(null)).crewForms.launch).toBeNull()
   })
 })
+
+describe('RemoteCrewPanel more-sizes toggle', () => {
+  it('says whether the extra sizes are shown and hides its chevron from the name', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    const toggle = await screen.findByRole('button', { name: /Smaller and x86_64 sizes/ })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    for (const svg of toggle.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+    await u.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText(/16 GB is the smallest size with real headroom/)).toBeInTheDocument()
+  })
+})
