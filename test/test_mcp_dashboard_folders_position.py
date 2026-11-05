@@ -615,6 +615,14 @@ class TestFolderPosition:
         assert "Moved folder" not in out, out
         assert not out.startswith("Error:")
 
+    def test_a_channel_refused_reposition_says_nothing_moved(self) -> None:
+        """Nothing was written, and re-running is refused the same way."""
+        refused = {"error": "channel conversation", "code": "channel_reachable_caller"}
+        out, _ = _call(
+            "chat_folder_move", {"folder": "Delta", "after": "Alpha"}, _positioning(reorder=refused)
+        )
+        assert out == "Error: channel conversation", out
+
 
 class TestPositionRenumberIsAllOrNothingForAnApp:
     """An app may not half-shuffle the person's sidebar.

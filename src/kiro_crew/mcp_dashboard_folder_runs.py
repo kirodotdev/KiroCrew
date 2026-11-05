@@ -428,6 +428,9 @@ def _run_chat_folder_move(args: dict[str, Any], ctx: ToolContext) -> str:
                 session_key=caller_key,
             )
         except DashboardError as refused:
+            if refused.code == "channel_reachable_caller" and not move_body:
+                # Nothing was written, and a re-run is refused the same way.
+                return redact(f"Error: {refused.error}")
             # The reparent (if any) landed and is not in doubt; the ordering
             # did not -- and, being atomic, left the stored order untouched
             # rather than partway. Say which half held so the caller can

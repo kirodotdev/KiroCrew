@@ -4456,6 +4456,22 @@ the tool layer could only drift or race. What the tool layer still decides is th
 one question the endpoint cannot: whether the caller can be placed at all, since
 an unverifiable or delegated caller has no scope to bound a write to.
 
+**A session a channel can drive does not reshape the person's sidebar.** A
+conversation resumed from a channel keeps the dashboard session's `dashboard:` key,
+so no check on the key can tell the channel's turns from the person's. The endpoints
+decide on the session's channel bindings instead
+(`chat_folders_records.refuse_channel_reachable_agent`, failing closed on an
+unreadable store): an agent call from a session with a channel-namespaced key, a
+channel-born slot, a channel mirror or a linked Slack thread is refused 403
+`channel_reachable_caller` when it creates (any `mkdir -p` segment too), renames,
+restyles, reparents or repositions a folder; files, tags, pins or drops a session
+(`PATCH /api/chat/slots/<slot>/folder` and `/pin`, `PUT .../tags`, `POST .../drop`);
+or writes the tag vocabulary or the board's columns (every route that applies
+`_refuse_vocabulary_write`). `chat_folder_delete` is not gated: it removes only an
+empty folder the calling session made. The rule is per session, not per turn, so
+the person's own agent turns there are refused too; the person's browser is never
+gated.
+
 **Position is the one folder write the tool layer has to compose.** A folder's
 place among its siblings is an `order` int the endpoint stores verbatim and never
 renumbers, so there is no single value a caller could compute — which is why

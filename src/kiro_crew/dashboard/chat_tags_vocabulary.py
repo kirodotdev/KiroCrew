@@ -116,6 +116,9 @@ def _refuse_vocabulary_write(
     update, delete, reorder) apply this refusal too, and the
     ``chat_tag_column_*`` MCP tools rely on it.
 
+    An agent in a session a channel can drive is refused too: the vocabulary
+    and the board are the person's sidebar.
+
     Returns the refusal response, or ``None`` when the write may proceed.
     """
     refused = refuse_unattributable_caller(state, request, operation)
@@ -148,7 +151,10 @@ def _refuse_vocabulary_write(
         return web.json_response(
             {"error": "agents cannot write shared tags", "code": "app_forbidden"}, status=403
         )
-    return None
+    # Imported here: chat_folders_records imports chat_tags, which imports this module.
+    from kiro_crew.dashboard.chat_folders_records import refuse_channel_reachable_agent
+
+    return refuse_channel_reachable_agent(request, operation)
 
 
 async def api_chat_tag_create(request: web.Request) -> web.Response:

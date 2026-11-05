@@ -222,6 +222,13 @@ def _folder_state(folders: list[dict[str, Any]]) -> DashboardState:
     slot = _ChatSlot("chat-1-100")
     state._slots = {slot.key: slot}
     state.push_slots_update = MagicMock()
+    # An unlinked session: the channel-reachability check fails closed on a store
+    # that cannot answer, so the double answers "no binding".
+    state.get_slot = state._slots.get
+    state.sessions = MagicMock(
+        get_mirror_link=MagicMock(return_value=None),
+        get_slack_link=MagicMock(return_value=(None, None)),
+    )
     state.conversation_log = None
 
     async def _mutate(fn: Any, on_committed: Any = None) -> Any:

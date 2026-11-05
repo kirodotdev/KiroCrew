@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_folders_records import (
     _unhide_folder,
     member_slot_write_refused,
     note_folder_filed,
+    refuse_channel_reachable_agent,
 )
 from kiro_crew.dashboard.chat_manual_order import load_manual_order_after_listen
 from kiro_crew.dashboard.chat_persistence import _coerce_requested_mode, save_slot_off_loop
@@ -184,6 +185,8 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_folder")
     ) is not None:
         return denied
+    if (refusal := refuse_channel_reachable_agent(request, "chat.slot_folder", name)) is not None:
+        return refusal
     # Capture the transcript key the ownership decision above just covered,
     # BEFORE the body-parse await: ``linked_session_key`` is rebound on
     # already-live slots with no ``running`` gate (cron completions, workflow
@@ -350,6 +353,8 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     request_app = _effective_request_app(state, request)
     if (denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_pin")) is not None:
         return denied
+    if (refusal := refuse_channel_reachable_agent(request, "chat.slot_pin", name)) is not None:
+        return refusal
     # Capture the transcript key the lookup above just covered, BEFORE the
     # body-parse await — the same rebind window api_chat_slot_folder
     # documents. The re-check below and the save's expected_history_key pin
@@ -443,8 +448,7 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
         # move anything in that order. A session with
         # no stored place stays unranked, one that has a place keeps it, and an
         # unpin leaves a live, unpinned key that the next person-initiated
-        # write prunes. The writer leaves the order alone for an agent in a
-        # channel-reachable session.
+        # write prunes.
         person_caller = not folder_principal(state, request)
         order_changed = False
         order_saved: bool | None = True
@@ -849,7 +853,7 @@ async def _write_pinned_order(
 
     The order is the person's: a channel-reachable agent returns ``None``
     without changing disk or memory. Every order write passes here, so the
-    rule holds on every route without refusing the pin itself.
+    rule holds on every route.
 
     Memory changes only after the file write succeeds, so the order the
     sidebar shows is always the one a restart would load. Returns ``False``
