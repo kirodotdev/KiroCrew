@@ -15060,6 +15060,7 @@
         "mcp_concern_auto_approve": "As regras de aprovação automática que o seu arquivo de configuração do agente define — o {{name}} não as aplica",
         "mcp_concern_denied_tools": "As ferramentas que você desligou: aqui continuam disponíveis",
         "mcp_concern_hooks": "Os hooks que seu arquivo de configuração de agente define: não são executados",
+        "mcp_concern_hooks_pre_tool_use": "Os hooks preToolUse que seu arquivo de configuração de agente define: não são executados",
         "mcp_concern_mcp_servers": "Os servidores MCP do seu arquivo de configuração de agente: não são montados aqui",
         "mcp_concern_model": "O modelo que o seu arquivo de configuração do agente nomeia — o {{name}} obtém o modelo dele em outro lugar",
         "mcp_concern_model_allowlist": "A lista de modelos que o seu arquivo de configuração do agente permite — ela não limita o que o {{name}} oferece",

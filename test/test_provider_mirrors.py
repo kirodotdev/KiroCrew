@@ -402,7 +402,8 @@ class TestClaudeCodeMirror:
     def test_hooks_is_the_one_open_gap_and_it_is_addressed(self):
         """Pins the state the RFC's hooks plan starts from.
 
-        Claude Code runs hooks natively; nothing writes them today. When phase H2
+        Claude Code runs hooks natively; nothing writes them to it. Crew fires the
+        spec's non-gating events itself, so the gap left is preToolUse. When that
         lands, this flips to delivered/translated and this test is what says so.
         """
         rulings = mirror_for("claude").rulings()

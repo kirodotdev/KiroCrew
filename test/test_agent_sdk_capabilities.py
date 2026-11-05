@@ -79,6 +79,7 @@ CAPABILITY_FIELDS = (
     "effort_via_slash_command",
     "compacts_inline",
     "crew_fires_spec_hooks",
+    "crew_fires_spec_observer_hooks",
     "supports_native_todos",
     "honors_zero_tool_ban",
     "acp_client_spawnable",

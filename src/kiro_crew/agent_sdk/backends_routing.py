@@ -334,6 +334,26 @@ ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
     {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_STRANDS}
 )
 
+#: Backends whose session never runs the agent spec's own ``hooks``, so Crew's turn
+#: loop fires the events that cannot refuse a tool call: ``postToolUse``,
+#: ``userPromptSubmit``, ``agentSpawn`` and ``stop``. Every member of
+#: ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`` is one, since Crew fires all five there.
+#:
+#: claude is a member of this set alone. Its harness is handed no spec, so nothing
+#: else runs the field, and none of these four events needs a permission request to
+#: fire on. ``preToolUse`` does: claude approves some calls inside the harness
+#: without asking, so a gating hook would be skipped on exactly those, and its
+#: ``preToolUse`` entries keep the session-start notice that says they do not run.
+#: That is why claude stays out of the gating set, whose every branch (the
+#: unreadable-spec block, the permission-request gate, the skipped informational
+#: fire) assumes each covered call reaches Crew as a permission request.
+#:
+#: kiro-cli is NOT a member and must never become one: it runs the field itself,
+#: so membership would run every spec hook twice.
+ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS | frozenset(
+    {ACP_BACKEND_CLAUDE}
+)
+
 
 # ── How a harness is made to ask ──
 # Kiro Crew's PreToolUse gate -- the bundled denied-command rules, the
