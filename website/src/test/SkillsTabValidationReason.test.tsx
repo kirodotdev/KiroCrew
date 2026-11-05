@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { confirmAction } from './confirmAction'
 import { MemoryRouter } from 'react-router-dom'
 
 /* ── Mocks: must run before importing the component ── */
@@ -297,34 +298,30 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       Object.assign(new Error('script validation failed'), { status: 422, body }),
     )
     mockApi.dismissPendingSkill.mockResolvedValue({ dismissed: true })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      renderWithQuery()
-      await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
-      fireEvent.click(screen.getByText('Review'))
-      const approve = screen.getByText('Approve').closest('button') as HTMLButtonElement
-      await waitFor(() => expect(approve).not.toBeDisabled())
-      fireEvent.click(approve)
-      await waitFor(() =>
-        expect(
-          screen.getByText('Approval refused: the bundled scripts failed validation — approving again without changes returns this same refusal. Fix the scripts, then approve.'),
-        ).toBeInTheDocument(),
-      )
-      // Dismiss the candidate; the row (still rendered from the stale list
-      // mock) must no longer carry the previous candidate's refusal notice.
-      fireEvent.click(screen.getByText('Dismiss'))
-      // The card has read the candidate, so the dismiss names those bytes.
-      await waitFor(() =>
-        expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper', 'c'.repeat(64)),
-      )
-      await waitFor(() =>
-        expect(
-          screen.queryByText('Approval refused: the bundled scripts failed validation — approving again without changes returns this same refusal. Fix the scripts, then approve.'),
-        ).not.toBeInTheDocument(),
-      )
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    renderWithQuery()
+    await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Review'))
+    const approve = screen.getByText('Approve').closest('button') as HTMLButtonElement
+    await waitFor(() => expect(approve).not.toBeDisabled())
+    fireEvent.click(approve)
+    await waitFor(() =>
+      expect(
+        screen.getByText('Approval refused: the bundled scripts failed validation — approving again without changes returns this same refusal. Fix the scripts, then approve.'),
+      ).toBeInTheDocument(),
+    )
+    // Dismiss the candidate; the row (still rendered from the stale list
+    // mock) must no longer carry the previous candidate's refusal notice.
+    fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
+    // The card has read the candidate, so the dismiss names those bytes.
+    await waitFor(() =>
+      expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper', 'c'.repeat(64)),
+    )
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Approval refused: the bundled scripts failed validation — approving again without changes returns this same refusal. Fix the scripts, then approve.'),
+      ).not.toBeInTheDocument(),
+    )
   })
 
   it('a failed dismiss surfaces a named error notice instead of failing silently', async () => {
@@ -335,48 +332,45 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
       }),
     )
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      renderWithQuery()
-      await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
-      fireEvent.click(screen.getByText('Dismiss'))
-      // Never opened, so there is no read to name: the dismiss sends no digest.
-      await waitFor(() =>
-        expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper', undefined),
-      )
-      // The mutation's rejection must not vanish: the panel renders the
-      // localized failure through ErrorNotice (errors-use-error-notice —
-      // the value originates in a rejected mutation, so the shared error
-      // surface with its Ask-agent hand-off is mandatory), NAMING the
-      // candidate and mapping the coded reason to catalog text. The live
-      // list (mocked empty) settles, so the reason states the DISMISSAL
-      // outright rather than "approved or dismissed".
-      await waitFor(() =>
-        expect(
-          screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
-        ).toBeInTheDocument(),
-      )
-      expect(screen.getByRole('alert').textContent).not.toContain('approved or dismissed')
-      // The outcome resolved (handled elsewhere — nothing is broken), so the
-      // hand-off follows it instead of naming a "failure".
+    renderWithQuery()
+    await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
+    // Never opened, so there is no read to name: the dismiss sends no digest.
+    await waitFor(() =>
+      expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper', undefined),
+    )
+    // The mutation's rejection must not vanish: the panel renders the
+    // localized failure through ErrorNotice (errors-use-error-notice —
+    // the value originates in a rejected mutation, so the shared error
+    // surface with its Ask-agent hand-off is mandatory), NAMING the
+    // candidate and mapping the coded reason to catalog text. The live
+    // list (mocked empty) settles, so the reason states the DISMISSAL
+    // outright rather than "approved or dismissed".
+    await waitFor(() =>
       expect(
-        screen.getByText('Ask the agent what happened to this candidate'),
-      ).toBeInTheDocument()
-      // And the queue is re-read so the stale row cannot contradict the
-      // notice (same recovery as the approve path's not-found branch).
-      expect(mockApi.skillsPending.mock.calls.length).toBeGreaterThan(1)
-      // A retry starts clean: the next dismiss click clears the stale notice
-      // before the new mutation settles.
-      mockApi.dismissPendingSkill.mockResolvedValue({ dismissed: true })
-      fireEvent.click(screen.getByText('Dismiss'))
-      await waitFor(() =>
-        expect(
-          screen.queryByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
-        ).not.toBeInTheDocument(),
-      )
-    } finally {
-      confirmSpy.mockRestore()
-    }
+        screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
+      ).toBeInTheDocument(),
+    )
+    expect(screen.getByRole('alert').textContent).not.toContain('approved or dismissed')
+    // The outcome resolved (handled elsewhere — nothing is broken), so the
+    // hand-off follows it instead of naming a "failure".
+    expect(
+      screen.getByText('Ask the agent what happened to this candidate'),
+    ).toBeInTheDocument()
+    // And the queue is re-read so the stale row cannot contradict the
+    // notice (same recovery as the approve path's not-found branch).
+    expect(mockApi.skillsPending.mock.calls.length).toBeGreaterThan(1)
+    // A retry starts clean: the next dismiss click clears the stale notice
+    // before the new mutation settles.
+    mockApi.dismissPendingSkill.mockResolvedValue({ dismissed: true })
+    fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
+      ).not.toBeInTheDocument(),
+    )
   })
 
   it('a dismiss refused because the candidate changed says so and reads it again', async () => {
@@ -390,45 +384,41 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         }),
       }),
     )
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      renderWithQuery()
-      // Skills must settle before the pending-list query renders this row.
-      await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument(), {
-        timeout: CHAINED_QUERY_TIMEOUT_MS,
-      })
-      fireEvent.click(screen.getByText('Review'))
-      // Review opens the row and starts the detail query.
-      await waitFor(() => expect(mockApi.skillPendingDetail).toHaveBeenCalled(), {
-        timeout: CHAINED_QUERY_TIMEOUT_MS,
-      })
-      // The detail response enables Approve once the candidate has been read.
-      await waitFor(() =>
-        expect(screen.getByText('Approve').closest('button') as HTMLButtonElement).not.toBeDisabled(),
-        { timeout: CHAINED_QUERY_TIMEOUT_MS },
-      )
-      const readsBefore = mockApi.skillPendingDetail.mock.calls.length
-      fireEvent.click(screen.getByText('Dismiss'))
-      // Dismiss submits the digest from the settled detail query.
-      await waitFor(() =>
-        expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper', 'c'.repeat(64)),
-        { timeout: CHAINED_QUERY_TIMEOUT_MS },
-      )
-      // The dismiss mutation's refusal renders the changed-candidate notice.
-      await waitFor(() =>
-        expect(
-          screen.getByText('Dismiss of “auto/evil-helper” failed (it changed after you read it; it has been read again, so review it, then dismiss).'),
-        ).toBeInTheDocument(),
-        { timeout: CHAINED_QUERY_TIMEOUT_MS },
-      )
-      // The dismiss refusal invalidates the detail query, which then reads again.
-      await waitFor(() =>
-        expect(mockApi.skillPendingDetail.mock.calls.length).toBeGreaterThan(readsBefore),
-        { timeout: CHAINED_QUERY_TIMEOUT_MS },
-      )
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    renderWithQuery()
+    // Skills must settle before the pending-list query renders this row.
+    await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    fireEvent.click(screen.getByText('Review'))
+    // Review opens the row and starts the detail query.
+    await waitFor(() => expect(mockApi.skillPendingDetail).toHaveBeenCalled(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    // The detail response enables Approve once the candidate has been read.
+    await waitFor(() =>
+      expect(screen.getByText('Approve').closest('button') as HTMLButtonElement).not.toBeDisabled(),
+      { timeout: CHAINED_QUERY_TIMEOUT_MS },
+    )
+    const readsBefore = mockApi.skillPendingDetail.mock.calls.length
+    fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
+    // Dismiss submits the digest from the settled detail query.
+    await waitFor(() =>
+      expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper', 'c'.repeat(64)),
+      { timeout: CHAINED_QUERY_TIMEOUT_MS },
+    )
+    // The dismiss mutation's refusal renders the changed-candidate notice.
+    await waitFor(() =>
+      expect(
+        screen.getByText('Dismiss of “auto/evil-helper” failed (it changed after you read it; it has been read again, so review it, then dismiss).'),
+      ).toBeInTheDocument(),
+      { timeout: CHAINED_QUERY_TIMEOUT_MS },
+    )
+    // The dismiss refusal invalidates the detail query, which then reads again.
+    await waitFor(() =>
+      expect(mockApi.skillPendingDetail.mock.calls.length).toBeGreaterThan(readsBefore),
+      { timeout: CHAINED_QUERY_TIMEOUT_MS },
+    )
   })
 
   it('a not-found dismiss keeps the open wording while the live list cannot answer', async () => {
@@ -443,26 +433,22 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
       }),
     )
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      renderWithQuery()
-      await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
-      fireEvent.click(screen.getByText('Dismiss'))
-      await waitFor(() =>
-        expect(
-          screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or dismissed in another window or by your Kiro Crew agent).'),
-        ).toBeInTheDocument(),
-      )
-      await waitFor(() => expect(mockApi.skills.mock.calls.length).toBeGreaterThan(1))
-      // The refetch has failed; the hedge stands and no outcome is asserted.
+    renderWithQuery()
+    await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
+    await waitFor(() =>
       expect(
         screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or dismissed in another window or by your Kiro Crew agent).'),
-      ).toBeInTheDocument()
-      expect(screen.getByRole('alert').textContent).not.toContain('already dismissed')
-      expect(screen.getByRole('alert').textContent).not.toContain('already approved')
-    } finally {
-      confirmSpy.mockRestore()
-    }
+      ).toBeInTheDocument(),
+    )
+    await waitFor(() => expect(mockApi.skills.mock.calls.length).toBeGreaterThan(1))
+    // The refetch has failed; the hedge stands and no outcome is asserted.
+    expect(
+      screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or dismissed in another window or by your Kiro Crew agent).'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('alert').textContent).not.toContain('already dismissed')
+    expect(screen.getByRole('alert').textContent).not.toContain('already approved')
   })
 
   it('a not-found dismiss resolves to "already approved" when the skill went live', async () => {
@@ -479,21 +465,17 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
       }),
     )
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      renderWithQuery()
-      await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
-      live = true
-      fireEvent.click(screen.getByText('Dismiss'))
-      await waitFor(() =>
-        expect(
-          screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already approved in another window or by your Kiro Crew agent and now appears in the Skills list below).'),
-        ).toBeInTheDocument(),
-      )
-      expect(screen.getByRole('alert').textContent).not.toContain('approved or dismissed')
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    renderWithQuery()
+    await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
+    live = true
+    fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
+    await waitFor(() =>
+      expect(
+        screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already approved in another window or by your Kiro Crew agent and now appears in the Skills list below).'),
+      ).toBeInTheDocument(),
+    )
+    expect(screen.getByRole('alert').textContent).not.toContain('approved or dismissed')
   })
 
   it('a not-found approve refusal survives the refetch that removes its row', async () => {

@@ -183,7 +183,7 @@ export default [
       // 'error', not 'warn': like the native-<select> gate above this is a gate
       // on a set that only shrinks, so it stays out of the --max-warnings budget
       // where a real regression would be indistinguishable from unrelated noise.
-      // The 32 modules that still call these globals are exempted by name in the
+      // The modules that still call these globals are exempted by name in the
       // allowlist block below (see issue #15662); every other renderer file is
       // refused a new call. Electron main-process dialogs live outside src/ and
       // are untouched. Tests drive these globals through the harness and are
@@ -220,7 +220,7 @@ export default [
     // Allowlist for no-restricted-globals / no-restricted-properties: the
     // renderer modules that still call a browser-native confirm/alert/prompt
     // today (issue #15662). The gate above is 'error' for every OTHER renderer
-    // file, so a NEW native dialog anywhere else is refused; these 32 are the
+    // file, so a NEW native dialog anywhere else is refused; these are the
     // standing inventory, migrated to useConfirm() / in-app surfaces in later
     // PRs. This list only SHRINKS: delete a path the moment its last native
     // dialog is gone, never add one. Keep it sorted.
@@ -252,10 +252,7 @@ export default [
       'src/pages/overview/AgentTemplatesTab.tsx',
       'src/pages/overview/KiroCrewCfgTab.tsx',
       'src/pages/overview/MemoryTab.tsx',
-      'src/pages/overview/PortabilityTab.tsx',
       'src/pages/overview/PromptsTab.tsx',
-      'src/pages/overview/SkillsTab.tsx',
-      'src/pages/overview/SteeringTab.tsx',
       'src/utils/popoutController.ts',
     ],
     rules: {
