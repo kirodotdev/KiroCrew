@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import channel_options_checks
 from telegram_helpers import FakeCtx  # noqa: F401
 from telegram_helpers import FakeProvider  # noqa: F401
 from telegram_helpers import _cfg  # noqa: F401
@@ -26,7 +27,6 @@ from telegram_helpers import _press  # noqa: F401
 from telegram_helpers import _prime_live  # noqa: F401
 from telegram_helpers import FakeClient
 
-from conftest import assert_rejected_without_backtracking
 from kiro_crew.dashboard.token_auth import parse_duration
 from kiro_crew.messaging.commands import parse_dashboard_ttl
 from kiro_crew.messaging.renderer import session_provenance_tag
@@ -785,7 +785,7 @@ class TestInlineKeyboard:
         assert [len(row) for row in kb["inline_keyboard"]] == [1, 1]
 
 
-class TestExtractOptions:
+class TestExtractOptions(channel_options_checks.UnterminatedOptionsTagIsNotRedos):
     def test_trailing_options_extracted(self) -> None:
         body, opts = _extract_options("Answer here\n\n[OPTIONS: Yes | No | Maybe]")
         assert body == "Answer here"
@@ -800,24 +800,6 @@ class TestExtractOptions:
         body, opts = _extract_options("text so far [OPTIONS: Ye")
         assert "[OPTIONS" not in body
         assert opts == []
-
-    def test_unterminated_options_tag_is_not_redos(self) -> None:
-        # Regression (py/polynomial-redos): a plain greedy ``.*`` body could
-        # consume a "[" that ALSO starts the outer "[OPTIONS:" literal, so over
-        # text with many "[OPTIONS:" prefixes search() re-explored the body from
-        # each position — polynomial. The tempered body
-        # (?:[^[]|\[(?!OPTIONS:))* forbids only a re-occurring "[OPTIONS:", so
-        # the body is unambiguous (linear). A whitespace-padded unterminated tag
-        # and many repeated "[OPTIONS:" prefixes (the real pump) must both be
-        # rejected in CPU time linear in the pump -- see
-        # conftest.assert_rejected_without_backtracking for why this is not a
-        # 1.0 s wall-clock bound.
-        def reject(text: str) -> None:
-            body, opts = _extract_options(text)
-            assert opts == []
-
-        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" + ("\t" * n) + "x")
-        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" * n + "x")
 
 
 # ── transport.py: deny-by-default auth + capabilities + inbound ─────────────

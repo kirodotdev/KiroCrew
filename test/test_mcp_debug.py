@@ -17,6 +17,7 @@ import json
 from typing import Any
 from unittest.mock import patch
 
+import mcp_tool_set_checks
 import pytest
 
 from kiro_crew import mcp_debug as server
@@ -40,7 +41,7 @@ def _call(name: str, **args: Any) -> dict[str, Any]:
     return json.loads(server._call_tool(name, args))
 
 
-class TestTheToolSetIsRatcheted:
+class TestTheToolSetIsRatcheted(mcp_tool_set_checks.TheDeclaredSetMatchesWhatIsAdvertised):
     """The whole point of the server: five reads, and no way to add a write."""
 
     def test_exactly_five_tools_by_name(self) -> None:
@@ -51,9 +52,6 @@ class TestTheToolSetIsRatcheted:
             "debug_processes",
             "debug_snapshots",
         ]
-
-    def test_the_declared_set_matches_what_is_advertised(self) -> None:
-        assert server.TOOLS == tuple(t["name"] for t in server._list_tools())
 
     def test_no_tool_name_reads_as_a_write(self) -> None:
         """A name-level ratchet, so a write cannot arrive under a read's clothing."""

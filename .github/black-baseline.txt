@@ -479,8 +479,6 @@ test/test_issue_radar_investigation_tool.py
 test/test_issue_radar_list_probe.py
 test/test_issue_radar_recent_repos.py
 test/test_issue_radar_ref_summary.py
-test/test_issue_radar_routes_ai_coverage.py
-test/test_issue_radar_routes_coverage.py
 test/test_issue_radar_tagging.py
 test/test_issue_summary_workflow.py
 test/test_kas_display_mapping.py

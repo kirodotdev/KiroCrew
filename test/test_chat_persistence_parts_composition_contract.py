@@ -29,6 +29,8 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import composition_contract_checks
+
 from kiro_crew.dashboard import chat_persistence as cp
 
 FACADE = "kiro_crew.dashboard.chat_persistence"
@@ -304,14 +306,10 @@ def _part_names() -> dict[str, set[str]]:
     return {f"{PARTS_PACKAGE}.{stem}": _defined(_tree(PARTS_DIR / f"{stem}.py")) for stem in PARTS}
 
 
-class TestPackage:
-    def test_the_package_holds_exactly_the_composed_parts(self) -> None:
-        assert {path.stem for path in PARTS_DIR.glob("*.py")} == {*PARTS, "__init__"}
-
-    def test_the_package_init_holds_only_its_docstring(self) -> None:
-        body = _tree(PARTS_DIR / "__init__.py").body
-        assert len(body) == 1 and isinstance(body[0], ast.Expr)
-        assert isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)
+class TestPackage(
+    composition_contract_checks.ThePackageHoldsExactlyTheComposedParts,
+    composition_contract_checks.ThePackageInitHoldsOnlyItsDocstring,
+):
 
     def test_the_facade_composes_every_part_through_the_shared_helper(self) -> None:
         tree = _tree(Path(cp.__file__))
