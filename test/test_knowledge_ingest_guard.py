@@ -133,6 +133,20 @@ class TestSizeGuard:
 
 class TestChunkingOffLoop:
     @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_a_staged_upload_is_titled_by_its_original_name(
+        self, pipeline, kstore, tmp_path, monkeypatch
+    ):
+        """An upload is read from a ``kn_<hex>`` staging copy; its title is the upload's name."""
+        monkeypatch.setattr(ingestion_mod, "_max_ingest_file_mb", lambda: 0)
+        staged = tmp_path / "kn_15bdc0aa11bb22cc33dd44ee55ff6677.md"
+        staged.write_text("# Notes\n\nbody\n", encoding="utf-8")
+        await pipeline.ingest_file(str(staged), original_name="quarterly-report.md")
+        rows = kstore.db.execute("SELECT name, properties FROM sources").fetchall()
+        assert len(rows) == 1
+        assert json.loads(rows[0]["properties"])["title"] == "quarterly-report"
+
+    @pytest.mark.asyncio
     async def test_ingest_file_chunks_off_the_event_loop(
             self, pipeline, tmp_path, monkeypatch):
         doc = tmp_path / "doc.md"
