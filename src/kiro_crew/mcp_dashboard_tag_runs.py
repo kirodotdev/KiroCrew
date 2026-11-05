@@ -318,9 +318,9 @@ def _run_chat_session_pin(args: dict[str, Any], ctx: ToolContext) -> str:
     # Channel containment is enforced HERE, at dispatch, and not only by the
     # CHANNEL_AGENT_BLOCKED_TOOLS name match: that match runs at the
     # permission prompt, which an auto-approved call never reaches. A
-    # channel agent acts on thread text other people wrote, and nothing at
-    # the route refuses a ``channel:`` caller, so it is refused before any
-    # session is listed.
+    # channel agent acts on thread text other people wrote, so it is refused
+    # before any session is listed. The route refuses every other session a
+    # channel can drive (403 ``channel_reachable_caller``).
     if caller_key.startswith("channel:"):
         try:
             sel().log_tool_invocation(
