@@ -374,9 +374,9 @@ def forward_declared_env_enabled() -> bool:
     Function-local config import: ``config.loader`` imports the rewriter, and with
     it this module, at its own module top level, so a top-level import here would
     be circular. Mirrors
-    ``backend._mcp_apps_enabled``. Fails CLOSED — an unreadable config means the
-    declared env is not forwarded, which also leaves the server unwrapped rather
-    than pooling it without the env it declares.
+    ``backend._mcp_apps_enabled``. Fails CLOSED — an unreadable or degraded config
+    means the declared env is not forwarded, which in the rewriter also leaves the
+    server unwrapped rather than pooling it without the env it declares.
     """
     try:
         # circular import: config.loader imports the rewriter, and with it this
@@ -385,10 +385,13 @@ def forward_declared_env_enabled() -> bool:
         # Mirrors backend._mcp_apps_enabled.
         from kiro_crew.config.loader import KiroCrewConfig
 
-        return bool(KiroCrewConfig.load().mcp_gateway.forward_declared_env)
+        cfg = KiroCrewConfig.load()
     except Exception:
         logger.debug("rewriter: config unreadable; declared-env forwarding off", exc_info=True)
         return False
+    if cfg._base_unreadable or cfg._overlay_unreadable or "mcp_gateway" in cfg.degraded_sections:
+        return False
+    return bool(cfg.mcp_gateway.forward_declared_env)
 
 
 def pool_identity_env_keys() -> frozenset[str]:
