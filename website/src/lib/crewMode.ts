@@ -73,6 +73,25 @@ export function liveMateThreads(rows: readonly { key?: string; mode?: string }[]
   return new Set(rows.filter(r => r.mode === 'member' && r.key).map(r => r.key as string))
 }
 
+/** The slot keys that are busy, each slot's own key plus the mate thread it was
+ *  dispatched from (`mate_root`): a mate is working while ANY session in its tree
+ *  is, as a waiting worker already badges the mate as needing you. A slot is busy
+ *  while its turn runs, a child runs, or a child waits behind the spawn caps (the
+ *  gateway refuses a new turn on it either way). */
+export function busySlotKeys(
+  rows: readonly { key?: string; running?: boolean; subagents_running?: boolean; mate_root?: string | null }[],
+  subagentQueued: Readonly<Record<string, number>> | undefined,
+): ReadonlySet<string> {
+  const keys = new Set<string>()
+  for (const r of rows) {
+    if (!r.key || !(r.running || r.subagents_running || (subagentQueued?.[r.key] ?? 0) > 0)) continue
+    keys.add(r.key)
+    const mate = mateRootOf(r)
+    if (mate) keys.add(mate)
+  }
+  return keys
+}
+
 /** The conductor Crew Mode runs while the gateway has not said otherwise. */
 export const DEFAULT_CREW_MODE_AGENT = 'kirocrew-conductor'
 

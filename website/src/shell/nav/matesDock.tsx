@@ -24,6 +24,7 @@ import { OverlayPortal } from '../../components/overlayRoot'
 import { useDndSensors } from '../../hooks/useDndSensors'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { railWidthFor } from '../../hooks/useRailWidth'
+import { busySlotKeys } from '../../lib/crewMode'
 import { haptic } from '../../lib/haptic'
 import { DOCK_MATES_LIMIT, dockMateOrder, starOrderWrites } from '../../lib/dockMates'
 import { i18nT } from '../../i18n/t'
@@ -113,8 +114,11 @@ function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentPro
     const slot = (m.slot_key ? slotRowByKey(s.dashboard.slots, m.slot_key) : undefined)
       ?? s.dashboard.slots.find(row => row.mode === 'member' && row.agent === m.name)
     // Match the Mates page: live idle overrides the HTTP snapshot, while
-    // child work (including a queued child) still counts as working.
-    return slot ? !!(slot.running || slot.subagents_running || (s.chat.subagentQueued?.[slot.key] ?? 0) > 0) : m.running
+    // child work (including a queued child) and a session the mate dispatched
+    // still count as working.
+    const key = slot?.key || m.slot_key
+    if (key && busySlotKeys(s.dashboard.slots, s.chat.subagentQueued).has(key)) return true
+    return slot ? false : m.running
   })
   return (
     <NavItem
