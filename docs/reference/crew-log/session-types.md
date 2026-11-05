@@ -63,13 +63,13 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`work/recorded`](#workrecorded) | One work-board mutation: who acted, on which item, and the fields it set. | live | `gateway` | — |
 | [`work/charged`](#workcharged) | One bound worker's charge, relayed by the gateway into the board's own log. | live | `gateway` | — |
 | [`panel/published`](#panelpublished) | One publish of a crew's own webview: the data, and the template that renders it. | live | `gateway` | — |
-| [`dashboard/instance_changed`](#dashboardinstance_changed) | One mate dashboard-instance change: adopted, edited or rolled back. | live | `gateway` | — |
+| [`dashboard/instance_changed`](#dashboardinstance_changed) | One Bot dashboard-instance change: adopted, edited or rolled back. | live | `gateway` | — |
 | [`dashboard/agentic_value`](#dashboardagentic_value) | One agent-written dynamic dashboard value. | live | `gateway` | — |
 | [`dashboard/agentic_refused`](#dashboardagentic_refused) | A refused agentic dashboard write (the mistake book's input), or a correction. | live | `gateway` | — |
-| [`dashboard/goal_recorded`](#dashboardgoal_recorded) | A crewmate's goal record after a change: goals and milestones. | live | `gateway` | — |
-| [`dashboard/waiting_changed`](#dashboardwaiting_changed) | What a crewmate waits on the person for, after it changed. | live | `gateway` | — |
-| [`dashboard/custom_value`](#dashboardcustom_value) | One record a script cron or an installed app appended for a crewmate, stamped with who wrote it. | live | `gateway` | — |
-| [`dashboard/custom_failed`](#dashboardcustom_failed) | A run of a script cron bound to this crewmate ended in error, stamped by the gateway. | live | `gateway` | — |
+| [`dashboard/goal_recorded`](#dashboardgoal_recorded) | A Bot's goal record after a change: goals and milestones. | live | `gateway` | — |
+| [`dashboard/waiting_changed`](#dashboardwaiting_changed) | What a Bot waits on the person for, after it changed. | live | `gateway` | — |
+| [`dashboard/custom_value`](#dashboardcustom_value) | One record a script cron or an installed app appended for a Bot, stamped with who wrote it. | live | `gateway` | — |
+| [`dashboard/custom_failed`](#dashboardcustom_failed) | A run of a script cron bound to this Bot ended in error, stamped by the gateway. | live | `gateway` | — |
 | [`card/proposed`](#cardproposed) | The agent proposed a change card, at this point in the conversation. | live | `gateway` | opener of `card/finished` |
 | [`card/finished`](#cardfinished) | A change card reached a finished status. | live | `gateway` | closer, by `card_id`; may repeat |
 | [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
@@ -1651,13 +1651,13 @@ the file still serves that crew's panel.
 
 ## The dynamic dashboard
 
-A crewmate's Dashboard tab: its own copy of a template, the values it writes into
-that copy, and the writes that were refused. All three land on the crewmate's own
+A Bot's Dashboard tab: its own copy of a template, the values it writes into
+that copy, and the writes that were refused. All three land on the Bot's own
 DM session log and fold under its slot.
 
 ### `dashboard/instance_changed`
 
-One accepted change to a crewmate's own dynamic dashboard.
+One accepted change to a Bot's own dynamic dashboard.
 
 **Kind and `src`** — `session`; `src` is `gateway`.
 
@@ -1670,7 +1670,7 @@ the file is the record of the current page, and this entry is its history.
 
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
-| `slug` | string | required | Whose dashboard changed, so one entry names its crewmate without resolving the slot. | |
+| `slug` | string | required | Whose dashboard changed, so one entry names its Bot without resolving the slot. | |
 | `instance_version` | integer | required | The instance's own counter after this change. Never the template's version. | |
 | `action` | string | required | What the change was. Closed: the store clamps it to this list. | `adopted`, `edited`, `rolled_back` |
 | `template_id` | string | required | Id of the template this instance was copied from. | |
@@ -1694,7 +1694,7 @@ change with the log off still succeeds, so a missing entry is not a missing chan
 
 ### `dashboard/agentic_value`
 
-One agentic dashboard value the crewmate wrote, already type-checked.
+One agentic dashboard value the Bot wrote, already type-checked.
 
 **Kind and `src`** — `session`; `src` is `gateway`.
 
@@ -1757,16 +1757,16 @@ correction carries `code` `corrected` and `corrects`.
 
 **Since** — #17507.
 
-## A crewmate's own record
+## A Bot's own record
 
-Two snapshots the gateway appends to a crewmate's own DM session log so its
+Two snapshots the gateway appends to a Bot's own DM session log so its
 Dashboard page can bind them (`dashboard/crewmate_feed.py`). Each replaces the
 last one whole in its slot fold, so a page reading it moves when the fact does,
-with no value the crewmate typed.
+with no value the Bot typed.
 
 ### `dashboard/goal_recorded`
 
-Kind `session`, `src` `gateway`. Written after every write of the crewmate's goal
+Kind `session`, `src` `gateway`. Written after every write of the Bot's goal
 record (a goal set, milestones applied, a reading recorded), through
 `member_goals.add_change_listener`, and only when it differs from the last one
 recorded for that thread. A write while the thread has no live session (an idle
@@ -1776,7 +1776,7 @@ the thread's next growth, when its session is known. Folded as `goal`.
 | field | type | notes |
 | --- | --- | --- |
 | `goals` | array of `{text}` | the goals, in the record's order |
-| `milestones` | array of `{text, target, current, at}` | `current` is the reading the crewmate last recorded with `key_result_progress` and `at` its time; whether the target is reached is the crewmate's own word in that reading, not judged by the gateway; at most `CREWMATE_ROW_LIMIT` rows |
+| `milestones` | array of `{text, target, current, at}` | `current` is the reading the Bot last recorded with `key_result_progress` and `at` its time; whether the target is reached is the Bot's own word in that reading, not judged by the gateway; at most `CREWMATE_ROW_LIMIT` rows |
 | `goals_total` | integer | how many goals the record holds in all |
 | `milestones_total` | integer | how many milestones the record holds in all |
 
@@ -1788,7 +1788,7 @@ the thread's next growth, when its session is known. Folded as `goal`.
 
 Kind `session`, `src` `gateway`. Written when the list
 `dashboard.member_waiting.waiting_items` reads off the thread differs from the
-last one recorded, checked after each growth of the crewmate's DM log (a reply,
+last one recorded, checked after each growth of the Bot's DM log (a reply,
 an `[OPTIONS]` chip, a card raised or pressed, a turn ending). Folded as
 `waiting`.
 
@@ -1803,7 +1803,7 @@ an `[OPTIONS]` chip, a card raised or pressed, a turn ending). Folded as
 
 ### `dashboard/custom_value`
 
-Kind `session`, `src` `gateway`. Written when a script cron bound to this crewmate
+Kind `session`, `src` `gateway`. Written when a script cron bound to this Bot
 calls `ctx.crew_log_append(type, data)`, through
 `POST /api/agent-panel/dashboard/record` (`dashboard/handlers/agent_panel_record.py`),
 or when an installed app holding the `/api/member-records/*` grant posts to
@@ -1812,8 +1812,8 @@ routes hand the record to the same append. The body carries `type`, `data` and a
 optional `max_age_s` only;
 `writer`, `member` and `crew_key` are stamped by the gateway from the caller's attested
 identity (the job's scope, or the token's app claim), so neither a script nor an app can
-choose who it writes as. A job bound to no crewmate is refused; an app names the
-crewmate in the path and is refused for a slug no crewmate has or two share. An app's
+choose who it writes as. A job bound to no Bot is refused; an app names the
+Bot in the path and is refused for a slug no Bot has or two share. An app's
 `type` is stored as `<app id with - as _>__<type>`, one bindable path segment that
 splits one way, so two apps never share a key and `__` is refused in every caller's
 type. Folded as
@@ -1826,8 +1826,8 @@ as text, and nothing frames it as an instruction to an agent.
 | `type` | string | the record type the writer named (for an app, `<app id with - as _>__<type>`): one plain name without `__`, at most `CUSTOM_TYPE_NAME_LIMIT` characters |
 | `data` | object | the record, at most `CUSTOM_RECORD_BYTES` serialized and `CUSTOM_RECORD_DEPTH` deep; its members are the writer's own |
 | `writer` | string | `cron:<job id>` or `app:<app id>`, stamped by the gateway |
-| `member` | string | the slug of the crewmate written for (the job's binding, or the app route's path), stamped by the gateway |
-| `crew_key` | string | digest of that crewmate's exact name, for ownership on a shared slot |
+| `member` | string | the slug of the Bot written for (the job's binding, or the app route's path), stamped by the gateway |
+| `crew_key` | string | digest of that Bot's exact name, for ownership on a shared slot |
 | `max_age_s` | integer | optional; how many seconds the writer says the record stays current, `CUSTOM_MAX_AGE_MIN_S` to `CUSTOM_MAX_AGE_MAX_S`; the fold renders `stale_after` from the entry's own `time` plus this |
 
 ```json
@@ -1838,9 +1838,9 @@ as text, and nothing frames it as an instruction to an agent.
 
 Kind `session`, `src` `gateway`. Written by the gateway's scheduler
 (`slack/gateway_runtime/cron_fire.py` through `agent_panel_record.record_cron_failure`)
-when a run of a script cron bound to this crewmate ends with `last_status` `error`: an
+when a run of a script cron bound to this Bot ends with `last_status` `error`: an
 exception, a refused `ctx.crew_log_append` (`quota_exceeded` among them), a timeout or a
-denial. Best-effort: a crewmate with no crew log yet gets none. No script can write one,
+denial. Best-effort: a Bot with no crew log yet gets none. No script can write one,
 because the record route only appends `dashboard/custom_value`. Folded by `custom`: each
 latest record the same `writer` wrote before it gains `failed_at` and `last_error`, until
 that writer's next record replaces the row, and `custom.failures` lists the writer.
@@ -1849,8 +1849,8 @@ that writer's next record replaces the row, and `custom.failures` lists the writ
 | --- | --- | --- |
 | `writer` | string | `cron:<job id>`, from the scheduler's own record of the job |
 | `error` | string | the run's `last_error`, redacted and cut to `CUSTOM_ERROR_LIMIT` characters |
-| `member` | string | the slug of the crewmate the job is bound to |
-| `crew_key` | string | digest of that crewmate's exact name |
+| `member` | string | the slug of the Bot the job is bound to |
+| `crew_key` | string | digest of that Bot's exact name |
 
 ```json
 {"type":"dashboard/custom_failed","seq":97,"time":1789000004600,"src":"gateway","data":{"writer":"cron:nightly-build","error":"crew_log_append() failed: this cron job has sent 30 records in the last minute; wait before sending more","member":"conductor","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}

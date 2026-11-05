@@ -724,7 +724,7 @@ else has joined hides the control and the bylines (`useSharedCrewListView`,
 `SharedCrewBylineContext`; see People and setup modes). A creator-filtered row
 matches its catalog key against the full local live-slot roster by normalized
 session identity, including slots outside the chat-only sidebar projection.
-A live crewmate conversation opens its owning surface through `opensElsewhereOf`;
+A live Bot conversation opens its owning surface through `opensElsewhereOf`;
 a live chat switches with the actual slot key and passes that key to the host.
 Only a catalog row with no live match goes through `resumeFromHistory`.
 

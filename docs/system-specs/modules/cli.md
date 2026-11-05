@@ -1669,7 +1669,7 @@ else in an update route calls `dep_sync.sync_or_reinstall` or
    imported. The child decides how much the install needs the engine.
    `agent.kas_bundle` on makes it required: a failure fails the update. That is
    the switch alone, not `kas_bundle_route()`, because with it on a member route
-   (`agent.member_acp_backend`), a mate's harness pin or a spawn asking for KAS
+   (`agent.member_acp_backend`), a Bot's harness pin or a spawn asking for KAS
    runs the engine while the default backend is something else. An engine
    version on disk while a KAS spawn here takes the bundle route on its own
    (`acp.kas_route.resolve_kas_route`: no kiro-cli, or one that cannot run a

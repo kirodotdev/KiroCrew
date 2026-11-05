@@ -81,6 +81,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _unlink_unheld_app_lock,
         _unresolvable_tool_refs,
         purge_uninstalled_agent_residue,
+        snapshot_app_agent_configs,
     )
     from kiro_crew.apps.bridges_crons import (  # noqa: F401
         _CREATE_ONLY_CRON_KEYS,
@@ -216,6 +217,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         Container,
         Iterable,
         Iterator,
+        Mapping,
         Optional,
     )
     from urllib.parse import (  # noqa: F401

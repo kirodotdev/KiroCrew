@@ -286,10 +286,9 @@ def azs_offering_instance_type(instance_type: str, profile: str, region: str) ->
 
 
 # Hosts the bootstrap MUST resolve to build the box. Keep in sync with the
-# UserData in templates/kirocrew-ec2.yaml — the kiro-cli URL is pinned to
-# us-east-1 there regardless of the launch region, so it is literal here too.
+# UserData in templates/kirocrew-ec2.yaml; a test holds the kiro-cli host equal.
 _BOOTSTRAP_DOWNLOAD_HOSTS = (
-    "desktop-release.q.us-east-1.amazonaws.com",  # kiro-cli musl build
+    "prod.download.cli.kiro.dev",  # kiro-cli musl build
     "nodejs.org",  # Node >= NODE_MIN tarball
 )
 
@@ -298,9 +297,9 @@ def _zone_shadows_host(zone: str, host: str) -> bool:
     """True when a hosted zone named ``zone`` is authoritative for ``host``.
 
     A private hosted zone owns its apex **and every subdomain**, so
-    ``q.us-east-1.amazonaws.com`` shadows ``desktop-release.q.us-east-1.amazonaws.com``.
-    Matching is done on label boundaries so ``xq.us-east-1.amazonaws.com`` does
-    not match — a plain ``endswith`` would produce false positives.
+    ``kiro.dev`` shadows ``prod.download.cli.kiro.dev``.
+    Matching is done on label boundaries so ``xkiro.dev`` does not match — a
+    plain ``endswith`` would produce false positives.
     """
     zone = zone.rstrip(".").lower()
     host = host.rstrip(".").lower()
@@ -312,18 +311,13 @@ def _zone_shadows_host(zone: str, host: str) -> bool:
 def shadowed_download_hosts(vpc_id: str, profile: str, region: str) -> list[tuple[str, str]]:
     """``(host, zone)`` pairs where a private hosted zone hides a download host.
 
-    An interface VPC endpoint with private DNS enabled creates a private hosted
-    zone that is authoritative for its whole domain. Amazon Q's
-    ``com.amazonaws.<region>.q`` endpoint creates one for
-    ``q.<region>.amazonaws.com`` — and kiro-cli is downloaded from
-    ``desktop-release.q.us-east-1.amazonaws.com``, which sits inside it. In such
-    a VPC the lookup is answered by the private zone, finds no matching record,
-    and returns NXDOMAIN **without falling through to public DNS**, so the
-    bootstrap dies ~4 minutes in on a name that resolves fine everywhere else.
+    A private hosted zone bound to the VPC is authoritative for its whole
+    domain: a lookup under it that finds no record returns NXDOMAIN **without
+    falling through to public DNS**, so the bootstrap would die minutes in on a
+    name that resolves fine everywhere else.
 
-    The failure is deterministic — retries do not help — and it surfaces as
-    "kiro-cli did not install", which names the wrong layer. One read-only call
-    here turns it into a pre-launch error.
+    The failure is deterministic — retries do not help. One read-only call here
+    turns it into a pre-launch error.
 
     Returns an empty list when the check cannot be performed (for example the
     launch role predates ``route53:ListHostedZonesByVPC``): a missing optional
@@ -373,10 +367,9 @@ def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> 
         f"VPC {vpc_id} has a private hosted zone that shadows a host the bootstrap "
         f"must download from ({detail}). Inside this VPC that name resolves to "
         "NXDOMAIN instead of falling through to public DNS, so the install would "
-        "fail several minutes from now with a misleading error. This is usually an "
-        "interface VPC endpoint with private DNS enabled (e.g. Amazon Q's "
-        "`com.amazonaws.<region>.q`). Launch into a VPC without that endpoint via "
-        "`--subnet <subnet-id>`, or disable private DNS on the endpoint, then retry.",
+        "fail several minutes from now with a misleading error. Launch into a VPC "
+        "without that zone via `--subnet <subnet-id>`, or remove the zone from this "
+        "VPC, then retry.",
         action="route53:ListHostedZonesByVPC",
     )
 

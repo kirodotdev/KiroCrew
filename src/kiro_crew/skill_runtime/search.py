@@ -196,7 +196,9 @@ def _exact_read_while_building(
                 or _catalog._alias_matches(candidate, globs, loader_roots)
             ):
                 return None
-        if disabled_apps and loader._owning_app(key, candidate) in disabled_apps:
+        row = (key, candidate, None)
+        released_apps = _catalog._get_released_app_names(loader, [row])
+        if _catalog._hidden_by_app(loader, row, disabled_apps, released_apps):
             return None
         return loader.load_skill(
             key, project_dir, max_bytes=max_bytes, refusal_reasons=refusal_reasons

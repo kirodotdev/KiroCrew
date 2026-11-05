@@ -482,8 +482,18 @@ async def _start_unix_site(runner: web.AppRunner, port: int) -> Path | None:
     directory gate (created here if missing) and is itself tightened to 0600,
     mirroring ``mcp_gateway/transport`` conventions. Returns the bound path,
     or ``None`` when the transport is unavailable.
+
+    *port* must be the BOUND port (``_resolved_bound_port``), never a requested
+    ``0``: clients dial the socket named for the port they resolved, and the
+    stale-socket unlink is only safe for a name whose TCP port this process
+    holds. A ``0`` therefore degrades to TCP-only rather than binding
+    ``dashboard-0.sock``, a name every ``--port auto`` gateway in the data home
+    would share and unlink from under each other.
     """
     if platform_compat.IS_WINDOWS:
+        return None
+    if not port:
+        logger.warning("dashboard bound port unknown; internal API stays TCP-only")
         return None
     try:
         path = dashboard_socket_path(port)

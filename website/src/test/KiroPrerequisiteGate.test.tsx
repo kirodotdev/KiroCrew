@@ -904,6 +904,23 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
   })
 
+  it('asks a signed-out browser to sign in again instead of reporting a Kiro CLI check failure', async () => {
+    // A 403 X-Auth-Required refusal: the gateway never ran the check, so the
+    // banner's sign-in is the one remedy and no retry can succeed before it.
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(403, 'session expired', '', true))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Sign in again to continue.' })).toBeInTheDocument()
+    // The refusal is announced as an error, not dropped into a plain paragraph.
+    expect(screen.getByRole('alert')).toHaveTextContent(/Your sign-in is no longer valid/)
+    expect(screen.queryByText('We could not check Kiro CLI.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
   it('shows the probe diagnostic when the backend backstop degrades a probe exception to 200', async () => {
     // The backend's last-resort backstop reports an exception as a retryable
     // not-ready 200 body (never a 500), so `prerequisite` resolves and the

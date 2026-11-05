@@ -42,6 +42,8 @@ from kiro_crew.sandbox_leaves import (
 #:      extends trust by nothing for ``{}``;
 #:    * ``aws_service_consent.json`` — ``aws_consent._read_all`` returns ``{}`` for
 #:      both absent and empty, so every service stays unconfirmed;
+#:    * ``denied_commands.json`` — ``hooks.load_denied_commands_state`` returns ``{}``
+#:      for both, so nothing is opted out (criterion 2 is argued at its entry);
 #:    * ``decisions_consent.json`` — ``decisions.consent.load_state`` reads ``{}``
 #:      as NOT CONSENTED, which is what an absent keystone means;
 #:    * ``shared_crew_preview.json`` — ``shared_crew.preview.read_stored`` reads
@@ -64,13 +66,8 @@ from kiro_crew.sandbox_leaves import (
 #:    or unlinked. The empty ``profiles`` dir is exempt from the concern entirely: a
 #:    directory bind shows live contents, so a profile added later is visible.
 #:
-#: DELIBERATELY EXCLUDED, and each for a different one of those two reasons:
+#: DELIBERATELY EXCLUDED:
 #:
-#:   * ``denied_commands.json`` — clears (1) but fails (2), which is the direction
-#:     that matters: in-sandbox ``mcp_cron`` reads it to decide whether a command is
-#:     denied, so a pinned ``{}`` would report "nothing is denied" for the rest of the
-#:     sandbox's life even after the operator denies a command. Sealing it would trade
-#:     an agent-authored deny list for a stale one, so it keeps the pre-existing gap;
 #:   * ``security_policy.json`` — fails (1). ``governance.load_security_policy`` reads
 #:     the file whenever it exists and fails CLOSED on a parse or version mismatch, so
 #:     a ``{}`` stub raises ``PlatformCompositionError`` out of a function that runs at
@@ -346,6 +343,11 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # Absent until the operator first saves a deny setting, and while absent a sandbox
+    # could create it with ``disable_all`` set. Criterion 2 is moot here: the host saves
+    # by rename, which detaches this seal in a running sandbox (the ``config.json``
+    # residual below), so in-sandbox readers see the saved rules, never a pinned ``{}``.
+    "denied_commands.json",
     "decisions_consent.json",
     # The Shared Crew preview switch: ``preview.read_stored`` reads an absent,
     # empty and unreadable store alike as OFF, so a pre-created ``{}`` means

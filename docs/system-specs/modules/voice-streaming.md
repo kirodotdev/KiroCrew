@@ -403,6 +403,13 @@ region, so `voice_polly_rejected` is a client-fallback code alongside
 payloads carry `speakable`, and a manual Read aloud that allowed the fallback
 speaks the reply on the client instead of showing the notice.
 
+Every Polly `aws` child gets its environment through `sandbox.without_python_env`:
+the catalogue's `describe-voices`, the consent gate's probes and synthesis.
+aws-cli v1 is a Python program, so this keeps the gateway's `PYTHONPATH` /
+`PYTHONHOME` from making it import the gateway's packages, with or without a
+sandbox backend. Nothing else is dropped by it. The consent probes get it at
+`cloud.aws.run_aws`.
+
 `_synthesize_polly()` runs its command through
 `wrap_argv_async(..., _prepare=wrap_argv)`. `_synthesize_system()` instead delegates
 to `_run_tts_subprocess()`, which uses `sandboxed_spawn_argv_async()` and the

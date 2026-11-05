@@ -486,6 +486,9 @@ class ScriptHookStore:
         # snapshot taken BEFORE B's change and drops it. Re-entrant because the
         # persist path is called from inside the same held section.
         self._mutex = threading.RLock()
+        # ``load=False`` is a snapshot its caller reads in (``persisted_hook_store``):
+        # writing a fire's status back would put that snapshot over a newer save.
+        self._persists_fire_status = load
         if load:
             self._load()
 
@@ -1002,7 +1005,7 @@ class ScriptHookStore:
         # Snapshot INSIDE the worker under the mutex, not here: capturing on the
         # loop and persisting later leaves the same interleaving window a
         # concurrent CRUD mutation could fall into.
-        if touched:
+        if touched and self._persists_fire_status:
             await asyncio.to_thread(self._persist_current)
         return results
 

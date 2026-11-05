@@ -402,7 +402,7 @@ untouched. On top of those verbs the port adds only:
   `mode_raise_refused` for a mode above the target session's current mode or
   above the launching session's own posture (`_trust` → `trust`, `_trust_reads`
   → `trust_reads`, else `normal`; a launching slot that closed or was replaced
-  reads as `normal`, and a Crew Mode card trust (`_trust_card_scoped`), which
+  reads as `normal`, and an Ultra Mode card trust (`_trust_card_scoped`), which
   `approval_posture.trust_carries` keeps from passing to the sessions it
   starts though it reaches its subagents, counts as no `_trust`). So a session the person lowered stays lowered, and the
   mode write's `trust` arm, which also approves the session's pending tool calls,
@@ -1119,7 +1119,7 @@ writes nothing. Neither card offers Undo: the library has no delete, and an upda
 keeps every earlier revision in `revisions`. Only the main assistant's own
 dashboard chat may propose one: the shared card caller check already refuses
 sub-agents, scheduled and app sessions, channel turns and turns the user did not
-send, and the propose route also refuses a crewmate's thread and its workers
+send, and the propose route also refuses a Bot's thread and its workers
 (`owner_assistant_only`). SEL records the proposal on the shared `cards.propose` row
 (its resource names the card id and kind), the owner's decline as `cards.decline`,
 and the save itself on the definition route's own `workflow_definition_create` /
@@ -2083,10 +2083,10 @@ refusal or a `WorkflowMemoryError`, both raised with fixed text (a test parses
 every raise site to keep it so). Any other cause, such as an `OSError` or a
 memory-store refusal that formats one and its path into its own text, stays in
 the log only. When either reason is one of
-the two a mate's own binding produces (`MEMBER_ON_GLOBAL_REASON`,
+the two a Bot's own binding produces (`MEMBER_ON_GLOBAL_REASON`,
 `MEMBER_WITHOUT_IDENTITY_REASON`), the text adds the two ways to run a workflow:
-a chat with no mate picked (the default template on Global), or a mate
-with its own memory. A mate on Global V1 is still refused: member memory
+a chat with no Bot picked (the default template on Global), or a Bot
+with its own memory. A Bot on Global V1 is still refused: member memory
 never substitutes Global. A refusal that names no reason keeps the generic text
 "Workflow memory is unavailable; no Global fallback was used."
 

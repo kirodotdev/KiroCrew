@@ -16,7 +16,8 @@ Instance fields written: ``_drain_mode_reports``, ``_mcp_notifications``,
 Instance fields read: ``_acp_config_options``, ``_agent``,
 ``_copilot_ambiguous_mcp_calls``, ``_deepseek_gate_nonce``,
 ``_deepseek_read_only_issue``, ``_pi_gate_nonce``, ``_session_id``, ``_session_key``,
-``_side_read_only``, ``_spec_denied_tools``, ``_tool_call_diff_path``,
+``_side_read_only``, ``_spec_denied_tools``, ``_spec_shell_allowlist``,
+``_spec_write_allowlist``, ``_spec_write_cwd``, ``_tool_call_diff_path``,
 ``_tool_call_harness_tool_name``, ``_tool_call_identity_unreadable``,
 ``_tool_call_input_redacted``, ``_tool_call_inputs``, ``_tool_call_is_shell``,
 ``_tool_call_mcp_server``, ``_tool_call_params``, ``_tool_call_tool_name``,
@@ -61,6 +62,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     session_config_drift_issue,
@@ -1416,6 +1418,14 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
         # A native sub-agent's request: the dashboard keeps the parent's deny
         # overrides away from it (``dashboard.deny_override.slot_may_override``).
         event.native_child_call = True
+    if getattr(self, "backend", None) in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
+        # The spec's `toolsSettings` shell and write allowlists: the gate's
+        # `spec-shell-allowlist` and `spec-write-allowlist` rows refuse what they do
+        # not cover. A native sub-agent's request carries them too: it runs in this
+        # same process under this session's spec, with no spec of its own.
+        event.spec_shell_allowlist = getattr(self, "_spec_shell_allowlist", None)
+        event.spec_write_allowlist = getattr(self, "_spec_write_allowlist", None)
+        event.spec_write_cwd = str(getattr(self, "_spec_write_cwd", "") or "")
     # Whether the mark above can be trusted for this backend. ``None`` when the
     # attribute is unset, never ``""``: that is Kiro CLI's id.
     event.child_calls_marked = child_calls_marked(
