@@ -1,9 +1,8 @@
-"""``POST /api/autonudge`` refuses an unknown body key, as the monitor tools do (#30333).
+"""``POST /api/autonudge`` refuses an unknown body key, as the monitor tools do.
 
 The ``monitor_start`` / ``monitor_watch`` tools answer an extra field with
-``<field>: unknown field for tool ...`` and arm nothing. The REST route used to
-read the keys it knew and arm the loop anyway, so the same input was refused on
-one path and silently accepted on the other.
+``<field>: unknown field for tool ...`` and arm nothing. The REST route answers
+the same input the same way: a 400 naming the field, and no loop armed.
 """
 
 from __future__ import annotations
