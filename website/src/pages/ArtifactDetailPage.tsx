@@ -3,11 +3,10 @@
  * `ArtifactPopoutFrame` renders). This file is the page's only import path:
  * it calls the owner hooks beside it in the page's hook order and renders the
  * two views. It keeps the comment counts and the side-panel state machine (the
- * owners and views read them, and two callbacks here set the panel), the revert
- * (its native confirm is allowlisted for this file), and the companion-chat
- * open path, its context entry and the upstream sync banner, which hold
- * agent-facing and provider strings that are not translated. New work goes to
- * the owner whose part it is:
+ * owners and views read them, and two callbacks here set the panel), the revert,
+ * and the companion-chat open path, its context entry and the upstream sync
+ * banner, which hold agent-facing and provider strings that are not translated.
+ * New work goes to the owner whose part it is:
  *   useArtifactDetailPageDocument.ts   page state, the artifact and its versions
  *   useArtifactDetailPageEditor.ts     header and editor writes, editor lifecycle
  *   useArtifactDetailPageComments.ts   comments, the anchored composer, threads
@@ -47,8 +46,8 @@ export { isEditableKind }
 export default function ArtifactDetailPage({ popout = false }: { popout?: boolean } = {}) {
   const stateRead = useArtifactDetailPageState()
   const {
-    slug, navigate, confirmDialog, queryClient, dispatch, selectedVersion, setSelectedVersion, editing,
-    setSaving, setSaveError,
+    slug, navigate, confirm, confirmDialog, confirmOpen, queryClient, dispatch, selectedVersion, setSelectedVersion, editing,
+    setSaving, setSaveError, editGenerationRef,
   } = stateRead
   // ── Inline-comment state (durable via /api/artifacts/:slug/comments) ──
   const commentsQuery = useQuery<{ comments: ArtifactComment[]; remote_sync_error?: string | null }>({
@@ -130,14 +129,26 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const documentRead = useArtifactDetailPageDocument({ popout, stateRead })
   const { detailQuery, isCurrent, versionQuery, artifact, dirty } = documentRead
   const editorRead = useArtifactDetailPageEditor({ stateRead, documentRead })
+  const slugRef = useRef(slug)
+  useEffect(() => { slugRef.current = slug }, [slug])
   const handleRevert = useCallback(async () => {
-    if (!artifact || !selectedVersion || isCurrent) return
+    if (!artifact || !selectedVersion || isCurrent || confirmOpen) return
+    const targetSlug = artifact.slug
     const targetVersion = selectedVersion
     const newVersion = (detailQuery.data?.version ?? 1) + 1
-    const ok = window.confirm(
-      i18nT('pages.artifactDetailPage.revert_confirm', { version: targetVersion, newVersion }),
-    )
-    if (!ok) return
+    const ok = await confirm({
+      title: i18nT('pages.artifactDetailPage.revert'),
+      body: i18nT('pages.artifactDetailPage.revert_confirm', { version: targetVersion, newVersion }),
+      confirmLabel: i18nT('pages.artifactDetailPage.revert'),
+      danger: false,
+    })
+    // Backstop to the withdrawal on a route change: the question does not name its
+    // artifact, so an answer given after the route moved is not consent to revert it.
+    if (!ok || slugRef.current !== targetSlug) return
+    // Read after the answer: an edit ending during the question advances the
+    // generation, and a value read before it would leave Saving stuck. From here on,
+    // a later edit or route change stops this revert's state writes.
+    const editGeneration = editGenerationRef.current
     setSaving(true)
     setSaveError(null)
     try {
@@ -147,22 +158,24 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // 'reverted' event with the source version pinned so the activity
       // timeline can render it as a revert (not a generic edit) and skip
       // the broken 'from session dashboard:ui' link.
-      const versionData = await api.artifactVersion(artifact.slug, targetVersion)
-      await api.updateArtifact(artifact.slug, {
+      const versionData = await api.artifactVersion(targetSlug, targetVersion)
+      await api.updateArtifact(targetSlug, {
         content: versionData.content ?? '',
         event_type: 'reverted',
         from_version: targetVersion,
       })
-      await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
-      await queryClient.invalidateQueries({ queryKey: ['artifact-versions', slug] })
-      await queryClient.invalidateQueries({ queryKey: ['artifact-events', slug] })
-      setSelectedVersion(null)
+      await queryClient.invalidateQueries({ queryKey: ['artifact', targetSlug] })
+      await queryClient.invalidateQueries({ queryKey: ['artifact-versions', targetSlug] })
+      await queryClient.invalidateQueries({ queryKey: ['artifact-events', targetSlug] })
+      if (editGenerationRef.current === editGeneration) setSelectedVersion(null)
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err))
+      if (editGenerationRef.current === editGeneration) {
+        setSaveError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
-      setSaving(false)
+      if (editGenerationRef.current === editGeneration) setSaving(false)
     }
-  }, [artifact, selectedVersion, isCurrent, detailQuery.data?.version, queryClient, slug, setSaveError, setSaving, setSelectedVersion])
+  }, [artifact, selectedVersion, isCurrent, detailQuery.data?.version, confirm, confirmOpen, queryClient, editGenerationRef, setSaveError, setSaving, setSelectedVersion])
   const commentsRead = useArtifactDetailPageComments({ durableComments, stateRead, documentRead })
   const { postAnchoredMut } = commentsRead
   // Anchored add (from the selection toolbar's composer).
@@ -323,13 +336,14 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const threadsRead = useArtifactDetailPageThreads({ durableComments, stateRead, documentRead, composerRead })
   const menuRead = useArtifactDetailPageMenu({ stateRead, documentRead, composerRead, companionRead })
   if (detailQuery.isLoading || (!isCurrent && versionQuery.isLoading))
-    return <div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.loading')}</div>
+    return <>{confirmDialog}<div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.loading')}</div></>
   // A failed historical-snapshot fetch used to fall through to "Not found"
   // (artifact is undefined either way); surface it as the load failure it is.
   const loadError = detailQuery.error ?? (!isCurrent ? versionQuery.error : null)
   if (loadError) {
     return (
       <>
+        {confirmDialog}
         <div className="sticky top-0 z-10 bg-bg border-b border-border">
           <PageHeader title={i18nT('pages.artifactDetailPage.artifact')} subtitle={slug} />
         </div>
@@ -356,7 +370,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       </>
     )
   }
-  if (!artifact) return <div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.not_found')}</div>
+  if (!artifact) return <>{confirmDialog}<div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.not_found')}</div></>
 
   return (
     <>
