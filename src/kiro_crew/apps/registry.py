@@ -810,7 +810,6 @@ if _typing.TYPE_CHECKING:
         _fetch_app_manifest,
         _merge_manifest,
         _resolve_manifest,
-        loads_user_json,
         official_catalog,
         sanitize_links,
     )
@@ -922,6 +921,7 @@ if _typing.TYPE_CHECKING:
         _write_clone_failure,
         _write_unobtainable_art,
         is_reparse_point,
+        loads_user_json,
         posixpath,
         tempfile,
         threading,

@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from apps_registry_coverage_helpers import _fake_sandbox, _FakeProc
 from plugin_import_helpers import _package
+from registry_store_art_prewarm_helpers import ART, MANIFEST, _entry, _fake_fetch, _pin_registry
 
 from kiro_crew.apps import plugin_import, registry
+from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.plugin_import import PluginImportError, convert_plugin_package
 
 BOM = b"\xef\xbb\xbf"
@@ -112,3 +115,84 @@ class TestPluginManifestBom:
             "bom-plugin"
         )
         assert report is not None
+
+
+class TestInstalledManifestBom:
+    @pytest.mark.parametrize("prefix", [BOM, b""], ids=["bom", "no-bom"])
+    def test_from_json_file(self, tmp_path, prefix):
+        path = tmp_path / "app.json"
+        _write(path, prefix + json.dumps(APP_MANIFEST).encode())
+        assert AppManifest.from_json_file(path).name == "bomapp"
+
+    def test_from_json_file_still_refuses_invalid_json_after_a_bom(self, tmp_path):
+        path = tmp_path / "app.json"
+        _write(path, BOM + b"{not json")
+        with pytest.raises(ValueError):
+            AppManifest.from_json_file(path)
+
+
+class TestInstallIdentityGatesBom:
+    """The identity gates read the cloned ``app.json``; a BOM is not a mismatch."""
+
+    @pytest.fixture(autouse=True)
+    def _admitted(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
+        monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "kiro_crew.apps.official_catalog.inventory_for_install", lambda name: None
+        )
+        monkeypatch.setattr(registry, "sel", lambda: MagicMock())
+
+    @pytest.mark.asyncio
+    async def test_pre_build_gate_admits_a_bom_manifest(self, monkeypatch, tmp_path):
+        built: list = []
+
+        async def _fake_build(build_dir, app_name, log_lines, **kwargs):
+            built.append(app_name)
+            return {"ok": True}
+
+        async def _fake_clone(git_url, branch, pkg_dir, log_lines, **kwargs):
+            _write(pkg_dir / "app.json", BOM + json.dumps({"name": "bomapp"}).encode())
+            return None
+
+        monkeypatch.setattr(registry, "_run_app_build", _fake_build)
+        monkeypatch.setattr(registry, "_git_clone_or_pull", _fake_clone)
+        monkeypatch.setattr(registry, "app_source_dir", lambda name: tmp_path / name)
+
+        result = await registry._clone_build_app_locked(
+            "https://example.invalid/r.git", "bomapp", [], pending_cleanup=[]
+        )
+
+        assert built == ["bomapp"], result
+
+    @pytest.mark.asyncio
+    async def test_post_build_gate_admits_a_bom_manifest(self, monkeypatch, tmp_path):
+        url = "https://github.com/o/bomapp.git"
+        entry = {"name": "bomapp", "gitUrl": url, "repo": url, "branch": "main"}
+        monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
+        manifest = {**APP_MANIFEST, "displayName": "Bom App", "description": "d", "author": "t"}
+        monkeypatch.setattr(registry, "_fetch_app_manifest", AsyncMock(return_value=manifest))
+        clone = tmp_path / "clone"
+        _write(clone / "app.json", BOM + json.dumps(manifest).encode())
+
+        async def _fake_clone_build(git_url, app_name, log_lines, branch="main", **kwargs):
+            return {"ok": True, "pkg_dir": clone}
+
+        monkeypatch.setattr(registry, "_clone_build_app", _fake_clone_build)
+
+        result = await registry.install_from_registry("bomapp")
+
+        assert result["ok"] is True, result.get("error")
+
+
+class TestStoreArtPrewarmBom:
+    @pytest.mark.asyncio
+    async def test_prewarm_caches_a_bom_manifest(self, monkeypatch):
+        reg = _pin_registry(monkeypatch, registry._TRUST_OWNER)
+        _fake_fetch(
+            monkeypatch, {"app.json": BOM + json.dumps(MANIFEST).encode(), **ART}, manifest=None
+        )
+        entry = _entry()
+
+        assert await registry._prewarm_owner_tier_store_assets(reg, [entry]) == 1
+        assert registry._read_manifest_cache(entry) == MANIFEST
