@@ -220,6 +220,7 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
           }
           if (wantsTour) setShowOnboarding(true)
         }}
+        onDismiss={() => setShowAgentImport(false)}
         onSkipAll={() => {
           // Skip the rest of first run — but NOT the Privacy chapter, which is
           // mandatory: show it, and let its Continue mark onboarding done so
