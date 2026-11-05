@@ -637,10 +637,11 @@ def _matches(
     it is appended there and left out, unread and not descended into. The implicit
     steering scan passes *linked* alone, so it leaves a link out wherever it
     points. A declared steering glob also passes *confined*: only a link whose
-    target the path screen resolves inside *root* is left out, and any other link
-    still refuses.
+    target the path screen resolves inside *root* goes to *linked*, and any other
+    link refuses unless *outside* takes it.
 
-    An ABSOLUTE declaration also passes *outside*: a link the path screen resolves
+    An ABSOLUTE declaration passes *outside*, and a relative steering glob passes
+    its *linked* list as *outside*: a link the path screen resolves
     to a target outside *root* (``~/workplace`` linked to another volume) is appended
     there and left out, unread and not descended into, instead of refusing. A
     target that is managed memory state still refuses, and so does a link the
@@ -1397,12 +1398,14 @@ def _resource_paths(
     A caller that passes *linked* has a steering glob (a ``steering`` component in
     its pattern, the test :func:`documents_for_member` applies to a match) leave a
     link that stays inside its root out and name it there, as the implicit steering
-    scan does. A link that resolves elsewhere, and a link under any other glob,
-    still refuses, as it does for a caller that passes none.
+    scan does. A relative steering glob names a link that leaves its root there too,
+    unless the screen refuses its target or the target is managed state (see
+    *outside* in :func:`_matches`). A link under any other relative glob still
+    refuses, as it does for a caller that passes none.
 
     A caller that passes *outside* has an ABSOLUTE declaration leave out a link
     whose target resolves outside its root and name it there (see
-    :func:`_matches`). A relative declaration never does.
+    :func:`_matches`). A relative declaration never uses *outside*.
     """
     paths: list[tuple[Path, Path]] = []
     absent: list[Path] = [] if missing is None else missing
@@ -1420,7 +1423,7 @@ def _resource_paths(
         else:
             pattern = str(path)
         left_out = linked if "steering" in Path(pattern).parts else None
-        escaping = outside if path.is_absolute() else None
+        escaping = outside if path.is_absolute() else left_out
         for match in _matches(
             root, pattern, skipped, left_out, absent, confined=True, outside=escaping
         ):
@@ -1525,7 +1528,7 @@ def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
     Conditional inclusion stays with the native selector; skill URI resources
     and object-form ``knowledgeBase`` declarations keep their on-demand
     behavior and are never treated as full text. A link a steering glob reaches
-    inside its root is left out unread, as in the snapshot, which names it. So is
+    is left out unread, as in the snapshot, which names it. So is
     a steering document the no-follow descriptor read refuses (a hard link, a
     non-link reparse point).
     """

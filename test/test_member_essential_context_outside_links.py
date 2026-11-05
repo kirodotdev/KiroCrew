@@ -3,8 +3,8 @@
 On a cloud desktop a folder under home, such as ``~/.tools``, can be a link to another
 volume. kiro-cli follows it; the member snapshot never reads outside home, so the link
 is left out unread and named in-band, and the member still starts. A link into
-managed memory state, a relative declaration, and the launch-record size check keep
-refusing.
+managed memory state, a relative non-steering declaration, and the launch-record size
+check keep refusing.
 """
 
 from pathlib import Path
