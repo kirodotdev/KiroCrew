@@ -573,6 +573,10 @@ async def api_memory_history(request: web.Request) -> web.Response:
     return _memory_document_response(content)
 
 
+class _MemorySectionNotObject(Exception):
+    """config.json's ``memory`` entry is present but is not a JSON object."""
+
+
 async def api_memory_settings(request: web.Request) -> web.Response:
     """GET/PUT /api/memory/settings — memory consolidation config."""
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
@@ -640,11 +644,27 @@ async def api_memory_settings(request: web.Request) -> web.Response:
             # is no change to persist.
             if not updates:
                 return None
-            data.setdefault("memory", {}).update(updates)
+            section = data.setdefault("memory", {})
+            if not isinstance(section, dict):
+                # Refuse rather than replace it with {}: whatever the person put
+                # there is theirs to fix, and nothing is written.
+                raise _MemorySectionNotObject
+            section.update(updates)
             return data
 
         try:
             await run_config_write(update_config_locked, config_path(), mutate=_apply)
+        except _MemorySectionNotObject:
+            return web.json_response(
+                {
+                    "error": (
+                        "config.json has a 'memory' entry that is not an object; "
+                        "fix or remove it, then save again"
+                    ),
+                    "code": "config_section_not_object",
+                },
+                status=409,
+            )
         except ConfigReadError:
             # Fail closed: writing back a {} baseline would drop every other setting.
             logger.exception("Refusing to save memory settings: config unreadable")
