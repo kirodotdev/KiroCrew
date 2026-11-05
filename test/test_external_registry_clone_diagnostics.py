@@ -312,6 +312,19 @@ class TestIndexOriginatedCloneFailureHintIsGated:
         assert "credentials are withheld" in result["error"]
         assert "Private app repos must live inside the registry repo" in result["error"]
 
+    @pytest.mark.asyncio
+    async def test_ssh_refusal_with_publickey_listed_second_keeps_the_posture_hint(self, tmp_path):
+        # A server that lists keyboard-interactive before publickey refuses
+        # the credential-free clone the same way, so it gets the same hint.
+        result = await _run_index_clone_failure(
+            tmp_path,
+            b"git@git.example.com: Permission denied (keyboard-interactive,publickey).\n"
+            b"fatal: Could not read from remote repository.\n",
+        )
+        assert result is not None and result["ok"] is False
+        assert result["code"] == "git_clone_failed_no_credentials"
+        assert "Private app repos must live inside the registry repo" in result["error"]
+
     def test_permission_denied_marker_is_remote_ssh_specific(self):
         # Unit-level pin on the classifier verdict (never on git argv): the
         # `permission denied` auth marker fires ONLY on the SSH method-list
@@ -327,6 +340,13 @@ class TestIndexOriginatedCloneFailureHintIsGated:
             is False
         )
         assert reg._git_output_is_auth_shaped("error: open('/x'): Permission denied") is False
+        assert (
+            reg._git_output_is_auth_shaped("[Errno 13] Permission denied: '/x' (read-only)")
+            is False
+        )
+        assert reg._git_output_is_auth_shaped("Permission denied (os error 13)") is False
+        assert reg._git_output_is_auth_shaped("Permission denied ()") is False
+        assert reg._git_output_is_auth_shaped("Permission denied (13)") is False
         # Remote SSH refusal forms — every method list must stay auth-shaped.
         assert reg._git_output_is_auth_shaped("git@host: Permission denied (publickey).") is True
         assert reg._git_output_is_auth_shaped("Permission denied (publickey,password).") is True
@@ -334,11 +354,54 @@ class TestIndexOriginatedCloneFailureHintIsGated:
             reg._git_output_is_auth_shaped("Permission denied (publickey,keyboard-interactive).")
             is True
         )
+        # The server lists its methods in its own order, so publickey need
+        # not come first, and a server may not offer publickey at all.
+        assert (
+            reg._git_output_is_auth_shaped(
+                "git@git.example.com: Permission denied (keyboard-interactive,publickey)."
+            )
+            is True
+        )
+        assert (
+            reg._git_output_is_auth_shaped("Permission denied (gssapi-with-mic,password).") is True
+        )
         # fail-open-direction-pinned: a phrasing the allowlist does not
         # recognize returns False (falls open to the honest bare message), so a
         # future git rewording drops the posture hint rather than fabricating
         # one — the safe direction for a version-sensitive substring allowlist.
         assert reg._git_output_is_auth_shaped("fatal: some future git wording") is False
+
+    def test_ssh_method_list_must_be_well_formed_and_closed(self):
+        # The method list is a comma-separated run of names closed by `)`:
+        # an empty name, an unclosed list or a stray character is not one.
+        from kiro_crew.apps import registry as reg
+
+        assert reg._git_output_is_auth_shaped("Permission denied (publickey,).") is False
+        assert reg._git_output_is_auth_shaped("Permission denied (,publickey).") is False
+        assert reg._git_output_is_auth_shaped("Permission denied (publickey,,password).") is False
+        assert reg._git_output_is_auth_shaped("Permission denied (publickey") is False
+        assert reg._git_output_is_auth_shaped("Permission denied (public key).") is False
+        # A refusal that follows a rejected candidate is still found, also
+        # when it begins inside that candidate's list.
+        assert (
+            reg._git_output_is_auth_shaped(
+                "Permission denied (13)\ngit@host: Permission denied (publickey)."
+            )
+            is True
+        )
+        assert (
+            reg._git_output_is_auth_shaped("permission denied (permission denied (publickey)")
+            is True
+        )
+
+    def test_ssh_refusal_check_reads_repeated_prefixes_in_one_pass(self):
+        # Many back-to-back unmatched prefixes are each rejected at their own
+        # first space, so the verdict is reached without rescanning the rest.
+        from kiro_crew.apps import registry as reg
+
+        repeated = "permission denied (" * 40000
+        assert reg._git_output_is_auth_shaped(repeated + "13)") is False
+        assert reg._git_output_is_auth_shaped(repeated + "publickey)") is True
 
     @pytest.mark.asyncio
     async def test_owner_designated_clone_failure_body_carries_code(self, tmp_path):
