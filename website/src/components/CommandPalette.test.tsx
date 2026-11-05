@@ -1324,3 +1324,57 @@ describe('CommandPalette — fallback for a failed overlay chunk', () => {
     }
   })
 })
+
+describe('CommandPalette — keyboard isolation', () => {
+  // The palette is modal, so a key pressed inside it must not reach the page's
+  // global shortcuts behind it. Those listen in the bubble phase on `document`
+  // (useKeyboardShortcuts, useInstanceShortcuts); the quick-search gesture that
+  // toggles the palette listens on `window` (useCommandPalette) and is the one
+  // key that still travels.
+  const documentListener = vi.fn()
+  const windowListener = vi.fn()
+
+  afterEach(() => {
+    document.removeEventListener('keydown', documentListener)
+    window.removeEventListener('keydown', windowListener)
+    documentListener.mockReset()
+    windowListener.mockReset()
+  })
+
+  function mountPalette() {
+    document.addEventListener('keydown', documentListener)
+    window.addEventListener('keydown', windowListener)
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    return screen.getByPlaceholderText('Search for anything')
+  }
+
+  it.each([
+    ['the Settings chord', { key: ',', code: 'Comma', altKey: true }],
+    ['a session jump', { key: '1', code: 'Digit1', ctrlKey: true }],
+    ['the agent monitor', { key: 'g', code: 'KeyG', ctrlKey: true }],
+    ['a plain letter', { key: 'a', code: 'KeyA' }],
+  ])('keeps %s from reaching the page behind the palette', (_name, init) => {
+    const input = mountPalette()
+    fireEvent.keyDown(input, init)
+    expect(documentListener).not.toHaveBeenCalled()
+    expect(windowListener).not.toHaveBeenCalled()
+  })
+
+  it('lets the default quick-search gesture through, so it can close the palette', () => {
+    const input = mountPalette()
+    fireEvent.keyDown(input, { key: 'k', code: 'KeyK', ctrlKey: true })
+    expect(windowListener).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets a recorded custom quick-search chord through, and Ctrl+K then stops', () => {
+    localStorage.setItem(
+      QUICK_SEARCH_SHORTCUT_KEY,
+      JSON.stringify({ mode: 'custom', custom: { key: 'j', ctrl: true } }),
+    )
+    const input = mountPalette()
+    fireEvent.keyDown(input, { key: 'j', code: 'KeyJ', ctrlKey: true })
+    expect(windowListener).toHaveBeenCalledTimes(1)
+    fireEvent.keyDown(input, { key: 'k', code: 'KeyK', ctrlKey: true })
+    expect(windowListener).toHaveBeenCalledTimes(1)
+  })
+})
