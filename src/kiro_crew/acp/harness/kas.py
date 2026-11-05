@@ -44,6 +44,7 @@ from kiro_crew.acp.default_crew_servers import with_default_crew_servers
 from kiro_crew.acp.harness._common import (
     KIRO_FAMILY_ALIASES,
     MembershipHarness,
+    defer_mandatory_mcps_env,
     pin_mandatory_mcps_env,
 )
 from kiro_crew.acp.harness.base import (
@@ -162,6 +163,26 @@ def _bundle_route_selected() -> bool:
     from kiro_crew.config.loader import KiroCrewConfig
 
     return bool(KiroCrewConfig.load().agent.kas_bundle)
+
+
+def _runs_crew_engine_bundle(spawned_binary: str | None) -> bool:
+    """Is *spawned_binary* inside one of Crew's own engine roots (the bundle's Node)?
+
+    The roots are the two :func:`kiro_crew.acp.kas_bundle.installed_bundle` reads:
+    the data home's ``engines/kas`` and the desktop app's staged copy. Positive
+    identity only: a missing path, a kiro-cli relay or any failure is False.
+    Blocking (resolves paths); call off the loop.
+    """
+    if not spawned_binary:
+        return False
+    from kiro_crew.acp import kas_bundle as kas_bundle_mod
+
+    roots = [kas_bundle_mod.kas_engines_root(), kas_bundle_mod.bundled_kas_root()]
+    try:
+        binary = Path(spawned_binary).resolve()
+        return any(binary.is_relative_to(root.resolve()) for root in roots if root)
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def _is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
@@ -665,8 +686,12 @@ class KasHarness(MembershipHarness):
         ``api_key`` token type. So the key is handed over exactly as the kiro
         harness hands it: inherited, or re-read from the data home's ``.env``.
 
-        The relay is kiro-cli, so it reads the same Tool Search never-defer list;
-        :func:`pin_mandatory_mcps_env` pins it by operator override or engine version.
+        The KAS engine reads the same Tool Search never-defer variable on either
+        route. On Crew's own engine bundle, :func:`defer_mandatory_mcps_env`
+        passes only the operator's value: that engine keeps its ``tools`` array
+        fixed when a deferred tool loads (measured on the pinned build). The relay
+        runs whatever KAS a kiro-cli carries, so it keeps
+        :func:`pin_mandatory_mcps_env`'s engine-version gate.
 
         ``agent.child_env_defaults`` applies here too, for the same reason: the
         relay is a kiro-cli process with the same core-count-sized pools.
@@ -677,7 +702,10 @@ class KasHarness(MembershipHarness):
             inject_kiro_cli_api_key(env)
         else:
             strip_kiro_cli_api_key(env)
-        pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
+        if _runs_crew_engine_bundle(spawned_binary):
+            defer_mandatory_mcps_env(env)
+        else:
+            pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
         apply_child_env_defaults(env)
 
     @property
