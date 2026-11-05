@@ -273,7 +273,12 @@ and effort selection, the full `session/request_permission` flow) works. So
   `permissions.allow` entry, and a pre-approved tool is one Claude never asks
   about — so the call would never reach the host gate that carries the deny floor,
   the sensitive-path check and the governance ceiling. Every MCP call on this
-  backend stays gated. `timeout` is kiro-only and dropped.
+  backend stays gated. `timeout` is kiro-only and dropped. An operator's
+  `hooks.auto_deny_tools` entry in the `@server/tool` or `@server` spelling binds
+  to such a call through its `mcp__<server>__<tool>` title, since the adapter sends
+  no `_meta.kiro` server name; the grant tiers never read that title as an
+  identity (`docs/system-specs/modules/security.md`, the `auto_deny_tools`
+  identity-plane paragraph).
 - **`disabledTools` becomes a `permissions.deny` rule.** It cannot ride along in
   an array element either, but it is a RESTRICTION: dropping it while forwarding
   the server it narrows would silently widen the session's tool surface, which is

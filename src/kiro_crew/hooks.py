@@ -245,10 +245,11 @@ from kiro_crew.hook_runtime.windows_paths import (  # noqa: F401
 # simulate a host where a descriptor's path cannot be read.
 from kiro_crew.pinned_fs import fd_real_path as _fd_real_path  # noqa: F401
 from kiro_crew.platform import current_context, redact_via_context
-from kiro_crew.platform.governance import (
+from kiro_crew.platform.governance import (  # noqa: F401  (read by hook_runtime owners)
     CU_CLASS_OBSERVE,
     computer_use_action_classes,
     computer_use_action_from_title,
+    mcp_title_to_ref,
 )
 
 # The bounded, depth-aware target-path walk lives one layer below both this
