@@ -193,6 +193,10 @@ CREW_ANSWERED_WRITES_KEY = "_crewAnsweredWrites"
 #: (:mod:`kiro_crew.acp.kas_spec_denies`).
 CREW_SPEC_DENIES_KEY = "_crewSpecDenies"
 
+#: The key the active entry carries what :mod:`kiro_crew.acp.kas_settings_mcp`
+#: read from the mcp.json / cli.json files under, until the wire envelope applies it.
+CREW_SETTINGS_MCP_KEY = "_crewSettingsMcp"
+
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
     {
@@ -204,6 +208,7 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
         CREW_WRITE_ALLOWLIST_KEY,
         CREW_ANSWERED_PATHS_KEY,
         CREW_SHELL_READONLY_KEY,
+        CREW_SETTINGS_MCP_KEY,
     }
 )
 

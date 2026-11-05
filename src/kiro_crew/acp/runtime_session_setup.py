@@ -368,6 +368,7 @@ async def _kas_custom_agents(
     crew_panel: bool = False,
     session_key: str = "",
     worker_stub_names: frozenset[str] | None = None,
+    session_cwd: str | Path | None = None,
 ) -> SessionExtras:
     """The per-session payload for a wire-registered host, and what built it.
 
@@ -387,7 +388,8 @@ async def _kas_custom_agents(
 
     *worker_stub_names* is :func:`_kas_worker_stub_names`' answer, handed down
     only when it is one (a KAS crewmate worker), so every other host's call is
-    unchanged.
+    unchanged. *session_cwd* is the session's own directory, for a host that reads
+    workspace settings beside the session.
     """
     worker: dict[str, Any] = (
         {} if worker_stub_names is None else {"worker_stub_names": worker_stub_names}
@@ -400,6 +402,7 @@ async def _kas_custom_agents(
         crew_panel=crew_panel,
         session_key=session_key,
         engine_features=kas_engine_features.advertised(getattr(self, "_agent_capabilities", {})),
+        session_cwd=session_cwd,
         **worker,
     )
     # Judged HERE, on the payload, so every path that builds one -- session/new

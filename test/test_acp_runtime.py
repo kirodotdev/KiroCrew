@@ -30,7 +30,7 @@ import asyncio
 import dataclasses
 import json
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
@@ -48,6 +48,8 @@ from acp_runtime_helpers import (
 )
 
 from kiro_crew.acp.harness import SessionExtras
+from kiro_crew.acp.kas_permissions import CREW_ONLY_ENTRY_KEYS
+from kiro_crew.acp.kas_settings_mcp import finish_settings_mcp
 from kiro_crew.acp.runtime import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -212,6 +214,12 @@ def kas_readiness_wire(monkeypatch, tmp_path):
                 expected["mcpServers"] = kept
             else:
                 expected.pop("mcpServers", None)
+            # The envelope applies the mcp.json stamp, then drops Crew-only keys.
+            expected = {
+                k: v
+                for k, v in finish_settings_mcp(expected, request["params"]["mcpServers"]).items()
+                if k not in CREW_ONLY_ENTRY_KEYS
+            }
             assert sent_agent == expected
             for name in hoisted:
                 assert name in wire_names
@@ -408,7 +416,11 @@ async def test_derived_worker_identity_keeps_freshness_and_readiness(
             agent_name="kirocrew-worker",
         )
         wire.runtime._kas_custom_agents.assert_awaited_once_with(
-            "kirocrew-worker", member_dispatch=False, crew_panel=False, session_key=key
+            "kirocrew-worker",
+            member_dispatch=False,
+            crew_panel=False,
+            session_key=key,
+            session_cwd=ANY,
         )
         if revoked:
             wire.status("connected", extra_servers=("kirocrew-work",))
@@ -571,6 +583,7 @@ async def test_kas_readiness_delays_prompt_until_active_managed_tools(
             member_dispatch=False,
             crew_panel=False,
             session_key="subagent:readiness-worker",
+            session_cwd=ANY,
         )
         # Two pre-mode snapshots must be consumed without satisfying this activation.
         for _ in range(3 if pre_ready else 1):
