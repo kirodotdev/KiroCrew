@@ -765,6 +765,18 @@ installed plugins' MCP servers beside the wire array, and each helper call start
 fresh session, so those servers would start on every call in a session that runs no
 tool. Only the wire array mounts; nothing else in the envelope changes.
 
+### A fresh conversation is a cold start
+
+The adapter runs on a dedicated `AcpClient`, and `AcpClient` has no reset that
+starts a new conversation on its live process; only `AcpSessionProvider` (the
+shared-runtime path of kiro, KAS and Codex) has one. `AcpProvider.new_conversation`
+on a Claude session therefore raises `NotImplementedError` naming the backend, and
+both of its callers take their kill-and-respawn fallback: a reused workflow-pool
+worker (`WorkerPool.reset`, which logs the cold start at INFO) and a history
+consolidation pass (`_start_fresh_conversation`, which logs the path it took at
+INFO). No context crosses either reset; the cost is a spawn and `initialize` per
+reuse.
+
 ### Known gap: the user's global `~/.claude` is inherited
 
 With no `CLAUDE_CONFIG_DIR` set by the core, the adapter and the SDK read the

@@ -1407,7 +1407,10 @@ never spawns `kiro-cli` in tests. Two production adapters:
   worker after `provider.new_conversation()` (a fresh `session/new` on the live
   process, skipping spawn and initialize), falling back to a hard
   `SessionManager.reset` if that is unavailable or fails, so a reused worker can
-  never carry prior-task context forward. Dead workers are retired and replaced.
+  never carry prior-task context forward. Only a backend on the shared runtime
+  (kiro, KAS, Codex) has the cheap reset; one on its own `AcpClient` (claude and
+  the other per-session adapters) raises `NotImplementedError` naming the backend,
+  and its reuse is the hard reset, logged at INFO as a cold start. Dead workers are retired and replaced.
   A `session=<key>` call bypasses the pool entirely, since it needs a stable named
   session rather than a reset-between-uses worker.
 

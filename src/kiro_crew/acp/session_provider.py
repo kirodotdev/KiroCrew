@@ -332,8 +332,9 @@ class AcpSessionProvider(LLMProvider):
     async def new_conversation(self) -> None:
         """Reset to a fresh conversation on the SAME warm runtime (kiro path).
 
-        Parity with ``AcpClient.new_conversation`` — the cheap clean-slate reuse
-        primitive a warm worker pool relies on: create a brand-new ``session/new``
+        The cheap clean-slate reuse primitive a warm worker pool relies on, and
+        the only one: ``AcpClient`` has none, so a backend on its own client is
+        reset by kill and respawn. Create a brand-new ``session/new``
         on the *already-running* kiro-cli process (paying only session/new + the
         MCP-init drain), then destroy the old session so its context/transcript
         and MCP children are freed on the shared process. This SKIPS the expensive

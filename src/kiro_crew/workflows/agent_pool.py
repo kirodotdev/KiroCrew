@@ -16,7 +16,9 @@ calls. Semantics that make this correct:
     conversational state, exactly like the per-call-session model they replace.
   * **Warm reuse** — a *sequential* task reuses an idle worker after a cheap
     clean-slate reset (``provider.new_conversation()`` — fresh ``session/new`` on
-    the same live process, skipping spawn + ``initialize``). No cold start.
+    the same live process, skipping spawn + ``initialize``). No cold start on a
+    backend whose provider has one; a backend on its own ``AcpClient`` (claude and
+    the other per-session adapters) has none and is reset by kill and respawn.
   * **Self-healing** — a worker whose process died is retired and replaced.
   * **Bounded** — at most ``max_workers`` live sessions; startup throttled to
     ``max_starting`` concurrent spawns (matches the workflow concurrency cap).
@@ -225,9 +227,11 @@ class _WorkflowSessionWorker:
     async def reset(self) -> None:
         """Cheap clean slate before REUSE — fresh conversation on the warm process.
 
-        Uses ``provider.new_conversation()`` when the backend exposes it (kiro +
-        claude ACP both do), which skips the expensive spawn+initialize. If it is
-        unavailable or fails, fall back to a hard ``SessionManager.reset`` so a
+        Uses ``provider.new_conversation()``, which skips the expensive
+        spawn+initialize on a backend served through the shared runtime (kiro, KAS,
+        Codex). A backend on its own ``AcpClient`` (claude and the other per-session
+        adapters) has no such reset and raises ``NotImplementedError``. On that, or
+        any other failure, fall back to a hard ``SessionManager.reset`` so a
         reused worker can NEVER carry prior-task context into the next task
         (correctness over speed on the fallback path)."""
         if self._memory_scope is not None:
@@ -268,6 +272,8 @@ class _WorkflowSessionWorker:
                 await new_conv()
                 await self._reapply_effort()
                 return
+            except NotImplementedError as exc:
+                logger.info("workflow pool: %s cold-starts for reuse: %s", self._key, exc)
             except Exception:
                 logger.debug(
                     "workflow pool: new_conversation reset failed for %s, "

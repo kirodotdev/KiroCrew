@@ -1448,3 +1448,40 @@ async def test_a_reuse_reads_the_delete_delay_again_before_the_conversation_ends
     await worker.reset()
 
     assert provider.order_sink == [("delete_delay", 1800.0), "new_conversation"]
+
+
+@pytest.mark.asyncio
+async def test_a_claude_worker_is_reused_by_kill_and_respawn_and_says_so(caplog):
+    """A claude-backed worker has no cheap reset, so its reuse cold-starts, visibly.
+
+    ``AcpProvider.new_conversation`` on a backend served by its own ``AcpClient`` raises
+    ``NotImplementedError`` naming the backend. The pool must still take the hard reset,
+    so no prior-task context survives, and must say at INFO that the reuse paid a cold
+    start, because that is the cost an operator sees and would otherwise find no reason
+    for in the default log.
+    """
+    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+    from kiro_crew.providers.acp import AcpProvider
+
+    claude = AcpProvider.__new__(AcpProvider)
+    claude._client = AcpClient(acp_backend=ACP_BACKEND_CLAUDE)
+    sessions = _FakeSessions()
+    key = "wf-pool:run-cc:0"
+    sessions.live[key] = claude
+    worker = _WorkflowSessionWorker(sessions, key=key, agent="kirocrew", model=None, cwd=None)
+    await worker.start()
+    assert worker._provider is claude
+
+    with caplog.at_level("INFO", logger="kiro_crew.workflows.agent_pool"):
+        await worker.reset()
+
+    assert sessions.resets == 1, "the claude worker kept its conversation across reuse"
+    assert sessions.reset_intents == [True]
+    assert sessions.cold_starts == 1, "the hard reset did not re-acquire a fresh session"
+    assert worker._provider is not claude
+    cold = [
+        r for r in caplog.records if r.levelname == "INFO" and "cold-starts for reuse" in r.message
+    ]
+    assert len(cold) == 1, [r.getMessage() for r in caplog.records]
+    assert "'claude'" in cold[0].getMessage()
