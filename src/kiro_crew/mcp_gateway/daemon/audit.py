@@ -382,6 +382,28 @@ def _audit_owner_port(peer_pid: int | None, port: object, outcome: str, reason: 
         logger.debug("SEL audit emit for owner-port failed", exc_info=True)
 
 
+def _audit_recycle_server(server: str, outcome: str, detail: str) -> None:
+    """Emit a SEL audit event for a ``recycle-server`` request.
+
+    A recycle kills one server's pooled backends (idle ones at once, in-use ones
+    at the drain deadline), so it is audited beside stand-down, the other frame
+    that takes running backends down on request. ``server`` is the operator's
+    name, bounded by the frame validation before it gets here. Wrapped
+    defensively -- an audit-log failure must never break the handler.
+    """
+    try:
+        facade.SecurityEventLog().log_api_access(
+            caller="kirocrew-cli",
+            operation="mcp-gateway.recycle_server",
+            outcome=outcome,
+            source="gateway",
+            resources=server or "(none)",
+            error=detail,
+        )
+    except Exception:  # pragma: no cover — audit must never break the handler
+        logger.debug("SEL audit emit for recycle-server failed", exc_info=True)
+
+
 def _audit_disconnect_cancel(stub_uuid: str, remaining: int, cancelled: int) -> None:
     """Emit a SEL audit event for in-flight calls cancelled on a stub disconnect.
 

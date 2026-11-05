@@ -108,6 +108,7 @@ _NAMESPACE_HANDLERS = [
     (("logs",), "kiro_crew.cli_server", "_logs_cmd"),
     (("token",), "kiro_crew.cli_server", "_token"),
     (("status",), "kiro_crew.cli_server", "_status"),
+    (("mcp", "reload", "github"), "kiro_crew.cli_commands_mcp", "mcp_cmd"),
 ]
 
 

@@ -1,4 +1,6 @@
-"""Operator-side control of the MCP gateway daemon: find it, describe it, stop it.
+"""Operator-side control of the MCP gateway daemon: find it, describe it, stop it,
+and recycle one server's backends (:func:`recycle_server`, behind
+``kirocrew mcp reload``).
 
 The daemon (``mcp_gateway.gatewayd``) is spawned by a gateway process and, since
 it carries ``--owner-pid``, exits on its own once that process is gone. This
@@ -201,6 +203,111 @@ async def _ping_async(socket_path: Path) -> tuple[str, Optional[dict[str, Any]]]
         writer.close()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(writer.wait_closed(), timeout=_PING_TIMEOUT_SECS)
+
+
+#: Reply bound for ``recycle-server``. The daemon shuts the server's idle
+#: backends down before it answers (each bounded at 2 s), so this is longer
+#: than a ping's but still finite: a daemon that never answers is reported, not
+#: waited on.
+_RECYCLE_TIMEOUT_SECS = 30.0
+
+
+@dataclass(frozen=True)
+class RecycleResult:
+    """How one ``recycle-server`` request ended.
+
+    ``outcome`` is ``"recycled"`` (the daemon retired the server's backends; the
+    counts say how), ``"rejected"`` (it refused the frame; ``reason`` says why),
+    or a :data:`PROBE_OUTCOMES` value other than ``ok`` when no reply was read
+    (``absent`` means no daemon is running, so there is nothing to recycle).
+    """
+
+    outcome: str
+    evicted: int = 0
+    draining: int = 0
+    private: int = 0
+    deadline_secs: float = 0.0
+    reason: str = ""
+
+
+def _count(reply: dict[str, Any], field: str) -> int:
+    value = reply.get(field)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+async def _recycle_async(socket_path: Path, server: str) -> RecycleResult:
+    """One ``recycle-server`` round trip over the shared transport client."""
+    try:
+        reader, writer = await asyncio.wait_for(
+            transport.connect(socket_path), timeout=_PING_TIMEOUT_SECS
+        )
+    except asyncio.TimeoutError:
+        return RecycleResult(PROBE_CONNECT_TIMEOUT)
+    except FileNotFoundError:
+        return RecycleResult(PROBE_ABSENT)
+    except ConnectionRefusedError:
+        return RecycleResult(_refused_outcome())
+    except OSError:
+        return RecycleResult(PROBE_CONNECT_ERROR)
+    try:
+        frame = json.dumps({"type": "recycle-server", "server": server}) + "\n"
+        writer.write(frame.encode("utf-8"))
+        try:
+            await asyncio.wait_for(writer.drain(), timeout=_PING_TIMEOUT_SECS)
+            line = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=_RECYCLE_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
+            return RecycleResult(PROBE_RESPONSE_TIMEOUT)
+        except asyncio.LimitOverrunError:
+            return RecycleResult(PROBE_MALFORMED)
+        except (asyncio.IncompleteReadError, ConnectionError, OSError):
+            return RecycleResult(PROBE_CONNECTION_LOST)
+        try:
+            reply = json.loads(line.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return RecycleResult(PROBE_MALFORMED)
+        if not isinstance(reply, dict):
+            return RecycleResult(PROBE_MALFORMED)
+        if reply.get("type") == "recycled":
+            deadline = reply.get("deadline_secs")
+            return RecycleResult(
+                "recycled",
+                evicted=_count(reply, "evicted"),
+                draining=_count(reply, "draining"),
+                private=_count(reply, "private"),
+                deadline_secs=(
+                    float(deadline)
+                    if isinstance(deadline, (int, float)) and not isinstance(deadline, bool)
+                    else 0.0
+                ),
+            )
+        if reply.get("type") == "recycle-server-rejected":
+            return RecycleResult("rejected", reason=str(reply.get("reason") or "")[:200])
+        # A daemon that predates the frame answers the unknown first frame as a
+        # Register attempt and rejects it; whatever it said, nothing was recycled.
+        return RecycleResult("rejected", reason="this daemon does not support recycle-server")
+    finally:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(writer.wait_closed(), timeout=_PING_TIMEOUT_SECS)
+
+
+def recycle_server(server: str, socket_path: Optional[Path] = None) -> RecycleResult:
+    """Ask the running daemon to recycle one MCP server's pooled backends; never raises.
+
+    The daemon and every other server keep running. Idle backends of *server*
+    are shut down at once and in-use ones finish their in-flight calls before
+    the drain deadline takes them down, so the next session to attach starts a
+    fresh process that re-reads its boot-time input.
+    """
+    path = Path(socket_path) if socket_path else configured_socket_path()
+    try:
+        return asyncio.run(_recycle_async(path, server))
+    except RuntimeError:
+        logger.warning(
+            "mcp-gateway: cannot send recycle-server to %s from inside a running event loop",
+            path,
+        )
+        return RecycleResult(PROBE_INVALID_CONTEXT)
 
 
 def configured_socket_path() -> Path:

@@ -1,7 +1,7 @@
 """The one-shot control frames served on the uid-gated socket.
 
 ``ping`` (the pong the manager's adoption gate reads), ``stats``, ``claim``,
-``abort``, ``set-spawn-capacity``, ``owner-port``, ``stand-down``,
+``abort``, ``set-spawn-capacity``, ``owner-port``, ``stand-down``, ``recycle-server``,
 ``session-mounts`` and ``app-call`` each arrive as
 the first frame of their own connection, get one reply, and end it. Trust basis
 for all of them is the owner-only endpoint that authenticates Register;
@@ -40,7 +40,7 @@ from kiro_crew.mcp_gateway.daemon.launch import (
     resolvable_target_stems,
 )
 from kiro_crew.mcp_gateway.daemon.wire import _write_json_line
-from kiro_crew.mcp_gateway.pool import BackendPool
+from kiro_crew.mcp_gateway.pool import DRAIN_DEADLINE_SECS, BackendPool
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore
 
 if TYPE_CHECKING:
@@ -600,6 +600,49 @@ async def _apply_owner_port(
     return {"type": "owner-port-set", "port": port}
 
 
+#: Longest server name a ``recycle-server`` frame may carry. Far above any
+#: real ``mcp.json`` key; it bounds what reaches the log line and the SEL row.
+_RECYCLE_SERVER_NAME_MAX = 256
+
+
+async def _apply_recycle_server(frame: dict[str, Any], pool: BackendPool) -> dict[str, Any]:
+    """Recycle one server's pooled backends so its next acquire boots fresh.
+
+    ``kirocrew mcp reload <server>`` sends this when a server's boot-time input
+    changed without its pool key changing (a token it reads from a file, an env
+    key the identity hash leaves out). :meth:`BackendPool.drain_server` shuts
+    the idle backends down and blue-green drains the in-use ones; the daemon
+    and every other server keep running. Replies ``recycled`` with the counts,
+    or ``recycle-server-rejected`` for a frame with no usable name. Both are
+    SEL-audited. Trust basis: the same uid-gated owner-only socket that
+    authenticates Register/Claim/Abort/Stand-down.
+    """
+    server = frame.get("server")
+    if (
+        not isinstance(server, str)
+        or not server
+        or len(server) > _RECYCLE_SERVER_NAME_MAX
+        or not server.isprintable()
+    ):
+        facade._audit_recycle_server("", "denied", "missing or invalid server name")
+        return {"type": "recycle-server-rejected", "reason": "missing or invalid 'server' name"}
+    result = await pool.drain_server(server)
+    detail = (
+        f"evicted={result.evicted} draining={result.draining} private={result.private} "
+        f"deadline={int(DRAIN_DEADLINE_SECS)}s"
+    )
+    logger.info("gatewayd: recycled MCP server %r on request (%s)", server, detail)
+    facade._audit_recycle_server(server, "allowed", detail)
+    return {
+        "type": "recycled",
+        "server": server,
+        "evicted": result.evicted,
+        "draining": result.draining,
+        "private": result.private,
+        "deadline_secs": DRAIN_DEADLINE_SECS,
+    }
+
+
 def _apply_set_spawn_capacity(
     frame: dict[str, Any], admission: Optional[Admission]
 ) -> dict[str, Any]:
@@ -732,6 +775,15 @@ async def _serve_control_frame(
     # ``_apply_stand_down``.
     if register.get("type") == "stand-down":
         await _write_json_line(writer, _apply_stand_down(register, stop_event))
+        return True
+
+    # Recycle-server short-circuit (one-shot control connection from
+    # ``kirocrew mcp reload <server>``): retire one server's pooled backends so
+    # the next acquire boots a fresh process, without cycling the daemon.
+    # Trust basis: same uid-gated owner-only socket as Register/Claim/Abort.
+    # Validation and auditing live in ``_apply_recycle_server``.
+    if register.get("type") == "recycle-server":
+        await _write_json_line(writer, await _apply_recycle_server(register, pool))
         return True
 
     # App-call short-circuit (one-shot control connection from the dashboard):

@@ -42,6 +42,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("restart", "Restart a running gateway (service-aware)"),
             ("stop", "Stop a running gateway"),
             ("gateway-pid", "Print the PID holding this home's gateway lock (JSON)"),
+            ("mcp", "Reload one MCP server's running processes without a restart"),
             ("logs", "Show gateway logs"),
             ("token", "Print a dashboard access URL with auth token"),
             ("open", "Open the desktop app on a session (kirocrew:// deep link)"),
