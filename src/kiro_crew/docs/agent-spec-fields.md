@@ -282,9 +282,9 @@ context rather than as config — `context.py`'s `_skills_injection_plan` return
 `bool(globs) or not is_custom`, with no backend condition, so Crew injects the
 mapped set on every backend, as a bounded directory plus each `always: true`
 body. The `file://` steering
-load is the half that never runs: it is gated on `is_cc`, which is
-`is_claude_code(provider_type)`, true only for `provider=claude_code` and never for
-an `acp_backend`. `claude_code.py`, `codex.py` and `opencode.py` give `withheld`
+load runs on one of them only: it is gated on `is_cc`, which is
+`is_claude_code(provider_type)`, true for the `claude` `acp_backend` (its provider
+label is `claude_code`) and for no other harness. `claude_code.py`, `codex.py` and `opencode.py` give `withheld`
 the shared reason `RESOURCES_NO_READER` (`providers/mirrors/base.py`), which opens
 with this page's class name, `no-reader`; `goose.py`'s reason says no channel is
 advertised for them. A new session of a custom agent on a backend whose mirror
@@ -671,9 +671,12 @@ Capabilities.
 
 `file://<glob>` is a steering glob, and a narrower mechanism than it looks:
 `_load_steering_resources` in `src/kiro_crew/context_assembly/agent_spec.py` reads `resources` from
-`kirocrew.json` specifically — not from the session's active agent — globs each
-pattern against `$HOME`, and admits only `*.md` files that stay under the trust
-base and are not sensitive locations.
+`kirocrew.json` specifically — not from the session's active agent — anchors
+each pattern as kiro-cli does (a relative one at the session's project, or at
+`$HOME` with none bound; `~/` at `$HOME`; an absolute one at its glob-free
+prefix), adds kiro-cli's inherited defaults (global steering, and the project's
+steering and `AGENTS.md`), and admits only `*.md` files that stay under their
+entry's anchor and are not sensitive locations.
 
 A knowledge base is the one entry that is an **object**, not a URI: kiro-cli
 documents `{"type": "knowledgeBase", "source": "file://./docs", "name": ...}` in

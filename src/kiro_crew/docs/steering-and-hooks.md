@@ -30,10 +30,18 @@ Two different mechanisms put them there. kiro-cli loads both roots itself: the
 global one for every session it starts, and the workspace one because the
 session subprocess runs with the chat slot's project directory as its working
 directory. On the Claude Code backend, which does not read an agent spec's
-`resources` array, the gateway loads the global root explicitly —
+`resources` array, the gateway loads them explicitly —
 `steering_target_admissible` and `_load_steering_resources` in
-`src/kiro_crew/context_assembly/agent_spec.py` glob the agent config's
-`file://.kiro/steering/**/*.md` resource against `$HOME`.
+`src/kiro_crew/context_assembly/agent_spec.py` anchor each `file://` entry the
+way kiro-cli does: a relative glob such as the shipped
+`file://.kiro/steering/**/*.md` at the chat's project (at `$HOME` when none is
+bound), `~/` at `$HOME`, and an absolute path at its own glob-free prefix. They
+add what kiro-cli inherits by default: the global root `~/.kiro/steering`
+always (the host tree, which is the one folder steering skips as delivered),
+and the project's steering root and `AGENTS.md` when a project is bound. A hit is
+admitted only when its resolved target stays under its entry's anchor, so a
+project steering link to a file outside the project is not read. An entry that
+cannot be globbed skips only itself.
 
 A workspace file therefore needs a project bound to the chat slot. With no
 resolvable project the Steering files tab offers only the global root, and
@@ -80,7 +88,8 @@ read the harness's own steering documentation rather than trusting a mode name t
 mean what it sounds like.
 
 So "always on" is the default, not a guarantee: a mode can withhold a document,
-and the gateway's own CC-backend load reaches the global root only. Treat a
+and the gateway's own CC-backend load reaches the workspace root only for a
+chat bound to a project. Treat a
 steering file as reliably reaching a session when it declares `always` (or
 declares nothing) and lives in a root that session loads.
 

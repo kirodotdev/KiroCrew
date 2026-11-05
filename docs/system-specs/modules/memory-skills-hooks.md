@@ -7186,6 +7186,8 @@ A spawning parent decides which of three groups its sub-agent inherits, via `inc
 
 The steering row carries a backend caveat: the steering block is injected only on the Claude Code backend (`is_cc`), because on the ACP/kiro backend `kiro-cli --agent` loads the agent's own `resources` natively. `include_project=false` therefore suppresses steering on CC only — an ACP sub-agent still receives it, and nothing in Kiro Crew can prevent that from this call site.
 
+On CC the block mirrors what kiro-cli would load for the same project: `_load_steering_resources(project)` anchors each `file://` entry as kiro-cli does (relative at the project, else `$HOME`; `~/` at `$HOME`; absolute at its glob-free prefix), adds kiro-cli's inherited defaults (global steering under the host `~/.kiro`, the same root `_double_load_roots` skips as delivered, so a relocated `KIRO_HOME` cannot leave a folder-selected global document on neither path; the project's steering and `AGENTS.md` when a project is bound), admits each hit against its own entry's anchor, reads a document two entries match once, and skips only an entry it cannot glob. That is what keeps the `is_claude_code` disjunct of `_project_steering_delivered` true for the project root the folder dedup skips.
+
 conduct is not switchable because it supplies the output contract and capability
 entry points. Default skill discovery is a small name/purpose list plus
 `skill_search`, not the full installed directory. V1 project notebook bodies are
