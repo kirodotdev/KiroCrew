@@ -51,6 +51,7 @@ from kiro_crew.sandbox_seals import (
     _refuse_linked_models_leaf,
 )
 from kiro_crew.sandbox_staging import (
+    _materialize_env_mask_target,
     _materialize_live_target_mask_target,
     _materialize_maskable_dirs,
     _materialize_md_notebook_mask_targets,
@@ -587,6 +588,8 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target(_required_targets)
+    # The channel-credential file has the same gap: an absent ``.env`` gets no mask.
+    _materialize_env_mask_target(_required_targets)
     # CLEANUP BEFORE THE REFUSAL, and this order is a contract rather than a preference.
     # Both sweeps and the reconciliation remove names that are themselves hard links to a
     # masked credential leaf -- a pre-upgrade orphan is a link to the signing key by
