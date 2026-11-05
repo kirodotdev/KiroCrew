@@ -1097,9 +1097,10 @@ class Ask:
 
 @dataclass(frozen=True)
 class Brief:
-    """One validated, redacted, capped brief. Every field but ``body`` is plain
-    text; ``body`` is markdown. ``waiting`` is the gateway's own read of the
-    ledger, never the model's."""
+    """One validated, capped brief. Every free-text field but ``body`` is redacted
+    plain text; ``body`` is markdown kept as source, unredacted, and the secret
+    scan of the posted text drops the model's fields when it holds one.
+    ``waiting`` is the gateway's own read of the ledger, never the model's."""
 
     status: str
     headline: str
@@ -1228,13 +1229,6 @@ def _clean_extra(value: object) -> tuple[tuple[str, tuple[str, ...]], ...]:
         if title and items:
             sections.append((title, items))
     return tuple(sections[:_MAX_EXTRA_SECTIONS])
-
-
-def _redact_whole(text: str) -> str:
-    """Redact a multi-line value as one text, before and after ``**`` is
-    dropped: a marker inside a key's header would otherwise hide the header
-    from the whole-text pass and leave the key's body lines behind."""
-    return _redact(_redact(text).replace("**", ""))
 
 
 def _unescaped(text: str) -> str:
