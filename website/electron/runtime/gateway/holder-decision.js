@@ -2,6 +2,7 @@
 
 const { getRemoteHostConfig } = require("../../host-config");
 const { decideGatewayAction } = require("../../instance-guard");
+const { isKirocrewGatewayCommand } = require("../../gateway-stop");
 const {
   classifyAdoptedGateway,
   waitForServiceRebind,
@@ -19,6 +20,9 @@ const STUCK_GATEWAY_POLL_MS = 1_000;
 // How the stale dialog describes a launchd-parented gateway that is no launchd
 // job: a plain local gateway, which nothing restarts (see staleDialogOwner).
 const ORPHAN_DIALOG_OWNER = "kirocrew";
+// How a Windows gateway proven to serve this data folder is adopted when the
+// user chooses to use it (see provenWindowsHomeGateway): a plain local one.
+const PROVEN_HOME_OWNER = "kirocrew";
 
 /**
  * What a launch does about a gateway already holding its port: adopt it, wait
@@ -67,6 +71,8 @@ function createHolderDecision({
   fetchGatewayReadiness,
   resolveFamilyConflict,
   launchdJobPids = null,
+  windowsCommand = null,
+  windowsStopPid = null,
 }) {
   async function isCurrentBundleGateway() {
     if (!app.isPackaged || IS_WIN || !path.isAbsolute(processObj.resourcesPath || "")) return false;
@@ -191,6 +197,78 @@ function createHolderDecision({
       cancelId: 0,
     });
     return response === 1 ? "quit" : "continue";
+  }
+
+  /**
+   * Windows only. The port-owner probe there trusts only the executable this
+   * install would launch, so a gateway left running from an older install
+   * folder (or another install of the app) reads as foreign and is never
+   * adopted or offered a stop. It is proven to be this data folder's Kiro Crew
+   * gateway when all three hold: it is the one listener on the port, the CLI's
+   * lock probe names that same pid as this home's gateway.lock holder, and its
+   * command line has a Kiro Crew server shape.
+   *
+   * @returns {Promise<{pid:number, command:string, executable:string}|null>}
+   */
+  async function provenWindowsHomeGateway() {
+    if (!IS_WIN || !windowsCommand) return null;
+    const pids = await snapshotGatewayPortPids(PORT);
+    if (pids?.length !== 1) return null;
+    const lock = await probeLockHolderPid();
+    if (lock?.verdict !== "captured" || lock.pid !== pids[0]) return null;
+    const command = String((await windowsCommand(pids[0])) || "").trim();
+    const executable = /^"([^"]+)"/.exec(command)?.[1] || "";
+    // The executable is the observed one, so this checks the server shape
+    // only; the lock-holder match above is what ties it to this data folder.
+    if (!executable || !isKirocrewGatewayCommand(command, { trustedExecutablePaths: [executable] })) {
+      return null;
+    }
+    return { pid: pids[0], command, executable };
+  }
+
+  /**
+   * Offer the choices for a proven Windows gateway (provenWindowsHomeGateway),
+   * then act on them. Returns a resolveGatewayConflict outcome, or "adopt"
+   * when the caller should continue down its reuse path.
+   */
+  async function resolveProvenWindowsGateway(proven, health, canUse) {
+    const buttons = canUse ? ["Stop it and restart", "Use it", "Quit"] : ["Stop it and restart", "Quit"];
+    const { response } = await dialog.showMessageBox({
+      type: "warning",
+      message: `Another Kiro Crew gateway is using port ${PORT}.`,
+      detail: `It serves this data folder but was not started from this install of Kiro Crew.\n\n`
+        + `Process ${proven.pid}: ${proven.executable}\n`
+        + `Gateway version: ${health?.version || "not reported"} (this app is version ${app.getVersion()}).\n\n`
+        + "Stop it and restart stops that gateway and anything it is running, then starts this app's own gateway."
+        + (canUse ? "\nUse it connects to it as it is; features of this version may be unavailable." : ""),
+      buttons,
+      defaultId: 0,
+      cancelId: buttons.length - 1,
+    });
+    const choice = buttons[response];
+    if (choice === "Use it") return "adopt";
+    if (choice !== "Stop it and restart") return "abort";
+    // The dialog can stay open for minutes. Stop only the same process it
+    // named: same pid, still this home's lock holder, same command line.
+    const again = await provenWindowsHomeGateway();
+    if (!again || again.pid !== proven.pid || again.command !== proven.command) {
+      glog(`windows gateway: :${PORT} changed holder while the dialog was open — stopping nothing`);
+      return "foreign-holder";
+    }
+    sendStatus("Stopping the previous gateway…");
+    try {
+      await windowsStopPid(proven.pid, (command) => String(command || "").trim() === proven.command);
+    } catch (error) {
+      glog(`windows gateway: stopping pid ${proven.pid} failed: ${error && error.message}`);
+      return "foreign-holder";
+    }
+    if (!(await waitForPortFree())) {
+      glog(`windows gateway: :${PORT} still held after stopping pid ${proven.pid}`);
+      return "foreign-holder";
+    }
+    await waitForIncumbentExit([proven.pid], "windows gateway");
+    glog(`windows gateway: :${PORT} released by pid ${proven.pid} — starting the bundled backend`);
+    return "spawn";
   }
 
   /**
@@ -329,9 +407,18 @@ function createHolderDecision({
     // `warn-stale` cannot reach here with a `foreign` owner: the bundled-path
     // probe above only runs for a `kirocrew` or `service` owner, so that action
     // is unreachable without positive local attribution.
+    let adoptOwner = localOwner;
     if (decision.action === "reuse" && localOwner === "foreign" && !remoteHost) {
-      glog(`:${PORT} is served by a process this app did not start and no remote crew is configured there — refusing to adopt it`);
-      return "foreign-holder";
+      const proven = getRunLocalGateway() ? await provenWindowsHomeGateway() : null;
+      if (!proven) {
+        glog(`:${PORT} is served by a process this app did not start and no remote crew is configured there — refusing to adopt it`);
+        return "foreign-holder";
+      }
+      glog(`windows gateway: pid ${proven.pid} (${proven.executable}, version ${health?.version || "not reported"}) holds this data folder's gateway.lock on :${PORT} but is not this install's — asking the user`);
+      const canUse = decideGatewayAction(app.getVersion(), health, { localOwner: PROVEN_HOME_OWNER }).action === "reuse";
+      const outcome = await resolveProvenWindowsGateway(proven, health, canUse);
+      if (outcome !== "adopt") return outcome;
+      adoptOwner = PROVEN_HOME_OWNER;
     }
     if (decision.action === "warn-stale") {
       glog(`bundled gateway ${decision.oldVersion} predates app ${bundleVersion || app.getVersion()} — warning before reuse`);
@@ -413,7 +500,7 @@ function createHolderDecision({
         adoptedDraining = true;
       }
       glog(`reusing existing gateway on :${PORT} (${decision.reason}) — bundled backend NOT spawned`);
-      setGatewayOwnership(classifyAdoptedGateway({ reason: decision.reason, localOwner }));
+      setGatewayOwnership(classifyAdoptedGateway({ reason: decision.reason, localOwner: adoptOwner }));
       sendStatus(adoptedDraining
         ? "Connecting to the existing gateway…"
         : "Gateway already running ✓");

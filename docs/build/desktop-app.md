@@ -720,6 +720,21 @@ Unknown owners, remote tunnels, separate CLI installs, same or newer versions,
 Windows, and moved AppImages keep the existing reuse behavior. The shell does
 not restart or force-stop a stale gateway automatically.
 
+On Windows a gateway left running from another install folder (an older
+install, or another copy of the app) reads as `foreign`, because only this
+install's executable is trusted. Before refusing it, the shell checks whether
+it is this data folder's Kiro Crew gateway: it is the port's one listener, the
+CLI's lock probe (`kirocrew gateway-pid`) names that same pid as this home's
+`gateway.lock` holder, and its command line has a Kiro Crew server shape. A
+proven holder gets a dialog naming its pid, executable path and version, with
+**Stop it and restart**, **Use it** (only when the ordinary adopt decision
+would reuse it, so not for the other release family) and **Quit**. The stop
+re-proves the holder right before acting and requires the same pid and command
+line, then ends that process tree with `taskkill /T /F` behind the same
+command-line check, waits for the port to clear and starts this app's own
+gateway. **Use it** adopts the holder as a plain local gateway. Any holder that
+is not proven keeps the `foreign-holder` refusal and is never stopped.
+
 When nothing answers the first health check but the port is still held, the
 shell checks whether the sole listener is a local Kiro Crew gateway for this
 app's data folder: `gateway.lock` must name its pid, and that pid must have
