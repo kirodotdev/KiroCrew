@@ -30,6 +30,7 @@ from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR, RelayCli
 from kiro_crew.relay_client.connection import RelayTimings
 from kiro_crew.relay_client.ingress import CrewIngress, LoopbackIngress
 from kiro_crew.relay_client.lease import (
+    TOKEN_TYPE_API_KEY,
     TOKEN_TYPES,
     LeaseHostTokenSource,
     credential_reference_problem,
@@ -147,6 +148,14 @@ class RelaySettings:
                     "tunnel.relay_lease_token_type must be empty or one of "
                     + ", ".join(sorted(TOKEN_TYPES))
                 )
+
+    @property
+    def is_team_crew(self) -> bool:
+        """Whether this Crew leases as a team Crew, on a crew API key.
+
+        Rules meant for personal Remote Control can use it to skip team Crews.
+        """
+        return self.lease_token_type == TOKEN_TYPE_API_KEY
 
     def crew_url_for(self, endpoint_id: str) -> str:
         """The Crew's relay URL from ``tunnel.relay_crew_domain``.
