@@ -53,6 +53,7 @@ const xt = vi.hoisted(() => {
     scrollListeners: (() => void)[] = []
     /** Controls `remeasureAndFit`'s laid-out-pane guard. */
     offsetParent: unknown = {}
+    parser = { registerOscHandler: () => ({ dispose() {} }) }
 
     constructor(options: FakeOptions) {
       // Proxy fontFamily so writes are observable without hiding the value.
