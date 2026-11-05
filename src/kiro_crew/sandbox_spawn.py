@@ -591,6 +591,7 @@ def sandboxed_spawn_argv(
     extra_writable_dirs: tuple[str, ...] = (),
     first_party_fixed_argv: bool = False,
     is_kiro_cli: bool | None = None,
+    require_confinement: bool = False,
 ) -> tuple[list[str], dict[str, str], str | None]:
     """Single chokepoint for agent-influenced subprocess spawns.
 
@@ -638,12 +639,16 @@ def sandboxed_spawn_argv(
             (``kiro_cli.find_kiro_cli_candidates``) with a fixed argv; every passing site must be
             allowlisted in ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``.
             See :func:`wrap_argv` for the no-backend carve-out it gates.
+        require_confinement: Threaded to :func:`wrap_argv` only when true, so
+            existing preparation doubles and callers keep their prior keyword
+            contract.
 
     Returns:
         ``(wrapped_argv, scrubbed_env, cleanup_path_or_None)``. The caller MUST
         pass *scrubbed_env* as the subprocess ``env=`` and unlink *cleanup_path*
         (a temp launcher/profile) after the child exits.
     """
+    confinement: dict[str, Any] = {"require_confinement": True} if require_confinement else {}
     if extra_hidden_dirs or extra_visible_dirs or extra_private_dirs or extra_writable_dirs:
         wrapped, cleanup = wrap_argv(
             argv,
@@ -655,6 +660,7 @@ def sandboxed_spawn_argv(
             extra_writable_dirs=extra_writable_dirs,
             first_party_fixed_argv=first_party_fixed_argv,
             is_kiro_cli=is_kiro_cli,
+            **confinement,
         )
     else:
         wrapped, cleanup = wrap_argv(
@@ -663,6 +669,7 @@ def sandboxed_spawn_argv(
             strip_python_env=strip_python_env,
             first_party_fixed_argv=first_party_fixed_argv,
             is_kiro_cli=is_kiro_cli,
+            **confinement,
         )
     # ``wrap_argv`` only strips PYTHONPATH/PYTHONHOME inside the launcher script,
     # so on the fail-open path (no sandbox backend, opted-in unsandboxed exec) it
@@ -820,6 +827,7 @@ async def sandboxed_spawn_argv_async(
     extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     first_party_fixed_argv: bool = False,
+    require_confinement: bool = False,
     executor: ThreadPoolExecutor | None = None,
     _prepare: Callable[..., tuple[list[str], dict[str, str], str | None]] | None = None,
 ) -> tuple[list[str], dict[str, str], str | None]:
@@ -846,6 +854,8 @@ async def sandboxed_spawn_argv_async(
         options["extra_writable_dirs"] = extra_writable_dirs
     if first_party_fixed_argv:
         options["first_party_fixed_argv"] = True
+    if require_confinement:
+        options["require_confinement"] = True
     return await shielded_prepare_off_loop(
         functools.partial(
             sandboxed_spawn_argv if _prepare is None else _prepare,

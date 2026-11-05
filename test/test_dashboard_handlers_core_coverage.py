@@ -464,6 +464,60 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod, "_ffmpeg_install_commands", lambda: ["brew install ffmpeg"])
         assert core_mod._stt_prereq_commands("transcribe") == ["brew install ffmpeg"]
 
+    @staticmethod
+    def _codex_host(monkeypatch, *, aiortc: bool, sandbox_refuses: bool = False) -> None:
+        """No trusted ``codex`` binary, and ``aiortc`` importable or not.
+
+        ``find_spec`` is wrapped rather than replaced so every other lookup in
+        the process still answers truthfully. The sandbox verdict is pinned so
+        the host's own backend cannot decide the outcome.
+        """
+        import importlib.util
+
+        from kiro_crew import sandbox
+        from kiro_crew.stt import codex
+
+        real_find_spec = importlib.util.find_spec
+
+        def _find_spec(name, *args, **kwargs):
+            if name == "aiortc":
+                return object() if aiortc else None
+            return real_find_spec(name, *args, **kwargs)
+
+        from kiro_crew.acp import client_spawn_env
+
+        monkeypatch.setattr(
+            codex,
+            "codex_cli",
+            lambda: client_spawn_env.CodexCliResolution(
+                None, "", client_spawn_env.CODEX_CLI_ADAPTER_MISSING
+            ),
+        )
+        monkeypatch.setattr(codex.importlib.util, "find_spec", _find_spec)
+        monkeypatch.setattr(
+            sandbox, "no_backend_refuses_spawn", lambda mode, **options: sandbox_refuses
+        )
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+        monkeypatch.setattr(
+            core_mod, "pip_extra_install_command", lambda extra: f"pip-extra {extra}"
+        )
+
+    def test_codex_offers_no_pip_command_where_the_sandbox_refuses(self, monkeypatch) -> None:
+        """No package makes Codex runnable on a host with no confining backend,
+        so the extra is not advertised there even though it is missing."""
+        self._codex_host(monkeypatch, aiortc=False, sandbox_refuses=True)
+        assert core_mod._stt_prereq_commands("codex") == []
+
+    def test_codex_names_the_extra_even_while_the_binary_is_missing(self, monkeypatch) -> None:
+        """Both prerequisites at once: a missing ``codex`` binary must not hide
+        the missing extra until after the user has installed Codex."""
+        self._codex_host(monkeypatch, aiortc=False)
+        assert core_mod._stt_prereq_commands("codex") == ["pip-extra voice-codex"]
+
+    def test_codex_with_the_extra_present_offers_no_pip_command(self, monkeypatch) -> None:
+        self._codex_host(monkeypatch, aiortc=True)
+        assert core_mod._stt_prereq_commands("codex") == []
+
 
 class TestPipInstallChannel:
     @pytest.fixture(autouse=True)
@@ -779,7 +833,7 @@ class TestSttConfigEndpoint:
         # Streaming capability is served from the backend's own set so the
         # Settings UI gates on a CAPABILITY rather than a provider name. `local`
         # streams too, so every advertised provider is in it.
-        assert body["streaming_providers"] == ["local", "apple", "transcribe"]
+        assert body["streaming_providers"] == ["local", "apple", "transcribe", "codex"]
         assert body["language_identification_providers"] == ["transcribe"]
         # Tracks _STT_MODEL_SIZES (the PUT allowlist) rather than pinning one
         # literal, so a catalog entry added or resized cannot make the picker
