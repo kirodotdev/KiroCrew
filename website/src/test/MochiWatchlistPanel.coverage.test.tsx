@@ -405,6 +405,16 @@ describe('WatchlistPanel list mode', () => {
     expect(screen.queryByText('Just done')).not.toBeInTheDocument()
   })
 
+  it('says whether the completed items are shown on its toggle', async () => {
+    await mountWith([
+      makeItem({ id: 'w-2', label: 'Just done', status: 'done', completedAt: minutesAgo(30) }),
+    ])
+    const show = screen.getByRole('button', { name: 'Show completed (1)' })
+    expect(show).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(show)
+    expect(screen.getByRole('button', { name: 'Hide completed' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
   it('omits the section heading a partition has no members for', async () => {
     await mountWith([
       makeItem({ id: 'w-2', label: 'Just done', status: 'done', completedAt: minutesAgo(30) }),
