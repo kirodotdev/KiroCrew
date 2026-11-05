@@ -665,11 +665,17 @@ def _subagent_wave_digest(
                     if _flush_only
                     else ""
                 )
+                # The text can wait in the parent's queue while the
+                # remaining members finish, so the counts are dated, in a
+                # sentence of their own: a channel row carries no meta and
+                # is parsed by its header line.
                 announce = (
                     f"{SUBAGENT_BATCH_COMPLETION_PREFIX}\n"
                     f"Batch results {_chunk_k}/{_chunk_j} — "
                     f"{bp['done']} of {bp['total']} delivered, "
                     f"{_remaining} still running.\n"
+                    f"These counts were taken when this digest was composed; "
+                    f"a running agent may have finished since.\n"
                     f"{_why}"
                     f"Process these results now, but do NOT spawn new "
                     f"sub-agents yet — more result batches from this "
