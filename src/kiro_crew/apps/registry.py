@@ -757,6 +757,7 @@ if _typing.TYPE_CHECKING:
         _retained_startup_refusal,
         _trust_grant_would_stay_local,
         app_name_error,
+        git_unavailable_refusal,
         install_app,
         install_from_registry,
         install_receipt,
