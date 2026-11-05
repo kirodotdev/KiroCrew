@@ -47,7 +47,6 @@ it passes the same ceiling the derived rules do, or it does not travel.
 
 from __future__ import annotations
 
-import fnmatch
 import logging
 import re
 from collections.abc import Callable, Iterable
@@ -261,24 +260,23 @@ def shell_denies_by_default(tools_settings: Any) -> bool:
     return False
 
 
-#: The names kiro-cli's ``allowedTools`` matcher tests a shell call against: the
-#: tool's own name and its short spelling (:data:`KIRO_TOOL_ALIASES`).
-_SHELL_TOOL_NAMES = ("execute_bash", "shell")
+#: The exact names :func:`allowed_tools_grant_shell` compares an ``allowedTools``
+#: entry against: the shell tool's own name and its short spelling
+#: (:data:`KIRO_TOOL_ALIASES`).
+_SHELL_TOOL_NAMES = frozenset({"execute_bash", "shell"})
 
-#: Prefix kiro-cli reads as "every built-in" (``@builtin``, ``@builtin/``,
-#: ``@builtin/*``) or as one built-in pattern (``@builtin/execute_bash``).
+#: Prefix whose exact forms ``@builtin``, ``@builtin/`` and ``@builtin/*`` mean
+#: "every built-in"; ``@builtin/<name>`` names one built-in by its exact name.
 _BUILTIN_PREFIX = "@builtin"
 
 
 def allowed_tools_grant_shell(allowed_tools: Any) -> bool:
-    """Whether *allowed_tools* names the shell the way kiro-cli's matcher reads it.
+    """Whether *allowed_tools* names the shell by its exact name.
 
-    kiro-cli (``is_tool_in_allowlist`` for a native tool) matches the shell when an
-    entry is ``@builtin`` / ``@builtin/`` / ``@builtin/*``, or when an entry without
-    ``@`` (or the part after ``@builtin/``) matches ``execute_bash`` as a glob.
-    Only the glob syntax both matchers document (``*``, ``?``) is read; an entry
-    with ``[ ] { } !`` grants nothing here, so an unclear entry keeps the
-    restriction (fail closed).
+    True when an entry is ``@builtin`` / ``@builtin/`` / ``@builtin/*``, or when an
+    entry (or the part after ``@builtin/``) is exactly ``execute_bash`` or
+    ``shell``. Any other entry, one holding ``*`` or ``?`` included, grants
+    nothing here, so the ``denyByDefault`` restriction stays (fail closed).
     """
     if not isinstance(allowed_tools, list):
         return False
@@ -290,11 +288,7 @@ def allowed_tools_grant_shell(allowed_tools: Any) -> bool:
             return True
         if entry.startswith(f"{_BUILTIN_PREFIX}/"):
             entry = entry[len(_BUILTIN_PREFIX) + 1 :]
-        elif entry.startswith("@"):
-            continue
-        if not entry or _UNSHARED_GLOB_SYNTAX.intersection(entry):
-            continue
-        if any(fnmatch.fnmatchcase(name, entry) for name in _SHELL_TOOL_NAMES):
+        if entry in _SHELL_TOOL_NAMES:
             return True
     return False
 
