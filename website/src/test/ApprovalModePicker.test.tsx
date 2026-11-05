@@ -60,6 +60,14 @@ describe('ApprovalModePicker', () => {
     expect(texts.some(t => t.includes('YOLO'))).toBe(true)
   })
 
+  it('says Reads and Trust also cover the sessions this chat starts', () => {
+    renderPicker('normal')
+    fireEvent.click(screen.getByLabelText('Approval mode: Normal'))
+    const [, reads, trust] = screen.getAllByRole('menuitem').map(i => i.textContent || '')
+    expect(reads).toContain('the sessions it starts')
+    expect(trust).toContain('the sessions it starts')
+  })
+
   it('selecting a non-yolo mode dispatches changeApprovalMode with the slot', () => {
     renderPicker('normal')
     fireEvent.click(screen.getByLabelText('Approval mode: Normal'))
