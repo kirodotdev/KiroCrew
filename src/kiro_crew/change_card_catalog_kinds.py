@@ -359,6 +359,10 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         # The provider and model a Strands session runs: where its conversation goes.
         "agent.strands_provider",
         "agent.strands_model",
+        # A Kiro Cloud profile moves a session's agent and tools into a Kiro
+        # cloud sandbox outside Kiro Crew's tool gate, with the repositories
+        # it names checked out there.
+        "session_environments.kiro_cloud_profiles",
     }
 )
 

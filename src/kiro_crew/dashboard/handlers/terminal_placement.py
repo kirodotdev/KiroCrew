@@ -31,7 +31,7 @@ async def _remote_terminal_argv(
 ) -> tuple[list[str] | None, str, str]:
     """``(argv, "", "")`` for a shell in ``slot_name``'s remote workspace, else
     ``(None, why, error_code)``."""
-    from kiro_crew.coder.session_browse import NotRemote, remote_terminal_argv
+    from kiro_crew.coder.session_browse import CloudSandboxOnly, NotRemote, remote_terminal_argv
     from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
@@ -46,6 +46,10 @@ async def _remote_terminal_argv(
         return await remote_terminal_argv(effective_session_key(slot)), "", ""
     except NotRemote:
         return None, "This chat runs on this machine, not a remote environment", _WRONG_MACHINE
+    except CloudSandboxOnly as exc:
+        # Before its base class: a Kiro Cloud sandbox has no shell Kiro Crew can
+        # reach, now or later, so the tab parks rather than redialing an outage.
+        return None, f"No terminal for this chat: {exc}", _WRONG_MACHINE
     except SessionEnvironmentUnavailable as exc:
         return None, f"The remote workspace is not available: {exc}", _PLACEMENT_UNAVAILABLE
 

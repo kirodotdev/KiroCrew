@@ -215,8 +215,13 @@ class AcpProvider(LLMProvider):
         self.app_launch_agent = ""
         # The app that owns this session, set by session allocation from the chat
         # slot's own app (never from transcript metadata). The remote git proxy's
-        # egress check passes it to governance so an app-bound profile applies.
+        # egress check and the cloud start pass it to governance so an app-bound
+        # profile applies.
         self.owning_app = ""
+        # A Kiro Cloud start's (session_key, agent, app), which every later turn
+        # re-checks governance against (``acp_turns._readmit_cloud_session``);
+        # None for every other session, which then skips the check.
+        self._cloud_governance_scope: tuple[str, str, str] | None = None
         # Kept on the provider, not only on the placeholder client: on the kiro
         # path ``_start_kiro_runtime_impl`` replaces that client with an
         # ``AcpRuntime`` it constructs itself, and a dedicated subagent's
@@ -1135,6 +1140,12 @@ class AcpProvider(LLMProvider):
         if not self._client:
             return None
         return self._client.background_launch()
+
+    @property
+    def turn_survives_disconnect(self) -> bool:
+        return (
+            isinstance(self._client, AcpSessionProvider) and self._client.turn_survives_disconnect
+        )
 
     def has_unfinished_turn(self) -> bool:
         """True if the client reports a native turn that has NOT reached its

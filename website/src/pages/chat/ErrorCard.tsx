@@ -156,6 +156,22 @@ const KIRO_CLI_MISSING_KIND = 'kiro_cli_missing'
 export const isKiroCliMissing = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === KIRO_CLI_MISSING_KIND || (m.meta as { kind?: string } | undefined)?.kind === KIRO_CLI_MISSING_KIND
 
+/** Row kinds the backend stamps on the error a Kiro Cloud chat leaves when it
+ *  moved onto a new cloud sandbox (`providers/acp_runtime_start.py`): its cloud
+ *  session could not be reopened (`replayed`), or Edit & Resend, a reset or
+ *  compaction dropped it (`replaced`). The row's wire text is the channel
+ *  fallback; the card shows the localized sentence instead. */
+const CLOUD_SESSION_NOTICE_KEYS: Record<string, string> = {
+  cloud_session_replayed: 'sessionEnvironments.kiroCloud.replayed',
+  cloud_session_replaced: 'sessionEnvironments.kiroCloud.replaced',
+}
+
+/** The catalog key of a Kiro Cloud sandbox notice row, or `''`. */
+const cloudSessionNoticeKey = (meta: ChatMessage['meta']): string => {
+  const kind = (meta as { kind?: string } | undefined)?.kind
+  return (kind && Object.hasOwn(CLOUD_SESSION_NOTICE_KEYS, kind) && CLOUD_SESSION_NOTICE_KEYS[kind]) || ''
+}
+
 /** Consecutive tagged session-start failures at which the card stops offering
  *  Resume and the server refuses the re-run (`session_start_repeat`). Two, not
  *  one: a single timed-out start is host weather and the first Resume is the
@@ -584,7 +600,10 @@ export const ErrorCard = memo(function ErrorCard({
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
   // Resume button. A row with no control keeps the wire text: telling the
   // reader to resume beside nothing is worse than the mismatch it would fix.
-  const content = (onContinue && (resumeContent ?? retryProse(wireContent))) || wireContent
+  const cloudNotice = cloudSessionNoticeKey(meta)
+  const content = cloudNotice
+    ? i18nT(cloudNotice)
+    : (onContinue && (resumeContent ?? retryProse(wireContent))) || wireContent
   if (featureRequestFormUrl) {
     // A feature request the plan could not afford: the one action that still
     // ends it is the tracker's own form, which needs no agent turn. The prose

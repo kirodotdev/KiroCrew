@@ -591,6 +591,16 @@ class SessionEnvironmentsConfig:
             "credential is stored.",
         ),
     )
+    kiro_cloud_profiles: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Kiro Cloud Sessions Profiles",
+            "Named Kiro Cloud Sessions profiles (at most 20), each {id, name, "
+            "repositories}. The session runs in a Kiro Cloud Sessions sandbox through "
+            "Kiro Agent, without Kiro Crew's tools, MCP servers or governance gate; the "
+            "gateway's Kiro sign-in authenticates.",
+        ),
+    )
 
     default_profile: str = field(
         default="",
@@ -620,6 +630,7 @@ class SessionEnvironmentsConfig:
         from kiro_crew.config.session_environments import (
             load_boxd_profiles,
             load_default_profile,
+            load_kiro_cloud_profiles,
             load_session_environments,
             load_sprites_profiles,
             load_stop_on_shutdown,
@@ -633,6 +644,7 @@ class SessionEnvironmentsConfig:
             profiles=[SessionEnvironmentProfileConfig(**p) for p in profiles],
             sprites_profiles=load_sprites_profiles(section),
             boxd_profiles=load_boxd_profiles(section),
+            kiro_cloud_profiles=load_kiro_cloud_profiles(section),
             default_profile=load_default_profile(section),
             stop_on_shutdown=load_stop_on_shutdown(section),
         )
