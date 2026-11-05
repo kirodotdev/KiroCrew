@@ -27,6 +27,7 @@ import type { ReactNode } from 'react'
 import { i18nT } from '../../i18n/t'
 import type { ChatMessage } from '../../types'
 import MarkdownRenderer, { LinkOverrideCtx, LinkUnfurlCtx, type LinkOverride, type LinkUnfurl } from '../MarkdownRenderer'
+import ErrorNotice from '../ErrorNotice'
 import WidgetFrame from '../WidgetFrame'
 import { WidgetFrameProfileContext } from '../widgetFrameProfile'
 import WarmBriefWaiting, { SHOWN, type WarmBriefCardItem } from './WarmBriefWaiting'
@@ -56,6 +57,30 @@ export interface WarmBrief {
   /** Structured asks: why, each option's consequence, the recommendation.
    *  Option labels are the gateway-checked source labels. */
   asks: WarmBriefAsk[]
+  /** What the gateway itself read for this brief; body lines cite them as `{fN}`. */
+  checked: WarmBriefFact[]
+  /** The model's typed lines; each line's marks come from its `facts` field. */
+  lines: WarmBriefLine[]
+}
+
+/** One typed line: a plain sentence and the checked facts it states. */
+export interface WarmBriefLine {
+  text: string
+  /** Fact ids (`f1`, ...); the gateway kept only ids its fact table holds. */
+  facts: string[]
+}
+
+export interface WarmBriefFact {
+  /** `f1`, `f2`, ...: the id body lines cite. */
+  id: string
+  label: string
+  /** What was read, as words in the UI language (`factWords`). */
+  facts: string[]
+  /** Where it was read, translated: GitHub or the task list. */
+  source: string
+  readAt: string
+  /** The read failed: the row is "not checked since HH:MM", an error. */
+  failed: boolean
 }
 
 export interface WarmBriefAsk {
@@ -118,6 +143,91 @@ function waitingOf(value: unknown): WarmBriefCardItem[] {
 }
 
 const MAX_ASK_OPTIONS = 6
+// Every id the gateway can mint (`f1`..`f200`, its `MAX_FACTS`), so each
+// fact a line lists keeps its row; and the gateway's bound on typed lines.
+const MAX_FACTS = 200
+const MAX_LINES = 12
+/** `f1` .. `f200` exactly, compared as text, the ids the gateway mints. */
+function isFactId(id: unknown): id is string {
+  const n = typeof id === 'string' && id.startsWith('f') ? Number(id.slice(1)) : NaN
+  return Number.isInteger(n) && n >= 1 && n <= MAX_FACTS && id === `f${n}`
+}
+
+// The gateway's machine values, each with its word in the UI language; a
+// value outside the list is shown as read, lower-cased.
+const FACT_VALUE_KEYS = {
+  open: 'components.warmBriefCard.value_open', closed: 'components.warmBriefCard.value_closed',
+  merged: 'components.warmBriefCard.value_merged', draft: 'components.warmBriefCard.value_draft',
+  accepted: 'components.warmBriefCard.value_accepted', rejected: 'components.warmBriefCard.value_rejected',
+  abandoned: 'components.warmBriefCard.value_abandoned', progress: 'components.warmBriefCard.value_progress',
+  question: 'components.warmBriefCard.value_question', blocked: 'components.warmBriefCard.value_blocked',
+  done: 'components.warmBriefCard.value_done', APPROVED: 'components.warmBriefCard.value_approved',
+  CHANGES_REQUESTED: 'components.warmBriefCard.value_changes_requested',
+  REVIEW_REQUIRED: 'components.warmBriefCard.value_review_required',
+  MERGEABLE: 'components.warmBriefCard.value_no_conflicts', CLEAN: 'components.warmBriefCard.value_can_merge',
+  CONFLICTING: 'components.warmBriefCard.value_conflicts', DIRTY: 'components.warmBriefCard.value_conflicts',
+} as const
+const count = (v: unknown) => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : 0)
+
+/** One fact's values as words in the UI language, in the card's order. */
+export function factWords(values: Record<string, unknown>): string[] {
+  const since = values.not_checked_since
+  if (typeof since === 'string') {
+    return [since === 'never' ? i18nT('components.warmBriefCard.not_checked_never') : i18nT('components.warmBriefCard.not_checked_since', { time: text(since) })]
+  }
+  const words = (['state', 'status', 'review', 'mergeable'] as const)
+    .map(k => text(values[k]))
+    .filter(v => v && v !== 'UNKNOWN')
+    .map(v => (v in FACT_VALUE_KEYS ? i18nT(FACT_VALUE_KEYS[v as keyof typeof FACT_VALUE_KEYS]) : v.toLowerCase().split('_').join(' ')))
+  const checks = values.checks
+  if (typeof checks === 'string' && checks) words.push(i18nT('components.warmBriefCard.checks_not_read'))
+  else if (checks && typeof checks === 'object') {
+    const c = checks as Record<string, unknown>
+    const parts = [i18nT('components.warmBriefCard.checks_counts', { passed: count(c.passed), failed: count(c.failed) })]
+    if (count(c.pending)) parts.push(i18nT('components.warmBriefCard.checks_running', { n: count(c.pending) }))
+    if (count(c.unknown)) parts.push(i18nT('components.warmBriefCard.checks_unknown', { n: count(c.unknown) }))
+    words.push(parts.join(', '))
+  }
+  return words
+}
+
+function checkedOf(value: unknown): WarmBriefFact[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map(raw => {
+      const s = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+      const id = isFactId(s.id) ? s.id : ''
+      const values = s.values && typeof s.values === 'object' ? (s.values as Record<string, unknown>) : {}
+      const source = s.source === 'github' ? i18nT('components.warmBriefCard.source_github') : s.source === 'tasks' ? i18nT('components.warmBriefCard.source_tasks') : ''
+      return { id, label: text(s.label), facts: factWords(values), source, readAt: text(s.read_at), failed: typeof values.not_checked_since === 'string' }
+    })
+    .filter(f => f.id && f.label)
+    .slice(0, MAX_FACTS)
+}
+
+const SUPERSCRIPT = '⁰¹²³⁴⁵⁶⁷⁸⁹'
+/** `f12` as the footnote mark `¹²` the body and the Checked row share. */
+const mark = (digits: string) => [...digits].map(d => SUPERSCRIPT[Number(d)]).join('')
+/** A typed line with its fact ids drawn as the Checked rows' marks. */
+export const lineText = (l: WarmBriefLine) => `${l.text}${l.facts.map(id => mark(id.slice(1))).join(',')}`
+
+function linesOf(value: unknown): WarmBriefLine[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map(raw => {
+      const s = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+      return { text: text(s.text), facts: (Array.isArray(s.facts) ? s.facts : []).filter(isFactId).slice(0, MAX_FACTS) }
+    })
+    .filter(l => l.text)
+    .slice(0, MAX_LINES)
+}
+
+/** One checked fact as one line: `¹ owner/repo#N: merged · approved (GitHub 09:30)`. */
+export function factText(f: WarmBriefFact): string {
+  const values = f.facts.length ? `: ${f.facts.join(' · ')}` : ''
+  const where = [f.source, f.readAt].filter(Boolean).join(' ')
+  return `${mark(f.id.slice(1))} ${f.label}${values}${where ? ` (${where})` : ''}`
+}
 
 function asksOf(value: unknown): WarmBriefAsk[] {
   if (!Array.isArray(value)) return []
@@ -175,6 +285,8 @@ export function warmBriefOf(m: ChatMessage): WarmBrief | null {
     widget: typeof b.widget === 'string' && b.widget.length <= MAX_WIDGET ? b.widget.trim() : '',
     links: linksOf(b.links),
     asks: asksOf(b.asks),
+    checked: checkedOf(b.checked),
+    lines: linesOf(b.lines),
   }
 }
 
@@ -219,9 +331,13 @@ export function warmBriefVisibleText(brief: WarmBrief): string {
   }
   if (brief.remaining) lines.push(remainingText(brief))
   for (const ask of brief.asks) lines.push(...askLines(ask))
+  lines.push(...brief.lines.map(lineText))
   const body = brief.body.replace(MCWIDGET_RE, '').trim()
   if (body) lines.push(body)
   lines.push(...brief.links.map(l => l.label))
+  const read = brief.checked.filter(f => !f.failed)
+  if (read.length) lines.push(i18nT('components.warmBriefCard.checked'), ...read.map(factText))
+  lines.push(...brief.checked.filter(f => f.failed).map(factText))
   if (brief.asked) lines.push(askedText(brief))
   if (brief.done.length) lines.push(i18nT('components.warmBriefCard.done'), ...brief.done)
   if (brief.next.length) lines.push(i18nT('components.warmBriefCard.next'), ...brief.next)
@@ -334,6 +450,11 @@ export default function WarmBriefCard({ brief, messageTs, slotKey }: { brief: Wa
         </div>
       )}
       {brief.asks.length > 0 && <Asks asks={brief.asks} />}
+      {brief.lines.length > 0 && (
+        <ul className="m-0 pl-4 list-disc break-words" data-testid="warm-brief-lines">
+          {brief.lines.map((line, i) => <li key={i}>{lineText(line)}</li>)}
+        </ul>
+      )}
       {brief.body && (
         <div className="min-w-0 break-words" data-testid="warm-brief-body">
           {/* The chat's own renderer, with the welcome frame profile: an
@@ -357,6 +478,13 @@ export default function WarmBriefCard({ brief, messageTs, slotKey }: { brief: Wa
           </LinkUnfurlCtx.Provider>
         </div>
       )}
+      {brief.checked.some(f => !f.failed) && (
+        <Section title={i18nT('components.warmBriefCard.checked')} list={brief.checked.filter(f => !f.failed).map(factText)} testId="warm-brief-checked" />
+      )}
+      {/* A failed read is an error (RFC 3.9.1 wording kept), drawn by the shared error surface. */}
+      {brief.checked.filter(f => f.failed).map(f => (
+        <ErrorNotice key={f.id} variant="inline" message={factText(f)} askAgent testId="warm-brief-not-checked" />
+      ))}
       {brief.asked && (
         <div className="text-[12px] leading-4 text-muted" data-testid="warm-brief-asked">
           {/* One text node, the same string search counts (`warmBriefVisibleText`):

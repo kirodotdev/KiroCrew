@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { defaultMessageRenderers, mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { isCrewmateChatRow } from '../components/chat/crewmateBubbles'
-import WarmBriefCard, { warmBriefBodyOf, warmBriefOf, type WarmBrief } from '../components/chat/WarmBriefCard'
+import WarmBriefCard, { factWords, warmBriefBodyOf, warmBriefOf, type WarmBrief } from '../components/chat/WarmBriefCard'
 import type { ChatMessage } from '../types'
 import { fmtMessageTime } from '../pages/chat/messageTime'
 import { searchableText, searchableTextMemo } from '../utils/searchableText'
@@ -115,7 +115,7 @@ describe('warm task brief transcript rows', () => {
     const b = warmBriefOf(brief({ asked: 'Fix the test', now: 'PR is open.', needs_you: ['Approve'], next: ['Merge'] }))!
     expect(b).toEqual({
       status: null, headline: 'PR is open.', asked: 'Fix the test', remaining: '',
-      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [], asks: [],
+      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [], asks: [], checked: [], lines: [],
     })
     render(<WarmBriefCard brief={b} />)
     expect(screen.queryByTestId('warm-brief-status')).toBeNull()
@@ -135,7 +135,7 @@ const FULL = {
 
 const EMPTY: WarmBrief = {
   status: null, headline: 'PR is open.', asked: '', remaining: '',
-  done: [], needsYou: [], next: [], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [], asks: [],
+  done: [], needsYou: [], next: [], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [], asks: [], checked: [], lines: [],
 }
 
 describe('WarmBriefCard', () => {
@@ -624,6 +624,76 @@ describe('structured asks', () => {
     expect(b.asks).toHaveLength(1)
     expect(b.asks[0].recommended).toBe('')
     expect(b.asks[0].recommendedWhy).toBe('')
+  })
+})
+
+describe('checked facts', () => {
+  // The gateway stores machine values; the card says them in the UI language.
+  const PR = { id: 'f1', kind: 'pr', label: 'kirodotdev/KiroCrew#12', values: { state: 'merged', review: 'APPROVED' }, source: 'github', read_at: '09:30' }
+  const TASK = { id: 'f2', kind: 'task', label: 'Ship the importer', values: { status: 'progress' }, source: 'tasks' }
+
+  it('translates each machine value and keeps every check count', () => {
+    expect(factWords({ state: 'open', mergeable: 'MERGEABLE', checks: { passed: 10, failed: 0, pending: 2, unknown: 1 } })).toEqual([
+      'open', 'no conflicts', 'checks 10 passed, 0 failed, 2 running, 1 unknown',
+    ])
+    // No conflicts is not ready to merge: only CLEAN says that.
+    expect(factWords({ mergeable: 'CLEAN' })).toEqual(['ready to merge'])
+    expect(factWords({ not_checked_since: '09:30' })).toEqual(['not checked since 09:30'])
+    expect(factWords({ not_checked_since: 'never' })).toEqual(['never checked'])
+    expect(factWords({ state: 'open', checks: 'not fully read', mergeable: 'UNKNOWN' })).toEqual(['open', 'checks not fully read'])
+    // A value the card does not know is shown as read, never dropped.
+    expect(factWords({ review: 'SOME_NEW_STATE' })).toEqual(['some new state'])
+  })
+
+  it('lists each fact the gateway read, by its id, as plain text that search reads', () => {
+    const lines = [{ text: '#12 merged', kind: 'pr', facts: ['f1'] }, { text: 'Importer {f2} is open', kind: 'task', facts: ['f2'] }]
+    const m = brief({ headline: 'Back.', status: 'on_track', lines, checked: [PR, TASK] })
+    render(<WarmBriefCard brief={warmBriefOf(m)!} />)
+    const section = screen.getByTestId('warm-brief-checked')
+    expect(section.textContent).toContain('Checked')
+    expect([...section.querySelectorAll('li')].map(li => li.textContent)).toEqual([
+      '¹ kirodotdev/KiroCrew#12: merged · approved (GitHub 09:30)',
+      '² Ship the importer: ongoing (task list)',
+    ])
+    expect(section.querySelectorAll('button, a')).toHaveLength(0)
+    expect(searchableText(m)).toContain('² Ship the importer: ongoing (task list)')
+    // Each line's marks come from its facts field; text is never read for ids.
+    expect([...screen.getByTestId('warm-brief-lines').querySelectorAll('li')].map(li => li.textContent)).toEqual([
+      '#12 merged¹',
+      'Importer {f2} is open²',
+    ])
+    expect(searchableText(m)).toContain('#12 merged¹')
+  })
+
+  it('leaves the body as written: braces in a picture are never read as citations', () => {
+    const body = '<mcwidget><script>const f1 = 1; const v = {f1};</script></mcwidget>'
+    expect(warmBriefOf(brief({ headline: 'Back.', body }))!.body).toBe(body)
+  })
+
+  it('keeps every fact id the gateway can mint, three digits included, and drops malformed ids', () => {
+    const many = Array.from({ length: 200 }, (_, i) => ({ ...TASK, id: `f${i + 1}` }))
+    const lines = [{ text: 'B099 is open', kind: 'task', facts: ['f100', 'f0', 'f01', 'f201', 'x', 7] }]
+    const b = warmBriefOf(brief({ headline: 'Back.', lines, checked: many }))!
+    expect(b.checked).toHaveLength(200)
+    expect(b.lines).toEqual([{ text: 'B099 is open', facts: ['f100'] }])
+  })
+
+  it('draws a failed read through the shared error surface, with the RFC wording', () => {
+    const failed = { id: 'f3', kind: 'pr', label: 'kirodotdev/KiroCrew#13', values: { not_checked_since: '09:30' }, source: 'github' }
+    const m = brief({ headline: 'Back.', status: 'on_track', checked: [PR, failed] })
+    render(<WarmBriefCard brief={warmBriefOf(m)!} />)
+    expect(screen.getByTestId('warm-brief-checked').textContent).not.toContain('#13')
+    const notice = screen.getByTestId('warm-brief-not-checked')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice.textContent).toContain('³ kirodotdev/KiroCrew#13: not checked since 09:30 (GitHub)')
+    expect(searchableText(m)).toContain('not checked since 09:30')
+  })
+
+  it('drops a fact without a well-formed id or a label, and draws no section without facts', () => {
+    const m = brief({ headline: 'Back.', checked: [{ ...PR, id: 'x1' }, { ...TASK, label: '' }, 'f3', { ...TASK, id: 'f3' }] })
+    expect(warmBriefOf(m)!.checked.map(f => f.id)).toEqual(['f3'])
+    render(<WarmBriefCard brief={warmBriefOf(brief({ headline: 'Back.' }))!} />)
+    expect(screen.queryByTestId('warm-brief-checked')).toBeNull()
   })
 })
 

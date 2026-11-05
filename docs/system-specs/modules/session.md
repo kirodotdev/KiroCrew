@@ -227,8 +227,11 @@ ask is never brought back);
 anchor, and session-ledger events after it, each with its source (worker
 report, conductor decision, work ledger or session ledger) and `HH:MM`
 time; a PR's live state is not listed here, since the read cannot tell when
-it merged, and stays in `live_prs`);
-`live_prs`; `transcript_since_owner` (the
+it merged, and is a checked fact);
+`checked_facts` (what the gateway itself read, numbered `f1`, `f2`, ...:
+each pull request the live read covered, one whose read failed stating
+only "not checked since HH:MM", then every work item in `open_items`, from
+the task list; `warm_task_brief_facts.py`); `transcript_since_owner` (the
 owner's last genuine message and every turn since, whole; over budget the
 oldest drop first); `open_items` (open items, and terminal ones that changed
 while the owner was away, questions and blocked first); `goal` (conductor
@@ -236,12 +239,13 @@ goal, else session-ledger goal, else the owner's newest message);
 `goal_progress`; and `owner_recent_messages` (the owner's last three genuine
 messages, which pick the reply language and the script of the fixed lines).
 
-The live read covers only pull requests the open asks name, at most five,
-through the structured monitor's GitHub probe (`GitHubPullRequestProvider`).
+The live read covers the pull requests the open work items hold, at most
+five, through the structured monitor's GitHub probe (`GitHubPullRequestProvider`).
 A PR's repository comes only from ledger data or a full PR URL: each open
 question or blocked item's own PR (its `pr`, or its acceptance's `pr`, in its
 acceptance's `repo`), then every `https://github.com/<owner>/<repo>/pull/<n>`
-URL in the pending ask's text and choices and in those items' text. A bare
+URL in the pending ask's text and choices and in those items' text, then each
+other open item's own PR. A bare
 `#N` or a written `owner/repo#N` is never resolved to a repository, so it is
 not read. PR links in the card and buttons for the pending choices come in
 follow-up changes. Each answer
@@ -250,9 +254,25 @@ total on live reads, both attempts included (`LIVE_READ_TOTAL_SECS`); at the
 limit the welcome goes out with the cached reads, and every PR still being read
 is `checked: false`. Every entry carries `read_at`, or
 `checked: false` with `not_checked_since` (the last good read, or `never`).
-The prompt allows merged, green, approved or conflict states only from
-`live_prs` or a change newer than the away time; anything else is written as
-"not checked since HH:MM".
+The model returns its catch-up lines as `lines` (at most 12), each
+`{text, kind, facts}` with `kind` one of `pr`, `task`, `file`, `deploy`,
+`ticket`, `none`. Before the grounding scans the gateway keeps a line only
+when every id in `facts` is a key of the fact table, a `pr` or `task` line
+lists a fact of its own kind, and its kind is not `file`, `deploy` or
+`ticket` (no fact covers those yet); no text is scanned for this. `body`
+is asked for pictures only; the gateway enforces no picture count.
+Known limit: a `none` line naming a task or file is not caught; a pull
+request in one still fails the `#N` grounding check. Words in `body` are not citation-checked
+either; the grounding checks still read them. Kept lines are stored
+in `meta.brief.lines`. The card lists the facts under "Checked just now"
+(`meta.brief.checked`: `id`, `kind`, `label`, `values` (machine values),
+`source` (`github` or `tasks`), `read_at`), translated by the card, each led by a superscript mark; each line draws the
+marks of its own `facts`. The secret scan reads these strings, and a
+grounding miss drops them. The result row stores `facts_digest` (the ledger digest, what
+waited and each live read, without read times); when the newest delivered
+brief's digest equals the new one and the thread said nothing since the away
+anchor, the return sends nothing and calls no model. A PR whose read failed
+is written as "not checked since HH:MM", citing its fact.
 
 The prompt asks for parts in order: the goal, what changed since the owner
 left (each fact with source and time), numbered asks (what, why only the
@@ -282,7 +302,7 @@ post: the secret scan on its whole `content` and each `meta.brief` field,
 the PR, SHA and time scans on the model-written strings only (each
 `meta.brief` field and the body as `content` carries it; the gateway's own
 waiting cards are not model text). Any grounding miss drops every model
-field, never masks or edits one. Every scanner reads the same three views
+field, never masks or edits one; the checked-fact line rule runs before the scans. Every scanner reads the same three views
 of its text, built by one function: the canonical form (HTML entities
 decoded until stable, then NFKC) as written, with tags, comments and link
 syntax removed until none is left so the halves around them join, and that joined form with

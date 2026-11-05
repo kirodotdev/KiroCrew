@@ -578,6 +578,8 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
     }
     result = slot.rows[-1]
     assert result["role"] == "assistant"
+    # What the brief stood on, so an unchanged return is not sent again.
+    assert len(result["meta"].pop("facts_digest")) == 64
     assert result["meta"] == {
         "kind": "warm_task_brief_result",
         "fingerprint": "fp",
@@ -610,7 +612,7 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
     # The model sees the gateway's goal-scoped count so its text agrees with it.
     assert '"goal_progress": {"accepted": 0, "total": 1}' in prompt
     assert "checked since HH:MM" in prompt and "add, drop or rename one" in prompt
-    assert '"needs_you"' in prompt and '"body" is markdown' in prompt
+    assert '"needs_you"' in prompt and '"lines"' in prompt
     assert "No links,\nimages or [OPTIONS] lines" in prompt
     # The user's reply-style choice reaches the prompt.
     assert warm_task_brief._STYLE_HINTS["answer_only"] in prompt
@@ -1795,11 +1797,11 @@ _WAITING_ITEM = {
 @pytest.mark.parametrize(
     ("result", "miss"),
     [
-        ({"headline": "Back.", "body": "- #31337 merged"}, "unknown_pr"),
-        ({"headline": "Back.", "body": "key AKIA**IOSFODNN7EXAMPLE**"}, "secret"),
+        ({"headline": "Back. #31337 merged", "body": "- ok"}, "unknown_pr"),
+        ({"headline": "Back.", "body": "| key AKIA**IOSFODNN7EXAMPLE** |"}, "secret"),
         # Rejoined only by cleaning: the run scans what it would post.
-        ({"headline": "Back.", "body": "key AK<im<img>g>IAIOSFODNN7EXAMPLE"}, "secret"),
-        ({"headline": "Back.", "body": "- deployed at 23&#58;47"}, "unbacked_fact"),
+        ({"headline": "Back.", "body": "| key AK<im<img>g>IAIOSFODNN7EXAMPLE |"}, "secret"),
+        ({"headline": "Back.", "body": "| built at 23&#58;47 |"}, "unbacked_fact"),
     ],
 )
 async def test_every_grounding_miss_keeps_the_waiting_cards_and_is_not_a_catch_up(
