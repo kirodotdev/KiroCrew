@@ -391,7 +391,9 @@ def _base_tool_definitions() -> list[dict[str, Any]]:
                 "done_without_evidence; a check that could not run is still recorded "
                 "as an artifact that says so. A 'done' is a claim the conductor verifies, "
                 "never an acceptance: nothing here can write a verdict. Write facts and "
-                "pointers to what you produced, not requests. Which item this lands on "
+                "pointers to what you produced, not requests. Send this call alone, in "
+                "a step after the calls that prove what it reports have returned. "
+                "Which item this lands on "
                 "is resolved from your own session — there is no item parameter."
                 " The whole report is one 64 KB crew-log line as JSON (a non-ASCII "
                 "character can count up to twelve bytes), so a report at every field cap with "
@@ -545,7 +547,9 @@ def _base_tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "work_ledger_record",
             "description": (
-                "Write one conductor-owned field set on your own ledger. One action per "
+                "Write one conductor-owned field set on your own ledger. Send this call "
+                "alone, in a step after the calls that prove what it records have "
+                "returned. One action per "
                 "call, because the field sets are disjoint: 'goal' sets the goal and "
                 "round (and opens the ledger); 'create' mints an item from title + "
                 "acceptance; 'bind' attaches a worker session key to an item — do this "
