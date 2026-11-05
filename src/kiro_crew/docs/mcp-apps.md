@@ -78,7 +78,7 @@ preference, but two ways to say **no** hold:
 |---|---|
 | `KIROCREW_MCP_APPS` = `0`/`false`/`no`/`off` | disabled (explicit kill-switch, wins over everything) |
 | stored `mcp_gateway.apps_enabled` = `false` | disabled, even with `KIROCREW_MCP_APPS` on — a released opt-out is still honoured |
-| config unreadable | disabled (fails closed — the stored preference cannot be confirmed) |
+| config unreadable or not parseable, or a non-object `mcp_gateway` | disabled (fails closed — the stored preference cannot be confirmed) |
 | `KIROCREW_MCP_APPS` = `1`/`true`/`yes`, no stored opt-out | enabled (explicit override — tests, e2e harness) |
 | nothing set | enabled — reaching the gate already means the server was stubbed |
 
@@ -88,7 +88,8 @@ install never has it. It is read in exactly one direction: an operator-written
 an opt-out.
 
 Read live per call, so toggling the feature takes effect without restarting the
-daemon.
+daemon. A file that does not parse keeps it off while it stays unparseable; a
+non-object `mcp_gateway` keeps it off until Kiro Crew restarts.
 
 ### Worked example: excalidraw diagrams
 
