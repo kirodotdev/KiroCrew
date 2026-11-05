@@ -350,6 +350,16 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
     // vice versa). May reject with origin_missing / stale_binding / not_a_private_copy
     // / ambiguous_template_name / rebind_failed.
     agentReset: (name: string, crew: string) => fetch('/api/agents/detail/' + encodeURIComponent(name) + '/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ crew }) }).then(j),
+    // Settings > Developer: mount one opt-in managed set (`kirocrew-dashboard`,
+    // `kirocrew-debug`) on the default agent through the mount-only record. The body
+    // names no entry and the request carries no card: the gateway builds the managed
+    // launch line and records it under its own Settings card id
+    // (`handlers/template_server_request.py`). Rejects 409 `already_added` when the
+    // record already holds the server.
+    defaultMcpSetAdd: (server: string) => fetch('/api/agents/detail/kirocrew/mcp-additions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ server, mount_only: true }) }).then(j) as Promise<{ sessions_reset?: number }>,
+    // Its counterpart: delete the server's mount-only record on the default agent,
+    // whichever card recorded it. Rejects 409 `not_found` when there is none.
+    defaultMcpSetRemove: (server: string) => fetch('/api/agents/detail/kirocrew/mcp-additions/' + encodeURIComponent(server), { method: 'DELETE' }).then(j) as Promise<{ sessions_reset?: number }>,
     // Kiro Crew agents
     // sessionKey identifies the CHAT SLOT whose project scope applies. The
     // server resolves project-local agents through

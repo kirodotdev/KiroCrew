@@ -7,6 +7,7 @@ import { ContentSkeleton } from '../../components/ui'
 import { useLocalGateway } from '../../hooks/useLocalGateway'
 import { FeaturePreviewsSection } from './FeaturePreviewsSection'
 import { CrewmatesSection } from './CrewmatesSection'
+import { DefaultMcpGrantsSection } from './DefaultMcpGrantsSection'
 import AutomaticCardSetting from '../chat/command-center/AutomaticCardSetting'
 import { i18nT } from '../../i18n/t'
 import { MCP_MANAGEMENT_PATH } from '../overview/McpShareRefusedNotice'
@@ -101,6 +102,8 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
               <FeaturePreviewsSection />
               {/* The crewmate feature switches (`CrewmatesSection.tsx`). */}
               <CrewmatesSection />
+              {/* The default agent's opt-in MCP sets (`DefaultMcpGrantsSection.tsx`). */}
+              <DefaultMcpGrantsSection />
               {localGatewaySupported && (
                 <SettingsSection title={i18nT('pages.settings.developerPanel.gateway')}>
                   <SettingsCard>
