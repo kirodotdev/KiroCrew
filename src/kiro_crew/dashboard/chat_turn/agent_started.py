@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 AGENT_STARTED_ACTOR = "agent"
 #: The assistant row meta key that says who started the turn the row answers.
 AGENT_ORIGIN_META_KEY = "origin"
+#: Set in ``meta.origin`` on the first row a turn the agent started writes.
+AGENT_TURN_START_KEY = "turn_start"
 
 
 def agent_origin_meta() -> dict[str, str]:
@@ -48,8 +50,19 @@ def agent_origin_meta() -> dict[str, str]:
     return {"kind": AGENT_STARTED_ACTOR}
 
 
+def agent_turn_opener_meta(meta: dict | None) -> dict:
+    """*meta* for the first row a turn the agent started writes, whatever its role.
+
+    That turn has no prompt row, so this row is where the transcript starts the
+    turn's own group, and it exists for a turn that wrote only tool rows too.
+    """
+    out = dict(meta) if meta else {}
+    out[AGENT_ORIGIN_META_KEY] = {**agent_origin_meta(), AGENT_TURN_START_KEY: True}
+    return out
+
+
 def is_agent_started_row(row: object) -> bool:
-    """Whether *row* is a reply a turn the agent started wrote (:func:`agent_origin_meta`)."""
+    """Whether a turn the agent started wrote *row* and marked it (:func:`agent_origin_meta`)."""
     meta = row.get("meta") if isinstance(row, dict) else None
     origin = meta.get(AGENT_ORIGIN_META_KEY) if isinstance(meta, dict) else None
     return isinstance(origin, dict) and origin.get("kind") == AGENT_STARTED_ACTOR
@@ -72,12 +85,14 @@ async def _close_agent_turn_stream(turn: _ChatTurn) -> None:
 
     The client holds the next prompt back while that stream is open, so a turn
     that leaves its loop early (a Stop, a raise, a ``break``) must not leave it
-    for the garbage collector to close.
+    for the garbage collector to close. A turn that wrote no row leaves its
+    opener unclaimed, and the next row on the slot is not this turn's.
     """
     stream = turn._agent_turn_stream
     if stream is None:
         return
     turn._agent_turn_stream = None
+    turn.slot._owed_turn_opener = None
     try:
         await stream.aclose()
     except Exception:

@@ -33,11 +33,17 @@ from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied
 from kiro_crew.acp.types import STOP_REASON_STALE_RECOVER
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
+from kiro_crew.context import build_session_replay
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard import gateway_notice as gn
 from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.chat_turn import turn_ledgers
-from kiro_crew.dashboard.chat_utils import TRANSIENT_GIVE_UP_TEXT, TRANSIENT_RETRY_KIND
+from kiro_crew.dashboard.chat_turn.agent_started import agent_turn_opener_meta
+from kiro_crew.dashboard.chat_utils import (
+    TRANSIENT_GIVE_UP_TEXT,
+    TRANSIENT_RETRY_KIND,
+    slot_history_key,
+)
 from kiro_crew.hooks import ToolHookResult
 from kiro_crew.providers import acp_turns
 from kiro_crew.providers.acp import AcpProvider
@@ -45,6 +51,7 @@ from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
+    EVENT_TOOL_CALL,
     LLMEvent,
 )
 from kiro_crew.recovery.ladder import InfraError
@@ -54,6 +61,8 @@ from kiro_crew.testing.wait import async_wait_until, await_until, default_timeou
 # A credential-shaped string the agent's own reply carries; it must be stored redacted.
 _SECRET = "AKIA" + "Z" * 16
 _ORIGIN = {"kind": "agent"}
+# The first row the turn writes opens it.
+_OPENER = {"kind": "agent", "turn_start": True}
 
 
 def _text(text: str) -> LLMEvent:
@@ -123,7 +132,7 @@ async def test_the_turn_shows_its_permission_card_and_its_reply_on_its_own_row(t
     [reply] = _rows(slot, "assistant")
     assert "The background build finished." in reply["content"]
     assert _SECRET not in reply["content"]
-    assert reply["meta"]["origin"] == _ORIGIN
+    assert reply["meta"]["origin"] == _OPENER
     # The permission card rendered as on a user turn.
     assert any(m.get("role") == "permission" for m in slot.messages)
 
@@ -146,7 +155,7 @@ async def test_the_next_user_bubble_holds_only_its_own_reply(tmp_path):
 
     agent_reply, user_reply = _rows(slot, "assistant")
     assert agent_reply["content"] == "it finished, output: done"
-    assert agent_reply["meta"]["origin"] == _ORIGIN
+    assert agent_reply["meta"]["origin"] == _OPENER
     assert user_reply["content"] == "All quiet."
     assert "origin" not in (user_reply.get("meta") or {})
 
@@ -496,6 +505,98 @@ def test_a_session_another_provider_serves_registers_no_watch():
     assert client.watch_agent_turns.call_args_list == []
 
 
+# ── the row that opens the turn ──
+
+
+def _tool_call() -> LLMEvent:
+    return LLMEvent(
+        kind=EVENT_TOOL_CALL, tool_call_id="tc-1", title="Read the build log", tool_kind="read"
+    )
+
+
+def _saved(state, slot) -> list[dict]:
+    return state.conversation_log.read_messages(slot_history_key(slot))
+
+
+@pytest.mark.asyncio
+async def test_a_turn_of_only_tool_rows_is_marked_on_its_first_row(tmp_path):
+    state, client = _make_state(tmp_path)
+    slot = _make_slot()
+    _agent_turn_client(state, client, [_tool_call(), _complete_event()])
+
+    with _patch_stats():
+        await _run_agent_turn(state, slot)
+
+    assert _rows(slot, "assistant") == []
+    [tool] = _rows(slot, "tool")
+    assert tool["meta"]["origin"] == _OPENER
+    [saved_tool] = [m for m in _saved(state, slot) if m.get("role") == "tool"]
+    assert saved_tool["meta"]["origin"] == _OPENER
+    # Spent on that row: a row written after the turn is not the turn's.
+    slot.append("notice", "the session went idle")
+    assert "origin" not in (slot.messages[-1].get("meta") or {})
+
+
+@pytest.mark.asyncio
+async def test_only_the_turns_first_row_opens_it_and_its_reply_is_in_the_resume_replay(tmp_path):
+    state, client = _make_state(tmp_path)
+    slot = _make_slot()
+    _agent_turn_client(
+        state,
+        client,
+        [_text("Checking the log."), _tool_call(), _text("The build passed."), _complete_event()],
+    )
+
+    with _patch_stats():
+        await _run_agent_turn(state, slot)
+
+    durable = [m for m in slot.messages if m.get("role") in ("assistant", "tool")]
+    assert durable[0]["meta"]["origin"] == _OPENER
+    assert [m["meta"].get("origin") for m in durable[1:] if m["role"] == "assistant"] == [_ORIGIN]
+    assert (
+        sum(bool((m.get("meta") or {}).get("origin", {}).get("turn_start")) for m in slot.messages)
+        == 1
+    )
+    assert _saved(state, slot)[0]["meta"]["origin"] == _OPENER
+    replay = build_session_replay(state.conversation_log, slot_history_key(slot))
+    assert replay is not None and "The build passed." in replay
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_wrote_no_row_leaves_no_opener_for_a_later_row(tmp_path):
+    state, client = _make_state(tmp_path)
+    slot = _make_slot()
+    _agent_turn_client(state, client, [_complete_event()])
+
+    with _patch_stats():
+        await _run_agent_turn(state, slot)
+
+    assert slot._owed_turn_opener is None
+    slot.append("notice", "a cron job ran")
+    assert "origin" not in (slot.messages[-1].get("meta") or {})
+
+
+def test_the_first_durable_row_the_turn_writes_takes_the_opener():
+    slot = _make_slot()
+    slot._owed_turn_opener = agent_turn_opener_meta
+    slot.append("chunk", "partial text")
+    slot.append("user", "a message relayed meanwhile")
+    # A permission row pays the segment cut it owes first, so the cut's row is the first.
+    slot._owed_segment_cut = lambda: slot.append(
+        "assistant", "Before the card.", meta={"origin": _ORIGIN}
+    )
+    slot.append("permission", "fs_write", meta={"request_id": "req-1"})
+
+    origins = [(m["role"], (m.get("meta") or {}).get("origin")) for m in slot.messages]
+    assert origins == [
+        ("chunk", None),
+        ("user", None),
+        ("assistant", _OPENER),
+        ("permission", None),
+    ]
+    assert slot._owed_turn_opener is None
+
+
 # ── Regenerate never re-runs a prompt over a reply the agent started ──
 
 
@@ -507,6 +608,8 @@ def test_a_session_another_provider_serves_registers_no_watch():
         [("user", "Q", None), ("assistant", "A", None), ("assistant", "B", {"origin": _ORIGIN})],
         # A prompted reply follows it: the prompt queued behind the agent's turn.
         [("user", "Q", None), ("assistant", "B", {"origin": _ORIGIN}), ("assistant", "A", None)],
+        # The agent's turn wrote only a tool row, which opens it.
+        [("user", "Q", None), ("assistant", "A", None), ("tool", "🔧 Read", {"origin": _OPENER})],
     ],
 )
 async def test_regenerate_refuses_a_span_holding_a_reply_the_agent_started(state, rows) -> None:

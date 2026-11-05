@@ -34,4 +34,12 @@ export type DisplayItem =
        * per-completion summaries that say the same thing.
        */
       interim?: boolean
+      /**
+       * This turn is one the agent started on its own: it begins at the row
+       * that opens it (`opensAgentTurn`) and runs to the next prompt or the
+       * next such row. Set by `groupDisplayItems` (and app-sdk
+       * `ChatMessageList`), and read by TurnBlock, which heads the turn with
+       * the "Started by the agent" label.
+       */
+      agentStarted?: boolean
     }
