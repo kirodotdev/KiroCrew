@@ -6337,7 +6337,7 @@
         "update_to": "v{{version}}-এ আপডেট করো"
       },
       "sourcesPopover": {
-        "developer_install_of_a_local_app_directory_equiv": "একটি লোকাল অ্যাপ ডিরেক্টরির ডেভেলপার ইনস্টল (সমতুল্য:",
+        "developer_install_equivalent_to_command": "একটি লোকাল অ্যাপ ডিরেক্টরির ডেভেলপার ইনস্টল (সমতুল্য: <command/>)।",
         "install": "ইনস্টল করো",
         "install_failed": "ইনস্টল ব্যর্থ",
         "install_from_path": "পাথ থেকে ইনস্টল করুন",

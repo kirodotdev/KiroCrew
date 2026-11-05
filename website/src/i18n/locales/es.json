@@ -6501,7 +6501,7 @@
         "update_to": "Actualizar a la v{{version}}"
       },
       "sourcesPopover": {
-        "developer_install_of_a_local_app_directory_equiv": "Instalación de desarrollo de un directorio de app local (equivalente a",
+        "developer_install_equivalent_to_command": "Instalación de desarrollo de un directorio de app local (equivalente a <command/>).",
         "install": "Instalar",
         "install_failed": "Error al instalar",
         "install_from_path": "Instalar desde una ruta",

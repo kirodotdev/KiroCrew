@@ -6140,7 +6140,7 @@
         "update_to": "v{{version}}(으)로 업데이트"
       },
       "sourcesPopover": {
-        "developer_install_of_a_local_app_directory_equiv": "로컬 앱 디렉터리의 개발자 설치 (다음과 동일:",
+        "developer_install_equivalent_to_command": "로컬 앱 디렉터리의 개발자 설치(<command/>와 동일).",
         "install": "설치",
         "install_failed": "설치 실패",
         "install_from_path": "경로에서 설치",

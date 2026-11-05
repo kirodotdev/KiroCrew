@@ -6501,7 +6501,7 @@
         "update_to": "Mettre à jour vers la v{{version}}"
       },
       "sourcesPopover": {
-        "developer_install_of_a_local_app_directory_equiv": "Installation développeur d’un répertoire d’application local (équivalent à",
+        "developer_install_equivalent_to_command": "Installation développeur d’un répertoire d’application local (équivalent à <command/>).",
         "install": "Installer",
         "install_failed": "Échec de l’installation",
         "install_from_path": "Installer depuis un chemin",
