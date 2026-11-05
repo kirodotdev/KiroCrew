@@ -99,6 +99,14 @@ the provider's own remedy. See the Lost backend session entry in
 `errorKind`, not a harness check, so any backend that emits that kind is
 recycled the same way.
 
+### Overloaded answers
+
+Anthropic's 529 overload reaches Crew as `Internal error: API Error: 529 {...}` or,
+once Claude Code's own retries are spent, `API Error: Repeated 529 Overloaded
+errors`. Both are a retryable `http_5xx` by wording, not by a harness check, so the
+same retry ladder a kiro-cli 5xx gets runs here; the patterns are in the 5xx
+paragraph of [error handling](../common/error-handling.md).
+
 ### What Crew gates on this harness, and what a pre-approval skips
 
 Start from what is NOT broken, because the difference is narrow and easy to overstate.
