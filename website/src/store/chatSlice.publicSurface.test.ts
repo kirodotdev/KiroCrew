@@ -43,7 +43,7 @@ const ACTION_CREATORS = [
   'resolveByApprovalId', 'resolveOptimisticSteer', 'resolveQuestionCard', 'retireSwappedRows', 'selectSubagent',
   'setActiveSlot', 'setAgentSwitchNotice', 'setAutomations', 'setCloseRefused', 'setFolderSuggestion',
   'setFollowupCard', 'setPendingInput', 'setQuestionCard', 'setQuestionDraft', 'setQuestionNotice', 'setQuestionRequestInFlight', 'setSidePanelAlwaysOpen', 'setSlotRunning',
-  'setSlotState', 'setSlotStatusDetail', 'setSlotStopping', 'setStopPressedAt', 'setVoiceAudio',
+  'setSlotState', 'setSlotStatusDetail', 'setSlotStopping', 'setStopPressedAt', 'setSwitchSlotGone', 'setVoiceAudio',
   'setVoicePlaying', 'setVoicePreparing', 'settleStopNotRunning', 'sideClose', 'sideClosedElsewhere', 'sideOptimisticAccepted', 'sideOptimisticAppend',
   'sideOptimisticRollback', 'sideReleaseConsumed', 'sideRestore', 'sideRestoreReading', 'sideResync', 'sideSendStatus', 'sseActivityEvent', 'sseAutomation',
   'sseChatMessage', 'sseChatMessagePatchByTs', 'sseChatMessageUpdate', 'sseContextUsage',
