@@ -13121,7 +13121,9 @@
         "give_up": "Connessione instabile — riprova.",
         "throttle_retrying": "Il fornitore del modello sta limitando le richieste — nuovo tentativo…",
         "throttle_restored": "Limitazione terminata",
-        "throttle_interrupted": "Il fornitore del modello ha continuato a limitare le richieste"
+        "throttle_interrupted": "Il fornitore del modello ha continuato a limitare le richieste",
+        "throttle_give_up": "Il fornitore del modello sta limitando le richieste — riprova.",
+        "throttle_resuming": "Il fornitore del modello sta limitando le richieste — completamento della risposta…"
       },
       "gatewayNotice": {
         "connection_lost_retrying": "Connessione persa{{detail}} — nuovo tentativo…",

@@ -22,6 +22,7 @@ from test_dashboard_chat import TestRunChatTransientRetry as _TransientSuite
 from kiro_crew import llm_helpers
 from kiro_crew.dashboard.chat_utils import (
     TRANSIENT_RETRYING_TEXT,
+    TRANSIENT_THROTTLE_GIVE_UP_TEXT,
     TRANSIENT_THROTTLE_RETRYING_TEXT,
 )
 
@@ -254,6 +255,10 @@ class TestThrottledTurnRetry:
         assert kas.copies("hello") == 1
         assert any("partial answer" in t for t in self._assistant_texts(slot))
         assert kas.calls == 2  # the continuation, not a verbatim re-send
+        # The resuming row names the throttle, and settles under the same wording.
+        notices = [(m.get("meta") or {}).get("notice") for m in slot.messages]
+        assert [n for n in notices if n] == ["transient_throttle_resuming"]
+        assert not any("Connection" in t for t in self._err_texts(slot))
 
     @pytest.mark.asyncio
     async def test_stop_during_the_backoff_sends_nothing_and_rewinds_nothing(
@@ -284,6 +289,19 @@ class TestThrottledTurnRetry:
         assert kas.calls == 1
         client.discard_unanswered_prompt.assert_not_awaited()
         assert kas.copies("hello") == 1
+        # The ladder's last row names the throttle too, not the connection.
+        notices = [(m.get("meta") or {}).get("notice") for m in slot.messages]
+        assert [n for n in notices if n] == [
+            "transient_throttle_retrying",
+            "transient_throttle_give_up",
+        ]
+        give_up = [
+            m
+            for m in slot.messages
+            if (m.get("meta") or {}).get("notice") == "transient_throttle_give_up"
+        ]
+        assert give_up[0]["content"] == TRANSIENT_THROTTLE_GIVE_UP_TEXT
+        assert not any("Connection" in t for t in self._err_texts(slot))
 
     @pytest.mark.asyncio
     async def test_throttle_fallback_swap_rewinds_before_its_resend(self, tmp_path, monkeypatch):

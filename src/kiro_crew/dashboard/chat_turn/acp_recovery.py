@@ -23,10 +23,14 @@ from kiro_crew.dashboard.chat_utils import (
     TRANSIENT_NOTICE_META_KEY,
     TRANSIENT_NOTICE_RESUMING,
     TRANSIENT_NOTICE_RETRYING,
+    TRANSIENT_NOTICE_THROTTLE_GIVE_UP,
+    TRANSIENT_NOTICE_THROTTLE_RESUMING,
     TRANSIENT_NOTICE_THROTTLE_RETRYING,
     TRANSIENT_RESUMING_TEXT,
     TRANSIENT_RETRY_KIND,
     TRANSIENT_RETRYING_TEXT,
+    TRANSIENT_THROTTLE_GIVE_UP_TEXT,
+    TRANSIENT_THROTTLE_RESUMING_TEXT,
     TRANSIENT_THROTTLE_RETRYING_TEXT,
     RecoveryPayload,
     ResetCause,
@@ -95,6 +99,7 @@ async def _recover_posttoken_transient(
     _prompt_depth: int,
     _queue_recovery: Callable[..., str],
     _stop_pressed: Callable[[], bool],
+    throttled: bool = False,
 ) -> None:
     """Resume a turn whose stream died on a transient backend error after output.
 
@@ -130,22 +135,19 @@ async def _recover_posttoken_transient(
     # reading "resuming…" forever.
     _will_recover = not _should_suppress_requeue(slot) and _prompt_depth == 0
     if _will_recover:
+        # A throttle is the provider's answer, not a dropped connection.
+        if throttled:
+            _notice, _text = TRANSIENT_NOTICE_THROTTLE_RESUMING, TRANSIENT_THROTTLE_RESUMING_TEXT
+        else:
+            _notice, _text = TRANSIENT_NOTICE_RESUMING, TRANSIENT_RESUMING_TEXT
         slot.append(
             "error",
-            TRANSIENT_RESUMING_TEXT,
+            _text,
             "msg msg-err",
-            meta={
-                "kind": TRANSIENT_RETRY_KIND,
-                TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_RESUMING,
-            },
+            meta={"kind": TRANSIENT_RETRY_KIND, TRANSIENT_NOTICE_META_KEY: _notice},
         )
     else:
-        slot.append(
-            "error",
-            TRANSIENT_GIVE_UP_TEXT,
-            "msg msg-err",
-            meta={TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP},
-        )
+        _append_transient_give_up(slot, throttled)
     if _will_recover:
         _delay = transient_retry_delay(1)  # single short backoff (one-shot)
         logger.info(
@@ -193,12 +195,7 @@ async def _recover_posttoken_transient(
             # correct it with the give-up token the nested-turn and
             # Stop-already-active paths use — the ErrorCard keeps its
             # Continue affordance instead of reading "resuming…" forever.
-            slot.append(
-                "error",
-                TRANSIENT_GIVE_UP_TEXT,
-                "msg msg-err",
-                meta={TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP},
-            )
+            _append_transient_give_up(slot, throttled)
             # Nothing to hand back: this arm counts no attempt, and the
             # one-shot is consumed BELOW the wait precisely so a retry
             # that never runs cannot spend it — an allowance burned here
@@ -950,12 +947,7 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
                 slot.key,
                 _delay,
             )
-            slot.append(
-                "error",
-                TRANSIENT_GIVE_UP_TEXT,
-                "msg msg-err",
-                meta={TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP},
-            )
+            _append_transient_give_up(slot, _throttled)
             # A NO-REQUEUE exit ENDS the turn, so this arm owes the same
             # per-turn budget refresh as `_on_acp_error_card` and the landed arm in
             # _turn_persist_and_settle — the refresh the requeue chain would otherwise have reached.
@@ -984,12 +976,20 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
     else:
         # depth>0 (nested turn): don't re-queue — surface a clean
         # transient status; the live session stays resumable.
-        slot.append(
-            "error",
-            TRANSIENT_GIVE_UP_TEXT,
-            "msg msg-err",
-            meta={TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP},
-        )
+        _append_transient_give_up(slot, _throttled)
+
+
+def _append_transient_give_up(slot, throttled: bool) -> None:
+    """Append the terminal row of a pre-token retry ladder.
+
+    A throttle ladder names the throttle, not the connection, so the row a
+    reader sees last agrees with the retrying rows above it.
+    """
+    if throttled:
+        notice, text = TRANSIENT_NOTICE_THROTTLE_GIVE_UP, TRANSIENT_THROTTLE_GIVE_UP_TEXT
+    else:
+        notice, text = TRANSIENT_NOTICE_GIVE_UP, TRANSIENT_GIVE_UP_TEXT
+    slot.append("error", text, "msg msg-err", meta={TRANSIENT_NOTICE_META_KEY: notice})
 
 
 async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> None:
@@ -1197,4 +1197,5 @@ async def _on_acp_posttoken_transient(turn: _ChatTurn, exc) -> None:
         _prompt_depth=_prompt_depth,
         _queue_recovery=functools.partial(_queue_recovery, turn),
         _stop_pressed=functools.partial(_stop_pressed, turn),
+        throttled=acp_error_is_throttle(exc),
     )

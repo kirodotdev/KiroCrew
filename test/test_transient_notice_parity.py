@@ -172,7 +172,7 @@ def test_fallback_texts_avoid_internal_vocabulary() -> None:
     # A person reading the English fallback is not told about "backends" or
     # "hiccups". Pins the wording class, not the copy.
     texts = _fallback_texts()
-    assert len(texts) == 14
+    assert len(texts) == 16
     for name, text in texts.items():
         lowered = text.lower()
         assert "hiccup" not in lowered and "backend" not in lowered, (name, text)
@@ -192,9 +192,9 @@ def _legacy_token(text: str) -> str | None:
 
 
 def test_token_tables_have_the_pinned_size() -> None:
-    # 4 transient-5xx tokens and 62 gateway tokens; a new row family moves both.
-    assert len(_backend_tokens()) == 66
-    assert len(_frontend_families()) == 66
+    # 6 transient-5xx tokens and 62 gateway tokens; a new row family moves both.
+    assert len(_backend_tokens()) == 68
+    assert len(_frontend_families()) == 68
     assert len(_legacy_entries()) == 68
 
 

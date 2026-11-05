@@ -7331,7 +7331,9 @@
         "give_up": "Connection unstable — please try again.",
         "throttle_retrying": "The model provider is throttling requests — retrying…",
         "throttle_restored": "Throttling cleared",
-        "throttle_interrupted": "The model provider kept throttling requests"
+        "throttle_interrupted": "The model provider kept throttling requests",
+        "throttle_give_up": "The model provider is throttling requests — please try again.",
+        "throttle_resuming": "The model provider is throttling requests — finishing this answer…"
       },
       "gatewayNotice": {
         "connection_lost_retrying": "Connection lost{{detail}} — retrying…",

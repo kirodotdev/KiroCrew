@@ -44,7 +44,9 @@ const NOTICE_FAMILIES = {
   transient_retrying: { role: 'error', card: 'pending' },
   transient_throttle_retrying: { role: 'error', card: 'pending' },
   transient_resuming: { role: 'error', card: 'pending' },
+  transient_throttle_resuming: { role: 'error', card: 'pending' },
   transient_give_up: { role: 'error', card: 'error' },
+  transient_throttle_give_up: { role: 'error', card: 'error' },
   connection_lost_retrying: { role: 'error', card: 'error' },
   connection_lost_give_up: { role: 'error', card: 'error' },
   session_busy_retrying: { role: 'error', card: 'error' },
@@ -116,7 +118,9 @@ const COPY_KEY = {
   transient_retrying: 'pages.chat.transientNotice.retrying',
   transient_throttle_retrying: 'pages.chat.transientNotice.throttle_retrying',
   transient_resuming: 'pages.chat.transientNotice.resuming',
+  transient_throttle_resuming: 'pages.chat.transientNotice.throttle_resuming',
   transient_give_up: 'pages.chat.transientNotice.give_up',
+  transient_throttle_give_up: 'pages.chat.transientNotice.throttle_give_up',
   connection_lost_retrying: 'pages.chat.gatewayNotice.connection_lost_retrying',
   connection_lost_give_up: 'pages.chat.gatewayNotice.connection_lost_give_up',
   session_busy_retrying: 'pages.chat.gatewayNotice.session_busy_retrying',
@@ -208,6 +212,10 @@ const INTERRUPTED_KEY = 'pages.chat.transientNotice.interrupted'
  */
 const SETTLED_KEY = {
   transient_throttle_retrying: {
+    answered: 'pages.chat.transientNotice.throttle_restored',
+    failed: 'pages.chat.transientNotice.throttle_interrupted',
+  },
+  transient_throttle_resuming: {
     answered: 'pages.chat.transientNotice.throttle_restored',
     failed: 'pages.chat.transientNotice.throttle_interrupted',
   },

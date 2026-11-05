@@ -187,7 +187,16 @@ describe('resolveGatewayNotice', () => {
       expect(resolveGatewayNotice(throttled, answered, i)).toEqual({ text: COPY.throttle_restored, card: 'notice', tone: 'info' })
     }
     expect(resolveGatewayNotice(throttled, [throttled, giveUp], 0)).toEqual({ text: COPY.throttle_interrupted, card: 'notice', tone: 'info' })
-    for (const text of [COPY.throttle_retrying, COPY.throttle_restored, COPY.throttle_interrupted]) {
+    // The terminal row of a throttle ladder is its own error card.
+    const throttleGiveUp = withNotice('transient_throttle_give_up')
+    expect(resolveGatewayNotice(throttleGiveUp, [throttled, throttleGiveUp], 1)).toEqual({ text: COPY.throttle_give_up, card: 'error' })
+    expect(resolveGatewayNotice(throttled, [throttled, throttleGiveUp], 0)?.text).toBe(COPY.throttle_interrupted)
+    // A throttle that cut off a streamed answer finishes it under the same wording.
+    const throttleResuming = withNotice('transient_throttle_resuming', 'transient_retry')
+    expect(resolveGatewayNotice(throttleResuming, [throttleResuming], 0)).toEqual({ text: COPY.throttle_resuming, card: 'notice', tone: 'warn' })
+    expect(resolveGatewayNotice(throttleResuming, [throttleResuming, msg('assistant', { content: 'ok' })], 0)?.text).toBe(COPY.throttle_restored)
+    expect(resolveGatewayNotice(throttleResuming, [throttleResuming, throttleGiveUp], 0)?.text).toBe(COPY.throttle_interrupted)
+    for (const text of [COPY.throttle_retrying, COPY.throttle_restored, COPY.throttle_interrupted, COPY.throttle_give_up, COPY.throttle_resuming]) {
       expect(text).not.toMatch(/connection/i)
     }
     // A plain 5xx in the same ladder keeps its own connection wording.
@@ -425,7 +434,7 @@ describe('wire parity with the gateway constants', () => {
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(65)
+    expect(backend).toHaveLength(68)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 
