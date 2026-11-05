@@ -351,6 +351,8 @@ class TestAntiDrift:
             "memory_store",
             # Computed by ack_job / unack_job from acked_items; no caller sets it.
             "acked_item_ids_digest",
+            # add_job copies the already-validated session_key; no caller sets it.
+            "person_owner_key",
         }
     )
 
