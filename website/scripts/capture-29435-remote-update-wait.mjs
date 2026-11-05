@@ -96,7 +96,9 @@ for (const [name, code, text] of STOPPED) {
     const { page, posts } = await open(theme, state)
     await page.getByText(text).waitFor({ timeout: 20_000 })
     check(`${name}-${theme} Restart now offered`, (await page.getByRole('button', { name: 'Restart now' }).count()) === 1)
-    check(`${name}-${theme} Try again offered`, (await page.getByRole('button', { name: 'Update dev-box' }).count()) === 1)
+    // A crew too old to wait gets no Try again: a retry ends the same way.
+    const tryAgain = code === 'peer_cannot_wait' ? 0 : 1
+    check(`${name}-${theme} Try again offered ${tryAgain}x`, (await page.getByRole('button', { name: 'Update dev-box' }).count()) === tryAgain)
     check(`${name}-${theme} no generic next step`, (await page.getByText(/Fix the cause on dev-box/).count()) === 0)
     check(`${name}-${theme} no POST`, posts.length === 0)
     await page.screenshot({ path: `${OUT}/${name}-${theme}.png` })

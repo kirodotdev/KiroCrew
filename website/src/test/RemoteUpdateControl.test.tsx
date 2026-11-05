@@ -160,7 +160,12 @@ describe('RemoteUpdateControl', () => {
     // The generic next step would contradict the message, which names its own.
     expect(screen.queryByText(/Fix the cause on Old box/)).toBeNull()
     expect(screen.getByRole('button', { name: 'Restart now' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Update Old box' })).toHaveTextContent('Try again')
+    if (code === 'peer_cannot_wait') {
+      // A retry reaches the same old gateway and ends the same way.
+      expect(screen.queryByRole('button', { name: 'Update Old box' })).toBeNull()
+    } else {
+      expect(screen.getByRole('button', { name: 'Update Old box' })).toHaveTextContent('Try again')
+    }
   })
 
   it('Restart now asks first, then starts a job that does not wait', async () => {

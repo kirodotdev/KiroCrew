@@ -197,6 +197,8 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
   // A finished job that did not land is retried with the same action; the
   // label says so, since the crew already ran it once.
   const again = job?.state === 'failed' || job?.state === 'unchanged'
+  // Retrying the update cannot help a crew whose build has no idle check.
+  const cannotWait = !localFailure && job?.state === 'failed' && job.code === 'peer_cannot_wait'
   return (
     <span className={ROOT} data-testid="remote-update-control">
       {job?.state === 'unchanged' && (
@@ -242,7 +244,8 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
         </span>
       ) : armed === 'force' ? (
         <span data-testid="remote-update-force-row" className="flex flex-wrap items-center gap-2 min-w-0 max-w-full">
-          <Btn primary className="max-w-full text-left" onClick={() => start.mutate(true)}>
+          {/* Danger, not primary: this stops the crew's running work. */}
+          <Btn danger className="max-w-full text-left" onClick={() => start.mutate(true)}>
             <RefreshCw className="lucide-inline shrink-0" aria-hidden />{' '}
             <span className="min-w-0">{i18nT('components.remoteUpdate.restart_now_confirm', { name })}</span>
           </Btn>
@@ -250,10 +253,14 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
         </span>
       ) : (
         <>
-          <Btn onClick={() => setArmed('update')} aria-label={i18nT('components.remoteUpdate.update_aria', { name })}>
-            <ArrowDownCircle className="lucide-inline" aria-hidden />{' '}
-            {again ? i18nT('components.remoteUpdate.try_again') : i18nT('components.remoteUpdate.update')}
-          </Btn>
+          {/* A crew too old to report its work answers the same way to every
+              retry, and its message names only its own two ways out. */}
+          {!cannotWait && (
+            <Btn onClick={() => setArmed('update')} aria-label={i18nT('components.remoteUpdate.update_aria', { name })}>
+              <ArrowDownCircle className="lucide-inline" aria-hidden />{' '}
+              {again ? i18nT('components.remoteUpdate.try_again') : i18nT('components.remoteUpdate.update')}
+            </Btn>
+          )}
           {/* Restarting without waiting stops the crew's running work, so it
               asks for its own confirmation too. */}
           {stopped && (

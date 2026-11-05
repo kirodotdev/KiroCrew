@@ -376,8 +376,14 @@ async def _prepare_auto_update_apply(
             background_busy,
         )
 
-    self._update_pause_holder = None
-    if await sessions.resume_turn_admission_after_update():
+    # The holder is cleared only once the resume returned (no await between):
+    # a gate pause queued behind this resume returns re-entrantly on this
+    # apply's pause, and must still see it as the apply's, not take it.
+    try:
+        reopened = await sessions.resume_turn_admission_after_update()
+    finally:
+        self._update_pause_holder = None
+    if reopened:
         self._schedule_inbound_replay()
     self._update_apply_deferred = True
     logger.info("Auto-update deferred: %d in-flight turn(s)", busy)
@@ -396,7 +402,10 @@ async def _finish_auto_update_apply(self: GatewayOrchestrator) -> None:
     sessions = self.sessions
     if sessions is None:
         return
-    self._update_pause_holder = None
+    # The holder is cleared only once the resume returned, with no await
+    # between: a pause queued behind this resume returns re-entrantly on the
+    # pause being released, and must still see whose it is (and stand aside)
+    # rather than take it and have it reopened under it.
     try:
         reopened = await sessions.resume_turn_admission_after_update()
     except Exception:
@@ -404,6 +413,8 @@ async def _finish_auto_update_apply(self: GatewayOrchestrator) -> None:
     else:
         if reopened:
             self._schedule_inbound_replay()
+    finally:
+        self._update_pause_holder = None
 
 
 #: How long an idle answer from the restart gate keeps turn admission paused
@@ -430,7 +441,8 @@ async def _restart_gate_when_idle(self: GatewayOrchestrator) -> tuple[bool, int,
     is re-entrant, so ``_update_pause_holder`` says whose it is: the gate sets
     ``"restart_gate"``, ``_prepare_auto_update_apply`` sets ``"auto_update"``,
     each right after its pause returns with no await between, and each
-    defers to the other. A stop
+    defers to the other. A gate ask whose pause returns on a pause another
+    gate ask still holds defers to it too. A stop
     already signalled answers busy too: that gateway is going down anyway,
     and the caller's next ask finds it gone.
     """
@@ -458,13 +470,18 @@ async def _restart_gate_when_idle(self: GatewayOrchestrator) -> tuple[bool, int,
             turns, background = self._in_flight_work_counts()
             return False, turns, background
         # Read with no await since the pause returned. The pause is re-entrant,
-        # so an apply that took it while this waited for the lock still owns it:
-        # busy, and not this gate's to release.
-        if getattr(self, "_update_pause_holder", None) == "auto_update":
+        # so whoever took it while this waited for the lock still owns it -- an
+        # apply, or another gate ask whose resume is queued behind this pause:
+        # busy, and not this gate's to take or release.
+        if getattr(self, "_update_pause_holder", None) is not None:
             turns, background = self._in_flight_work_counts()
             return False, turns, background
         self._update_pause_holder = "restart_gate"
     turns, background = self._in_flight_work_counts()
+    # An update the dashboard started (``api_update_apply``) runs its policy
+    # installer as a tracked task the census does not count; the restart's
+    # shutdown would cancel it mid-install, so it is work a restart interrupts.
+    background += len(self._dashboard_policy_applies())
     if turns + background > 0:
         await self._finish_auto_update_apply()
         logger.info(

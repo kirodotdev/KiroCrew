@@ -34,8 +34,12 @@ async def api_restart_when_idle(request: web.Request) -> web.Response:
     ``idle: true`` means nothing a restart would interrupt is running, and new
     turns stay paused until the caller's restart lands (or a short hold
     expires). ``idle: false`` reopens admission and carries the counts. The
-    request takes no body. ``503 restart_gate_unavailable`` when this process
-    runs no orchestrator to ask.
+    optional body ``{"service_managed_only": true}`` says the caller will
+    restart the kirocrew service: a gateway the service did not launch then
+    answers ``idle: false`` with ``service_managed: false`` without asking the
+    gate, so no admission is paused for a restart that will not reach it. Any
+    other body is ``400 invalid_body``. ``503 restart_gate_unavailable`` when
+    this process runs no orchestrator to ask.
     """
     # Both checks are load-bearing. A loopback request with no X-Internal-Secret
     # falls through to cookie auth on a strict path, so loopback alone would let
@@ -49,6 +53,19 @@ async def api_restart_when_idle(request: web.Request) -> web.Response:
                 "code": "restart_gate_not_local",
             },
             status=403,
+        )
+    service_only = await _read_service_only(request)
+    if service_only is None:
+        return web.json_response(
+            {"error": "invalid request body", "code": "invalid_body"}, status=400
+        )
+    service_managed = launched_as_managed_service()
+    if service_only and not service_managed:
+        # The caller's restart goes to the service, which did not launch this
+        # gateway: its idleness is not the caller's question, and pausing
+        # admission here would hold it for a restart that never comes.
+        return web.json_response(
+            {"idle": False, "turns": 0, "background": 0, "service_managed": False}
         )
     state: DashboardState = request.app["state"]
     gate = getattr(state, "_restart_idle_gate", None)
@@ -69,6 +86,23 @@ async def api_restart_when_idle(request: web.Request) -> web.Response:
             "background": max(0, int(background)),
             # Whether a generated service definition launched this gateway, so
             # the CLI can tell that a service restart would reach THIS gateway.
-            "service_managed": launched_as_managed_service(),
+            "service_managed": service_managed,
         }
     )
+
+
+async def _read_service_only(request: web.Request) -> bool | None:
+    """``service_managed_only`` from the request body, or ``None`` if malformed.
+
+    No body and ``{}`` both mean ``False``.
+    """
+    if not request.can_read_body:
+        return False
+    try:
+        body = await request.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or set(body) - {"service_managed_only"}:
+        return None
+    value = body.get("service_managed_only", False)
+    return value if isinstance(value, bool) else None

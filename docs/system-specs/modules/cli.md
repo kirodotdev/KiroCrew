@@ -2086,7 +2086,7 @@ is busy the command prints the counts and asks again every 10s, for up to
 checks once). On an idle answer, or when the connection is refused and no
 kirocrew service is running (or `--port` names the gateway), it runs the
 restart below. Exits that restart nothing: 75 while still busy, with
-`kirocrew-restart-busy turns=N background=M` on stderr and as the last stdout
+`kirocrew-restart-busy {"turns":N,"background":M}` on stderr and as the last stdout
 line (a remote caller keeps the head of stderr and the tail of stdout, and an
 SSH banner can fill the former); 69 when the gateway has no such route (an
 older build: a 401/403/404/405/503 without the route's own refusal code), with
@@ -2099,11 +2099,13 @@ when kirocrew units run in both systemd scopes, because the service restart
 restarts both and the check can ask only one gateway. Without `--port` and with
 a service running (judged by the predicate `restart_service` gates on:
 `linux.is_active()`, or `macos.is_loaded()`, which also finds a gui/<uid> agent
-from SSH), an idle answer counts only from the service's own gateway:
-the route reports `service_managed` (`launched_as_managed_service()`, the
-marker the generated service definition sets), and an idle answer without it
-exits 78, because the restart would go to the service and the gateway that
-answered is another one. The route requires the secret-verified
+from SSH), only the service's own gateway may answer:
+the command sends `{"service_managed_only": true}`, and the route reports
+`service_managed` (`launched_as_managed_service()`, the marker the generated
+service definition sets). A gateway without it answers `idle: false` without
+asking its gate, so its admission is never paused for a restart that would
+go to the service, and the command exits 78 on any such answer. Any other
+body is `400 invalid_body`. The route requires the secret-verified
 `internal_auth` mark, not loopback alone, so a cookie-authenticated loopback
 caller cannot pause admission. `--max-wait`
 without `--when-idle` exits 2. The Remote Crew Update and Restart actions run

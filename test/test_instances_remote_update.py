@@ -363,7 +363,9 @@ _WHEN_IDLE = "restart --when-idle --max-wait 0"
 
 def _busy(turns: int, background: int) -> tuple[int, str]:
     """What the crew's ``restart --when-idle`` answers while work is in flight."""
-    return 75, f"kirocrew-restart-busy turns={turns} background={background}"
+    from kiro_crew.cli_restart_idle import busy_marker
+
+    return 75, busy_marker(turns, background)
 
 
 async def _phase(mgr, iid, phase):
@@ -1054,13 +1056,15 @@ def test_the_gate_answers_match_what_the_cli_prints():
 
     assert ru._GATE_EXIT_BUSY == cli.EXIT_BUSY
     assert ru._GATE_EXIT_UNSUPPORTED == cli.EXIT_GATE_UNSUPPORTED
-    line = f"{cli.BUSY_MARKER} turns=4 background=7"
+    assert ru._GATE_BUSY_MARKER == cli.BUSY_MARKER
+    line = cli.busy_marker(4, 7)
+    assert line == 'kirocrew-restart-busy {"turns":4,"background":7}'
     assert ru.read_gate_answer(cli.EXIT_BUSY, line) == ru.GateAnswer("busy", 4, 7)
     unsupported = ru.read_gate_answer(cli.EXIT_GATE_UNSUPPORTED, cli.UNSUPPORTED_MARKER)
     assert unsupported.outcome == "unsupported"
     assert ru.read_gate_answer(1, "boom").outcome == "failed"
-    # A busy exit without its marker line is not trusted as busy.
-    assert ru.read_gate_answer(cli.EXIT_BUSY, "").outcome == "failed"
+    # A busy exit without its marker line restarted nothing and gives no counts.
+    assert ru.read_gate_answer(cli.EXIT_BUSY, "").outcome == "refused"
     assert ru._GATE_EXIT_REFUSED == cli.EXIT_GATE_REFUSED
     assert ru._GATE_REFUSED_MARKER == cli.REFUSED_MARKER
     refused = ru.read_gate_answer(cli.EXIT_GATE_REFUSED, f"x | stdout tail: {cli.REFUSED_MARKER}")
@@ -1076,9 +1080,82 @@ def test_a_login_banner_filling_stderr_cannot_hide_the_busy_marker():
     from kiro_crew.instances.token_mint import _with_stdout_tail
 
     banner = ("Authorized use only. " * 30)[:300]
-    err = _with_stdout_tail(banner, "Not restarted ... kirocrew-restart-busy turns=2 background=1")
+    marker = 'kirocrew-restart-busy {"turns":2,"background":1}'
+    err = _with_stdout_tail(banner, f"Not restarted ...\n{marker}")
 
     assert ru.read_gate_answer(75, err) == ru.GateAnswer("busy", 2, 1)
+
+
+def test_a_one_line_stdout_tail_still_yields_the_marker():
+    """With a single stdout line the marker shares a line with the stderr head."""
+    from kiro_crew.instances import remote_update as ru
+    from kiro_crew.instances.token_mint import _with_stdout_tail
+
+    err = _with_stdout_tail("banner", 'kirocrew-restart-busy {"turns":0,"background":3}')
+
+    assert ru.read_gate_answer(75, err) == ru.GateAnswer("busy", 0, 3)
+
+
+def test_the_marker_survives_the_stdout_tail_redaction():
+    from kiro_crew import cli_restart_idle as cli
+    from kiro_crew.instances import remote_update as ru
+    from kiro_crew.instances.token_mint import _redacted_output_tail, _with_stdout_tail
+
+    stdout = f"❌ Not restarted: busy.\n{cli.busy_marker(12, 0)}\n"
+    err = _with_stdout_tail("", _redacted_output_tail(stdout))
+
+    assert ru.read_gate_answer(cli.EXIT_BUSY, err) == ru.GateAnswer("busy", 12, 0)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # A key is missing.
+        'kirocrew-restart-busy {"turns":2}',
+        'kirocrew-restart-busy {"background":2}',
+        # A value is not a non-negative int.
+        'kirocrew-restart-busy {"turns":"2","background":1}',
+        'kirocrew-restart-busy {"turns":2.0,"background":1}',
+        'kirocrew-restart-busy {"turns":true,"background":1}',
+        'kirocrew-restart-busy {"turns":null,"background":1}',
+        'kirocrew-restart-busy {"turns":-1,"background":1}',
+        # Not one JSON object after the prefix.
+        'kirocrew-restart-busy {"turns":2,"background":1} trailing',
+        "kirocrew-restart-busy garbage",
+        "kirocrew-restart-busy [2, 1]",
+        "kirocrew-restart-busy ",
+        "kirocrew-restart-busy",
+        # The prefix is not exact, or the line is not the last one.
+        'kirocrew-restart-busy{"turns":2,"background":1}',
+        'xkirocrew-restart-busy {"turns":2,"background":1}',
+        'Not restarted kirocrew-restart-busy {"turns":2,"background":1}',
+        # The format before the JSON marker.
+        "kirocrew-restart-busy turns=2 background=1",
+        'kirocrew-restart-busy {"turns":2,"background":1}\nsomething after',
+    ],
+)
+def test_an_unreadable_busy_marker_is_an_idle_check_failure(line):
+    """A busy exit whose counts cannot be read is refused, never busy and never idle."""
+    from kiro_crew.instances import remote_update as ru
+
+    assert ru.read_gate_answer(75, line) == ru.GateAnswer("refused")
+
+
+@pytest.mark.asyncio
+async def test_a_restart_with_an_unreadable_busy_marker_is_refused_idle_check_failed(
+    tmp_path, monkeypatch
+):
+    reg, mgr = _manager(tmp_path)
+    reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+    runner = _Runner((75, "kirocrew-restart-busy garbage"))
+    _patch_runner(monkeypatch, runner)
+
+    result = await mgr.restart_remote("box")
+
+    assert result["ok"] is False
+    assert result["code"] == "idle_check_failed"
+    assert [call[0] for call in runner.calls] == [_WHEN_IDLE]
+    await mgr.shutdown()
 
 
 @pytest.mark.asyncio

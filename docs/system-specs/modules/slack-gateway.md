@@ -613,7 +613,9 @@ take the hold in `cli.main` after argument parsing.
   `kirocrew restart --when-idle` asks it through the host-only
   `POST /api/restart/when-idle` (`dashboard/handlers/restart_gate.py`, wired as
   `DashboardState._restart_idle_gate` at dashboard boot). It pauses admission
-  and counts `_in_flight_work_counts`. Busy reopens admission and returns the
+  and counts `_in_flight_work_counts`, plus any policy installer a dashboard
+  update started (`_dashboard_policy_applies`), which the restart's shutdown
+  would cancel mid-install. Busy reopens admission and returns the
   counts. Idle keeps admission paused for the caller's restart, and
   `_release_restart_gate_hold` reopens it after `_RESTART_GATE_HOLD_SECS` (60s)
   if no restart came, unless an update restart fenced the pause first. While
@@ -622,10 +624,15 @@ take the hold in `cli.main` after argument parsing.
   the first was approved for. The
   pause is re-entrant, so `_update_pause_holder` records whose it is
   (`"restart_gate"` or `"auto_update"`), set right after each pause returns
-  with no await between, and cleared when admission reopens. An apply that
+  with no await between, and cleared only once the resume that reopens
+  admission has returned, again with no await between. The pause is one owned
+  flag, not a count, so that single resume reopens it however many re-entrant
+  pauses returned on it; a pause queued behind the resume still sees whose it
+  is and stands aside, rather than taking a pause about to be reopened. An apply that
   finds the gate's holder defers (`_update_apply_deferred`) without releasing
   it, so it is never cut off by the restart the gate approved. A gate ask that
-  finds the apply's holder answers busy without releasing it. A pause someone
+  finds any holder (the apply's, or another gate ask's whose resume is
+  queued behind it) answers busy without releasing it. A pause someone
   else holds (`admission_closed`) or a signalled stop answers busy without
   touching admission. The Remote Crew Update and Restart actions run
   that command on the remote ([instances](instances.md)).

@@ -52,8 +52,8 @@ EXIT_BUSY = 75
 #: (``EX_UNAVAILABLE``): nothing was restarted.
 EXIT_GATE_UNSUPPORTED = 69
 
-#: The line a busy exit prints, on stderr and last on stdout, for a caller on
-#: another machine: ``kirocrew-restart-busy turns=<n> background=<n>``.
+#: The prefix of the line a busy exit prints, on stderr and last on stdout, for
+#: a caller on another machine (see :func:`busy_marker`).
 BUSY_MARKER = "kirocrew-restart-busy"
 
 #: Exit status when the command could not establish that the gateway is idle
@@ -92,14 +92,19 @@ class _GateFailed(Exception):
     """The idle check could not be answered, so nothing may restart."""
 
 
-def _ask_gate(port: int) -> _Verdict:
-    """One ``POST /api/restart/when-idle`` against the gateway on *port*."""
+def _ask_gate(port: int, *, service_only: bool = False) -> _Verdict:
+    """One ``POST /api/restart/when-idle`` against the gateway on *port*.
+
+    *service_only*: the restart will go to the kirocrew service, so a gateway
+    the service did not launch answers without pausing its admission.
+    """
     url = f"http://{_CLI_LOOPBACK}:{port}/api/restart/when-idle"
     headers = {"Content-Type": "application/json"}
     secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
     if secret:
         headers["X-Internal-Secret"] = secret
-    req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+    data = b'{"service_managed_only":true}' if service_only else b"{}"
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         # The local secret goes only to a listener proven to be this install's
         # own gateway, the same send helper `kirocrew update approve` uses.
@@ -181,6 +186,16 @@ def _service_scopes_running() -> int:
     return linux.running_scope_count()
 
 
+def busy_marker(turns: int, background: int) -> str:
+    """The busy line: :data:`BUSY_MARKER`, a space, and the counts as one JSON object.
+
+    ``kirocrew-restart-busy {"turns":2,"background":1}``. The reader checks the
+    exact prefix and ``json.loads`` the rest, so the line needs no pattern.
+    """
+    counts = json.dumps({"turns": turns, "background": background}, separators=(",", ":"))
+    return f"{BUSY_MARKER} {counts}"
+
+
 def _print_marker(line: str) -> None:
     """Print *line* on stderr and as the LAST stdout line.
 
@@ -222,11 +237,16 @@ def _restart_when_idle(cli_port: int | None, *, max_wait_secs: float | None = No
     wait = DEFAULT_MAX_WAIT_SECS if max_wait_secs is None else max(0.0, max_wait_secs)
     deadline = _now() + wait
     while True:
+        # Without --port the restart below goes to the running service, so only
+        # the service's own gateway may answer for it. Asked as part of the
+        # request, so a gateway that is not the service's answers without
+        # pausing its admission for a restart that will not reach it.
+        service_only = cli_port is None and _service_active()
         try:
-            verdict = _ask_gate(port)
+            verdict = _ask_gate(port, service_only=service_only)
         except _GateFailed as e:
             _refuse(f"{e}.")
-        if verdict.state == "down" and cli_port is None and _service_active():
+        if verdict.state == "down" and service_only:
             # The restart below would go to the running service, and the port
             # that refused may not be the one that service serves (a changed
             # dashboard.url, say), so nothing proves that gateway is idle.
@@ -235,17 +255,12 @@ def _restart_when_idle(cli_port: int | None, *, max_wait_secs: float | None = No
                 "is running. Pass --port for the gateway you mean, or run "
                 "`kirocrew restart` to restart the service now."
             )
-        if (
-            verdict.state == "idle"
-            and cli_port is None
-            and not verdict.service_managed
-            and _service_active()
-        ):
-            # Without --port the restart below goes to the running service, and
-            # the gateway that answered idle says no service launched it (another
-            # data home, say), so that idle answer is not about the service.
+        if service_only and verdict.state in ("idle", "busy") and not verdict.service_managed:
+            # The gateway that answered says no service launched it (another
+            # data home, say), so its answer is not about the service the
+            # restart below would reach.
             _refuse(
-                f"the gateway on port {port} is idle but is not the running kirocrew "
+                f"the gateway on port {port} is not the running kirocrew "
                 "service's gateway, and without --port the restart would go to the "
                 "service. Pass --port for the gateway you mean, or run `kirocrew restart` "
                 "to restart the service now."
@@ -266,7 +281,7 @@ def _restart_when_idle(cli_port: int | None, *, max_wait_secs: float | None = No
                 f"❌ Not restarted: the gateway is still running {_describe(verdict)}. "
                 "Try again later, or run `kirocrew restart` to restart it now and stop that work."
             )
-            _print_marker(f"{BUSY_MARKER} turns={verdict.turns} background={verdict.background}")
+            _print_marker(busy_marker(verdict.turns, verdict.background))
             sys.exit(EXIT_BUSY)
         pause = min(POLL_SECS, remaining)
         print(f"⏳ The gateway is running {_describe(verdict)}; checking again in {pause:.0f}s.")

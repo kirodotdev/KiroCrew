@@ -15,6 +15,7 @@ What the job runs, and on which transport, is
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -83,7 +84,12 @@ _GATE_EXIT_BUSY = 75
 _GATE_EXIT_UNSUPPORTED = 69
 _GATE_EXIT_REFUSED = 78
 _GATE_REFUSED_MARKER = "kirocrew-restart-gate-refused"
-_GATE_BUSY_RE = re.compile(r"kirocrew-restart-busy turns=(\d{1,9}) background=(\d{1,9})")
+#: The busy marker is this prefix, one space, then a JSON object with the
+#: counts: ``kirocrew-restart-busy {"turns":2,"background":1}``.
+_GATE_BUSY_MARKER = "kirocrew-restart-busy"
+#: Where the runner joins the stdout tail onto the stderr head
+#: (``token_mint._with_stdout_tail``).
+_STDOUT_TAIL_JOIN = " | stdout tail: "
 #: argparse's exit status for an unknown flag: a crew whose CLI predates
 #: ``--when-idle``. Nothing else ``kirocrew restart`` does exits 2.
 _ARGPARSE_USAGE_EXIT = 2
@@ -99,19 +105,53 @@ class GateAnswer:
     background: int = 0
 
 
+def _read_busy_counts(err: str) -> tuple[int, int] | None:
+    """The ``(turns, background)`` of the busy marker ending *err*, or ``None``.
+
+    The marker is the CLI's last line: the last stdout line when the runner
+    added a stdout tail, else the last stderr line. That line must be exactly
+    the marker, a space and a JSON object whose ``turns`` and ``background``
+    are non-negative integers; anything else is unreadable.
+    """
+    lines = (err or "").strip().splitlines()
+    if not lines:
+        return None
+    last = lines[-1].rpartition(_STDOUT_TAIL_JOIN)[2].strip()
+    prefix = _GATE_BUSY_MARKER + " "
+    if not last.startswith(prefix):
+        return None
+    try:
+        body = json.loads(last[len(prefix) :])
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    turns = body.get("turns")
+    background = body.get("background")
+    # ``type(...) is int`` and not ``isinstance``: JSON ``true`` reads as a bool,
+    # which is an int subclass and no count.
+    if type(turns) is not int or type(background) is not int:
+        return None
+    if turns < 0 or background < 0:
+        return None
+    return turns, background
+
+
 def read_gate_answer(rc: int, err: str) -> GateAnswer:
     """Classify the exit status and message of a remote idle-gated restart.
 
     *err* is the runner's message with its stdout tail (``stdout_tail=True``):
     the marker is the CLI's last stdout line, so an SSH banner that fills the
-    head of stderr cannot hide it.
+    head of stderr cannot hide it. A busy exit whose marker cannot be read is
+    ``refused``: the crew restarted nothing, and its counts are unknown.
     """
     if rc == 0:
         return GateAnswer("restarted")
     if rc == _GATE_EXIT_BUSY:
-        found = _GATE_BUSY_RE.search(err or "")
-        if found:
-            return GateAnswer("busy", int(found.group(1)), int(found.group(2)))
+        counts = _read_busy_counts(err)
+        if counts is None:
+            return GateAnswer("refused")
+        return GateAnswer("busy", counts[0], counts[1])
     if rc in (_GATE_EXIT_UNSUPPORTED, _ARGPARSE_USAGE_EXIT):
         return GateAnswer("unsupported")
     if rc == _GATE_EXIT_REFUSED and _GATE_REFUSED_MARKER in (err or ""):

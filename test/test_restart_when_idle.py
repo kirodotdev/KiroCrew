@@ -12,14 +12,16 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sys
 import urllib.error
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from kiro_crew import cli_restart_idle as idle_cli
 from kiro_crew.dashboard.handlers import restart_gate
+from kiro_crew.session_parts import claims as _claims
 from kiro_crew.slack import gateway
 
 
@@ -71,6 +73,19 @@ class TestGate:
         assert (sessions.paused, sessions.resumed) == (1, 1)
         assert sessions.admission_closed is False
         orch._schedule_inbound_replay.assert_called_once_with()
+        assert orch._restart_gate_hold is None
+
+    async def test_a_dashboard_policy_apply_in_flight_is_busy(self, monkeypatch):
+        """The restart's shutdown would cancel that installer mid-install."""
+        sessions = _Sessions()
+        orch = _orchestrator((0, 0), sessions)
+        installer = SimpleNamespace(done=lambda: False)
+        updates = SimpleNamespace(policy_applies_in_flight=lambda: [installer])
+        monkeypatch.setitem(sys.modules, "kiro_crew.dashboard.handlers.updates", updates)
+
+        assert await orch._restart_gate_when_idle() == (False, 0, 1)
+
+        assert sessions.admission_closed is False
         assert orch._restart_gate_hold is None
 
     async def test_idle_keeps_admission_paused_for_the_restart(self):
@@ -219,10 +234,159 @@ class TestGate:
         assert sessions.paused == 0
 
 
-def _request(gate, *, remote: str = "127.0.0.1", internal: bool = True) -> MagicMock:
+class _RealAdmission:
+    """``SessionManager``'s own update pause and resume, on just the state they use.
+
+    The fake above counts calls; this one keeps the real re-entrant semantics,
+    so a test can tell whether one resume reopens a pause taken twice.
+    """
+
+    pause_turn_admission_for_update = _claims.pause_turn_admission_for_update
+    resume_turn_admission_after_update = _claims.resume_turn_admission_after_update
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._closing = False
+        self._update_pause_owned = False
+        self.update_restart_fenced = False
+
+    @property
+    def admission_closed(self) -> bool:
+        return self._closing
+
+
+def _apply_ready(orch) -> None:
+    orch._mandatory_update_deferred_at = None
+    orch._mandatory_update_deferred_key = None
+    orch._update_apply_deferred = False
+    orch._update_pause_holder = None
+    orch.dashboard_state = None
+
+
+@pytest.mark.asyncio
+class TestSharedPause:
+    """The idle gate and an automatic apply share one pause (``_update_pause_holder``)."""
+
+    async def test_one_resume_reopens_a_pause_taken_twice(self):
+        sessions = _RealAdmission()
+
+        assert await sessions.pause_turn_admission_for_update() is True
+        assert await sessions.pause_turn_admission_for_update() is True
+        assert await sessions.resume_turn_admission_after_update() is True
+
+        assert sessions.admission_closed is False
+        # A second resume has nothing left to release.
+        assert await sessions.resume_turn_admission_after_update() is False
+
+    async def test_a_deferred_apply_then_an_idle_gate_wait_leaves_admission_open(self):
+        sessions = _RealAdmission()
+        counts = [(1, 2)]
+        orch = _orchestrator((0, 0), sessions)
+        orch._in_flight_work_counts = lambda: counts[0]
+        orch._RESTART_GATE_HOLD_SECS = 0.0
+        _apply_ready(orch)
+
+        # A mandatory apply defers for the running work, and the gate asks while
+        # it is still running: both release the pause they took.
+        assert await orch._prepare_auto_update_apply(mandatory=True) is False
+        assert orch._update_apply_deferred is True
+        assert sessions.admission_closed is False
+        assert await orch._restart_gate_when_idle() == (False, 1, 2)
+        assert sessions.admission_closed is False
+        # The work ends; the gate answers idle, and no restart comes.
+        counts[0] = (0, 0)
+        assert await orch._restart_gate_when_idle() == (True, 0, 0)
+        assert sessions.admission_closed is True
+        await orch._restart_gate_hold
+
+        assert sessions.admission_closed is False
+        assert sessions._update_pause_owned is False
+        assert orch._update_pause_holder is None
+
+    @pytest.mark.parametrize("gate_counts", [(1, 0), (0, 0)])
+    async def test_a_gate_pause_queued_inside_a_deferring_apply(self, gate_counts):
+        """The gate's re-entrant pause lands between the apply's busy census and its resume.
+
+        The lock is FIFO: the apply's pause, then the gate's (which read admission
+        open before the apply took it), then the apply's resume. The pause is
+        still the apply's when the gate's returns, so the gate answers busy and
+        leaves it, and the apply's one resume reopens admission.
+        """
+        sessions = _RealAdmission()
+        census = iter([(1, 0), gate_counts])
+        orch = _orchestrator((0, 0), sessions)
+        orch._in_flight_work_counts = lambda: next(census)
+        _apply_ready(orch)
+
+        await sessions._lock.acquire()
+        apply = asyncio.create_task(orch._prepare_auto_update_apply(mandatory=True))
+        await asyncio.sleep(0)
+        gate = asyncio.create_task(orch._restart_gate_when_idle())
+        await asyncio.sleep(0)
+        sessions._lock.release()
+        deferred, verdict = await asyncio.gather(apply, gate)
+
+        assert deferred is False
+        assert verdict == (False, *gate_counts)
+        assert orch._restart_gate_hold is None
+        assert sessions.admission_closed is False
+        assert sessions._update_pause_owned is False
+        assert orch._update_pause_holder is None
+
+    async def test_a_gate_pause_queued_inside_another_gate_asks_resume_is_busy(self):
+        """Two overlapping asks: the first is busy, the work ends before the second counts."""
+        sessions = _RealAdmission()
+        census = iter([(1, 0), (0, 0)])
+        orch = _orchestrator((0, 0), sessions)
+        orch._in_flight_work_counts = lambda: next(census)
+        _apply_ready(orch)
+
+        await sessions._lock.acquire()
+        first = asyncio.create_task(orch._restart_gate_when_idle())
+        await asyncio.sleep(0)
+        second = asyncio.create_task(orch._restart_gate_when_idle())
+        await asyncio.sleep(0)
+        sessions._lock.release()
+        verdicts = await asyncio.gather(first, second)
+
+        # The second must not answer idle on a pause the first is reopening.
+        assert verdicts == [(False, 1, 0), (False, 0, 0)]
+        assert orch._restart_gate_hold is None
+        assert sessions.admission_closed is False
+        assert orch._update_pause_holder is None
+
+    async def test_an_apply_pause_queued_inside_a_busy_gate_answer_defers(self):
+        """The mirror: the apply's pause lands between the gate's busy census and its resume."""
+        sessions = _RealAdmission()
+        census = iter([(0, 1), (0, 0)])
+        orch = _orchestrator((0, 0), sessions)
+        orch._in_flight_work_counts = lambda: next(census)
+        _apply_ready(orch)
+
+        await sessions._lock.acquire()
+        gate = asyncio.create_task(orch._restart_gate_when_idle())
+        await asyncio.sleep(0)
+        apply = asyncio.create_task(orch._prepare_auto_update_apply(mandatory=False))
+        await asyncio.sleep(0)
+        sessions._lock.release()
+        verdict, ran = await asyncio.gather(gate, apply)
+
+        # Not admitted to run while the gate's resume reopens admission under it.
+        assert verdict == (False, 0, 1)
+        assert ran is False and orch._update_apply_deferred is True
+        assert sessions.admission_closed is False
+        assert sessions._update_pause_owned is False
+        assert orch._update_pause_holder is None
+
+
+def _request(
+    gate, *, remote: str = "127.0.0.1", internal: bool = True, body: object = None
+) -> MagicMock:
     req = MagicMock()
     req.remote = remote
     req.transport = None
+    req.can_read_body = body is not None
+    req.json = AsyncMock(return_value=body)
     # A bare MagicMock.get is truthy and would pass the auth-mark check vacuously.
     req.get = ({"internal_auth": True} if internal else {"user": "member"}).get
     req.app = {"state": SimpleNamespace(_restart_idle_gate=gate)}
@@ -247,6 +411,50 @@ class TestRoute:
             "background": 2,
             "service_managed": managed,
         }
+
+    async def test_a_service_only_ask_is_answered_without_the_gate_off_the_service(
+        self, monkeypatch
+    ):
+        async def _gate():
+            raise AssertionError("no admission pause for a restart that goes elsewhere")
+
+        monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: False)
+
+        resp = await restart_gate.api_restart_when_idle(
+            _request(_gate, body={"service_managed_only": True})
+        )
+
+        assert resp.status == 200
+        assert json.loads(resp.body) == {
+            "idle": False,
+            "turns": 0,
+            "background": 0,
+            "service_managed": False,
+        }
+
+    async def test_a_service_only_ask_reaches_the_gate_on_the_service(self, monkeypatch):
+        async def _gate():
+            return True, 0, 0
+
+        monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: True)
+
+        resp = await restart_gate.api_restart_when_idle(
+            _request(_gate, body={"service_managed_only": True})
+        )
+
+        assert json.loads(resp.body)["idle"] is True
+
+    @pytest.mark.parametrize(
+        "body", [[], {"service_managed_only": 1}, {"other": True}, {"service_managed_only": "yes"}]
+    )
+    async def test_a_malformed_body_is_400_before_the_gate(self, body):
+        async def _gate():
+            raise AssertionError("the gate must not run for a malformed body")
+
+        resp = await restart_gate.api_restart_when_idle(_request(_gate, body=body))
+
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_body"
 
     async def test_a_caller_off_the_host_is_refused_before_the_gate(self):
         async def _gate():
@@ -302,12 +510,18 @@ def cli(monkeypatch):
     monkeypatch.setattr(idle_cli, "_now", lambda: clock.now)
     monkeypatch.setattr(idle_cli, "_sleep", clock.sleep)
     monkeypatch.setattr(idle_cli, "resolve_client_port", lambda port: port or 5476)
-    monkeypatch.setattr(idle_cli, "_ask_gate", lambda port: answers.pop(0))
+    asks: list[bool] = []
+
+    def _ask(port, *, service_only=False):
+        asks.append(service_only)
+        return answers.pop(0)
+
+    monkeypatch.setattr(idle_cli, "_ask_gate", _ask)
     # No probe of the host's real service manager from a unit test.
     monkeypatch.setattr(idle_cli, "_service_scopes_running", lambda: 0)
     monkeypatch.setattr(idle_cli, "_service_active", lambda: False)
     monkeypatch.setattr(cli_server, "_restart", lambda port: restarts.append(port))
-    return SimpleNamespace(clock=clock, answers=answers, restarts=restarts)
+    return SimpleNamespace(clock=clock, answers=answers, restarts=restarts, asks=asks)
 
 
 class TestCli:
@@ -355,6 +569,19 @@ class TestCli:
 
         assert exc.value.code == idle_cli.EXIT_GATE_REFUSED
         assert cli.restarts == []
+        # Asked so that gateway does not pause admission for this restart.
+        assert cli.asks == [True]
+
+    def test_a_gateway_the_service_did_not_launch_is_refused_at_once(self, cli, monkeypatch):
+        """Its no-pause answer reads busy; it is refused, not waited on."""
+        monkeypatch.setattr(idle_cli, "_service_active", lambda: True)
+        cli.answers.append(idle_cli._Verdict("busy", service_managed=False))
+
+        with pytest.raises(SystemExit) as exc:
+            idle_cli._restart_when_idle(None)
+
+        assert exc.value.code == idle_cli.EXIT_GATE_REFUSED
+        assert cli.restarts == [] and cli.clock.sleeps == []
 
     def test_the_idle_service_gateway_is_restarted(self, cli, monkeypatch):
         monkeypatch.setattr(idle_cli, "_service_active", lambda: True)
@@ -363,6 +590,14 @@ class TestCli:
         idle_cli._restart_when_idle(None)
 
         assert cli.restarts == [None]
+        assert cli.asks == [True]
+
+    def test_without_a_service_the_ask_is_unrestricted(self, cli):
+        cli.answers.append(idle_cli._Verdict("idle"))
+
+        idle_cli._restart_when_idle(None)
+
+        assert cli.asks == [False]
 
     def test_an_explicit_port_needs_no_service_proof(self, cli, monkeypatch):
         monkeypatch.setattr(idle_cli, "_service_active", lambda: True)
@@ -406,7 +641,7 @@ class TestCli:
             idle_cli._restart_when_idle(None, max_wait_secs=0)
 
         out = capsys.readouterr()
-        marker = f"{idle_cli.BUSY_MARKER} turns=3 background=4"
+        marker = 'kirocrew-restart-busy {"turns":3,"background":4}'
         assert out.out.rstrip("\n").splitlines()[-1] == marker
         assert marker in out.err
 
@@ -419,7 +654,7 @@ class TestCli:
         assert exc.value.code == idle_cli.EXIT_BUSY
         assert cli.restarts == []
         assert cli.clock.sleeps == [10.0, 5.0]
-        assert f"{idle_cli.BUSY_MARKER} turns=2 background=5" in capsys.readouterr().err
+        assert idle_cli.busy_marker(2, 5) in capsys.readouterr().err
 
     def test_one_check_with_no_wait(self, cli):
         cli.answers.append(idle_cli._Verdict("busy", 0, 1))
@@ -441,7 +676,7 @@ class TestCli:
         assert idle_cli.UNSUPPORTED_MARKER in capsys.readouterr().err
 
     def test_a_failed_check_is_not_restarted(self, cli, monkeypatch):
-        def _fail(port):
+        def _fail(port, **_):
             raise idle_cli._GateFailed("no answer")
 
         monkeypatch.setattr(idle_cli, "_ask_gate", _fail)
@@ -477,9 +712,11 @@ class TestAskGate:
     def _no_secret(self, _floor_monkeypatch):
         _floor_monkeypatch.setattr(idle_cli, "read_local_secret", lambda *a, **k: "")
 
-    def _answer(self, monkeypatch, outcome):
+    def _answer(self, monkeypatch, outcome, sent=None):
         def _open(req, port, timeout, *, operation):
             assert req.full_url.endswith("/api/restart/when-idle")
+            if sent is not None:
+                sent.append(json.loads(req.data))
             if isinstance(outcome, BaseException):
                 raise outcome
             return _Resp(json.dumps(outcome).encode())
@@ -495,6 +732,15 @@ class TestAskGate:
             monkeypatch, {"idle": True, "turns": 0, "background": 0, "service_managed": True}
         )
         assert idle_cli._ask_gate(5476).service_managed is True
+
+    def test_the_body_says_whether_only_the_service_may_answer(self, monkeypatch):
+        sent: list = []
+        self._answer(monkeypatch, {"idle": True, "turns": 0, "background": 0}, sent)
+
+        idle_cli._ask_gate(5476)
+        idle_cli._ask_gate(5476, service_only=True)
+
+        assert sent == [{}, {"service_managed_only": True}]
 
     @pytest.mark.parametrize("status", [401, 403, 404, 405, 503])
     def test_an_older_gateway_is_unsupported(self, monkeypatch, status):
