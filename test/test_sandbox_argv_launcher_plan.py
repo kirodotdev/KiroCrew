@@ -132,7 +132,7 @@ def _bind_targets(libc: RecordingLibc) -> list[str]:
 class TestWritableCarveouts:
     """A probe's private TMPDIR must be writable inside the sandbox.
 
-    The MCP probe's TMPDIR lives at ``<data home>/run/mcp-tmp/<probe>``, inside
+    The MCP probe's TMPDIR lives at ``<data home>/run/t/<probe>``, inside
     the runtime parent both backends seal read-only, so the wrap must carve
     exactly that directory back out — a Bun-packaged server extracts its native
     module into TMPDIR before it can answer the handshake. These tests lock the

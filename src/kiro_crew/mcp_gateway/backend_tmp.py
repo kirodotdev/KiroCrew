@@ -9,12 +9,28 @@ well-behaved server without touching any server's code. A server that
 hardcodes ``/tmp`` ignores the variables and keeps today's behavior: this is
 containment, not a sandbox guarantee.
 
-Layout: ``<data home>/run/mcp-tmp/<digest12>-<token8>/`` -- one directory per
+Layout: ``<data home>/run/t/<digest8>-<token8>/`` -- one directory per
 spawned PROCESS, not per PoolKey. Two live processes can share a PoolKey (a
 connection-private backend spawned beside the shared one), so a sweep keyed
 on the digest alone would delete the temp dir out from under the survivor.
 The digest prefix keeps the directory attributable to its server config; the
 fresh token makes the shutdown sweep single-owner by construction.
+
+The root name and the per-process name are kept SHORT so a server that binds a
+Unix socket under its temp dir stays within ``sun_path`` (108 bytes on Linux,
+104 on macOS, 108 for AF_UNIX on Windows). A server creates its socket a few
+levels below ``$TMPDIR`` (the MATLAB MCP server adds a 53-byte
+``matlab-mcp-server-<n>/watchdog-<n>.sock``), so every byte the managed prefix
+spends is a byte the server cannot: ``run/t`` rather than ``run/mcp-tmp`` and an
+8-char digest rather than 12 leave the default data home with a few bytes to
+spare. The root MUST stay under ``<data home>/run`` because the sandbox seals
+that parent read-only and carves the per-process dir writable only there; a
+root outside it would hand a sandboxed child an unwritable ``TMPDIR``. A longer
+data home can still overflow -- the full remedy is a short writable root outside
+the data home, which needs a sandbox-seal decision; until then the documented
+workaround is a short ``TMPDIR``/``TMP``/``TEMP`` in the server's own ``env``,
+which wins over the managed one. The random token is kept whole, so collision
+safety is unchanged by the shorter digest.
 
 PoolKey invariant (same reasoning as the ``KIROCREW_SPAWNED_ENV`` marker in
 :func:`kiro_crew.mcp_gateway.backend.spawn_backend`): the injected value is
@@ -48,12 +64,23 @@ from kiro_crew.owner_only_files import mkdirs_owner_only
 logger = logging.getLogger(__name__)
 
 #: Subdirectory of ``<data home>/run`` that holds every per-process temp dir.
-_SUBDIR = "mcp-tmp"
+#: Kept to one character so the managed prefix spends as few of ``sun_path``'s
+#: ~108 bytes as possible before a backend adds its own socket name.
+_SUBDIR = "t"
+
+#: The prior root name. The sweep still visits it so dirs left by an older
+#: gateway are reclaimed rather than stranded.
+_LEGACY_SUBDIR = "mcp-tmp"
 
 
 def backend_tmp_root() -> Path:
-    """The managed root: ``<data home>/run/mcp-tmp``."""
+    """The managed root: ``<data home>/run/t``."""
     return config_dir() / "run" / _SUBDIR
+
+
+def _legacy_backend_tmp_root() -> Path:
+    """The prior managed root ``<data home>/run/mcp-tmp``, swept for leftovers."""
+    return config_dir() / "run" / _LEGACY_SUBDIR
 
 
 def allocate_backend_tmp(pool_digest: str) -> Path:
@@ -75,7 +102,7 @@ def allocate_backend_tmp(pool_digest: str) -> Path:
     # owner-only DACL with (OI)(CI) inheritance there (0o700 on POSIX), so
     # children created inside are covered as well.
     platform_compat.restrict_dir_to_owner(root)
-    name = f"{pool_digest[:12]}-{secrets.token_hex(4)}"
+    name = f"{pool_digest[:8]}-{secrets.token_hex(4)}"
     path = root / name
     path.mkdir(mode=0o700)
     platform_compat.restrict_dir_to_owner(path)
@@ -106,8 +133,9 @@ def allocate_probe_tmp() -> Path:
 
 
 #: Child-facing scratch subdirectory of a probe allocation (see
-#: :func:`probe_child_scratch`).
-PROBE_SCRATCH_SUBDIR = "tmp"
+#: :func:`probe_child_scratch`). One character, for the same ``sun_path`` budget
+#: reason as the root name: it is a level the child's socket path sits below.
+PROBE_SCRATCH_SUBDIR = "t"
 
 
 def probe_child_scratch(root: Path) -> Path:
@@ -368,9 +396,22 @@ def sweep_all_backend_tmp() -> int:
     the probe's own ``finally``; one whose cleanup never ran is reclaimed by
     the generic owner-dead + idle path above.
 
-    Returns the number of directories removed.
+    Two roots are swept: the current ``<data home>/run/t`` AND the prior
+    ``<data home>/run/mcp-tmp`` (two fixed, distinct names). A gateway that ran
+    with the old root name can leave owned-and-idle dirs under it, and the
+    per-dir reclamation contract (dead owner + idle tree) makes sweeping them as
+    safe there as under the current root -- each swept root passes its own
+    containment compare by construction, since a dir is only removed as a direct
+    child of the root it was listed under.
+
+    Returns the number of directories removed across both roots.
     """
-    root = backend_tmp_root()
+    return _sweep_root(backend_tmp_root()) + _sweep_root(_legacy_backend_tmp_root())
+
+
+def _sweep_root(root: Path) -> int:
+    """Reclaim dead-and-idle dirs directly under ONE *root* (see
+    :func:`sweep_all_backend_tmp` for the deletion contract). Returns the count."""
     try:
         entries = list(os.scandir(root))
     except FileNotFoundError:

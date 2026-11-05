@@ -454,7 +454,7 @@ async def probe_server(
         # when containment cannot be set up.
         #
         # Allocated BEFORE the sandbox wrap: the managed root lives at
-        # ``<data home>/run/mcp-tmp``, inside the runtime parent the sandbox
+        # ``<data home>/run/t``, inside the runtime parent the sandbox
         # seals read-only, so the wrap must know the directory to carve its
         # write access out of that seal. Allocating after the wrap hands the
         # child a ``TMPDIR`` it cannot write -- a Bun-packaged server then
@@ -1033,8 +1033,8 @@ async def probe_server(
                 # sweep (owner dead AND 1h+ whole-tree idle) from THIS
                 # process: it reclaims prior probes' dead dirs while never
                 # touching the fresh one (its tree is seconds old). Running
-                # it here, not only in the mcp-tmp daemon, matters because a
-                # topology with no stub servers never starts that daemon --
+                # it here, not only in the backend-tmp daemon, matters because
+                # a topology with no stub servers never starts that daemon --
                 # probes must not depend on it for reclamation. Concurrent
                 # with a daemon sweep it is benign: both sides lstat-recheck
                 # and rmtree(ignore_errors=True).
