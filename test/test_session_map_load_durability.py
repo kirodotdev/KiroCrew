@@ -7,6 +7,9 @@ client) left
 the map empty in memory, the next ordinary write would replace the file with
 that empty map and drop every session_key -> sid binding.
 
+The read goes through ``read_bytes_with_retry``, so a transient Windows sharing
+violation is retried; only one that outlasts the retry window refuses writes.
+
 A file that reads but is not usable JSON starts the map empty too; its bytes are
 moved to ``session_map.json.corrupt-<utc>`` by the first write, and one leading
 UTF-8 byte-order mark reads normally.
@@ -20,7 +23,7 @@ import pathlib
 
 import pytest
 
-from kiro_crew import session_map_store
+from kiro_crew import atomic_write, platform_compat, session_map_store
 from kiro_crew.session_map import SessionMap
 
 _SEED = {
@@ -46,8 +49,8 @@ def unreadable_once(monkeypatch):
             raise OSError("EIO: handle held by a scanner")
         return real(self, *args, **kwargs)
 
-    real = pathlib.Path.read_text
-    monkeypatch.setattr(pathlib.Path, "read_text", flaky)
+    real = pathlib.Path.read_bytes
+    monkeypatch.setattr(pathlib.Path, "read_bytes", flaky)
 
 
 def _raw(map_dir: pathlib.Path) -> bytes:
@@ -167,3 +170,46 @@ def test_a_failed_move_aside_refuses_the_write_until_one_succeeds(map_dir, monke
         assert handle.read() == b"{not json"
     on_disk = json.loads((map_dir / "session_map.json").read_text(encoding="utf-8"))
     assert list(on_disk) == ["dashboard:carol"]
+
+
+def _sharing_violation(monkeypatch, times: int) -> dict[str, int]:
+    """Fail the next *times* map reads with a Windows sharing violation."""
+    calls = {"n": 0}
+    real = pathlib.Path.read_bytes
+
+    def contended(self, *args, **kwargs):
+        if self.name == "session_map.json":
+            calls["n"] += 1
+            if calls["n"] <= times:
+                raise PermissionError(32, "WinError 32: in use by another process")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", contended)
+    return calls
+
+
+def test_a_transient_windows_sharing_violation_at_load_is_retried(map_dir, monkeypatch) -> None:
+    """One lost read to a concurrent handle loads the map, so writes are not refused."""
+    calls = _sharing_violation(monkeypatch, times=2)
+    sm = SessionMap()
+
+    assert calls["n"] == 3
+    assert not sm._load_failed
+    assert sm._data["dashboard:alice"]["sid"] == "sid-ALICE"
+    sm.set_agent_override("dashboard:carol", "reviewer")
+    sm.flush()
+    _assert_bindings_intact(map_dir)
+
+
+def test_a_persistent_windows_sharing_violation_still_refuses_writes(map_dir, monkeypatch) -> None:
+    """A violation that outlasts the retry window keeps the file and refuses the write."""
+    before = _raw(map_dir)
+    _sharing_violation(monkeypatch, times=10_000)
+    sm = SessionMap()
+
+    assert sm._load_failed
+    with pytest.raises(OSError, match="not readable at load"):
+        sm.set_agent_override("dashboard:carol", "reviewer")
+    assert _raw(map_dir) == before
