@@ -187,6 +187,7 @@ class _ChatSlot:
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
+        "_pending_thread_parent",
         "channel_origin",
         "_channel_runtime_origin",
         "folder_id",
@@ -449,6 +450,10 @@ class _ChatSlot:
     _slack_linked: bool
     _slack_channel: str
     _slack_thread_ts: str
+    #: ``(channel, thread_ts, parent text)`` of the Slack thread this new session
+    #: joined (``chat_slack._seed_thread_parent``), handed to each prompt built
+    #: until the session holds a reply, then dropped.
+    _pending_thread_parent: tuple[str, str, str] | None
     _model_pick_gen: int
     _model_runtime_pick_gen: int | None
     _pending_memory_mode: str | None

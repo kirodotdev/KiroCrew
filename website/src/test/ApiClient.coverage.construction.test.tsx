@@ -439,6 +439,11 @@ describe('request bodies with conditionally-omitted keys', () => {
     expect(call().init?.body).toBeUndefined()
     await api.slackLink('chat-1', 'C123', '1699.1')
     expect(call(1).body).toEqual({ channel: 'C123', thread_ts: '1699.1' })
+    await api.slackLink('chat-1', 'C123', '1699.1', '1699.2')
+    expect(call(2).body).toEqual({ channel: 'C123', thread_ts: '1699.1', msg_ts: '1699.2' })
+    // msg_ts means nothing without the thread it is a reply in.
+    await api.slackLink('chat-1', 'C123', undefined, '1699.2')
+    expect(call(3).body).toEqual({ channel: 'C123' })
   })
 
   it('channelClearContext narrows to one agent only in agent scope', async () => {

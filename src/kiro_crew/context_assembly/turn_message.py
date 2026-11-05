@@ -105,6 +105,7 @@ def build_message(
     skill_trigger_text: str | None = None,
     template_dir: str | None = None,
     directive_user_origin: bool = False,
+    include_channel_history: bool = True,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -154,6 +155,12 @@ def build_message(
     the guidance offers ``suggest_followup`` only when that applier would
     admit it. The default ``False`` matches the applier's: a cron, a wake,
     a sub-agent, a peer send or a slot-less channel turn is not offered it.
+
+    Pass *include_channel_history* ``False`` to keep *channel_id*'s buffered
+    recent channel messages out of the prompt while *channel_id* and
+    *thread_ts* still label the fenced thread blocks. A dashboard turn handed
+    only a thread parent does this: the parent is the one Slack text it was
+    given, and the channel buffer is a different, wider read.
 
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
@@ -622,7 +629,12 @@ def build_message(
     # replaces this leg: the replies come from Slack itself, screened, so
     # this app's own replies and those before the last turn are left out
     # here too, rather than shown twice through an unscreened path.
-    if channel_id and self.channel_history and not (thread_ts and thread_replies_text):
+    if (
+        include_channel_history
+        and channel_id
+        and self.channel_history
+        and not (thread_ts and thread_replies_text)
+    ):
         ch_ctx = self.channel_history.context_for(channel_id, thread_ts=thread_ts) or None
         if ch_ctx:
             # Group-channel context is authored by other users — scrub the

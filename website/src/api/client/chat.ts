@@ -255,7 +255,8 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     switchVariant: (slot: string, index: number) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/switch-variant', { index }).then(j),
     editResend: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/edit-resend', { ts, content }).then(j),
     rewind: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/rewind', { ts, content }).then(j),
-    slackLink: (slot: string, channel?: string, threadTs?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-link', (channel || threadTs) ? { ...(channel ? { channel } : {}), ...(threadTs ? { thread_ts: threadTs } : {}) } : undefined).then(j),
+    /** `msgTs` is the Slack message that sent the user here; when it is a reply inside `threadTs`, the server reads the thread's first message for the session's first turn. */
+    slackLink: (slot: string, channel?: string, threadTs?: string, msgTs?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-link', (channel || threadTs) ? { ...(channel ? { channel } : {}), ...(threadTs ? { thread_ts: threadTs } : {}), ...(threadTs && msgTs ? { msg_ts: msgTs } : {}) } : undefined).then(j),
     unlinkSlack: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-unlink').then(j),
     // Sets whether turns reach the linked Slack thread. One call for both
     // directions: a session born in its thread has no binding to re-establish, so

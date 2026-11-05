@@ -389,6 +389,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     self._slack_linked = False  # True when linked to a Slack thread
     self._slack_channel = ""
     self._slack_thread_ts = ""
+    self._pending_thread_parent = None
     # Explicit model-pick generation. Bumped ONLY by the explicit set-model
     # surfaces (single-slot pick, bulk switch, provider-switch clear) —
     # never by the automatic provider backfill — so the fallback restore
