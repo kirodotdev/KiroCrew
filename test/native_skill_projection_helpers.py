@@ -41,6 +41,13 @@ def _hold_the_prune_clock(monkeypatch):
     other name (``sleep``, ``time``, ...) falls through to the real module. The
     shared stdlib ``time.monotonic`` is left untouched, so unrelated readers --
     asyncio's ``loop.time()`` among them -- keep the real clock.
+
+    Because ``skill_projection`` is a facade module backed by
+    ``_facade_mirror.MirroredModule``, ``monkeypatch.setattr(projection, "time",
+    proxy)`` propagates to every owner in ``_OWNERS``, including
+    ``alias_reclaim``.  A single call therefore freezes both
+    ``projection.time.monotonic`` and ``alias_reclaim.time.monotonic`` through
+    the same proxy -- no second setattr is needed or wanted.
     """
 
     class _FrozenMonotonicTime:

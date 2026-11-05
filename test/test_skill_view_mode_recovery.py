@@ -69,6 +69,11 @@ def native_tree(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", home / "settings" / "mcp.json")
     (agents / "custom.json").write_text('{"name":"custom","description":"v1"}', encoding="utf-8")
+    # Freeze the projection clock so the drain budget never expires; the production
+    # budget is left at its real value and only the deadline comparison is held.
+    # The facade mirror propagates the setattr to every owner module including
+    # alias_reclaim, so one call covers both projection.time and alias_reclaim.time.
+    native_skill_projection_helpers._hold_the_prune_clock(monkeypatch)
     return agents, project
 
 
