@@ -387,7 +387,8 @@ def ability_payload(backend: str) -> Dict[str, object]:
       withheld/no-channel split is a maintainer's distinction between a settled
       ruling and an open gap; the reader's question is the same either way -- does
       the thing I wrote in my file happen -- and each setting's own sentence says
-      what becomes of it.
+      what becomes of it. ``hooks`` is the one line answered by what Crew fires
+      as well as by the ruling (:data:`HOOKS_PRE_TOOL_USE_CARD_ID`).
 
     The projection KIND is deliberately absent: ``native``/``mirror``/``external``
     names the route Crew takes, which costs the reader nothing and cannot be acted
@@ -413,8 +414,35 @@ def ability_payload(backend: str) -> Dict[str, object]:
         # Stated only where it HOLDS, so a harness that honours the whole file sends an
         # empty list and renders nothing: a reader never reads a row of "delivered"
         # marks that mean "as expected".
-        "ineffective": [*ability.withheld, *ability.no_channel],
+        "ineffective": _card_ineffective(backend, [*ability.withheld, *ability.no_channel]),
     }
+
+
+#: The card line the ``hooks`` one narrows to where Crew fires every spec hook event
+#: but ``preToolUse`` (``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`` without
+#: ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``, claude). The mirror still rules ``hooks``
+#: no-channel there, which is the route's truth and what ``kirocrew doctor`` prints,
+#: but "your hooks will not run" would tell the reader the opposite of what happens.
+HOOKS_PRE_TOOL_USE_CARD_ID = "hooks_pre_tool_use"
+
+
+def _card_ineffective(backend: str, ineffective: list[str]) -> list[str]:
+    """*ineffective* as the card says it: ``hooks`` narrowed where only preToolUse is lost."""
+    # circular import -- see :func:`_declaration`.
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+        ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
+    )
+    from kiro_crew.providers.mirrors import Concern
+
+    observer_only = (
+        backend in ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS
+        and backend not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    )
+    if not observer_only:
+        return ineffective
+    hooks = concern_id(Concern.HOOKS)
+    return [HOOKS_PRE_TOOL_USE_CARD_ID if cid == hooks else cid for cid in ineffective]
 
 
 def spec_keys() -> Dict[str, str]:

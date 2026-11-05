@@ -8099,6 +8099,7 @@
         "mcp_concern_auto_approve": "The auto-approve rules your agent config file sets — {{name}} does not apply them",
         "mcp_concern_denied_tools": "The tools you turned off — they stay available here",
         "mcp_concern_hooks": "The hooks your agent config file defines — they will not run",
+        "mcp_concern_hooks_pre_tool_use": "The preToolUse hooks your agent config file defines — they will not run",
         "mcp_concern_mcp_servers": "The MCP servers your agent config file lists — they are not mounted here",
         "mcp_concern_model": "The model your agent config file names — {{name}} takes its model from elsewhere",
         "mcp_concern_model_allowlist": "The model list your agent config file allows — it does not limit what {{name}} offers",
