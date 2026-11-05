@@ -414,6 +414,15 @@ class TestShippedScenarios:
         )  # the older titles are still valid readings on older builds
         assert any('"Bots" item is in the left rail' in s for s in sc.steps)
 
+    def test_members_dm_scenario_says_where_the_list_is_before_the_search(self) -> None:
+        """The page reopens the last mate with the list in the switcher; the steps say so before the search."""
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "members-dm-hello.yaml")
+        search = next(i for i, s in enumerate(sc.steps) if "Search Bots" in s)
+        before = " ".join(sc.steps[:search])
+        assert "avatar switcher" in before
+        assert '"Show the full roster"' in before
+        assert "hover or focus" in before
+
     def test_members_scenarios_hedge_the_card_label(self) -> None:
         """A seeded member has no display name, so its card shows the id; every members scenario says so."""
         for name in (
