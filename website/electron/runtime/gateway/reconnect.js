@@ -9,6 +9,7 @@ const {
   INCUMBENT_RETRY_STATUS,
   LOCK_HOLDER_START_GRACE_MS,
 } = require("../../gateway-recovery");
+const { RESPAWN_SUPERSEDED } = require("./respawn-owner");
 
 const ADOPTED_RECOVERY_WAIT_MS = 30_000;
 
@@ -28,6 +29,9 @@ const ADOPTED_RECOVERY_WAIT_MS = 30_000;
  *        ownership of a gateway a service manager rebound.
  * @param {(failure: object|null) => void} deps.setGatewayStartFailure  clears
  *        the start-failure record before each reconnect.
+ * @param {() => Promise<boolean|string>} deps.respawnGateway  the supervisor's
+ *        respawn owner (respawn-owner.js); RESPAWN_SUPERSEDED means an update
+ *        install took over, so the recovery stops without connecting.
  */
 function createReconnect({
   app,
@@ -45,7 +49,7 @@ function createReconnect({
   setGatewayOwnership,
   setGatewayStartFailure,
   checkBackend,
-  startGateway,
+  respawnGateway,
   showLoadingThenConnect,
   showUnrecoverableGatewayError,
   waitForPortFree,
@@ -216,7 +220,7 @@ function createReconnect({
     if (!lockNamedHolder) await waitForIncumbentExit(incumbentPids, "liveness");
     sendStatus("Starting a fresh gateway…");
     setGatewayStartFailure(null);
-    await startGateway();
+    if ((await respawnGateway()) === RESPAWN_SUPERSEDED) return;
     if (window.isDestroyed() || quitting()) return;
     return showLoadingThenConnect(window, BACKEND_URL, { reconnect: true });
   }
