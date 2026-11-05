@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         warm_project_agent_names,
     )
     from kiro_crew.dashboard.chat_turn.account_identity import _retire_sessions_on_identity_change
+    from kiro_crew.dashboard.chat_turn.agent_started import _watch_agent_turns
     from kiro_crew.dashboard.chat_turn.app_agent_binding import (
         _app_agent_host_allowed,
         _app_agent_turn_backend,
@@ -1338,6 +1339,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # (the dashboard steer handler) can reach the running session's client
     # to inject a mid-turn steer. Cleared in _turn_release_handles (chat_turn/turn_entry.py).
     slot._acp_client = getattr(client, "client", None)
+    # A turn the agent starts on its own between this session's prompts runs on
+    # this slot (chat_turn/agent_started.py); set again by every turn, so the
+    # agent.agent_started_turns switch applies from the next one.
+    _watch_agent_turns(state, slot, client, loaded_cfg)
     # Billing stats as they stand BEFORE this turn's prompt is sent. The
     # runtime installs a fresh per-turn stats object only inside the dispatch
     # in _run_chat; a turn that dies before that (expired credential, broken pipe)

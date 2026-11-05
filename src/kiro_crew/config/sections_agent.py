@@ -734,6 +734,18 @@ class AgentConfig:
             "opt an eligible backend back onto per-subagent processes.",
         ),
     )
+    agent_started_turns: bool = field(
+        default=True,
+        metadata=_meta(
+            "Agent-started Turns",
+            "Show a reply the agent starts on its own between your messages, such "
+            "as Claude Code answering when a background command finishes, as its "
+            "own message in the dashboard chat, with its tool calls and "
+            "permission prompts. Only the claude backend starts such turns. Set "
+            "false to turn it off: that reply then shows under your next message. "
+            "Applies from the next turn.",
+        ),
+    )
     max_subagents: int = field(
         default=0,
         metadata=_meta(

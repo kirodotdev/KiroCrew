@@ -62,6 +62,7 @@
         "tool_search_min_pct": 5,
         "tool_search_min_tokens": 50000,
         "session_sharing": true,
+        "agent_started_turns": true,
         "max_subagents": 0,
         "max_stop_hook_nudges": 100,
         "spawn_min_memory_gb": 2.0,
@@ -988,6 +989,20 @@
       "tags": [],
       "label": "Session Sharing",
       "help": "Subagents reuse a shared ACP runtime instead of spawning a fresh backend process per subagent. Reduces startup from ~3-5s to ~200ms and memory from ~400MB to near-zero per subagent. Default ON for the eligible backends (kiro-cli and codex); every other ACP backend ignores it and runs a dedicated process per subagent. Set false to opt an eligible backend back onto per-subagent processes.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "agent.agent_started_turns",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Agent-started Turns",
+      "help": "Show a reply the agent starts on its own between your messages, such as Claude Code answering when a background command finishes, as its own message in the dashboard chat, with its tool calls and permission prompts. Only the claude backend starts such turns. Set false to turn it off: that reply then shows under your next message. Applies from the next turn.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

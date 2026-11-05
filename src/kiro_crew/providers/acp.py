@@ -1266,6 +1266,9 @@ class AcpProvider(LLMProvider):
     _ready_confirmed_session = _acp_turns._ready_confirmed_session
     stream = _acp_turns.stream
     stream_command = _acp_turns.stream_command
+    watch_agent_turns = _acp_turns.watch_agent_turns
+    agent_turn_pending = _acp_turns.agent_turn_pending
+    stream_unsolicited = _acp_turns.stream_unsolicited
     compact = _acp_turns.compact
     cancel = _acp_turns.cancel
     steer = _acp_turns.steer

@@ -331,6 +331,7 @@ class _ChatSlot:
         "_turn_channel_origin",
         "_turn_user_sent",
         "_turn_owner_sent",
+        "_turn_agent_started",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
@@ -631,6 +632,9 @@ class _ChatSlot:
     _turn_channel_origin: bool
     _turn_user_sent: bool
     _turn_owner_sent: bool
+    #: The turn running now is one the agent started on its own between prompts
+    #: (``chat_turn.agent_started``); its assistant rows carry ``meta.origin``.
+    _turn_agent_started: bool
     _steer_admissions: dict[str, dict]
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]

@@ -252,6 +252,8 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
     if (
         _escalation.should_probe()
         and _prompt_depth == 0
+        # A turn the agent started has no prompt to retry after the probe.
+        and not turn._agent_started
         and not _should_suppress_requeue(slot)
         # Resolved Stop: the canary snapshot below is taken after the
         # Stop moved the counter (see _on_process_died in acp_recovery.py).

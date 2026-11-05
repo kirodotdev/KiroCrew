@@ -1,6 +1,7 @@
 """Run an ``AcpProvider`` session's turns on its inner client.
 
-Prompt and slash-command turns and their event translation, manual compaction and the
+Prompt and slash-command turns and their event translation, a turn the agent started
+on its own (``watch_agent_turns``, ``stream_unsolicited``), manual compaction and the
 wait for its result, cancel and steer.
 
 Each function here whose first parameter is ``self`` is an ``AcpProvider`` method: the
@@ -17,9 +18,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew.acp import relaunch_reload, stale_compaction
 from kiro_crew.acp.client import AcpClient, AcpError
@@ -30,6 +31,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_AGENT_STARTED_TURNS
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.process_identity import record_live_children_after_turn
 from kiro_crew.providers.base import CancelOutcome, LLMEvent
@@ -318,6 +320,51 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
                 yield self._to_llm_event(e)
     finally:
         await record_live_children_after_turn(self._client)
+
+
+def watch_agent_turns(self: AcpProvider, callback: Callable[[], None] | None) -> bool:
+    """Call *callback* when the agent starts a turn on its own; ``None`` stops it.
+
+    Only a direct ``AcpClient`` on a backend in ``ACP_BACKENDS_AGENT_STARTED_TURNS``
+    has a reader that sees such a turn, so any other session registers nothing and
+    returns False. The callback runs synchronously on the event loop, from the
+    client's idle reader, and the turn is read with :func:`stream_unsolicited`.
+    """
+    client = self._client
+    if not isinstance(client, AcpClient) or client.backend not in ACP_BACKENDS_AGENT_STARTED_TURNS:
+        return False
+    if callback is None:
+        client.on_agent_turn = None
+    else:
+        client.on_agent_turn = lambda _client: callback()
+    return True
+
+
+def agent_turn_pending(self: AcpProvider) -> bool:
+    """Whether a turn the agent started is waiting to be read by :func:`stream_unsolicited`."""
+    client = self._client
+    return isinstance(client, AcpClient) and client._agent_turn_pending()
+
+
+async def stream_unsolicited(
+    self: AcpProvider, timeout: float | None = None
+) -> AsyncIterator[LLMEvent]:
+    """Yield the events of the turn the agent started on its own, sending nothing.
+
+    Yields nothing when no such turn is pending or a prompt took its frames. No
+    prompt is sent, so the essential-context receipts are left as they are.
+    """
+    client = self._client
+    if not isinstance(client, AcpClient):
+        return
+    try:
+        # The client's method is an async generator typed as its iterator.
+        unsolicited = cast("AsyncGenerator[Any, None]", client.stream_unsolicited(timeout))
+        async with aclosing(unsolicited) as events:
+            async for e in events:
+                yield self._to_llm_event(e)
+    finally:
+        await record_live_children_after_turn(client)
 
 
 async def compact(self: AcpProvider, context: str = "") -> None:

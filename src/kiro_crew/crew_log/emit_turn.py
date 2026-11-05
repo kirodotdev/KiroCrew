@@ -68,15 +68,19 @@ _UNCLASSIFIED_LABELS = frozenset({""})
 
 #: Who caused a turn to run. Every value names a STRUCTURAL producer the
 #: dispatch layer identifies; ``user`` means a person typed the message,
-#: ``app`` means an installed app's backend sent it under its own token, and
-#: ``gateway`` means the gateway synthesized it and no narrower producer fits
-#: (a task-runner summary, an orchestrator stage). Anything unrecognised is
+#: ``app`` means an installed app's backend sent it under its own token,
+#: ``agent`` means the agent started the turn itself between prompts (an
+#: agent-started turn on the claude backend), and ``gateway`` means the gateway
+#: synthesized it and no narrower producer fits (a task-runner summary, an
+#: orchestrator stage). Anything unrecognised is
 #: recorded as ``other`` rather than guessed.
 #:
 #: A reader never gates on this field, so a producer landing later widens the
 #: set without breaking a reader built against the narrower one -- unlike an
 #: entry TYPE, which aborts reconstruction when a reader does not know it.
-ACTORS = frozenset({"user", "app", "crew", "cron", "autonudge", "subagent", "gateway", "other"})
+ACTORS = frozenset(
+    {"user", "app", "crew", "cron", "autonudge", "subagent", "agent", "gateway", "other"}
+)
 
 
 def close_open_tool_calls(

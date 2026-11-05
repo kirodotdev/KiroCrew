@@ -2671,8 +2671,15 @@ stdout while no request waits. Design record:
   a prompt inside an open `stream_unsolicited()` loop: the prompt waits for that
   stream to close, so the two wait on each other.
 
-No production caller registers `on_agent_turn`; until one does, the reader
-never starts.
+The one production caller is the dashboard chat: each turn registers
+`on_agent_turn` through `AcpProvider.watch_agent_turns` once it holds its session,
+while `agent.agent_started_turns` is on, and the callback starts a
+`_run_chat(_agent_started=True)` turn that reads the pending turn through
+`AcpProvider.stream_unsolicited` (`claude-code-provider.md`, "A turn Claude Code
+starts on its own"). `watch_agent_turns` registers nothing on a session that is not
+a direct `AcpClient` on a backend in `ACP_BACKENDS_AGENT_STARTED_TURNS`. A session
+no dashboard chat turn runs (the messaging driver's channel sessions, a cron job's
+own session, a sub-agent) leaves `on_agent_turn` unset, so its reader never starts.
 
 ## Key APIs
 

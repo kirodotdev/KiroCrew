@@ -70,6 +70,10 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
 
     _is_synthetic = turn._is_synthetic
     _prompt_depth = turn._prompt_depth
+    # A turn the agent started has no prompt to continue or replay, so it takes
+    # the arms a nested turn takes below: it gives up with its notice, spends no
+    # retry budget and queues nothing.
+    _requeues = _prompt_depth == 0 and not turn._agent_started
     _stall_command = turn._stall_command
     _stall_evidence = turn._stall_evidence
     _stall_status = turn._stall_status
@@ -107,7 +111,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
         # above the recovery card.
         await _persist_partial_reply(turn, _stop_reason)
 
-        if _prompt_depth == 0 and slot._stale_recovery_retries < STOP_RECOVERY_MAX_RETRIES:
+        if _requeues and slot._stale_recovery_retries < STOP_RECOVERY_MAX_RETRIES:
             slot._stale_recovery_retries += 1
             _queue_recovery(
                 turn,
@@ -169,7 +173,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
         _stuck = (
             _stall_status is not None and _stall_status.wait_reason == WAIT_REASON_INPUT
         ) or "stuck_input" in (_stall_evidence or "")
-        if _prompt_depth == 0 and slot._tool_stall_retries < STOP_RECOVERY_MAX_RETRIES:
+        if _requeues and slot._tool_stall_retries < STOP_RECOVERY_MAX_RETRIES:
             slot._tool_stall_retries += 1
             _body = build_tool_stall_recovery_prompt(
                 _stall_tool_title,
@@ -246,7 +250,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
             # repeat a side effect, so an emitted turn keeps the old
             # give-up behaviour rather than inventing a continuation.
             and not _turn_emitted
-            and _prompt_depth == 0
+            and _requeues
             and slot._compaction_failed_retries < _COMPACTION_FAILED_RETRIES
             # The USER'S INTENT WINS over this recovery. A requeue lands at
             # queue index 0, so without these four checks a message the user
@@ -329,7 +333,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
         # after three own-fault deaths a shared one would read as 1 and hand
         # the slot fresh attempts it had used up.
         _death_attempts = max(slot._acp_pipe_death_retries, runtime_death.shared_deaths(slot.key))
-        if _prompt_depth == 0 and _death_attempts < SESSION_RECOVERY_MAX_ATTEMPTS:
+        if _requeues and _death_attempts < SESSION_RECOVERY_MAX_ATTEMPTS:
             if _own_fault:
                 slot._acp_pipe_death_retries += 1
             else:
