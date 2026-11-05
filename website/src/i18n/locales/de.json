@@ -3545,6 +3545,7 @@
       "meeting": {
         "agentsPaused": "Die Agenten haben nach mehreren Fehlern angehalten.",
         "attachPrompt": "Fügen Sie einen Link ein, den Sie mit den Agenten teilen möchten",
+        "attachRequired": "Gib einen Link ein.",
         "back": "Zurück",
         "endAndReview": "Beenden und prüfen",
         "ended": "Beendet",
@@ -4757,6 +4758,7 @@
       },
       "fileTree": {
         "delete_file": "{{file}} löschen",
+        "delete_file_button": "Datei löschen",
         "files": "Dateien",
         "main": "Haupt",
         "new_file": "Neue Datei",
@@ -4848,6 +4850,7 @@
         "log": "Protokoll",
         "main_document": "Hauptdokument",
         "new_file_prompt": "Benennen Sie die neue Datei, zum Beispiel methods.tex",
+        "new_file_name_required": "Gib einen Dateinamen ein.",
         "papers": "Papers",
         "pull": "Holen",
         "save_and_compile_hint": "Drücken Sie Cmd+S (Ctrl+S unter Windows und Linux), um zu speichern und zu kompilieren.",

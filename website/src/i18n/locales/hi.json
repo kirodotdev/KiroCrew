@@ -3456,6 +3456,7 @@
       "meeting": {
         "agentsPaused": "बार-बार विफल होने के बाद एजेंट रुक गए।",
         "attachPrompt": "एजेंट के साथ साझा करने के लिए लिंक चिपकाएँ",
+        "attachRequired": "लिंक डालो।",
         "back": "वापस",
         "endAndReview": "समाप्त करें और समीक्षा करें",
         "ended": "समाप्त",
@@ -4668,6 +4669,7 @@
       },
       "fileTree": {
         "delete_file": "{{file}} हटाएँ",
+        "delete_file_button": "फ़ाइल हटाओ",
         "files": "फ़ाइलें",
         "main": "मुख्य",
         "new_file": "नई फ़ाइल",
@@ -4759,6 +4761,7 @@
         "log": "लॉग",
         "main_document": "मुख्य दस्तावेज़",
         "new_file_prompt": "नई फ़ाइल का नाम दें, उदाहरण के लिए methods.tex",
+        "new_file_name_required": "फ़ाइल का नाम डालो।",
         "papers": "पेपर",
         "pull": "पुल करें",
         "save_and_compile_hint": "सहेजने और कंपाइल करने के लिए Cmd+S (Windows और Linux पर Ctrl+S) दबाएँ।",

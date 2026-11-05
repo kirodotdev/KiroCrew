@@ -3678,6 +3678,7 @@
       "meeting": {
         "agentsPaused": "Агенты остановились после нескольких сбоев.",
         "attachPrompt": "Вставьте ссылку, чтобы поделиться с агентами",
+        "attachRequired": "Укажи ссылку.",
         "back": "Назад",
         "endAndReview": "Завершить и проверить",
         "ended": "Завершена",
@@ -4940,6 +4941,7 @@
       },
       "fileTree": {
         "delete_file": "Удалить {{file}}",
+        "delete_file_button": "Удалить файл",
         "files": "Файлы",
         "main": "Главный",
         "new_file": "Новый файл",
@@ -5033,6 +5035,7 @@
         "log": "Журнал",
         "main_document": "Главный документ",
         "new_file_prompt": "Назовите новый файл, например methods.tex",
+        "new_file_name_required": "Укажи имя файла.",
         "papers": "Статьи",
         "pull": "Забрать",
         "save_and_compile_hint": "Нажмите Cmd+S (Ctrl+S в Windows и Linux), чтобы сохранить и скомпилировать.",

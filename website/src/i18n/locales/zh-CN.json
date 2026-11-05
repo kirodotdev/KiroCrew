@@ -3345,6 +3345,7 @@
       "meeting": {
         "agentsPaused": "多次失败后，代理已停止。",
         "attachPrompt": "粘贴要分享给智能体的链接",
+        "attachRequired": "链接不能为空。",
         "back": "返回",
         "endAndReview": "结束并复核",
         "ended": "已结束",
@@ -4532,6 +4533,7 @@
       },
       "fileTree": {
         "delete_file": "删除 {{file}}",
+        "delete_file_button": "删除文件",
         "files": "文件",
         "main": "主文件",
         "new_file": "新建文件",
@@ -4622,6 +4624,7 @@
         "log": "日志",
         "main_document": "主文档",
         "new_file_prompt": "为新文件命名，例如 methods.tex",
+        "new_file_name_required": "文件名不能为空。",
         "papers": "论文",
         "pull": "拉取",
         "save_and_compile_hint": "按 Cmd+S（Windows 和 Linux 上为 Ctrl+S）保存并编译。",

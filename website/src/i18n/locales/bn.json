@@ -3456,6 +3456,7 @@
       "meeting": {
         "agentsPaused": "বারবার ব্যর্থ হওয়ার পর এজেন্টগুলি থেমে গেছে।",
         "attachPrompt": "এজেন্টদের সঙ্গে শেয়ার করার লিঙ্ক পেস্ট করুন",
+        "attachRequired": "লিঙ্ক দাও।",
         "back": "পিছনে",
         "endAndReview": "শেষ করে পর্যালোচনা করুন",
         "ended": "শেষ হয়েছে",
@@ -4668,6 +4669,7 @@
       },
       "fileTree": {
         "delete_file": "{{file}} মুছুন",
+        "delete_file_button": "ফাইল মুছে ফেলো",
         "files": "ফাইল",
         "main": "মূল",
         "new_file": "নতুন ফাইল",
@@ -4759,6 +4761,7 @@
         "log": "লগ",
         "main_document": "মূল নথি",
         "new_file_prompt": "নতুন ফাইলের নাম দিন, যেমন methods.tex",
+        "new_file_name_required": "ফাইলের নাম লেখো।",
         "papers": "পেপার",
         "pull": "পুল করুন",
         "save_and_compile_hint": "সংরক্ষণ করে কম্পাইল করতে Cmd+S (Windows ও Linux-এ Ctrl+S) চাপুন।",

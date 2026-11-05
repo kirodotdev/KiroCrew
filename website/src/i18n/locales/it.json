@@ -3567,6 +3567,7 @@
       "meeting": {
         "agentsPaused": "Gli agenti si sono fermati dopo ripetuti errori.",
         "attachPrompt": "Incolla un link da condividere con gli agenti",
+        "attachRequired": "Inserisci un link.",
         "back": "Indietro",
         "endAndReview": "Termina e passa in revisione",
         "ended": "Terminata",
@@ -4804,6 +4805,7 @@
       },
       "fileTree": {
         "delete_file": "Elimina {{file}}",
+        "delete_file_button": "Elimina file",
         "files": "File",
         "main": "Principale",
         "new_file": "Nuovo file",
@@ -4896,6 +4898,7 @@
         "log": "Registro",
         "main_document": "Documento principale",
         "new_file_prompt": "Assegna un nome al nuovo file, per esempio methods.tex",
+        "new_file_name_required": "Inserisci il nome del file.",
         "papers": "Articoli",
         "pull": "Recupera",
         "save_and_compile_hint": "Premi Cmd+S (Ctrl+S su Windows e Linux) per salvare e compilare.",
