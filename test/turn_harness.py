@@ -1065,9 +1065,15 @@ async def _one_turn(
     await _settle(state)
     log = state.conversation_log
     key = slot_history_key(slot)
-    seen.rows = tuple(log.read_messages(key)) if log.has_log(key) else ()
+    # Off the loop: on it the transcript read retries without a pause, so a
+    # brief Windows sharing lock on the file the turn just wrote fails the test.
+    seen.rows = await asyncio.to_thread(_transcript_rows, log, key)
     seen.window = tuple(json.loads(json.dumps(row, default=str)) for row in slot.messages)
     seen.ended = clock.elapsed()
+
+
+def _transcript_rows(log: Any, key: str) -> tuple[dict, ...]:
+    return tuple(log.read_messages(key)) if log.has_log(key) else ()
 
 
 async def _drive(
