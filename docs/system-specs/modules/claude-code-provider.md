@@ -71,9 +71,13 @@ half-install does not read as a total one. A probe that itself fails reads
 
 Both operator-facing surfaces read that one verdict:
 
-- `kirocrew doctor` prints Claude Code as an optional backend — present, absent
-  with the missing components named, or uncheckable. It is never a hard failure;
-  kiro-cli is the floor.
+- `kirocrew doctor` prints Claude Code's row — present, absent with the missing
+  components named, or uncheckable. When `agent.acp_backend` or
+  `agent.member_acp_backend` selects `claude`, a missing component is a ❌ row and
+  an issue (doctor exits 1), because every session on that role fails to spawn.
+  Otherwise it is an optional backend and never a hard failure; kiro-cli is the
+  floor. An uncheckable probe is never an issue. Covered by
+  `test/test_doctor_claude_backend.py`.
 - The dashboard's agent-backend control **hides** a harness the deployment may
   not select instead of dimming it, because under a managed policy there is
   nothing the reader can do about it and advertising a forbidden option is the
