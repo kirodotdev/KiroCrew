@@ -129,10 +129,10 @@ Usage: <credits> credits · <elapsed>
   `SUBAGENT_BATCH_COMPLETION_PREFIX`, which `injected_turns.py` bundles with the others into
   `SUBAGENT_COMPLETION_PREFIXES` for the same `str.startswith` classification. A
   chunk is NOT the wave: a mid-wave chunk carries progress facts (how many of the
-  total are delivered, how many still running) and tells the parent to process
-  those results without spawning yet, because more chunks are still arriving. Only
-  the final chunk reports the wave finished, carries the run's tallies, and
-  releases the spawn-discipline gate.
+  total are delivered, how many still running, dated to when it was composed) and
+  tells the parent to process those results without spawning yet, because more
+  chunks are still arriving. Only the final chunk reports the wave finished,
+  carries the run's tallies, and releases the spawn-discipline gate.
 - The runner appends it with role `subagent`, so it renders as its own message kind
   rather than a user bubble.
 - Orchestration guards append to the same envelope when a stage has burned its
