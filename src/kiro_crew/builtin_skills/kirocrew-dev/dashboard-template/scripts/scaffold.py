@@ -64,22 +64,14 @@ from typing import NamedTuple
 
 #: Kinds the ``--fields`` grammar accepts, mapped to the annotation they emit.
 #:
-#: There is deliberately no bare ``str``. Every author-declared field is read out of the
-#: fold by ``read_text``, which returns ``str | Unsaid`` because a fold value can always
-#: be absent; a ``str`` kind emitted ``<name>: str`` over that line and the generated
-#: contract failed mypy. Plain ``str`` is reserved for the fields the script supplies
-#: itself in ``_ALWAYS`` -- the provider writes those, it does not read them.
+#: No bare ``str``: ``read_text`` returns ``str | Unsaid`` since a fold value can be
+#: absent, so ``<name>: str`` fails mypy. Plain ``str`` is only for the ``_ALWAYS``
+#: fields the provider writes itself.
 #:
-#: There is deliberately no bare ``int``. A count reaching the page as a number has to
-#: answer two questions this script cannot answer for it -- what its total is, and what
-#: to render when the fold does not carry it -- and both wrong answers are silent: a
-#: bare "7" reads as complete information, and a zero standing in for an unknown reads
-#: as good news. ``fraction`` answers both at once: it is ``N/M`` when both sides are
-#: known and :data:`UNSAID` otherwise, which reaches the page as words.
-#:
-#: A hand-written contract MAY still declare an ``int`` where a template genuinely
-#: wants the pair rendered apart; the denominator gate then requires its ``<name>_of``
-#: sibling. That escape hatch is checked, not emitted.
+#: No bare ``int``: a bare "7" silently reads as complete and a zero for an unknown as
+#: good news. ``fraction`` is ``N/M`` when both sides are known, else :data:`UNSAID`.
+#: A hand-written contract MAY declare an ``int``; the denominator gate then requires
+#: its ``<name>_of`` sibling.
 KINDS: dict[str, str] = {
     "str|unsaid": "str | Unsaid",
     "fraction": "str | Unsaid",
@@ -186,34 +178,18 @@ _UNKNOWN_TYPE = "unknown"
 def _fold_fields(fold: str, wanted: str, *, whole: bool = False) -> tuple[str, ...]:
     """The names of *fold*'s fields a *wanted*-kind field may read.
 
-    Two types answer yes, and the second is the one that matters. A row typed exactly
-    *wanted* is plainly readable. A row typed ``"unknown"`` is ALSO accepted, because that
-    is what the catalogue writes for every OPTIONAL field -- its type is not knowable from
-    an empty fold, and the catalogue refuses to guess one. Filtering on *wanted* alone
-    therefore sees only the REQUIRED fields and refuses the optional ones, which are
-    exactly the fields a dashboard wants: an optional field is the one that can be absent,
-    which is what ``Unsaid`` is for.
+    That is: names this fold has, minus the ones whose type is known and wrong. A row
+    typed ``"unknown"`` is accepted too, because the catalogue writes that for every
+    OPTIONAL field, and optional fields are exactly the ones ``Unsaid`` is for.
+    ``status.turn`` is optional but declared ``object``, so ``turn:str|unsaid`` is
+    refused.
 
-    So this menu is not "fields of this type". It is "names this fold has, minus the ones
-    whose type is known and wrong".
+    The limit: an ``"unknown"`` row whose real type is wrong is accepted, and the emitted
+    gates cannot catch it since they render an EMPTY view. :func:`parse_fields` prints
+    every ``unknown``-typed source it admits.
 
-    That second set is wide, because the catalogue renders ``dashboard_types.catalog``,
-    which declares the type of a null leaf wherever one is declarable. ``status.turn`` is
-    optional and declared ``object``, so ``turn:str|unsaid`` is REFUSED here rather than
-    admitted to render the words "not said" at every active turn.
-
-    The limit is the genuinely untypeable row: the empty fold renders ``None`` and
-    nothing declares what fills it, so an ``"unknown"`` row whose real type IS wrong is
-    accepted. The emitted gates cannot catch it either -- they build the card from an
-    EMPTY view, where "not said" is the expected answer, so they agree with the wrong
-    render. :func:`parse_fields` prints a line naming every ``unknown``-typed source it
-    admits, which is a short list and worth reading.
-
-    With *whole*, a row the catalogue reports as a NON-integer number is dropped as well.
-    That is a type the menu knows and knows is wrong, so it belongs with the refusals
-    rather than with the admitted ones: ``read_int`` answers "not said" for a float. A
-    number the catalogue did not judge keeps the benefit of the doubt, the same posture
-    an ``"unknown"`` row gets, and ``parse_fields`` names it.
+    With *whole*, a row the catalogue reports as a NON-integer number is dropped too
+    (``read_int`` answers "not said" for a float); an unjudged number is kept and named.
     """
     rows = _catalogue_rows(fold)
     return tuple(
@@ -1068,33 +1044,14 @@ def _write_over(path: Path, text: str) -> None:
 def publish(root: Path, files: dict[Path, str], *, force: bool) -> None:
     """Write the four outputs, refusing to write outside *root*.
 
-    This deliberately does NOT make the four writes atomic, and an earlier version of it
-    did: outputs were staged in a directory this run owned, copies of the targets were kept
-    beside them, and a failed move was undone from those copies. That machinery was removed
-    rather than repaired.
+    The four writes are deliberately NOT atomic: the outputs land in a checkout under
+    version control, so a mixed set shows in ``git status`` and is undone with git, and
+    ``--force`` already destroys uncommitted edits by design.
 
-    What it defended against was a failure part-way leaving an html and a contract from one
-    run beside a provider and a test from another. The reason it is not worth defending here
-    is where these files live: a checkout, under version control, on their way to review. A
-    mixed set is named by ``git status`` and undone by ``git checkout --`` or by deleting the
-    new files, and nothing reaches anyone until a human reads the diff.
-
-    ``--force`` is the case that settles it. Overwriting is what the flag is for, so a run
-    that SUCCEEDS already destroys every uncommitted edit to all four outputs. Machinery
-    that preserves some of them when the third write fails is protecting a fraction of what
-    the flag destroys by design -- while being, itself, the most intricate code in this file.
-
-    Two properties are kept, because git supplies neither.
-
-    :func:`is_symlinked` stays: a link along the path sends the write OUTSIDE the tree this
-    root names, which is not a mixed set but a write somewhere else entirely -- no
-    ``git checkout`` in this repository undoes it, and the line this script prints still
-    names the path inside the tree.
-
-    ``O_EXCL`` on the path that overwrites nothing stays, in :func:`_publish_new`: two runs
-    for one slug can otherwise both find the target absent and the second silently replace
-    what the first created. That is a race between two runs, not a torn write, and git does
-    not arbitrate it.
+    Two properties git does not supply are kept. :func:`is_symlinked`: a link along the
+    path would send the write OUTSIDE the tree, where no ``git checkout`` undoes it.
+    ``O_EXCL`` in :func:`_publish_new`: two runs for one slug could otherwise both find
+    the target absent and the second silently replace the first's file.
     """
     for path in files:
         if is_symlinked(root, path):
