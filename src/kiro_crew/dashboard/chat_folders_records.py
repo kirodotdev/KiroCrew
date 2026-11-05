@@ -772,3 +772,30 @@ def _agent_in_channel_reachable_session(request: web.Request) -> bool:
     return _audit_origin(request)[0] != "dashboard" and _caller_reaches_a_channel(
         request, request.headers.get("X-Session-Key", "").strip()
     )
+
+
+def refuse_channel_reachable_agent(
+    request: web.Request, operation: str, resources: str = ""
+) -> web.Response | None:
+    """The 403 for an agent reshaping the person's sidebar from a session a channel can
+    drive, or ``None``. The person's browser is never refused."""
+    if not _agent_in_channel_reachable_session(request):
+        return None
+    sel().log_api_access(
+        caller=_audit_origin(request)[1],
+        operation=operation,
+        outcome="denied",
+        source="channel_containment",
+        resources=resources,
+        error="agent sidebar write from a session a channel can drive",
+    )
+    return web.json_response(
+        {
+            "error": (
+                "this session can receive turns from a channel conversation, so an "
+                "agent cannot change the person's sidebar from it"
+            ),
+            "code": "channel_reachable_caller",
+        },
+        status=403,
+    )
