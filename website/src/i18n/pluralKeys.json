@@ -494,5 +494,7 @@
   "apps.designCritique.composer.staged_flow_hint",
   "apps.designCritique.designCritiquePage.rail_flow",
   "components.pastedChip.collapse_pasted_lines",
-  "components.pastedChip.expand_pasted_lines"
+  "components.pastedChip.expand_pasted_lines",
+  "pages.settings.instancesPanel.warm_cap_count",
+  "pages.settings.postureDisclosure.show_more_count"
 ]
