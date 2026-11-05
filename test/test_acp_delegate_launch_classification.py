@@ -176,12 +176,14 @@ async def test_a_line_after_startup_does_not_latch():
 # -- The translation, and its verdict --
 
 
-def test_the_translation_is_non_retryable_and_names_the_fix():
+@pytest.mark.asyncio
+async def test_the_translation_is_non_retryable_and_names_the_fix():
     from kiro_crew.providers.acp_runtime_start import _delegate_launch_failure
 
     runtime = MagicMock()
     runtime.saw_delegate_launch_failure.return_value = True
-    exc = _delegate_launch_failure(runtime)
+    runtime.delegate_launch_failure_text.return_value = DELEGATE_LAUNCH_FAILURE_MESSAGE
+    exc = await _delegate_launch_failure(runtime)
     assert isinstance(exc, AcpDelegateLaunchFailed)
     assert isinstance(exc, AcpError)
     # NOT a process death: the chat surfaces route AcpProcessDied into their
@@ -199,12 +201,13 @@ def test_the_translation_is_non_retryable_and_names_the_fix():
     assert DELEGATE_LAUNCH_FAILURE_MESSAGE == str(exc)
 
 
-def test_an_unlatched_runtime_is_not_translated():
+@pytest.mark.asyncio
+async def test_an_unlatched_runtime_is_not_translated():
     from kiro_crew.providers.acp_runtime_start import _delegate_launch_failure
 
     runtime = MagicMock()
     runtime.saw_delegate_launch_failure.return_value = False
-    assert _delegate_launch_failure(runtime) is None
+    assert await _delegate_launch_failure(runtime) is None
 
 
 def test_the_retry_deciders_all_refuse_it():

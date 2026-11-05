@@ -216,6 +216,7 @@ class AcpRuntime:
     saw_sandbox_init_failure = _rt_liveness.saw_sandbox_init_failure
     saw_delegate_launch_failure = _rt_liveness.saw_delegate_launch_failure
     saw_kas_engine_refusal = _rt_liveness.saw_kas_engine_refusal
+    delegate_launch_failure_text = _rt_liveness.delegate_launch_failure_text
     redacted_stderr_tail = _rt_liveness.redacted_stderr_tail
     _exit_watch_loop = _rt_liveness._exit_watch_loop
     _reader_has_buffered_input = _rt_liveness._reader_has_buffered_input
@@ -660,6 +661,7 @@ class AcpRuntime:
         # Same sink, ring-turnover reason and startup-only lifetime as the delegate
         # latch: the refusal is printed before ``initialize`` and the child exits.
         self._saw_kas_engine_refusal = False
+        self._delegate_launch_failure_message: str | None = None
         # Whether a session handle has ever been produced on this runtime. The
         # startup window the latches above arm in, and the reason it is a separate
         # flag from ``_initialized``: the handshake is the middle of startup, not

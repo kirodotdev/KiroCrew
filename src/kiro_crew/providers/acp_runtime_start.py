@@ -51,7 +51,7 @@ from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.session_provider import AcpSessionProvider
-from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed
+from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed, delegate_launch_failed
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKENDS_HARNESS_OWNED_SESSIONS
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import model_registry_namespace
@@ -390,7 +390,7 @@ def _owning_channel_id(self: AcpProvider) -> str | None:
     return channel if isinstance(channel, str) and channel else None
 
 
-def _delegate_launch_failure(runtime: AcpRuntime) -> AcpDelegateLaunchFailed | None:
+async def _delegate_launch_failure(runtime: AcpRuntime) -> AcpDelegateLaunchFailed | None:
     """Translate a startup death into an actionable delegate-launch error, or None.
 
     Checked on every startup-death path alongside
@@ -404,7 +404,7 @@ def _delegate_launch_failure(runtime: AcpRuntime) -> AcpDelegateLaunchFailed | N
     """
     if not runtime.saw_delegate_launch_failure():
         return None
-    return AcpDelegateLaunchFailed()
+    return await delegate_launch_failed(runtime.delegate_launch_failure_text())
 
 
 def _kas_extract_failure(runtime: AcpRuntime) -> AcpKasExtractBroken | None:
@@ -777,7 +777,7 @@ async def _start_kiro_runtime_impl(
         # the same reason and on all three paths: deterministic, fixed by repairing
         # the install rather than a retry, so it must not fall through to the
         # generic process-death card the ladder reproduces identically.
-        delegate_failure = _delegate_launch_failure(runtime)
+        delegate_failure = await _delegate_launch_failure(runtime)
         if delegate_failure is not None:
             raise delegate_failure from exc
         kas_extract_failure = _kas_extract_failure(runtime)
@@ -964,7 +964,7 @@ async def _start_kiro_runtime_impl(
                     sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
                     if sandbox_failure is not None:
                         raise sandbox_failure from exc
-                    delegate_failure = _delegate_launch_failure(runtime)
+                    delegate_failure = await _delegate_launch_failure(runtime)
                     if delegate_failure is not None:
                         raise delegate_failure from exc
                     kas_extract_failure = _kas_extract_failure(runtime)
@@ -1005,7 +1005,7 @@ async def _start_kiro_runtime_impl(
                 sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
                 if sandbox_failure is not None:
                     raise sandbox_failure from exc
-                delegate_failure = _delegate_launch_failure(runtime)
+                delegate_failure = await _delegate_launch_failure(runtime)
                 if delegate_failure is not None:
                     raise delegate_failure from exc
                 kas_extract_failure = _kas_extract_failure(runtime)
