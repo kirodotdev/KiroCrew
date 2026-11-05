@@ -78,6 +78,48 @@ describe('McpManagement pre-resolve', () => {
     })
   })
 
+  it('names one server and several servers in their own English forms', async () => {
+    stubPage()
+    const refresh = vi.spyOn(api, 'mcpResolveRefresh')
+    refresh.mockResolvedValueOnce({
+      ok: true,
+      resolved: { 'foo@latest': 'ready' },
+      ready: ['foo@latest'],
+    } as never)
+
+    mount()
+    const button = await pressUpdate()
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('1 server pre-installed.')
+    })
+
+    refresh.mockResolvedValueOnce({
+      ok: true,
+      resolved: { 'foo@latest': 'ready', 'bar@1.0.0': 'ready' },
+      ready: ['bar@1.0.0', 'foo@latest'],
+    } as never)
+    act(() => { button.click() })
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('2 servers pre-installed.')
+    })
+  })
+
+  it('names the failed servers in the right English form', async () => {
+    stubPage()
+    vi.spyOn(api, 'mcpResolveRefresh').mockResolvedValue({
+      ok: true,
+      resolved: { 'foo@latest': 'error' },
+      ready: [],
+    } as never)
+
+    mount()
+    await pressUpdate()
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain('Could not pre-install 1 server.')
+    })
+  })
+
   it('says nothing needed pre-resolving instead of claiming a win', async () => {
     stubPage()
     vi.spyOn(api, 'mcpResolveRefresh').mockResolvedValue({
