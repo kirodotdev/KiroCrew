@@ -46,7 +46,7 @@ export function ChannelDisabledPanel({
             i18n render gate reads two catalog sentences in one run as a
             glued fragment. */}
         <div className="text-base font-semibold text-text-strong mb-2">
-          {label} {i18nT('pages.settings.channelDisabledPanel.policy_status_unavailable')}
+          {i18nT('pages.settings.channelDisabledPanel.channel_policy_status_unavailable', { channel: label })}
         </div>
         <ErrorNotice
           // The catalog string carries source-formatting newlines that a <p>
@@ -63,7 +63,7 @@ export function ChannelDisabledPanel({
         <Lock size={20} className="lucide-inline text-muted" />
       </div>
       <div className="text-base font-semibold text-text-strong mb-1.5">
-        {label} {i18nT('pages.settings.channelDisabledPanel.is_turned_off_by_your_administrator')}
+        {i18nT('pages.settings.channelDisabledPanel.channel_turned_off', { channel: label })}
       </div>
       <p className="text-sm text-muted leading-relaxed">
         {i18nT('pages.settings.channelDisabledPanel.your_organization_s_security_policy_disables_thi')}

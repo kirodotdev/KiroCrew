@@ -11,6 +11,7 @@ import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
 import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
+import { useStableCallbackProps } from './chat/useStableCallbackProps'
 import { useChatPageTranscriptEarlyController } from './chat/useChatPageTranscriptController'
 import { useChatPageSessionController } from './chat/useChatPageSessionController'
 import { useChatPageResourcesController } from './chat/useChatPageResourcesController'
@@ -658,7 +659,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // land where the document belongs. switchSlot.pending sets activeSlot
   // synchronously, but send()'s closure activeSlot is stale until re-render,
   // so the origin slot is passed to send() explicitly.
-  const submitComments = useCallback((message: string) => {
+  //
+  // The side panel can hold on to the callback it was last rendered with for a
+  // render after this page has moved on (it sits under AnimatePresence), so it
+  // is handed a stable forwarder to the latest handler: a Submit right after
+  // Auto (Jev) consent arrives must carry the auto flag, not the steer the
+  // previous render would have sent.
+  const { submitComments } = useStableCallbackProps({ submitComments: (message: string): false | Promise<boolean> => {
     // Defense-in-depth: the panels' submit buttons are gated on `connected`,
     // but bail here too so an offline call can't switch the active session
     // and then have send() silently drop the message.
@@ -673,7 +680,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // The delivery verdict flows back to the panel: ArtifactPanel marks a
     // comment batch as sent only when this resolves true.
     return send(message, target ?? undefined, steerFlag)
-  }, [connected, tabsCtl.activeTab, activeSlot, dispatch, send, jevAutoConsented, activeSlotRef])
+  } })
 
   // The armed auto-send (?autoSend=1, a signed token, an app launch) and a
   // widget action's prefill.

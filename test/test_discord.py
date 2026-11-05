@@ -25,6 +25,7 @@ import threading
 from types import SimpleNamespace
 from typing import Any
 
+import channel_options_checks
 import discord_helpers
 import pytest
 from discord_helpers import (  # noqa: F401
@@ -41,7 +42,6 @@ from discord_helpers import (  # noqa: F401
     _prime_live,
 )
 
-from conftest import assert_rejected_without_backtracking
 from kiro_crew.discord import renderer as discord_renderer
 from kiro_crew.discord.attachments import process_discord_attachments
 from kiro_crew.discord.client import (
@@ -851,7 +851,7 @@ class TestOptionComponents:
         assert ids == ["opt:0:deadbeefcafe", "opt:1:deadbeefcafe"]
 
 
-class TestExtractOptions:
+class TestExtractOptions(channel_options_checks.UnterminatedOptionsTagIsNotRedos):
     def test_no_options(self) -> None:
         assert _extract_options("plain body") == ("plain body", [])
 
@@ -864,24 +864,6 @@ class TestExtractOptions:
         body, opts = _extract_options("Pick one\n[OPTIONS: A | B")
         assert body == "Pick one"
         assert opts == []
-
-    def test_unterminated_options_tag_is_not_redos(self) -> None:
-        # Regression (py/polynomial-redos): a plain greedy ``.*`` body could
-        # consume a "[" that ALSO starts the outer "[OPTIONS:" literal, so over
-        # text with many "[OPTIONS:" prefixes search() re-explored the body from
-        # each position — polynomial. The tempered body
-        # (?:[^[]|\[(?!OPTIONS:))* forbids only a re-occurring "[OPTIONS:", so
-        # the body is unambiguous (linear). A whitespace-padded unterminated tag
-        # and many repeated "[OPTIONS:" prefixes (the real pump) must both be
-        # rejected in CPU time linear in the pump -- see
-        # conftest.assert_rejected_without_backtracking for why this is not a
-        # 1.0 s wall-clock bound.
-        def reject(text: str) -> None:
-            body, opts = _extract_options(text)
-            assert opts == []
-
-        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" + ("\t" * n) + "x")
-        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" * n + "x")
 
 
 class TestStripSteering:

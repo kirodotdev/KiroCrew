@@ -113,6 +113,7 @@ from kiro_crew.slack.code_channels import install as install_code_channels
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
 from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
 from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_gate
+from kiro_crew.slack.code_channels.routing import is_bound_code_channel
 from kiro_crew.slack.code_channels.store import store as code_channel_store
 from kiro_crew.slack.enterprise import trusted_bot_admission, validated_self_user_id
 from kiro_crew.slack.files import (
@@ -669,7 +670,16 @@ async def _route_message(
             )
             return
 
-    if activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW) and not is_mention:
+    # A bound code channel answers without a mention: the code-channel gate
+    # below decides it, and the mention drop is applied after the gate only
+    # when the gate leaves the message to the normal path.
+    _defer_mention_drop = is_bound_code_channel(orch, channel)
+
+    if (
+        activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW)
+        and not is_mention
+        and not _defer_mention_drop
+    ):
         # In mention/review mode: ignore messages without @mention UNLESS the
         # message is a reply in a thread where the bot already has an active
         # session (i.e., the bot was already @mentioned in that thread) and is
@@ -854,6 +864,21 @@ async def _route_message(
     _was_mention = is_mention
     if _code_channel.gate is CodeChannelGate.DIRECTED:
         is_mention = True
+    elif (
+        _defer_mention_drop
+        and activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW)
+        and not is_mention
+        and not _thread_follow_admits(
+            orch,
+            thread_follow=ch_cfg.thread_follow,
+            activation=activation,
+            thread_ts=thread_ts,
+            text=address_text,
+            sender_id=sender_id,
+            channel=channel,
+        )
+    ):
+        return
 
     # Resolve sender's Slack display name so the LLM uses the actual
     # profile name instead of guessing from memory. Cached on channel
@@ -1115,7 +1140,9 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             return
-        note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
+        note_user_stop(
+            orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key
+        )
         has_session = orch.sessions.has_session(session_key)
         # READ, not popped: the task is removed only once the cancel is known
         # to have gone through, below.
@@ -1307,6 +1334,7 @@ async def _route_message(
     #    (_handle_restart) which owns owner-check + supervisor guard, keeping
     #    a single source of truth for the restart logic. ──
     if clean_text.strip().lower() == "!restart":
+
         async def _restart_respond(text: str, **_kw: Any) -> None:
             if orch.slack:
                 await orch.slack.post_message(channel, text, thread_ts or msg_ts)
@@ -1619,6 +1647,7 @@ async def _route_message(
 
     orch._handler_tasks.add(t)
     t.add_done_callback(_on_done)
+
 
 # The Socket Mode wiring (``init_socket_mode``) and the message router
 # (``_route_message``) stay here; the rest lives in the ``events_*`` owner modules beside

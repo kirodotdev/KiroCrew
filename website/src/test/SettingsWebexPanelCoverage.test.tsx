@@ -572,8 +572,9 @@ describe('WebexPanel group spaces', () => {
     seed({ allow_group_rooms: true })
     await hydrated()
 
+    expect(screen.getByText('Empty means no space is answered.')).toBeInTheDocument()
     expect(
-      screen.getByText(/turning the switch on alone grants nothing/i),
+      screen.getByTitle(/turning the switch on alone grants nothing/i),
     ).toBeInTheDocument()
   })
 
@@ -622,7 +623,7 @@ describe('WebexPanel group spaces', () => {
     seed({ allow_group_rooms: true })
     await hydrated()
 
-    expect(screen.getByText(/webexapis\.com\/v1\/rooms/)).toBeInTheDocument()
+    expect(screen.getByTitle(/webexapis\.com\/v1\/rooms/)).toBeInTheDocument()
   })
 })
 

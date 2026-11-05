@@ -70,7 +70,11 @@ from kiro_crew.config.loader_snapshots import (
     publish_config_timezone,
 )
 from kiro_crew.config.paths import config_package_dir, kiro_agents_dir
-from kiro_crew.config.resolution import _subtract_overlay
+from kiro_crew.config.resolution import (
+    _canonical_renamed_keys,
+    _restore_stored_renamed_spellings,
+    _subtract_overlay,
+)
 from kiro_crew.config.sections import (
     ACTIVATION_ALWAYS,
     ACTIVATION_MENTION,
@@ -885,7 +889,8 @@ class KiroCrewConfig:
                                 k: canonical[k] for k in rl_overlay if k in canonical
                             },
                         }
-                    overlay_owned = raw_local
+                    # Renamed keys compare under the name save() emits.
+                    overlay_owned = _canonical_renamed_keys(raw_local)
             except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
 
@@ -919,6 +924,9 @@ class KiroCrewConfig:
                 # What config.json stores keeps its own value under an
                 # overlay-owned leaf, so dropping the overlay later still finds it.
                 d = _subtract_overlay(d, overlay_owned, stored)
+                # A renamed key config.json stores under an older spelling goes
+                # back under that spelling.
+                _restore_stored_renamed_spellings(d, stored, overlay_owned)
                 # An equal overlay value must not erase a choice the base file owns.
                 _restore_stored_harness_fields(d)
             write_config_atomically(p, stamp_config_meta(d))

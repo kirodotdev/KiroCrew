@@ -549,13 +549,6 @@ class DashboardState:
         )
         self._slots: dict[str, _ChatSlot] = {}
         self._slot_registry = SlotRegistry()
-        # Process-local Spec Builder outbox claims, keyed by directory + delivery.
-        # Directory scope matters because aliases use different slots for the same
-        # files; durable status remains owned by the app's decision ledger.
-        self._spec_decision_deliveries_inflight: set[tuple[str, str]] = set()
-        # Consumed claims whose durable finalization failed remain blocked from
-        # redispatch while a later Spec Builder detail poll retries the ledger write.
-        self._spec_decision_deliveries_consumed: set[tuple[str, str]] = set()
         # Sandbox kind -> monotonic time of the last notification for it. Keyed on
         # the sandbox layer's own closed kind set (three values), NEVER on request
         # data: auto-speak synthesises one request per sentence, so a key carrying

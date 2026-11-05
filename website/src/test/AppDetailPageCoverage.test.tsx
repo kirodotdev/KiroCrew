@@ -53,6 +53,7 @@ vi.mock('../hooks/useTheme', () => ({ useTheme: () => ({ theme: theme.mode }) })
 vi.mock('../components/AppIcon', () => ({ default: () => <div data-testid="app-icon" /> }))
 
 import AppDetailPage from '../pages/AppDetailPage'
+import { i18next } from '../i18n/all'
 
 /** Not one of the first-party names in APP_MANIFEST_KEY, so display name,
  *  description and highlights fall through to the fixture instead of a catalog. */
@@ -1123,5 +1124,42 @@ describe('AppDetailPage — uncovered surfaces', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /back to apps/i }))
     expect(await screen.findByText('apps list')).toBeInTheDocument()
+  })
+})
+
+// The Details rows are each one catalog sentence, and the origin, resources
+// and lifecycle values are shown as words, not as the raw record values.
+describe('AppDetailPage — Details rows in other languages', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    system.mockResolvedValue({ hostname: '' })
+    listRegistry.mockResolvedValue({ apps: [], serverPlatform: { os: 'darwin', arch: 'arm64' } })
+  })
+  afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
+
+  it('names the origin and lifecycle in English words', async () => {
+    getApp.mockResolvedValue(installedApp({ origin: 'builtin', lifecycle: 'locked' }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('Origin: Built-in | Resources: Gateway | Lifecycle: Locked')).toBeInTheDocument()
+  })
+
+  it('words the rows in German with no English record values', async () => {
+    await act(async () => { await i18next.changeLanguage('de') })
+    getApp.mockResolvedValue(installedApp({ origin: 'builtin', lifecycle: 'locked' }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('Ursprung: Integriert | Ressourcen: Gateway | Lebenszyklus: Gesperrt')).toBeInTheDocument()
+    expect(screen.queryByText(/builtin|locked/)).toBeNull()
+  })
+
+  it('shows a value it has no word for as it is', async () => {
+    getApp.mockResolvedValue(installedApp({ origin: 'mirror', resources: 'app', lifecycle: 'app' }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('Origin: mirror | Resources: App | Lifecycle: App')).toBeInTheDocument()
   })
 })

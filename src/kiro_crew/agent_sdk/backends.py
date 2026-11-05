@@ -244,6 +244,8 @@ with no row here.
        answers the three hook methods; no consumer above the boundary asks it)
    * - ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``
      - semantic question (``SessionCapabilities.crew_fires_spec_hooks``)
+   * - ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS``
+     - semantic question (``SessionCapabilities.crew_fires_spec_observer_hooks``)
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
@@ -1172,6 +1174,7 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
     ACP_BACKEND_ROUTING,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+    ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_HOOKS_LIST,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,

@@ -100,7 +100,8 @@ def _apply_through_gateway(
     except app_lifecycle_client.AppGatewayError as exc:
         if action == "enable" and exc.code == _SESSION_APPROVAL_CONSENT_REQUIRED:
             _refuse_session_approval_from_cli(subject)
-        print(f"❌ gateway refused: {exc}. {hint}", file=sys.stderr)
+        # A refusal that already ends its sentence would otherwise print "..".
+        print(f"❌ gateway refused: {str(exc).rstrip('.')}. {hint}", file=sys.stderr)
         sys.exit(1)
     if result is None:
         return False
@@ -581,11 +582,26 @@ def _handle_app(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     elif action == "update":
+        source = getattr(args, "source", None)
+        if source is not None and not source.strip():
+            # `--source "$DIR"` with the variable unset. Resolving "" would read
+            # the current directory, so it is refused rather than read as either
+            # a directory or "use the recorded source".
+            print("❌ --source is empty; pass the app directory or omit the flag", file=sys.stderr)
+            sys.exit(1)
+        # The gateway resolves a source against its OWN working directory, not
+        # this shell's, so a given path is made absolute here as install does.
+        # With no --source the request carries no body and the gateway updates
+        # from the app's recorded source: where it was installed from, or the
+        # last --source an update used.
+        payload: dict[str, object] | None = None
+        if source is not None:
+            payload = {"source": str(Path(source).expanduser().resolve())}
         # Gateway only, with no file-only fallback. An update stops the app's
         # backend, swaps its tree and restarts it, and re-registers its crons
         # with the running scheduler; from a separate process the backend
         # would keep running the old tree and the scheduler the old jobs.
-        if _run_app_action_through_gateway("update", args.name):
+        if _run_app_action_through_gateway("update", args.name, payload=payload):
             return
         print(
             "❌ No running gateway answered, so nothing was updated. Start it "

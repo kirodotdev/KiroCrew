@@ -285,7 +285,7 @@ export function PostureDisclosureRow({
                   className="text-[12px] text-accent hover:underline bg-transparent border-none cursor-pointer p-0 mt-1.5 ml-6"
                   onClick={() => setExpandedFor(query)}
                 >
-                  {i18nT('pages.settings.postureDisclosure.show')} {hidden} {i18nT('pages.settings.postureDisclosure.more')}
+                  {i18nT('pages.settings.postureDisclosure.show_more_count', { count: hidden })}
                 </button>
               )}
 

@@ -323,7 +323,7 @@ describe('Session Environments configuration preview', () => {
   it('defines a profile once, in the intro, not again under Profiles', async () => {
     await mounted()
     expect(screen.getAllByText(/A profile is a saved setup/)).toHaveLength(1)
-    expect(screen.getByText(/Each profile is a Coder template plus a working folder/)).toBeInTheDocument()
+    expect(screen.getByTitle(/Each profile is a Coder template plus a working folder/)).toBeInTheDocument()
   })
 
   it('says a removal is undone by Discard changes, until it is saved', async () => {
@@ -468,7 +468,7 @@ describe('Coder setup and saved profile management', () => {
     expect(screen.getByRole('radio', { name: 'Coder', exact: true })).toBeChecked()
     expect(screen.getByRole('radio', { name: 'Fly.io Sprites' })).not.toBeChecked()
     // Where the "Run this chat on" menu is, said once on the card (under Profiles).
-    expect(screen.getAllByText(/“Run this chat on” menu next to the message box/)).toHaveLength(1)
+    expect(screen.getAllByTitle(/“Run this chat on” menu next to the message box/)).toHaveLength(1)
     expect(screen.getByText('Archiving a chat stops its workspace and deletes it 7 days later.')).toBeVisible()
     expect(writes).toEqual([])
   })
@@ -1135,7 +1135,7 @@ describe('Sprites and boxd providers', () => {
     // Where the token is kept is rarely changed, so it starts tucked away.
     expect(screen.getByText('Advanced: secret name').closest('details')).not.toHaveAttribute('open')
     // The secret name says what it is: the key the token is stored under, not the token.
-    expect(screen.getByText(/The name the token is stored under in Settings → Secrets\./)).toBeInTheDocument()
+    expect(screen.getByTitle(/The name the token is stored under in Settings → Secrets\./)).toBeInTheDocument()
     expect(screen.getByLabelText(TOKEN_LABEL)).toHaveAttribute('placeholder', 'Paste a Sprites API token')
     // A new profile's working folder starts blank: the sprite's own home folder.
     expect(screen.getByLabelText('Working folder')).toHaveValue('')

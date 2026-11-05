@@ -126,8 +126,8 @@ def test_a_missing_directory_is_refused(tmp_path) -> None:
 def test_a_sensitive_directory_is_refused(tmp_path, monkeypatch) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        "kiro_crew.dashboard.chat_folders.is_sensitive_path",
-        lambda p, *a, **k: p == repo,
+        "kiro_crew.dashboard.chat_folders.canonical_path_refusal",
+        lambda p: f"Blocked: access to sensitive path: {p}" if p == repo else None,
     )
     with pytest.raises(ValueError, match="sensitive"):
         resolve_project_path(repo)

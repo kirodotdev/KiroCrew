@@ -24,6 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import conductor_agent_checks
 from skill_script_helpers import load_skill_script
 
 from kiro_crew import agent
@@ -60,7 +61,7 @@ def _pin_spec_permissions_cli(monkeypatch, which):
     monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
 
 
-class TestConductorInstaller:
+class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetiredVerbosityToken):
     def _install(self, tmp_path, monkeypatch, *, may_auto_approve=None, cli_version="accepts"):
         monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
         _pin_spec_permissions_cli(monkeypatch, cli_version)
@@ -94,12 +95,6 @@ class TestConductorInstaller:
         data = self._install(tmp_path, monkeypatch)
         assert data["name"] == "kirocrew-conductor"
         assert "work item" in data["prompt"]
-
-    def test_prompt_does_not_carry_the_retired_verbosity_token(self, tmp_path, monkeypatch):
-        data = self._install(tmp_path, monkeypatch)
-        # Reply style now arrives as session-context chrome for every
-        # agent; a token left here would reach the model as a literal.
-        assert "{{VERBOSITY_BLOCK}}" not in data["prompt"]
 
     def test_prompt_drives_patrol_with_monitor_start_not_wait(self, tmp_path, monkeypatch):
         """A patrol round outlives a turn, so the loop must own the turn boundary.

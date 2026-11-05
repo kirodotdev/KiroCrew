@@ -137,6 +137,16 @@ describe('reading threads', () => {
     expect(screen.getByText('2 messages')).toBeTruthy()
   })
 
+  it('says whether a comment is collapsed and hides its chevron from the name', async () => {
+    mount(source([comment({ id: 'c1', body: 'Cap this' })]))
+    const toggle = screen.getByRole('button', { name: 'Collapse comment' })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    for (const svg of toggle.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+    await userEvent.click(toggle)
+    expect(screen.getByRole('button', { name: 'Expand comment' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('anchors the thread to its file and line', () => {
     mount(source([comment({ path: 'src/jar.py', line: 42 })]))
     expect(screen.getByText('src/jar.py:42')).toBeTruthy()

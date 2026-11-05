@@ -76,13 +76,14 @@ afterEach(() => {
 })
 
 describe('FollowDefaultModelAction', () => {
-  it('sits under its own label and explains what it changes', async () => {
+  it('sits under its own label and explains what it changes in its info tip', async () => {
     const user = userEvent.setup()
     renderAction()
     expect(screen.getByText(copy.follow_default_label)).toBeInTheDocument()
-    expect(screen.getByText(copy.follow_default_description)).toBeInTheDocument()
+    // The explanation lives only in the tip, so nothing reads it until it opens.
+    expect(screen.queryByText(copy.follow_default_description_tip)).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: i18nT('components.infoTip.more_information') }))
-    expect(await screen.findByText(copy.follow_default_hint)).toBeInTheDocument()
+    expect(await screen.findByText(copy.follow_default_description_tip)).toBeInTheDocument()
   })
 
   it('names the Default Model the chats land on, in monospace', async () => {
@@ -131,14 +132,14 @@ describe('FollowDefaultModelAction', () => {
   })
 
   it('counts only the chats you started, in the words the rest of the row uses', () => {
-    expect(copy.follow_default_hint).toMatch(/\bchats\b/)
-    expect(copy.follow_default_hint).not.toMatch(/session/i)
+    expect(copy.follow_default_description_tip).toMatch(/\bchats\b/)
+    expect(copy.follow_default_description_tip).not.toMatch(/session/i)
   })
 
   it('leaves out the chats others started, in the same words as the description', async () => {
     // The description's sentence about the chats that keep their model, up to
     // what happens to them: "Chats that crewmates, … started".
-    const senders = copy.follow_default_description
+    const senders = copy.follow_default_description_tip
       .split('. ')
       .find(sentence => sentence.endsWith(' keep their model'))
       ?.replace(/ keep their model$/, '')

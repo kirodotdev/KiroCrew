@@ -52,8 +52,8 @@ def resolve_project_path(raw: str) -> str:
 
     ``""`` stays ``""`` (no project directory: today's cwd). Anything else goes
     through the chat folder's own project-directory validator
-    (``_validate_project_dir``: absolute or ``~``, ``realpath``, not
-    ``is_sensitive_path``, an existing directory), so the two fences cannot
+    (``_validate_project_dir``: absolute or ``~``, ``realpath``, no
+    ``canonical_path_refusal``, an existing directory), so the two fences cannot
     drift. A UNC-shaped path, raw or resolved, is refused before and after it,
     so a share is never probed. Raises ``ValueError`` naming the rule. Called on
     every write AND at every fire, so a directory that was removed, or that a

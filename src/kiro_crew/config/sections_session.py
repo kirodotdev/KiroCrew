@@ -477,7 +477,7 @@ class KiroCrewAgentConfig:
         default_factory=dict,
         metadata=_meta(
             "Imported",
-            "Provenance stamp of a Bot imported from a .crewmate file: "
+            "Provenance stamp of a Bot imported from a .kirobot file: "
             "{'format_version', 'sender_label', 'sha256', 'imported_at'}. Empty "
             "for a Bot made here. The sender label is self-declared; nothing "
             "reads the stamp to reach the sender.",

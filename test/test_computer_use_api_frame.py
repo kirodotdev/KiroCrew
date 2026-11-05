@@ -29,6 +29,7 @@ from computer_use_api_helpers import (  # noqa: F401 -- fixtures are requested b
     no_real_probe,
     profiles_dir_fixture,
 )
+from loopback_servers import LoopbackHTTPServer
 
 from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform.bootstrap import build_default_context
@@ -398,7 +399,7 @@ class TestTheFrameRelayIsNeverProxied:
             def log_message(self, fmt, *args):
                 pass  # keep pytest output clean
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server, server.server_address[1]
 
