@@ -6,7 +6,7 @@ without anything going red. Each class pins the named sites to the helper:
 
 | Rule | Helper | Sites pinned here |
 |---|---|---|
-| a cut never splits a grapheme cluster | ``imessage.plaintext._grapheme_boundary`` / ``_grapheme_end`` | ``computer_use.render._clip``, ``ops_mission_control`` ``notify_out._clip``, ``dashboard.chat_title._title_reveal_prefixes`` |
+| a cut never splits a grapheme cluster | ``imessage.plaintext._grapheme_boundary`` / ``_grapheme_end`` | ``computer_use.render._clip``, ``dashboard.chat_title._title_reveal_prefixes`` |
 | a download name is sent as RFC 5987 ``filename*=UTF-8''`` | ``dashboard.session_export.content_disposition`` | ``GET /api/knowledge/export`` |
 | a temp-write-and-rename uses a unique temp name | ``atomic_write.atomic_write`` | ``auto_research.subquestion_queue.save_queue`` |
 | column alignment is measured in display columns, not ``len`` | ``messaging.tables.display_width`` | ``kirocrew knowledge stats`` |
@@ -14,7 +14,9 @@ without anything going red. Each class pins the named sites to the helper:
 Two kinds of assertion. A spy on the module's own binding of the helper proves the
 site still reaches it. A behavioural assertion proves what the helper buys: the
 occupied fixed temp name, the non-ASCII download name and the CJK column each fail
-on the hand-rolled form the site would otherwise have.
+on the hand-rolled form the site would otherwise have. Ops Mission Control's
+``notify_out._clip`` follows the grapheme rule too; its pin runs in that app's own
+``tests/``.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ import pytest
 from knowledge_handlers_coverage_helpers import _client, _make_app
 
 import kiro_crew.apps.builtins.auto_research.subquestion_queue as sq
-import kiro_crew.apps.builtins.ops_mission_control.backend.notify_out as notify_out
 import kiro_crew.computer_use.render as render
 import kiro_crew.dashboard.chat_title as chat_title
 import kiro_crew.dashboard.handlers.knowledge_bundles as knowledge_bundles
@@ -56,15 +57,6 @@ class TestGraphemeCutSites:
 
         assert render._clip("AB" + FAMILY + "CD", 3) == "AB…"
         assert calls, "computer_use.render._clip cut without the shared grapheme boundary"
-
-    def test_notify_clip_reaches_the_shared_boundary(self, monkeypatch):
-        calls: list = []
-        monkeypatch.setattr(
-            notify_out, "_grapheme_boundary", _recording(notify_out._grapheme_boundary, calls)
-        )
-
-        assert notify_out._clip("AB" + FAMILY + "CD", 4) == "AB…"
-        assert calls, "notify_out._clip cut without the shared grapheme boundary"
 
     def test_title_reveal_reaches_the_shared_cluster_end(self, monkeypatch):
         calls: list = []

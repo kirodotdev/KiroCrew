@@ -5513,6 +5513,19 @@ backend modules, which leave with those files. The UI half is
 `website/src/apps/design-tweak/designTweakBoundary.test.ts`: only `builtinRegistry.ts`
 imports the app's directory, and the app's tests live in it.
 
+Ops Mission Control's `ops_mission_control_api` is not a declared tool: it is a GET/POST
+dispatcher over an allowlist of the app's `/api/apps/ops-mission-control` routes, with a
+query, a JSON body and a per-operation channel deny, and this seam carries one POST route
+under the app proxy. The tool therefore stays core (`mcp_tools/apps.py`, its validation
+row, its internal paths and its `channel.py` deny), unchanged for users, until an
+app-contributed tool seam can carry it under the same name and permission key.
+`test/test_core_ops_mission_control_decoupling.py` is that app's gate, on the shared
+scans: no core module or script imports it, and the core strings still naming it (that
+tool, the `webhooks` source id, the sandbox leaf tables, the security-posture rows, its
+packaged skill id and two docs-lint rows) are a pinned list that may only shrink (see
+`ops-mission-control.md`, "Repository boundary"). The UI half is
+`website/src/apps/ops-mission-control/opsMissionControlBoundary.test.ts`.
+
 ## 31. A marketplace app installs disabled and is trusted by its listing
 
 A Kiro Space marketplace app version is one zip of the app folder.

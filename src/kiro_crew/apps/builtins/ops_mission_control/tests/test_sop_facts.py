@@ -13,11 +13,13 @@ from pathlib import Path
 
 import pytest
 
+import kiro_crew
 from kiro_crew.mcp_tools.apps import OPS_MISSION_CONTROL_ALLOWED_CALLS
 
-_SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
-_SOPS = _SRC / "builtin_skills" / "ops-mission-control" / "sops"
-_APP_JSON = _SRC / "apps" / "builtins" / "ops_mission_control" / "app.json"
+_SOPS = (
+    Path(kiro_crew.__file__).resolve().parent / "builtin_skills" / "ops-mission-control" / "sops"
+)
+_APP_JSON = Path(__file__).resolve().parents[1] / "app.json"
 
 # A backticked `GET /x` or `POST /x` in SOP prose. Gateway routes outside the app
 # base (`/api/...`) are plain routes, not tool paths, so they are excluded.

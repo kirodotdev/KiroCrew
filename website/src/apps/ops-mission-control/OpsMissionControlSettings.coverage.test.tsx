@@ -25,7 +25,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-import { OpsApiError } from '../apps/ops-mission-control/api'
+import { OpsApiError } from './api'
 import type {
   AutonomyRule,
   BoardState,
@@ -36,7 +36,7 @@ import type {
   RotationRoster,
   SlackOutStatus,
   SweepWindows,
-} from '../apps/ops-mission-control/api'
+} from './api'
 
 const mockApi = vi.hoisted(() => ({
   providers: vi.fn(),
@@ -50,12 +50,12 @@ const mockApi = vi.hoisted(() => ({
 // Spread the real module so value exports (`OpsApiError`) keep their identity —
 // the identity refusal branch narrows with `instanceof`, and a bare factory would
 // hand the component `undefined` for the class.
-vi.mock('../apps/ops-mission-control/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/ops-mission-control/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   opsApi: mockApi,
 }))
 
-const SettingsPanel = (await import('../apps/ops-mission-control/SettingsPanel')).default
+const SettingsPanel = (await import('./SettingsPanel')).default
 
 /* ── fixtures ─────────────────────────────────────────────────────────────── */
 

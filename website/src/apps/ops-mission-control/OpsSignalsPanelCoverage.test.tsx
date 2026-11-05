@@ -22,9 +22,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query'
-import { renderWithProviders } from './helpers'
-// `/all` for every catalog: `../i18n` registers English only.
-import { i18next } from '../i18n/all'
+import { renderWithProviders } from '../../test/helpers'
+// `/all` for every catalog: `../../i18n` registers English only.
+import { i18next } from '../../i18n/all'
 import {
   SIGNALS_QUERY_KEY,
   WEBHOOK_QUEUE_LIMIT,
@@ -38,12 +38,12 @@ import {
   type Signal,
   type SignalsResult,
   type SourcePollHealth,
-} from '../apps/ops-mission-control/api'
-import SignalsPanel from '../apps/ops-mission-control/SignalsPanel'
+} from './api'
+import SignalsPanel from './SignalsPanel'
 
-vi.mock('../apps/ops-mission-control/api', async (importOriginal) => {
+vi.mock('./api', async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import('../apps/ops-mission-control/api')>()
+    await importOriginal<typeof import('./api')>()
   return {
     ...actual,
     opsApi: {

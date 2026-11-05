@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
-import { hasBuiltinComponent, getBuiltinApp } from '../apps/builtinRegistry'
-import { describeSourceHealth, type SourcePollHealth } from '../apps/ops-mission-control/api'
-import EN_CATALOG from '../i18n/locales/en.json'
+import { hasBuiltinComponent, getBuiltinApp } from '../builtinRegistry'
+import { describeSourceHealth, type SourcePollHealth } from './api'
+import EN_CATALOG from '../../i18n/locales/en.json'
 
 /**
  * The English catalog, loaded once. These panels were converted to `i18nT('key')`
@@ -15,7 +15,7 @@ import EN_CATALOG from '../i18n/locales/en.json'
  * resolves the same `t()` calls to catalog values for the settings search index.
  */
 const CATALOG = JSON.parse(
-  readFileSync(resolve(__dirname, '../i18n/locales/en.json'), 'utf-8'),
+  readFileSync(resolve(__dirname, '../../i18n/locales/en.json'), 'utf-8'),
 ) as Record<string, unknown>
 
 /** Resolve a dotted catalog path (`apps.opsMissionControl.signalsPanel.key`) to its value.
@@ -52,7 +52,7 @@ const expandI18n = (source: string): string =>
   })
 
 const readPanel = (name: string) =>
-  expandI18n(readFileSync(resolve(__dirname, `../apps/ops-mission-control/${name}`), 'utf-8'))
+  expandI18n(readFileSync(resolve(__dirname, `./${name}`), 'utf-8'))
 
 /**
  * A panel's source with comments removed, for assertions that BAN a phrase.
@@ -109,7 +109,7 @@ describe('ops-mission-control builtin registration', () => {
     // read the shipped copy whether they are plain strings or catalog references.
     const page = readPanel('OpsMissionControlPage.tsx')
     const spec = readFileSync(
-      resolve(__dirname, '../../playwright/ops-mission-control.spec.ts'),
+      resolve(__dirname, '../../../playwright/ops-mission-control.spec.ts'),
       'utf-8',
     )
     const rendered = [
@@ -662,7 +662,7 @@ describe('Settings shows when the local repo drifted off the configured branch',
 
 describe('the remote URL is displayed without a credential in it', () => {
   it('strips a userinfo component before painting a remote', async () => {
-    const { displayRemote } = await import('../apps/ops-mission-control/SettingsPanel')
+    const { displayRemote } = await import('./SettingsPanel')
     // config.json is served UNAUTHENTICATED and `redact_tokens` has no pattern for a PAT
     // inside a URL, so this panel declines to be a second place the token is shown.
     expect(displayRemote('https://user:ghp_secret@github.com/org/repo.git')).toBe(
@@ -673,13 +673,13 @@ describe('the remote URL is displayed without a credential in it', () => {
   it('leaves an scp-style SSH remote exactly as typed', () => {
     // `git@github.com:org/repo.git` has no userinfo to strip; a naive split on '@' would
     // mangle the recommended remote into `github.com:org/repo.git`.
-    return import('../apps/ops-mission-control/SettingsPanel').then(({ displayRemote }) => {
+    return import('./SettingsPanel').then(({ displayRemote }) => {
       expect(displayRemote('git@github.com:org/repo.git')).toBe('git@github.com:org/repo.git')
     })
   })
 
   it('does not mangle a plain https remote or a path containing @', () => {
-    return import('../apps/ops-mission-control/SettingsPanel').then(({ displayRemote }) => {
+    return import('./SettingsPanel').then(({ displayRemote }) => {
       expect(displayRemote('https://github.com/org/repo.git')).toBe(
         'https://github.com/org/repo.git',
       )
@@ -1214,7 +1214,7 @@ describe('the sweep windows are visible to an operator', () => {
     // Routed through `fmtUnit`, so the unit is translated and the digits localized. The
     // rendering is the CLDR narrow form for the active language — `2h` under `en`, not a
     // hand-glued `2 h`. Asserted against `en` because that is the test locale.
-    const { humanizeSecs } = await import('../apps/ops-mission-control/SettingsPanel')
+    const { humanizeSecs } = await import('./SettingsPanel')
     expect(humanizeSecs(7200)).toBe('2h')
     // 12h — the derived needs_human default. Misread as minutes this is the difference
     // between half a day and a coffee break, which is why the card never prints raw secs.
@@ -1225,7 +1225,7 @@ describe('the sweep windows are visible to an operator', () => {
 
   it('renders an unreported window as a dash rather than as zero', async () => {
     // 0 must never read as "released immediately".
-    const { humanizeSecs } = await import('../apps/ops-mission-control/SettingsPanel')
+    const { humanizeSecs } = await import('./SettingsPanel')
     expect(humanizeSecs(0)).toBe('—')
     expect(humanizeSecs(Number.NaN)).toBe('—')
   })
@@ -1529,7 +1529,7 @@ describe('a provider-supplied URL cannot become an executable link', () => {
   it('the helper it depends on really does reject the dangerous schemes', async () => {
     // Guards the premise: if `safeHttpUrl` ever loosened, the tests above would still pass
     // while the app became vulnerable again.
-    const { safeHttpUrl } = await import('../lib/safeUrl')
+    const { safeHttpUrl } = await import('../../lib/safeUrl')
     for (const hostile of [
       'javascript:alert(document.cookie)',
       'data:text/html,<script>alert(1)</script>',

@@ -134,19 +134,6 @@ def test_webhooks_off_in_enterprise_even_when_switched_on(
     assert store.is_switch_on() is not enterprise
 
 
-@pytest.mark.parametrize("edition", EDITIONS)
-def test_ops_mission_control_webhook_source_off_in_enterprise(monkeypatch, edition) -> None:
-    from kiro_crew.apps.builtins.ops_mission_control.backend.providers import webhook
-
-    enterprise = _set_edition(monkeypatch, edition)
-    monkeypatch.setattr(webhook, "provider_enabled", lambda _id: False)
-
-    accepted, detail = webhook.enqueue(b"{}", "sha256=x")
-
-    assert accepted is False
-    assert ("enterprise edition" in detail) is enterprise
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("edition", EDITIONS)
 async def test_webhook_switch_enable_refused_in_enterprise(wired, monkeypatch, edition) -> None:
