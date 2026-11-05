@@ -443,10 +443,24 @@ describe('isPathCandidate — path chip pre-filter', () => {
     expect(isPathCandidate('要么这样/要么那样')).toBe(false)
     expect(isPathCandidate('и/или')).toBe(false)
     expect(isPathCandidate('entweder/oder')).toBe(false)
-    // Shape-level pin: fullwidth colon U+FF1A is \p{Po}, outside the widened
-    // class, so this is rejected by PATH_SHAPE_RE itself — not by the
-    // extension gate — pinning that Unicode punctuation stays excluded.
-    expect(isPathCandidate('/文档：说明/文件.md')).toBe(false)
+    // Shape-level pin: an ASCII colon before the last segment is rejected by
+    // PATH_SHAPE_RE itself — not by the extension gate.
+    expect(isPathCandidate('/文档:说明/文件.md')).toBe(false)
+  })
+
+  it('accepts non-ASCII punctuation and symbols inside segments (issue #16890)', () => {
+    // Legal filename characters on both platforms and no shell operator, so
+    // they must not fail the shape before the stat probe can answer.
+    expect(isPathCandidate('/Users/x/mv05_迈克尔·贝英雄环绕/clip.mp4')).toBe(true) // U+00B7
+    expect(isPathCandidate('/文档：说明/文件.md')).toBe(true) // fullwidth colon U+FF1A
+    expect(isPathCandidate('~/demo/a、b，c＋d【e】—f/clip.mp4')).toBe(true)
+    expect(isPathCandidate('C:\\Users\\me\\迈克尔·贝\\《三体》.txt')).toBe(true) // drive-rooted shape
+    expect(isPathCandidate('C:\\a&b\\x.txt')).toBe(false) // ASCII exclusions still hold there
+    // A closing bracket of any script may end a path; other punctuation may not.
+    expect(isPathCandidate('/Users/x/资料（2023）')).toBe(true)
+    expect(isPathCandidate('/Users/x/clip.mp4。')).toBe(false)
+    // No root and no extension is still prose, punctuated or not.
+    expect(isPathCandidate('要么这样·要么/那样')).toBe(false)
   })
 
   it('rejects git refs — the regression that made this gate necessary', () => {
