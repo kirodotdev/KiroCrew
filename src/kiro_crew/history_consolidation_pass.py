@@ -674,6 +674,7 @@ async def _consolidate(
         # to update and delete them. Fetching globally would show crew B the
         # operator's semantic table and let its consolidation turn delete it.
         has_vector = vector_store is not None
+        refusal_notes: tuple[dict, ...] = ()
         if has_vector and vector_store is not None:
             private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
             # Offload: each page of the fetch serializes on the store's _db_lock,
@@ -747,6 +748,18 @@ async def _consolidate(
                 for row in current_semantic
             }
             del current_semantic, semantic_entries
+            # Values an earlier pass of this session refused for size: its span is
+            # marked consolidated, so this note is the model's one chance to propose
+            # them again within the bound. Cleared below once this pass has written.
+            from kiro_crew.consolidation_refusal_notes import (
+                pending_refusals,
+                render_refusal_notice,
+            )
+
+            refusal_notes = await asyncio.to_thread(pending_refusals, vector_store, key)
+            semantic_json += render_refusal_notice(
+                refusal_notes, _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS
+            )
             semantic_fields = (
                 '"delete": false, "metadata": {"category": "contact", "subject": "user", '
                 '"predicate": "work_email", "scope": "", "source_ref": "brief evidence", '
@@ -1123,6 +1136,13 @@ async def _consolidate(
                 messages=unconsolidated if include_history else chunk,
                 commit_state=commit_state,
             )
+
+        # The model has answered a prompt that listed these refused values and its
+        # answer is written, so the note has done its one job.
+        if refusal_notes and vector_store is not None:
+            from kiro_crew.consolidation_refusal_notes import clear_reported
+
+            await asyncio.to_thread(clear_reported, vector_store, refusal_notes)
 
         # Legacy V1 Markdown writes (skip if migrated or private V2). Each value
         # replaces the whole file, so a non-file answer (e.g. the literal
