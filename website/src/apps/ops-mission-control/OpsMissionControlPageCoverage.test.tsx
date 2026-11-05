@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent, act } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders } from '../../test/helpers'
 import {
   SIGNALS_QUERY_KEY,
   opsApi,
@@ -29,12 +29,12 @@ import {
   type RotationInfo,
   type Signal,
   type SignalsResult,
-} from '../apps/ops-mission-control/api'
-import OpsMissionControlPage from '../apps/ops-mission-control/OpsMissionControlPage'
+} from './api'
+import OpsMissionControlPage from './OpsMissionControlPage'
 
-vi.mock('../apps/ops-mission-control/api', async (importOriginal) => {
+vi.mock('./api', async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import('../apps/ops-mission-control/api')>()
+    await importOriginal<typeof import('./api')>()
   return {
     ...actual,
     opsApi: {
@@ -50,16 +50,16 @@ vi.mock('../apps/ops-mission-control/api', async (importOriginal) => {
   }
 })
 
-vi.mock('../apps/ops-mission-control/SettingsPanel', () => ({
+vi.mock('./SettingsPanel', () => ({
   default: () => <div data-testid="stub-settings" />,
 }))
-vi.mock('../apps/ops-mission-control/SignalsPanel', () => ({
+vi.mock('./SignalsPanel', () => ({
   default: () => <div data-testid="stub-signals" />,
 }))
-vi.mock('../apps/ops-mission-control/HandoverPanel', () => ({
+vi.mock('./HandoverPanel', () => ({
   default: () => <div data-testid="stub-handover" />,
 }))
-vi.mock('../apps/ops-mission-control/IncidentChat', () => ({
+vi.mock('./IncidentChat', () => ({
   default: ({ incidentId }: { incidentId: string }) => (
     <div data-testid="stub-chat" data-incident={incidentId} />
   ),
