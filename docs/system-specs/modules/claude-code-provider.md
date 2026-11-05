@@ -785,6 +785,32 @@ isolated config root, which is a separate change: it has to carry credentials
 across (or CC cannot authenticate at all) while dropping exactly the `permissions`
 keys that bypass the gate.
 
+### A disposable session's transcript
+
+The `claude` CLI keeps its own record of every session under that same config
+root: `projects/<project>/<sid>.jsonl`, the sibling `projects/<project>/<sid>/`,
+and `file-history/<sid>/`, where `<project>` is the session's resolved working
+directory with every character that is not an ASCII letter or digit replaced by
+`-`. Crew deletes those three paths wherever it deletes the kiro-cli replay log
+(`agent_sdk/claude_transcripts.py`, `delete_claude_session_files`):
+
+- an incognito or temporary chat's shutdown (`providers/acp_lifecycle.cleanup_session`,
+  on `is_claude_backend`, off the loop, using the client's work directory), and
+  every other caller of that method: a permanent session destroy and the
+  lessons-draft export's throwaway session;
+- the subagent tombstone prune (`subagent_persistence._cleanup_session_files_sync`
+  for `PROVIDER_LABEL_CLAUDE`, using the gateway-recorded cleanup cwd);
+- `spawn_release` (`ContinuationCoordinator._release_disk_sync`, reading the cwd
+  from the trusted cleanup identity record).
+
+The root is `CLAUDE_CONFIG_DIR`, else `~/.claude` (`claude_settings_sources.claude_config_dir`),
+read in the gateway because the child inherits its environment. A session id that
+is not a UUID, an empty cwd, a project name longer than the 200 characters the CLI
+keeps verbatim, or a symlinked `projects`, `file-history`, project directory or
+leaf deletes nothing and answers not done, so the prune keeps its retry record and
+`spawn_release` answers `not_disposed`. A persistent session's store is never
+touched, and nothing is sent over the wire to delete the adapter's session.
+
 ### Standing rule
 
 Unchanged by Claude Code becoming selectable: `agent.provider` stays

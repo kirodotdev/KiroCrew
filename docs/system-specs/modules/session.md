@@ -580,6 +580,10 @@ TRANSCRIPT is persisted like any other session's -- the user reopens an
 incognito or temporary chat from History, before or after a restart -- and what
 the mode withholds is everything derived FROM it: consolidation, lessons,
 memory injection, the session summary, workflow and task snapshots. The
+harness's OWN record of the session is deleted when the provider shuts down
+(`AcpProvider.cleanup_session`): kiro-cli's `sessions/cli/<sid>.json` + `.jsonl`,
+or on the claude backend Claude Code's `projects/<project>/<sid>.jsonl`,
+`<sid>/` and `file-history/<sid>/` (`agent_sdk/claude_transcripts.py`). The
 metadata line is the file's privacy contract, and both slot save and
 turn-start binding treat it as a ratchet. When a writer tightens a line held by a
 live slot, the slot follows that mode on the event loop and its restricted-key
