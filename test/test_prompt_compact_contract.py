@@ -205,7 +205,7 @@ def test_moved_tool_rules_live_in_their_own_descriptions() -> None:
         ),
         "nothing_to_do": (r"TERMINAL", r"REFUSES it on a turn a person opened"),
         "spawn_run": (
-            r"~3-5s, ~400MB",
+            r"~3-5s, ~0.55 GB",
             r"memory-pressure refusal",
             r"awaiting_approval.*not that it failed",
         ),

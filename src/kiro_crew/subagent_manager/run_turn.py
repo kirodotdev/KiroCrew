@@ -362,7 +362,7 @@ async def _run_inner_impl(
     # ── Session sharing: reuse parent's shared AcpRuntime ──
     # When enabled and eligible, subagents get a session on the parent's
     # companion AcpRuntime (~200ms startup, ~0 memory) instead of spawning
-    # a fresh kiro-cli process (~3-5s, ~400MB).
+    # a fresh kiro-cli process (~3-5s, ~0.55 GB).
     #
     # Retain-by-default: EVERY run keeps its session files (teardown skips
     # deletion on both arms), so any completed run is continuable while
