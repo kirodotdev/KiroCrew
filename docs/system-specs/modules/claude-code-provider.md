@@ -929,6 +929,18 @@ does not reach the client), and a live chat tightened to incognito or temporary 
 its claude session runs, which keeps the envelope it started with until its next
 `session/new`. Contract tests: `test_claude_auto_memory_envelope.py`.
 
+### `/clear` is answered by the dashboard
+
+A dashboard `/clear` on a claude session never reaches the adapter: claude is in
+`ACP_BACKENDS_LOCAL_CLEAR`, so the slash gate runs the dashboard's own reset (the
+discard `reset_conversation` queues, the todo pill dropped, the "Conversation
+cleared" row) before any session work. Sent on as `session/prompt` text, a clear the
+Agent SDK ran would leave Crew's history, todo state and next-turn replay
+untouched, because the adapter sends no clear status frame and has no
+`_kiro.dev/commands/execute`. claude runs one adapter per session, so the discard
+drops that adapter's conversation either way. Every other claude command keeps
+the prompt path. Pinned by `test/test_slash_command_no_channel.py`.
+
 ### Known gap: the user's global `~/.claude` is inherited
 
 With no `CLAUDE_CONFIG_DIR` set by the core, the adapter and the SDK read the

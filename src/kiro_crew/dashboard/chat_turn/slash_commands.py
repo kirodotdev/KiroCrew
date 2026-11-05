@@ -815,8 +815,9 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # sends it as the engine's own compaction verb, not as prompt text. A /todos
     # that got past its own gate is on a harness that runs it natively.
     # The other harnesses in ACP_BACKENDS_LOCAL_CLEAR have no /clear of their own
-    # either, so /clear alone is answered here for them too; their other commands
-    # keep the prompt path, where those harnesses serve the ones they know.
+    # either, or (claude) run one Crew cannot observe, so /clear alone is answered
+    # here for them too; their other commands keep the prompt path, where those
+    # harnesses serve the ones they know.
     if (
         is_slash
         and not _is_cc_provider
