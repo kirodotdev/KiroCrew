@@ -119,7 +119,7 @@ from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     mcp_entry_is_muted,
 )
-from kiro_crew.template_mcp_additions import merge_at_spawn
+from kiro_crew.template_mcp_additions import MERGED_MARK, merge_at_spawn
 from kiro_crew.user_json import loads_user_jsonc
 
 logger = logging.getLogger(__name__)
@@ -1444,9 +1444,16 @@ _NATIVE_ELEMENT_KEYS: frozenset[str] = _agent_mod._MANAGED_MCP_ENTRY_KEYS - {"ti
 # omits them expresses everything the declaration says. Judging them as "a key
 # the element cannot carry" would refuse the default agent for Crew's own stamp,
 # with a message telling the user to remove it. The session-label opt-in
-# (acp.session_label) is the same kind of key: Crew reads it, kiro-cli never does.
+# (acp.session_label) is the same kind of key: Crew reads it, kiro-cli never does,
+# and so is the mount-only record's stamp (template_mcp_additions.MERGED_MARK),
+# which the managed refresh keeps on an opt-in entry the record mounted.
 _NATIVE_INERT_KEYS = frozenset(
-    {mcp_provenance.MARKER_KEY, mcp_provenance.DERIVED_KEY, SESSION_LABEL_MARKER}
+    {
+        mcp_provenance.MARKER_KEY,
+        mcp_provenance.DERIVED_KEY,
+        SESSION_LABEL_MARKER,
+        MERGED_MARK,
+    }
 )
 
 # How the three places a managed server is declared are named to a user. These
