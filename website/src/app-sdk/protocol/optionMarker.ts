@@ -219,15 +219,160 @@ function labelsOf(match: RegExpMatchArray): string {
   return (match[2] ?? match[4]) ?? ''
 }
 
+/** The choices a matched marker OFFERS, in the order the agent listed them.
+ *
+ * Exported so `parseOptions` and `stripMarkersForDisplay` cannot disagree about it: two
+ * copies of this split are how an empty `[OPTIONS:]` counted as its own renderer while
+ * offering nothing. `|` wins when present so a label may contain a comma. */
+export function optionsOf(match: RegExpMatchArray): string[] {
+  const labels = labelsOf(match)
+  const sep = labels.includes('|') ? '|' : ','
+  return labels.split(sep).map(o => o.trim()).filter(Boolean)
+}
+
+/** The marker heads, longest first so `[OPTIONS:` is not read as `[OPTION:` plus `S`.
+ *  Protocol tokens, not UI copy: spelled lower-case, the token shape the i18n lint already
+ *  excludes, and `headAt` folds the case. */
+const markerHeads = ['[options:', '[option:']
+const HEAD_FRAME = -1 // a stack frame for a marker HEAD; no opener index is negative
+
+/** Length of the head at `i`, in any casing, else 0.
+ *
+ * Each character is compared with both ASCII cases, as the `i` flag does without `u`, so a
+ * letter whose upper case is ASCII only by folding (`ı`, `ſ`) does not make a head. */
+function headAt(text: string, i: number): number {
+  for (const head of markerHeads) {
+    let k = 0
+    while (k < head.length && (text[i + k] === head[k] || text[i + k] === head[k].toUpperCase())) k++
+    if (k === head.length) return k
+  }
+  return 0
+}
+
+/** The characters at which the `m`-flag anchors start and end a line. */
+const isLineBreak = (ch: string | undefined): boolean =>
+  ch === '\n' || ch === '\r' || ch === '\u2028' || ch === '\u2029'
+
+const openerIndex = (ch: string | undefined): number => (ch ? PAIR_OPENERS.indexOf(ch) : -1)
+const closerIndex = (ch: string | undefined): number => (ch ? PAIR_CLOSERS.indexOf(ch) : -1)
+
+/** Whether the closer at `i` is label text because the list goes on after it.
+ *
+ * It goes on when another closer follows at once, or a `|` after blanks. A `,` is also prose
+ * punctuation, so it counts only when the next bracket on the line is a closer:
+ * `Use [OPTIONS: A | B], then pick [OPTIONS: Yes | No]` ends at the first `]`. */
+function closerContinues(text: string, i: number): boolean {
+  let j = i + 1
+  if (closerIndex(text[j]) >= 0) return true
+  while (text[j] === ' ' || text[j] === '\t') j++
+  if (text[j] === '|') return true
+  if (text[j] !== ',') return false
+  for (j++; j < text.length && !isLineBreak(text[j]); j++) {
+    if (closerIndex(text[j]) >= 0) return true
+    if (openerIndex(text[j]) >= 0) return false
+  }
+  return false
+}
+
+/** Past the stray link close a model may append to a closer (`](OPTIONS)`), else `j`.
+ *  The same shape the pattern's tail allows: no whitespace or parenthesis inside. */
+function afterLinkClose(text: string, j: number): number {
+  if (text[j] !== '(') return j
+  let k = j + 1
+  while (k < text.length && text[k] !== '(' && text[k] !== ')' && text[k].trim() !== '') k++
+  return text[k] === ')' ? k + 1 : j
+}
+
+/** `text[start, end)` as a marker, when the pattern matches exactly that span and its labels
+ *  balance; else null. The span holds no line break, so the pattern's `$` is its end. */
+function markerSpanning(text: string, start: number, end: number): RegExpMatchArray | null {
+  const span = text.slice(start, end)
+  const m = new RegExp(OPTION_MARKER_RE).exec(span)
+  if (!m || m.index !== 0 || m[0].length !== span.length) return null
+  if (labelsHaveUnmatchedOpener(labelsOf(m))) return null
+  m.index = start
+  m.input = text
+  return m
+}
+
+/** The markers that run up to the line-final marker `last` on its line, or null when `last`
+ *  sits inside an earlier head that never closed.
+ *
+ * The pattern needs the line end, so it finds only the LAST marker of
+ * `Body [OPTIONS: A] [OPTIONS: B]`. This walks the line once, left to right, with a stack of
+ * brackets typed by `PAIR_OPENERS` / `PAIR_CLOSERS`:
+ *   - a head opens a HEAD frame; a pair opener opens its own frame;
+ *   - a closer pops a pair frame only of its own type;
+ *   - a closer pops a HEAD frame unless the list goes on after it (`closerContinues`).
+ * When an outermost head closes and blanks then another head follow, that span is a sibling,
+ * held to the same pattern and balance check as `last`. Siblings count only as an unbroken
+ * run that ends where `last` starts. Anything else on the line leaves them as written. */
+function markersBefore(text: string, last: RegExpMatchArray): RegExpMatchArray[] | null {
+  const end = last.index ?? 0
+  let i = end
+  while (i > 0 && !isLineBreak(text[i - 1])) i--
+  const stack: number[] = []
+  let depth = 0
+  let head = -1
+  let run: RegExpMatchArray[] = []
+  let runEnd = -1
+  for (; i < end; i++) {
+    const h = text[i] === '[' ? headAt(text, i) : 0
+    if (h > 0) {
+      if (depth > 0 || i !== runEnd) run = []
+      if (depth === 0) head = i
+      stack.push(HEAD_FRAME)
+      depth++
+      i += h - 1
+      continue
+    }
+    const o = openerIndex(text[i])
+    if (o >= 0) {
+      stack.push(o)
+      continue
+    }
+    const c = closerIndex(text[i])
+    if (c < 0 || stack.length === 0) continue
+    const top = stack[stack.length - 1]
+    if (top !== HEAD_FRAME) {
+      if (top === c) stack.pop()
+      continue
+    }
+    if (closerContinues(text, i)) continue
+    stack.pop()
+    depth--
+    if (depth > 0) continue
+    let next = afterLinkClose(text, i + 1)
+    while (text[next] === ' ' || text[next] === '\t') next++
+    const sibling = headAt(text, next) > 0 ? markerSpanning(text, head, next) : null
+    if (sibling) {
+      run.push(sibling)
+      runEnd = next
+    } else {
+      run = []
+      runEnd = -1
+    }
+  }
+  if (depth > 0) return null
+  return runEnd === end ? run : []
+}
+
+/** Marker heads one message may carry before EVERY marker in it is refused, which bounds
+ *  the per-message work. */
+const HEAD_CAP = 256
+
 /** Every marker in `content` whose terminator is its own, in order.
  *
- * Clones the pattern per call, so the g-flag `lastIndex` hazard cannot reach a
- * caller. A refused candidate cannot hide an accepted one inside its span: the body
- * refuses a nested `[OPTION(S):`, so no candidate ever contains another head. */
+ * The pattern finds each line's final candidate; `markersBefore` decides the rest of that
+ * line. A line is accepted or refused whole: when its final candidate is refused, nothing on
+ * it is a marker, so `[OPTIONS: A] [OPTIONS: B then arr[0]` keeps both as written. */
 export function findOptionMarkers(content: string): RegExpMatchArray[] {
+  if ([...content.matchAll(new RegExp(HEAD_RE))].length > HEAD_CAP) return []
   const out: RegExpMatchArray[] = []
   for (const m of content.matchAll(new RegExp(OPTION_MARKER_RE))) {
-    if (!labelsHaveUnmatchedOpener(labelsOf(m))) out.push(m)
+    if (labelsHaveUnmatchedOpener(labelsOf(m))) continue
+    const before = markersBefore(content, m)
+    if (before) out.push(...before, m)
   }
   return out
 }
@@ -252,6 +397,24 @@ export function stripOptionMarkers(content: string): string {
   }
   parts.push(content.slice(cursor))
   return parts.join('')
+}
+
+/** `content` as a surface should DISPLAY it: accepted markers removed, UNLESS removing them
+ *  would leave the user nothing to read.
+ *
+ * A marker that renders a pill may empty its row, as the pills carry it. A marker that
+ * renders nothing is kept: raw syntax the user can read and search beats a row that silently
+ * holds nothing. Both the transcript and the search index call THIS, so the two cannot drift.
+ *
+ * The predicates that MEASURE a row (`hasOptionsMarker`, `substantiveLength`) keep calling
+ * `stripOptionMarkers`: a marker retained for display is still not substance of its own. */
+export function stripMarkersForDisplay(content: string): string {
+  const stripped = stripOptionMarkers(content)
+  if (stripped.trim() !== '') return stripped
+  // The LAST marker supplies the pills, so it alone decides whether anything renders: an
+  // earlier `[OPTIONS: A]` must not vouch for a trailing `[OPTIONS:]` that offers none.
+  const renders = findLastOptionMarker(content)
+  return renders && optionsOf(renders).length > 0 ? stripped : content
 }
 
 /** The closing brackets the marker pattern accepts — ASCII plus the CJK lookalikes.
@@ -359,12 +522,8 @@ function cutAt(text: string, idx: number): string {
  *      casing must be consistent (see PARTIAL_HEAD_UPPER_RE).
  *
  * Cutting is safe in case 1 because `parseOptions` runs FIRST, so a head reaching
- * this function almost always belongs to a marker that is not yet
- * complete-and-line-final. "Almost": a SAME-LINE PAIR survives it, because
- * OPTION_MARKER_RE's tempered body cannot match the earlier of two markers on one
- * line, so `[OPTIONS: A] [OPTIONS: B]` loses only the second and the first arrives
- * here complete. Hiding it mid-stream is the wanted behaviour anyway — it is a
- * marker, not prose — and the isStreaming gate returns it at turn end.
+ * this function belongs to a marker that is not yet complete-and-line-final. A
+ * same-line pair `[OPTIONS: A] [OPTIONS: B]` is consumed whole there, both markers.
  *
  * The residual limit, stated so it is not mistaken for an oversight: a label that
  * contains a closer AND continues with words rather than a separator
