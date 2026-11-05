@@ -1461,7 +1461,7 @@ async def test_fetch_pr_head_oid_reused_head_with_open_pr_refuses(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_pr_head_oid_closed_gate_returns_closed_head(monkeypatch):
-    """state="CLOSED" resolves the CLOSED PR's head (issue #30399), and the
+    """state="CLOSED" resolves the CLOSED PR's head, and the
     default stays MERGED-only for the removal paths."""
     payload = json.dumps([{"state": "CLOSED", "headRefOid": "c" * 40}])
     _run_cmd_queue(monkeypatch, [(0, payload, ""), (0, payload, "")])
