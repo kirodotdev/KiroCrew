@@ -1272,7 +1272,7 @@ export default function AppDetailPage() {
                   <Trash2 size={20} className="text-danger" />
                 </div>
                 <div>
-                  <div className="font-medium text-text">{i18nT('pages.appDetailPage.uninstall')} {appDisplayName(app)}?</div>
+                  <div className="font-medium text-text">{i18nT('pages.appsPage.uninstall_app_title', { name: appDisplayName(app) })}</div>
                   <div className="text-[12px] text-muted">{i18nT('pages.appDetailPage.v')}{app.installedVersion || app.version}</div>
                 </div>
               </div>
