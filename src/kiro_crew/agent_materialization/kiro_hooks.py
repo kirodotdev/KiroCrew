@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -411,8 +411,14 @@ def _hook_document_action(action: object, *, index: int) -> dict | None:
     return {"type": action_type, payload_key: payload}
 
 
-def _hook_document_from_document(entry: object, *, index: int) -> dict | None:
-    """Validate one KAS hook document, returning the normalized copy or None."""
+def _hook_document_from_document(
+    entry: object, *, index: int, matcher_ok: Callable[[object], bool] = _hook_matcher_ok
+) -> dict | None:
+    """Validate one KAS hook document, returning the normalized copy or None.
+
+    *matcher_ok* is the matcher rule: the object form's by default, which is what
+    kiro-cli's materialized spec receives.
+    """
     if not isinstance(entry, dict):
         _document_warning("kiro_hooks[%d]: hook document is not an object, skipping", index)
         _document_rejected(_HOOK_SPEC_AUDIT_TAG, str(entry), "hook document is not an object")
@@ -466,7 +472,7 @@ def _hook_document_from_document(entry: object, *, index: int) -> dict | None:
         _document_warning("kiro_hooks[%d]: name is empty, skipping", index)
         _document_rejected(_HOOK_SPEC_AUDIT_TAG, "", "name is empty")
         return None
-    if "matcher" in entry and not _hook_matcher_ok(entry["matcher"]):
+    if "matcher" in entry and not matcher_ok(entry["matcher"]):
         _document_warning(
             "kiro_hooks[%d]: matcher contains disallowed characters or is too long, skipping", index
         )
@@ -487,7 +493,9 @@ def _hook_document_from_document(entry: object, *, index: int) -> dict | None:
     return doc
 
 
-def _hook_documents_from_array_form(hooks: list) -> list[dict]:
+def _hook_documents_from_array_form(
+    hooks: list, matcher_ok: Callable[[object], bool] = _hook_matcher_ok
+) -> list[dict]:
     """Normalize a KAS array of hook documents to the document list."""
     if len(hooks) > _MAX_SPEC_HOOK_DOCUMENTS:
         _document_warning(
@@ -498,14 +506,20 @@ def _hook_documents_from_array_form(hooks: list) -> list[dict]:
         _document_rejected(_HOOK_SPEC_AUDIT_TAG, str(len(hooks)), "document limit exceeded")
     docs: list[dict] = []
     for index, entry in enumerate(hooks[:_MAX_SPEC_HOOK_DOCUMENTS]):
-        doc = _hook_document_from_document(entry, index=index)
+        doc = _hook_document_from_document(entry, index=index, matcher_ok=matcher_ok)
         if doc is not None:
             docs.append(doc)
     return docs
 
 
-def normalize_spec_hooks(value: object) -> list[dict]:
+def normalize_spec_hooks(
+    value: object, *, matcher_ok: Callable[[object], bool] = _hook_matcher_ok
+) -> list[dict]:
     """Normalize a KAS array of hook documents to the internal document list.
+
+    *matcher_ok* defaults to the object form's matcher rule, which kiro-cli's
+    materialized spec keeps. Crew's own spec-hook conversion passes its wider
+    rule (``agent_sdk.spec_hooks._matcher_ok``), since it fires the hooks itself.
 
     A rejected element is warned about and SEL-audited rather than raising, which
     is how a spec's ``hooks`` has always treated bad input.
@@ -519,7 +533,7 @@ def normalize_spec_hooks(value: object) -> list[dict]:
     straight to that merge instead.
     """
     if isinstance(value, list):
-        return _hook_documents_from_array_form(value)
+        return _hook_documents_from_array_form(value, matcher_ok)
     _document_warning("kiro_hooks is not an array of hook documents, ignoring")
     _document_rejected(_HOOK_SPEC_AUDIT_TAG, str(value), "hooks is not an array of hook documents")
     return []

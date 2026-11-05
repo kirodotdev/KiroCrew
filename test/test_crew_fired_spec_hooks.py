@@ -324,10 +324,8 @@ def test_conversion_stops_at_the_hook_cap():
 
 
 def test_spec_array_over_the_cap_drops_the_remainder_and_audits(monkeypatch):
-    # A spec ``hooks`` ARRAY of 21 runnable command documents: _from_documents (no
-    # cap_overflow passed) keeps main's break, so _convert sees more than the cap
-    # and audits "more than 20 spec hooks, ignoring the remainder" -- the user-file
-    # side-count must not have changed this spec path.
+    # A spec ``hooks`` ARRAY of 21 runnable command documents: the first 20 are
+    # read, and the one past the cap is counted and named in one audit.
     import kiro_crew.agent as agent_mod
 
     reasons: list = []
@@ -343,8 +341,8 @@ def test_spec_array_over_the_cap_drops_the_remainder_and_audits(monkeypatch):
     hooks = spec_hooks.spec_script_hooks("a1", {"hooks": docs})
     assert len(hooks) == spec_hooks._MAX_SPEC_HOOKS  # the 21st is dropped
     assert any(
-        f"more than {spec_hooks._MAX_SPEC_HOOKS} spec hooks" in r for r in reasons
-    ), "the spec-array overflow must still audit as on main"
+        f"only the first {spec_hooks._MAX_SPEC_HOOKS} spec hooks run; 1 more" in r for r in reasons
+    ), "the spec-array overflow must audit what it drops"
 
 
 def test_extra_hooks_fire_but_are_never_persisted(tmp_path, monkeypatch):

@@ -79,19 +79,19 @@ from kiro_crew.acp.kas_app_identity import (
 from kiro_crew.acp.kas_auto_approve import auto_approve_refs
 from kiro_crew.acp.kas_env_literals import _loggable_key_names, _relayable_literal
 from kiro_crew.acp.kas_permissions import (
-    AUTO_APPROVABLE_CAPABILITIES,
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
     CREW_WRITE_ALLOWLIST_KEY,
+    HOOK_GATEABLE_CAPABILITIES,
     allowed_tools_to_permissions,
-    auto_approved_capabilities,
     crew_answered_builtins,
     crew_answered_commands,
     merge_user_permissions,
     spec_shell_allowlist,
     spec_write_allowlist,
     tools_settings_to_permissions,
+    unprompted_capabilities,
     withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
     without_allowed_commands,
@@ -1139,6 +1139,7 @@ def to_client_custom_agent(
         agent_id=agent_id,
         source="translated `toolsSettings`",
     )
+    authored_policy = permissions  # before the hooks' asks, which restrict nothing
     permissions = withhold_hook_gated_auto_approval(
         permissions,
         pre_tool_hook_matchers,
@@ -1157,13 +1158,13 @@ def to_client_custom_agent(
         _audit_skill_scope(skill_scope_rules, agent_id)
     if permissions:
         out["permissions"] = permissions
-    # Read after every merge AND from the raw inputs: an ``ask`` or ``deny`` the
+    # Read before the hook asks AND from the raw inputs: an ``ask`` or ``deny`` the
     # spec's author wrote for a capability -- including one a merge refused or a
     # translation could not carry -- keeps its built-ins out of what Crew answers,
     # so the call prompts exactly as the author asked.
     crew_answered = withhold_answered_under_authored_rules(
         crew_answered,
-        permissions,
+        authored_policy,
         authored_permissions=spec.get("permissions"),
         tools_settings=spec.get("toolsSettings"),
     )
@@ -1175,14 +1176,14 @@ def to_client_custom_agent(
     # withheld under the same authored restrictions as a shell grant. The
     # `allowedCommands` key itself is the grant, so it is not read as one of them.
     answered_commands = crew_answered_commands(spec.get("toolsSettings"))
-    if answered_commands and not _allowed_commands_withheld(spec, permissions):
+    if answered_commands and not _allowed_commands_withheld(spec, authored_policy):
         out[CREW_ANSWERED_COMMANDS_KEY] = answered_commands
     # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.
     # A restriction, so recorded whatever the ceiling says; the gate refuses every
     # other shell call of this agent (`spec-shell-allowlist` tier), unless
     # `allowedTools` names the shell and every deny rides *permissions*.
     shell_allowlist = spec_shell_allowlist(
-        spec.get("toolsSettings"), spec.get("allowedTools"), permissions
+        spec.get("toolsSettings"), spec.get("allowedTools"), authored_policy
     )
     if shell_allowlist is not None:
         out[CREW_SHELL_ALLOWLIST_KEY] = shell_allowlist
@@ -1443,8 +1444,8 @@ def pre_tool_hook_matchers(agent_id: str, spec: dict[str, Any]) -> tuple[str, ..
 
 
 def projected_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str] | None:
-    """What the projection sent for *agent_id* auto-approves, or ``None`` with no
-    projection (a host that took its agent at spawn time).
+    """What the projection sent for *agent_id* lets KAS decide without Crew
+    (``unprompted_capabilities``), or ``None`` with no projection (spawn-time agent).
 
     Recorded on the session when the batch is handed over, because a live session
     keeps the batch it registered: ``set_mode`` activates, it does not re-send. The
@@ -1457,7 +1458,7 @@ def projected_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str]
     if not entries:
         return None
     entry = next((a for a in entries if a.get("id") == agent_id), entries[0])
-    return auto_approved_capabilities(entry.get("permissions"))
+    return unprompted_capabilities(entry.get("permissions"))
 
 
 def _entry_crew_answered(entry: Any) -> frozenset[str]:
@@ -1579,16 +1580,16 @@ def switched_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str]:
     definition KAS already holds, so the answer is the registered entry for
     *agent_id* when the batch carries one. A mode the batch
     does not carry (a KAS built-in) runs permissions Crew never projected, so every
-    auto-approvable capability is assumed approved: any PreToolUse hook then reads
-    the session as stale, which is the side that re-projects.
+    gateable capability is assumed approved: any PreToolUse hook then reads the
+    session as stale, which is the side that re-projects.
     """
     entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
     entry = next(
         (a for a in entries if kas_wire_agent_id(str(a.get("id") or "")) == agent_id), None
     )
     if entry is None:
-        return frozenset(AUTO_APPROVABLE_CAPABILITIES)
-    return auto_approved_capabilities(entry.get("permissions"))
+        return frozenset(HOOK_GATEABLE_CAPABILITIES)
+    return unprompted_capabilities(entry.get("permissions"))
 
 
 def build_kas_custom_agents(
