@@ -785,7 +785,13 @@ Enrolled members prepare capabilities only when allocating a new runtime.
 verifies the saved materialization off-loop before provider construction. It
 passes the immutable template explicitly while preserving the canonical member,
 member memory binding, history key, caller model and approval policy. An explicit
-or resumed cwd wins; otherwise the member's configured workspace is used. The
+or resumed cwd wins; otherwise the member's configured workspace is used. A
+resumed cwd is the one the session map recorded, kept only while it is still a
+directory and is not inside an earlier process's scratch tree: the sandbox hides
+every scratch tree but the spawn's own (and a `shared_scratch` tree it is handed),
+so a child started there could not read its working directory. With
+`agent.sandbox` off after the governance floor nothing is hidden and the cwd is kept
+(`session_allocation_parts/get_or_create._stored_cwd_is_hidden_scratch`). The
 cwd may name a different project than the one the capabilities were saved in
 (a folder's project directory, for example). Startup is refused with
 `project_identity_changed` only when that project resolves a different Parent:

@@ -1133,6 +1133,72 @@ class TestGetOrCreatePoolClaim:
         assert mgr.has_session("dashboard:slot2")
         await mgr.close_all()
 
+    @pytest.mark.asyncio
+    async def test_resume_skips_a_stored_cwd_in_an_earlier_process_scratch(self, cfg, tmp_path):
+        """A resume never starts in an earlier process's scratch tree, which the sandbox hides.
+
+        The stored cwd outside the scratch root is still used; one inside it is used only
+        when it lies in the tree this spawn shares.
+        """
+        root = tmp_path / "scratch"
+        old_tree = root / "runtime-old" / "checkout"
+        project = tmp_path / "project"
+        for directory in (old_tree, project):
+            directory.mkdir(parents=True)
+        seen: dict[str, object] = {}
+        base = _mock_provider_factory()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            seen[session_key] = kwargs.get("cwd")
+            return base(session_key, agent, channel_id, **kwargs)
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        stored = {"k-old": str(old_tree), "k-project": str(project), "k-shared": str(old_tree)}
+        with (
+            patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
+            patch("kiro_crew.sandbox_tiers.configured_sandbox_mode", return_value="auto"),
+            patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
+            patch.object(mgr._session_map, "get", return_value="sid-resume-test"),
+            patch.object(mgr._session_map, "get_cwd", side_effect=stored.__getitem__),
+            patch.object(mgr._session_map, "get_provider", return_value="acp"),
+        ):
+            for key in ("k-old", "k-project"):
+                await mgr.get_or_create(key)
+                mgr.release(key)
+            await mgr.get_or_create("k-shared", shared_scratch=old_tree.parent)
+            mgr.release("k-shared")
+        assert not seen["k-old"]
+        assert seen["k-project"] == str(project)
+        assert seen["k-shared"] == str(old_tree)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_resume_keeps_a_stored_scratch_cwd_when_the_sandbox_is_off(self, cfg, tmp_path):
+        """With the sandbox off nothing is hidden, so a stored scratch cwd is still used."""
+        root = tmp_path / "scratch"
+        old_tree = root / "runtime-old" / "checkout"
+        old_tree.mkdir(parents=True)
+        seen: dict[str, object] = {}
+        base = _mock_provider_factory()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            seen[session_key] = kwargs.get("cwd")
+            return base(session_key, agent, channel_id, **kwargs)
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        with (
+            patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
+            patch("kiro_crew.sandbox_tiers.configured_sandbox_mode", return_value="off"),
+            patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
+            patch.object(mgr._session_map, "get", return_value="sid-resume-test"),
+            patch.object(mgr._session_map, "get_cwd", return_value=str(old_tree)),
+            patch.object(mgr._session_map, "get_provider", return_value="acp"),
+        ):
+            await mgr.get_or_create("k-off")
+            mgr.release("k-off")
+        assert seen["k-off"] == str(old_tree)
+        await mgr.close_all()
+
 
 class TestGetOrCreateDeadProvider:
     """Test get_or_create when existing session has a dead provider."""
