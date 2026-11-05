@@ -224,3 +224,17 @@ class WakaTimeConfig:
             tags=["wakatime"],
         ),
     )
+    oauth_client_id: str = field(
+        default="",
+        metadata=_meta(
+            "OAuth Client ID",
+            "WakaTime OAuth app client ID, from https://wakatime.com/apps. "
+            "Required to read stats, summaries, and durations after WakaTime "
+            "makes API keys write-only on 1 November 2026. The matching client "
+            "secret and the user's access and refresh tokens are stored in the "
+            "secrets vault, not here. Empty keeps the integration on API-key "
+            "auth, which still works before the cutoff and for self-hosted "
+            "backends.",
+            tags=["wakatime"],
+        ),
+    )

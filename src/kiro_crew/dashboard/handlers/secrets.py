@@ -18,6 +18,8 @@ from kiro_crew.config.loader import (
     CRED_MICROSOFT_APP_TENANT_ID,
     CRED_OWNER_ID,
     CRED_WAKATIME_API_KEY,
+    CRED_WAKATIME_OAUTH_CLIENT_SECRET,
+    CRED_WAKATIME_OAUTH_TOKENS,
     CRED_WECOM_BOT_ID,
     MANAGED_VAULT_FIXED_CONSUMERS,
     VAULT_CHANNEL_CREDENTIAL_KEYS,
@@ -65,6 +67,10 @@ _MANAGED_KIND_JIRA_HOST_TOKEN = "jira_host_token"
 _MANAGED_KIND_GERRIT_HTTP_CREDENTIAL = "gerrit_http_credential"
 # A Connections pre-registered OAuth client secret (``connections/oauth_clients``).
 _MANAGED_KIND_CONNECTIONS_CLIENT_SECRET = "connections_client_secret"
+# WakaTime OAuth read-auth secrets, managed by the WakaTime OAuth flow (the
+# client secret entered on Settings, the tokens entry minted by the flow). Listed only when stored, so a cleanup labels them by owner rather than
+# reading them as stray user secrets.
+_MANAGED_KIND_WAKATIME_OAUTH = "wakatime_oauth"
 
 
 def _connections_client_secret_owned(name: str) -> web.Response | None:
@@ -89,6 +95,26 @@ def _connections_client_secret_owned(name: str) -> web.Response | None:
             "Settings → OAuth Apps",
             "code": "managed_by_connections",
             "slug": slug,
+        },
+        status=409,
+    )
+
+
+def _wakatime_oauth_tokens_owned(name: str) -> web.Response | None:
+    """Refuse a generic vault write or delete of the WakaTime OAuth tokens entry.
+
+    The OAuth flow rotates that entry under its token-mutation lock; a write or
+    delete here would skip the lock, so a refresh in flight could store the
+    tokens straight back. Disconnect revokes and clears it under the lock.
+    Returns the 409 to send, or ``None`` when the name is not that entry.
+    """
+    if name != CRED_WAKATIME_OAUTH_TOKENS:
+        return None
+    return web.json_response(
+        {
+            "error": "this entry is managed by the WakaTime OAuth flow; remove it with "
+            "POST /api/wakatime/oauth/disconnect",
+            "code": "managed_by_wakatime_oauth",
         },
         status=409,
     )
@@ -225,6 +251,11 @@ def _managed_secret_catalog(
                 "kind": MANAGED_VAULT_FIXED_CONSUMERS[CRED_WAKATIME_API_KEY],
             }
         )
+        # The OAuth secrets are flow-managed, not entered here, so label each one
+        # only when it is already stored (the Connections client-secret pattern).
+        for oauth_name in (CRED_WAKATIME_OAUTH_CLIENT_SECRET, CRED_WAKATIME_OAUTH_TOKENS):
+            if oauth_name in name_set:
+                catalog.append({"name": oauth_name, "kind": _MANAGED_KIND_WAKATIME_OAUTH})
     if jira_global_applicable and jira_hosts:
         per_host_name = jira_host_token_name(jira_hosts[0])
         if per_host_name not in name_set:
@@ -454,7 +485,7 @@ async def api_secrets_set(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Secret value is required", "code": "missing_value"}, status=400
         )
-    owned = _connections_client_secret_owned(name)
+    owned = _connections_client_secret_owned(name) or _wakatime_oauth_tokens_owned(name)
     if owned is not None:
         return owned
     owned = await _channel_credential_owned(request, name)
@@ -479,7 +510,7 @@ async def api_secrets_delete(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Secret name is required", "code": "missing_name"}, status=400
         )
-    owned = _connections_client_secret_owned(name)
+    owned = _connections_client_secret_owned(name) or _wakatime_oauth_tokens_owned(name)
     if owned is not None:
         return owned
     owned = await _channel_credential_owned(request, name)
