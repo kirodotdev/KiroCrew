@@ -501,17 +501,20 @@ async def on_app_enable(
 
     # Register routes if declared
     routes_hook = hooks.get("routes", "")
+    wiring_ok = True
     if routes_hook and _route_registry:
         app_root = _app_hook_root(app_name)
         registered = await _route_registry.register_app_routes(app_name, app_root, routes_hook, ctx)
         if registered:
             result["hooks_routes"] = registered
+        wiring_ok = ctx.health.status == "healthy"
 
     # Invoke on_startup hook if declared
     startup_hook = hooks.get("on_startup", "")
     if startup_hook and _lifecycle_dispatcher:
         success = await _lifecycle_dispatcher._invoke(app_name, startup_hook, ctx, phase="startup")
         result["hooks_startup"] = "ok" if success else "failed"
+        wiring_ok = wiring_ok and success
 
     # Reconcile this app's job records now that its startup hook has registered
     # the runners. The boot-time pass runs once, after the enable LOOP, so an app
@@ -544,20 +547,25 @@ async def on_app_enable(
     # Shared source of truth: record that this app's hooks are now loaded under
     # its current on-disk signature, so the out-of-process reconciler sees no
     # drift for an enable THIS handler just performed and does not re-run the
-    # startup hook on its next tick. ``_publish_hook_health`` returns a snapshot
-    # exactly when the context is NOT healthy and ``None`` when it is, so gate on
-    # that return rather than re-reading ``ctx.health`` -- the context object is
-    # the single source for both, and reusing the already-computed result avoids
-    # assuming a ``health`` attribute shape on every caller's context.
+    # startup hook on its next tick.
     #
-    # Record ONLY when the wiring came up healthy. A route or startup hook that
+    # Record ONLY when the wiring came up: routes registered without a failure
+    # mark and ``on_startup`` returned normally. A route or startup hook that
     # failed to import (or a detached/timed-out ``on_startup``) must stay
     # UN-recorded so the reconciler re-attempts it on its next tick and picks the
     # app up once a transient failure clears -- the poll-retry-after-recovery the
     # reconciler exists to provide. Freezing a degraded import as the current
     # loaded state would strand it until its code changed. A prior record is
     # cleared on failure for the same reason.
-    if health_snapshot is None:
+    #
+    # Gated on ``wiring_ok``, not on the published health: an ``on_startup`` that
+    # succeeds but calls ``ctx.health.mark_degraded`` itself (the App Kit docs
+    # tell apps to do that and keep serving) is wired fine. Treating it as a
+    # failure tore it down and re-enabled it on every tick, cutting off its own
+    # routes mid-request. Its degraded snapshot is still published above.
+    # shortcut: a ``routes`` function that itself calls ``mark_degraded`` still
+    # counts as a wiring failure; split the marks by source if an app needs that.
+    if wiring_ok:
         # Cache the declared on_shutdown callable now (files still present) so a
         # later CLI uninstall can stop background work this app spawned -- even a
         # ROUTES-ONLY app with no on_startup, and even when on_shutdown lives in a
@@ -913,8 +921,10 @@ async def on_gateway_startup(
 
         # Register routes (if declared)
         routes_hook = hooks.get("routes", "")
+        boot_wiring_ok = True
         if routes_hook and _route_registry:
             await _route_registry.register_app_routes(name, _app_hook_root(name), routes_hook, ctx)
+            boot_wiring_ok = ctx.health.status == "healthy"
 
         # Invoke on_startup hook (if declared)
         startup_hook = hooks.get("on_startup", "")
@@ -922,6 +932,7 @@ async def on_gateway_startup(
             success = await _lifecycle_dispatcher._invoke(name, startup_hook, ctx, phase="startup")
             if success:
                 logger.info("Startup hook invoked for: %s", name)
+            boot_wiring_ok = boot_wiring_ok and success
 
         # Same publication as on_app_enable: the reason a hook failed must outlive
         # the context, or boot is the one path where it is collected and dropped.
@@ -930,19 +941,19 @@ async def on_gateway_startup(
         # lifecycle.py:352,396, plus the cancelled site via
         # _mark_cancelled_startup_residual at lifecycle.py:66), so an aggregate
         # would only re-log them, and only ever for this one caller.
-        boot_health = _publish_hook_health(name, ctx)
+        _publish_hook_health(name, ctx)
 
         # Shared source of truth: record what boot loaded so the out-of-process
         # reconciler starts already agreeing with the gateway and does not
         # reimport every app on its first tick. Recorded for any hook-declaring
         # app the loop reached (it has already `continue`d past hookless apps),
         # covering routes-only apps as well as those with on_startup -- but ONLY
-        # when the wiring came up healthy (``_publish_hook_health`` returns a
-        # snapshot only when it did NOT). A boot-time import failure stays
-        # un-recorded so the reconciler re-attempts it and picks the app up once a
-        # transient failure clears, rather than freezing the degraded state as
-        # current.
-        if boot_health is None:
+        # when the wiring came up (same rule as ``on_app_enable``: an app that
+        # marks itself degraded from a successful ``on_startup`` is still wired).
+        # A boot-time import failure stays un-recorded so the reconciler
+        # re-attempts it and picks the app up once a transient failure clears,
+        # rather than freezing the degraded state as current.
+        if boot_wiring_ok:
             # Cache the declared on_shutdown regardless of on_startup (routes-only
             # apps included; dispatcher no-ops when none is declared), so a later
             # CLI uninstall can stop background work this app spawned.
