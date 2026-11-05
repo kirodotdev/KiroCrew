@@ -1083,7 +1083,9 @@
         "fix": "Fix",
         "suggestion": "Suggestion",
         "what_i_saw": "What I saw",
-        "where": "Where"
+        "where": "Where",
+        "steps_range": "steps {{range}}",
+        "flow_badge": "flow"
       },
       "manifest": {
         "description": "A design critique you can run before you ask a colleague. Give it one screenshot, a whole multi-screen flow, a Figma file, a git repo, or a URL that is already serving, and it finds the candidate screens, lets you choose what to look at, then reports back the way an experienced designer would: an overall read, what is working, and the things worth tightening, each tied to a named heuristic. Multi-screen flows also get cross-screen findings that a single screen cannot show — inconsistent controls, missing progress, no way back, dead ends. It renders code and Figma before judging them, so it never critiques visuals it has not actually seen, and it says plainly which screens it could not get to instead of guessing.",
@@ -1121,7 +1123,8 @@
         "i_ll_list_the_screens_only_pages_that_render_wit": "I’ll list the screens. Only pages that render without a server can be seen.",
         "i_ll_pull_the_frames": "export the frames as PNGs and drop them in — I critique the exported images.",
         "it_must_be_running_right_now_i_ll_capture_it_liv": "it must be running right now. I’ll capture it live and measure real contrast and sizes.",
-        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving."
+        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving.",
+        "screen_fallback": "Screen"
       },
       "waitingScreen": {
         "cancel_this_run": "Cancel this run",

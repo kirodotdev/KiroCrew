@@ -1854,7 +1854,9 @@
         "fix": "Corrección",
         "suggestion": "Sugerencia",
         "what_i_saw": "Qué vi",
-        "where": "Dónde"
+        "where": "Dónde",
+        "steps_range": "pasos {{range}}",
+        "flow_badge": "flujo"
       },
       "manifest": {
         "description": "Una crítica de diseño que puedes ejecutar antes de pedírsela a un colega. Le das una captura, un flujo completo de varias pantallas, un archivo de Figma, un repositorio git o una URL que ya esté sirviendo, y encuentra las pantallas candidatas, te deja elegir qué revisar y luego responde como lo haría un diseñador con experiencia: una lectura general, lo que funciona y lo que vale la pena ajustar, cada punto ligado a una heurística con nombre. Los flujos de varias pantallas también reciben hallazgos entre pantallas que una sola no puede mostrar — controles inconsistentes, falta de indicación de avance, ninguna forma de volver, callejones sin salida. Renderiza el código y Figma antes de juzgarlos, así que nunca critica elementos visuales que no vio de verdad, y dice con claridad a qué pantallas no pudo llegar en lugar de adivinar.",
@@ -1893,7 +1895,8 @@
         "i_ll_list_the_screens_only_pages_that_render_wit": "Listaré las pantallas. Solo se pueden ver las páginas que se renderizan sin un servidor.",
         "i_ll_pull_the_frames": "Traeré los frames.",
         "it_must_be_running_right_now_i_ll_capture_it_liv": "debe estar en ejecución ahora mismo. Lo capturaré en vivo y mediré el contraste y los tamaños reales.",
-        "not_something_i_recognise_give_me_a_figma_link_a": "No lo reconozco. Envíame un enlace de Figma, un repositorio de GitHub, una ruta local absoluta o una URL que ya esté en servicio."
+        "not_something_i_recognise_give_me_a_figma_link_a": "No lo reconozco. Envíame un enlace de Figma, un repositorio de GitHub, una ruta local absoluta o una URL que ya esté en servicio.",
+        "screen_fallback": "Pantalla"
       },
       "waitingScreen": {
         "cancel_this_run": "Cancelar esta ejecución",
