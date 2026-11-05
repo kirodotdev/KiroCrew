@@ -67,7 +67,7 @@ def _read_all() -> dict[str, Any]:
         raw = json.loads(ssh_auth_sock_consent_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         logger.warning(
             "ssh-agent forward consent store is unreadable; treating the socket as unconfirmed"
         )
