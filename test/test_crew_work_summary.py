@@ -227,6 +227,41 @@ def test_slot_frame_follows_each_root_and_primes_it_once(monkeypatch):
     )
 
 
+def test_slot_frame_follows_a_sub_conductor_and_not_a_plain_worker(monkeypatch):
+    from kiro_crew.crew_log import slot_prime
+
+    monkeypatch.setattr(slot_prime, "schedule", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_utils.effective_session_key",
+        lambda slot: f"dashboard:{slot.key}",
+    )
+    crew_work.remember("chat-sub", {"items": [_item("g")]})
+    keys = ("chat-root", "chat-sub", "chat-grand", "chat-w")
+    state = SimpleNamespace(_slots={key: SimpleNamespace(key=key) for key in keys})
+    rows = [
+        {"key": "chat-sub", "crew_root": "chat-root", "crew_dispatched_by": "chat-root"},
+        {"key": "chat-grand", "crew_root": "chat-root", "crew_dispatched_by": "chat-sub"},
+        {"key": "chat-w", "crew_root": "chat-root", "crew_dispatched_by": "chat-root"},
+        {"key": "chat-root", "crew_mode_root": True},
+    ]
+
+    slots_frame._attach_crew_work(state, rows)  # type: ignore[arg-type]
+
+    # The sub-conductor's board holds its grandchild's item, so its row carries it.
+    assert rows[0]["crew_work"]["open"] == 1
+    assert "crew_work" not in rows[1] and "crew_work" not in rows[2]
+    assert bus.has_subscriber(bus.FOLD_ADVANCED, scope=bus.SCOPE_SLOT, key="chat-sub", fold="work")
+    for key in ("chat-grand", "chat-w"):
+        assert not bus.has_subscriber(bus.FOLD_ADVANCED, scope=bus.SCOPE_SLOT, key=key, fold="work")
+
+    # The grandchild finished and left: the sub-conductor dispatches no one live,
+    # and its board is released.
+    slots_frame._attach_crew_work(state, [rows[0], rows[2], rows[3]])  # type: ignore[arg-type]
+    assert not bus.has_subscriber(
+        bus.FOLD_ADVANCED, scope=bus.SCOPE_SLOT, key="chat-sub", fold="work"
+    )
+
+
 def test_a_channel_board_s_fold_lands_on_the_slot_it_is_shown_under(monkeypatch):
     from kiro_crew.crew_log import slot_prime
 

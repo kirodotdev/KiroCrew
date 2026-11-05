@@ -51,16 +51,18 @@ export function useCrewWorkerQuery(root: string): [string, (query: string) => vo
 const routeNotServed = crewRouteNotServed
 
 /** The list is re-read when the store says the crew moved (`useCrewWorkersPush`);
- *  this slow timer only catches what no push carries, such as a sub-conductor's
- *  ledger report made mid-turn. */
+ *  this slow timer only catches what no push carries, such as a write to a closed
+ *  sub-conductor's ledger. */
 export const CREW_WORKERS_FALLBACK_POLL_MS = 60_000
 
 /** A burst of pushes (a lead opening six workers) is one re-read after this long. */
 export const CREW_WORKERS_PUSH_COALESCE_MS = 250
 
 /** What the slot store says about *root*'s crew that the worker list also answers:
- *  each crew row's key, state, title and parent, and the root's `crew_work` (its
- *  ledger's open items, pushed when they move). A changed value means a re-read. */
+ *  each crew row's key, state, title and parent, and the `crew_work` of the root and
+ *  of each sub-conductor (a ledger's open items, pushed when they move: a
+ *  grandchild's report lands on its sub-conductor's ledger). A changed value means
+ *  a re-read. */
 export function crewWorkersPushKey(slots: readonly ChatSlot[], root: string): string {
   if (!root) return ''
   const parts: string[] = []
@@ -71,6 +73,7 @@ export function crewWorkersPushKey(slots: readonly ChatSlot[], root: string): st
       parts.push([
         s.key, s.running ? 1 : 0, s.pending_approval ? 1 : 0, s.pending_approval_info?.request_id || '',
         s.needs_input ? 1 : 0, s.title || '', s.last_turn_ts || '', s.parent?.slot || '', s.created_by || '',
+        s.crew_work ? JSON.stringify(s.crew_work) : '',
       ].join('|'))
     }
   }
@@ -80,7 +83,7 @@ export function crewWorkersPushKey(slots: readonly ChatSlot[], root: string): st
 const pendingRefresh = new Map<string, ReturnType<typeof setTimeout>>()
 
 /** Re-read *root*'s worker list whenever its crew moves in the slot store: the
- *  session tree's lineage push, the root's `crew_work` push, a worker's state. Every
+ *  session tree's lineage push, a conductor's `crew_work` push, a worker's state. Every
  *  hook mounted for one root shares one coalesced re-read. */
 export function useCrewWorkersPush(root: string, enabled: boolean): void {
   const queryClient = useQueryClient()
