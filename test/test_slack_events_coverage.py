@@ -676,6 +676,8 @@ class TestInitSocketMode:
             await ev.init_socket_mode(orch, ev.SeenCache())
         assert orch._slack_enabled is False
         assert orch.slack is None
+        # The status surfaces read this as the reason Slack is not connected.
+        assert orch._slack_connect_error == "KIROCREW_OWNER_ID is not set"
 
     @pytest.mark.asyncio
     async def test_enterprise_validation_failure_disables_slack(self):
@@ -685,6 +687,7 @@ class TestInitSocketMode:
         assert orch._slack_enabled is False
         assert orch.slack is None
         assert orch._socket_client is None
+        assert orch._slack_connect_error == "workspace failed enterprise validation"
 
     @pytest.mark.asyncio
     async def test_success_installs_listener_and_shares_state(self):
