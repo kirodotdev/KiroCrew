@@ -24,7 +24,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_mcp_secret_server``.
 
 Instance fields read: ``_acp_backend``, ``_extra_env``, ``_launch_agent``, ``_member_context``,
-``_model``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
+``_model``, ``_native_skill_projection_enabled``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
 ``_work_dir``.
 """
 
@@ -480,7 +480,10 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # on the identity; kiro-cli is handed the launch copy instead.
             argv = list(argv)
             argv[argv.index("--agent") + 1] = self._launch_agent
-        if self.acp_backend == ACP_BACKEND_KIRO:
+        # ``getattr``: a runtime built without ``__init__`` (test doubles) projects.
+        if self.acp_backend == ACP_BACKEND_KIRO and getattr(
+            self, "_native_skill_projection_enabled", True
+        ):
             from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
             async with self._skill_projection_lock():
