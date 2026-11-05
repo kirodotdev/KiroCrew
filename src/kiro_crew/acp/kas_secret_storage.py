@@ -49,6 +49,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.mcp_grant_kas import persistence_enabled
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -97,40 +99,6 @@ class SecretStorageRefused(Exception):
     """A secret request Crew will not serve. The message never holds a value."""
 
 
-def persistence_enabled() -> bool:
-    """``agent.kas_persist_mcp_sign_in`` as configured. Blocking; call off the loop.
-
-    On by default, so the read fails CLOSED: a load that raised, or one that came
-    back degraded, is OFF. A ``config.json`` or ``config.local.json`` that is
-    present but unreadable, or an ``agent`` section the loader discarded, builds
-    the field defaults, and the default here says "store tokens" -- the opposite of
-    a ``false`` the owner may have written in the file that could not be read.
-    """
-    try:
-        from kiro_crew.config.loader import KiroCrewConfig
-        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
-
-        cfg = KiroCrewConfig.load()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "MCP sign-in persistence stays off: config unreadable (%s)", type(exc).__name__
-        )
-        return False
-    degraded = cfg.degraded_sections
-    if (
-        cfg._base_unreadable
-        or cfg._overlay_unreadable
-        or "agent" in degraded
-        or DEGRADED_WHOLE_CONFIG in degraded
-    ):
-        logger.warning(
-            "MCP sign-in persistence stays off: the config read was degraded, so the "
-            "agent settings are defaults rather than the owner's"
-        )
-        return False
-    return cfg.agent.kas_persist_mcp_sign_in is True
-
-
 def with_secret_storage(capabilities: dict[str, Any]) -> dict[str, Any]:
     """A copy of *capabilities* that also declares ``_meta.kiro.secretStorage``.
 
@@ -146,10 +114,12 @@ class McpGrantStore:
     """The dedicated vault holding persisted MCP ``client`` / ``tokens`` entries."""
 
     def __init__(self, data_home: str | Path) -> None:
+        from kiro_crew.mcp_grant_kas import grant_store_root
         from kiro_crew.secrets import SecretVault
 
-        self._kas_dir = Path(data_home) / "kas"
-        self._root = self._kas_dir / "mcp-grants"
+        # One layout, shared with the Connections probe's name-only presence check.
+        self._root = grant_store_root(data_home)
+        self._kas_dir = self._root.parent
         self._vault = SecretVault(self._root)
 
     def _assert_unlinked(self) -> None:

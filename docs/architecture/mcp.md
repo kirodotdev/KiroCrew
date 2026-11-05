@@ -633,13 +633,15 @@ Probes run from `POST /api/mcp/probe`:
   **Two pieces of evidence split that ambiguity**, and the wording follows what
   they support rather than the status code. The probe parses the challenge (a
   Bearer challenge carrying a `scope` list or an https `resource_metadata` URL sets
-  `authChallenge`), and it stats kiro-cli's paired grant artifacts for the url to
-  set `authGrantPresent`. Three wordings follow, one per answer the pair supports:
+  `authChallenge`), and it asks both runtimes' grant stores whether they hold a
+  grant for the url to set `authGrantPresent`: kiro-cli's cache (a stat of its
+  paired grant artifacts) and the KAS grant vault (whether an entry name is
+  listed; see below). Three wordings follow, one per answer the pair supports:
 
   | Evidence | Badge | Why |
   |---|---|---|
-  | challenge, `authGrantPresent` false | **Sign-in required** | "Nobody has signed in" is observed, so the row names the action and states where it happens. |
-  | challenge, `authGrantPresent` true | **Signed in** (muted) | A grant artifact exists. The badge reports THAT, never that the server answers — the probe holds no token, so validity is the one thing it cannot check, and the hover says so. Toned muted rather than warn: amber is the panel's "act now" colour, and a resolved row wearing it is indistinguishable by colour from one that still needs a sign-in. |
+  | challenge, `authGrantPresent` false | **Sign-in required** | "Nobody has signed in" is observed in BOTH stores, so the row names the action and states where it happens. |
+  | challenge, `authGrantPresent` true | **Signed in** (muted) | A grant exists in either store. The badge reports THAT, never that the server answers — the probe holds no token, so validity is the one thing it cannot check, and the hover says so. Toned muted rather than warn: amber is the panel's "act now" colour, and a resolved row wearing it is indistinguishable by colour from one that still needs a sign-in. |
   | no challenge, or `authGrantPresent` absent | **Not verified** | An older gateway, or a bare `401`. Naming any state here would assert more than the probe observed. |
 
   The middle row is what gives the guided sign-in an ending: without it a user who
@@ -663,6 +665,25 @@ Probes run from `POST /api/mcp/probe`:
   the Rust URL runtime at the byte boundary: Unicode domain names are
   IDNA-encoded and IPv6 literals retain their brackets before hashing.
 
+  **The KAS backend never writes kiro-cli's cache**, so the probe also consults
+  the leaf `mcp_grant_kas` module. With `agent.kas_persist_mcp_sign_in` on, the
+  engine's sign-in lands in Crew's dedicated grant vault, and the check parses
+  `<data_home>/kas/mcp-grants/.vault/secrets.enc` for its plain-text entry NAMES
+  only, looking for `kiro.mcp.<sha256(url.trim().toLowerCase() + "|")>.tokens`.
+  The key file is never opened and nothing is decrypted, so only a boolean
+  leaves the module. Both stores are consulted whatever the configured backend,
+  since the backend can differ per agent and per route. `_runtime_grant_present`
+  combines them: kiro-cli `true` decides it without reading the vault (so no
+  second SEL event is written); either side `true` is `true`; `false` needs BOTH
+  sides definitively absent; anything else is unanswerable. The KAS side is
+  unanswerable for an entry with `headers` (Crew strips them or bridges the
+  entry, so the engine's key cannot be derived from the config, and such a row
+  reads "Not verified" unless kiro-cli holds the grant), a non-ASCII url, a
+  linked `kas`/`mcp-grants`/`.vault` directory, or an envelope that cannot be
+  read or parsed. It is a definitive `false` when no envelope exists yet, and
+  when `agent.kas_persist_mcp_sign_in` is off: the engine does not use the vault
+  then, so it answers without reading the vault or writing an SEL event.
+
   **`grant_presence()` is the single tri-state**, and there is deliberately only
   one spelling of it. Each paired artifact is stat-ed exactly once and classified
   by errno — the ENOENT family is a definitive absence, any other `OSError` is
@@ -685,7 +706,11 @@ Probes run from `POST /api/mcp/probe`:
   and renders either answer, and an absent pair is exactly what produces
   "Sign-in required", so it passes `audit_absence=True` and the access leaves a
   trail as `success` or `missing`. Opting in is the caller's, not the default's,
-  so a future polling caller cannot silently flood the log.
+  so a future polling caller cannot silently flood the log. The KAS vault read
+  is audited the same way under `mcp_discovery.kas_grant_presence`, on every
+  read (`success`, `missing` or `unreadable`), and best-effort for the same
+  reason: a failed audit logs a warning naming the connection hash, never the
+  url.
 
   **Absence in the payload is meaningful, and the UI gates on an explicit `false`.**
   `authChallenge` is omitted when the probe learned nothing about authorization.
@@ -708,6 +733,13 @@ Probes run from `POST /api/mcp/probe`:
   corrected. The recorded-hash tests pin the mirror only against itself, so the
   drift would not fail in-repo either. Detecting it needs an observation of an
   artifact kiro-cli actually wrote.
+
+  The KAS side has the same limit. Its entry name mirrors the engine's
+  undocumented `calculateConnectionHash` (checked against KAS 2.36.0 and
+  2.37.1). If an engine upgrade re-keys it, the name lookup misses, the answer is
+  `false`, and a server signed in through KAS reads "Sign-in required" until the
+  mirror is corrected. `test/test_mcp_grant_kas.py` pins a recorded hash, so the
+  mirror cannot change by accident, but it cannot detect an engine-side change.
 
   A `401` on an entry that DOES carry a static `Authorization` header stays
   `error`: a supplied credential was rejected, which is a real fault. The

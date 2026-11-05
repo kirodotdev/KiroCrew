@@ -914,6 +914,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.mcp_grant import (  # noqa: F401
         grant_observed,
     )
+    from kiro_crew.mcp_grant_kas import (  # noqa: F401
+        kas_grant_observed,
+    )
     from kiro_crew.mcp_provenance import (  # noqa: F401
         WITHHELD_KEY,
         is_withheld_mute,
