@@ -106,6 +106,7 @@ def test_output_matches_full_transcript_scan_and_cache_holds_paths_only(store):
         assert entry.messages == [
             {
                 "ts": f"2026-11-03T00:01:{i % 60:02d}",
+                "role": "assistant",
                 "meta": {
                     "file_changes": [
                         {"path": f"/tmp/docs/report_{i}.md"},

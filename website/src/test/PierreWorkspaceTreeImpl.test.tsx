@@ -1117,6 +1117,43 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
       await waitFor(() => expect(recallDismissedUnreadable(ROOT)).toEqual([]))
     })
 
+    it('keeps a dismissal while a one-level payload has not read the parent yet', async () => {
+      // The tree reads one level per request: on a remount the root listing
+      // names `vault` as a folder to read on open and says nothing of
+      // `vault/locked`, which is not knowledge that the folder is gone.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        directories: ['vault'],
+        unreadableDirectories: [],
+        nestedRepoDirectories: ['vault'],
+      }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT], exact: true }) })
+      await act(async () => { await Promise.resolve() })
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+    })
+
+    it('keeps a dismissal for a folder the one-level payload lists but has not read', async () => {
+      vi.mocked(api.projectTree).mockResolvedValue(locked({ directories: ['vault'], unreadableDirectories: ['vault'] }))
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault'])
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        directories: ['vault'],
+        unreadableDirectories: [],
+        nestedRepoDirectories: ['vault'],
+      }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT], exact: true }) })
+      await act(async () => { await Promise.resolve() })
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault'])
+    })
+
     it('forgets a dismissal once a truncated payload lists the parent whole without the folder', async () => {
       // The cut did not reach `vault`: it is listed and not truncated, so a
       // `vault/locked` missing beneath it is gone, not hidden -- and the same

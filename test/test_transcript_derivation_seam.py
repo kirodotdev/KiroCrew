@@ -105,6 +105,10 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/dashboard/cron_inject.py", "read_messages"),
         # Rendering the transcript's own artifacts / rows to its user.
         ("kiro_crew/dashboard/handlers/artifacts_parts/session_documents.py", "read_messages"),
+        # The Files tab listing the paths this session edited, to its user.
+        ("kiro_crew/dashboard/session_files.py", "read_file_change_messages"),
+        # The same tab showing one of those edits, as the transcript's own card does.
+        ("kiro_crew/dashboard/session_files.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
         ("kiro_crew/dashboard/handlers/core_security.py", "recent"),
         ("kiro_crew/dashboard/handlers/cron_runs.py", "read_messages"),
