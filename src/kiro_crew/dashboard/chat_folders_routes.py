@@ -73,7 +73,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 from kiro_crew.dashboard.token_auth import effective_request_app as _effective_request_app
 from kiro_crew.dashboard.token_auth import folder_principal
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import folder_scan_executor
 from kiro_crew.instances.crew_ref import clean_crew_ref
 from kiro_crew.sel import sel
 
@@ -104,12 +104,13 @@ async def api_chat_folders(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     # _folders_with_history_counts walks the on-disk session list (a synchronous
     # filesystem scan) that is user-triggered (every GET) and scales with the
-    # archived-session count. Offload it to keep the event loop responsive, using
-    # subprocess_executor (the pool for potentially-slow work) rather than
-    # maintenance_executor, whose fast periodic sweeps — the orphan reaper — must
-    # stay responsive and could otherwise be starved by frequent polling.
+    # archived-session count. Offload it to keep the event loop responsive, on a
+    # pool of its own so it never queues behind process-tree walks on
+    # subprocess_executor or the orphan reaper's sweeps on maintenance_executor.
     loop = asyncio.get_running_loop()
-    folders = await loop.run_in_executor(subprocess_executor(), _folders_with_history_counts, state)
+    folders = await loop.run_in_executor(
+        folder_scan_executor(), _folders_with_history_counts, state
+    )
     member_principal = str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "")
     if member_principal.startswith("member:"):
         # The member also sees the folder its own session is filed in, and that
@@ -1291,7 +1292,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         archived = (
             {}
             if not_yours
-            else await loop.run_in_executor(subprocess_executor(), _folder_history_counts, state)
+            else await loop.run_in_executor(folder_scan_executor(), _folder_history_counts, state)
         )
         if archived.get(fid, 0):
             return web.json_response(
