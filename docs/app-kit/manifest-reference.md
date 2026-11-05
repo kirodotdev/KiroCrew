@@ -1407,6 +1407,15 @@ popover says the app did not respond.
 > reason; the app itself still enables, since its other parts do not need the
 > backend.
 
+A Node backend gets its npm dependencies from the gateway, because an install
+never copies `node_modules`. Before the backend starts, the gateway runs
+`npm install --production` in every directory from the app root down to the
+entry point's own that has a `package.json` and no `node_modules`. So an
+`entryPoint` of `backend/dist/server.js` with its `package.json` in `backend/`
+gets `backend/node_modules`. This is how a local-path install gets its npm
+dependencies, since `setup.onInstall` does not run for one. A failed
+`npm install` is logged as a warning and the backend starts anyway.
+
 App backends are accessible through the Gateway's reverse proxy at
 `/apps/{name}/api/{path}`, which avoids CORS issues for dashboard UI pages.
 

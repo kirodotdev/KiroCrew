@@ -955,32 +955,47 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         # Pass PORT as env var — Node.js apps typically read process.env.PORT
         env["NODE_ENV"] = "production"
 
-        # Install npm dependencies if package.json exists and node_modules is missing
-        pkg_json = root / "package.json"
-        node_modules = root / "node_modules"
-        if pkg_json.is_file() and not node_modules.is_dir():
+        # Node looks the entry's imports up in the node_modules of every directory
+        # above it, so a backend/package.json needs installing as much as the root's.
+        # Install in each such directory, from the app root down, that has a
+        # package.json and no node_modules. The resolved paths Node itself uses keep
+        # every candidate inside the app root.
+        real_root = root.resolve()
+        pkg_dirs = [d for d in entry.resolve().parents if d == real_root or real_root in d.parents]
+        for pkg_dir in reversed(pkg_dirs):
+            if not (pkg_dir / "package.json").is_file() or (pkg_dir / "node_modules").is_dir():
+                continue
             npm_bin = _find_npm_binary()
-            if npm_bin:
-                logger.info("Installing npm deps for app %s", app_name)
-                try:
-                    sel().log_api_access(
-                        caller="gateway", operation="app_backend_npm_install",
-                        outcome="started", resources=f"{app_name}",
-                    )
-                except Exception as exc:
-                    logger.debug("SEL audit failed for npm install %s: %s", app_name, exc)
-                try:
-                    sandboxed_npm, _ = wrap_argv(
-                        [npm_bin, "install", "--production", "--no-audit", "--no-fund"],
-                        mode="standard",
-                    )
-                    sandboxed_npm = cgroup_scope_argv(sandboxed_npm)  # cgroup DoS ceiling
-                    run_limited(
-                        sandboxed_npm,
-                        cwd=str(root), env=env, capture_output=True, timeout=120,
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to install npm deps for app %s: %s", app_name, exc)
+            if not npm_bin:
+                break
+            logger.info("Installing npm deps for app %s in %s", app_name, pkg_dir)
+            try:
+                sel().log_api_access(
+                    caller="gateway", operation="app_backend_npm_install",
+                    outcome="started", resources=f"{app_name}",
+                )
+            except Exception as exc:
+                logger.debug("SEL audit failed for npm install %s: %s", app_name, exc)
+            try:
+                sandboxed_npm, _ = wrap_argv(
+                    [npm_bin, "install", "--production", "--no-audit", "--no-fund"],
+                    mode="standard",
+                )
+                sandboxed_npm = cgroup_scope_argv(sandboxed_npm)  # cgroup DoS ceiling
+                npm_run = run_limited(
+                    sandboxed_npm,
+                    cwd=str(pkg_dir), env=env, capture_output=True, timeout=120,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to install npm deps for app %s in %s: %s", app_name, pkg_dir, exc
+                )
+                continue
+            if npm_run.returncode != 0:
+                logger.warning(
+                    "Failed to install npm deps for app %s in %s: npm exited %s",
+                    app_name, pkg_dir, npm_run.returncode,
+                )
 
     # --- Module-style Python builtin (e.g. kiro_crew.apps.builtins.<name>) ---
     # Module-style entries have no file path — the module runs under the gateway's own
