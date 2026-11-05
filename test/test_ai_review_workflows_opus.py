@@ -163,6 +163,22 @@ class TestClaudeReviewCodeOnlyScope:
         for stage in ("opus-discovery", "opus-validate"):
             assert "gh pr diff" not in _review_prompt(stage)
 
+    def test_discovery_prompt_states_there_is_no_shell(self) -> None:
+        """Discovery runs with Read/Grep/Glob only.
+
+        A prompt that leaves a shell path open makes the model spend its pass on
+        denied Bash calls and quit before the [OPUS-DISCOVERY] marker, which
+        fails the capture closed. So the prompt must say there is no shell, name
+        the tools it does have, and never offer "a command to run".
+        """
+        for lane in ("claude-review.yml", "fork-opus-review.yml"):
+            for tools in [ln for ln in _workflow(lane).splitlines() if "--allowedTools" in ln]:
+                assert '"Read,Grep,Glob"' in tools, lane
+        flat = _flat(_review_prompt("opus-discovery"))
+        assert "You have no shell" in flat
+        assert "Use Read, Glob and Grep" in flat
+        assert "a command to run" not in flat
+
     def test_rescan_is_scaled_to_diff_size(self) -> None:
         discovery = _review_prompt("opus-discovery")
 
