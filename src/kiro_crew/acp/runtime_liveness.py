@@ -889,8 +889,13 @@ async def _drain_stderr(self: AcpRuntime) -> None:
                     and is_delegate_launch_failure_output(text)
                 ):
                     self._saw_delegate_launch_failure = True
-                if self.recording_allowed:
-                    logger.debug("stderr: %s", text[:200])
+                if self.recording_allowed and logger.isEnabledFor(logging.DEBUG):
+                    # Child stderr can echo a credential (a failed login prints
+                    # the header it sent); redact before the cut so a token
+                    # split at the boundary is still recognised.
+                    from kiro_crew.platform.context import redact_log_via_context
+
+                    logger.debug("stderr: %s", redact_log_via_context(text)[:200])
     except asyncio.CancelledError:
         raise
     except Exception as exc:
