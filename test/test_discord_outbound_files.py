@@ -271,7 +271,9 @@ class TestSealTimeExtraction:
         r, _ = _renderer()
         r._buf, components = ["A" * (DISCORD_MAX_TEXT * 2 + 1)], [{"type": 1}]
         r._land_sealed = land = AsyncMock(side_effect=[True, False, True])  # type: ignore[method-assign]
-        await r._seal_current(components=components, extract_uploads=False)
+        landed = await r._seal_current(components=components, extract_uploads=False)
+        # One chunk never reached the reader, so the seal must not report delivery.
+        assert landed is False
         assert land.await_count == 3 and land.await_args_list[-1].args[2] is components
 
 

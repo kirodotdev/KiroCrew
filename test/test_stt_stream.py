@@ -10,6 +10,7 @@ shared socket helpers in ``stt_stream_helpers.py``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock
@@ -621,6 +622,29 @@ class TestAppleStreamingSession:
             assert msg["type"] == "error"
             assert msg["code"] == "stt_session_failed"
             await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_start_failure_is_logged_not_only_audited(self, monkeypatch, caplog):
+        """A helper that refuses to start must leave its reason in gateway.log.
+
+        The audit trail records only `stt_stream_end outcome=error`, so with nothing
+        at WARNING an operator chasing a silent microphone on a non-en-US host found
+        no trace of the helper's own reason (a missing dictation model).
+        """
+        reason = "no on-device speech model is installed for locale zh-CN"
+        self._install(monkeypatch, start_error=reason)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.stt_stream"):
+            async with TestClient(TestServer(_make_app())) as client:
+                ws = await client.ws_connect("/api/ws/stt")
+                msg = await ws.receive_json()
+                assert msg["type"] == "error"
+                await ws.close()
+        logged = [
+            r
+            for r in caplog.records
+            if r.name == "kiro_crew.dashboard.stt_stream" and r.levelno >= logging.WARNING
+        ]
+        assert any(reason in r.getMessage() for r in logged), [r.getMessage() for r in logged]
 
     @pytest.mark.asyncio
     async def test_cancelled_start_still_closes_the_session(self, monkeypatch):

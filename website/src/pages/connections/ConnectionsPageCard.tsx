@@ -91,6 +91,11 @@ interface ConnectionCardProps {
   /** True when the shared-grant census could not read every source, so an empty
    *  `grantSharedWith` is "could not confirm sole ownership", not "unshared". */
   grantSharedUnconfirmed?: boolean
+  /** True while dashboard chats run on a backend that drops a pre-registered
+   *  provider's `oauth` settings (KAS today). A caveat beside Connect and
+   *  on the connected row; it never removes an action, because the sign-in runs
+   *  on Kiro CLI and its grant is real for Kiro CLI chats. */
+  backendLacksOauth?: boolean
   busy?: ConnectionAction
   /** The provider NAME (not slug) of whichever card currently owns the single
    *  in-flight Connections Test, or undefined when none is running. Used only
@@ -131,6 +136,12 @@ const PREREQUISITE_KEYS = {
   atlassian: 'pages.connectionsPage.prerequisite_atlassian',
   github: 'pages.connectionsPage.prerequisite_github',
   asana: 'pages.connectionsPage.prerequisite_asana',
+  gmail: 'pages.connectionsPage.prerequisite_gmail',
+  'google-drive': 'pages.connectionsPage.prerequisite_google_drive',
+  'google-calendar': 'pages.connectionsPage.prerequisite_google_calendar',
+  'google-sheets': 'pages.connectionsPage.prerequisite_google_sheets',
+  'google-docs': 'pages.connectionsPage.prerequisite_google_docs',
+  'google-slides': 'pages.connectionsPage.prerequisite_google_slides',
 } as const
 
 /**
@@ -267,6 +278,7 @@ function ConnectionCard({
   grantPresent,
   grantSharedWith,
   grantSharedUnconfirmed,
+  backendLacksOauth = false,
   busy,
   testingProvider,
   feedbackSlots,
@@ -503,17 +515,38 @@ function ConnectionCard({
   // One shared element so EVERY consent-initiating action (Connect, Authorize,
   // Reconnect) carries the provider-side prerequisite — a GitLab whose Duo is
   // off fails identically whichever button started the OAuth flow.
-  const prerequisiteTip = provider.prerequisite_copy ? (
+  const providerPrerequisite = provider.prerequisite_copy
+    ? provider.slug in PREREQUISITE_KEYS
+      ? t(PREREQUISITE_KEYS[provider.slug as keyof typeof PREREQUISITE_KEYS], {
+          defaultValue: provider.prerequisite_copy,
+        })
+      : provider.prerequisite_copy
+    : ''
+  // The backend caveat joins the provider's own prerequisite in the ONE tip
+  // beside the action, never a second triangle: it says only what is known (the
+  // chat harness drops the settings), not that the sign-in fails.
+  const backendCaveat = backendLacksOauth ? t('pages.connectionsPage.backend_oauth_caveat', { provider: provider.name }) : ''
+  // Caveat first: it is the part a user can read without the provider's setup terms.
+  const prerequisiteText = [backendCaveat, providerPrerequisite].filter(Boolean).join(' ')
+  const sharedGrant = (grantSharedWith && grantSharedWith.length > 0) || grantSharedUnconfirmed
+  const sharedText = sharedGrant
+    ? `${
+        grantSharedWith && grantSharedWith.length > 0
+          ? t('pages.connectionsPage.grant_shared_fact', { names: grantSharedWith.join(', ') })
+          : t('pages.connectionsPage.grant_shared_fact_unconfirmed')
+      } ${t('pages.connectionsPage.grant_shared_caveat')}`
+    : ''
+  // A shared row already has a Disconnect tip, so the caveat joins it. A row
+  // that is not shared has no tip to join, and the card rule allows one tip per
+  // row and no new heading key, so there the caveat is a fact about the
+  // current state and rides the status list instead (chatUseNote below).
+  const connectedTipText = sharedGrant ? [sharedText, backendCaveat].filter(Boolean).join(' ') : ''
+  const chatUseNote = backendLacksOauth && !sharedGrant
+  const prerequisiteTip = prerequisiteText ? (
     <PrerequisiteTip
       label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
       heading={t('pages.connectionsPage.before_you_connect')}
-      text={
-        provider.slug in PREREQUISITE_KEYS
-          ? t(PREREQUISITE_KEYS[provider.slug as keyof typeof PREREQUISITE_KEYS], {
-              defaultValue: provider.prerequisite_copy,
-            })
-          : provider.prerequisite_copy
-      }
+      text={prerequisiteText}
     />
   ) : null
   const stateMeta: Record<ConnectionCardState, { label: string; icon: ReactNode; tone: string }> = {
@@ -582,6 +615,8 @@ function ConnectionCard({
             <span
               className={`flex h-5 w-5 items-center justify-center rounded text-[11px] font-bold ${PROVIDER_TONES[provider.slug] || 'bg-accent text-accent-fg'}`}
               aria-hidden="true"
+              // A brand's initial, not prose: kept out of the render-time i18n scan.
+              data-i18n-opaque=""
             >
               {provider.name.slice(0, 1)}
             </span>
@@ -769,10 +804,20 @@ function ConnectionCard({
 
         {state === 'connected' && (
           <div className="space-y-3">
-            {(connectedSince || server?.connectedSince) && (
+            {(connectedSince || server?.connectedSince || chatUseNote) && (
               <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[12px]">
-                <dt className="text-muted">{t('pages.connectionsPage.connected_since')}</dt>
-                <dd className="m-0 text-text">{fmtDate((connectedSince || server?.connectedSince) as string)}</dd>
+                {(connectedSince || server?.connectedSince) && (
+                  <>
+                    <dt className="text-muted">{t('pages.connectionsPage.connected_since')}</dt>
+                    <dd className="m-0 text-text">{fmtDate((connectedSince || server?.connectedSince) as string)}</dd>
+                  </>
+                )}
+                {chatUseNote && (
+                  <>
+                    <dt className="text-muted">{t('pages.connectionsPage.chat_use_label')}</dt>
+                    <dd className="m-0 text-text">{t('pages.connectionsPage.chat_use_lacks_oauth')}</dd>
+                  </>
+                )}
               </dl>
             )}
             {/* The shared-grant state (shared with whom, or could-not-confirm)
@@ -783,8 +828,10 @@ function ConnectionCard({
             {/* Test and Disconnect are visually separated groups (never three
                 peer buttons): the shared-grant caveat tip sits in the Disconnect
                 group, immediately before Disconnect, because it qualifies that
-                action -- the connection-card-caveat-tip convention, reusing the
-                shared PrerequisiteTip heading and label. */}
+                action -- the connection-card-caveat-tip convention. Its heading
+                and label name the Disconnect it qualifies, never the
+                pre-connect "Before you connect" (#26890): the card is already
+                connected. */}
             <div className="flex items-center justify-between gap-2">
               <Btn
                 onClick={() => void onTest()}
@@ -796,15 +843,19 @@ function ConnectionCard({
                 {busy === 'test' ? t('pages.connectionsPage.testing') : t('pages.connectionsPage.test_connection')}
               </Btn>
               <div className="flex items-center gap-2">
-                {(grantSharedWith && grantSharedWith.length > 0) || grantSharedUnconfirmed ? (
+                {/* ONE tip for the row (connection-card-caveat-tip): the
+                    shared-grant fact and the backend caveat merge into a
+                    single bubble beside Disconnect. The shared label names the
+                    shared sign-in only when there is one. */}
+                {connectedTipText ? (
                   <PrerequisiteTip
-                    label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
-                    heading={t('pages.connectionsPage.before_you_connect')}
-                    text={`${
-                      grantSharedWith && grantSharedWith.length > 0
-                        ? t('pages.connectionsPage.grant_shared_fact', { names: grantSharedWith.join(', ') })
-                        : t('pages.connectionsPage.grant_shared_fact_unconfirmed')
-                    } ${t('pages.connectionsPage.grant_shared_caveat')}`}
+                    label={
+                      sharedGrant
+                        ? t('pages.connectionsPage.shared_signin_for_provider', { provider: provider.name })
+                        : t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })
+                    }
+                    heading={t('pages.connectionsPage.before_you_disconnect')}
+                    text={connectedTipText}
                   />
                 ) : null}
                 <Btn danger onClick={() => void onDisconnect()} disabled={!!busy}>

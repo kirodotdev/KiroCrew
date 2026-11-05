@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         WorkspaceConfig,
         WorkspaceDirUnusable,
         _sel,
+        _ws_dir_in_use,
         coerce_dict_section,
         data_home,
         drained_to_thread,
@@ -85,7 +86,12 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    name = body.get("name", "").strip()
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    name = body.get("name", "")
+    if (not_string := string_field_error("name", name)) is not None:
+        return not_string
+    name = name.strip()
     if not name:
         return web.json_response({"error": "Workspace name is required"}, status=400)
     if not WORKSPACE_NAME_RE.match(name):
@@ -96,7 +102,10 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     cfg = KiroCrewConfig.load()
     if name in cfg.workspaces:
         return web.json_response({"error": f"Workspace '{name}' already exists"}, status=409)
-    copy_from = body.get("copy_from", "").strip()
+    copy_from = body.get("copy_from", "")
+    if (not_string := string_field_error("copy_from", copy_from)) is not None:
+        return not_string
+    copy_from = copy_from.strip()
     # Set only once ALL validation has passed (staging is the LAST pre-persist
     # step): the staged tree awaiting install, and the destination it installs
     # into once the in-lock checks pass. copy_pending records that the branch
@@ -111,6 +120,8 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             )
         # New workspace gets its own directory, named after the workspace
         ws_dir = body.get("dir", f"workspace-{name}")
+        if (not_string := string_field_error("dir", ws_dir)) is not None:
+            return not_string
         # Check for directory collision with existing workspaces
         existing_dirs = {ws.dir for ws in cfg.workspaces.values()}
         if ws_dir in existing_dirs:
@@ -160,6 +171,8 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             copy_pending = True
     else:
         ws_dir = body.get("dir", f"workspace-{name}")
+        if (not_string := string_field_error("dir", ws_dir)) is not None:
+            return not_string
     # Guard against path traversal for relative paths; absolute paths are allowed
     _abs = Path(ws_dir).expanduser().is_absolute()
     # Path constructed for validation only (never opened/read/written); the
@@ -173,9 +186,14 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     unresolved_dir = Path(ws_dir).expanduser() if _abs else data_home() / ws_dir
     validated_dir = unresolved_dir.resolve()  # lgtm[py/path-injection]
 
-    # Check for directory collision with existing workspaces (resolve both sides)
-    existing_resolved = {_resolve_ws_dir(ws.dir) for ws in cfg.workspaces.values()}
-    if validated_dir in existing_resolved:
+    # Check for directory collision with existing workspaces (resolve both sides;
+    # on a case-insensitive disk another spelling of a folder in use is the same
+    # folder, so _ws_dir_in_use compares disk identity when both exist). This one
+    # judges every create, copy_from included, before anything is staged.
+    existing_resolved = (str(_resolve_ws_dir(ws.dir)) for ws in cfg.workspaces.values())
+    if _ws_dir_in_use(
+        platform_compat.strip_extended_length_prefix(validated_dir), existing_resolved
+    ):
         return web.json_response(
             {"error": f"Directory '{ws_dir}' is already used by another workspace"},
             status=409,
@@ -261,12 +279,12 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         workspaces = coerce_dict_section(doc, "workspaces")
         if name in workspaces:
             raise _WorkspaceConflict(409, f"Workspace '{name}' already exists", "workspace_exists")
-        raw_dirs = {
-            _resolve_ws_dir(str(ws.get("dir", "")))
+        raw_dirs = (
+            str(_resolve_ws_dir(str(ws.get("dir", ""))))
             for ws in workspaces.values()
             if isinstance(ws, dict)
-        }
-        if validated_dir in raw_dirs:
+        )
+        if _ws_dir_in_use(platform_compat.strip_extended_length_prefix(validated_dir), raw_dirs):
             raise _WorkspaceConflict(
                 409,
                 f"Directory '{ws_dir}' is already used by another workspace",
@@ -382,6 +400,12 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     if "dir" in body:
         new_dir = body["dir"]
+        # Path() and the set lookups below raise TypeError on a number, list,
+        # object or null: caller error, so a 400 rather than a 500.
+        from kiro_crew.dashboard.handlers._shared import string_field_error
+
+        if (not_string := string_field_error("dir", new_dir)) is not None:
+            return not_string
         _abs = Path(new_dir).expanduser().is_absolute()
         # Resolved for validation only; is_relative_to + is_sensitive_path guard
         # below reject traversals before the value is stored in config.
@@ -417,16 +441,18 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "Cannot use config root as workspace directory"}, status=400
             )
-        existing_dirs = {
-            (
+        # Disk identity decides when both folders exist (_ws_dir_in_use), so a
+        # case variant of another workspace's folder is refused here too.
+        existing_dirs = (
+            str(
                 (data_home() / ws.dir).resolve()
                 if not Path(ws.dir).expanduser().is_absolute()
                 else Path(ws.dir).expanduser().resolve()
             )
             for n, ws in cfg.workspaces.items()
             if n != name
-        }
-        if resolved in existing_dirs:
+        )
+        if _ws_dir_in_use(platform_compat.strip_extended_length_prefix(resolved), existing_dirs):
             return web.json_response(
                 {"error": f"Directory '{new_dir}' is already used by another workspace"},
                 status=409,
@@ -449,12 +475,12 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
             # parent swapped for a link between the screen and this check pass a
             # different directory. Only the OTHER entries resolve fresh -- they are
             # the state re-decided inside the lock.
-            others = {
-                _resolve_ws_dir(str(w.get("dir", "")))
+            others = (
+                str(_resolve_ws_dir(str(w.get("dir", ""))))
                 for n2, w in workspaces.items()
                 if n2 != name and isinstance(w, dict)
-            }
-            if resolved in others:
+            )
+            if _ws_dir_in_use(platform_compat.strip_extended_length_prefix(resolved), others):
                 raise _WorkspaceConflict(
                     409,
                     f"Directory '{body['dir']}' is already used by another workspace",

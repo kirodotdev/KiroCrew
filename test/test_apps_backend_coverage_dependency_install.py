@@ -13,6 +13,7 @@ the family shares come from ``apps_backend_coverage_helpers.py``.
 from __future__ import annotations
 
 import builtins
+import contextlib
 import importlib
 import logging
 import os
@@ -28,6 +29,7 @@ from apps_backend_coverage_helpers import spawn_root_fixture  # noqa: F401
 from apps_backend_coverage_helpers import _capture_popen, _manifest, _record_runs, _StopSpawn
 
 import kiro_crew.apps.backend as bmod
+from kiro_crew.testing.wait import default_timeout
 
 # ---------------------------------------------------------------------------
 # Spawn body: dependency installation
@@ -807,13 +809,18 @@ class TestDependencyInstall:
         file lock admits one transaction at a time - and the stamp check
         runs inside it, so the waiter skips pip on the winner's stamp."""
         import threading
-        import time as _time
 
         (spawn_root / "requirements.txt").write_bytes(b"requests\n")
         inside = []
         overlap = []
         installs = []
         ready = threading.Barrier(2)
+        parked = threading.Event()
+        release = threading.Event()
+        second_moved = threading.Event()
+        overlapped = threading.Event()
+        at_lock = set()
+        real_file_lock = bmod.platform_compat.file_lock
         real_open = bmod.os.open
 
         def concurrent_open(path, flags, mode=0o777, *, dir_fd=None):
@@ -827,15 +834,31 @@ class TestDependencyInstall:
             )
         monkeypatch.setattr(bmod.os, "open", concurrent_open)
 
+        @contextlib.contextmanager
+        def arrival_file_lock(fd: int, **kwargs: Any) -> Any:
+            """The real deps lock, reporting each caller's arrival at it before taking it."""
+            at_lock.add(threading.get_ident())
+            if len(at_lock) == 2:
+                second_moved.set()
+            with real_file_lock(fd, **kwargs):
+                yield
+
+        monkeypatch.setattr(bmod.platform_compat, "file_lock", arrival_file_lock)
+
         def _fake_pip(argv: Any, **kwargs: Any) -> Any:
             if "install" in argv:
                 installs.append(True)
                 if inside:
                     overlap.append(True)
+                    overlapped.set()
+                    second_moved.set()
                 inside.append(True)
-                # flake-ok: a pre-existing 150 ms hold inside the fake pip so two installs would overlap if the lock failed; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- a pre-existing hold inside the fake pip, moved verbatim; tracked for a de-flake pass
-                _time.sleep(0.15)
+                # The install stays inside the lock until the test has seen the other caller
+                # arrive at it and watched the window in which a second install would begin.
+                parked.set()
+                assert release.wait(
+                    timeout=default_timeout()
+                ), "the test never released the install"
                 argv = list(argv)
                 staging = argv[argv.index("--target") + 1]
                 (__import__("pathlib").Path(staging) / "pkg.py").write_text("x = 1\n")
@@ -851,8 +874,16 @@ class TestDependencyInstall:
         threads = [threading.Thread(target=_call) for _ in range(2)]
         for t in threads:
             t.start()
-        for t in threads:
-            t.join(timeout=10)
+        try:
+            assert parked.wait(timeout=default_timeout()), "no caller reached pip"
+            assert second_moved.wait(
+                timeout=default_timeout()
+            ), "the second caller neither reached the deps lock nor ran pip"
+            assert not overlapped.wait(timeout=0.15), "two pip transactions ran concurrently"
+        finally:
+            release.set()
+            for t in threads:
+                t.join(timeout=10)
         assert all(not t.is_alive() for t in threads), "dependency provisioning deadlocked"
         assert errs == ["", ""], errs
         assert not overlap, "two pip transactions ran concurrently"
@@ -1144,18 +1175,17 @@ class TestDependencyInstall:
         old-ABI wheels live. A PATCH upgrade must reprovision too:
         requirements can carry python_full_version markers that flip on it."""
         before = bmod._deps_digest(b"requests\n")
-        monkeypatch.setattr(
-            bmod.sys,
-            "implementation",
-            SimpleNamespace(
-                cache_tag="cpython-399",
-                name=sys.implementation.name,
-                version=sys.implementation.version,
-            ),
-        )
-        assert bmod._deps_digest(b"requests\n") != before
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- a pre-existing reset between two digest probes, moved verbatim; tracked for a de-flake pass
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                bmod.sys,
+                "implementation",
+                SimpleNamespace(
+                    cache_tag="cpython-399",
+                    name=sys.implementation.name,
+                    version=sys.implementation.version,
+                ),
+            )
+            assert bmod._deps_digest(b"requests\n") != before
         monkeypatch.setattr(bmod.platform, "python_version", lambda: "3.99.99")
         assert bmod._deps_digest(b"requests\n") != before
 

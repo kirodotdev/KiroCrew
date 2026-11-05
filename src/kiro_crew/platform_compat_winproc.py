@@ -611,18 +611,43 @@ async def descendant_termination_handles_async(
     retained_handles: Mapping[int, int] | None = None,
     root_handle: int | None = None,
 ) -> dict[int, int]:
-    """Async variant of :func:`descendant_termination_handles`."""
+    """Async variant of :func:`descendant_termination_handles`.
+
+    A started executor job cannot be cancelled: the worker keeps reading the
+    caller's root and retained handles and keeps opening new ones. So a
+    cancelled caller does not return until the worker has settled. Until then
+    the borrowed handles are still in use and must stay open, and the handles
+    the worker opened would otherwise reach nobody. A repeated cancellation
+    while settling is absorbed, since abandoning the worker then is the same
+    loss. Once settled, every handle a successful worker opened is closed here,
+    because the cancelled caller never receives them, and the cancellation
+    propagates. A failed worker has already closed what it opened.
+    """
 
     if not IS_WINDOWS:
         return {}
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
+    worker = loop.run_in_executor(
         subprocess_executor(),
         descendant_termination_handles,
         pid,
         dict(retained_handles or {}),
         root_handle,
     )
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not worker.cancelled() and worker.exception() is None:
+            for handle in worker.result().values():
+                close_process_handle(handle)
+        raise
 
 
 # ---------------------------------------------------------------------------

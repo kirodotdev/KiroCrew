@@ -101,9 +101,16 @@ describe('ChatPanel — default agent model pin notice', () => {
     wrap()
     await settled()
     const notice = await screen.findByTestId('agent-model-pin-notice')
+    // #29725: the notice states only the precedence that is always true — the
+    // agent pins a model, and only a chat running AS this agent with no model
+    // choice of its own uses that pin. It must NOT claim the New chat button
+    // "uses this setting": a default template that pins its own model outranks
+    // the Default Model setting for a new chat, and a chat that already has its
+    // own model keeps it, so the button never simply "uses this setting".
     expect(notice).toHaveTextContent(
-      'New chats on the default agent use its own pinned model claude-opus-5, not this setting. You can pin a model again later from the chat model picker.'
+      'The default agent pins its own model claude-opus-5. Only chats running as this agent without their own model choice use that pin. The New chat button does not. You can pin a model again later from the chat model picker.'
     )
+    expect(notice).not.toHaveTextContent('The New chat button uses this setting')
     // The button says what it does and names no successor model: clearing hands
     // new chats to the next tier down, which may be the agent's template rather
     // than the global default, and the panel cannot tell which in advance.
@@ -165,7 +172,7 @@ describe('ChatPanel — default agent model pin notice', () => {
     wrap()
     await settled()
     const notice = await screen.findByTestId('agent-model-pin-notice')
-    expect(notice).toHaveTextContent('New chats on the default agent use')
+    expect(notice).toHaveTextContent('The default agent pins its own model')
     expect(notice).not.toHaveTextContent('Kiro')
   })
 

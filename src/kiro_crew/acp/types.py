@@ -8,6 +8,12 @@ import re as _re
 from dataclasses import dataclass, field
 from typing import Any
 
+# The ``_session/steering`` readers, re-exported for existing importers.
+from kiro_crew.acp.steering_wire import (  # noqa: F401
+    steering_advertised,
+    steering_outcome,
+)
+
 # Backend identifiers, the capability sets and the selectable registry live in the
 # leaf module
 # ``kiro_crew.acp_backends`` (it imports nothing from this package, which is what
@@ -25,6 +31,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CLIENT_META_SETTINGS,
@@ -46,14 +53,17 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MATE_WORKER_KIT,
+    ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
+    ACP_BACKENDS_MCP_RELAUNCH_RELOAD,
     ACP_BACKENDS_MCP_WIRE_REINJECT,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
+    ACP_BACKENDS_MODEL_AT_LAUNCH,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
@@ -77,6 +87,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
+    effort_config_option_clear_value,
     effort_config_option_id,
     effort_config_option_value,
     model_registry_namespace,
@@ -154,6 +165,10 @@ EVENT_STEER_DROPPED = "steer_dropped"
 #: see :meth:`StructuredStatus.from_meta` and the origin rule in
 #: ``AcpSessionHandle._handle_update``.
 EVENT_STRUCTURED_STATUS = "structured_status"
+#: The ENGINE moved the turn onto another model, or reported that it could not
+#: (kiro-cli's KAS or V2 engine). Carries an ``engine_fallback.ModelFallbackNotice``
+#: on :attr:`AcpEvent.model_fallback`; see ``acp/engine_fallback.py``.
+EVENT_MODEL_FALLBACK = "model_fallback"
 
 # ── ACP Protocol Methods ──
 
@@ -196,30 +211,6 @@ METHOD_SESSION_STEER_CLEAR = "_session/steer/clear"
 STEER_CLEAR_ANSWER_WAIT_SECS = 5.0
 
 
-def steering_outcome(result: object) -> str:
-    """The ``outcome`` of a ``_session/steering`` answer; "" for any other shape.
-
-    The answer is adapter-authored JSON: a result that is not an object is read as
-    no outcome (undelivered) rather than trusted to have ``.get``.
-    """
-    if not isinstance(result, dict):
-        return ""
-    outcome = result.get("outcome")
-    return outcome if isinstance(outcome, str) else ""
-
-
-def steering_advertised(init_resp: object) -> bool:
-    """Whether an ``initialize`` result advertises the ``_session/steering`` request.
-
-    The extension is advertised at the TOP level of the result, as
-    ``_meta.steering.supported``, a sibling of ``agentCapabilities``. Only a
-    literal ``true`` counts.
-    """
-    meta = init_resp.get("_meta") if isinstance(init_resp, dict) else None
-    steering = meta.get("steering") if isinstance(meta, dict) else None
-    return isinstance(steering, dict) and steering.get("supported") is True
-
-
 METHOD_SESSION_LOAD = "session/load"
 #: The other standard restore verb, for an agent that keeps sessions but does not
 #: implement full loading: it restores the session WITHOUT replaying the previous
@@ -236,11 +227,13 @@ METHOD_SESSION_FORK = "session/fork"
 # grows without bound as sessions accumulate. Handler: acp_agent.rs -> Session
 # ManagerRequestData::TerminateSession (self.sessions.remove + handle.shutdown).
 METHOD_SESSION_TERMINATE = "_kiro.dev/session/terminate"
-#: KAS's equivalent. Its extension namespace is ``_kiro/`` (no ``.dev``), and it
-#: has no evict-only verb: this disposes the resident session AND removes its
-#: persisted record. Both are wanted here — the disposal is the memory reclaim
-#: ``terminate`` exists for, and the record is what would otherwise accumulate.
-#: Takes the same ``{"sessionId": ...}`` params and is idempotent.
+#: KAS's equivalent. Its extension namespace is ``_kiro/`` (no ``.dev``). It
+#: disposes the resident session AND removes its persisted record. Both are wanted
+#: on an ordinary teardown — the disposal is the memory reclaim ``terminate``
+#: exists for, and the record is what would otherwise accumulate. Takes the same
+#: ``{"sessionId": ...}`` params and is idempotent: an unknown id answers success.
+#: An engine that advertises ``sessionCapabilities.close`` also has the evict-only
+#: ``session/close`` below, which keeps the record (``KasHarness.release``).
 METHOD_KAS_SESSION_DELETE = "_kiro/session/delete"
 #: KAS's manual compaction verb. A REQUEST with ``{"sessionId": ...}`` params,
 #: answered ``{"success": bool}`` once the summary is committed; a successful run
@@ -270,6 +263,12 @@ METHOD_KAS_CHECKPOINT_REVERT = "_kiro/checkpoint/revertMultiple"
 #: ``test_codex_session_mcp.py::test_real_codex_acp_session_close_evicts`` re-runs
 #: that measurement on every install that has the adapter, and the lane pins
 #: its release in ``test/real_adapters/package.json``.
+#:
+#: KAS serves it from an engine that advertises ``sessionCapabilities.close``: it
+#: disposes the session in memory and keeps the record, which a later
+#: ``session/load``, from a restarted process too, replays (KAS 0.66.22 and 0.66.26
+#: through kiro-cli 2.27.1 and 2.29.0; captured within one process, KAS 0.66.62
+#: through kiro-cli 2.34.0, in ``test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl``).
 METHOD_SESSION_CLOSE = "session/close"
 METHOD_COMPACTION_STATUS = "_kiro.dev/compaction/status"
 METHOD_CLEAR_STATUS = "_kiro.dev/clear/status"
@@ -306,6 +305,15 @@ METHOD_KAS_OPEN_EXTERNAL_URL = "_kiro/openExternalUrl"
 #: not answer (a -32601) makes the engine report ``cancel`` to the server, so the
 #: elicitation-gated tool fails silently rather than asking.
 METHOD_KAS_MCP_ELICITATION = "_kiro/mcp/elicitation"
+#: Engine -> client request carrying the model's own question (KAS's
+#: ``user_input`` tool): ``{sessionId, toolCallId, question, options}``. Sent only
+#: to a client that declares ``_meta.kiro.userInput``. The answer is
+#: ``{"action": "answered", "answer": <text>}``; KAS hands only an ``answered``
+#: with a non-empty ``answer`` to the model, and every other reply (``dismissed``,
+#: an error) becomes "move on to the next phase", which the tool tells the model
+#: to read as yes. Kiro Crew therefore always answers ``answered``
+#: (``acp/elicitation.py``).
+METHOD_KAS_USER_INPUT = "_kiro/userInput"
 METHOD_SUBAGENT_LIST_UPDATE = "_kiro.dev/subagent/list_update"
 METHOD_KIRO_SESSION_UPDATE = "_kiro.dev/session/update"
 METHOD_SET_CONFIG_OPTION = "session/set_config_option"
@@ -435,6 +443,7 @@ PROVIDER_LABEL_PI = "pi"
 PROVIDER_LABEL_GOOSE = "goose"
 PROVIDER_LABEL_DEEPSEEK = "deepseek"
 PROVIDER_LABEL_COPILOT = "copilot"
+PROVIDER_LABEL_STRANDS = "strands"
 
 #: Backend id -> its label. The mapping is what ``provider_label`` resolves
 #: through, so a harness's label and the answer a session persists under are one
@@ -448,6 +457,7 @@ PROVIDER_LABEL_COPILOT = "copilot"
 PROVIDER_LABEL_BY_BACKEND: dict = {
     ACP_BACKEND_KIRO: PROVIDER_LABEL_DEFAULT,
     ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
+    ACP_BACKEND_STRANDS: PROVIDER_LABEL_STRANDS,
     ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
     ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
     ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
@@ -474,16 +484,19 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
 # the link of a sign-in Crew starts with ``_kiro/mcp/resetServer``, and a remote
 # OAuth server never connects.
 #
-# ``secretStorage`` is NOT in this constant. By default the engine holds the
-# resulting grant in its own memory and Crew never stores an MCP token. Only with
-# ``agent.kas_persist_mcp_sign_in`` on does the spawn add it to a copy of this
-# declaration (``acp/kas_secret_storage.py``): Crew then keeps each server's
-# ``client`` and ``tokens`` in a dedicated encrypted vault under ``kas/``, never the
-# Secrets vault, and serves them back only on the engine's own pipe. Every other
-# callback stays undeclared (= false).
+# ``userInput`` is declared so the model's own questions (KAS's ``user_input``
+# tool) arrive as ``_kiro/userInput`` with their options and a free-text answer,
+# put to the person on the same card as an MCP elicitation. Undeclared, KAS
+# sends them as a permission request whose Deny reaches the model as "yes".
+# The handler (``acp/elicitation.py``) ships with this flag: declared without
+# one, the method-not-found would turn into the same "yes".
+#
+# ``secretStorage`` is NOT in this constant: the spawn adds it to a copy while
+# ``agent.kas_persist_mcp_sign_in`` is on (the default; ``acp/kas_secret_storage.py``),
+# and every other callback stays undeclared (= false).
 KAS_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
-    "_meta": {"kiro": {"settings": {}, "openExternalUrl": True}},
+    "_meta": {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}},
 }
 
 # ── Claude backend permission modes ──
@@ -963,6 +976,9 @@ class AcpEvent:
     #: ``None`` on every other terminal, including a plain ``end_turn`` whose
     #: metadata said nothing about a refusal.
     refusal: "RefusalInfo | None" = None
+    #: Set on ``EVENT_MODEL_FALLBACK``: the engine's fallback decision, an
+    #: ``engine_fallback.ModelFallbackNotice``. ``None`` on every other event.
+    model_fallback: Any = None
     #: True when Kiro Crew fabricated this terminal event because the provider
     #: omitted its result frame. Consumers must not treat it as raw completion
     #: evidence even when compatibility requires ``stop_reason=end_turn``.
@@ -1136,6 +1152,39 @@ class AcpEvent:
     #: ``spec-builtin-grant`` tier approves a shell call whose recovered command
     #: fullmatches one. Empty everywhere else, which grants nothing.
     spec_granted_commands: tuple[str, ...] = ()
+    #: spec_shell_allowlist: on the same requests, the only shell commands the
+    #: agent's spec lets run when it sets ``toolsSettings.shell.denyByDefault``
+    #: (``AcpSessionHandle.kas_spec_shell_allowlist`` on KAS,
+    #: ``AcpClient._spec_shell_allowlist`` on claude); ``None`` when it does not.
+    #: A restriction: the gate's ``spec-shell-allowlist`` tier refuses every other
+    #: shell call.
+    spec_shell_allowlist: tuple[str, ...] | None = None
+    #: spec_write_allowlist: on the same requests, the only paths the agent's write
+    #: tool may touch when its spec sets ``toolsSettings.fs_write.fallbackAction:
+    #: "deny"``, as absolute globs (``AcpSessionHandle.kas_spec_write_allowlist`` on
+    #: KAS, ``AcpClient._spec_write_allowlist`` on claude); ``None`` when it does not. A restriction: the gate's ``spec-write-allowlist``
+    #: tier refuses every other file write.
+    spec_write_allowlist: tuple[str, ...] | None = None
+    #: spec_write_cwd: on the same requests, the session's own directory
+    #: (``AcpSessionHandle._bound_cwd`` on KAS, ``AcpClient._spec_write_cwd`` on
+    #: claude), which a relative write target names a path under, as the harness
+    #: resolves it against its workspace root. ``""`` elsewhere: a
+    #: relative target is then not covered.
+    spec_write_cwd: str = ""
+    #: native_child_call: a permission request a native KAS sub-agent made under
+    #: this session's own id, told apart by the tool-call id its
+    #: ``agentSubtaskId`` frame recorded (``_is_native_child_call``), or one
+    #: naming no tool call at all. Unlike a foreign-session child it has no
+    #: ``sub_session_id``, so this is what keeps the parent's in-session deny
+    #: overrides (``dashboard.deny_override``) away from it.
+    native_child_call: bool = False
+    #: child_calls_marked: the transport that built this request reads a backend
+    #: whose sub-agent calls it is proven to tell apart
+    #: (``security.deny_waiver.child_calls_marked``), so ``native_child_call`` and
+    #: ``sub_session_id`` can be trusted to be set on a child's call. False by
+    #: default and for every other backend (codex included): the dashboard then
+    #: offers no deny override and applies no session waiver.
+    child_calls_marked: bool = False
     # Canonical, NON-model-authored tool identity from adapter-authored
     # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
     # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``
@@ -1168,6 +1217,10 @@ class AcpEvent:
     #: launch did not prove stock dsh registers the read tools. Set only on a
     #: deepseek permission event; empty once proved and on every other backend.
     deepseek_read_only_issue: str = ""
+    #: Why a Side Chat READ_ONLY turn refuses this request before any gate tier
+    #: could approve it. Set only on a Strands side session's event, for every call
+    #: that is not the harness's own proven file read; empty everywhere else.
+    side_read_only_refusal: str = ""
     # Diff content block fields — authoritative before/after text from kiro-cli
     # for write tools. Used by chat_runner to derive the "before" snapshot
     # without a racy disk read (the write has already landed by the time the
@@ -1779,192 +1832,30 @@ class AcpPromptStats:
             self.context_pct = 0.0
 
 
-# ── Structured status protocol (``kirocrew/status`` extension, version 1) ──
-#
-# ACP ``session/update`` carries tool-call start/complete and agent text;
-# ``_kiro.dev/metadata`` carries the harness ``stopReason``; MCP
-# ``notifications/progress`` is routed per request. None of them carries a WAIT
-# REASON or a resume condition, so one versioned extension is added. It rides
-# under ``params._meta[STATUS_EXTENSION_KEY]`` on a ``session/update`` frame and
-# is TRUSTED ONLY FROM THE EXECUTION LAYER: the runtime accepts it from a frame
-# routed to the session it names, never from a fanned-out frame and never from
-# agent text (``AcpSessionHandle._handle_update`` enforces the origin rule; this
-# module only owns the shape and the version gate). The MCP side — the same
-# object under ``_meta.kirocrew_status`` on a ``notifications/progress``
-# sibling — is documented in ``docs/system-specs/modules/acp-client.md`` and is
-# NOT parsed here yet (the gateway stub is frozen for this PR).
-
-STATUS_EXTENSION_KEY = "kirocrew/status"
-STATUS_EXTENSION_VERSION = 1
-
-STATUS_PHASE_STARTING = "starting"
-STATUS_PHASE_RUNNING = "running"
-STATUS_PHASE_WAITING = "waiting"
-STATUS_PHASE_RECOVERING = "recovering"
-STATUS_PHASES: frozenset[str] = frozenset(
-    {STATUS_PHASE_STARTING, STATUS_PHASE_RUNNING, STATUS_PHASE_WAITING, STATUS_PHASE_RECOVERING}
+# The structured-status extension lives in its own module; this path stays the
+# import path for every name it defines.
+from kiro_crew.acp.types_status import (  # noqa: E402,F401 - re-exported for importers
+    _STATUS_BOOL_FIELDS,
+    _STATUS_STR_FIELDS,
+    _STATUS_STR_MAX,
+    PROGRESS_SOURCE_CHECKPOINT,
+    PROGRESS_SOURCE_PROCESS_EVIDENCE,
+    PROGRESS_SOURCE_STREAM_EVENT,
+    PROGRESS_SOURCE_TOOL_OUTPUT,
+    STATUS_EXTENSION_KEY,
+    STATUS_EXTENSION_VERSION,
+    STATUS_ORIGIN_EXECUTION_LAYER,
+    STATUS_ORIGIN_LIVENESS_ORACLE,
+    STATUS_PHASE_RECOVERING,
+    STATUS_PHASE_RUNNING,
+    STATUS_PHASE_STARTING,
+    STATUS_PHASE_WAITING,
+    STATUS_PHASES,
+    WAIT_REASON_CHILDREN,
+    WAIT_REASON_DEPENDENCY,
+    WAIT_REASON_INPUT,
+    WAIT_REASON_PERMISSION,
+    WAIT_REASON_RETRY,
+    WAIT_REASONS,
+    StructuredStatus,
 )
-
-#: Wait reasons — the taskq wait-state vocabulary (SPEC-ADDENDUM §1). A
-#: ``waiting`` phase names exactly one of these; any other phase leaves it "".
-WAIT_REASON_INPUT = "waiting_input"
-WAIT_REASON_PERMISSION = "waiting_permission"
-WAIT_REASON_DEPENDENCY = "waiting_dependency"
-WAIT_REASON_CHILDREN = "waiting_children"
-WAIT_REASON_RETRY = "retry_wait"
-WAIT_REASONS: frozenset[str] = frozenset(
-    {
-        WAIT_REASON_INPUT,
-        WAIT_REASON_PERMISSION,
-        WAIT_REASON_DEPENDENCY,
-        WAIT_REASON_CHILDREN,
-        WAIT_REASON_RETRY,
-    }
-)
-
-#: ``StructuredStatus.origin`` values. ``execution_layer`` is the only origin a
-#: consumer may act on for a wait; ``liveness_oracle`` marks the watchdog's own
-#: post-stall classification (evidence-based, no harness cooperation).
-STATUS_ORIGIN_EXECUTION_LAYER = "execution_layer"
-STATUS_ORIGIN_LIVENESS_ORACLE = "liveness_oracle"
-
-#: ``StructuredStatus.progress_source`` values.
-PROGRESS_SOURCE_TOOL_OUTPUT = "tool_output"
-PROGRESS_SOURCE_STREAM_EVENT = "stream_event"
-PROGRESS_SOURCE_CHECKPOINT = "checkpoint"
-PROGRESS_SOURCE_PROCESS_EVIDENCE = "process_evidence"
-
-_STATUS_STR_FIELDS = (
-    "task_id",
-    "session_id",
-    "parent_id",
-    "tool_call_id",
-    "phase",
-    "wait_reason",
-    "dependency_scope",
-    "progress_source",
-    "checkpoint_ref",
-)
-_STATUS_BOOL_FIELDS = ("cancellable", "resumable", "safe_retry")
-_STATUS_STR_MAX = 512
-
-
-@dataclass(frozen=True)
-class StructuredStatus:
-    """One ``kirocrew/status`` (version 1) record.
-
-    Identity: ``task_id`` / ``session_id`` / ``parent_id`` / ``tool_call_id`` /
-    ``generation``. Lifecycle: ``phase`` (one of ``STATUS_PHASES``) and, when
-    waiting, ``wait_reason`` (one of ``WAIT_REASONS``), ``dependency_scope`` and
-    ``retry_at`` (epoch seconds, or None). Progress provenance:
-    ``progress_source``. Capabilities the SCHEDULER may rely on:
-    ``cancellable`` / ``resumable`` / ``safe_retry`` — each defaults to False so
-    an emitter that says nothing grants nothing (a status that is uncertain
-    must not invent a recoverable capability). ``checkpoint_ref`` names a
-    checkpoint / partial result. ``origin`` is stamped by the consumer that
-    validated the frame, never read from the wire.
-    """
-
-    version: int = STATUS_EXTENSION_VERSION
-    task_id: str = ""
-    session_id: str = ""
-    parent_id: str = ""
-    tool_call_id: str = ""
-    generation: int = 0
-    phase: str = STATUS_PHASE_RUNNING
-    wait_reason: str = ""
-    dependency_scope: str = ""
-    retry_at: float | None = None
-    progress_source: str = ""
-    cancellable: bool = False
-    resumable: bool = False
-    safe_retry: bool = False
-    checkpoint_ref: str = ""
-    origin: str = STATUS_ORIGIN_EXECUTION_LAYER
-    #: Free-text evidence for a ``liveness_oracle``-origin status (the oracle's
-    #: evidence string). Empty for a wire-parsed status: the wire carries no
-    #: prose field, on purpose.
-    evidence: str = ""
-
-    @property
-    def is_waiting(self) -> bool:
-        return self.phase == STATUS_PHASE_WAITING and bool(self.wait_reason)
-
-    @classmethod
-    def from_meta(cls, meta: object) -> "tuple[StructuredStatus | None, str]":
-        """Parse ``params._meta`` into a status, or explain why not.
-
-        Returns ``(status, "")`` on success and ``(None, reason)`` otherwise.
-        ``reason`` is a closed set of short tokens: ``absent`` (no extension
-        key — the ordinary case, never logged), ``not_object``,
-        ``version_unsupported``, ``phase_invalid``, ``wait_reason_invalid``.
-        Pure shape + version gate; it does NOT decide provenance (the caller
-        knows which frame the meta came from — see the origin rule in
-        ``AcpSessionHandle._handle_update``).
-
-        Field handling is fail-closed: unknown fields are ignored, a string
-        field that is not a string is dropped (""), a capability that is not a
-        bool is False, ``generation`` that is not an int is 0, ``retry_at`` that
-        is not a finite number is None. An unsupported version is rejected
-        WHOLE — a consumer must not act on half of a newer schema.
-        """
-        if not isinstance(meta, dict):
-            return None, "absent"
-        raw = meta.get(STATUS_EXTENSION_KEY)
-        if raw is None:
-            return None, "absent"
-        if not isinstance(raw, dict):
-            return None, "not_object"
-        version = raw.get("version")
-        if not isinstance(version, int) or isinstance(version, bool):
-            return None, "version_unsupported"
-        if version != STATUS_EXTENSION_VERSION:
-            return None, "version_unsupported"
-        strs: dict[str, str] = {}
-        for name in _STATUS_STR_FIELDS:
-            value = raw.get(name)
-            strs[name] = value[:_STATUS_STR_MAX] if isinstance(value, str) else ""
-        phase = strs["phase"] or STATUS_PHASE_RUNNING
-        if phase not in STATUS_PHASES:
-            return None, "phase_invalid"
-        wait_reason = strs["wait_reason"]
-        if phase == STATUS_PHASE_WAITING:
-            if wait_reason not in WAIT_REASONS:
-                return None, "wait_reason_invalid"
-        else:
-            # A wait reason outside the waiting phase is noise, not a wait.
-            wait_reason = ""
-        generation_raw = raw.get("generation")
-        generation = (
-            generation_raw
-            if isinstance(generation_raw, int) and not isinstance(generation_raw, bool)
-            else 0
-        )
-        retry_raw = raw.get("retry_at")
-        retry_at: float | None = None
-        if isinstance(retry_raw, (int, float)) and not isinstance(retry_raw, bool):
-            retry_f = float(retry_raw)
-            if retry_f == retry_f and retry_f not in (float("inf"), float("-inf")):
-                retry_at = retry_f
-        bools = {name: raw.get(name) is True for name in _STATUS_BOOL_FIELDS}
-        return (
-            cls(
-                version=version,
-                task_id=strs["task_id"],
-                session_id=strs["session_id"],
-                parent_id=strs["parent_id"],
-                tool_call_id=strs["tool_call_id"],
-                generation=generation,
-                phase=phase,
-                wait_reason=wait_reason,
-                dependency_scope=strs["dependency_scope"],
-                retry_at=retry_at,
-                progress_source=strs["progress_source"],
-                cancellable=bools["cancellable"],
-                resumable=bools["resumable"],
-                safe_retry=bools["safe_retry"],
-                checkpoint_ref=strs["checkpoint_ref"],
-                origin=STATUS_ORIGIN_EXECUTION_LAYER,
-            ),
-            "",
-        )

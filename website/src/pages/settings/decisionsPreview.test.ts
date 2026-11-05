@@ -39,6 +39,8 @@ const OFF = {
   memoryText: false,
   // And the wake-evidence scope.
   nudgeEvidence: false,
+  browser: false,
+  browserImages: false,
   // And the prior-conversation ceiling reads 0, which is the least that can leave.
   historyBudget: 0,
 }
@@ -67,6 +69,8 @@ describe('readConsent', () => {
         // Nor the evidence a waiting loop is watching, which comes from OTHER
         // sessions and so is not covered by any yes about this one.
         nudgeEvidence: false,
+        browser: false,
+        browserImages: false,
         // Nor does it consent to prior turns: an unmentioned ceiling is 0.
         historyBudget: 0,
       })
@@ -160,6 +164,8 @@ describe('readDecisions', () => {
         compaction: false,
         memoryText: false,
         nudgeEvidence: false,
+        browser: false,
+        browserImages: false,
         // Absent from this payload, so the ceiling reads as 0 — the shipped
         // default, and the least that can leave the machine.
         historyBudget: 0,

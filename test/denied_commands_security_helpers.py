@@ -48,8 +48,7 @@ class _PacketlessProbeSocket(_argv_floor.socket.socket):
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture on the shared monkeypatch, moved verbatim; tracked for a de-flake pass
-def _own_address_probe_stays_local(monkeypatch):
+def _own_address_probe_stays_local(_floor_monkeypatch):
     """Every ``ssh``-family verdict in a module importing this fixture seeds the own-host set.
 
     The first ``is_denied("ssh ...")`` in the process runs ``_own_host_seed``
@@ -67,12 +66,14 @@ def _own_address_probe_stays_local(monkeypatch):
     instead of starting a thread. Hosts-file tests name their own file and
     warm it explicitly.
     """
-    monkeypatch.setattr(_argv_floor.socket, "socket", _PacketlessProbeSocket)
-    monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
-    monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: ())
-    monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_CACHE", {})
-    monkeypatch.setattr(_argv_floor, "_HOSTS_WARM_IN_FLIGHT", False, raising=False)
-    monkeypatch.setattr(_argv_floor, "_schedule_hosts_file_warm", lambda: None, raising=False)
+    _floor_monkeypatch.setattr(_argv_floor.socket, "socket", _PacketlessProbeSocket)
+    _floor_monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+    _floor_monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: ())
+    _floor_monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_CACHE", {})
+    _floor_monkeypatch.setattr(_argv_floor, "_HOSTS_WARM_IN_FLIGHT", False, raising=False)
+    _floor_monkeypatch.setattr(
+        _argv_floor, "_schedule_hosts_file_warm", lambda: None, raising=False
+    )
 
 
 # ── Guarded literals ────────────────────────────────────────────────────────

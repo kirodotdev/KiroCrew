@@ -84,7 +84,7 @@ describe('ChatInput binding to the shared mapping (#5486 / #8193)', () => {
     // semantics — re-verify this contract against it before adding one.
     const calls = composerSources.flatMap(src => src.match(/(?<!function\s)toApiDecision\(/g) ?? [])
     expect(calls).toHaveLength(1)
-    expect(source).toContain('api.resolveApproval(approvalId, toApiDecision(decision))')
+    expect(source).toContain('api.resolveApproval(approvalId, toApiDecision(decision), undefined, responseId)')
   })
 
   it('does not re-declare the mapping locally', () => {

@@ -18,7 +18,8 @@ import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-from kiro_crew.config.loader import config_path, read_config_text
+from kiro_crew.config.loader import config_local_path, config_path, read_config_text
+from kiro_crew.config.resolution import _deep_merge
 from kiro_crew.cpu_affinity import affinity_cpu_count
 
 logger = logging.getLogger("kiro_crew.embeddings")
@@ -282,21 +283,33 @@ _PROGRESS_EVERY_BYTES = 16 << 20
 
 
 def _read_memory_config() -> dict:
-    """Read the raw ``memory`` section of ``config.json``. Never raises.
+    """Read the raw ``memory`` section, ``config.local.json`` over ``config.json``. Never raises.
 
     Read raw rather than through the config loader so the download thread and
     the backend factory never depend on the config dataclass import graph
-    (which imports large parts of the package).
+    (which imports large parts of the package). The overlay's keys win, as they
+    do for the loader: a knob set only in ``config.local.json`` is the one the
+    loader and Settings report, so it must be the one the embedder runs with.
+    A file that is absent or unreadable contributes nothing.
     """
+    # Whole documents are merged before ``memory`` is read, as the loader does: an
+    # overlay ``"memory": null`` replaces the base section rather than vanishing.
+    merged: dict = {}
+    for path in (config_path(), config_local_path()):
+        merged = _deep_merge(merged, _config_document(path))
+    section = merged.get("memory", {})
+    return section if isinstance(section, dict) else {}
+
+
+def _config_document(path) -> dict:
+    """One config file as an object, or ``{}`` when absent or unreadable. Never raises."""
     try:
-        path = config_path()
         if path.exists():
             data = json.loads(read_config_text(path))
-            section = data.get("memory", {})
-            if isinstance(section, dict):
-                return section
+            if isinstance(data, dict):
+                return data
     except Exception:
-        logger.debug("Could not read the memory config section", exc_info=True)
+        logger.debug("Could not read %s for the memory config section", path, exc_info=True)
     return {}
 
 
@@ -311,6 +324,16 @@ def embedding_idle_evict_secs() -> float:
     if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw >= 0:
         return float(raw)
     return _DEFAULT_IDLE_EVICT_SECS
+
+
+def embedding_weight_repack() -> bool:
+    """Whether llama.cpp keeps its CPU-repacked copy of the embedding weights.
+
+    Raw ``memory`` section, read once per model load. Only an explicit ``false``
+    turns repacking off; anything else keeps llama.cpp's default (on), so vectors
+    stay what they were unless the operator opts out.
+    """
+    return _read_memory_config().get("embedding_weight_repack") is not False
 
 
 def _embed_threads() -> int:

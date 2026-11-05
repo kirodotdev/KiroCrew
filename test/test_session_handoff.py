@@ -535,6 +535,7 @@ def test_a_handoff_to_a_receiver_at_the_slot_cap_is_refused(tmp_path, monkeypatc
         _hand(state, lead, worker, conductor)
 
     assert err.value.code == "creator_slot_cap_reached"
+    assert err.value.status == 409
     assert session_managers.holder(worker) == lead.key
 
 

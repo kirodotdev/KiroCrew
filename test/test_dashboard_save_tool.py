@@ -1,16 +1,8 @@
 """Tests for ``dashboard_save`` -- the call that puts a composed page IN FORCE.
 
-There is no preview gate: the owner crewmate's package is stored and
-drawn at once, as an instance version, and one ``dashboard_rollback`` goes back to
-any earlier version -- another package version or the template page.
-
-The binding is derived from the vetted caller on the server and never read out of
-the body, so a save only ever writes the caller's own package.
-
-Nothing here reimplements the store's own write gate. The save runs
-``canonical_package_content`` -- the same function ``ArtifactStore.create`` and
-``.update`` run -- and the refusal tests send packages each guard refuses and
-assert the save answers 400 with nothing stored.
+There is no preview gate; ``dashboard_rollback`` goes back to any earlier version. The
+binding comes from the vetted caller, never the body. The save runs the store's own
+``canonical_package_content``, so refusals answer 400 with nothing stored.
 """
 
 from __future__ import annotations
@@ -80,11 +72,8 @@ def _package_body() -> dict[str, Any]:
 class _Store:
     """A stand-in for ``ArtifactStore`` that keeps the real write gate.
 
-    The gate is the point of the test, so this does NOT fake it: ``create`` and
-    ``update`` call ``parse_package`` exactly where the real store calls
-    ``canonical_package_content``, and raise the same
-    ``ArtifactValidationError``. What is faked is only the filesystem -- the
-    records live in a dict -- so a route test needs no artifact home.
+    ``create`` and ``update`` call ``parse_package`` where the real store does; only
+    the filesystem is faked (records live in a dict).
     """
 
     def __init__(self) -> None:
@@ -155,11 +144,8 @@ def store(monkeypatch) -> _Store:
 async def _client(monkeypatch, *, resolved: tuple[str, str, str] | None = (SLUG, CREW, "slot-1")):
     """The panel routes with the caller already vetted, or already refused.
 
-    ``resolved=None`` is the shape every caller the shared gate turns away has --
-    a subagent with no dashboard slot, a cookie-only caller, an app identity, a
-    restricted session. Those refusals are ``_resolve_dashboard_caller``'s and are
-    proven on its own tests; what this file has to prove is that a save ASKS it
-    and writes nothing when it says no.
+    ``resolved=None`` is any caller ``_resolve_dashboard_caller`` turns away; this file
+    proves only that a save asks it and writes nothing on a no.
     """
 
     async def _resolve(_request, _operation):
@@ -626,12 +612,8 @@ async def test_a_lone_surrogate_is_refused(monkeypatch, store):
 async def test_a_lone_surrogate_never_reaches_the_real_store_either(monkeypatch, tmp_path):
     """The same body with a REAL store behind the route, which it must never reach.
 
-    The refusal is the save's now, because the save runs the dashboard gate itself
-    and nothing is handed to a store until an apply. So the thing worth pinning
-    with a real store wired up is that the store stays EMPTY: no record, and no
-    apply to make one, because the package was refused while the agent was still
-    composing. The store's own refusal, for every other caller, is pinned in
-    ``test_artifact_update_refuses_a_surrogate_the_same_way``.
+    The save refuses before any store write, so the store stays EMPTY. The store's own
+    refusal is pinned in ``test_artifact_update_refuses_a_surrogate_the_same_way``.
     """
     from kiro_crew.artifacts import ArtifactStore
 
@@ -653,12 +635,8 @@ async def test_a_lone_surrogate_never_reaches_the_real_store_either(monkeypatch,
 async def test_artifact_update_refuses_a_surrogate_the_same_way(tmp_path):
     """The store's OWN refusal, on ``update`` as well as ``create``.
 
-    The clean refusal belongs to the store, so it holds for every caller --
-    including a plain ``artifact_update`` the save route never touches.
-    ``_validate_content`` is the first call in both methods and it measures
-    content by encoding it, and content holding an unpaired surrogate cannot be
-    encoded at all: answering that with ``UnicodeEncodeError`` would turn an
-    artifact a caller can fix into a 500.
+    ``_validate_content`` measures content by encoding it, and an unpaired surrogate
+    cannot be encoded: a raw ``UnicodeEncodeError`` would turn a fixable artifact into a 500.
     """
     from kiro_crew.artifact_store.model import ArtifactValidationError
     from kiro_crew.artifacts import ArtifactStore
@@ -705,23 +683,10 @@ async def test_artifact_update_refuses_a_surrogate_the_same_way(tmp_path):
 async def test_a_credential_shaped_field_name_is_refused_at_save(monkeypatch, store):
     """A name a redactor would mask is refused HERE, and nothing is written.
 
-    The field-name grammar both sides enforce, ``[a-z][a-z0-9_]{0,63}``, admits a
-    credential shape: ``ghp_`` plus 36 lowercase characters satisfies it. The page
-    refuses a read whose declared names a redactor would rewrite, and it refuses
-    the WHOLE read, because a field name is the key joining the read's fields, the
-    frame's blocks and the page's cells. So a save that stored such a name would
-    succeed and hand the crewmate a page that can never render -- while this
-    route's reply says the tab draws it. That reply would be false, so the save
-    refuses instead.
-
-    The premise is asserted on the REDACTOR rather than on a hand-written pattern,
-    because the redactor is what both sides consult. A test that invented its own
-    pattern would pin a rule nothing enforces.
-
-    The refusal names a POSITION, not the name. The page's own counter withholds
-    the offending name on purpose, and the MCP boundary redacts this sentence
-    anyway, so a name would reach the agent masked while travelling raw through the
-    gateway's logs. A position resolves against the package in the agent's own hand.
+    ``[a-z][a-z0-9_]{0,63}`` admits ``ghp_`` plus 36 characters, and the page refuses
+    the whole read for such a name, so storing it would give a page that never renders.
+    The premise is asserted on the real redactor, the rule both sides consult. The
+    refusal names a POSITION, not the name, so the name never travels raw in logs.
     """
     from kiro_crew.platform import redact_via_context
 
@@ -764,17 +729,10 @@ async def test_an_ordinary_field_name_still_saves(monkeypatch, store):
 
 
 async def test_a_credential_shaped_theme_token_is_refused_too(monkeypatch, store):
-    """The THIRD name set a package carries, and the one whose grammar hides it.
+    """A credential-shaped theme token is refused like a field name.
 
-    A field name and a block id match ``[a-z][a-z0-9_]{0,63}``. A theme token is a
-    CSS custom property, ``--[a-z][a-z0-9-]{0,63}``, so a lowercase HYPHENATED
-    look-alike satisfies it where an underscored one never could -- which is how a
-    check written for the first two name sets leaves this one open.
-
-    Refused rather than redacted on the way out, for the reason the other two are:
-    a token key is a JOIN KEY. The page's own style references the variable by
-    name, so a redactor rewriting it hands back a stylesheet pointing at a property
-    that does not exist. There is no masked form that still works.
+    A token is ``--[a-z][a-z0-9-]{0,63}``, so a HYPHENATED look-alike fits it. It is a
+    join key the page's style names, so no masked form would still work.
     """
     from kiro_crew.platform import redact_via_context
 
@@ -1339,7 +1297,7 @@ def test_a_session_that_is_not_a_crewmate_has_its_page_left_unrun(glue):
     out = glue.module.verify_package_page(SLUG, "", "slot-1", _PACKAGE)
 
     assert out is not None and out["status"] == "skipped"
-    assert "not a crewmate" in out["reason"]
+    assert "not a Bot" in out["reason"]
     assert glue.ran == [] and _FakeLivePage.built == [] and glue.audited == []
 
 
@@ -1434,11 +1392,8 @@ async def test_a_saved_page_is_run_end_to_end_through_the_route(
 ):
     """The route, the real live page and the runner, with only the browser faked.
 
-    Nothing between the save and the browser is stubbed: the route stages the page, the
-    glue arms a real ``LivePage`` for the crewmate (the grant, the redaction, the feed),
-    the document is composed from a copy of that read, and the browser is handed it. What
-    comes back is the error the browser reported, placed on the line of the agent's own
-    page, and the verdict says the page ran over a synthetic copy.
+    The browser's error comes back on the line of the agent's own page, and the verdict
+    says the page ran over a synthetic copy.
     """
     fake = browser(
         events=[
@@ -1748,7 +1703,6 @@ async def test_a_save_stops_waiting_for_a_check_that_does_not_come_back(
     def _stuck(slug: str, crew: str, slot: str, package: dict[str, Any], deadline=None):
         running.set()
         release.wait(60)
-        return None
 
     monkeypatch.setattr(member_dashboard_fields, "verify_package_page", _stuck)
     monkeypatch.setattr(routes, "_await_check", _wait_ends_when(running.is_set))
@@ -1842,13 +1796,10 @@ async def test_a_save_whose_limit_has_passed_starts_no_browser_and_says_timed_ou
 
 
 def test_only_a_save_of_a_written_page_can_start_a_check():
-    """The browser is for ``dashboard_save`` of a page written as ``view.html`` and for
-    the crewmate's own ``dashboard_snapshot`` of one, and for nothing else: not a
-    ``dashboard_write``, a preview, an apply, or the load of a page.
+    """The browser runs only for ``dashboard_save`` and ``dashboard_snapshot`` of a page.
 
-    Every module that names the runner or the glue is listed; within the route module the
-    one function that starts a check is the save, and within the snapshot's module it is
-    the snapshot route, through the glue's picture-taking entry.
+    Not for a ``dashboard_write``, a preview, an apply, or a page load; every module that
+    names the runner or the glue is listed.
     """
     from source_corpus import iter_candidate_sources, src_root
 

@@ -6,7 +6,7 @@ import dataclasses
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 from aiohttp import web
@@ -47,8 +47,20 @@ def catalog(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_catalog, "list_agents", discovery)
     # The refresh scans the real agents dir and would replace a snapshot a test
     # arranged; stubbed here, asserted by its own test.
-    refresh = Mock()
+    # A landed refresh moves the installed snapshot's ticket, as the real one does.
+    tickets = [0]
+
+    def landed(**_):
+        tickets[0] += 1
+        return True
+
+    refresh = Mock(side_effect=landed)
     monkeypatch.setattr(agent_catalog, "refresh_materialized_agents", refresh)
+    monkeypatch.setattr(agent_catalog, "materialized_refresh_ticket", lambda: tickets[0])
+    heal = Mock(return_value=False)
+    monkeypatch.setattr(agent_catalog, "reset_dangling_default_agent", heal)
+    monkeypatch.setattr(agent_catalog, "materialized_snapshot_complete", lambda: True)
+    monkeypatch.setattr(agent_catalog, "materialized_skipped_stems", frozenset)
     monkeypatch.setattr(agent_catalog.agent_state, "all_fork_info", lambda: {})
     save = Mock(side_effect=AssertionError("Catalog must not persist config"))
     allocate = Mock(side_effect=AssertionError("Catalog must not allocate member memory"))
@@ -77,6 +89,7 @@ def catalog(monkeypatch, tmp_path):
         config=config,
         discovery=discovery,
         refresh=refresh,
+        heal=heal,
         save=save,
         allocate=allocate,
         state=state,
@@ -398,6 +411,7 @@ async def test_only_the_owner_s_catalog_fetch_may_reset_the_default(catalog, cal
         response = await client.get("/api/agents/catalog")
         assert response.status == 200
     catalog.refresh.assert_called_once_with(heal_default=False)
+    catalog.heal.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -405,7 +419,26 @@ async def test_the_owner_s_catalog_fetch_resets_a_dangling_default(catalog):
     async with TestClient(TestServer(catalog.app)) as client:
         response = await client.get("/api/agents/catalog")
         assert response.status == 200
-    catalog.refresh.assert_called_once_with(heal_default=True)
+    catalog.refresh.assert_called_once_with(heal_default=False)
+    catalog.heal.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_catalog_handler_uses_the_gate(catalog, monkeypatch, tmp_path):
+    # Two owner fetches and one non-owner fetch over unchanged agents
+    # directories: one scan, and the heal on each owner fetch.
+    from kiro_crew import agent_discovery
+
+    monkeypatch.setattr(agent_discovery, "AGENTS_DIR_MEMO_ENABLED", True)
+    monkeypatch.setattr(agent_catalog, "kiro_agents_dir", lambda: tmp_path / "no-agents")
+    monkeypatch.setattr(agent_catalog, "mate_agents_dir", lambda: tmp_path / "no-mates")
+    async with TestClient(TestServer(catalog.app)) as client:
+        assert (await client.get("/api/agents/catalog")).status == 200
+        assert (await client.get("/api/agents/catalog")).status == 200
+        catalog.caller.user = "another-user"
+        assert (await client.get("/api/agents/catalog")).status == 200
+    assert catalog.refresh.call_args_list == [call(heal_default=False)]
+    assert catalog.heal.call_count == 2
 
 
 @pytest.mark.asyncio

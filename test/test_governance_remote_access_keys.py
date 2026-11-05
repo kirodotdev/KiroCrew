@@ -297,7 +297,8 @@ class TestDashboardOrigins:
             parse_policy({"version": 1, "boot": {}, "dashboard_origins": {"mode": "deny"}})
 
     def test_oss_still_loads_a_deny_list(self) -> None:
-        parse_policy({"version": 1, "boot": {}, "dashboard_origins": {"mode": "deny"}})
+        ceiling = parse_policy({"version": 1, "boot": {}, "dashboard_origins": {"mode": "deny"}})
+        assert ceiling.controls["dashboard_origins"].mode == "deny"
 
     @pytest.mark.parametrize(
         "entry",
@@ -379,7 +380,8 @@ class TestDashboardOrigins:
 
     @pytest.mark.parametrize("entry", ["https://[2001:0db8:0:0:0:0:0:1]", "https://10.1"])
     def test_oss_loads_any_spelling(self, entry) -> None:
-        parse_policy({"version": 1, "boot": {}, "dashboard_origins": _allow(entry)})
+        ceiling = parse_policy({"version": 1, "boot": {}, "dashboard_origins": _allow(entry)})
+        assert ceiling.controls["dashboard_origins"].allow == (entry,)
 
     @pytest.mark.parametrize(
         ("configured", "entry"),

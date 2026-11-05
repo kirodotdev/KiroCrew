@@ -283,8 +283,12 @@ async def test_openai_compat_response_survives_a_turn_end_purge(tmp_path):
 
     tokens = ["Hello", ", ", "world", "!"]
 
-    async def fake_run_chat(_state, sl, _prompt, *, _directive_user_origin, _turn_actor):
+    async def fake_run_chat(
+        _state, sl, _prompt, *, _directive_user_origin, _turn_actor, _message_is_typed
+    ):
         assert _directive_user_origin is True
+        # The prompt is the flattened conversation, never the person's typed text.
+        assert _message_is_typed is False
         # This request carries no app claim, so the handler names no actor and the
         # turn is the dashboard caller's own. Taken as a parameter rather than
         # swallowed by `**kwargs`: a double that accepts anything cannot tell a

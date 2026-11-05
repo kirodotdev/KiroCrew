@@ -24,8 +24,7 @@ from kiro_crew.platform import update_layout
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim; no importing module calls monkeypatch.undo()
-def _isolated_module_state(monkeypatch, tmp_path):
+def _isolated_module_state(_floor_monkeypatch, tmp_path):
     """Snapshot every module global these tests mutate, then put it all back.
 
     ``_update_info``, the ring buffer and the changelog cache are process-wide,
@@ -33,13 +32,13 @@ def _isolated_module_state(monkeypatch, tmp_path):
     exactly the class of cross-test coupling this module's cache contract exists
     to prevent.
     """
-    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-    monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
-    monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
+    _floor_monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    _floor_monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
+    _floor_monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
     # The apply tests fake every git spawn, so the repo-config probe would read
     # their minimal fixture checkout as unreadable. The refusal itself is covered
     # against a real repo in test_host_git_repo_exec_neutralization.
-    monkeypatch.setattr(updates, "repo_exec_config_reason", lambda proj, **_k: "")
+    _floor_monkeypatch.setattr(updates, "repo_exec_config_reason", lambda proj, **_k: "")
     saved_info = dict(updates._update_info)
     saved_ring = list(updates._log_ring)
     saved_cache = updates._changelog_cache

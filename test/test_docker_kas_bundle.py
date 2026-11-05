@@ -29,7 +29,7 @@ KAS_ROOT = "/usr/local/share/kirocrew/kas"
 
 def _instructions() -> list[str]:
     """Logical Dockerfile instructions, read by the repository's one reader."""
-    path = ROOT / "scripts" / "crew_image_build_plan.py"
+    path = ROOT / "src/kiro_crew/apps/builtins/aws_control/crew/scripts/crew_image_build_plan.py"
     spec = importlib.util.spec_from_file_location("crew_image_build_plan_kas", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

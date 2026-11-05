@@ -66,13 +66,15 @@ class TestVaultProbe:
         TokenStore(data_home).save(_token(expires_in=-60))
         assert vault_holds_identity() is True
 
-    def test_expired_identity_with_nothing_to_renew_it_does_not_count(self, data_home, caplog):
-        """An entry that cannot answer a single callback must not capture the
-        spawn: it would only shadow a working kiro-cli login. Degrades to
-        cli-owned with a WARNING naming the identity, never the token."""
+    def test_a_lapsed_identity_is_not_signed_in_and_never_falls_back(self, data_home, caplog):
+        """A stored entry is the sign-in even when it cannot answer a callback:
+        the spawn stays Crew-owned, so it reports "not signed in" instead of
+        running as kiro-cli's account. The WARNING says how to sign in again and
+        that removing the entry hands over to kiro-cli; it never shows the token."""
         TokenStore(data_home).save(_token(expires_in=-60, refresh_token=None))
-        assert vault_holds_identity() is False
-        assert "expired social identity" in caplog.text
+        assert vault_holds_identity() is True
+        assert "kas login --provider idc" in caplog.text
+        assert "kas logout" in caplog.text and "kiro-cli's sign-in" in caplog.text
         assert "at-value" not in caplog.text
 
     def test_warn_false_keeps_the_verdict_and_logs_at_debug(self, data_home, caplog):
@@ -80,21 +82,19 @@ class TestVaultProbe:
         spawn-time WARNING: same verdicts, diagnostics at DEBUG."""
         TokenStore(data_home).save(_token(expires_in=-60, refresh_token=None))
         with caplog.at_level("DEBUG", logger="kiro_crew.auth.bridge"):
-            assert vault_holds_identity(warn=False) is False
+            assert vault_holds_identity(warn=False) is True
             with patch(
                 "kiro_crew.auth.store.TokenStore.resolve",
                 side_effect=TokenStoreError("refusing linked token-store directory"),
             ):
-                assert vault_holds_identity(warn=False) is False
-            with patch("kiro_crew.auth.store.TokenStore.resolve", side_effect=RuntimeError("boom")):
-                assert vault_holds_identity(warn=False) is False
+                assert vault_holds_identity(warn=False) is True
         bridge_records = [r for r in caplog.records if r.name == "kiro_crew.auth.bridge"]
-        assert [r.levelname for r in bridge_records] == ["DEBUG", "DEBUG", "DEBUG"]
+        assert [r.levelname for r in bridge_records] == ["DEBUG", "DEBUG"]
         assert "at-value" not in caplog.text
         caplog.clear()
         # The default still warns, for the spawn and doctor.
         with caplog.at_level("DEBUG", logger="kiro_crew.auth.bridge"):
-            assert vault_holds_identity() is False
+            assert vault_holds_identity() is True
         assert [r.levelname for r in caplog.records if r.name == "kiro_crew.auth.bridge"] == [
             "WARNING"
         ]
@@ -137,14 +137,17 @@ class TestVaultProbe:
         assert "at-value" not in line and "rt-value" not in line
         assert vault_holds_identity() is True
 
-    def test_unreadable_vault_degrades_to_no_identity(self, data_home, caplog):
-        """A vault error must not fail the spawn; it falls back to cli-owned."""
+    def test_an_unreadable_vault_entry_keeps_the_spawn_crew_owned(self, data_home, caplog):
+        """A stored entry that cannot be read is not signed in, never a silent
+        switch to kiro-cli's account: the spawn stays Crew-owned and fails there."""
+        TokenStore(data_home).save(_token())
         with patch(
             "kiro_crew.auth.store.TokenStore.resolve",
             side_effect=TokenStoreError("refusing linked token-store directory"),
         ):
-            assert vault_holds_identity() is False
-        assert "cli-owned" in caplog.text
+            assert vault_holds_identity() is True
+        assert "Crew-owned" in caplog.text
+        assert "kas logout" in caplog.text
 
     def test_unexpected_error_degrades_to_no_identity(self, data_home):
         with patch("kiro_crew.auth.store.TokenStore.resolve", side_effect=RuntimeError("boom")):

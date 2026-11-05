@@ -25,6 +25,7 @@ from typing import NamedTuple
 from kiro_crew import hooks as hooks_module
 from kiro_crew import skill_trust
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
+from kiro_crew.metrics.feature_usage import SKILL_LAZY_LOAD_COUNT, skill_label
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.sel import sel
 from kiro_crew.skills_discovery import _installed_package_bytes_match, _within_any
@@ -528,7 +529,7 @@ def load_skill(
         )
         if content is None:
             return None
-        self._emit_lazy_load_metric(_t0, hit=True)
+        self._emit_lazy_load_metric(_t0, hit=True, skill=name)
         return content
     for extra in self._extra_paths:
         skill_file = extra / name / "SKILL.md"
@@ -544,7 +545,7 @@ def load_skill(
             )
             if content is None:
                 return None
-            self._emit_lazy_load_metric(_t0, hit=True)
+            self._emit_lazy_load_metric(_t0, hit=True, skill=name)
             return content
     # A trusted project's own skills, last — same order as _iter_uncached.
     project_key = self._trusted_project_key(project_dir)
@@ -598,9 +599,9 @@ def load_skill(
             content = _decode_skill_text(raw, strict=False)
             if _html_skill_refused(self._parse_frontmatter_text(content), skill_file):
                 break
-            self._emit_lazy_load_metric(_t0, hit=True)
+            self._emit_lazy_load_metric(_t0, hit=True, skill=name)
             return content
-    self._emit_lazy_load_metric(_t0, hit=False)
+    self._emit_lazy_load_metric(_t0, hit=False, skill=name)
     return None
 
 
@@ -662,8 +663,13 @@ def _read_global_skill_text(
     return None if _html_skill_refused(self._parse_frontmatter_text(text), path) else text
 
 
-def _emit_lazy_load_metric(t0: float, *, hit: bool) -> None:
-    """Best-effort OTEL emit for on-demand skill body loads."""
+def _emit_lazy_load_metric(t0: float, *, hit: bool, skill: str | None = None) -> None:
+    """Best-effort OTEL emit for on-demand skill body loads.
+
+    The counter also carries ``skill``: the skill's id when Kiro Crew ships it,
+    ``custom`` for any other name (``metrics.feature_usage.skill_label``). The
+    duration histogram keeps ``hit`` alone.
+    """
     try:
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         attrs: dict[str, str | int | bool | float] = {"hit": hit}
@@ -673,7 +679,7 @@ def _emit_lazy_load_metric(t0: float, *, hit: bool) -> None:
             unit="ms",
             attrs=attrs,
         )
-        get_recorder().counter("kirocrew.skill.lazy_load.count", attrs=attrs)
+        get_recorder().counter(SKILL_LAZY_LOAD_COUNT, attrs={**attrs, "skill": skill_label(skill)})
     except Exception:  # never let telemetry break skill loading
         pass
 

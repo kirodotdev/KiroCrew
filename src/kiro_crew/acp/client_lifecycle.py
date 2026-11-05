@@ -26,7 +26,8 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_id``,
 ``_session_key``, ``_session_mcp_cache``, ``_session_mcp_snapshot``,
 ``_session_mcp_unhonoured``, ``_spawn_start_token``, ``_spawn_work_dir``,
-``_spec_denied_tools``, ``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``,
+``_spec_denied_tools``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
+``_spec_write_cwd``, ``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``,
 ``_stdin_stalled``, ``_windows_tree_cleanup_failed``.
 
 Instance fields read: ``_entitlement_probe_inflight``, ``_mcp_gateway_socket``,
@@ -55,6 +56,7 @@ from kiro_crew.acp.client_timeouts import (
 from kiro_crew.acp.liveness import LivenessOracle, _consume_future_exception
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_process_tree import ChildRecord
+from kiro_crew.acp.stale_compaction import clear_stale_compaction_state
 from kiro_crew.acp.transport_errors import (
     AcpDelegateLaunchFailed,
     AcpError,
@@ -86,44 +88,22 @@ logger = logging.getLogger("kiro_crew.acp.client")
 _T = TypeVar("_T")
 
 
-# High-frequency, content-free adapter stderr diagnostics that _drain_stderr()
-# drops instead of forwarding as per-line WARNINGs.  The driving case is the
-# claude-agent-acp "Unexpected case: {...thinking_tokens...}" line.  Mechanism
-# (confirmed by reading the vendored adapter, dist/acp-agent.js): the backend
-# emits a `system` message with subtype `thinking_tokens`, but the adapter's
-# `switch (message.subtype)` enumerates ~18 known subtypes (init, status,
-# compact_boundary, memory_recall, api_retry, ...) and routes anything else to
-# `default: unreachable(message)`, which does `logger.error("Unexpected case:
-# " + JSON.stringify(message))` to stderr — one line per token delta.  Measured
-# at ~10 lines/sec during active thinking (one line per 2-4 thinking tokens; the
-# payload is only estimated_tokens/_delta/uuid/session_id — no response content,
-# so dropping them loses nothing).
+# High-frequency, content-free adapter stderr lines that _drain_stderr() drops
+# instead of forwarding as per-line WARNINGs. The driving case is
+# claude-agent-acp's "Unexpected case: {...thinking_tokens...}": the adapter's
+# `switch (message.subtype)` (dist/acp-agent.js) does not list the backend's
+# `thinking_tokens` system subtype, so its `default: unreachable(message)` logs
+# one line per token delta, about 10 lines/sec while thinking. The payload is
+# only estimated_tokens/_delta/uuid/session_id, so dropping it loses nothing.
+# The real fix is upstream (add the case or bump the vendored adapter).
 #
-# This is a forward-compat gap in the adapter, NOT new behavior in a specific
-# backend build: the `thinking_tokens` event is present in both 2.1.165.357
-# and 2.1.168.358 (verified by string-matching both bundled `claude` binaries —
-# identical occurrences), so it predates the .168 update that drew attention to
-# it.  Exactly when it began appearing in our logs is unconfirmed.  The cleaner
-# long-term fix is upstream (add a `thinking_tokens` case to the adapter / bump
-# the vendored version); this filter is the version-agnostic stopgap that also
-# absorbs the next unenumerated subtype's flood.
+# Dropped rather than downgraded because gateway.log rotates at 2MB x 3
+# (cli_logging.py), so a burst would push real diagnostics out, and each
+# forwarded line costs a synchronous file write plus two redaction passes on the
+# gateway event loop. This reduces log volume; it is not a fix for any stall.
 #
-# Why drop rather than just downgrade the level:
-#   1. Log hygiene — gateway.log uses a RotatingFileHandler(maxBytes=2MB,
-#      backupCount=3) (see cli_logging.py), so a sustained burst rolls genuine
-#      diagnostics out of the retained 8MB window.
-#   2. Event-loop load — the file handler is a plain *synchronous* handler and
-#      _drain_stderr runs as a task on the gateway event loop, so each forwarded
-#      line costs a synchronous file write + two regex redaction passes on the
-#      same loop that streams responses.  Per-session the cost is small; it
-#      compounds across concurrent thinking sessions.
-# (This is a log-volume / event-loop-load reduction, NOT a fix for any
-# turn-stall or "agent not responding" symptom — no such causal link was
-# established.)
-#
-# Match on a stable substring (not the full JSON) so the filter survives field
-# changes, and keep the tuple NARROW so a genuine error line is never silently
-# swallowed.
+# Match a stable substring, not the full JSON, and keep the tuple NARROW so a
+# genuine error line is never swallowed.
 _SUPPRESSED_STDERR_MARKERS = ("thinking_tokens",)
 
 
@@ -684,6 +664,9 @@ def _reset_state(self: AcpClient) -> None:
     # what the next session's guard judges, not this one's.
     self._mcp_ref_spec = None
     self._spec_denied_tools = frozenset()
+    self._spec_shell_allowlist = None
+    self._spec_write_allowlist = None
+    self._spec_write_cwd = ""
     self._spec_zero_tools = False
     self._session_mcp_unhonoured = frozenset()
     self._session_harness_deny_rules = ()
@@ -722,6 +705,8 @@ def _reset_state(self: AcpClient) -> None:
     # harness transcript (restore_cost_session keeps the baseline). Zeroing
     # here re-billed the whole lifetime on the first turn after every resume.
     self._buffer.clear()
+    # The replacement process cannot send an abandoned compaction's terminal.
+    clear_stale_compaction_state(self)
     self._stderr_lines.clear()
     # A fresh process opens a fresh registration window: cleared WITH the
     # ring, so the latch and the evidence it gates always describe the same

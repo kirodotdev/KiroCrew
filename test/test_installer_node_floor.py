@@ -77,6 +77,7 @@ def _run_with_node(tmp_path: Path, version: str | None) -> int:
         env={"PATH": f"{binbox}:{tools}"},
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     ).returncode
 
@@ -115,6 +116,7 @@ class TestNodeFloorIsAuthoritative:
             env={"PATH": str(binbox) + ":" + os.environ.get("PATH", "")},
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
         )
         assert out.returncode != 0, "a broken node binary was treated as supported"
@@ -135,3 +137,83 @@ class TestFrontendBuildHeadroom:
         text = INSTALL_SH.read_text(encoding="utf-8")
         assert text.count("NODE_MIN_VERSION=") == 1
         assert "NODE_MIN_MAJOR" not in text
+
+
+def _function_source(text: str, name: str) -> str:
+    start = text.index(f"{name}() {{")
+    end = text.index("\n}", start) + len("\n}")
+    return text[start:end]
+
+
+class TestDistroNodeIsRaisedToTheFloor:
+    """A fresh Amazon Linux 2023 host has no node, so the dnf branch runs and
+    dnf ships node 18. Kept as is, the dashboard build fails under it; the
+    branch must swap it for a supported node."""
+
+    def _run_node_to_floor(
+        self, tmp_path: Path, distro_version: str
+    ) -> subprocess.CompletedProcess[str]:
+        text = INSTALL_SH.read_text(encoding="utf-8")
+        distro = tmp_path / "distro"
+        distro.mkdir()
+        _write_node(distro / "node", distro_version)
+        good = tmp_path / "ensured"
+        good.mkdir()
+        _write_node(good / "node", "v24.5.1")
+        tools = tmp_path / "tools"
+        tools.mkdir()
+        for util in ("sed", "cut", "sh", "env", "cat"):
+            real = shutil.which(util)
+            if real:
+                (tools / util).symlink_to(real)
+        # ensure-node.sh stands in as a stub that puts a supported node first
+        # on PATH, which is what the real helper does through node-bin-dir.
+        script = "\n".join(
+            [
+                _helper_source(),
+                'ok() { echo "OK $1"; }',
+                'info() { echo "INFO $1"; }',
+                'warn() { echo "WARN $1"; }',
+                'NODE_VERSION="24"',
+                f'install_node_via_ensure() {{ echo ENSURE; PATH="{good}:$PATH"; }}',
+                _function_source(text, "node_to_floor"),
+                "node_to_floor dnf",
+                "",
+            ]
+        )
+        bash = shutil.which("bash")
+        if bash is None:  # pragma: no cover - POSIX hosts always have bash
+            pytest.skip("bash not available")
+        return subprocess.run(
+            [bash, "-c", script],
+            env={"PATH": f"{distro}:{tools}"},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+
+    def test_an_under_floor_distro_node_escalates_to_ensure_node(self, tmp_path: Path) -> None:
+        out = self._run_node_to_floor(tmp_path, "v18.20.8")
+        assert "ENSURE" in out.stdout, out.stdout
+        assert "OK Node.js v24.5.1 now active" in out.stdout, out.stdout
+        assert "installed via dnf" not in out.stdout, out.stdout
+
+    def test_a_supported_distro_node_is_kept(self, tmp_path: Path) -> None:
+        out = self._run_node_to_floor(tmp_path, "v22.20.1")
+        assert "ENSURE" not in out.stdout, out.stdout
+        assert "OK Node.js v22.20.1 installed via dnf" in out.stdout, out.stdout
+
+    def test_every_distro_branch_goes_through_the_floor_check(self) -> None:
+        """apt, dnf and brew can each ship a node below the floor."""
+        text = INSTALL_SH.read_text(encoding="utf-8")
+        section = text[
+            text.index('info "Checking Node.js…"') : text.index("fi # USE_MISE -eq 0 (Node.js)")
+        ]
+        for manager in ("apt", "dnf", "brew"):
+            assert f"node_to_floor {manager}" in section, manager
+
+
+def _write_node(path: Path, version: str) -> None:
+    path.write_text(f'#!/bin/sh\n[ "$1" = "--version" ] && echo "{version}"\n')
+    path.chmod(0o755)

@@ -15,7 +15,7 @@ import asyncio
 import pytest
 from overload_fakes import settle_dependency_park, settle_store_writes
 
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 from kiro_crew.workflows.agent_pool import _WorkflowSessionWorker, build_pooled_agent_fn
 
 
@@ -38,6 +38,10 @@ class _FakeProvider:
 
     def is_process_alive(self) -> bool:
         return self.alive
+
+    def set_delete_delay(self, seconds: float) -> None:
+        # ``LLMProvider``'s default: a provider that ends its sessions as before.
+        return None
 
 
 class _FakeSessions:
@@ -584,6 +588,9 @@ class _ClockProvider:
 
     def is_process_alive(self) -> bool:
         return True
+
+    def set_delete_delay(self, seconds: float) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -1347,3 +1354,134 @@ async def test_the_cheap_reuse_path_still_ends_the_previous_conversations_childr
         "the reused worker kept the previous conversation's children, so one of them can "
         "inject into the next task's conversation"
     )
+
+
+class _DelayRecordingProvider(_FakeProvider):
+    def __init__(self, tag: str) -> None:
+        super().__init__(tag)
+        self.delete_delays: list[float] = []
+
+    def set_delete_delay(self, seconds: float) -> None:
+        self.delete_delays.append(seconds)
+        sink = getattr(self, "order_sink", None)
+        if sink is not None:
+            sink.append(("delete_delay", seconds))
+
+
+def _configured_delete_delay(monkeypatch, delay):
+    """``session.kas_delete_delay_secs`` as the worker reads it, from the loader."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = SimpleNamespace(session=SimpleNamespace(kas_delete_delay_secs=delay))
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+    return cfg
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delay", [0, 1800])
+async def test_a_worker_passes_the_configured_delete_delay_to_its_session(monkeypatch, delay):
+    """Each reuse ends the previous step's conversation, so the worker's provider is
+    told how long that conversation's record waits before it is deleted."""
+    _configured_delete_delay(monkeypatch, delay)
+    sessions = _FakeSessions()
+    provider = _DelayRecordingProvider(tag="wf-pool:d1:0")
+    sessions.live["wf-pool:d1:0"] = provider
+    worker = _WorkflowSessionWorker(sessions, key="wf-pool:d1:0", agent=None, model=None, cwd=None)
+
+    await worker.start()
+
+    assert provider.delete_delays == [float(delay)]
+
+
+@pytest.mark.asyncio
+async def test_a_start_cancelled_while_reading_the_delete_delay_holds_no_session(monkeypatch):
+    """The setting is read before the session is acquired, so a start cancelled in that
+    read leaves no session held with no worker to release it."""
+    import threading
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    entered, go_on = threading.Event(), threading.Event()
+
+    def slow_load(cls):
+        entered.set()
+        go_on.wait(default_timeout())
+        return SimpleNamespace(session=SimpleNamespace(kas_delete_delay_secs=0))
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(slow_load))
+    sessions = _FakeSessions()
+    worker = _WorkflowSessionWorker(sessions, key="wf-pool:d3:0", agent=None, model=None, cwd=None)
+
+    starting = asyncio.create_task(worker.start())
+    try:
+        await async_wait_until(entered.is_set, describe=lambda: "config load not entered")
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await await_until(starting, what="the cancelled start")
+    finally:
+        go_on.set()
+        if not starting.done():
+            starting.cancel()
+        await await_until(
+            asyncio.gather(starting, return_exceptions=True), what="the start settling"
+        )
+
+    assert sessions.cold_starts == 0
+
+
+@pytest.mark.asyncio
+async def test_a_reuse_reads_the_delete_delay_again_before_the_conversation_ends(monkeypatch):
+    """A changed setting applies to the conversation the next reuse ends: the worker
+    reads it again at reuse, not only when it starts."""
+    cfg = _configured_delete_delay(monkeypatch, 0)
+    sessions = _FakeSessions()
+    provider = _DelayRecordingProvider(tag="wf-pool:d2:0")
+    sessions.live["wf-pool:d2:0"] = provider
+    worker = _WorkflowSessionWorker(sessions, key="wf-pool:d2:0", agent=None, model=None, cwd=None)
+    await worker.start()
+
+    cfg.session.kas_delete_delay_secs = 1800
+    provider.order_sink = []
+    await worker.reset()
+
+    assert provider.order_sink == [("delete_delay", 1800.0), "new_conversation"]
+
+
+@pytest.mark.asyncio
+async def test_a_claude_worker_is_reused_by_kill_and_respawn_and_says_so(caplog):
+    """A claude-backed worker has no cheap reset, so its reuse cold-starts, visibly.
+
+    ``AcpProvider.new_conversation`` on a backend served by its own ``AcpClient`` raises
+    ``NotImplementedError`` naming the backend. The pool must still take the hard reset,
+    so no prior-task context survives, and must say at INFO that the reuse paid a cold
+    start, because that is the cost an operator sees and would otherwise find no reason
+    for in the default log.
+    """
+    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+    from kiro_crew.providers.acp import AcpProvider
+
+    claude = AcpProvider.__new__(AcpProvider)
+    claude._client = AcpClient(acp_backend=ACP_BACKEND_CLAUDE)
+    sessions = _FakeSessions()
+    key = "wf-pool:run-cc:0"
+    sessions.live[key] = claude
+    worker = _WorkflowSessionWorker(sessions, key=key, agent="kirocrew", model=None, cwd=None)
+    await worker.start()
+    assert worker._provider is claude
+
+    with caplog.at_level("INFO", logger="kiro_crew.workflows.agent_pool"):
+        await worker.reset()
+
+    assert sessions.resets == 1, "the claude worker kept its conversation across reuse"
+    assert sessions.reset_intents == [True]
+    assert sessions.cold_starts == 1, "the hard reset did not re-acquire a fresh session"
+    assert worker._provider is not claude
+    cold = [
+        r for r in caplog.records if r.levelname == "INFO" and "cold-starts for reuse" in r.message
+    ]
+    assert len(cold) == 1, [r.getMessage() for r in caplog.records]
+    assert "'claude'" in cold[0].getMessage()

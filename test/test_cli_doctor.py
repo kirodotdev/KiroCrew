@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -226,42 +227,6 @@ class TestDataHome:
         assert "Data Home" in out
         assert "legacy:" not in out
         assert "rm -rf" not in out
-
-    def test_a_workspace_root_over_the_data_home_is_flagged(
-        self, monkeypatch, tmp_path: Path, capsys
-    ) -> None:
-        from kiro_crew.browser_cli import install as browser_install
-
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-        home = tmp_path / ".kiro" / "crew"
-        home.mkdir(parents=True)
-        monkeypatch.setattr(cli_doctor, "config_dir", lambda: home)
-        monkeypatch.setattr(browser_install, "_agent_writable_roots", lambda: (tmp_path.resolve(),))
-
-        cli_doctor._doctor_data_home()
-
-        out = capsys.readouterr().out
-        assert f"workspace:   ⚠️  {str(tmp_path.resolve())!r} contains the data home" in out
-        assert "outside the data home" in out
-
-    def test_a_workspace_root_beside_the_data_home_is_not_flagged(
-        self, monkeypatch, tmp_path: Path, capsys
-    ) -> None:
-        from kiro_crew.browser_cli import install as browser_install
-
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-        home = tmp_path / ".kiro" / "crew"
-        home.mkdir(parents=True)
-        workspace = tmp_path / "workplace" / "kirocrew-workspace"
-        workspace.mkdir(parents=True)
-        monkeypatch.setattr(cli_doctor, "config_dir", lambda: home)
-        monkeypatch.setattr(
-            browser_install, "_agent_writable_roots", lambda: (workspace.resolve(),)
-        )
-
-        cli_doctor._doctor_data_home()
-
-        assert "workspace:" not in capsys.readouterr().out
 
     def test_location_prints_the_symlink_resolved_spelling(
         self, monkeypatch, tmp_path: Path, capsys
@@ -1488,10 +1453,16 @@ class TestRuntimeTmpfs:
         monkeypatch.setattr(cli_doctor.os, "statvfs", _boom, raising=False)
         assert cli_doctor._tmpfs_usage("/nope") is None
 
-    def test_usage_is_none_without_statvfs(self, monkeypatch, tmp_path) -> None:
-        # The Windows shape: ``os`` has no ``statvfs`` at all.
+    def test_usage_without_statvfs_reads_space_only(self, monkeypatch, tmp_path) -> None:
+        # The Windows shape: ``os`` has no ``statvfs`` at all, so free space
+        # comes from ``shutil.disk_usage`` and inodes read as unconstrained.
         monkeypatch.delattr(cli_doctor.os, "statvfs", raising=False)
-        assert cli_doctor._tmpfs_usage(str(tmp_path)) is None
+        usage = SimpleNamespace(total=1000, used=600, free=400)
+        monkeypatch.setattr(shutil, "disk_usage", lambda root: usage)
+        free_space_pct, free_inode_pct, _free_inodes, _entries = cli_doctor._tmpfs_usage(
+            str(tmp_path)
+        )
+        assert (free_space_pct, free_inode_pct) == (40.0, 100.0)
 
 
 class TestTempDirectories:
@@ -1853,6 +1824,9 @@ class TestGatewayMemoryLines:
         monkeypatch.setattr(cli_doctor, "_read_gateway_pid", lambda: 4242)
         monkeypatch.setattr(cli_doctor.platform_compat, "proc_rss_bytes_for_pid", lambda pid: None)
         monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "darwin_resident_bytes_for_pid", lambda pid: None
+        )
         monkeypatch.setattr(
             cli_doctor.platform_compat, "trusted_system_bin", lambda name: "/bin/ps"
         )

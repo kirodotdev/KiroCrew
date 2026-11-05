@@ -33,17 +33,9 @@ from kiro_crew.discord.client import DiscordClient as _RealDiscordClient
 from kiro_crew.messaging.link import ChannelLink, binding_token
 
 #: Channels whose REAL capabilities refuse a proactive send, so the mirror-link
-#: gate must reject them. Pinned as a set as well as derived below, so unlocking
-#: one is a NAMED failure in ``test_the_proactive_split_matches_the_shipped_caps``
-#: rather than a parametrized suite that quietly stops driving anything.
-#:
-#: Membership tracks a capability declaration, not a policy: WeCom left when it
-#: gained a proactive path over its long connection, and Feishu arrived declaring
-#: ``supports_proactive_send=False`` because its v1 renderer only ever replies to
-#: an inbound ``message_id``. The rejection branch below is nonetheless driven by a
-#: SYNTHETIC capability rather than by whoever happens to be in this set: the set
-#: has been empty before and will be again, and a branch whose only coverage is a
-#: roster entry stops being covered the moment that entry graduates.
+#: gate must reject them. Pinned as a set so an unlock is a NAMED failure in
+#: ``test_the_proactive_split_matches_the_shipped_caps``. The rejection branch is
+#: driven by a SYNTHETIC capability, because this set can be empty.
 NON_PROACTIVE_CHANNELS: set[str] = {"feishu"}
 
 
@@ -57,14 +49,10 @@ def _channels_declaring_proactive(supported: bool) -> list[str]:
 
 
 def _caps_transport(channel_type: str, **overrides):
-    """A fake transport whose capabilities are SYNTHETIC, for a branch no shipped
-    channel exercises any more.
+    """A fake transport whose capabilities are SYNTHETIC, for a branch no shipped channel hits.
 
-    Deliberately separate from :func:`_real_caps_transport`: that one exists so the
-    gate is pinned against the real declaration and an unlock is observable, and
-    this one must not be reachable from it. Every shipped channel now declares
-    ``supports_proactive_send=True``, so the refusing branch has no real subject —
-    but the gate still has to refuse, and this is the only honest way to say so.
+    Kept apart from :func:`_real_caps_transport`, which pins the gate against the real
+    declarations so an unlock is observable.
     """
     from kiro_crew.messaging.transport import TransportCapabilities
 
@@ -140,16 +128,9 @@ class TestMirrorLink:
         transport = _fake_transport("telegram")
 
         def _permits(*args, **kwargs):
-            # A PREDICATE, not a call counter. The old version denied on the
-            # third governance consult, which silently depended on exactly two
-            # consults happening before the loop — change how many messages the
-            # backfill selects, or add a pre-loop check, and the denial lands on
-            # a pre-loop gate while every assertion below still passes, so the
-            # test stops guarding the path it was written for.
-            #
-            # Keying on "has the transport already delivered?" pins the denial
-            # to the first in-loop unit regardless of selection size: the
-            # announcement is the only send before the loop.
+            # A predicate, not a call counter: a counter would land the denial on a
+            # pre-loop gate if the consult count changed. The announcement is the only
+            # send before the loop, so this denies the first in-loop unit.
             return SimpleNamespace(
                 permitted=not transport.send_message.await_args_list,
                 rule="",
@@ -244,13 +225,10 @@ class TestMirrorLink:
             assert resp.status == 503
 
     def test_the_proactive_split_matches_the_shipped_caps(self):
-        """The two suites below are only as honest as this roster.
+        """A change to any channel's ``supports_proactive_send`` fails HERE, named.
 
-        Derived from the shipped objects, so a channel that starts or stops
-        declaring ``supports_proactive_send`` fails HERE, named, instead of
-        migrating between the suites without a word. The acceptance half is
-        checked for non-vacuity too: an empty parametrize list is a green test
-        that drives nothing.
+        The acceptance half is checked for non-vacuity: an empty parametrize list is
+        a green test that drives nothing.
         """
         assert _channels_declaring_proactive(False) == sorted(NON_PROACTIVE_CHANNELS), (
             "A channel's supports_proactive_send declaration changed. The mirror-link "
@@ -269,14 +247,8 @@ class TestMirrorLink:
     async def test_non_proactive_channel_rejected(self, tmp_path, monkeypatch):
         """The gate must refuse a transport that declares no proactive send.
 
-        Driven by a SYNTHETIC capability rather than by a shipped channel that
-        declares ``False``, so this branch keeps its coverage across a roster that
-        churns: ``NON_PROACTIVE_CHANNELS`` has been empty before, and a test
-        parametrized over it would have gone vacuously green instead of red. The
-        real-capability version is `test_proactive_channel_accepted`, which covers
-        every shipped channel; this one keeps the refusing branch alive, because a
-        mirror binding on a transport that cannot send unattended promises a
-        delivery it will never make.
+        Driven by a SYNTHETIC capability because ``NON_PROACTIVE_CHANNELS`` can be
+        empty, and a test parametrized over it would go vacuously green.
         """
         channel = "synthetic"
         state = _prep(tmp_path, monkeypatch)
@@ -377,13 +349,10 @@ class TestMirrorLink:
 
     @pytest.mark.asyncio
     async def test_an_allow_listed_telegram_dm_links(self, tmp_path, monkeypatch):
-        """The dashboard-direction repro, on the REAL transport's authorization.
+        """An allow-listed Telegram DM links, on the REAL transport's authorization.
 
-        The permissive ``_fake_transport`` cannot catch this: its ``may_send_to``
-        answers True for anything, while Telegram's real one tests the id against
-        a roster of BARE user ids. A pre-check that hands it the configured
-        -target spelling (``user:123``) can never match, so it refuses a
-        recipient the user explicitly allow-listed.
+        Telegram's ``may_send_to`` checks BARE user ids, so a pre-check that passes
+        the target spelling (``user:123``) refuses an allow-listed recipient.
         """
         from kiro_crew.telegram.transport import TelegramTransport
 
@@ -438,15 +407,10 @@ class TestMirrorLink:
     async def test_a_recipient_refusal_after_resolution_is_403_and_audited(
         self, tmp_path, monkeypatch
     ):
-        """Moving the recipient leg after the resolve must not delete it.
+        """A roster refusal after the resolve is a 403: nothing sent or persisted, denial audited.
 
-        A transport whose resolver still yields a conversation while its roster
-        refuses the recipient (a roster narrowed between the two, or a resolver
-        that does not itself consult it) must be refused with the same 403
-        contract, with nothing sent, nothing persisted, and the denial on the
-        SEL trail — an unaudited authz denial is a security-contract regression.
-        The audit is recorded by the shared ``_authorize_recipient`` helper in
-        ``chat_runner``, which is why the seam patched here is that module's.
+        The audit is written by ``_authorize_recipient`` in ``chat_runner``, hence the
+        patched seam.
         """
         recorded: list[dict[str, Any]] = []
         monkeypatch.setattr(
@@ -497,15 +461,12 @@ class TestMirrorLink:
     async def test_the_recipient_check_receives_the_resolved_id_and_principal(
         self, tmp_path, monkeypatch
     ):
-        """The re-decision runs against the RESOLVED conversation id, with the
-        principal taken from the target spelling — the posture
-        ``handlers/messaging._deliver_channel_dm`` already established for a
-        ``user:<id>``-shaped target. That is what lets a transport whose
-        conversation id is opaque (Discord's DM channel id) reach its roster.
-        The decision is audited on the ALLOWED outcome too, like the resolver
-        audit beside it: both are authorization decisions at an egress boundary.
-        Recorded by the shared ``_authorize_recipient`` helper in ``chat_runner``,
-        hence the patched seam."""
+        """The recheck gets the RESOLVED id and the principal from the target spelling.
+
+        That lets a transport with an opaque conversation id (Discord DM) reach its
+        roster. The ALLOWED outcome is audited too, by ``_authorize_recipient`` in
+        ``chat_runner``, hence the patched seam.
+        """
         recorded: list[dict[str, Any]] = []
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_runner.sel",
@@ -540,13 +501,9 @@ class TestMirrorLink:
 class _FakeDiscordClient(_RealDiscordClient):
     """The real client with only its NETWORK edges replaced.
 
-    ``_api`` answers the one route the mirror-link handler reaches -- ``POST
-    /users/@me/channels``, Discord's own statement of which DM channel belongs to a
-    user -- from ``dm_for_user``; ``send_message`` records instead of posting;
-    ``is_thread_channel`` says yes. Everything that matters here is inherited and
-    real: ``create_dm_channel`` leaving the ``dm_channel_id -> user_id`` pairing
-    behind and ``cached_dm_recipient`` reading it back. A hand-written pairing
-    store would test the fake, not the fix.
+    ``_api`` answers ``POST /users/@me/channels`` from ``dm_for_user``. The
+    ``dm_channel_id -> user_id`` pairing in ``create_dm_channel`` and
+    ``cached_dm_recipient`` stays real, so the test does not pin a fake.
     """
 
     def __init__(self) -> None:
@@ -575,14 +532,9 @@ class _FakeDiscordClient(_RealDiscordClient):
 class TestADiscordDmMirrorOfADashboardSession:
     """The dashboard menu link to a Discord DM, end to end through the REAL transport.
 
-    A dashboard-born slot's session key (``dashboard:chat-<n>-<ts>``) names no
-    peer, and Discord's DM channel id is unrelated to the user snowflake its roster
-    holds. So the link handler's own post-claim ladder recheck, and every later
-    dashboard-driven delivery, could only pass the recipient leg with a principal
-    from somewhere else: the record the gateway writes when it admits the mirror --
-    the peer, in the same write as the conversation id, under a MAC only the
-    gateway can mint. The session store here is the shared double, which signs a
-    principal-bearing row exactly as ``SessionMap.set_mirror_link`` does.
+    A dashboard session key names no peer and a Discord DM id is not the user id, so
+    the recipient check reads the principal from the MAC-signed mirror record. The
+    store double signs that row as ``SessionMap.set_mirror_link`` does.
     """
 
     _SLOT = "chat-1-1700000000"
@@ -766,13 +718,10 @@ class TestADiscordDmMirrorOfADashboardSession:
     async def test_a_stale_requests_rollback_leaves_a_refreshed_relink_in_place(
         self, tmp_path, monkeypatch
     ):
-        """Two link requests for the same DM overlap: the first claims, then fails its
-        test message; while it is failing, the signing key rotates and a second request
-        re-links the same session to the same conversation under a fresh admission.
-        The first request's rollback owns only its OWN row. A location match would
-        call the refreshed row its own, clear it and put the obsolete state back, after
-        which every reply refuses; whole-row identity leaves the newer row alone and
-        it keeps delivering under the rotated key.
+        """A failed link's rollback leaves a newer relink of the same DM in place.
+
+        Rollback matches the whole row, not the location, so a relink under a rotated
+        key survives and keeps delivering.
         """
         import dataclasses
         import secrets
@@ -842,13 +791,8 @@ class TestMirrorUnlink:
     async def test_a_stale_row_cannot_unlink_a_replacement_binding(self, tmp_path, monkeypatch):
         """The menu names the binding it believes it is severing; a mismatch clears nothing.
 
-        Two tabs: one misses a slots push while its socket reconnects and still
-        shows the Discord row; the other rebinds the slot to Telegram. The first
-        tab's Unlink click must not delete the Telegram binding it never saw --
-        the answer is 409 ``mirror_changed`` and the store is untouched. The
-        same for a replacement on the SAME channel whose id shares the row's
-        redacted tail: the token is a digest of the whole binding, so a row drawn
-        from ``777001`` never names ``999777001``.
+        A stale tab's Unlink gets 409 ``mirror_changed``. The token digests the whole
+        binding, so a row drawn from ``777001`` never names ``999777001``.
         """
         state = _prep(tmp_path, monkeypatch)
         state.sessions.set_mirror_link(
@@ -913,14 +857,8 @@ class TestMirrorUnlink:
     ):
         """A binding recreated to the SAME target is a new binding, not the old row.
 
-        The ABA the coordinates alone cannot see: tab A draws the Discord row and
-        its Unlink request is delayed; meanwhile tab B unlinks and reconnects the
-        very same DM. A's request arrives naming a binding that is byte-identical
-        in channel, id and thread -- and must still be refused, because the
-        binding it names is gone and the one standing was never on A's screen.
-        The token digests the binding's own persisted nonce, minted on every
-        create or target change and dropped with the binding, so unlink ->
-        reconnect the same target yields a token the old row never carried.
+        An ABA case: the token digests a nonce minted on every create, so unlink and
+        reconnect of the same DM yields a token the old row never carried.
         """
         state = _prep(tmp_path, monkeypatch)
         target = ChannelLink(channel_type="discord", channel_id="dm-chan-9")
@@ -1013,12 +951,8 @@ class TestMirrorUnlink:
     async def test_a_garbled_body_is_refused_and_clears_nothing(self, tmp_path, monkeypatch):
         """Only an EMPTY body is "no body"; a body that is present but garbled is 400.
 
-        Reading unparseable JSON as "no body" would hand a caller that tried to
-        name a row -- and failed -- the unconditional clear, the one answer the
-        stale-row guard exists to withhold from a caller with a row in hand. So
-        malformed JSON and a JSON value that is not an object are both refused
-        with ``invalid_body`` and the binding stands; an empty body keeps the
-        unconditional clear for callers that have no row.
+        Treating bad JSON as "no body" would give the unconditional clear to a caller
+        that tried to name a row. Malformed JSON and a non-object get ``invalid_body``.
         """
         state = _prep(tmp_path, monkeypatch)
         state.sessions.set_mirror_link(
@@ -1045,11 +979,8 @@ class TestMirrorUnlink:
     async def test_an_undecodable_body_is_refused_like_a_garbled_one(self, tmp_path, monkeypatch):
         """Bytes that do not decode, or an unknown charset, are the garbled body: 400.
 
-        ``request.text()`` raises ``UnicodeDecodeError`` on invalid UTF-8 and
-        ``LookupError`` on a ``charset=`` Python does not know. Both raise before
-        any read or mutation, so the guard's fail-closed answer already holds;
-        letting them escape answered a 500 where the 400 the guard has built for
-        exactly this caller belongs. The binding stands and nothing is pushed.
+        ``request.text()`` raises ``UnicodeDecodeError`` or ``LookupError`` (unknown
+        ``charset=``); both must answer 400, not 500. The binding stands.
         """
         state = _prep(tmp_path, monkeypatch)
         state.sessions.set_mirror_link(

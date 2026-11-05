@@ -50,11 +50,17 @@ export default defineConfig({
   // collect it: against that gateway every test would fail on its own
   // precondition. test/e2e/test_memory_ui_evidence.py boots one gateway per
   // state and opts the spec back in with PLAYWRIGHT_RUN_MEMORY_EVIDENCE=1.
+  //
+  // @shared-crew tags the two-principal Shared Crew specs: each needs a gateway
+  // with two storage states for two DIFFERENT verified principals, which the
+  // shared-gateway run cannot provide. A harness that builds them opts the specs
+  // back in with PLAYWRIGHT_RUN_SHARED_CREW=1.
   grepInvert: new RegExp(
     [
       '@needs-live-agent',
       ...(process.env.PLAYWRIGHT_RUN_AGENT_SPECS ? [] : ['@needs-agent']),
       ...(process.env.PLAYWRIGHT_RUN_MEMORY_EVIDENCE ? [] : ['@memory-evidence']),
+      ...(process.env.PLAYWRIGHT_RUN_SHARED_CREW ? [] : ['@shared-crew']),
     ].join('|'),
   ),
   use: {

@@ -83,7 +83,7 @@ export function appIcon(target: AppNavTarget): ReactNode {
       className: 'w-4 h-4 rounded-sm object-contain',
     })
   }
-  return (target.builtin ? getBuiltinIcon(target.iconName) : undefined) ?? fallbackIcon()
+  return (target.glyphAllowed ? getBuiltinIcon(target.iconName) : undefined) ?? fallbackIcon()
 }
 
 const compareResults = makeScoreThenNameComparator<Result>(

@@ -41,6 +41,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest import mock
 
+import composition_contract_checks
 import pytest
 
 from kiro_crew.apps import backend
@@ -89,7 +90,6 @@ FROZEN_NAMES: tuple[str, ...] = (
     "Any",
     "AppProcess",
     "ContextVar",
-    "DEV_FLEET_APP_NAME",
     "GOVERNANCE_ERROR_REASON",
     "HealthProbeOutcome",
     "Iterator",
@@ -106,7 +106,6 @@ FROZEN_NAMES: tuple[str, ...] = (
     "REQUIREMENTS_TXT_MAX_BYTES",
     "UTF8_TEXT",
     "_BOOT_SPAWN_MAX_WORKERS",
-    "_BUILD_CAPABLE_APPS",
     "_BackendShutdownEvent",
     "_DEPS_ABI_NAME",
     "_DEPS_PIP_STDERR_TAIL",
@@ -117,7 +116,6 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_DEPS_STAGING_SWEEP_RE",
     "_DEPS_STAMP_MAX_BYTES",
     "_DEPS_STAMP_NAME",
-    "_DEV_FLEET_DEFERRED",
     "_HEALTH_CHECK_INTERVAL",
     "_HEALTH_CHECK_RETRIES",
     "_HEALTH_CHECK_TIMEOUT",
@@ -164,6 +162,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_deps_tree_stamp_current",
     "_drain_exited_root_tree",
     "_drop_disabled_app_resources",
+    "_exec_backend_windows_refusal_text",
     "_find_free_port",
     "_find_node_binary",
     "_find_npm_binary",
@@ -248,6 +247,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "config_dir",
     "contextlib",
     "dataclass",
+    "exec_backend_platform_refusal",
     "field",
     "file_entry_point_refusal",
     "get_app_backend_port",
@@ -294,7 +294,6 @@ FROZEN_NAMES: tuple[str, ...] = (
     "spawned_backend_owner",
     "spawned_backend_owns_pid",
     "start_app_backend",
-    "start_deferred_app_backends",
     "start_enabled_app_backends",
     "stat",
     "stop_app_backend",
@@ -344,6 +343,8 @@ FACADE_RESIDENTS: frozenset[str] = frozenset(
         "_find_npm_binary",
         "_is_asgi_entry",
         "_is_shell_entry",
+        "_exec_backend_windows_refusal_text",
+        "exec_backend_platform_refusal",
         "_shebang_argv",
         "_abi_shebang_of",
         "_deps_boot_path",
@@ -365,7 +366,7 @@ GUARDED_FACADE_TEXT: tuple[tuple[str, str], ...] = (
     ("test_dev_fleet_app.py", '"KIROCREW_PROJECT_DIR"'),
     ("test_sandbox_dev_fleet_live_target.py", "_shipped_md_notebook"),
     ("test_app_bridges.py", "resolve_app_python("),
-    ("test_app_backend_spawn_env.py", '_platform_extra["KIROCREW_DEVFLEET_REPO"]'),
+    ("test_app_backend_spawn_env.py", "_host_grants.backend_env_names()"),
 )
 
 #: Text the same guards require to be ABSENT from the facade's source. They read only
@@ -379,7 +380,6 @@ FORBIDDEN_BACKEND_TEXT: tuple[tuple[str, str], ...] = (
 #: Names the owners rebind with ``global``, and the one module that may hold each.
 GLOBAL_REBINDS: dict[str, ModuleType] = {
     "_warned_unconfined_cache": backend,
-    "_DEV_FLEET_DEFERRED": startup,
 }
 
 _ABSENT = object()
@@ -488,10 +488,7 @@ def clean_tables() -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-class TestTheSurfaceSurvivesTheSplit:
-    def test_the_frozen_inventory_is_not_empty(self) -> None:
-        # An emptied list would make the case below pass while checking nothing.
-        assert len(FROZEN_NAMES) > 200
+class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInventoryIsNotEmpty):
 
     @pytest.mark.parametrize("name", FROZEN_NAMES)
     def test_every_name_the_module_bound_still_resolves_to_its_owners_object(
@@ -1031,7 +1028,7 @@ def _facade_reads(source: str) -> set[tuple[str, str]]:
     return found
 
 
-class TestLayering:
+class TestLayering(composition_contract_checks.TheFacadeHelperIsOnlyEverCalledInPlace):
     def test_the_import_reader_sees_every_spelling_of_an_engine_import(self) -> None:
         # A reader that saw only absolute module strings would pass an owner importing
         # the facade lazily or relatively, which is the violation it exists to catch.
@@ -1075,24 +1072,6 @@ class TestLayering:
                 if isinstance(node, ast.Constant) and isinstance(node.value, str)
             }
             assert backend.__name__ not in constants, f"{part.__name__} spells the facade"
-
-    def test_the_facade_helper_is_only_ever_called_in_place(self) -> None:
-        # An alias (``f = _facade``) or a stored module would hide a sixth call site
-        # from the reader above, so every reference to ``_facade`` in an owner is its
-        # import or the callee of a call.
-        for part in PARTS:
-            tree = ast.parse(_source(part))
-            callees = {
-                id(node.func)
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            }
-            stray = [
-                node.lineno
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Name) and node.id == "_facade" and id(node) not in callees
-            ]
-            assert stray == [], f"{part.__name__} refers to _facade at lines {stray}"
 
     def test_the_call_site_reader_can_fail(self) -> None:
         assert _facade_reads("def f():\n    return _facade()._pid_alive(1)\n") == {

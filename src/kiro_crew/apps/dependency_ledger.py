@@ -24,6 +24,7 @@ from typing import Any, Iterator
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,7 @@ def _locked_ledger(*, exclusive: bool = True) -> Iterator[None]:
     path = _ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(".lock")
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=OWNER_ONLY_FILE_MODE, exist_ok=True)
     # "r+" (not "r"): Windows msvcrt.locking requires write access on the fd —
     # a read-only handle fails with EACCES and platform_compat.file_lock
     # swallows it (best-effort), silently degrading this to a no-op.

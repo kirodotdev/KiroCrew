@@ -7,12 +7,14 @@
  * rail's "Add source" button can open it programmatically.
  */
 import { useState } from 'react'
+import { Trans } from 'react-i18next'
 import { Database, FolderOpen } from 'lucide-react'
 import { api } from '../../api/client'
 import { recordEvent } from '../../rum'
 import { Btn, Input, IconButton } from '../ui'
 import { Popover, PopoverTrigger, PopoverContent } from '../ui/popover'
 import RegistryManager from '../RegistryManager'
+import { backendRefusedNotice } from './backendRefused'
 
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -42,6 +44,9 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
       // mc:apps-changed listener in shell/appShell.tsx, for every dispatch site at once.
       window.dispatchEvent(new Event('mc:apps-changed'))
       onInstalled?.(installedName)
+      // Installed, but the host refused its backend: a warning, not only a success.
+      const refused = backendRefusedNotice(installedName, result)
+      if (refused) onError(refused)
       onOpenChange(false)
     } catch (e) {
       onError((e as Error)?.message || i18nT('components.appstore.sourcesPopover.install_failed'))
@@ -63,7 +68,14 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
           <div className="text-sm font-semibold tracking-tight text-text-strong mb-2 flex items-center gap-2">
             {i18nT('components.appstore.sourcesPopover.install_from_path')}
           </div>
-          <p className="text-[12px] text-muted mb-2.5">{i18nT('components.appstore.sourcesPopover.developer_install_of_a_local_app_directory_equiv')} <code className="bg-bg-elevated px-1 py-0.5 rounded">{i18nT('components.appstore.sourcesPopover.kirocrew_app_install_path')}</code>).</p>
+          <p className="text-[12px] text-muted mb-2.5">
+            <Trans
+              i18nKey="components.appstore.sourcesPopover.developer_install_equivalent_to_command"
+              components={{
+                command: <code className="bg-bg-elevated px-1 py-0.5 rounded">{i18nT('components.appstore.sourcesPopover.kirocrew_app_install_path')}</code>,
+              }}
+            />
+          </p>
           <div className="flex items-center gap-2">
             <FolderOpen size={15} className="text-muted shrink-0" />
             <Input

@@ -16,7 +16,9 @@ calls. Semantics that make this correct:
     conversational state, exactly like the per-call-session model they replace.
   * **Warm reuse** — a *sequential* task reuses an idle worker after a cheap
     clean-slate reset (``provider.new_conversation()`` — fresh ``session/new`` on
-    the same live process, skipping spawn + ``initialize``). No cold start.
+    the same live process, skipping spawn + ``initialize``). No cold start on a
+    backend whose provider has one; a backend on its own ``AcpClient`` (claude and
+    the other per-session adapters) has none and is reset by kill and respawn.
   * **Self-healing** — a worker whose process died is retired and replaced.
   * **Bounded** — at most ``max_workers`` live sessions; startup throttled to
     ``max_starting`` concurrent spawns (matches the workflow concurrency cap).
@@ -33,9 +35,11 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from kiro_crew.acp.worker_pool import WorkerPool
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.security import redact
@@ -56,6 +60,7 @@ from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
     WorkflowEffortInvalid,
     WorkflowSpawnRefused,
+    persist_step_usage_row,
     step_effort_kwargs,
     vet_step_spawn,
 )
@@ -142,6 +147,9 @@ class _WorkflowSessionWorker:
         """Cold-start THIS worker's session once (the only cold start it pays)."""
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
+        # Read before the session is acquired: a start cancelled in an await after
+        # the acquisition would leave the session held with no worker to release it.
+        delete_delay = await self._configured_delete_delay()
         provider, self._is_new, self._resumed = await self._sessions.get_or_create(
             self._key,
             agent=self._agent,
@@ -151,6 +159,26 @@ class _WorkflowSessionWorker:
             **self._effort_kwargs,
         )
         self._provider = provider
+        provider.set_delete_delay(delete_delay)
+
+    async def _configured_delete_delay(self) -> int:
+        """``session.kas_delete_delay_secs``, for the conversation the next reset ends.
+
+        Each reuse ends the previous step's conversation (``reset`` below). Where the
+        host can keep the record, it waits this long before Crew deletes it, so a
+        finished step can still be read. Read again before each reuse rather than
+        once at start, so a changed setting applies to the next conversation a
+        reuse ends.
+        """
+
+        def _configured() -> int:
+            try:
+                return KiroCrewConfig.load().session.kas_delete_delay_secs
+            except Exception:
+                # An unreadable config ends the conversation as before.
+                return 0
+
+        return await asyncio.to_thread(_configured)
 
     async def send_message(self, prompt: str, timeout: float = 1800.0) -> str:
         if self._provider is None:
@@ -177,7 +205,19 @@ class _WorkflowSessionWorker:
                 agent=self._agent,
                 cwd=self._cwd,
             )
+        # Wall clock for THIS turn only (acp leaves TurnUsage.duration_ms at 0),
+        # started right before the turn so session reuse is not charged to it.
+        _turn_t0 = time.monotonic()
         result = await _run_step(self._provider, prompt, timeout=timeout)
+        # Per-turn usage row on the warm pool's REAL key (wf-pool:…), through the
+        # same shared writer the cold path uses — surface/trigger "workflow".
+        await persist_step_usage_row(
+            slot_key=self._key,
+            model=self._model or "",
+            provider=self._provider,
+            agent=self._agent or "",
+            elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
+        )
         if self._memory_scope is not None:
             await self._memory_scope.validate()
         self._is_new = False
@@ -187,17 +227,22 @@ class _WorkflowSessionWorker:
     async def reset(self) -> None:
         """Cheap clean slate before REUSE — fresh conversation on the warm process.
 
-        Uses ``provider.new_conversation()`` when the backend exposes it (kiro +
-        claude ACP both do), which skips the expensive spawn+initialize. If it is
-        unavailable or fails, fall back to a hard ``SessionManager.reset`` so a
+        Uses ``provider.new_conversation()``, which skips the expensive
+        spawn+initialize on a backend served through the shared runtime (kiro, KAS,
+        Codex). A backend on its own ``AcpClient`` (claude and the other per-session
+        adapters) has no such reset and raises ``NotImplementedError``. On that, or
+        any other failure, fall back to a hard ``SessionManager.reset`` so a
         reused worker can NEVER carry prior-task context into the next task
         (correctness over speed on the fallback path)."""
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
+        delete_delay = await self._configured_delete_delay()
         # Lifecycle only; EssentialDelivery owns successful delivery evidence.
         self._is_new = True
         self._resumed = False
         prov = self._provider
+        if prov is not None:
+            prov.set_delete_delay(delete_delay)
         new_conv = getattr(prov, "new_conversation", None) if prov is not None else None
         if new_conv is not None:
             # BEFORE ``new_conv()``, not after. The cheap path replaces the CONVERSATION and
@@ -227,6 +272,8 @@ class _WorkflowSessionWorker:
                 await new_conv()
                 await self._reapply_effort()
                 return
+            except NotImplementedError as exc:
+                logger.info("workflow pool: %s cold-starts for reuse: %s", self._key, exc)
             except Exception:
                 logger.debug(
                     "workflow pool: new_conversation reset failed for %s, "
@@ -430,7 +477,21 @@ def build_pooled_agent_fn(
                     agent=opts.get("agent") or default_agent,
                     cwd=opts.get("cwd") or cwd,
                 )
+            # Wall clock for THIS turn only (acp leaves TurnUsage.duration_ms
+            # at 0), started right before the turn so session setup is not
+            # charged to it.
+            _turn_t0 = time.monotonic()
             result = await _run_step(provider, prompt)
+            # Per-turn usage row on this overflow session's REAL key
+            # (wf-unpooled:… or the named session= key), through the same shared
+            # writer the cold and pooled paths use — surface/trigger "workflow".
+            await persist_step_usage_row(
+                slot_key=key,
+                model=opts.get("model") or default_model or "",
+                provider=provider,
+                agent=opts.get("agent") or default_agent or "",
+                elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
+            )
             if memory_scope is not None:
                 await memory_scope.validate()
             return result

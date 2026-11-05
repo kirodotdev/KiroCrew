@@ -513,3 +513,108 @@ class TestImportedCrewmateCreate:
         assert status == 400
         assert data["code"] == "invalid_imported"
         assert cfg.saved == [] and cfg.agents == {}
+
+
+class TestHeadlessAvatarDefault:
+    """A create with no avatar must store the name-seeded ICON the UI posts for
+    the same name, never an empty override (which renders the ghost);
+    an explicitly supplied avatar is never overridden."""
+
+    @pytest.mark.asyncio
+    async def test_no_avatar_stores_the_name_seeded_icon(self):
+        from kiro_crew.crew_avatar_seed import default_icon_avatar
+
+        cfg = _fake_config()
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew"}, cfg, installed=("kirocrew",)
+        )
+        assert status == 200
+        stored = cfg.written["doc"]["agents"]["scout"]["avatar"]
+        assert stored == default_icon_avatar("scout")
+        assert stored["kind"] == "icon"
+
+    @pytest.mark.asyncio
+    async def test_no_avatar_never_stores_an_empty_override(self):
+        cfg = _fake_config()
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew"}, cfg, installed=("kirocrew",)
+        )
+        assert status == 200
+        # An empty override is exactly what renders the trait ghost; a headless
+        # create must never land there.
+        assert cfg.written["doc"]["agents"]["scout"]["avatar"] != {}
+
+    @pytest.mark.asyncio
+    async def test_explicit_icon_avatar_is_not_overridden(self):
+        cfg = _fake_config()
+        chosen = {"kind": "icon", "pose": "pose-3", "bg": "#123456"}
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew", "avatar": chosen},
+            cfg,
+            installed=("kirocrew",),
+        )
+        assert status == 200
+        assert cfg.written["doc"]["agents"]["scout"]["avatar"] == chosen
+
+    @pytest.mark.asyncio
+    async def test_explicit_ghost_avatar_is_not_overridden(self):
+        from kiro_crew.config.sections import _safe_avatar
+
+        cfg = _fake_config()
+        ghost = {"kind": "ghost", "traits": {"eyes": "happy"}}
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew", "avatar": ghost},
+            cfg,
+            installed=("kirocrew",),
+        )
+        assert status == 200
+        # The ghost the user explicitly picked stands (in its validated form);
+        # only an ABSENT avatar is defaulted to a seeded icon.
+        stored = cfg.written["doc"]["agents"]["scout"]["avatar"]
+        assert stored == _safe_avatar(ghost)
+        assert stored["kind"] == "ghost"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ghost_reset",
+        [
+            {"kind": "ghost", "traits": {}},
+            {"kind": "ghost", "traits": {"eyes": "", "mouth": ""}},
+        ],
+    )
+    async def test_explicit_ghost_reset_is_not_replaced_by_the_icon(self, ghost_reset):
+        """An explicit ghost RESET -- a ghost override whose traits are all empty --
+        collapses to `{}` under `_safe_avatar` but is a deliberate choice of the
+        name-derived ghost (the `_is_ghost_shaped` canonical reset). The icon
+        default must NOT replace it; the stored avatar stays the empty-override
+        reset, not a seeded icon. (A bare `{"kind": "ghost"}` with no `traits`
+        key is not ghost-shaped and the handler rejects it 400 by existing design.)"""
+        cfg = _fake_config()
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew", "avatar": ghost_reset},
+            cfg,
+            installed=("kirocrew",),
+        )
+        assert status == 200
+        stored = cfg.written["doc"]["agents"]["scout"].get("avatar", {})
+        # The reset stored as the canonical empty override -- NOT an icon.
+        assert stored.get("kind") != "icon"
+        assert stored in ({}, None)
+
+    @pytest.mark.asyncio
+    async def test_free_form_name_seeds_from_the_shown_label(self):
+        from kiro_crew.crew_avatar_seed import default_icon_avatar
+
+        cfg = _fake_config()
+        # A free-form name becomes the crew's display label over a derived key;
+        # the icon must seed from the shown label, matching the UI preview.
+        status, _ = await _post(
+            {"name": "Scout Ranger", "kiro_agent": "kirocrew"},
+            cfg,
+            installed=("kirocrew",),
+        )
+        assert status == 200
+        agents = cfg.written["doc"]["agents"]
+        (key,) = agents.keys()
+        assert agents[key]["display_name"] == "Scout Ranger"
+        assert agents[key]["avatar"] == default_icon_avatar("Scout Ranger")

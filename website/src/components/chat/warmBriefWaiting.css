@@ -1,0 +1,17 @@
+/* WarmBriefWaiting — the catch-up's cards for what waits on the owner.
+ *
+ * Colours come only from theme variables. The cards are text, not controls:
+ * no shadow, no motion. */
+
+.wb-wait-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
+
+.wb-wait-cards { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 6px; width: 100%; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.wb-wait-card {
+  flex: 1 1 140px; min-width: 0; max-width: 100%;
+  overflow-wrap: anywhere; white-space: normal;
+  color: var(--text);
+  border-left: 3px solid var(--warn);
+  padding: 2px 0 2px 8px; font-size: 12.5px; line-height: 1.35;
+}
+.wb-wait-card-title { display: block; font-weight: 600; color: var(--text-strong); }
+.wb-wait-card-ask { display: block; color: var(--muted); }

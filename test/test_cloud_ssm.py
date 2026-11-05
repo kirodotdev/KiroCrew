@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -208,6 +209,15 @@ class TestOpenPortForward:
             fake_aws.write_text("#!/bin/sh\n")
             fake_aws.chmod(0o755)
         install_dir = tmp_path / "install"
+        install_dir.mkdir()
+        # The PATH wiring is under test here, not the directory check, which has
+        # its own tests in test_deploy_web_engine.py and refuses the Windows CI
+        # runner's temp directory.
+        from kiro_crew import github_runner
+
+        monkeypatch.setattr(
+            github_runner, "validate_provider_directory", lambda candidate: candidate
+        )
         monkeypatch.setenv("PATH", str(inherited))
         monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(install_dir),))
         monkeypatch.setattr(ssm, "require_session_manager_plugin", lambda: None)
@@ -936,6 +946,170 @@ class TestKillPortForward:
                 return 0
 
         ssm.kill_port_forward(Dead())
+
+
+#: A stand-in ``session-manager-plugin``: ignores SIGTERM (as a plugin closing a
+#: session to a terminated target does), writes its pid once that is in place,
+#: then lives until the pytest process named in argv[2] is gone, 60 s at most,
+#: so a failed test cannot strand it.
+_STUBBORN_PLUGIN = (
+    "import os,signal,sys,time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+    "owner = int(sys.argv[2]); end = time.monotonic() + 60\n"
+    "while time.monotonic() < end:\n"
+    "    try:\n"
+    "        os.kill(owner, 0)\n"
+    "    except OSError:\n"
+    "        break\n"
+    "    time.sleep(0.2)\n"
+)
+
+
+def _stopped(pid: int) -> bool:
+    """Whether *pid* has stopped running: gone, or a zombie waiting to be reaped.
+
+    The killed plugin is an orphan once its wrapper is reaped, so it is
+    collected by whatever adopts it; a host whose init does not reap leaves it
+    a zombie, which ``pid_exists`` still reports.
+    """
+    return not platform_compat.pid_exists(pid) or platform_compat.pid_is_zombie(pid) is True
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="POSIX process groups")
+class TestKillPortForwardPluginOutlivesWrapper:
+    """The plugin left in the forward's group after the ``aws`` wrapper exits."""
+
+    @pytest.fixture
+    def spawn_forward(self, tmp_path: Path, request):
+        """Spawn a wrapper leading its own group with a stubborn plugin child in it.
+
+        Shaped like :func:`ssm.open_port_forward`'s child: ``start_new_session``
+        and ``ssm_pgid`` recorded through the same helper. The wrapper either
+        exits once the plugin is up, or sleeps and dies on SIGTERM. Cleanup is
+        registered right after the spawn, before any wait that can fail, and
+        SIGKILLs the whole group (which the plugin stays in after the wrapper
+        is reaped) before reaping the wrapper.
+        """
+        import subprocess
+        import sys
+
+        def _spawn(name: str, *, wrapper_exits: bool):
+            plugin = tmp_path / f"{name}-plugin.py"
+            plugin.write_text(_STUBBORN_PLUGIN, encoding="utf-8")
+            pidfile = tmp_path / f"{name}.pid"
+            tail = "" if wrapper_exits else "time.sleep(60)\n"
+            wrapper = (
+                "import os,subprocess,sys,time\n"
+                f"subprocess.Popen([sys.executable, {str(plugin)!r}, {str(pidfile)!r},"
+                f" {str(os.getpid())!r}])\n"
+                "end = time.monotonic() + 30\n"
+                f"while not os.path.exists({str(pidfile)!r}) and time.monotonic() < end:\n"
+                "    time.sleep(0.05)\n" + tail
+            )
+            proc = subprocess.Popen(
+                [sys.executable, "-c", wrapper], cwd=tmp_path, start_new_session=True
+            )
+
+            def _cleanup() -> None:
+                with contextlib.suppress(OSError, ValueError):
+                    platform_compat.kill_process_group(proc.pid, platform_compat.SIGKILL)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=_DESCENDANT_KILL_SECS)
+
+            request.addfinalizer(_cleanup)
+            proc.ssm_pgid = ssm._spawned_group(proc)
+            wait_until(
+                lambda: pidfile.exists() and pidfile.read_text(encoding="utf-8").strip(),
+                describe=lambda: f"{pidfile} was never written",
+            )
+            return proc, int(pidfile.read_text(encoding="utf-8").strip())
+
+        return _spawn
+
+    def test_spawned_group_is_the_wrapper_pid(self, spawn_forward):
+        proc, _ = spawn_forward("rec", wrapper_exits=False)
+        assert proc.ssm_pgid == proc.pid
+
+    def test_plugin_of_an_already_exited_wrapper_is_killed(self, spawn_forward):
+        proc, plugin_pid = spawn_forward("exited", wrapper_exits=True)
+        other, other_plugin = spawn_forward("other", wrapper_exits=False)
+        proc.wait(timeout=30)  # the wrapper is gone and reaped; the plugin is not
+        assert platform_compat.pid_exists(plugin_pid)
+
+        ssm.kill_port_forward(proc)
+
+        wait_until(
+            lambda: _stopped(plugin_pid),
+            timeout=_DESCENDANT_KILL_SECS,
+            describe=lambda: "plugin that outlived its wrapper must be killed",
+        )
+        # Another forward's group is never signalled.
+        assert other.poll() is None
+        assert platform_compat.pid_exists(other_plugin)
+
+    def test_plugin_that_survives_the_wrappers_sigterm_is_killed(self, spawn_forward):
+        proc, plugin_pid = spawn_forward("term", wrapper_exits=False)
+
+        ssm.kill_port_forward(proc)
+
+        assert proc.poll() is not None
+        wait_until(
+            lambda: _stopped(plugin_pid),
+            timeout=_DESCENDANT_KILL_SECS,
+            describe=lambda: "plugin that ignored SIGTERM must be killed",
+        )
+
+    def test_sigkilled_wrapper_is_reaped_before_the_survivor_check(self, tmp_path, request, caplog):
+        """A wrapper that ignores SIGTERM is SIGKILLed, then reaped, so the group
+        reads as empty: no second wait and no false 'survived SIGKILL' warning."""
+        import logging
+        import subprocess
+        import sys
+
+        script = tmp_path / "stubborn-wrapper.py"
+        script.write_text(_STUBBORN_PLUGIN, encoding="utf-8")
+        pidfile = tmp_path / "wrapper.pid"
+        proc = subprocess.Popen(
+            [sys.executable, str(script), str(pidfile), str(os.getpid())],
+            cwd=tmp_path,
+            start_new_session=True,
+        )
+
+        def _cleanup() -> None:
+            with contextlib.suppress(OSError, ValueError):
+                platform_compat.kill_process_group(proc.pid, platform_compat.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=_DESCENDANT_KILL_SECS)
+
+        request.addfinalizer(_cleanup)
+        proc.ssm_pgid = ssm._spawned_group(proc)
+        wait_until(
+            lambda: pidfile.exists() and pidfile.read_text(encoding="utf-8").strip(),
+            describe=lambda: f"{pidfile} was never written",
+        )
+
+        with caplog.at_level(logging.WARNING, logger=ssm.logger.name):
+            ssm.kill_port_forward(proc)
+
+        assert proc.returncode is not None
+        assert not [r for r in caplog.records if "survived SIGKILL" in r.getMessage()]
+
+    def test_exited_wrapper_with_an_empty_group_signals_nothing(self, monkeypatch):
+        class Exited:
+            pid = 4321
+            ssm_pgid = 4321
+
+            def poll(self):
+                return 0
+
+        monkeypatch.setattr(ssm.platform_compat, "pgroup_exists", lambda pgid: False)
+        monkeypatch.setattr(
+            ssm.platform_compat,
+            "kill_process_group",
+            lambda pgid, sig: pytest.fail("an empty group must not be signalled"),
+        )
+        ssm.kill_port_forward(Exited())
 
 
 class TestPortChecks:

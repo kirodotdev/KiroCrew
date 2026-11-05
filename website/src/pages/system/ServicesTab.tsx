@@ -11,7 +11,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
 import { useAppSelector } from '../../store'
-import { useUptime } from '../../hooks/useUptime'
+import { Uptime } from '../../components/Uptime'
 import { api } from '../../api/client'
 import { useProvider } from '../../providers'
 import { Card, CardTitle } from '../../components/ui'
@@ -134,7 +134,6 @@ export default function ServicesTab() {
     refetchInterval: 2000,
   })
   const status = useAppSelector(s => s.dashboard.status)
-  const statusUptime = useUptime()
   const providerAdapter = useProvider()
 
   const d = data ?? null
@@ -175,7 +174,7 @@ export default function ServicesTab() {
       rows: [
         { label: i18nT('pages.servicesTab.pid'), value: d?.pid != null ? String(d.pid) : '—' },
         { label: i18nT('pages.servicesTab.python'), value: d?.python ?? '—' },
-        { label: i18nT('pages.servicesTab.uptime'), value: statusUptime },
+        { label: i18nT('pages.servicesTab.uptime'), value: <Uptime /> },
         // No session count here. The Sessions plane owns that quantity: it counts
         // sessions holding a runtime, while status.sessions counts chat slots, so
         // the two legitimately disagree. Surfacing both is the "one quantity, two

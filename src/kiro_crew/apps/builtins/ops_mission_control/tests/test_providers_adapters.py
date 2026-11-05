@@ -160,7 +160,7 @@ class TestACloudWatchFaultIsNotAQuietEstate(unittest.IsolatedAsyncioTestCase):
 
         adapter = cloudwatch.CloudWatchSignalSource()
         with mock.patch.object(cloudwatch, "_boto3_client", return_value=None):
-            with self.assertRaises(Exception) as caught:
+            with self.assertRaises(RuntimeError) as caught:
                 await adapter.poll()
         # The message has to name the likely cause; "poll failed" sends nobody anywhere.
         self.assertIn("credential", str(caught.exception).lower())
@@ -175,7 +175,7 @@ class TestACloudWatchFaultIsNotAQuietEstate(unittest.IsolatedAsyncioTestCase):
 
         adapter = cloudwatch.CloudWatchSignalSource()
         with mock.patch.object(cloudwatch, "_boto3_client", return_value=_Boom()):
-            with self.assertRaises(Exception) as caught:
+            with self.assertRaises(RuntimeError) as caught:
                 await adapter.poll()
         self.assertIn("describe_alarms", str(caught.exception))
 

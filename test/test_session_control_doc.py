@@ -1,20 +1,9 @@
 """The packaged session-control page is pinned to ``mcp_dashboard``'s real tool surface.
 
-``scripts/docs_lint.py`` gates a doc's links, its reachability from an index, and the
-paths it cites. None of that asks the question this page's whole value rests on: does
-it still describe every tool the server actually advertises? A tool added to
-``_tool_definitions`` and absent from the page is a capability an agent reading the
-shipped docs cannot find, and a tool the page names after the server drops it is worse
-— the agent calls it and gets ``Error: unknown tool``.
-
-So the tool-name set is asserted in BOTH directions against the live definitions
-rather than against a hand-copied list, and the three claims most likely to rot
-independently of any name — the argument defaults the page tabulates, the session
-tools a channel agent is contained from, and the config switch that gates the whole
-surface — are asserted against the code that decides them.
-
-Deliberately NOT pinned here: the prose. A page that may only say what a test can
-phrase is a page nobody improves.
+``scripts/docs_lint.py`` checks links and paths, not whether the page names every tool
+``_tool_definitions`` advertises. The tool-name set is asserted in both directions, and the
+argument defaults, channel containment and config switch against the code that decides them.
+The prose is deliberately not pinned.
 """
 
 import json
@@ -168,12 +157,8 @@ def _session_control_source() -> str:
 def test_every_tabulated_refusal_code_is_one_the_source_raises(doc_text: str) -> None:
     """The refusal table is the codes a caller reads back, so each must exist.
 
-    ``session_control.py`` and its ``session_control_parts`` owners are the only place
-    that mints them, and the table is the
-    part of the page an agent consults while handling an error rather than while
-    learning the surface -- so a code renamed there and left here sends the caller
-    looking for a string it will never see. Asserted as literals rather than by
-    importing a set, because the module keeps no enumeration of them.
+    The codes are minted in ``session_control.py`` and ``session_control_parts``, which keep
+    no enumeration of them, so each is asserted as a literal.
     """
     source = _session_control_source()
     section = doc_text.split("## What you cannot reach", 1)[1].split("### Switches", 1)[0]
@@ -196,11 +181,8 @@ def test_every_tabulated_refusal_code_is_one_the_source_raises(doc_text: str) ->
 def test_the_three_target_forms_match_the_resolver(doc_text: str) -> None:
     """``target`` resolves by key, transcript stem and title -- and refuses a tie.
 
-    The page tells a caller to pass the KEY when a title might collide, which is only
-    sound while the resolver still checks every form before answering and still
-    refuses a cross-form tie instead of preferring the first hit. Both halves are
-    asserted, because a resolver that returned on the first key hit would make the
-    page's advice pointless rather than wrong.
+    The page's advice to pass the key holds only while the resolver checks every form and
+    refuses a cross-form tie rather than taking the first hit.
     """
     source = _session_control_source()
     assert 'code="ambiguous_target"' in source
@@ -217,18 +199,9 @@ def test_the_queue_row_matches_what_each_verb_does_to_the_queue(
 ) -> None:
     """Stop and close treat the queue differently, and in neither case simply.
 
-    Both halves are asserted against the code that decides them, because the row is a
-    two-column comparison and a reader acts on the column, not the prose: a caller
-    told the queue is kept will re-send a stop to force the issue and lose the queued
-    messages it was protecting, and one told the queue dies with the tab will re-type
-    work the archive already holds.
-
-    The stop half lives in the force branch of ``stop_slot_turn`` (a first, soft stop
-    leaves the queue alone; the escalation clears it). The close half is the durable
-    queue: ``queued_prompts`` is written with the conversation and handed back,
-    sanitized, when its tab is rehydrated from disk. (A History resume of an archived
-    conversation does not read the queue back -- an asymmetry the codec's table
-    declares -- so this checks the rehydrate, which is the path that does.)
+    Stop: a soft stop keeps the queue; the force branch of ``stop_slot_turn`` clears it.
+    Close: ``queued_prompts`` is saved and handed back when the tab is rehydrated. A History
+    resume does not read it back, so the rehydrate path is what is checked.
     """
     from chat_test_helpers import _make_state
 

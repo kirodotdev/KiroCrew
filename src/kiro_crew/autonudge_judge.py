@@ -143,11 +143,12 @@ def parse_targets(
     # default to what the MESSAGE names. Both shapes, not just pull requests -- a
     # conductor's instruction names the sessions it patrols, and requiring those to be
     # repeated in ``targets`` would mean a brief that looks armed and watches nothing.
+    # Not cut at MAX_TARGETS: the collector reads only the first MAX_TARGETS and
+    # counts the rest as dropped, and cutting here would hide that overflow from it,
+    # so a calm reading of the sessions that fit would pass for a complete one.
     for match in SESSION_TARGET_IN_TEXT_RE.findall(message or ""):
         if match not in out and SESSION_TARGET_RE.fullmatch(match):
             out.append(match)
-        if len(out) >= MAX_TARGETS:
-            break
     if _pr_subject(message):
         # The whole message, because pull-request inference reads the original
         # spelling (it carries the host a URL-armed watch is entitled to) rather

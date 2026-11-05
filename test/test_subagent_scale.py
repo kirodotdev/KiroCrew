@@ -1,24 +1,10 @@
-"""Scale plumbing tests (PR-4: 60-100 concurrent sub-agents).
+"""Scale plumbing for 60-100 concurrent sub-agents: the wave digest and its hold deadline.
 
-Covers:
-1. ``SubagentEventCoalescer``: pass-through below the activation threshold
-   (small spawns byte-identical to legacy), absorption + one-frame flush
-   above it, chunk concatenation, flush-before-lifecycle ordering, close().
-2. Batch identity: ``spawn(batch_id=...)`` threads onto ``SubagentInfo``,
-   survives the queue, and fires ``spawn_batch_started`` exactly once.
-3. Stall two-sweep confirmation: one idle sweep marks a suspect (no event),
-   the second flags stalled; activity between sweeps resets the suspicion.
-4. Wave-digest completion injection: waves above the digest threshold hold
-   per-agent injections and deliver ONE consolidated digest on the last
-   member; ``batch_finished`` fires with correct counts.
-5. ``POST /api/spawn/{id}/retry`` gating: only terminal FAILED agents.
-
-Items 1-3 (the coalescer, batch identity with a queued run's second stop, stall
-dampening) are in ``test_subagent_scale_batch.py``; item 5, the durable queue at scale,
-run-id minting and the queued depth reaching zero in ``test_subagent_scale_queue.py``. This
-module keeps the wave digest and its hold deadline: ``TestDigestHoldDeadline`` calls
-``TestWaveDigest``'s own capture helper, so the two share one module. The mocks and the
-orchestrator they share live in ``subagent_scale_helpers.py``.
+Waves above the digest threshold hold per-agent injections and deliver one digest on the
+last member. ``TestDigestHoldDeadline`` uses ``TestWaveDigest``'s capture helper, so they
+share this module. Coalescer, batch identity and stall dampening are in
+``test_subagent_scale_batch.py``; retry gating and the durable queue in
+``test_subagent_scale_queue.py``; shared mocks in ``subagent_scale_helpers.py``.
 """
 
 from __future__ import annotations
@@ -60,14 +46,9 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 async def _settle(predicate, what: str, timeout: float = 5.0) -> None:
     """Poll until *predicate* is truthy, and FAIL naming *what* on the ceiling.
 
-    create_task'd injection turns need real event-loop time on slow CI shards,
-    not one sleep(0). The ceiling is a lost-run guard, never the barrier: a
-    poll that returns on an unsatisfied predicate hands the assertions a state
-    nobody waited for, and the run then fails as whichever of them touches it
-    first — an injection turn that never ran reported as ``assert 1 == 2``, or
-    as an unrelated ledger mismatch three lines on. Measured on this host,
-    every call site here settles within one 0.02 s poll, so reaching the
-    ceiling is a stall and not a slow runner.
+    The ceiling is a lost-run guard, never the barrier: returning on an unsatisfied
+    predicate would surface as an unrelated assertion failure later. Every call site
+    settles within one 0.02 s poll, so reaching the ceiling is a stall.
     """
     await async_wait_until(predicate, timeout=timeout, describe=lambda: what)
 
@@ -75,18 +56,10 @@ async def _settle(predicate, what: str, timeout: float = 5.0) -> None:
 def _wire_hold_settlement(orch, slot, mgr):
     """Wire the slot's delivery ledger and the manager's async settle seam.
 
-    The direct-injection branch owes a flushing digest's held ids to the
-    turn's CONSUMPTION through the slot's content-keyed delivery ledger and
-    settles them through ``SubagentManager.settle_queued_delivery`` — the same
-    machinery the queue drain uses. The MagicMock
-    slot needs a real mini-ledger for that flow to be observable, and the
-    mocked manager's settle must hand back a real coroutine or the settlement
-    path skips it (the stubbed-manager guard in
-    ``_arm_queued_delivery_settlement``). Production wires
-    ``DashboardState(subagents=<the manager>)``; mirror it.
+    The MagicMock slot needs a real mini-ledger, and the mocked settle must return a real
+    coroutine or ``_arm_queued_delivery_settlement`` skips it as a stubbed manager.
 
-    Returns ``(ledger, settled)``: the content-keyed debts still parked, and
-    the id batches the manager was asked to settle.
+    Returns ``(ledger, settled)``: the debts still parked, and the id batches settled.
     """
     ledger: dict[str, list[SubagentDelivery]] = {}
     slot.note_pending_subagent_delivery = MagicMock(
@@ -378,15 +351,10 @@ class TestWaveDigest:
 
     @pytest.mark.asyncio
     async def test_wave_close_digest_does_not_claim_completion_with_live_nested_spawn(self):
-        """Pins the wave-close digest wording when a wave's direct members all
-        report done (so ``batch_members_pending`` is False and the digest
-        fires) while a member's nested spawn is still running.
+        """The wave-close digest does not claim "This run is complete" while a nested spawn runs.
 
-        The digest must not assert "This run is complete" / "All results
-        delivered" — that nested spawn has its own uncounted ``batch_id``, so
-        the wave cannot substantiate a whole-run completion. It reports the
-        true direct-member tally and states that the nested work reports
-        separately.
+        The nested spawn has its own uncounted ``batch_id``, so the digest reports the
+        direct-member tally and says nested work reports separately.
         """
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
@@ -548,15 +516,10 @@ class TestWaveDigest:
 
     @pytest.mark.asyncio
     async def test_digest_chunks_inject_in_fifo_order_despite_delayed_dispatch_hop(self):
-        """A later digest chunk must never overtake an earlier one whose
-        dispatched injection is still inside ``bounded_chat_turn``'s off-loop
-        timeout resolution. The first chunk's hop is held
-        deterministically: it releases the moment a later chunk's injection
-        lands (the overtake this test forbids) or after a bounded deadline
-        (the fixed code parks the later chunk behind the live ``slot.task``
-        claim, so nothing can land while it is held). No machine-load
-        dependence: without the widened busy predicate the overtake is forced
-        every run; with it the order is FIFO every run."""
+        """A later digest chunk never overtakes one still inside ``bounded_chat_turn``'s hop.
+
+        The first hop releases when a later injection lands or at a bounded deadline, so
+        without the live ``slot.task`` busy check the overtake is forced every run."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
         orch.ctx_builder = MagicMock()
@@ -646,20 +609,10 @@ class TestWaveDigest:
 
     @pytest.mark.asyncio
     async def test_held_members_marked_delivered_only_at_digest(self):
-        """Restart safety: held members
-        are flagged ``_digest_held`` (the run loop skips its own
-        mark_delivered — the result is NOT in the parent's context yet and a
-        delivered tombstone would hide it from orphan reconciliation after a
-        restart). The gateway must NOT settle them at chunk COMPOSITION
-        either (routing could still fail); instead it stashes each chunk's
-        held OK deliveries on that chunk's FLUSHING member
-        (``_digest_settle_deliveries``)
-        and settlement waits for the route that owns the hand-off: the
-        dashboard route below detaches the ids when the injection turn is
-        launched and owes them to the turn's CONSUMPTION through the slot's
-        delivery ledger; for routes whose ``_on_done`` return really
-        is the confirmation it is the run loop, after ``_on_done`` — routing
-        included — returns cleanly."""
+        """Held members are not tombstoned ``delivered`` until their digest is handed off.
+
+        A tombstone hides a result from orphan reconciliation after a restart. Held ids ride
+        on the flushing member (``_digest_settle_deliveries``) until the owning route confirms."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
         orch.ctx_builder = MagicMock()
@@ -768,33 +721,14 @@ class TestWaveDigest:
 
     @pytest.mark.asyncio
     async def test_holds_settle_only_after_the_injection_turn_confirms(self):
-        """Ownership: the dashboard route hands off asynchronously, so a
-        bare ``_on_done`` return is not proof the digest reached the parent.
+        """The dashboard route settles holds only when the injection turn reports consumption.
 
-        ``_report_terminal`` settles ``info._digest_settle_deliveries`` right after
-        ``_on_done`` returns. On the dashboard branch that return happens while
-        the injection turn is still a *pending task* — so a shutdown or a
-        cancelled slot turn between the two leaves the held siblings carrying
-        ``delivered`` tombstones for a digest the parent never saw. A tombstone
-        is exactly what ``list_orphans()`` uses to EXCLUDE a run folder from the
-        next start's reconciliation, so those complete ``result.txt`` files
-        become permanently invisible: no error, no notification, just N results
-        the parent never receives and recovery will never offer again.
+        ``_on_done`` returns while the turn is still a pending task, and a tombstone makes
+        ``list_orphans()`` skip the run for good. ``_run_chat`` also returns normally on
+        non-delivery paths (signed-out CLI, dead provider), so only consumption confirms.
 
-        The fix moves settlement to the side that actually owns the hand-off.
-        The flushing member's settle ids are DETACHED from ``info`` when the
-        injection task is launched — which makes the run loop's settle a no-op
-        for this route — and owed to the turn's CONSUMPTION through the slot's
-        delivery ledger, the same debt shape the queue branch records.
-        Not even the turn's clean completion settles them: ``_run_chat``
-        returns normally on several non-delivery paths (signed-out CLI, dead
-        provider, exhausted retries, a first empty response), so only the
-        consumption report — the model actually has the prompt — confirms the
-        hand-off.
-
-        The turn is gated on an ``asyncio.Event`` rather than timed: the state
-        under test is "task created, consumption not yet reported", which a
-        sleep can only approximate.
+        The turn is gated on an ``asyncio.Event``: "task created, consumption not yet
+        reported" is a state a sleep can only approximate.
         """
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
@@ -875,28 +809,11 @@ class TestWaveDigest:
 
     @pytest.mark.asyncio
     async def test_a_queued_hand_off_is_not_confirmed_until_the_turn_runs(self):
-        """The same root cause one branch up.
+        """A digest queued on a busy slot is not confirmed until a turn consumes it.
 
-        When the parent slot is busy the digest is appended to ``slot._queue``
-        and ``_subagent_done`` returns — so the run loop would settle on that
-        bare return, exactly as it did for the direct branch.
-
-        ``slot._queue`` is a plain in-memory list (``state_parts/chat_slot.py``): the
-        ``"queued"`` role is in ``chat_persistence._TRANSIENT_ROLES`` and no
-        producer writes it to disk. ``_run_chat``'s ``finally`` drains it on any
-        exit path *within the process*, which is why the enqueue looks durable —
-        but a shutdown before the drain loses the announce entirely, and by then
-        the held siblings would already carry ``delivered`` tombstones.
-        Enqueueing is a local routing success, not evidence the parent received
-        anything.
-
-        ``_defer_queued_delivery`` therefore owes the held ids (together with
-        the flushing member's own) to the drain through the slot's delivery
-        ledger, keyed on the announce itself — the run loop's settle is a no-op
-        here too, and settlement waits for a turn to actually consume the
-        announce (one debt shape for both routes).
-
-        This test never drains the queue: that IS the process-loss window.
+        ``slot._queue`` is in memory only (the ``"queued"`` role is transient), so a shutdown
+        before the drain loses the announce. ``_defer_queued_delivery`` parks the debt keyed
+        on the announce. This test never drains the queue: that is the process-loss window.
         """
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
@@ -960,23 +877,10 @@ class TestWaveDigest:
 
     @pytest.mark.asyncio
     async def test_an_auth_required_turn_is_not_a_confirmed_hand_off(self):
-        """The third state: the turn ended cleanly and delivered nothing.
+        """A turn that ended cleanly on ``AcpAuthRequired`` delivered nothing.
 
-        ``_run_chat`` CATCHES ``AcpAuthRequired`` — a signed-out CLI is
-        non-retryable, so it records the outcome on the slot, holds the queue
-        intact for post-login resume, and returns NORMALLY. The injection task
-        therefore completes with no exception and no cancellation, which is
-        indistinguishable from a delivered digest if "the task finished" is the
-        confirmation.
-
-        It is not delivered: the digest never reached the LLM. Settling here
-        tombstones results the parent has not seen — the exact loss this fix
-        exists to close, re-entered through a narrower door.
-
-        CONSUMPTION is the signal that cannot make this mistake: a signed-out
-        CLI fails before the model sees a single token, so ``_run_chat`` never
-        reports the prompt consumed and the debt stays parked in the ledger —
-        no per-outcome flag inspection required.
+        ``_run_chat`` catches it and returns normally, so "the task finished" would look
+        delivered. The prompt was never consumed, so the debt stays parked.
         """
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
@@ -1037,15 +941,9 @@ class TestWaveDigest:
 
     @pytest.mark.asyncio
     async def test_a_failed_injection_turn_leaves_holds_recoverable(self):
-        """The deliberate asymmetry: an unconfirmed hand-off must leave
-        holds UNsettled rather than settle them.
+        """An unconfirmed hand-off leaves holds unsettled, visible to ``list_orphans()``.
 
-        A duplicate digest after a restart is visible to the parent and
-        recoverable; a lost one is neither. So when the injection turn raises
-        before the model consumed the prompt, the held siblings keep no
-        tombstone and stay visible to ``list_orphans()`` — the same direction
-        ``_digest_held`` itself encodes. The debt stays parked in the slot's
-        ledger, so a recovery replay of the announce can still claim it.
+        A duplicate digest after a restart is recoverable; a lost one is not.
         """
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
@@ -1098,7 +996,8 @@ class TestWaveDigest:
         spawn, not gated on wave size. A 3-agent wave = 1 injection turn
         labelled 1/1 with the final release guidance, never 3 per-agent
         turns. (Single-task spawns have no batch identity and keep the plain
-        per-agent injection — see test_single_spawn_keeps_per_agent below.)"""
+        per-agent injection — see test_single_spawn_keeps_per_agent_injection
+        below.)"""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
         orch.ctx_builder = MagicMock()
@@ -1378,14 +1277,10 @@ class TestDigestHoldDeadline:
 
     @pytest.mark.asyncio
     async def test_straggler_wave_delivers_partial_digest_end_to_end(self):
-        """REPRO end to end through the real sweep.
+        """A straggler wave delivers a partial digest through the real hold-deadline sweep.
 
-        A 3-member wave: two members finish, the third keeps running. Neither
-        chunk trigger can fire — the COUNT trigger needs 10 pending completions
-        and the wave has not closed — so on main the parent receives NOTHING
-        until the straggler ends (up to the 30-minute reap if it hangs). After
-        the fix the reaper's hold-deadline sweep releases the two finished
-        results as a labelled partial digest."""
+        With 2 of 3 done neither chunk trigger fires (the count trigger needs 10), so only
+        the sweep stops the parent waiting up to the 30-minute reap."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
         orch.ctx_builder = MagicMock()
@@ -1536,9 +1431,13 @@ class TestDigestHoldDeadline:
         assert digest.startswith("[Subagent batch completion event]")
         # Both finished siblings' results are in the parent's context now.
         assert "/tmp/s0/result.txt" in digest and "/tmp/s1/result.txt" in digest
-        # Honest labelling: a partial release, wave-close chunk still to come.
+        # Honest labelling: a partial release, wave-close chunk still to come,
+        # with counts dated because the digest can wait in a busy parent's queue.
         assert "Batch results 1/2" in digest
-        assert "2 of 3 delivered, 1 still running" in digest
+        assert (
+            "2 of 3 delivered, 1 still running.\nThese counts were taken when this "
+            "digest was composed; a running agent may have finished since.\n"
+        ) in digest
         assert "PARTIAL result set" in digest
         assert "wave finished" not in digest
         # The synthetic record invented no agent: no terminal WS event for it,

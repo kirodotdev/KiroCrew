@@ -32,7 +32,7 @@ describe('FileCard image preview', () => {
     expect(open.querySelector('img')?.getAttribute('src')).toBe('/api/outbox/dashboard.png')
     const save = document.querySelector('a[download]')
     expect(save).toHaveAccessibleName(/Save/)
-    expect(save?.getAttribute('href')).toBe('/api/outbox/dashboard.png')
+    expect(save?.getAttribute('href')).toBe('/api/outbox/dashboard.png?download=1')
   })
 
   it('opens the viewer at the image on click, carrying the real filename', () => {

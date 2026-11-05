@@ -671,3 +671,91 @@ class TestRecordReadsRunOffTheLoop:
         assert enable_reads == [("get_app", False), ("app_enabled_state", False)]
         assert open_reads == [("get_app", False)]
         assert disable_reads == [("get_app", False), ("app_enabled_state", False)]
+
+
+# ---------------------------------------------------------------------------
+# Native-Windows exec backend refusal reaches the enable response
+# ---------------------------------------------------------------------------
+
+
+def _install_with_backend(tmp_path: Path, entry: str, body: str, **backend: Any) -> None:
+    src = _make_app_source(tmp_path, backend={"entryPoint": entry, "port": "auto", **backend})
+    (src / entry).write_text(body)
+    from kiro_crew.apps.manager import install_app
+
+    assert install_app(src).ok
+
+
+def _backend_sees_platform(monkeypatch: pytest.MonkeyPatch, *, is_posix: bool) -> None:
+    """Make only the backend module read ``platform_compat.IS_POSIX`` as *is_posix*.
+
+    The enable route's own record and config writes keep the real host's code paths;
+    the refusal under test reads ``platform_compat.IS_POSIX`` in ``backend.py``. Every
+    other attribute is read from the real module.
+    """
+    import kiro_crew.apps.backend as bmod
+
+    real = bmod.platform_compat
+
+    class _PlatformView:
+        IS_POSIX = is_posix
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real, name)
+
+    monkeypatch.setattr(bmod, "platform_compat", _PlatformView())
+
+
+def _backend_sees_native_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    _backend_sees_platform(monkeypatch, is_posix=False)
+
+
+class TestEnableReportsWindowsExecBackendRefusal:
+    """``start_app_backend`` returns the None of "no backend declared" when it refuses
+    an exec (shell launcher) backend on native Windows. The enable response must name
+    the refusal in ``backend_refused`` instead of reading as a clean start."""
+
+    @pytest.mark.asyncio
+    async def test_exec_backend_refusal_is_in_the_enable_response(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install_with_backend(tmp_path, "run.sh", "#!/bin/sh\necho hi\n", type="exec")
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        _backend_sees_native_windows(monkeypatch)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable")
+            body = await resp.json()
+        # The app still enables: its other parts may work without the backend.
+        assert resp.status == 200
+        assert "backend" not in body
+        assert "not supported on native Windows" in body["backend_refused"]
+        assert APP in body["backend_refused"]
+
+    @pytest.mark.asyncio
+    async def test_python_backend_on_windows_carries_no_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install_with_backend(tmp_path, "server.py", "print('hi')\n", type="python")
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        _backend_sees_native_windows(monkeypatch)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable")
+            body = await resp.json()
+        assert resp.status == 200
+        assert "backend_refused" not in body
+
+    @pytest.mark.asyncio
+    async def test_exec_backend_on_posix_carries_no_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install_with_backend(tmp_path, "run.sh", "#!/bin/sh\necho hi\n", type="exec")
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        _backend_sees_platform(monkeypatch, is_posix=True)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable")
+            body = await resp.json()
+        assert resp.status == 200
+        assert "backend_refused" not in body

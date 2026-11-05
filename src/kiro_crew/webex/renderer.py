@@ -54,12 +54,12 @@ from kiro_crew.messaging.outbound_files import (
 from kiro_crew.messaging.renderer import (
     Renderer,
     apply_options_cap,
+    chunk_for_transport,
     count_redaction_tags,
     new_approval_nonce,
     redaction_notice,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import bounded_for_delivery, chunk_utf8_bytes
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.preview_text import drop_format_chars
@@ -105,6 +105,10 @@ _STATUS_TAIL_CHARS = 600
 # message can hold while its uploads are in flight.
 _UPLOAD_LIMITS = ExtractLimits(max_file_bytes=8 * 1024 * 1024, max_total_bytes=32 * 1024 * 1024)
 
+# The final answer's split budget: Webex's byte cap and nothing else, whatever
+# capabilities a renderer was built with, so the cap stays this client's own.
+_BYTE_CAP = TransportCapabilities(max_message_bytes=WEBEX_MAX_TEXT)
+
 
 def _redact_all(text: str) -> str:
     """Both redactors as one callable, for the display-form pass.
@@ -125,13 +129,16 @@ def _bounded_chunks(content: str) -> list[str]:
     a key, which is its fail-closed answer and costs the caller a chunk over the
     budget. This client's cap is hard -- it truncates a larger payload and the
     answer's tail goes with no notice -- so the sequence is graded once more and,
-    when the grade repairs it, cut again to the budget. The repair is safe to bound
-    again by contract, which is what makes one pass enough here.
+    when the grade repairs it, cut again to the budget.
+
+    The byte path of ``chunk_for_transport``, the one the mirror and proactive
+    legs already take: the fence-aware ``split_markdown_bytes`` under the byte
+    cap, so a code fence spanning a cut is sealed and reopened rather than
+    leaving the next chunk's code to render as prose.
 
     Runs on a worker thread: the grade rescans the text per candidate boundary.
     """
-    chunks = chunk_utf8_bytes(content, WEBEX_MAX_TEXT, redactor=_redact_all)
-    return bounded_for_delivery(chunks, WEBEX_MAX_TEXT, _redact_all, chunk_utf8_bytes)
+    return chunk_for_transport(content, _BYTE_CAP, redactor=_redact_all)
 
 
 def webex_display_safe(text: str) -> str:
@@ -432,19 +439,14 @@ class WebexRenderer(Renderer):
         content = webex_display_safe(body) or ("…" if ok else _ERROR_TEXT)
         if self._steered:
             content = f"{content}\n\n{_STEER_NOTE}"
-        # Byte-aware and LOSSLESS: Webex caps messages in UTF-8 BYTES, so the
+        # Byte-aware and FENCE-AWARE: Webex caps messages in UTF-8 BYTES, so the
         # neutral character-based splitter could hand the client an oversized
-        # chunk that gets tail-truncated (silent data loss). Losslessness is the
-        # property the table path needs — an oversized safe-raw grid is chunked
-        # here and must reassemble exactly, which a line-oriented splitter cannot
-        # promise because it consumes the boundary whitespace. Pinned by
-        # test_channel_table_rendering.py::TestDeliveryFraming.
+        # chunk that gets tail-truncated (silent data loss). Nothing upstream of
+        # this split seals a code fence, so the split itself must: a cut inside a
+        # fence closes it in one chunk and reopens it in the next. Each chunk is
+        # its own message, so the blank line a cut lands on is dropped rather
+        # than shipped as empty space; every content line still arrives whole.
         #
-        # The SHARED primitive, not a local copy: it carries two termination
-        # guards (a non-positive budget, and a single code point wider than the
-        # budget) that a hand-rolled copy of this loop spins forever on. And
-        # deliberately the FENCE-BLIND one, not ``split_markdown_bytes``: the
-        # answer path above re-seals its own fences.
         # OFFLOADED, like every other site that hands this splitter a redactor:
         # the grade redacts and rescans the text once per candidate boundary and
         # the search tries many budgets, so a final answer where no cut is clean

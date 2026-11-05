@@ -7,7 +7,6 @@ Composed onto ``kiro_crew.hooks``; see :mod:`kiro_crew.hook_runtime`.
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace as dataclasses_replace
 from typing import TYPE_CHECKING
 
@@ -51,18 +50,32 @@ def load_denied_commands_state() -> dict:
     The opt-out state (``{disable_all, disabled_ids, user_added}``) lives in a
     keystone trust-root file the agent cannot write, NOT in ``config.json``.
     Returns ``{}`` (= no opt-out, all built-ins enforced) if the file is absent,
-    unreadable, or not a JSON object — fail-safe for a deny gate.
+    unreadable, or not a JSON object — fail-safe for a deny gate. A file saved
+    with a leading UTF-8 byte-order mark is read like the same file without it.
+    A file that is present but unusable logs a WARNING: the user's own
+    ``user_added`` rules drop out of the gate, and that must not happen quietly.
     """
     try:
         from kiro_crew.config.loader import denied_commands_path
+        from kiro_crew.user_json import loads_user_json
 
-        raw = json.loads(denied_commands_path().read_text(encoding="utf-8"))
-        return raw if isinstance(raw, dict) else {}
+        raw = loads_user_json(denied_commands_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except Exception:
-        logger.debug("denied_commands.json load failed; treating as no opt-out", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "denied_commands.json could not be read (%s); its user-added deny rules are "
+            "not applied, built-in rules stay enforced. Fix or re-save the file.",
+            type(exc).__name__,
+        )
         return {}
+    if not isinstance(raw, dict):
+        logger.warning(
+            "denied_commands.json is not a JSON object; its user-added deny rules are "
+            "not applied, built-in rules stay enforced. Fix or re-save the file."
+        )
+        return {}
+    return raw
 
 
 def hooks_config_from_config_dict(hooks_section: dict) -> HooksConfig:

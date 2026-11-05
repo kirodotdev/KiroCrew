@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         validate_file_path,
     )
     from kiro_crew.dashboard.chat_turn.regenerate_swap import note_regenerate_reply
+    from kiro_crew.dashboard.chat_turn.turn_stats import _last_reply_row
 
 
 class _Snapshot(NamedTuple):
@@ -495,7 +496,8 @@ def _snapshot_write_target(
     most ``_MAX_RECONSTRUCT_BYTES``, so the flush can tell a change past the
     per-file cut from no change and window the stored sides on it
     (``_excerpt_pair``). A strReplace or insert content block is a fragment and
-    never carries it. It lives only in the in-turn accumulator, bounded per
+    never carries it; a before taken from one carries ``fragment_before``
+    instead. It lives only in the in-turn accumulator, bounded per
     turn by ``_record_turn_snapshot``, and never reaches message meta.
 
     For strReplace, FIRST reconstructs the full-file before via
@@ -602,6 +604,10 @@ def _snapshot_write_target(
         }
         # Only create's content block is the whole previous file; strReplace
         # and insert carry a fragment, which must never be diffed as one.
+        if cmd != "create":
+            # Marks the before as that fragment for _turn_line_changes, which
+            # would otherwise count every line outside it as added.
+            snapshot["fragment_before"] = True
         if cmd == "create" and len(diff_old_text) <= _MAX_RECONSTRUCT_BYTES:
             snapshot["full_content"] = diff_old_text
             # The backend builds this block before it writes, so it is the file
@@ -969,6 +975,10 @@ def _turn_line_changes(changes: Any) -> int:
             if not isinstance(path, str) or path in seen:
                 continue
             seen.add(path)
+            if fc.get("fragment_before") and not fc.get("pending_str_replace"):
+                # A content-block fragment with nothing to settle it is not the
+                # file's before: diffing it would call the rest of the file added.
+                continue
             pair = _line_change_input(fc, _safe_read_snapshot(path))
             if pair is not None:
                 resolved.append(pair)
@@ -1204,6 +1214,7 @@ def _prepare_file_changes(
                 "before": fc["content"],
                 "after": "",
                 "_before_truncated": before_truncated,
+                "_fragment": bool(fc.get("fragment_before")),
             }
             if fc.get("pending_str_replace"):
                 pending_by_path[key] = fc["pending_str_replace"]
@@ -1242,6 +1253,11 @@ def _prepare_file_changes(
                 # re-truncating would append a second marker.
                 entry["before"] = resolved.content
                 before_truncated = resolved.truncated
+                entry["_fragment"] = False
+        # Stored on every entry, True or False: a reader that diffs before
+        # against after (the Files tab's Show changes) must know whether this
+        # before is only the replaced span. The excerpts are cut from whole sides.
+        entry["before_fragment"] = entry.pop("_fragment") and excerpt is None
         if excerpt is not None:
             # The per-file cap keeps a side's first _MAX_SNAPSHOT chars, so an
             # edit past it leaves two equal cuts: no diff, and the turn budget
@@ -1326,23 +1342,19 @@ def _attach_file_changes(
     and finishes in one loop step, which keeps "attach, then persist" the
     order the durable save relies on.
     """
-    # Attach to the most recent reply row this runner appended this turn; if
-    # none exists (turn aborted before any text, or every assistant row in the
-    # turn was injected by another writer), create a synthetic message so the
-    # chips still surface without touching a row that is not this turn's reply.
-    reply_mids = getattr(slot, "_turn_reply_mids", None)
-    for m in reversed(_turn_rows(slot, turn_boundary, turn_start_mid)):
-        if m.get("role") != "assistant":
-            continue
-        if isinstance(reply_mids, list) and row_mid(m) not in reply_mids:
-            continue
-        meta = m.setdefault("meta", {})
+    # Attach to the most recent reply row this runner appended this turn
+    # (``_last_reply_row``, the one identity walk the footer uses too); if none
+    # exists (turn aborted before any text, or every assistant row in the turn
+    # was injected by another writer), create a synthetic message so the chips
+    # still surface without touching a row that is not this turn's reply.
+    reply_row = _last_reply_row(slot, turn_boundary, turn_start_mid)
+    if reply_row is not None:
+        meta = reply_row.setdefault("meta", {})
         meta.update(file_meta)
         # The count describes the file_changes written beside it, so a
         # flush that drops nothing leaves no earlier count behind.
         if not dropped:
             meta.pop("file_changes_omitted_files", None)
-        break
     else:
         # broadcast=False: the synthetic message reaches the UI via the same
         # SSE/WS path the dashboard already drains for this slot. Default
@@ -1388,6 +1400,7 @@ def _attach_file_changes(
     # covers both branches and cannot be missed by a later edit.)
     slot._dirty = True
     slot._file_changes = []
+    reply_mids = getattr(slot, "_turn_reply_mids", None)
     if isinstance(reply_mids, list):
         reply_mids.clear()
 

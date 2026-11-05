@@ -212,7 +212,7 @@ describe('UserMessage', () => {
 
   it('copies content to clipboard on copy click', async () => {
     render(<UserMessage content="copy me" renderContent={renderContent} />)
-    fireEvent.click(screen.getByTitle('Copy'))
+    await act(async () => { fireEvent.click(screen.getByTitle('Copy')) })
     expect(copyToClipboard).toHaveBeenCalledWith('copy me')
   })
 
@@ -231,9 +231,9 @@ describe('UserMessage', () => {
     expect(screen.queryByTitle('Copy link to message')).not.toBeInTheDocument()
   })
 
-  it('calls copySessionLink with correct args on link button click', () => {
+  it('calls copySessionLink with correct args on link button click', async () => {
     render(<UserMessage content="hi" renderContent={renderContent} messageTs="2025-05-13T14:00:00.000Z" slotKey="chat-1" slotTitle="My Chat" mode="orchestrator" />)
-    fireEvent.click(screen.getByTitle('Copy link to message'))
+    await act(async () => { fireEvent.click(screen.getByTitle('Copy link to message')) })
     expect(copySessionLink).toHaveBeenCalledWith('chat-1', 'My Chat', '2025-05-13T14:00:00.000Z', 'orchestrator')
   })
 

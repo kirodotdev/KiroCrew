@@ -36,6 +36,7 @@ from kiro_crew.llm_helpers_parts.turn_usage import (
     provider_last_turn_usage,
     usage_has_billing,
 )
+from kiro_crew.metrics.usage_attrs import TRIGGER_SYSTEM
 from kiro_crew.sel import sel as _sel
 from kiro_crew.start_priority import StartPriority
 
@@ -346,6 +347,7 @@ async def run_bg_oneliner(
                         surface=f"bg:{sel_source}",
                         elapsed_ms=_elapsed_ms,
                         model_source=session,
+                        trigger=TRIGGER_SYSTEM,
                     )
             except Exception:
                 logger.debug("bg oneliner accounting failed source=%s", sel_source, exc_info=True)
@@ -483,9 +485,11 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
     running process, then the old session's teardown, which removes that one
     session's backend record (KAS ``_kiro/session/delete``; kiro-cli terminate
     plus the guarded unlink of ``sessions/cli/<sid>.json(+.jsonl)``). If the
-    provider has none or it raises, ``reset`` replaces the process, and the key's
-    stateless classification means the next turn starts with no history. The
-    same two steps ``WorkerPool.reset`` uses for a reused pool worker.
+    provider has none or it raises (a backend on its own ``AcpClient``, claude
+    among them, raises ``NotImplementedError``), ``reset`` replaces the process,
+    and the key's stateless classification means the next turn starts with no
+    history. The same two steps ``WorkerPool.reset`` uses for a reused pool
+    worker.
 
     Logs at INFO which path ran, once per call. Never raises ``Exception``.
     """
@@ -765,6 +769,7 @@ async def background_turn(
                         agent=agent or BACKGROUND_AGENT,
                         elapsed_ms=turn_elapsed_ms,
                         model_source=client,
+                        trigger=TRIGGER_SYSTEM,
                     )
             except Exception:
                 logger.debug("background turn accounting failed task=%s", task, exc_info=True)

@@ -82,18 +82,9 @@ async def _settle(predicate: Callable[[], bool], what: str) -> None:
 class TestARegistrationAfterThePopIsNamedNotChased:
     """A session registered under the key AFTER the reset's pop is a named kill failure; there is no second pass.
 
-    The snapshot and the pop capture together name every session the key held up
-    to the pop, and the fence is why nothing lands under it afterwards: every
-    door into the live map either meets the fence -- ``get_or_create`` at its
-    front door, after its busy-turn wait and at registration, cold start and
-    warm-pool claim alike -- or never publishes under a cron key
-    (``open_task_session`` publishes ``taskrunner:`` keys and refuses a key being
-    ended; the background session publishes its own key). So a reset-and-kill
-    pass is run ONCE per key, and the post-pass read is a net that names, not a
-    chase: a session under the key the pass did not handle -- a manager without
-    the fence, or a door this reasoning missed -- is reported as a kill failure,
-    audited ``failed``, never reset, never signalled, and a session the pass
-    already answered is never reported.
+    Every door into the live map meets the fence or never publishes under a cron key,
+    so one pass per key is enough. The post-pass read only names a session the pass
+    missed: audited ``failed``, never reset or signalled.
     """
 
     @staticmethod
@@ -184,10 +175,7 @@ class TestARegistrationAfterThePopIsNamedNotChased:
     ) -> None:
         """End to end: the first reset completes and the late cold start after its pop is held by the fence -- nothing lands, nothing is dropped.
 
-        Through the real manager the fence is why one pass is enough: the
-        completion's ``get_or_create`` after the pop meets the key's ending fence
-        at the door and waits there, so nothing lands after the pop for a
-        post-pass read to name; it lands once the fence lifts, under a key whose
+        The completion's ``get_or_create`` waits at the fence and lands only once the
         run is recorded.
         """
         from kiro_crew.config import KiroCrewConfig
@@ -280,19 +268,10 @@ class TestARegistrationAfterThePopIsNamedNotChased:
 class TestEveryKeyOfTheRunIsEnded:
     """A reap or cancel ends EVERY key the run registered, not the newest one.
 
-    A sequential job registers one key per agent inside one run, and an earlier
-    agent's session is kept alive -- its reset deferred -- while its sub-agents
-    are pending and a later agent runs. A reap that ended only the newest key
-    reset the hung later agent, recorded ``reaped``, and left the earlier agent's
-    session and its sub-agents running behind that record. Each registered key
-    is attributed to the run that registered it (``register_active_session_key``
-    reads the job's stored claim); the reap and cancel end every key of the run
-    they took (``_run_session_keys``, newest first), each fenced through the
-    record, and leave an older run's key -- a finished run's session retained
-    for its pending sub-agents -- alone. A key the run registers while its
-    others are being ended (its task is cancelled only after the passes) is
-    ended by a bounded second round; one that lands after the last round is a
-    named kill failure, so the audit says ``failed``.
+    A sequential job registers one key per agent, and an earlier agent's session stays
+    alive while its sub-agents are pending. Keys are attributed to their run
+    (``register_active_session_key``), so an older run's key is left alone. A key
+    registered during the passes gets a bounded second round; a later one is named.
     """
 
     @staticmethod
@@ -468,13 +447,8 @@ class TestEveryKeyOfTheRunIsEnded:
     ) -> None:
         """The fences are up for one key's bound, not the sum of every key's.
 
-        Each key's ending is bounded on its own (the reset timeout, the verified
-        kill); ended one after another, a run of many agent keys holds its fences
-        for the SUM of those bounds -- past ``ENDING_FENCE_WAIT_SECS``, so a
-        completion held at the door is refused for a teardown that was merely
-        long. Pinned by a handshake: the newest key's reset (ended first in a
-        serial order) waits until the OLDER key's reset has started; a serial
-        ending never starts it and hangs, a concurrent one completes.
+        Serial endings could pass ``ENDING_FENCE_WAIT_SECS``. Handshake: the newest
+        key's reset waits for the older key's reset to start, so a serial order hangs.
         """
         svc, job, claim = _overdue_reap_fixture(tmp_path, "par1")
         svc.register_active_session_key("par1", "cron:par1:agentA")
@@ -602,19 +576,10 @@ class TestEveryKeyOfTheRunIsEnded:
 class TestAColdStartInFlightWhenTheRunEndsIsFenced:
     """The case no pass can see: a cold start inside ``provider.start()`` when the run is ended.
 
-    ``get_or_create`` takes its allocation reservation, then awaits
-    ``provider.start()`` BEFORE publishing into the map. A reap or cancel that
-    runs then finds nothing under the key -- no snapshot, no pop, no post-pass
-    read can name it -- and without the fence recorded ``reaped`` while that
-    provider published afterwards, its process and the completion's injection
-    running on. ``_end_run_processes`` now raises the key's ending fence
-    (``SessionManager.ending_key``) before its first snapshot: the in-flight
-    reservation is invalidated, so the registration is refused when the start
-    returns (fence up or lifted) and the started provider is hard-killed by the
-    closing manager's own path; the passes report the allocation still in flight
-    as a named kill failure, so the audit says ``failed``. The completion's call
-    is not dropped: refused there, it waits for the lift and allocates again, a
-    new life under the recorded key.
+    ``get_or_create`` awaits ``provider.start()`` before publishing, so no read can see
+    it. ``_end_run_processes`` raises ``SessionManager.ending_key`` first: the
+    registration is refused, the provider hard-killed, the audit says ``failed``, and
+    the completion allocates again once the fence lifts.
     """
 
     @pytest.mark.asyncio
@@ -708,12 +673,9 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
     ) -> None:
         """The start returns after the pass, before the post-pass read: refused, hard-killed by dispatch, its reservation gone -- and still named.
 
-        Without the receipt the reservation cleanup erased every trace of that
-        start before the post-pass read, so the record said ``reaped`` on the
-        strength of a hard kill dispatched off the loop whose outcome nothing
-        read back -- a kill the dispatch could not land left the process alive
-        behind that record. The receipt survives until the fence lifts, so the
-        audit says ``failed`` and the record names the refusal.
+        Reservation cleanup erases the start before the read, and nothing reads back the
+        dispatched kill. The receipt survives until the fence lifts, so the audit says
+        ``failed``.
         """
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.session import SessionManager
@@ -828,12 +790,8 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
     ) -> None:
         """The fence outlives the passes: a completion held at the door wakes to a RECORDED key.
 
-        The run's terminal record -- the locked store merge, the history row --
-        and its audit are written while the key is still fenced; only then does
-        the fence lift and the held caller land. A fence that lifted when the
-        passes ended let the caller allocate against a key that was neither
-        being ended nor recorded: runtime and durable state disagreeing for the
-        span of the write.
+        The store merge, history row and audit are written while the key is fenced, so
+        runtime and durable state never disagree during the write.
         """
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.session import SessionManager
@@ -939,13 +897,8 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
     ) -> None:
         """A reservation is not a process: a completion's claim blocked on the busy parent's turn is held, not named.
 
-        The sub-agent completion's ``get_or_create`` of the parent key has taken
-        its reservation and waits on the live session's turn semaphore -- it
-        started no provider, and the passes tore the run's process down. Naming
-        that reservation as a start refused at registration recorded a kill
-        failure that never happened: ``failed`` over a clean reap. Only a
-        reservation past its spawn door is named; the waiter is woken by the
-        reset, meets the fence at the door and lands once the run is recorded.
+        The waiter on the parent's turn semaphore started no provider; naming it would
+        record ``failed`` over a clean reap. Only a reservation past its spawn door is named.
         """
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.session import SessionManager
@@ -1123,16 +1076,9 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
     ) -> None:
         """Why the fence, given the pre-reset handles, the pop capture and the post-pass read: the interval they cannot see.
 
-        The three name every process under the key up to the post-pass read.
-        A completion's claim that begins AFTER that read -- while the terminal
-        record is being written, an interval of awaits -- is outside all three:
-        no snapshot, no pop and no spawn read is taken again, and without the
-        fence its cold start publishes under the key before the record lands,
-        so the record says ``reaped`` over a live process nothing answered.
-        The fence holds that claim at the door until the record and the audit
-        are written, so it lands only under a recorded key. Red with the fence
-        removed (``process_identity.ending_fence`` returning ``nullcontext()``): the
-        claim lands before the record.
+        A claim that begins after the post-pass read, while the record is written, is
+        seen by none of the three. The fence holds it at the door until the record and
+        audit land. Disable it by making ``process_identity.ending_fence`` a ``nullcontext()``.
         """
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.session import SessionManager

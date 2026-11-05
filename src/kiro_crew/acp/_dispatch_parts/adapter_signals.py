@@ -408,53 +408,34 @@ def parse_codex_compaction_update(
 ) -> str | None:
     """Classify a codex-acp context-compaction frame, or ``None``.
 
-    Returns ``started`` or ``completed`` -- the same vocabulary kiro-cli's
-    ``_kiro.dev/compaction/status``, KAS's summarization kinds and the claude
-    notices already use -- so codex becomes the fourth producer of
-    ``EVENT_COMPACTION_STATUS`` and every consumer works with no per-surface
-    change.
+    Returns ``started`` or ``completed``, the vocabulary kiro-cli, KAS and claude
+    already use for ``EVENT_COMPACTION_STATUS``, so consumers need no change.
 
-    codex-acp reports compaction as an ordinary ``tool_call`` pair rather than an
-    out-of-band notification, and unlike the claude adapter it stamps the pair:
-    ``_meta.contextCompaction`` is a MARKER, so this is a structural match rather
-    than a guess about prose. Measured on codex-acp 1.11.0, driven over stdio::
+    codex-acp reports compaction as a ``tool_call`` pair. Up to 1.11.0 it stamps
+    ``_meta.contextCompaction`` (a MARKER); match on the marker and the frame
+    kind, never the title, which is display text and may be localized::
 
         tool_call        kind=think  status=in_progress  title="Compact conversation"
                          _meta={"contextCompaction": {"version": 1}}
         tool_call_update             status=completed    title="Compact conversation"
                          _meta={"contextCompaction": {"version": 1}}
-        session/prompt response -> {"stopReason": "end_turn"}
 
-    Matched on the marker and the FRAME KIND, never on the title -- the title is
-    display text the adapter is free to reword, and it is localized on some
-    clients.
-
-    codex-acp 2.2.2 dropped the marker, and 2.3.0 still sends the pair without it.
-    Its pair, captured in the lane (``test/fixtures/acp_frames/codex/compact-live.jsonl``)::
+    codex-acp 2.2.2 and 2.3.0 send the pair without the marker
+    (``test/fixtures/acp_frames/codex/compact-live.jsonl``)::
 
         tool_call        kind=think  status=in_progress  title="Compact conversation"
         tool_call_update             status=completed    (no title, no kind)
 
-    So an UNMARKED frame is read only with *allow_unmarked* (the caller's harness is
-    in ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``), and only in that exact shape: a
-    ``think`` call titled
-    ``CODEX_COMPACTION_TITLE`` starts it, and the update completes it only when its
-    ``toolCallId`` is *pending* -- the id the caller kept from that start. A marked
-    frame never needs *pending*, so the marked path is unchanged.
+    An UNMARKED frame is read only with *allow_unmarked* (harness in
+    ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``): a ``think`` call titled
+    ``CODEX_COMPACTION_TITLE`` starts it, and the update completes it only when
+    its ``toolCallId`` is *pending*, the id kept from that start.
 
-    Two arms rather than three, because there is no third frame to read:
-
-    * There is no ``failed`` status. A compaction that errors emits an
-      ``agent_message_chunk`` ("Error running remote compact task: ...") and then
-      the adapter's ``runCompact`` never resolves, so the ``session/prompt``
-      request itself is never answered (observed: a 240s wait with no response).
-      Synthesizing a ``failed`` from that text would be the prose guess this
-      marker exists to avoid, and the strand is a prompt-timeout problem rather
-      than a compaction-status one.
-    * A ``tool_call`` whose status is already ``completed`` is deliberately NOT a
-      terminal. That is the shape a past compaction takes when the adapter
-      REPLAYS a loaded session's history, and reading it as a live terminal would
-      reset the context counters against a window nobody just summarized.
+    * There is no ``failed`` arm: a failing compaction emits an
+      ``agent_message_chunk`` and the ``session/prompt`` is never answered, which
+      is a prompt-timeout problem, and reading the prose would be a guess.
+    * A ``tool_call`` already ``completed`` is NOT a terminal: that is a replayed
+      past compaction on session load, and would reset the context counters.
     """
     kind = update.get("sessionUpdate")
     if kind not in (UPDATE_TOOL_CALL, UPDATE_TOOL_CALL_UPDATE):

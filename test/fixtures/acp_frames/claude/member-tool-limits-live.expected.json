@@ -1,0 +1,373 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {},
+        "claudeCode": {
+          "promptQueueing": true
+        }
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "systemPrompt": {
+          "mode": {
+            "override": {}
+          }
+        }
+      }
+    },
+    "agent_version": "0.94.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "skip",
+    "frame": "_auth/status_update",
+    "params": {
+      "authStatus": {
+        "kind": "external",
+        "label": "AWS Bedrock"
+      }
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "description": "Session permission mode",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Always ask before making changes",
+            "name": "Manual",
+            "value": "default"
+          },
+          {
+            "description": "Automatically accept all file edits",
+            "name": "Accept edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Create a plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          },
+          {
+            "description": "Claude handles permission decisions",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Accepts all permissions",
+            "name": "Bypass permissions",
+            "value": "bypassPermissions"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "",
+        "description": "AI model to use",
+        "id": "model",
+        "name": "Model",
+        "options": [],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "default",
+        "description": "Available effort levels for this model",
+        "id": "effort",
+        "name": "Effort",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          },
+          {
+            "name": "Xhigh",
+            "value": "xhigh"
+          },
+          {
+            "name": "Max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "",
+        "description": "Main-thread agent persona",
+        "id": "agent",
+        "name": "Agent",
+        "options": [],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "auto",
+        "bypassPermissions"
+      ]
+    },
+    "session_id": "claude-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "ToolSearch",
+        "tool_call_id": "toolu-1",
+        "tool_kind": "other",
+        "wire_title": "ToolSearch"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "query": "select:mcp__limit-probe__probe_echo,mcp__dot_probe__dot_echo"
+        },
+        "tool_call_id": "toolu-1",
+        "tool_input": "{\n  \"query\": \"select:mcp__limit-probe__probe_echo,mcp__dot_probe__dot_echo\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "max_results": 2,
+          "query": "select:mcp__limit-probe__probe_echo,mcp__dot_probe__dot_echo"
+        },
+        "tool_call_id": "toolu-1",
+        "tool_input": "{\n  \"query\": \"select:mcp__limit-probe__probe_echo,mcp__dot_probe__dot_echo\",\n  \"max_results\": 2\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-1",
+        "tool_final": true,
+        "tool_output": "Tool: mcp__limit-probe__probe_echo\nTool: mcp__dot_probe__dot_echo",
+        "tool_output_bytes": 65,
+        "tool_output_digest": "d898e2e59258e14e092e11bf9bf6ebab148c747340e4021ab30f8b3e7d984555",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "mcp__limit-probe__probe_echo",
+        "tool_call_id": "toolu-2",
+        "tool_kind": "other",
+        "wire_title": "mcp__limit-probe__probe_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow-with-updates",
+            "label": "Yes, and don't ask again for Probe Echo commands"
+          },
+          {
+            "id": "reject",
+            "label": "No"
+          }
+        ],
+        "shell_classified": true,
+        "title": "mcp__limit-probe__probe_echo",
+        "tool_call_id": "toolu-2",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-with-updates",
+      "once": "allow-once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-2",
+        "tool_final": true,
+        "tool_output": "tool-limit-probe-ran:probe_echo",
+        "tool_output_bytes": 31,
+        "tool_output_digest": "a8a698fad7d7b0fc45562492ef160601445d881ae5dd61dd7a6639aaac91334e",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "mcp__dot_probe__dot_echo",
+        "tool_call_id": "toolu-3",
+        "tool_kind": "other",
+        "wire_title": "mcp__dot_probe__dot_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow-with-updates",
+            "label": "Yes, and don't ask again for Dot Echo commands"
+          },
+          {
+            "id": "reject",
+            "label": "No"
+          }
+        ],
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "mcp__dot_probe__dot_echo",
+        "tool_call_id": "toolu-3",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-with-updates",
+      "once": "allow-once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu-3",
+        "tool_final": true,
+        "tool_output": "tool-limit-probe-ran:dot_echo",
+        "tool_output_bytes": 29,
+        "tool_output_digest": "c47172a79340388c693bacbd8997238342b667d4b5b8024d0f3638e71f34d7c3",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      8,
+      953,
+      134725,
+      30819
+    ],
+    "stop_reason": "end_turn"
+  }
+]

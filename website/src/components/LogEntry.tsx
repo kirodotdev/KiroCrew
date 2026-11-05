@@ -54,9 +54,10 @@ export default function LogEntry({ entry, jobId, jobName }: { entry: LogEntryDat
     <div className="border-b border-border last:border-b-0">
       <button
         onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
         className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-bg-hover transition-colors cursor-pointer bg-transparent border-none"
       >
-        <ChevronRight size={14} className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`} />
+        <ChevronRight size={14} aria-hidden="true" className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`} />
         {statusBadge}
         <span className="text-[12px] text-muted shrink-0">{fmtDateTimeNumeric(entry.started_at)}</span>
         <span className="text-[12px] text-muted shrink-0">{fmtDuration(entry.duration_ms)}</span>

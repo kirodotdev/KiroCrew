@@ -5,7 +5,9 @@ export const {
   useAppApi, useAppEvents, useTheme, useAppInfo, useNavigate, useNotify,
   useNavBadge, useChatLauncher, AppApiProvider,
   useImeGuard, useLanguageGeneration, activeLocale,
-  fmtNumber, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText,
+  fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText,
+  // The App Kit seam level, so an app can feature-detect what this host provides.
+  APP_SDK_LEVEL,
   // Marker protocol. Naming an export the host does not provide is a load-time failure for the
   // whole app, so this list is checked against the protocol barrel by chatProtocolBoundary.test.ts.
   parseOptions, deriveFollowUpOptions, extractSteeringAcks, stripPartialOptionMarker,

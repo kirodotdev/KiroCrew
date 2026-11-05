@@ -35,6 +35,14 @@ _clean_warm_runtime = connections_warm_helpers._clean_warm_runtime
 _stub_activation = connections_warm_helpers._stub_activation
 
 
+@pytest.fixture(autouse=True)
+def _empty_invalidation_rearms():
+    # The registry is module-global and outlives each test's loop.
+    warm._invalidation_rearms.clear()
+    yield
+    warm._invalidation_rearms.clear()
+
+
 # ── redeemability takes TWO questions, and they die independently ──
 
 
@@ -641,6 +649,50 @@ def test_the_scheduler_is_a_noop_without_a_running_loop():
     warm._invalidation_rearms.clear()
 
     warm.rearm_invalidated_provider("linear")
+
+    assert warm._invalidation_rearms == {}
+
+
+def _rearm_on_a_closed_loop() -> Any:
+    """A pending re-arm whose loop is gone, so it never finishes or drops its entry."""
+    other = asyncio.new_event_loop()
+    try:
+        rearm = other.create_future()
+        # Registered like the real re-arm's forget callback: cancelling it would
+        # schedule that callback onto the closed loop.
+        rearm.add_done_callback(lambda _f: None)
+        return rearm
+    finally:
+        other.close()
+
+
+@pytest.mark.asyncio
+async def test_a_rearm_left_by_a_torn_down_loop_does_not_block_a_new_one(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    async def _rearm(slug: str) -> list[str]:
+        calls.append(slug)
+        return [slug]
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _rearm)
+
+    async with _rearm_registry() as registry:
+        dead = _rearm_on_a_closed_loop()
+        registry["linear"] = dead
+        warm.rearm_invalidated_provider("linear")
+        task = registry["linear"]
+        assert task is not dead, "the dead re-arm was taken for one still in flight"
+        assert await await_until(task) == ["linear"]
+        assert calls == ["linear"]
+
+
+@pytest.mark.asyncio
+async def test_settling_skips_a_rearm_left_by_a_torn_down_loop():
+    warm._invalidation_rearms["linear"] = _rearm_on_a_closed_loop()
+
+    await warm._settle_invalidation_rearms()
 
     assert warm._invalidation_rearms == {}
 

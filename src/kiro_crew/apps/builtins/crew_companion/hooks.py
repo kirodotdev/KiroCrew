@@ -77,7 +77,11 @@ async def on_startup(ctx: Any) -> None:
 
     if _store is not None:
         # Re-enable after a disable: the same instance resumes rather than
-        # building a second one that would double-fire every reminder.
+        # building a second one that would double-fire every reminder. A store
+        # whose file could not be read reads it again first, so re-enabling is
+        # how a person recovers once the file is readable.
+        if _store.write_blocked:
+            await asyncio.to_thread(_store.load)
         _store.start()
         return
 

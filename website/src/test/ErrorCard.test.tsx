@@ -863,3 +863,28 @@ describe('ErrorCard — turn hit its time limit', () => {
     cleanup()
   })
 })
+
+describe('a Kiro Cloud reopen that started a new sandbox', () => {
+  it('renders as an error card with the localized sentence, not the wire text', () => {
+    render(<ErrorCard content="channel fallback text" meta={{ kind: 'cloud_session_replayed' }} />)
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveTextContent(i18nT('sessionEnvironments.kiroCloud.replayed'))
+    expect(card).toHaveTextContent("Files and changes from the earlier session aren't in it.")
+    expect(card).toHaveTextContent("The earlier session wasn't deleted and is still listed in Kiro Web (app.kiro.dev).")
+    expect(screen.queryByText('channel fallback text')).toBeNull()
+  })
+
+  it('says a chat moved onto a new sandbox, and that the earlier one was not deleted', () => {
+    // Edit & Resend, a reset or compaction dropped the cloud session's resume id.
+    render(<ErrorCard content="channel fallback text" meta={{ kind: 'cloud_session_replaced' }} />)
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveTextContent('This chat now runs on a new Kiro Cloud Sessions sandbox.')
+    expect(card).toHaveTextContent("The earlier sandbox wasn't deleted and is still listed in Kiro Web (app.kiro.dev).")
+    expect(screen.queryByText('channel fallback text')).toBeNull()
+  })
+
+  it('keeps the wire text for a kind it does not know', () => {
+    render(<ErrorCard content="channel fallback text" meta={{ kind: 'toString' }} />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent('channel fallback text')
+  })
+})

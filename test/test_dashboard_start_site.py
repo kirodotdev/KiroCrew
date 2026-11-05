@@ -51,6 +51,21 @@ def _eaddrinuse() -> OSError:
     return exc
 
 
+class _PortRecordingSite(web.TCPSite):
+    """A real ``TCPSite`` that keeps the kernel-chosen port once it binds.
+
+    The port is read at bind time, so a later listener release cannot hide it.
+    """
+
+    bound_port = 0
+
+    async def start(self) -> None:
+        await super().start()
+        server = self._server
+        assert server is not None
+        self.bound_port = server.sockets[0].getsockname()[1]
+
+
 # ---------------------------------------------------------------------------
 # Mock-based bookkeeping tests (kept from revision 1)
 # ---------------------------------------------------------------------------
@@ -58,12 +73,25 @@ def _eaddrinuse() -> OSError:
 
 @pytest.mark.asyncio
 async def test_start_site_succeeds_immediately() -> None:
-    """Happy path: site.start() works on the first attempt."""
-    site = _make_site()
+    """Happy path: a free port binds on the first attempt and serves."""
+    app = web.Application()
+    app.router.add_get("/", lambda _: web.Response(text="ok"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Port 0 lets the kernel pick the port at bind time, so no other process
+    # can take it between choosing and binding.
+    site = _PortRecordingSite(runner, "127.0.0.1", 0)
     reclaim = AsyncMock()
-    await _start_site(site, 7777, retries=5, delay=0.01, reclaim=reclaim)
-    site.start.assert_awaited_once_with()
-    site.stop.assert_not_awaited()
+    try:
+        await _start_site(site, 0, retries=5, delay=0.01, reclaim=reclaim)
+        port = site.bound_port
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"http://127.0.0.1:{port}/") as resp:
+                assert (resp.status, await resp.text()) == (200, "ok")
+        assert len(runner.sites) == 1
+    finally:
+        await runner.cleanup()
     reclaim.assert_not_awaited()
 
 
@@ -212,12 +240,17 @@ async def test_start_site_healthy_peer_skips_waiting_message() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _find_free_port() -> int:
-    """Discover an ephemeral port that is currently free."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def _occupy_free_port() -> tuple[socket.socket, int]:
+    """Bind a listening socket to a kernel-chosen port and return it with the port.
+
+    Binding port 0 directly leaves no gap in which another process could take
+    the port before the test holds it.
+    """
+    occupier = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupier.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    occupier.bind(("127.0.0.1", 0))
+    occupier.listen(1)
+    return occupier, occupier.getsockname()[1]
 
 
 @pytest.mark.asyncio
@@ -227,13 +260,7 @@ async def test_start_site_real_bind_retry() -> None:
     This is the test that would have caught revision 1's bug — it uses real
     aiohttp objects and actually binds to the network.
     """
-    port = _find_free_port()
-
-    # Occupy the port with a plain TCP socket.
-    occupier = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    occupier.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    occupier.bind(("127.0.0.1", port))
-    occupier.listen(1)
+    occupier, port = _occupy_free_port()
 
     # Build a real aiohttp app + runner + site.
     app = web.Application()
@@ -284,12 +311,7 @@ async def test_boot_retry_releases_the_listener_without_shutting_the_app_down(
     those at boot tears down an application that has not started serving yet,
     so the retry releases the LISTEN socket and unregisters the site itself.
     """
-    port = _find_free_port()
-
-    occupier = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    occupier.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    occupier.bind(("127.0.0.1", port))
-    occupier.listen(1)
+    occupier, port = _occupy_free_port()
 
     fired: list[str] = []
 
@@ -309,17 +331,17 @@ async def test_boot_retry_releases_the_listener_without_shutting_the_app_down(
     loop = asyncio.get_running_loop()
     loop.call_later(0.4, occupier.close)
 
-    monkeypatch.setattr(web.TCPSite, "stop", _forbidden_stop, raising=False)
     try:
-        await _start_site(site, port, retries=40, delay=0.1, reclaim=_no_reclaim())
-        assert len(runner.sites) == 1
-        assert fired == []
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"http://127.0.0.1:{port}/") as resp:
-                assert resp.status == 200
+        with monkeypatch.context() as mp:
+            mp.setattr(web.TCPSite, "stop", _forbidden_stop, raising=False)
+            await _start_site(site, port, retries=40, delay=0.1, reclaim=_no_reclaim())
+            assert len(runner.sites) == 1
+            assert fired == []
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://127.0.0.1:{port}/") as resp:
+                    assert resp.status == 200
     finally:
         # Undone before cleanup: runner.cleanup() legitimately stops the sites.
-        monkeypatch.undo()
         await runner.cleanup()
         try:
             occupier.close()
@@ -334,13 +356,7 @@ async def test_naive_retry_without_stop_raises_runtime_error() -> None:
 
     This locks in the failure mode that revision 1 missed.
     """
-    port = _find_free_port()
-
-    # Occupy the port.
-    occupier = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    occupier.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    occupier.bind(("127.0.0.1", port))
-    occupier.listen(1)
+    occupier, port = _occupy_free_port()
 
     app = web.Application()
     app.router.add_get("/", lambda _: web.Response(text="ok"))

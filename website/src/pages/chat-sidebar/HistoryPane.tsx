@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { X, Monitor, EyeOff, VenetianMask, MessageSquare, Folder, Clock } from 'lucide-react'
 import FolderGlyph from '../../components/FolderGlyph'
 import InfoTip from '../../components/InfoTip'
+import ErrorNotice from '../../components/ErrorNotice'
 import { offlineProps } from '../../utils/offline'
 import { fetchHistory, resumeFromHistory } from '../../store/chatSlice'
 import { SEARCH_MIN_CHARS } from '../../api/client'
@@ -15,6 +16,7 @@ import { SearchInput } from '../../components/ui'
 import { ChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../../components/RemoteCrewChip'
 import { compareBySort, fmtRelativeTime } from '../chat/sessionOrder'
+import { fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { agentOrDefaultLabel } from '../../utils/agentLabel'
@@ -27,8 +29,8 @@ import type { SidebarScope } from './scope'
 export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
   const { clearClosedSessionsWithConfirm, collapsedHistoryGroups, connected, defaultAgent,
     deleteHistorySessionWithConfirm, dispatch, folderSortMode, folders, history, historyDragging,
-    historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchResults,
-    openHistoryPane, selectInstance, setCollapsedHistoryGroups, setHistoryFilter, setHistoryOpen, sortKey: listSortKey,
+    historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchFailed, historySearchResults,
+    historySearchScan, openHistoryPane, selectInstance, setCollapsedHistoryGroups, setHistoryFilter, setHistoryOpen, sortKey: listSortKey,
     tintAgents } = shell
   // Older sessions have no place in the manual order (it orders the open ones),
   // so under Manual this pane keeps its own newest-first order and date groups.
@@ -129,6 +131,19 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
                   <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors" onClick={() => setHistoryFilter('')} aria-label={i18nT('pages.chatSidebar.clear_search')}><X size={13} /></button>
                 )}
               </div>
+              {/* A failed content search drops its rows (they answered an older
+                  query), so the list below falls back to title matches. This
+                  notice says why the list got shorter. A read failure with only a
+                  search query to lose, so the hand-off is on. */}
+              {historySearchFailed && historyFilter.trim().length >= SEARCH_MIN_CHARS && (
+                <ErrorNotice
+                  askAgent
+                  actionPlacement="below"
+                  className="mt-1"
+                  message={i18nT('pages.chatSidebar.history_search_failed')}
+                  testId="history-search-error"
+                />
+              )}
               {/* The unresumable-surface notice used to live here. It moved to
                   ChatPage's shared notice slot above the composer (#5925): this
                   pane starts CLOSED (`historyOpen` defaults false), so a notice
@@ -294,8 +309,8 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
                               title={i18nT('pages.chatSidebar.opens_on_crew_switches_there', { name: remoteInstanceName })}
                             />
                           )}
-                          {s.memory_mode === 'incognito' && <span className="text-muted" title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
-                          {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
+                          {s.memory_mode === 'incognito' && <span className="text-muted" role="img" aria-label={i18nT('pages.chatSidebar.incognito_no_memory_writes')} title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
+                          {s.memory_mode === 'temporary' && <span className="text-aim" role="img" aria-label={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')} title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
                           {displayDate && <span className="ml-auto text-[11px] text-muted font-normal shrink-0">{displayDate}</span>}
                         </div>
                         <div className="text-[13px] leading-snug line-clamp-2 break-words">{sessionDisplayTitle(s)}</div>
@@ -356,6 +371,21 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
                   )
                 })
               })()}
+              {/* The backend reads only its scan window (`session.search_scan_window`)
+                  of the most recent sessions, so a search that found nothing older
+                  must say it did not look rather than read as "not in history".
+                  Under the results AND under the empty state, gated on the same
+                  "search active" test the list uses. */}
+              {historySearchScan && historySearchResults && historyFilter.trim().length >= SEARCH_MIN_CHARS && (
+                <div role="status" className="px-3 pt-2 pb-1 text-[11px] text-muted text-center" data-testid="history-search-scan-note">
+                  {i18nT(historySearchScan.local
+                    ? 'pages.chatSidebar.search_scan_cut_short_local'
+                    : 'pages.chatSidebar.search_scan_cut_short', {
+                    searched: fmtNumber(historySearchScan.searched),
+                    total: fmtNumber(historySearchScan.total),
+                  })}
+                </div>
+              )}
               {/* Load-more uses onMouseDown+preventDefault to trigger without stealing
                   focus from the transcript; scope-disable the static-interaction rule. */}
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}

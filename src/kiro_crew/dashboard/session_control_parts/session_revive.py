@@ -522,6 +522,22 @@ async def revive_session(
 
         if not await state.read_folders(_exists):
             raise deny("folder not found", "folder_not_found", status=400)
+        # A mate's home takes sessions only from that mate, as in `create_session`,
+        # and a session archived in one leaves it only by that mate.
+        from kiro_crew.dashboard.mate_folders import (
+            MateHomeLockedError,
+            refuse_foreign_home_filing,
+        )
+
+        try:
+            await refuse_foreign_home_filing(
+                state,
+                slot_history_key(caller_slot),
+                folder_id,
+                _bounded_folder_id(meta.get("folder_id")),
+            )
+        except MateHomeLockedError:
+            raise deny("this folder belongs to a Bot", "mate_home_locked", status=403) from None
 
     # A revive materialises the same resource a create does -- a live slot with
     # a hydrated transcript -- so it spends the same budgets: the per-caller
@@ -531,12 +547,12 @@ async def revive_session(
             "too many sessions opened recently; retry shortly", "create_rate_limited", status=429
         )
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
-        raise deny(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", status=429)
+        raise deny(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", status=409)
     if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
         raise deny(
             f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
             "creator_slot_cap_reached",
-            status=429,
+            status=409,
         )
 
     def _plain(reason: str, code: str, status: int = 403) -> SessionControlError:
@@ -607,12 +623,12 @@ async def revive_session(
         # walks the table only, so the built slot is not in it and the compare
         # is inclusive.
         if state.live_slot_count() > MAX_LIVE_SLOTS:
-            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 429)
+            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
         if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
             return ResumeRefusal(
                 f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
                 "creator_slot_cap_reached",
-                429,
+                409,
             )
         return None
 
@@ -630,12 +646,12 @@ async def revive_session(
         if refusal is not None:
             return ResumeRefusal(refusal[0], refusal[1], 403)
         if state.live_slot_count() > MAX_LIVE_SLOTS:
-            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 429)
+            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
         if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
             return ResumeRefusal(
                 f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
                 "creator_slot_cap_reached",
-                429,
+                409,
             )
         from kiro_crew.dashboard.approval_inheritance import (
             inherit_posture,

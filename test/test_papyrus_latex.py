@@ -234,12 +234,102 @@ class TestFindCompiler:
                 mock.patch.object(latex.os, "access", return_value=True):
             assert latex.find_compiler_sync() == found
 
+    def test_userspace_globs_carry_exe_on_windows(self) -> None:
+        """On Windows the on-disk name is ``pdflatex.exe``/``tectonic.exe``.
+
+        ``glob.glob`` is a plain filesystem match and does not apply
+        ``PATHEXT``, so a bare ``pdflatex``/``tectonic`` glob never matches a
+        Windows TeX install; the pattern must carry the ``.exe`` suffix.
+        """
+        assert latex._userspace_compiler_globs(is_windows=True) == (
+            "~/texlive/*/bin/*/pdflatex.exe",
+            "~/.local/bin/tectonic.exe",
+        )
+
+    def test_userspace_globs_are_bare_on_posix(self) -> None:
+        """POSIX keeps the bare ``pdflatex``/``tectonic`` names — no ``.exe``."""
+        assert latex._userspace_compiler_globs(is_windows=False) == (
+            "~/texlive/*/bin/*/pdflatex",
+            "~/.local/bin/tectonic",
+        )
+
+    def test_finds_a_windows_userspace_tectonic(self) -> None:
+        """A Windows user install (``~/.local/bin/tectonic.exe``) is found.
+
+        End-to-end through ``find_compiler_sync`` with the Windows-shaped globs:
+        PATH empty, managed Tectonic absent, only the ``.exe`` on disk.
+        """
+        found = "/home/u/.local/bin/tectonic.exe"
+
+        def fake_glob(pattern: str) -> list[str]:
+            expanded = latex.os.path.expanduser(pattern)
+            return [found] if expanded.endswith("tectonic.exe") else []
+
+        with mock.patch.object(
+                    latex,
+                    "USERSPACE_COMPILER_GLOBS",
+                    latex._userspace_compiler_globs(is_windows=True),
+                ), \
+                mock.patch.object(latex.shutil, "which", return_value=None), \
+                mock.patch.object(latex.tectonic, "binary_installed", return_value=False), \
+                mock.patch("glob.glob", side_effect=fake_glob), \
+                mock.patch.object(latex.os.path, "isfile", return_value=True), \
+                mock.patch.object(latex.os, "access", return_value=True):
+            latex.reset_compiler_cache()
+            assert latex.find_compiler_sync() == found
+        latex.reset_compiler_cache()
+
+    def test_finds_a_windows_userspace_texlive_pdflatex(self) -> None:
+        """The Windows TeX Live route lands at ``.../bin/windows/pdflatex.exe``."""
+        found = "/home/u/texlive/2026/bin/windows/pdflatex.exe"
+
+        def fake_glob(pattern: str) -> list[str]:
+            expanded = latex.os.path.expanduser(pattern)
+            return [found] if expanded.endswith("pdflatex.exe") else []
+
+        with mock.patch.object(
+                    latex,
+                    "USERSPACE_COMPILER_GLOBS",
+                    latex._userspace_compiler_globs(is_windows=True),
+                ), \
+                mock.patch.object(latex.shutil, "which", return_value=None), \
+                mock.patch.object(latex.tectonic, "binary_installed", return_value=False), \
+                mock.patch("glob.glob", side_effect=fake_glob), \
+                mock.patch.object(latex.os.path, "isfile", return_value=True), \
+                mock.patch.object(latex.os, "access", return_value=True):
+            latex.reset_compiler_cache()
+            assert latex.find_compiler_sync() == found
+        latex.reset_compiler_cache()
+
+    def test_posix_userspace_bare_names_still_match(self) -> None:
+        """POSIX keeps the bare ``tectonic`` name — no ``.exe`` suffix leaks in."""
+        found = "/home/u/.local/bin/tectonic"
+
+        def fake_glob(pattern: str) -> list[str]:
+            expanded = latex.os.path.expanduser(pattern)
+            return [found] if expanded.endswith("/tectonic") else []
+
+        with mock.patch.object(
+                    latex,
+                    "USERSPACE_COMPILER_GLOBS",
+                    latex._userspace_compiler_globs(is_windows=False),
+                ), \
+                mock.patch.object(latex.shutil, "which", return_value=None), \
+                mock.patch.object(latex.tectonic, "binary_installed", return_value=False), \
+                mock.patch("glob.glob", side_effect=fake_glob), \
+                mock.patch.object(latex.os.path, "isfile", return_value=True), \
+                mock.patch.object(latex.os, "access", return_value=True):
+            latex.reset_compiler_cache()
+            assert latex.find_compiler_sync() == found
+        latex.reset_compiler_cache()
+
     def test_result_is_cached(self) -> None:
         with mock.patch.object(latex.shutil, "which", return_value="/usr/bin/pdflatex") as which, \
                 mock.patch.object(latex.os.path, "isfile", return_value=True), \
                 mock.patch.object(latex.os, "access", return_value=True):
             latex.find_compiler_sync()
-            latex.find_compiler_sync()
+            assert latex._compiler_cache == "/usr/bin/pdflatex"
+            assert latex.find_compiler_sync() == "/usr/bin/pdflatex"
             assert which.call_count == 1
 
     def test_a_negative_result_is_also_cached(self) -> None:
@@ -1250,8 +1340,12 @@ class TestCompileRefusesSymlinkedArtifacts:
         os.symlink(project / "main.tex", project / ".git" / "objects" / "link")
         with mock.patch.object(
             latex, "find_compiler", mock.AsyncMock(return_value="/usr/bin/pdflatex")
-        ), mock.patch.object(latex, "_run", mock.AsyncMock(return_value=(0, ""))) as run:
-            await latex.compile_project(project, "main.tex")
+        ), mock.patch.object(
+            latex, "_run", mock.AsyncMock(return_value=(0, "compiled"))
+        ) as run:
+            result = await latex.compile_project(project, "main.tex")
+        # The log is the compiler's own output, not the guard's refusal text.
+        assert result.log == "compiled"
         assert run.called, "a link inside .git blocked the compile"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
@@ -1290,7 +1384,8 @@ class TestCompileRefusesSymlinkedArtifacts:
         with mock.patch.object(
             latex, "find_compiler", mock.AsyncMock(return_value="/usr/bin/pdflatex")
         ), mock.patch.object(latex, "_run", mock.AsyncMock(return_value=(0, "ok"))) as run:
-            await latex.compile_project(project, "main.tex")
+            result = await latex.compile_project(project, "main.tex")
+        assert (result.ok, result.log) == (True, "ok")
         assert run.called, "a regular pre-existing PDF must not block the compile"
 
 

@@ -262,7 +262,7 @@ class ScriptContext:
     # ``dashboard/custom_value`` entry, and the ``custom`` fold keeps the latest record
     # per type, so a page bound to ``custom.latest.<type>.data`` redraws when it lands.
 
-    def crew_log_append(self, type: str, data: dict) -> dict:
+    def crew_log_append(self, type: str, data: dict, *, max_age_s: int | None = None) -> dict:
         """Append one record to the bound crewmate's crew log (``POST .../dashboard/record``).
 
         *type* names the record: letters, digits and underscores only (never two
@@ -271,6 +271,12 @@ class ScriptContext:
         object of at most 8 KiB
         serialized and 8 levels deep. The record is redacted the way ``notify()``
         redacts its text, because a page renders it.
+
+        *max_age_s* (60 to 2592000 seconds) says how long the record stays current;
+        pass about twice the job's interval. The fold then carries ``stale_after``,
+        the gateway's own write time plus it, so a page can tell the record went stale
+        when the job stopped. A run that FAILS is recorded by the gateway itself, and
+        each record this job wrote gains ``failed_at`` and ``last_error``.
 
         The gateway decides WHO wrote it: the entry is stamped with this job's id and
         the crewmate it is bound to, read from the job's own attested identity, and
@@ -284,7 +290,9 @@ class ScriptContext:
         # Each string on its own, never the serialized blob: a credential pattern that
         # spans a key and its value (``"authorization": "Bearer ..."``) would otherwise
         # eat the ``": "`` between them and leave text that is not JSON.
-        safe = {"type": redact(type), "data": _redact_deep(data)}
+        safe: dict[str, Any] = {"type": redact(type), "data": _redact_deep(data)}
+        if max_age_s is not None:
+            safe["max_age_s"] = max_age_s
         result = self._post("/api/agent-panel/dashboard/record", safe)
         if not isinstance(result, dict) or "error" in result:
             raise RuntimeError(f"crew_log_append() failed: {self._reason(result)}")

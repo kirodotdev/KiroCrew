@@ -69,11 +69,8 @@ def _calls(node: ast.AST) -> set[str]:
 def _assigns_attribute(node: ast.AST, attribute: str) -> bool:
     """Whether *node* SETS *attribute* to something other than the empty string.
 
-    A clearing assignment is skipped, and on a property of the site rather than as an
-    exemption someone must maintain: the class fold holds each member at the most
-    restrictive value the log ever recorded, so unlinking cannot make a log more
-    restrictive and a record of it would change no reader's answer. The field's own
-    declaration in the slot's constructor is the same shape and drops out here too.
+    A clearing assignment is skipped: the class fold keeps the most restrictive value ever
+    recorded, so a record of unlinking would change no reader's answer.
     """
     for inner in ast.walk(node):
         targets: list[ast.expr] = []
@@ -95,15 +92,9 @@ def _assigns_attribute(node: ast.AST, attribute: str) -> bool:
 def _records_beside_the_assignment(func: ast.AST) -> bool:
     """Whether every link assignment in *func* has the recorder as a BLOCK SIBLING.
 
-    Not "somewhere in the function", and the difference is what the check is worth. A
-    name that merely appears in the function is satisfied by a call the code never
-    reaches -- wrap it in ``if False:`` and an occurrence check stays green while the
-    record is dead -- and it is equally satisfied by a call on a DIFFERENT branch than
-    the assignment, which records on one path and not the other.
-
-    Requiring the two to be siblings in one statement list is the structural form of
-    "the record is taken beside the change": moving the call into any nested block moves
-    it out of that list, and the check fails.
+    A mere occurrence in the function is satisfied by dead code (``if False:``) or a call on
+    a different branch. Requiring siblings in one statement list means "recorded beside the
+    change".
     """
     for block in _statement_lists(func):
         assigns = any(_assigns_attribute_here(stmt, "linked_session_key") for stmt in block)
@@ -210,16 +201,11 @@ def test_no_exemption_names_a_site_that_is_gone():
 
 
 def test_every_committed_binding_is_announced_to_the_recorder():
-    """MUTATION-SENSITIVE: the mirror half, pinned at the STORE rather than its callers.
+    """Every committed binding is announced by the session map, not by its callers.
 
-    A mirror or Slack binding is committed inside the session map, and the map cannot
-    know a session's memory mode or owning app -- so it announces the commit and the
-    dashboard records. Pinning the announcement here rather than at the 20-odd call
-    sites is what makes a third bind path safe by construction: any function in this
-    module that persists a binding must announce it.
-
-    Derived by asking which functions WRITE a binding key and persist it, so a new one
-    is caught without being named.
+    The map cannot know a session's memory mode or app, so it announces and the dashboard
+    records. Functions that write and persist a binding key are found by inspection, so a
+    new bind path is caught without being named.
     """
     from kiro_crew import session_map
 
@@ -250,14 +236,10 @@ def test_every_committed_binding_is_announced_to_the_recorder():
 
 
 def test_the_manager_exposes_both_listener_sinks():
-    """MUTATION-SENSITIVE: the wiring CALL has to resolve, not merely exist.
+    """The session manager exposes both listener sinks the wiring calls.
 
-    ``wire_session_bind_listener`` reaches the session map through the session manager,
-    and the manager wraps each module-level sink as its own method. Adding the sink and
-    the wiring without the wrapper leaves a gateway that raises on every start -- which
-    is not visible from the dashboard side at all: the wiring method is present, the
-    import succeeds, and only an actual boot fails. Asking the manager for both names is
-    the cheap form of that boot.
+    ``wire_session_bind_listener`` goes through the manager's wrapper methods; a missing
+    wrapper only fails at gateway boot, so this asks for both names.
     """
     from kiro_crew.session import SessionManager
 
@@ -287,22 +269,12 @@ def test_the_recorder_is_wired_wherever_its_sibling_is():
 
 
 def test_a_binding_before_the_log_exists_survives_being_removed():
-    """MUTATION-SENSITIVE: the recorder MARKS a restriction it cannot yet append.
+    """The recorder MARKS a restriction it cannot yet append.
 
-    The sequence a review lane named, and the one case the recorder's swallow-and-carry-on
-    argument does not cover. That argument rests on the far end recording its own losses,
-    which holds for a write the writer drops -- but a slot with no open log hands the
-    writer nothing, so there is no loss to record and the fact simply vanishes.
-
-    It is reachable without anything unusual: an idle session is bound to a channel, a
-    turn is routed through that binding, and the link is removed before the session's
-    first turn opens a log. Reading the class from the live slot at THAT point states
-    never-published about a log whose content includes channel-authored words, and the
-    dispatcher reading it would be told the session was private.
-
-    So the mark is what carries the fact across, and it is never cleared -- consistent
-    with the fold, which holds each member at the most restrictive value the log ever
-    recorded.
+    With no open log the writer is handed nothing, so no loss is recorded and the fact would
+    vanish. Bind an idle session to a channel, route a turn, unlink before the first log
+    opens: the class would then read never-published for a log holding channel words. The
+    mark is never cleared, matching the fold's most-restrictive rule.
     """
     from kiro_crew.dashboard.chat_runner import PENDING_CHANNEL_ATTR, _crew_log_class
     from kiro_crew.dashboard.state import note_crew_log_class
@@ -347,19 +319,11 @@ def test_a_slot_that_was_never_bound_is_not_marked():
 
 
 def test_a_live_session_id_does_not_stop_the_mark(monkeypatch):
-    """MUTATION-SENSITIVE: the mark is keyed on the restriction, not on lacking a sid.
+    """The mark is keyed on the restriction, not on lacking a sid.
 
-    A session id is not evidence that a log exists. A restored session publishes its id
-    while its log is still absent, so a class append made in that window finds no log and
-    returns having written nothing AND recorded no loss -- the one shape the recorder's
-    swallow-and-carry-on argument cannot cover, because that argument rests on the far end
-    recording its own losses. Conditioning the mark on the id being ABSENT therefore misses
-    it: a channel bound and removed inside the window leaves no trace, and the opening
-    entry states never-published about a log holding channel-authored words.
-
-    Both halves are asserted. The append is still attempted, so the mark BACKS the record
-    rather than replacing it; a fix that only marked would pass a mark-only assertion while
-    silently dropping the write for every session whose log does exist.
+    A restored session publishes its id before its log exists, so an append then writes
+    nothing and records no loss. Both halves are asserted: the append is still attempted,
+    and the mark backs it rather than replacing it.
     """
     from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.dashboard.chat_runner import PENDING_CHANNEL_ATTR, _crew_log_class
@@ -403,17 +367,11 @@ def test_a_live_session_id_does_not_stop_the_mark(monkeypatch):
 
 
 def test_a_real_chat_slot_holds_the_mark_and_keeps_the_record(monkeypatch):
-    """MUTATION-SENSITIVE: the recorder works on the slot class it is written for.
+    """The recorder works on the real ``_ChatSlot``, not only on plain doubles.
 
-    The doubles above are plain classes, which accept any attribute. ``_ChatSlot`` declares
-    ``__slots__`` and has no ``__dict__``, so assigning an attribute it does not declare
-    raises ``AttributeError`` -- and the recorder swallows every exception, so nothing
-    reports it. The loss is both halves, not just the mark: the mark is written BEFORE the
-    append, so the raise skips the append too, and a channel session's class record never
-    reaches its log.
-
-    So this drives the recorder with a real slot and asserts the append, the mark and the
-    fold that reads it, starting from a fresh slot that reads as never published.
+    ``_ChatSlot`` declares ``__slots__``, so an undeclared attribute raises
+    ``AttributeError``, which the recorder swallows; the mark comes first, so the append
+    would be skipped too.
     """
     from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.dashboard.chat_runner import PENDING_CHANNEL_ATTR, _crew_log_class

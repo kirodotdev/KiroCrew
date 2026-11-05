@@ -31,6 +31,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from kiro_crew import pinned_fs
+from kiro_crew.atomic_write import replace_with_retry
 
 from .errors import BenchRefusal
 
@@ -394,7 +395,7 @@ def write_text_atomic_nofollow(path: str | Path, text: str, *, what: str) -> Non
             fd = os.open(tmp, tmp_flags, 0o600)
             try:
                 _write_and_sync(fd, data)
-                os.replace(tmp, as_given)
+                replace_with_retry(tmp, as_given)
             except BaseException:
                 tmp.unlink(missing_ok=True)
                 raise

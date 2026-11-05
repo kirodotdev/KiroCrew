@@ -31,6 +31,7 @@ from kiro_crew import (
     snapshot_components,
     snapshot_merge,
     snapshot_merge_driver,
+    snapshot_order,
     snapshot_restore,
 )
 
@@ -129,6 +130,7 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_clear_store_directories",
         "_component_payload_absent",
         "_components_absent_from_bundle",
+        "_discard_partial_rollback",
         "_do_replace",
         "_do_replace_mutations",
         "_drop_derived_indexes_absent_from_bundle",
@@ -186,6 +188,8 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_copy_notifications",
         "_do_merge",
     ),
+    # The newest-first order `--list` and the `--keep` prune share.
+    "kiro_crew.snapshot_order": ("newest_first",),
     # What the facade itself defines: the two commands and the outbound redaction seam
     # (every redaction call name stays in this one module).
     "kiro_crew.snapshot": (
@@ -222,6 +226,7 @@ _MODULES = {
     "kiro_crew.snapshot_merge": snapshot_merge,
     "kiro_crew.snapshot_build": snapshot_build,
     "kiro_crew.snapshot_merge_driver": snapshot_merge_driver,
+    "kiro_crew.snapshot_order": snapshot_order,
 }
 
 #: Which owners each owner may import. The facade imports all of them; nothing imports
@@ -246,6 +251,7 @@ ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
             "kiro_crew.snapshot_merge",
         }
     ),
+    "kiro_crew.snapshot_order": frozenset(),
 }
 
 _OWNER_MODULES = tuple(m for m in OWNERS if m != "kiro_crew.snapshot")

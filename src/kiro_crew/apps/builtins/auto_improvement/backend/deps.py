@@ -154,7 +154,7 @@ def install_deps() -> dict[str, Any]:
         return {"ok": True, "installed": [], "detail": "ruff already present"}
     cmd = platform_compat.isolated_python_argv("-m", "pip", "install", "--quiet", "ruff")
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300.0)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=300.0)
     except (OSError, subprocess.SubprocessError) as exc:
         return {"ok": False, "installed": [], "error": f"install failed: {exc}"}
     if proc.returncode != 0:

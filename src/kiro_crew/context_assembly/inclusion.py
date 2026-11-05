@@ -3,8 +3,9 @@
 A spawning parent narrows the switchable context groups for its sub-agent and the
 operator's toggles narrow them further; :func:`_build_context_scope_section` names
 what a parent withheld. :func:`_render_folder_steering_section` is the one folder
-steering renderer, and :func:`skill_parts` the one loader call, that session start
-and post-compaction re-injection share.
+steering renderer, :func:`skill_parts` the one loader call, and
+:func:`steering_resources_part` the one Claude Code steering-resources gate, that
+session start and post-compaction re-injection share.
 
 Three inclusion rules stay on :mod:`kiro_crew.context`: ``_skills_injection_plan``
 (a doc pins its return expression there), ``_config_scoped_groups`` (callers rebind
@@ -185,3 +186,40 @@ def skill_parts(
         required_parts_out=required_skills,
     )
     return required_skills, skills_ctx
+
+
+def steering_resources_part(
+    *,
+    agent: str | None,
+    is_cc: bool,
+    essentials: str,
+    context_groups: frozenset[str] | None,
+    project: str | None = None,
+) -> str:
+    """The agent config's ``file://`` steering text for this session, or ``""``.
+
+    Session start frames it as ``[Steering resources]``; post-compaction
+    re-injection frames it as a ``[REINJECTED AFTER COMPACTION ...]`` block. One
+    gate for both, so the two cannot drift in who receives it.
+
+    kiro-cli loads an agent's ``resources`` natively when spawned with
+    ``--agent`` (see acp/client_start.py ``_spawn``) and keeps them across its own
+    compaction, so only the Claude Code backend, which does NOT read agent
+    ``resources``, needs the explicit load (*is_cc*, a positive identity).
+    A custom agent loads its own prompt, a member chat (*essentials* non-empty)
+    carries its steering inside the essentials envelope, and the ``project``
+    context group decides whether steering is in scope at all. *project* is the
+    session's project: relative entries anchor there, as kiro-cli anchors them
+    at its working directory, and it adds the project's steering and
+    ``AGENTS.md`` that kiro-cli inherits.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_files import is_kirocrew_default_agent
+
+    if not is_cc or essentials:
+        return ""
+    if agent and not is_kirocrew_default_agent(agent):
+        return ""
+    if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):
+        return ""
+    return ctx._load_steering_resources(project)

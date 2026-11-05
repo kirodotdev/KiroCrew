@@ -200,6 +200,15 @@ describe('playback owner client fallback (#22710)', () => {
     expect(recentErrors().filter(r => !before.includes(r.id))).toHaveLength(0)
   })
 
+  it('speaks on the client and shows NO failure notice when a fallback request hits voice_polly_rejected', () => {
+    const { spoken } = installSpeechSynthesis()
+    const ws = mount({ slot: ACTIVE, request_id: 'rq-polly', clientFallback: true, text: 'hello world' })
+    const before = recentErrors().map(r => r.id)
+    act(() => { ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'rq-polly', code: 'voice_polly_rejected', speakable: 'hello world' } }) })
+    expect(spoken.map(u => u.text)).toContain('hello world')
+    expect(recentErrors().filter(r => !before.includes(r.id))).toHaveLength(0)
+  })
+
   it('shows the failure notice (no client speech) for a request that did NOT allow fallback', () => {
     const before = recentErrors().map(r => r.id)
     const ws = mount({ slot: ACTIVE, request_id: 'rq-nofb' })

@@ -12,6 +12,7 @@
  * works out; the model site is linked once, from step 1, which says the file page
  * lists the SHA-256; and step 3 shows a real file name.
  */
+import { Profiler } from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -46,7 +47,7 @@ type Row = { name: string; size_bytes: number; present: boolean; error?: string 
 /** Mount with a served `stt` config, which is what a reload restores from. */
 function mount(
   config: Record<string, unknown> = {},
-  opts: { pairWithheld?: boolean; models?: Row[] } = {},
+  opts: { pairWithheld?: boolean; models?: Row[]; onCommit?: () => void } = {},
 ) {
   const served: Record<string, unknown> = {
     enabled: true,
@@ -82,7 +83,11 @@ function mount(
   return render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
-        <SttSettings />
+        {/* `onRender` runs in the commit phase, after the DOM is written and before
+            passive effects, so a probe there sees exactly what one commit shows. */}
+        <Profiler id="stt" onRender={() => opts.onCommit?.()}>
+          <SttSettings />
+        </Profiler>
       </QueryClientProvider>
     </Provider>,
   )
@@ -127,6 +132,23 @@ describe('SttSettings custom-model pair explanation', () => {
     mount({ custom_model_path: FILE, custom_model_sha256: '' })
     await waitFor(() => expect(modelSelect()).toBeTruthy())
     await waitFor(() => expect(explanation()).not.toBeNull())
+  })
+
+  it('the half-pair explanation is on screen in the first commit that shows the model select', async () => {
+    // What the served config implies (rows open, half pair explained) is derived
+    // in the render that first has it, not latched by a later effect: a commit
+    // showing the select without the explanation is a frame a user can see and
+    // a test can land on.
+    const commits: { select: boolean; explained: boolean }[] = []
+    mount({ custom_model_path: FILE, custom_model_sha256: '' }, {
+      onCommit: () => commits.push({
+        select: screen.queryByRole('combobox', { name: /model/i }) !== null,
+        explained: explanation() !== null,
+      }),
+    })
+    await waitFor(() => expect(explanation()).not.toBeNull())
+    const first = commits.find(c => c.select)
+    expect(first).toEqual({ select: true, explained: true })
   })
 
   it('says nothing once the pair is complete and custom is in force', async () => {

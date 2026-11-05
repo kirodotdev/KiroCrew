@@ -1,10 +1,9 @@
 """Sub-agent transient-backend retry and provider throttling (``subagent.py``).
 
-The cases under the ``1.`` and ``1b.`` section banners, among them the pre-token re-prompt
-and the post-token CONTINUE, the retry budget, the throttle fallback chain, the timeout and
-deadline a run captures across a recovery, and a provider throttle while the durable task
-queue is open; and the default budget letting a run pass one hundred tool requests. The
-shared helpers come from ``subagent_turn_resilience_helpers.py``.
+Sections ``1.`` and ``1b.``: pre-token re-prompt, post-token CONTINUE, the retry budget, the
+throttle fallback chain, the timeout and deadline captured across a recovery, a throttle with
+the durable task queue open, and the default budget passing one hundred tool requests.
+Helpers come from ``subagent_turn_resilience_helpers.py``.
 """
 
 from __future__ import annotations
@@ -457,15 +456,12 @@ async def _one_reaper_sweep(monkeypatch, mgr: SubagentManager) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_reaper_enforces_the_captured_deadline_from_execution_start(monkeypatch):
-    """One real sweep: the reaper measures each run's captured deadline from
-    ``_exec_started_mono``, on the monotonic clock. A run inside its captured hour is left alone although a
-    reload cut the manager default to one minute, a run past its captured hour
-    is reaped, and a run that has not started executing keeps the bound it had
-    before the capture existed: its registration age against the live default,
-    so a long-parked start is reaped and a fresh one is not. A run between two
-    recovery attempts (``_exec_started_mono`` cleared, deadline already captured) is
-    measured on the same registration age against its captured deadline, not
-    the cut default: inside it, it is left alone; past it, it is reaped."""
+    """One real sweep measures each run's captured deadline on the monotonic clock.
+
+    A started run is measured from ``_exec_started_mono`` against its captured hour, even
+    after a reload cut the default to one minute. A run not yet executing is measured by
+    registration age against the live default. A run between recovery attempts
+    (``_exec_started_mono`` cleared) uses registration age against its captured deadline."""
     mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock(), default_timeout=60)
     now = time.time()
     mono_now = time.monotonic()

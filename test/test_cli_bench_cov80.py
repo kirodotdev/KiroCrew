@@ -160,11 +160,14 @@ class TestDispatchRouting:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert _bench_dispatch(_Args()) == 2
-        assert "usage: kirocrew bench" in capsys.readouterr().out
+        # Errors go to stderr so a redirected report never holds them.
+        cap = capsys.readouterr()
+        assert "usage: kirocrew bench" in cap.err
+        assert cap.out == ""
 
     def test_unknown_action_returns_two(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert _bench_dispatch(_Args(bench_action="zibble")) == 2
-        assert "unknown bench action: zibble" in capsys.readouterr().out
+        assert "unknown bench action: zibble" in capsys.readouterr().err
 
     def test_list_prints_the_corpus_table(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -194,7 +197,7 @@ class TestDispatchRouting:
 
         monkeypatch.setattr(datasets, "ensure", _boom)
         assert _bench_dispatch(_Args(bench_action="fetch", corpus="locomo10")) == 1
-        assert "error: zibble checksum mismatch" in capsys.readouterr().out
+        assert "error: zibble checksum mismatch" in capsys.readouterr().err
 
 
 class TestLoadCorpus:
@@ -258,7 +261,7 @@ class TestBenchCmdCatchSites:
 
         monkeypatch.setattr("kiro_crew.cli_bench._bench_dispatch", _boom)
         assert bench_cmd(_Args(bench_action="retrieval")) == 1
-        assert "error: zibble read-only file system" in capsys.readouterr().out
+        assert "error: zibble read-only file system" in capsys.readouterr().err
 
     def test_a_clean_dispatch_code_passes_straight_through(
         self, monkeypatch: pytest.MonkeyPatch

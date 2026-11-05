@@ -78,7 +78,12 @@ async def _inject(gateway: Any, key: str) -> None:
     with patch("kiro_crew.slack.gateway._MAX_INJECT_ATTEMPTS", 1):
         await asyncio.wait_for(
             gateway._inject_subagent_into_channel_parent(
-                info, announce="child done", body="b", title="t", parent_key=key
+                info,
+                announce="child done",
+                body="b",
+                title="t",
+                parent_key=key,
+                carried=(info.id,),
             ),
             _HANG_CEILING_S,
         )
@@ -112,7 +117,7 @@ async def test_channel_injection_wakes_drain_for_message_queued_mid_turn(
 
     register_drain(channel, drain)
 
-    async def inject_while_user_writes(info, client, msg, parent_key, label):
+    async def inject_while_user_writes(info, client, msg, parent_key, label, **_kw):
         # The person writes while the hidden turn holds the lease; the dispatcher's
         # busy path queues it, tagged with its channel as every producer does.
         assert sessions.is_busy(parent_key)

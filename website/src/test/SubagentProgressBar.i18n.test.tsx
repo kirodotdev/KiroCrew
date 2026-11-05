@@ -10,7 +10,8 @@
  * of the stalled-row sentence #4020 already converted in this component.
  *
  * These tests mount the real component under a non-English language and read
- * what the user would read. Same shape as DesignCritiqueComposer.i18n.test.tsx.
+ * what the user would read. Same shape as
+ * apps/design-critique/DesignCritiqueComposer.i18n.test.tsx.
  */
 
 import { describe, it, expect, vi, afterAll } from 'vitest'

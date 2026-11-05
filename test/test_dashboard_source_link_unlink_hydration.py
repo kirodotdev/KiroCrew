@@ -147,6 +147,7 @@ class TestRebindResetsDismissals:
         state = MagicMock()
         state.get_slot.return_value = None  # originating chat is gone -> fallback
         state.get_or_create_slot.return_value = slot
+        state.live_slot_count.return_value = 0  # below the live ceiling
         snapshot = {"session_key": "sess-xyz", "name": "demo"}
         with patch("kiro_crew.dashboard.chat_utils._sync_dashboard_slots"):
             workflow_inject.inject_workflow_result(state, "run77", snapshot)

@@ -1,22 +1,14 @@
-"""The subagent DEPENDENCY park's ``running`` mark against a row still ``admitted``.
+"""The dependency park's ``running`` mark against a row still ``admitted``.
 
-The dependency path does not reach ``ensure_running_marked``: its wait write is
-inline, so its mark travels into the same database phase
-(``RunEventCoordinator._dependency_report_db``). That made it the one mark that
-did NOT get the missed-``starting`` replay, and a lost start write there produced
-three consecutive ``rejected_transition`` events -- the ``running`` mark, then the
-wait, then the coordinator's ``retry_wait`` park -- leaving a LIVE run parked on a
-dependency backoff behind a row the next boot requeues blind.
+The dependency path does not reach ``ensure_running_marked``: its mark travels in the same
+database phase as the wait (``RunEventCoordinator._dependency_report_db``), so it needs its own
+missed-``starting`` replay. A lost start write would otherwise leave a live run parked behind
+a row the next boot requeues blind.
 
-The mark is also UNCONDITIONAL, which is the second half: the in-memory
-``_taskq_running_marked`` flag is published ahead of a POSTED write whose boolean
-is discarded, so any durable decision that reads the flag can be wrong in exactly
-the direction that loses the run's result. Those pins drive the real
-``_dependency_verdict`` with the production off-loop hand-off.
+The mark is also unconditional: ``_taskq_running_marked`` is published ahead of a posted write
+whose boolean is discarded, so a durable decision that reads the flag can lose the result.
 
-Fake clock, a real SQLite store in ``tmp_path``. No kiro-cli: the subjects are one
-static database phase, the coroutine that hands work to it, and the store under
-both.
+Fake clock, a real SQLite store in ``tmp_path``, no kiro-cli.
 """
 
 from __future__ import annotations
@@ -86,11 +78,8 @@ def test_a_dependency_park_on_an_admitted_row_replays_the_missed_start(
 ) -> None:
     """The whole park lands: mark, wait record, no refusal anywhere.
 
-    ``admitted -> running`` is not an edge, so a bare ``transition`` here refused
-    the mark, ``report`` then refused the wait (a wait is reachable only FROM
-    ``running``) and refused the ``retry_wait`` park too (``admitted ->
-    retry_wait`` is not an edge either), so even the coordinator's fallback had
-    nowhere to put the row.
+    ``admitted -> running`` and ``admitted -> retry_wait`` are not edges, and a wait is
+    reachable only from ``running``, so a bare ``transition`` would refuse all three writes.
     """
     generation = _admitted_row(store)
     coordinator = DependencyCoordinator(store, clock=clock, wake_per_tick=1)
@@ -115,14 +104,11 @@ def test_a_dependency_park_on_an_admitted_row_replays_the_missed_start(
 def test_the_parked_row_is_no_longer_one_the_next_boot_requeues_blind(
     store: TaskStore, clock: Clock
 ) -> None:
-    """The consequence the mark exists to prevent.
+    """A parked live run is not requeued blind by the boot reconciler.
 
-    ``admitted`` is the store's word that no executor ever held the row, so the
-    boot reconciler requeues it WITHOUT asking the side-effect class. A live run
-    parked on a 15-minute dependency backoff behind such a row is re-dispatched
-    and its side effect runs twice. Reached ``waiting_dependency`` instead, the
-    same reconciler asks the class -- ``unknown`` for a subagent -- and refuses
-    to replay it.
+    ``admitted`` means no executor held the row, so the reconciler requeues it without
+    asking the side-effect class. From ``waiting_dependency`` it asks the class
+    (``unknown`` for a subagent) and refuses to replay.
     """
     generation = _admitted_row(store)
     coordinator = DependencyCoordinator(store, clock=clock, wake_per_tick=1)
@@ -209,13 +195,10 @@ def _mark_bridge(store: TaskStore) -> object:
 def test_the_stream_mark_replays_the_missed_start_from_an_admitted_row(
     store: TaskStore, clock: Clock
 ) -> None:
-    """``taskq_mark`` is the OTHER half, and the replay is what it buys.
+    """``taskq_mark`` replays the missed start, so the row leaves ``admitted``.
 
-    A pin that only spies the store entry point is satisfied by a mark that calls
-    ``transition``: from ``admitted`` that asks for an edge the table forbids, so
-    it answers False and the row stays in the one state a boot reconciler requeues
-    without asking the side-effect class. The row's state after the mark is
-    therefore the subject -- never the call it made.
+    The row's state is the subject, not the call: a mark that calls ``transition`` from
+    ``admitted`` answers False and the row stays requeue-blind.
     """
     generation = _admitted_row(store)
 
@@ -253,16 +236,11 @@ def test_the_stream_mark_never_resurrects_a_row_under_a_stale_generation(
 def test_the_unconditional_mark_writes_nothing_on_a_row_already_running(
     store: TaskStore, clock: Clock
 ) -> None:
-    """The mark costs no event on the row it finds already ``running`` -- which is
-    every park after the first for one run.
+    """The mark costs no event on a row already ``running``, as on every later park.
 
-    ``TaskStore.advance`` answers True from the row's own state without a write,
-    so "always mark" is free. A bare ``transition`` cannot deliver that: the
-    table has no self-edge, so ``running -> running`` is a
-    ``rejected_transition`` event on every park, and a park that reads a
-    per-process flag to dodge that event is exactly what loses the run. The row
-    is live, so the wait is a wait -- never ``PARK_STATE``, which holds no
-    runtime.
+    ``TaskStore.advance`` answers True from the row's own state without a write. The table
+    has no self-edge, so a bare ``transition`` would log ``rejected_transition`` each park.
+    The row is live, so the wait is a wait, never ``PARK_STATE``.
     """
     generation = _admitted_row(store)
     assert store.advance("sa-1", m.RUNNING, generation=generation)
@@ -342,12 +320,8 @@ async def _park_behind_a_lost_running_mark(
 ) -> tuple[SimpleNamespace, object]:
     """A live run whose posted ``running`` mark was lost, then parked on a scope.
 
-    The row is ``starting`` (the spawn gate's mark landed, the run's own did not)
-    while ``_taskq_running_marked`` already says a mark went out: the flag leads
-    the write, so this is the state any flag-gated durable decision reads. Every
-    setup write goes through ``store.run`` for the same reason production does --
-    a synchronous store call from a coroutine is what ``loop_thread_calls``
-    counts, and these tests assert that counter.
+    The row is ``starting`` while ``_taskq_running_marked`` already says a mark went out.
+    Setup writes go through ``store.run`` because the tests assert ``loop_thread_calls``.
     """
     generation = await store.run(_admitted_row, store)
     assert await store.run(store.advance, "sa-1", m.STARTING, generation=generation)
@@ -423,15 +397,10 @@ async def test_a_park_behind_a_lost_mark_leaves_the_wake_and_the_result_writable
 async def test_the_park_claims_the_flag_so_a_later_stream_mark_stays_out(
     store: TaskStore, clock: Clock
 ) -> None:
-    """The flag has one job left, and dropping it is the other way to lose the wait.
+    """A park before the run's first frame claims the flag, or the wait is lost.
 
-    A throttle that lands before the run's FIRST frame parks a row whose stream
-    mark has not been issued at all, so the flag is this park's to claim.
-    ``TaskStore.advance`` will happily walk ``waiting_dependency -> running`` --
-    the table allows it, a wait leaves only through ``running`` -- so a stream mark
-    arriving afterwards on an unclaimed flag clears ``wait_json`` with no ``wake``
-    event and no generation bump: the scope still lists the waiter and nothing on
-    the row says what it is waiting for.
+    ``waiting_dependency -> running`` is a legal edge, so a later stream mark on an
+    unclaimed flag would clear ``wait_json`` with no ``wake`` event and no generation bump.
     """
     generation = await store.run(_admitted_row, store)
     assert await store.run(store.advance, "sa-1", m.STARTING, generation=generation)
@@ -456,13 +425,10 @@ async def test_the_park_claims_the_flag_so_a_later_stream_mark_stays_out(
 
 
 def _delete_mode_store(tmp_path: Path, clock: Clock) -> TaskStore:
-    """A store in the journal mode a data home on a network filesystem gets.
+    """A store in ``journal_mode=delete``, as a data home on a network filesystem gets.
 
-    ``journal_mode=delete`` is what ``agent.task_store_journal_mode=delete``
-    selects and what the store AUTO-DETECTS over NFS/SMB, and it is the mode in
-    which a competing writer blocks readers -- so a bare ``SELECT`` fails there
-    exactly as a transaction does. WAL, the local default, does not block
-    readers, which is why no other test in this suite reaches this.
+    That mode (auto-detected over NFS/SMB) blocks readers behind a competing writer, so a
+    bare ``SELECT`` fails too; WAL does not, so no other test reaches this.
     """
     return TaskStore(
         tmp_path / "tasks.db", clock=clock, network_fs=True, busy_timeout_secs=0.05
@@ -472,13 +438,10 @@ def _delete_mode_store(tmp_path: Path, clock: Clock) -> TaskStore:
 def test_a_locked_read_is_the_stores_typed_error_and_not_a_raw_sqlite_one(
     tmp_path: Path, clock: Clock
 ) -> None:
-    """Every public method of the store reports a database failure as ONE type.
+    """Every public method of the store reports a database failure as one type.
 
-    ``advance`` reads the row's state before it writes, and on
-    ``journal_mode=delete`` that read raises. Unwrapped it was a
-    ``sqlite3.OperationalError``, which no caller in the tree catches: the mark's
-    hand-off (``_post_store_write``) and its two callers all catch
-    ``TaskStoreUnavailable``, so the raw error escaped the spawn path entirely.
+    ``advance``'s read raises under ``journal_mode=delete``; a raw
+    ``sqlite3.OperationalError`` would escape callers that catch ``TaskStoreUnavailable``.
     """
     store = _delete_mode_store(tmp_path, clock)
     try:
@@ -597,11 +560,8 @@ def test_taskq_settle_itself_is_what_reads_the_terminal_writes_boolean(
 ) -> None:
     """The report is ``taskq_settle``'s obligation, not just its helper's.
 
-    A pin on ``taskq_report_refused_settle`` alone is satisfied by a
-    ``taskq_settle`` that never calls it -- the boolean stays discarded and the
-    deliberate refusal stays silent -- so the real method is the subject here.
-    ``retry_wait -> done`` is the closed edge that makes ``finish`` answer False
-    with the row intact.
+    A pin on ``taskq_report_refused_settle`` alone passes when ``taskq_settle`` never
+    calls it. ``retry_wait -> done`` is the closed edge that makes ``finish`` answer False.
     """
     generation = _admitted_row(store)
     assert store.advance("sa-1", m.RUNNING, generation=generation)

@@ -74,6 +74,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
+import { expectLoopIcon } from './GoalLoopIconTestUtils'
 
 const UNREAD_DOT_TITLE = 'Agent finished — your turn'
 // Default recency window is 1h, so these sit either side of it.
@@ -198,23 +199,23 @@ describe('sidebar slot derivation — every derived value still reaches the row'
     // The widened flag is TRUE here (the goal loop widens it), so resolving
     // this from the widened value would print "Thinking…" for an idle row.
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, last_message: 'cycle 7 output' }] as unknown as ChatSlot[]
-    const { getByText, queryByText } = renderSidebar(
+    const { container, getByText, queryByText } = renderSidebar(
       slots,
       { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } }, slotStatusDetail: { k: { kind: 'tool', purpose: 'Reading gateway.log' } } },
     )
-    expect(getByText('Loop 7/24')).toBeTruthy()
+    expectLoopIcon(container, 7, 24)
     expect(getByText(/cycle 7 output/)).toBeTruthy()
     expect(queryByText(/Reading gateway\.log/)).toBeNull()
   })
 
   it('`midTurn` true mid-turn: the same loop row carries the live tool status instead', () => {
     const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, last_message: 'cycle 7 output' }] as unknown as ChatSlot[]
-    const { getByText, queryByText } = renderSidebar(
+    const { container, getByText, queryByText } = renderSidebar(
       slots,
       { activeSlot: 'k', goalLoops: { k: { cycle_count: 7, max_cycles: 24 } }, slotStatusDetail: { k: { kind: 'tool', purpose: 'Reading gateway.log' } } },
       { activeSlotProp: 'k' },
     )
-    expect(getByText('Loop 7/24')).toBeTruthy()
+    expectLoopIcon(container, 7, 24)
     expect(getByText(/Reading gateway\.log/)).toBeTruthy()
     expect(queryByText(/cycle 7 output/)).toBeNull()
   })

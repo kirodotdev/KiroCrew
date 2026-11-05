@@ -120,14 +120,8 @@ def _binary_name() -> str:
 def _install(directory: Path, name: str) -> Path:
     """Write a real executable the PLATFORM'S OWN resolver will find.
 
-    The ladder under test ends at ``shutil.which(name)``, and that call does not mean
-    the same thing on both platforms. On POSIX it wants an execute bit. On Windows
-    there is no execute bit and ``which`` only matches a name carrying one of the
-    ``PATHEXT`` suffixes, so an extensionless shell script is invisible to it -- the
-    probe then reads MISSING after an install this helper called successful, and the
-    failure surfaces three assertions later as if the product had lost the binary.
-    ``.cmd`` is in the default ``PATHEXT``, and ``which("dsh")`` resolves ``dsh.cmd``,
-    which is the lookup this test exists to drive.
+    ``shutil.which`` needs an execute bit on POSIX and a ``PATHEXT`` suffix on Windows,
+    so Windows gets ``dsh.cmd``, which ``which("dsh")`` resolves.
     """
     if os.name == "nt":
         target = directory / f"{name}.cmd"
@@ -279,14 +273,8 @@ class TestRecheckOverHttp:
 class TestGenerationFence:
     """A resolution already in flight cannot undo a re-check's clear.
 
-    The hazard is structural rather than incidental: every publish site checks the
-    sentinel, AWAITS its resolver, then assigns. So a resolve that began before the
-    operator installed a component can complete after the clear and stamp its stale miss
-    back over the cleared sentinel -- the panel having already reported the harness
-    ready, and the next spawn failing on the revived miss.
-
-    These cases drive the interleaving rather than waiting for it: the resolver blocks on
-    an event, the clear lands while it is blocked, and only then is it released.
+    Every publish site checks the sentinel, awaits its resolver, then assigns, so a stale
+    miss could land after the clear. The resolver blocks on an event until the clear lands.
     """
 
     async def test_a_pre_clear_resolution_does_not_revive_the_stale_miss(self, monkeypatch):

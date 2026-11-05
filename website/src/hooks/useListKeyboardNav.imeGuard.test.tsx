@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, fireEvent, cleanup } from '@testing-library/react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useListKeyboardNav, type UseListKeyboardNavOptions } from './useListKeyboardNav'
 
 /**
@@ -320,5 +320,175 @@ describe('claimKey for a window-capture interceptor', () => {
     vi.advanceTimersByTime(60)
     enter({ altKey: true })
     expect(onAltAction).toHaveBeenCalledTimes(1)
+  })
+})
+
+function EmptyActionHarness({ showAction = true, showComposer = true, ...opts }: Partial<UseListKeyboardNavOptions> & {
+  showAction?: boolean
+  showComposer?: boolean
+}) {
+  const emptyActionRef = useRef<HTMLButtonElement>(null)
+  const { restoreEmptyFocus } = useListKeyboardNav({
+    open: true,
+    count: 0,
+    releaseKeysWhenEmpty: true,
+    onChoose: () => {},
+    onClose: () => {},
+    emptyActionRef,
+    ...opts,
+  })
+  return <>
+    {showComposer && <input aria-label="composer" />}
+    {showAction && <button ref={emptyActionRef} onClick={restoreEmptyFocus}>Retry</button>}
+  </>
+}
+
+function renderEmptyAction(opts: Parameters<typeof EmptyActionHarness>[0] = {}) {
+  const onClose = vi.fn()
+  const onChoose = vi.fn()
+  const view = render(<EmptyActionHarness onClose={onClose} onChoose={onChoose} {...opts} />)
+  const composer = view.getByRole('textbox')
+  const retry = view.getByRole('button')
+  composer.focus()
+  return { ...view, composer, retry, onClose, onChoose }
+}
+
+describe('useListKeyboardNav empty action', () => {
+  it('moves forward Tab to the control without closing or choosing', () => {
+    const { composer, retry, onClose, onChoose } = renderEmptyAction()
+    expect(fireEvent.keyDown(composer, { key: 'Tab' })).toBe(false)
+    expect(retry).toHaveFocus()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(onChoose).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('returns focus on control Tab with shiftKey=%s', shiftKey => {
+    const { composer, retry, onClose } = renderEmptyAction()
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    expect(fireEvent.keyDown(retry, { key: 'Tab', shiftKey })).toBe(false)
+    expect(composer).toHaveFocus()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('restores focus before closing on Escape from the control', () => {
+    const { composer, retry, onClose } = renderEmptyAction()
+    onClose.mockImplementation(() => expect(composer).toHaveFocus())
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    expect(fireEvent.keyDown(retry, { key: 'Escape' })).toBe(false)
+    expect(composer).toHaveFocus()
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['Enter', ' ', 'ArrowDown', 'x'])('leaves %s on the control untouched', key => {
+    const { composer, retry, onClose, onChoose } = renderEmptyAction()
+    const onKey = vi.fn()
+    retry.addEventListener('keydown', onKey)
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    expect(fireEvent.keyDown(retry, { key })).toBe(true)
+    expect(onKey).toHaveBeenCalledTimes(1)
+    expect(retry).toHaveFocus()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(onChoose).not.toHaveBeenCalled()
+  })
+
+  it.each(['Enter', 'Tab'])('still releases composer %s (backward for Tab)', key => {
+    const { composer, onClose, onChoose } = renderEmptyAction()
+    expect(fireEvent.keyDown(composer, { key, shiftKey: key === 'Tab' })).toBe(true)
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(onChoose).not.toHaveBeenCalled()
+    expect(composer).toHaveFocus()
+  })
+
+  it.each(['live', 'post-composition'])('guards forward Tab during %s IME state', phase => {
+    const { composer, onClose, onChoose } = renderEmptyAction()
+    fireEvent.compositionStart(composer)
+    if (phase === 'post-composition') fireEvent.compositionEnd(composer)
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    expect(composer).toHaveFocus()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(onChoose).not.toHaveBeenCalled()
+  })
+
+  it('lets the IME own Escape on the control without restoring or closing', () => {
+    const { composer, retry, onClose } = renderEmptyAction()
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    expect(fireEvent.keyDown(retry, { key: 'Escape', isComposing: true })).toBe(true)
+    expect(retry).toHaveFocus()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it.each(['omitted', 'unmounted'])('keeps close-on-Tab when the action is %s', mode => {
+    const onClose = vi.fn()
+    const { getByRole } = render(<EmptyActionHarness onClose={onClose}
+      {...(mode === 'omitted' ? { emptyActionRef: undefined } : { showAction: false })} />)
+    const composer = getByRole('textbox')
+    composer.focus()
+    expect(fireEvent.keyDown(composer, { key: 'Tab' })).toBe(true)
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(composer).toHaveFocus()
+  })
+
+  it('ignores the empty action when there are rows', () => {
+    const { composer, retry, onChoose } = renderEmptyAction({ count: 1 })
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    expect(onChoose).toHaveBeenCalledWith(0, false)
+    expect(retry).not.toHaveFocus()
+  })
+
+  it('restores only once and does not move focus on a mouse-only activation', () => {
+    const { composer, retry } = renderEmptyAction()
+    fireEvent.click(retry)
+    expect(composer).toHaveFocus()
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    fireEvent.click(retry)
+    expect(composer).toHaveFocus()
+    retry.focus()
+    fireEvent.click(retry)
+    expect(retry).toHaveFocus()
+  })
+
+  it('clears a disconnected return target without focusing it', () => {
+    const { composer, retry, rerender } = renderEmptyAction()
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    rerender(<EmptyActionHarness showComposer={false} />)
+    const focus = vi.spyOn(composer, 'focus')
+    fireEvent.click(retry)
+    expect(focus).not.toHaveBeenCalled()
+    expect(retry).toHaveFocus()
+    focus.mockRestore()
+  })
+
+  it('returns focus when the focused control unmounts without activation', () => {
+    const { composer, retry, rerender } = renderEmptyAction()
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    expect(retry).toHaveFocus()
+    rerender(<EmptyActionHarness showAction={false} />)
+    expect(composer).toHaveFocus()
+  })
+
+  it('leaves focus the user moved elsewhere and drops the saved target', () => {
+    const view = render(<><EmptyActionHarness /><input aria-label="elsewhere" /></>)
+    const composer = view.getByRole('textbox', { name: 'composer' })
+    const elsewhere = view.getByRole('textbox', { name: 'elsewhere' })
+    composer.focus()
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    elsewhere.focus()
+    view.rerender(<><EmptyActionHarness showAction={false} /><input aria-label="elsewhere" /></>)
+    expect(elsewhere).toHaveFocus()
+    view.rerender(<><EmptyActionHarness /><input aria-label="elsewhere" /></>)
+    const retry = view.getByRole('button')
+    retry.focus()
+    fireEvent.click(retry)
+    expect(retry).toHaveFocus()
+  })
+
+  it('drops the saved target when the surface closes', () => {
+    const { composer, retry, rerender } = renderEmptyAction()
+    fireEvent.keyDown(composer, { key: 'Tab' })
+    rerender(<EmptyActionHarness open={false} />)
+    rerender(<EmptyActionHarness />)
+    retry.focus()
+    fireEvent.click(retry)
+    expect(retry).toHaveFocus()
   })
 })

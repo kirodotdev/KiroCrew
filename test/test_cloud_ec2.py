@@ -10,11 +10,15 @@ import os
 import re
 import shutil
 import subprocess
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
 from kiro_crew.cloud import aws, ec2, sizes
 from kiro_crew.validation import ValidationError
+
+_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestSubTemplateSyntax:
@@ -148,6 +152,23 @@ class TestSubTemplateSyntax:
         assert text.index("could not DOWNLOAD kiro-cli") < text.index(
             "install returned nonzero"
         )
+
+    def test_kiro_cli_is_the_pinned_release_from_a_host_the_preflight_checks(self):
+        # An interface VPC endpoint's zone can own a name under *.amazonaws.com.
+        text = ec2.load_template()
+        (url,) = re.findall(r'KIRO_URL="([^"]+)"', text)
+        host = urlsplit(url).hostname
+        assert host in ec2._BOOTSTRAP_DOWNLOAD_HOSTS, host
+        assert not host.endswith(".amazonaws.com"), host
+        pin = (_ROOT / "packaging" / "kiro-cli-version").read_text(encoding="utf-8").strip()
+        assert url.endswith(f"/stable/{pin}/kirocli-$KIRO_ARCH-linux-musl.zip"), (url, pin)
+        shas = dict(re.findall(r"KIRO_ARCH=(\w+) KIRO_SHA=([0-9a-f]{64})\n", text))
+        assert set(shas) == {"x86_64", "aarch64"}, shas
+        pinned = (_ROOT / "packaging" / "kiro-cli-sha256").read_text(encoding="utf-8").splitlines()
+        for arch, sha in shas.items():
+            assert f"{sha}  {pin}/kirocli-{arch}-linux-musl.zip" in pinned, arch
+        # The zip is checksummed before anything in it is unpacked or run.
+        assert text.index("kiro-cli zip checksum mismatch") < text.index("unzip -o -q kirocli.zip")
 
     def test_source_fetch_failure_is_not_asserted_to_be_an_install_failure(self):
         # kcfetch.sh runs under `set -e`, so a failing `aws s3 cp`, `git clone`
@@ -1000,22 +1021,21 @@ class TestDnsPreflight:
         assert not ec2._zone_shadows_host("", "nodejs.org")
         assert not ec2._zone_shadows_host(".", "nodejs.org")
 
-    def test_detects_q_endpoint_zone(self, monkeypatch):
+    def test_q_endpoint_zone_shadows_nothing_and_a_zone_over_a_host_is_found(self, monkeypatch):
         def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
             if "list-hosted-zones-by-vpc" in args:
                 return {
                     "HostedZoneSummaries": [
                         {"Name": "q.us-east-1.amazonaws.com.", "HostedZoneId": "Z1"},
                         {"Name": "efs.us-east-1.amazonaws.com.", "HostedZoneId": "Z2"},
+                        {"Name": "kiro.dev.", "HostedZoneId": "Z3"},
                     ]
                 }
             return {}
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
         hits = ec2.shadowed_download_hosts("vpc-1", "dev", "us-east-1")
-        assert hits == [
-            ("desktop-release.q.us-east-1.amazonaws.com", "q.us-east-1.amazonaws.com")
-        ]
+        assert hits == [("prod.download.cli.kiro.dev", "kiro.dev")]
 
     def test_clean_vpc_has_no_hits(self, monkeypatch):
         def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
@@ -1040,14 +1060,14 @@ class TestDnsPreflight:
     def test_assert_raises_with_actionable_text(self, monkeypatch):
         def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
             if "list-hosted-zones-by-vpc" in args:
-                return {"HostedZoneSummaries": [{"Name": "q.us-east-1.amazonaws.com."}]}
+                return {"HostedZoneSummaries": [{"Name": "kiro.dev."}]}
             return {}
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
         with pytest.raises(aws.AWSError) as err:
             ec2.assert_download_hosts_resolvable("vpc-1", "dev", "us-east-1")
         msg = str(err.value)
-        assert "q.us-east-1.amazonaws.com" in msg
+        assert "prod.download.cli.kiro.dev is inside private zone kiro.dev" in msg
         assert "--subnet" in msg  # the user needs a way forward, not just a diagnosis
 
 

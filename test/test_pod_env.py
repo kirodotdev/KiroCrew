@@ -27,6 +27,7 @@ from pod_helpers import (  # noqa: F401 -- the fixtures register by import
 
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
+from kiro_crew.testing.wait import default_timeout
 
 
 class TestSeedSanitization:
@@ -113,14 +114,10 @@ class TestSeedSanitization:
         assert not still_on, f"sections a seeded pod could boot live: {still_on}"
 
     def test_disabled_sections_cover_every_rostered_channel(self) -> None:
-        """The ratchet: a channel added to the roster with a config-level enable
-        must be named here, or a seeded pod boots it against real users. Teams
-        reached the roster without reaching this list, which is the hole.
+        """Every rostered channel with a config-level enable is disabled in a seed.
 
-        A channel with no ``enabled`` field is credential-gated only (Slack), and
-        those credentials are scrubbed by ``build_pod_env`` — but the exempt set is
-        pinned exactly, so a new credential-gated channel is an explicit decision
-        rather than a silent omission.
+        Credential-gated channels (Slack) are scrubbed by ``build_pod_env``; the exempt
+        set is pinned exactly so adding one is an explicit decision.
         """
         import dataclasses
 
@@ -164,13 +161,10 @@ class TestPodEnvCredentialScrub:
     def test_scrubs_every_channel_credential_the_loader_knows(
         self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The ratchet for the scrub itself: it matches on prefix and suffix, so a
-        credential named like neither reaches the pod silently — which is exactly
-        how ``MICROSOFT_APP_*`` survived. Pin it against the loader's roster.
+        """The scrub covers the loader's whole credential roster, not just its patterns.
 
-        Two keys are kept deliberately: ``KIRO_API_KEY`` is the agent's own model
-        credential and a pod runs agent turns, and ``KIROCREW_OWNER_ID`` is the pod
-        dashboard's owner identity rather than a bot credential.
+        Kept on purpose: ``KIRO_API_KEY`` (the agent's model credential) and
+        ``KIROCREW_OWNER_ID`` (the pod dashboard's owner, not a bot credential).
         """
         from kiro_crew.config.loader import CRED_KIRO_API_KEY, CRED_OWNER_ID, CREDENTIAL_KEYS
 
@@ -186,13 +180,9 @@ class TestPodEnvCredentialScrub:
     ) -> None:
         """An inherited KIROCREW_BIND must never reach the pod gateway.
 
-        `health()`, `mint_token()` and `pod_api()` all dial `127.0.0.1:<port>`,
-        and the ownership attestation vouches for the recorded PROCESS, not for
-        the ADDRESS it bound. A gateway inheriting `::1` would serve the IPv6
-        loopback while a foreign local process binds `127.0.0.1:<port>` — the
-        address the mint's own HTTP request then lands on. `0.0.0.0` (the
-        official image's export) would additionally expose the pod beyond the
-        host. The pin is what keeps listener and attestation on one address.
+        `health()`, `mint_token()` and `pod_api()` dial `127.0.0.1:<port>`, and the
+        attestation vouches for the process, not the address. `::1` would let a foreign
+        process take `127.0.0.1:<port>`; `0.0.0.0` would expose the pod off-host.
         """
         monkeypatch.setenv("KIROCREW_BIND", inherited)
         env = rt.build_pod_env(cfg, tmp_path / "home", 7999, tmp_path / "co")
@@ -285,19 +275,12 @@ class TestPodConfigWrite:
 class TestSeedPodOsHome:
     """``_seed_pod_os_home`` -- builds a pod's OS-home credential tree.
 
-    The ``.aws/sso/cache`` corridor is CREATED (the pod's own kiro-cli writes its
-    MCP OAuth grants there) and deliberately left EMPTY: nothing is copied from the
-    host. An earlier revision staged the host's SSO tokens into it, which a security
-    review blocked -- the carve-out that keeps the corridor writable also exposed
-    those copied HOST bearer tokens to any agent shell in the pod, and live
-    acceptance had already shown the copy was not load-bearing (sign-in comes from
-    the runtime's own data store, ``_RUNTIME_AUTH_STORES``). These tests pin the
-    absence of that copy.
+    The ``.aws/sso/cache`` corridor is created (the pod's kiro-cli writes MCP OAuth
+    grants there) and left empty: a copied host bearer token would be readable by any
+    agent shell in the pod, and sign-in comes from ``_RUNTIME_AUTH_STORES``.
 
-    ``Path.home()`` inside these tests resolves to the per-test ``HOME`` pin
-    of the autouse ``_isolate_pod_host_state`` (``pod_helpers.py``), not the
-    real invoking user's home. Tests populate THAT pinned real home's
-    ``.aws/sso/cache`` to stand in for "the real host".
+    ``Path.home()`` here is the per-test ``HOME`` pin of ``_isolate_pod_host_state``
+    (``pod_helpers.py``); tests fill its ``.aws/sso/cache`` as "the real host".
     """
 
     def test_never_copies_the_hosts_sso_token(self, tmp_path: Path) -> None:
@@ -410,16 +393,11 @@ class TestSeedPodOsHome:
 
     @requires_posix_pod_lifecycle
     def test_never_copies_the_host_token_through_a_planted_symlink(self, tmp_path: Path) -> None:
-        """The seeding copies a HOST credential and re-runs on every boot, so a
-        link planted at any component of the pod's OS-home would deposit the
-        operator's SSO token wherever it points -- an agent-readable workspace,
-        for instance. Every component is created through a pinned no-follow
-        descriptor, so the link is refused and nothing is written through it.
+        """A link planted in the pod's OS-home is refused, and nothing is written through.
 
-        The refusal RAISES: this directory becomes the pod child's HOME, so
-        skipping the seed and booting anyway would hand kiro-cli the link's
-        target and let it write its own grants there. See
-        ``TestBootRefusesAnUnverifiableOsHome``."""
+        Each component is made through a pinned no-follow descriptor. The refusal raises:
+        the directory becomes the child's HOME, so booting anyway would let kiro-cli
+        write grants at the link's target (``TestBootRefusesAnUnverifiableOsHome``)."""
         real_cache = Path.home() / ".aws" / "sso" / "cache"
         real_cache.mkdir(parents=True)
         (real_cache / "kiro-auth-token.json").write_text('{"accessToken": "real"}')
@@ -676,13 +654,9 @@ class TestReviewRound2Fix:
 class TestEnvFileConcurrentWrite:
     """``write_env_file`` merges, so it must serialize per pod name.
 
-    ``pod up`` writes pod settings AND starts the unit whose gateway writes the same
-    file, so an unserialized merge drops one side's keys and boots the pod on stale
-    config.
-
-    Both tests assert a property only the real lock provides, and both run on every
-    platform: ``pod_name_mutex`` locks through ``platform_compat.file_lock``, which
-    is ``flock`` on POSIX and ``msvcrt.locking`` on Windows.
+    ``pod up`` and the pod's gateway both write the file, so an unserialized merge
+    drops keys. ``pod_name_mutex`` uses ``platform_compat.file_lock`` (``flock`` or
+    ``msvcrt.locking``), so both tests run on every platform.
     """
 
     def test_a_concurrent_write_does_not_drop_the_other_writers_keys(
@@ -740,16 +714,34 @@ class TestEnvFileConcurrentWrite:
         rt.write_env_file(c, "demo", {"CHECKOUT": "/first"})
 
         blocked = threading.Event()
+        arrived = threading.Event()
+        real_file_lock = rt.file_lock
+
+        class _ArrivalFileLock:
+            """Reports that a writer reached the lock file, then takes the real lock."""
+
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                self._real = real_file_lock(*args, **kwargs)
+
+            def __enter__(self) -> object:
+                arrived.set()
+                return self._real.__enter__()
+
+            def __exit__(self, *exc: object) -> object:
+                return self._real.__exit__(*exc)
 
         def competing_writer() -> None:
             rt.write_env_file(c, "demo", {"SEED": "/s"})
             blocked.set()
 
         with rt.pod_name_mutex(c, "demo"):
+            monkeypatch.setattr(rt, "file_lock", _ArrivalFileLock)
             t = threading.Thread(target=competing_writer)
             t.start()
+            assert arrived.wait(
+                timeout=default_timeout()
+            ), "the competing writer never reached the lock"
             # The transaction holds the mutex, so the other writer cannot proceed.
-            # flake-ok: 1 s absence window while the mutex is held -- moved verbatim
             assert not blocked.wait(timeout=1.0), "a writer entered during the transaction"
             rt.write_env_file(c, "demo", {"APPROVAL": "yolo"})
         t.join(timeout=30)
@@ -765,18 +757,11 @@ class TestEnvFileConcurrentWrite:
     ) -> None:
         """The write must be atomic, not merely serialized.
 
-        ``boot`` reads without the mutex on purpose, so an in-place truncating
-        rewrite lets a reader observe one generation spliced onto another. A
-        missing ``APPROVAL`` is the least restrictive outcome (``boot`` leaves
-        ``approval_mode`` unset, which falls through to auto-approve), so a torn
-        read is a silent privilege upgrade rather than a crash.
+        ``boot`` reads without the mutex, and a torn read missing ``APPROVAL`` leaves
+        ``approval_mode`` unset, which falls through to auto-approve.
 
-        Modelled deterministically instead of by racing: a reader opens the file
-        and consumes half of it, a write lands, then it consumes the rest. Under
-        temp-file + rename its descriptor still refers to the intact old inode,
-        so the two halves belong to ONE generation. Under an in-place rewrite the
-        same descriptor reads across the truncation and the halves do not match
-        any generation that was ever valid.
+        No race: the reader reads half, a write lands, then it reads the rest. Under
+        temp-file + rename both halves come from one generation (the old inode).
         """
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path))
         c = PodConfig.load()

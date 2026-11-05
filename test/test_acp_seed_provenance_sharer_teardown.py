@@ -1,11 +1,8 @@
 """Teardown, the settle hand-back, re-seeds and restores beside a sibling that shares a seed.
 
 A live sharer holds the bytes it validated, so every owner path that revokes, rewrites or
-moves the seed aside stands down for it or puts the file back exactly as found. A refused
-hand-back drops governance and leaves the retry to teardown, a live sharer keeps the seed
-and blocks adoption, a re-seed under a sharer keeps the validated bytes, and a share waits
-for a settle whose restore never clobbers. Shared fixtures and helpers live in
-``acp_seed_provenance_helpers.py``.
+moves the seed aside stands down for it or puts the file back exactly as found.
+Shared fixtures live in ``acp_seed_provenance_helpers.py``.
 """
 
 from __future__ import annotations
@@ -37,6 +34,26 @@ from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import seed_provenance as sp
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.testing.wait import default_timeout
+
+
+class _ArrivalLock:
+    """A lock that reports each arrival at it, then takes the real lock.
+
+    A thread that reaches ``__enter__`` is about to block on the real lock, so
+    ``arrived`` marks the moment an absence window can start.
+    """
+
+    def __init__(self, real_lock) -> None:
+        self._real_lock = real_lock
+        self.arrived = threading.Event()
+
+    def __enter__(self):
+        self.arrived.set()
+        return self._real_lock.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real_lock.__exit__(*exc)
 
 
 class TestSharedPermissionSurfaceTeardownAndReseed:
@@ -129,13 +146,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     ):
         """A seed removed before teardown still hands back the durable owner holder.
 
-        ``record()`` publishes this process's live identity as the path's durable
-        owner. When the seed is gone at teardown (a ``git clean``, an ``rm``) the
-        settle transaction has no file to move, revoke or delete -- but the owner
-        holder is still Crew's to withdraw. Left standing, it names a live process,
-        so no prune reclaims it and every later session in this process reads the
-        vacant pathname as held by a live sibling and runs with ``mcpServers``
-        withheld: the toolless-second-session symptom re-manufactured in-process.
+        Left standing, the holder names a live process, so no prune reclaims it and
+        every later session here runs with ``mcpServers`` withheld.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -199,12 +211,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     ):
         """A post-move registry failure restores the seed instead of stranding it.
 
-        The settle transaction moves Crew's seed aside and then consults the
-        sharer registry a second time. With the lock unopenable at that point, the
-        consultation must read as "no sharer" so the revoke runs, fails on the
-        same lock, and the moved inode is restored under its pathname -- a
-        repairable orphan a later session recognizes, rather than a ``.crew-gc``
-        file nothing names beside an empty pathname.
+        An unopenable lock after the move reads as "no sharer", so the revoke fails and
+        the inode returns to its pathname instead of a ``.crew-gc`` file nothing names.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -229,13 +237,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     ):
         """A refused durable revoke at the re-seed drops authorship, keeps the retry.
 
-        The file at the path is the user's by observation (the inode-pinned
-        move-aside found a replacement), so ``_permission_surface_governed`` must
-        answer False from this return on -- a retained ``_claude_settings_authored``
-        delivered the ``mcpServers`` array under the user's own permission file.
-        The durable owner holder that could not be handed back rides
-        ``_claude_settings_claim_unrevoked`` instead, which teardown reads and
-        governance does not.
+        The file is the user's now, so ``_permission_surface_governed`` must answer False.
+        The un-returned holder rides ``_claude_settings_claim_unrevoked`` for teardown.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -291,14 +294,9 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     ):
         """The double-refusal exit of the foreign-replace branch withholds the array.
 
-        Crew authored the file; a live sibling shares it; the user replaces it
-        atomically. ``forget`` fails closed under the sharer's lease and
-        ``release`` fails too (the sidecar cannot be written). The file is the
-        user's by observation, so the owner must NOT stay governed: a retained
-        ``_claude_settings_authored`` let ``_permission_surface_governed`` answer
-        True and the ``mcpServers`` array was delivered under a permission file
-        whose ``permissions.allow`` never reaches ``session/request_permission``.
-        The un-revoked owner holder is carried on ``_claude_settings_claim_unrevoked``.
+        With ``forget`` and ``release`` both refused, the replaced file is the user's, so
+        the owner must not stay governed: the user's ``permissions.allow`` never reaches
+        ``session/request_permission``. The holder rides ``_claude_settings_claim_unrevoked``.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -438,11 +436,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     ):
         """An authored teardown whose durable withdrawal fails still frees the slot.
 
-        With the registry lock unopenable, the discard's ``forget`` and
-        ``release`` are both refused and the seed returns to its pathname. Each
-        withdrawal drops its in-memory half while the durable holder stands until
-        the sidecar is writable again or this process exits. The reset remains an
-        idempotent fallback for every teardown path.
+        With ``forget`` and ``release`` refused, each drops its in-memory half; the
+        durable holder stands until the sidecar is writable or the process exits.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -472,12 +467,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     def test_reset_does_not_drop_a_sibling_client_objects_lease(self, tmp_path, monkeypatch):
         """Positive control: the reset hands back only ITS OWN token's slot.
 
-        Two clients in one process legitimately hold the same path under
-        different owner tokens. A sibling's reset must not read a holder that
-        carries this process's identity as withdrawn, or one session's teardown
-        drops another's live lease and a third session may overwrite a file
-        still in use. ``release_local`` compares the token, so the owner's slot
-        and its persisted holder both survive.
+        Two clients in one process hold the same path under different tokens;
+        ``release_local`` compares the token, so the other's live lease survives.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -614,11 +605,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     ):
         """The settle's sharer probe is re-run AFTER the move-aside.
 
-        The probe and the move are not one atomic step: a sharer can register and
-        validate in between (its disk check read the file before the move, and
-        registration precedes validation, so it is visible to the re-check).
-        Without the barrier the teardown frees the pathname under a governed
-        reader.
+        A sharer can register and validate between the probe and the move; without the
+        re-check the teardown frees the pathname under a governed reader.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -676,12 +664,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     def test_a_reseed_whose_record_fails_restores_the_prior_bytes(self, tmp_path, monkeypatch):
         """A re-seed whose durable record fails puts the recorded bytes back.
 
-        The record for the new bytes publishes only once its sidecar persist
-        lands, so a failing persist leaves the PRIOR grant durable. The re-seed
-        has already renamed the new bytes into place by then, so the moved-aside
-        prior file is restored: the path holds exactly the bytes the durable
-        record names and stays the owner's recognized, repairable seed instead
-        of an unrecorded file nothing on the host can clean up.
+        A failing persist leaves the prior grant durable, so the prior file is restored
+        and the path keeps exactly the bytes the durable record names.
         """
         # Another settings source defines availableModels, so the warm cache is written.
         monkeypatch.setattr(
@@ -714,11 +698,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     def test_an_owner_reseed_cannot_change_permissions_under_a_sharer(self, tmp_path, monkeypatch):
         """The re-seed refreshes model keys; it must not move the permission half.
 
-        A sharer was delivered its MCP array under the file's defaultMode and
-        deny rules. An agent-spec edit mid-session re-renders those, and writing
-        the loosened set under a live reader would widen a surface it validated
-        stricter -- so a re-seed whose permissions block differs keeps the file
-        the sharers are running against.
+        Loosened deny rules under a live sharer would widen a surface it validated
+        stricter, so a re-seed with a different permissions block keeps the file.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -739,11 +720,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     def test_a_late_sharer_beats_a_permissions_changing_reseed(self, tmp_path, monkeypatch):
         """The permissions barrier is re-run AFTER the owner's write.
 
-        A sharer registering between the pre-write probes and the atomic_write
-        validated the stricter bytes; publishing loosened deny rules under it
-        would take its whole session out from behind the surface it validated.
-        The re-seed retracts: the prior bytes return, and the owner keeps
-        owning them.
+        A sharer can register between the probes and the atomic_write; the re-seed then
+        retracts and the prior bytes return, still owned by the owner.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -771,11 +749,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     ) -> tuple[AcpClient, Path, str]:
         """An owner seeded on a cold cache whose next render carries model keys.
 
-        The owner authors without model keys; a byte-identical sibling shares
-        the file when ``with_sharer`` is set; then the cache warms, so the
-        owner's next payload gains ``availableModels`` and ``model`` with an
-        UNCHANGED ``permissions`` block -- the exact shape of the post-capture
-        re-seed. Returns the owner, the path and the bytes on disk before it.
+        The next payload gains ``availableModels`` and ``model`` with the same
+        ``permissions`` block. Returns the owner, the path and the bytes on disk.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
         owner = _client(tmp_path, permission_mode="default", model="claude-opus-5")
@@ -815,12 +790,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     ):
         """A digest-changing re-seed is declined BEFORE the write under a sharer.
 
-        ``record`` refuses any digest change while a live sharer holds the prior
-        record, and a digest cannot tell a model-key refresh from a permissions
-        change. So the owner declines up front rather than writing bytes the
-        durable commit is bound to refuse and then retracting them: the file the
-        sharer validated is never touched, and the owner's recorded payload
-        stays the bytes on disk.
+        ``record`` refuses any digest change under a live sharer, so the owner declines
+        up front and the file the sharer validated is never touched.
         """
         # Another settings source defines availableModels, so the warm cache is written.
         monkeypatch.setattr(
@@ -924,11 +895,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     def test_a_swapped_symlink_is_moved_back_never_dereferenced(self, tmp_path):
         """A symlink at the aside name goes back as the link itself, not its target's bytes.
 
-        The aside name sits in the attacker-influenceable work dir: a sibling
-        can replace the moved-aside file with a symlink to a credential file
-        in the restore window. The rename moves the directory entry and reads
-        nothing through it, so no regular file carrying the target's bytes is
-        ever created; the link lands at the path exactly as the sibling made it.
+        A sibling can swap the aside file for a symlink to a credential file. The
+        rename reads nothing through it, so the target's bytes are never copied.
         """
         secret = tmp_path / "credentials"
         secret.write_text("AKIA-SECRET", encoding="utf-8")
@@ -1030,12 +998,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     def test_share_validation_waits_for_a_settle_transaction(self, tmp_path, monkeypatch):
         """A sharer cannot validate inside a teardown's move/restore window.
 
-        The teardown's own move-aside manufactures a vacancy at the pathname;
-        a user replacement racing into it is preserved by the no-clobber
-        restore. A share that validated the ORIGINAL bytes in that window
-        would become governed against a file it never verified. The settle
-        lock forces the validation to land before the move or after the
-        transaction settles.
+        A share validating the original bytes in that window would be governed against
+        a file it never verified, so the settle lock orders it before or after.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -1052,11 +1016,21 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
             result["shared"] = sibling._share_settings_seed_if_identical(path, payload)
             done.set()
 
-        with sp.SETTLE_LOCK:  # a settle transaction is mid-flight
+        real_lock = sp.SETTLE_LOCK
+        settle_lock = _ArrivalLock(real_lock)
+        with real_lock:  # a settle transaction is mid-flight
+            # The sharer reads the lock by module name when it validates, so it
+            # reaches the stand-in, which reports the arrival and then waits on
+            # the real lock this test holds.
+            monkeypatch.setattr(sp, "SETTLE_LOCK", settle_lock)
             worker = threading.Thread(target=try_share)
             worker.start()
-            # flake-ok: a 300 ms absence window while this test holds SETTLE_LOCK; moved verbatim
-            assert not done.wait(0.3)  # the validation is held out of the window
+            assert settle_lock.arrived.wait(
+                timeout=default_timeout()
+            ), "the sharer never reached the settle lock"
+            assert not done.wait(
+                timeout=0.3
+            ), "the validation ran while a settle transaction held the lock"
         assert done.wait(5)
         worker.join(5)
         # The settled state still holds Crew's bytes, so the share lands.
@@ -1068,11 +1042,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
     ):
         """A user replacement that takes the teardown's vacancy is not governed.
 
-        The teardown moves Crew's seed aside; a replacement arrives at the
-        vacated name before the transaction finishes. Serialized behind the
-        settle lock, a later share validates the SETTLED state -- the
-        replacement's bytes -- and declines, instead of validating the
-        original bytes in the window and going governed under the swap.
+        Behind the settle lock, a later share validates the replacement's bytes and
+        declines.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")

@@ -18,8 +18,8 @@ A construct whose SHAPE depends on a runtime value is never guessed. It contribu
 exactly one ``unknown`` node naming the construct, and every node found inside it is
 marked ``certain: False``:
 
-* ``if`` / ``for`` / ``while`` / ``async for`` / ``try`` / ``match``, a conditional
-  expression, and a comprehension — may not run, or may run a number of times only
+* ``if`` / ``for`` / ``while`` / ``async for`` / ``try`` (``except*`` too) /
+  ``match``, a conditional expression, and a comprehension — may not run, or may run a number of times only
   the run knows.
 * ``ctx.parallel(<not a literal list or tuple>)`` — fan-out width is a runtime value.
 * ``ctx.pipeline(...)`` — width times stage count, both runtime.
@@ -121,6 +121,7 @@ _BRANCHING_STMTS: tuple[tuple[type, str], ...] = (
     (ast.AsyncFor, "for"),
     (ast.While, "while"),
     (ast.Try, "try"),
+    (ast.TryStar, "try"),
     (ast.Match, "match"),
 )
 
@@ -356,7 +357,12 @@ class _Planner:
         phase or invent a title no ``phase_started`` event can be paired with, so the
         region is marked instead and its nodes stay where they are.
         """
-        title = _literal_str(call.args[0]) if call.args else None
+        # ``title`` is positional-or-keyword on the runner, so ``ctx.phase(title="x")``
+        # opens the same phase as ``ctx.phase("x")``.
+        title_node: Optional[ast.expr] = call.args[0] if call.args else None
+        if title_node is None:
+            title_node = next((kw.value for kw in call.keywords if kw.arg == "title"), None)
+        title = _literal_str(title_node)
         if title is None:
             self._add("unknown", "phase", certain=False)
             return False
@@ -497,7 +503,8 @@ def plan_from_source(source: str) -> Optional[dict[str, Any]]:
     entry = _find_entrypoint(tree)
     if entry is None:
         return None
-    params = entry.args.args
+    # A positional-only ``def workflow(ctx, /)`` keeps the context in ``posonlyargs``.
+    params = entry.args.posonlyargs + entry.args.args
     if not params:
         return None
     planner = _Planner(params[0].arg, _local_function_names(entry))

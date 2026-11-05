@@ -132,7 +132,7 @@ const ALL_TARGETS: readonly RefreshTarget[] = [
  *  install. Every cron writer runs in the gateway and announces itself.
  *
  *  Every other kind invalidates everything, and so do a kind this client does
- *  not know and a frame with no kinds. That includes `history`, pushed at the
+ *  not know and a frame with no kinds. That includes `turn_end`, pushed at the
  *  end of a turn: a turn can write config, workspaces and crewmate pins
  *  through an agent tool or a shell, and nothing else announces those writes,
  *  so the turn-end frame is what refreshes them. */
@@ -145,7 +145,7 @@ const sameTarget = (a: RefreshTarget, b: RefreshTarget) =>
   a.exact === b.exact && a.queryKey.length === b.queryKey.length && a.queryKey.every((k, i) => k === b.queryKey[i])
 
 /** How long the cron caches wait after a turn-end frame before they re-read.
- *  A `history` frame ends every turn on every session, and on a busy install
+ *  A `turn_end` frame ends every turn on every session, and on a busy install
  *  that is many a minute; each one re-read the whole job list (twice, with the
  *  Schedule page open), which is a large read when jobs carry long results.
  *  A turn writes a job through the gateway's own cron tools, which announce
@@ -184,7 +184,9 @@ function scheduleTurnEndCronRefresh(qc: QueryClient, onCronsStale?: () => void):
   }, TURN_END_CRON_REFRESH_MS)
 }
 
-const isTurnEndOnly = (kinds?: readonly string[]) => !!kinds?.length && kinds.every(kind => kind === 'history')
+/** `turn_end` ends a turn; `history` follows a close or a delete. */
+const TURN_END_KINDS: readonly string[] = ['turn_end', 'history']
+const isTurnEndOnly = (kinds?: readonly string[]) => !!kinds?.length && kinds.every(kind => TURN_END_KINDS.includes(kind))
 
 /**
  * Invalidate the React Query caches a `refresh` frame names in `kinds`
@@ -200,7 +202,7 @@ const isTurnEndOnly = (kinds?: readonly string[]) => !!kinds?.length && kinds.ev
  * (the artifact library after an auth-expired window, #10867) would otherwise
  * stay empty until its own kind is pushed.
  *
- * A frame that names only `history` refreshes everything but the cron caches
+ * A frame that names only `turn_end` or `history` refreshes everything but the cron caches
  * at once, and those once per `TURN_END_CRON_REFRESH_MS` (an errored one at
  * once, as above). `onCronsStale` is called whenever the cron caches are
  * re-read, now or when that window ends, for a reader that holds the job list
@@ -259,6 +261,12 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // another tab, which is how the update switches learn of it) was never
   // delivered either. Only observed readers refetch.
   queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  // The runtime monitor contract is fetched once with no staleTime, so a
+  // gateway restart that registered a contributed monitor kind while the
+  // socket was down would otherwise never refresh: its monitors would read as
+  // blocked until the page reloads. Re-fetch it so the new vocabulary installs
+  // and the existing re-seed re-normalizes the affected records.
+  queryClient.invalidateQueries({ queryKey: ['monitor-contract'] })
   // `credential_redaction_changed` is pushed to CONNECTED owner sockets
   // with no replay, so a flip made from another window while this socket
   // was down never reached this document. Re-read the switch and, ONLY if
@@ -282,6 +290,15 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY })
   // Same for a change-card frame: every slot's cards are re-read.
   queryClient.invalidateQueries({ queryKey: CHANGE_CARDS_QUERY_PREFIX })
+  // An open Dashboard tab is moved by `dashboard_fields`, `member_projection` and
+  // `dashboard_value_written` frames, and every one sent while the socket was down
+  // is lost. Its read sets no staleTime, so without this it waits for the 60 s
+  // fallback tick. The re-read is also what re-arms a package page's live feed
+  // after a gateway restart: the restart empties the armed pages, so no push can
+  // arrive until a GET arms one again. Through `refreshDashboardReads`, so a tab
+  // whose read is already out gets one more, not a pile.
+  refreshDashboardReads(queryClient, [MEMBER_DASHBOARD_QUERY_PREFIX])
+  refreshDashboardReads(queryClient, [SESSION_DASHBOARD_QUERY_PREFIX])
   // A dropped socket is the one client-visible sign the gateway may have
   // restarted — and a restart drops an unmessaged member slot while its
   // binding survives. The Crew Members page mounts a cached thread key
@@ -403,6 +420,22 @@ export function handleDashboardMoved(queryClient: QueryClient, data: FrameData):
   const slot = String(frame.slot || '')
   if (slot) {
     refreshDashboardReads(queryClient, [SESSION_DASHBOARD_QUERY_PREFIX, slot])
+  }
+}
+
+/** A slot's crew log grew (`slot_projection` or `slot_fold`), so the root session
+ *  pages over it must re-read. *roots* is the frame's slot and every slot it was
+ *  created under, as for the work board: a worker's report moves its conductor's
+ *  items. The gateway sends no `dashboard_instance_changed` for a ledger write --
+ *  that frame is only for an adopted or moved page -- so without this an open
+ *  Overview keeps its old board until the fallback poll. */
+export function handleSlotFoldMoved(queryClient: QueryClient, roots: readonly string[]): void {
+  const cache = queryClient.getQueryCache()
+  for (const root of roots) {
+    const key = [SESSION_DASHBOARD_QUERY_PREFIX, root]
+    // Most slots have no Overview cached: skip them rather than send a no-op
+    // invalidate per ancestor on every crew-log write.
+    if (root && cache.findAll({ queryKey: key }).length > 0) refreshDashboardReads(queryClient, key)
   }
 }
 

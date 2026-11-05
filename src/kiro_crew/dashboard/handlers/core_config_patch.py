@@ -22,6 +22,8 @@ from aiohttp import web
 from kiro_crew import beacon
 from kiro_crew.config import session_environments as _session_environments
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.sections import merge_strands_env_patch
+from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -132,14 +134,15 @@ def _session_environment_key_validators() -> dict[str, Any]:
 
     return {
         "default_profile": validate_default_profile,
-        "sprites_profiles": _keep_vm_profiles("sprites_profiles"),
-        "boxd_profiles": _keep_vm_profiles("boxd_profiles"),
+        "sprites_profiles": _keep_saved_profiles("sprites_profiles"),
+        "boxd_profiles": _keep_saved_profiles("boxd_profiles"),
+        "kiro_cloud_profiles": _keep_saved_profiles("kiro_cloud_profiles"),
         "stop_on_shutdown": validate_stop_on_shutdown,
     }
 
 
-def _keep_vm_profiles(key: str) -> Callable[[object], list[dict[str, Any]]]:
-    """The saved Sprites or boxd profiles the loader keeps, entry by entry.
+def _keep_saved_profiles(key: str) -> Callable[[object], list[dict[str, Any]]]:
+    """The saved Sprites, boxd or Kiro Cloud profiles the loader keeps, entry by entry.
 
     The loader drops a malformed or duplicate entry and keeps every valid one, so
     an omitted list is carried the same way: one hand-edited entry does not take
@@ -149,10 +152,15 @@ def _keep_vm_profiles(key: str) -> Callable[[object], list[dict[str, Any]]]:
     from kiro_crew.config.session_environments import (
         SessionEnvironmentsError,
         load_boxd_profiles,
+        load_kiro_cloud_profiles,
         load_sprites_profiles,
     )
 
-    load = {"sprites_profiles": load_sprites_profiles, "boxd_profiles": load_boxd_profiles}[key]
+    load = {
+        "sprites_profiles": load_sprites_profiles,
+        "boxd_profiles": load_boxd_profiles,
+        "kiro_cloud_profiles": load_kiro_cloud_profiles,
+    }[key]
 
     def keep(value: object) -> list[dict[str, Any]]:
         if not isinstance(value, list):
@@ -175,8 +183,8 @@ def _keep_omitted_session_environment_keys(saved: object, value: dict) -> dict:
     the loader reads it: a profile list keeps each entry the loader keeps, a value
     it would not accept at all (a hand edit) is not carried, and a saved default profile
     that no profile list of the merged section has is dropped rather than kept
-    dangling. Profile lists are merged first, so a default naming a kept Sprites
-    or boxd profile survives a save that omitted that list."""
+    dangling. Profile lists are merged first, so a default naming a kept Sprites,
+    boxd or Kiro Cloud profile survives a save that omitted that list."""
     from kiro_crew.config.session_environments import (
         SECTION_OPTIONAL_KEYS,
         SessionEnvironmentsError,
@@ -203,12 +211,33 @@ def _keep_omitted_session_environment_keys(saved: object, value: dict) -> dict:
     return merged
 
 
+def _drop_dangling_default_profile(section: object) -> None:
+    """Drop a saved default that no profile list of ``section`` still holds.
+
+    Run on the merged section after every ``session_environments`` write, under
+    the config lock. A leaf write of the ``kiro_cloud_profiles`` list can remove
+    the profile the default names (a Sprites or boxd list write that would is
+    refused before it gets here); left in place, that default would
+    run every new chat on this machine and make the next whole-section save fail.
+    It is dropped, as a whole-section save that removes the default's profile
+    drops it, rather than refusing the write. "" (this machine) is kept. A
+    hand-edited default that is not a string the loader would never read either,
+    so it is dropped too rather than failing the unrelated write.
+    """
+    if not isinstance(section, dict):
+        return
+    default = section.get("default_profile")
+    if default and (not isinstance(default, str) or default not in _profile_ids(section)):
+        del section["default_profile"]
+
+
 def _profile_ids(section: dict) -> set[str]:
     """Every profile id across the section's profile lists, of any provider,
     read the way the loader reads each list: a hand-edited entry it drops (an
     id that is not a string, say) names no profile and cannot fail the write."""
     from kiro_crew.config.session_environments import (
         load_boxd_profiles,
+        load_kiro_cloud_profiles,
         load_session_environments,
         load_sprites_profiles,
     )
@@ -216,7 +245,12 @@ def _profile_ids(section: dict) -> set[str]:
     _coder_url, coder = load_session_environments(section)
     return {
         item["id"]
-        for item in (*coder, *load_sprites_profiles(section), *load_boxd_profiles(section))
+        for item in (
+            *coder,
+            *load_sprites_profiles(section),
+            *load_boxd_profiles(section),
+            *load_kiro_cloud_profiles(section),
+        )
     }
 
 
@@ -377,6 +411,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return _deny(f"must be at most {max_items} items", path_key)
         if any(len(item) > max_item_len for item in value):
             return _deny(f"each item must be at most {max_item_len} characters", path_key)
+        item_pattern = spec.get("item_pattern")
+        if item_pattern and any(not re.fullmatch(item_pattern, item) for item in value):
+            return _deny(f"an item has the wrong shape for {path_key}", path_key)
     elif spec["type"] == "dict":
         # One-level record written ATOMICALLY as a single value, for settings
         # where multiple scalar fields form one verdict and a partial write is
@@ -486,8 +523,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # that promise has to hold for every state this route can reach. It would not:
     # `_build_recorder` attaches an OTLP reader for every destination the active
     # telemetry provider supplies (see metrics/provider.py), so on a host where
-    # egress is configured — through `telemetry.otlp_endpoint` for the default
-    # provider, or an edition's own collector — enabling collection from the
+    # egress is configured (through `telemetry.otlp_endpoint` or any
+    # `telemetry.otlp_endpoints` entry for the default provider, or an edition's
+    # own collector), enabling
+    # collection from the
     # dashboard would start network egress
     # under a switch that says it does not. Refuse the ENABLE there and let the
     # config file — which is where the endpoint was chosen — be where that decision
@@ -499,8 +538,8 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # state, but a full read plus schema validation (~14ms) when the file
             # changed — and this handler runs on the event loop.
             cfg = await asyncio.to_thread(KiroCrewConfig.load)
-            # Resolved posture, not the raw endpoint string: the DEFAULT provider
-            # derives its one destination from telemetry.otlp_endpoint, but an
+            # Resolved posture, not the raw endpoint strings: the DEFAULT provider
+            # derives its destinations from telemetry.otlp_endpoint(s), but an
             # edition may supply its own collector with that key empty. Asking the
             # same resolver _build_recorder uses is what keeps this refusal and
             # the actual egress from disagreeing. It RAISES when posture cannot be
@@ -538,10 +577,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # does nothing — `resolve_tailnet_host` already refuses to derive, so without
     # this the config file and the card would both claim "on" while no origin is
     # ever added.
-    if (
-        path_key in ("dashboard.tailscale.enabled", "dashboard.tailscale.trust_identity")
-        and value is True
-    ):
+    if path_key in TAILNET_OPENING_PATHS and value is True:
         pinned = await asyncio.to_thread(_tailnet_governance_pinned_off)
         if pinned:
             return _deny(
@@ -557,6 +593,26 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # switch and the trust settings give an overlay-owned key. A whole-section
     # (object) value is left alone: the overlay merges INTO it key by key, so the
     # keys it does not name still take effect.
+    # The Strands provider map is a keyed change (see
+    # ``validate_strands_env_patch``), so the overlay question is asked per key it
+    # names: a reference config.local.json supplies would win over the base file
+    # and keep pointing at whatever the change removed or replaced.
+    if path_key == "agent.strands_env" and isinstance(value, dict):
+        for env_name in value:
+            if await asyncio.to_thread(overlay_pins, "agent", "strands_env", env_name):
+                _log_sel("denied", f"{path_key}.{env_name}=overlay_owned")
+                return web.json_response(
+                    {
+                        "error": (
+                            f"agent.strands_env entry {env_name!r} is set in "
+                            "config.local.json, which overrides this setting. Change "
+                            "or remove it there."
+                        ),
+                        "code": "config_overlay_owned",
+                        "overlay_override": True,
+                    },
+                    status=409,
+                )
     if not isinstance(value, dict) and await asyncio.to_thread(overlay_pins, *path_key.split(".")):
         _log_sel("denied", f"{path_key}=overlay_owned")
         return web.json_response(
@@ -616,6 +672,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 _check_default_profile_is_saved(
                     {**section, parts[-1]: value}, section.get("default_profile")
                 )
+            if path_key == "agent.strands_env":
+                # A keyed change, merged under the lock with the map saved now.
+                stored = merge_strands_env_patch(section.get(parts[-1]), value)
             if path_key == "session_environments" and isinstance(value, dict):
                 # Under the lock, so it merges with what is saved at this write.
                 stored = _keep_omitted_session_environment_keys(section.get(parts[-1]), value)
@@ -628,6 +687,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 # provider's list, or a whole-section save that preserved one,
                 # must not leave an id naming profiles of two providers.
                 _session_environments.check_profile_ids_unique(data.get("session_environments"))
+                _drop_dangling_default_profile(data.get("session_environments"))
             # Saving the old default of an auto-adopting superseded-default row
             # (a 7200 turn limit) is an explicit choice. Ack it here, under the
             # config lock and before the write, so the reload this write triggers

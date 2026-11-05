@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_discovery
 from kiro_crew.dashboard import side_readonly_spec as srs
@@ -121,6 +122,28 @@ def test_a_same_named_base_entry_of_any_kind_keeps_the_spec(agents_dir, tmp_path
     (agents_dir / "ghost.md").write_text("---\nname: ghost\n---\nhi\n", encoding="utf-8")
     assert srs.reap_orphaned_readonly_specs() == []
     assert derived.exists()
+
+
+@requires_symlinks
+def test_a_base_only_a_link_under_another_name_declares_keeps_the_spec(
+    agents_dir, tmp_path, monkeypatch
+):
+    """The publisher reads a linked base by declared name, so the reaper keeps its spec."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    outside = tmp_path / "dotfiles" / "writer.json"
+    outside.parent.mkdir()
+    _write(outside, dict(_BASE, name="ghost"))
+    (agents_dir / "linked-writer.json").symlink_to(outside)
+    published = srs.publish_readonly_spec("ghost")
+    derived = agents_dir / f"{published.name}.json"
+
+    assert srs.reap_orphaned_readonly_specs() == []
+    assert derived.exists()
+
+    (agents_dir / "linked-writer.json").unlink()
+    assert srs.reap_orphaned_readonly_specs() == ["ghost--readonly"]
 
 
 def test_a_spec_a_live_session_runs_under_is_kept(agents_dir):

@@ -49,7 +49,7 @@ function mount(route = '/apps') {
   )
 }
 
-const sourceButton = (label: string) => screen.findByRole('button', { name: new RegExp(label) })
+const sourceButton = (label: string) => screen.findByRole('radio', { name: new RegExp(label) })
 const appRows = () => screen.queryAllByRole('button', { name: /^View details for/ })
 
 describe('App Store source filtering', () => {
@@ -61,24 +61,24 @@ describe('App Store source filtering', () => {
     expect(screen.queryByRole('button', { name: 'View details for Gamma Tool' })).toBeNull()
     const alpha = screen.getByRole('button', { name: 'View details for Alpha Tool' })
     expect(within(alpha).getByText('Team catalog')).toBeVisible()
-    expect(await sourceButton('Team catalog')).toHaveAttribute('aria-pressed', 'true')
+    expect(await sourceButton('Team catalog')).toHaveAttribute('aria-checked', 'true')
 
     fireEvent.click(await sourceButton('Other catalog'))
     expect(appRows()).toHaveLength(1)
     expect(screen.getByRole('status')).toHaveTextContent('1 app')
     expect(screen.getByRole('button', { name: 'View details for Gamma Tool' })).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'All sources' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'All sources' }))
     expect(screen.getByRole('status')).toHaveTextContent('5 apps')
   })
 
   it('composes source with search and category and keeps them when source resets', async () => {
     mount()
     fireEvent.click(await sourceButton('Team catalog'))
-    fireEvent.click(screen.getByRole('button', { name: /Developer Tools/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /Developer Tools/ }))
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Build' } })
     expect(appRows()).toHaveLength(1)
     expect(screen.getByRole('status')).toHaveTextContent('1 app')
-    fireEvent.click(screen.getByRole('button', { name: 'All sources' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'All sources' }))
     expect(appRows()).toHaveLength(3)
     expect(screen.getByRole('status')).toHaveTextContent('3 apps')
   })
@@ -86,12 +86,14 @@ describe('App Store source filtering', () => {
   it('supports keyboard selection, empty sources, builtin and core buckets', async () => {
     mount()
     const empty = await sourceButton('Empty catalog')
-    fireEvent.keyDown(empty, { key: 'Enter' })
-    expect(empty).toHaveAttribute('aria-pressed', 'true')
+    // A source row is a native radio button now (#27459): Enter/Space
+    // activation is the browser's own, so jsdom is driven with the click it fires.
+    fireEvent.click(empty)
+    expect(empty).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByText('No matching apps')).toBeVisible()
     expect(screen.getByText('Try a different search, category, or source.')).toBeVisible()
     expect(screen.getByRole('status')).toHaveTextContent('0 apps')
-    fireEvent.keyDown(await sourceButton('Built-in'), { key: ' ' })
+    fireEvent.click(await sourceButton('Built-in'))
     expect(appRows()).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'View details for Epsilon Builtin' })).toBeVisible()
     fireEvent.click(await sourceButton('Kiro Crew registry'))
@@ -175,21 +177,21 @@ it('clears a selected source when that registry and its cached apps disappear', 
       queryClient.invalidateQueries({ queryKey: ['registries'] }),
     ])
   })
-  await waitFor(() => expect(screen.getByRole('button', { name: 'All sources' })).toHaveAttribute('aria-pressed', 'true'))
+  await waitFor(() => expect(screen.getByRole('radio', { name: 'All sources' })).toHaveAttribute('aria-checked', 'true'))
   expect(screen.getByRole('status')).toHaveTextContent('3 apps')
 })
 
 it('scopes category counts to source and search while keeping empty categories selectable', async () => {
   mount()
   fireEvent.click(await sourceButton('Team catalog'))
-  expect(screen.getByRole('button', { name: 'All apps 2' })).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Developer Tools 1' })).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: 'Research & Writing 1' }))
+  expect(screen.getByRole('radio', { name: 'All apps 2' })).toBeVisible()
+  expect(screen.getByRole('radio', { name: 'Developer Tools 1' })).toBeVisible()
+  fireEvent.click(screen.getByRole('radio', { name: 'Research & Writing 1' }))
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Build' } })
-  expect(screen.getByRole('button', { name: 'All apps 1' })).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Research & Writing 0' })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('radio', { name: 'All apps 1' })).toBeVisible()
+  expect(screen.getByRole('radio', { name: 'Research & Writing 0' })).toHaveAttribute('aria-checked', 'true')
   fireEvent.click(await sourceButton('Empty catalog'))
-  expect(screen.getByRole('button', { name: 'All apps 0' })).toBeVisible()
+  expect(screen.getByRole('radio', { name: 'All apps 0' })).toBeVisible()
   expect(screen.getByRole('status')).toHaveTextContent('0 apps')
 })
 

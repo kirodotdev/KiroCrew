@@ -14,7 +14,7 @@ name: Crew Image Build
 #
 # WHY IT DISCOVERS THE RECIPES. Naming `Dockerfile` and `Dockerfile.crew` here
 # would reproduce the defect one level up: a third recipe added later would be
-# as uncovered as these two were. scripts/crew_image_build_plan.py asks the tree
+# as uncovered as these two were. crew/scripts/crew_image_build_plan.py asks the tree
 # which recipes exist and derives each one's role and producer from the recipe's
 # own text, and REFUSES anything it cannot account for. So a new recipe is
 # either built by this lane or reds it.
@@ -30,6 +30,11 @@ name: Crew Image Build
 # paths-filtered, so on most PRs it does not start. It blocks the way
 # docker-smoke.yml does -- a red X on the PR plus code-owner review -- and
 # docker-smoke.yml is absent from that allowlist for the same reason.
+#
+# WHO OWNS IT. Everything this lane builds and runs is the aws-control app's: the
+# recipes under its crew/runtime/ and the producers and planner under its
+# crew/scripts/. Kiro Crew core does not depend on any of it, so this file leaves
+# the repository together with that app (docs/system-specs/modules/aws-control.md).
 
 on:
   pull_request:
@@ -46,12 +51,12 @@ on:
       # scripts get run is DERIVED from what the recipes cite, so a name written
       # here would let a renamed -- or simply differently-named -- producer stop
       # firing the lane that runs it. `build*image*.sh` covers every producer the
-      # recipes cite and stops short of `scripts/**`, so an unrelated script does
+      # recipes cite and stops short of `crew/scripts/**`, so an unrelated script does
       # not drag a 1.5 GB build onto a pull request that cannot affect it.
       # test_crew_image_build_plan.py holds every cited producer to being matched
       # by one of these patterns, and an unrelated script to NOT being matched.
-      - "scripts/build*image*.sh"
-      - "scripts/crew_image_build_plan.py"
+      - "src/kiro_crew/apps/builtins/aws_control/crew/scripts/build*image*.sh"
+      - "src/kiro_crew/apps/builtins/aws_control/crew/scripts/crew_image_build_plan.py"
       # The wheel the base image installs is built from a checkout by its
       # producer, so the packaging surface can break the build: what gets built
       # (pyproject.toml, setup.py), what ships in it (MANIFEST.in), and the
@@ -109,6 +114,8 @@ jobs:
       # later edit here, or a third write site, is caught rather than trusted.
       REGISTRY: 127.0.0.1:5000
       REGISTRY_CONTAINER: crew-image-build-registry
+      # The planner, which the recipes' producers sit beside.
+      BUILD_PLAN: src/kiro_crew/apps/builtins/aws_control/crew/scripts/crew_image_build_plan.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -132,8 +139,8 @@ jobs:
       - name: Derive the build plan from the tree
         run: |
           set -euo pipefail
-          python3 scripts/crew_image_build_plan.py
-          python3 scripts/crew_image_build_plan.py --tsv > plan.tsv
+          python3 "$BUILD_PLAN"
+          python3 "$BUILD_PLAN" --tsv > plan.tsv
           echo "recipes discovered: $(wc -l < plan.tsv)"
 
       - name: Start the loopback registry
@@ -159,7 +166,7 @@ jobs:
       - name: Write the probe bundle a layer recipe is built from
         run: |
           set -euo pipefail
-          BUNDLE_DIGEST=$(python3 scripts/crew_image_build_plan.py --make-bundle "${RUNNER_TEMP}/bundle")
+          BUNDLE_DIGEST=$(python3 "$BUILD_PLAN" --make-bundle "${RUNNER_TEMP}/bundle")
           echo "probe bundle digest: ${BUNDLE_DIGEST}"
 
       # One loop over the discovered plan, bases first. A base is built, pushed
@@ -199,7 +206,7 @@ jobs:
                 "./${producer}" --base "$BASE_DIGEST" --bundle "${RUNNER_TEMP}/bundle"
                 ;;
               *)
-                echo "::error::${path} has role '${role}', which this lane cannot build. Teach scripts/crew_image_build_plan.py and this workflow together."
+                echo "::error::${path} has role '${role}', which this lane cannot build. Teach ${BUILD_PLAN} and this workflow together."
                 exit 1
                 ;;
             esac

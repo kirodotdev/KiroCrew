@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useId, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { holdVisibleCodeText } from '../utils/visibleText'
 import { AlertTriangle, ChevronDown, FileDiff } from 'lucide-react'
 
 import DiffBlock, { extractFilePath } from './DiffBlock'
@@ -73,6 +74,13 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
   // patch, so `aria-controls` always resolves to a real element — a disclosure
   // pointing at an id that exists only while open is not a disclosure.
   const regionId = useId()
+  // An open patch reads as its text (utils/visibleText): the diff view draws it
+  // in a shadow root a text reader cannot see. A folded one shows only the chip.
+  const regionRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = regionRef.current
+    return el && expanded ? holdVisibleCodeText(el, code) : undefined
+  }, [code, expanded])
   // The chip never unmounts, so focus stays on it across a toggle; no hand-off
   // is needed.
   const toggle = useCallback(() => {
@@ -147,7 +155,7 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
         </span>
         <ChevronDown size={12} aria-hidden className={`shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
       </button>
-      <div id={regionId}>
+      <div id={regionId} ref={regionRef}>
         {expanded && (
           <DiffBlock code={code} complete={complete} onFileOpen={onFileOpen} pathHint={pathHint} />
         )}

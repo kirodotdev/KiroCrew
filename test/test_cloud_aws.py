@@ -78,6 +78,37 @@ class TestRunAws:
 
         assert aws.run_aws(["sts", "get-caller-identity"]) == (0, "out", "err")
 
+    def test_the_aws_child_gets_no_python_interpreter_settings(self, monkeypatch):
+        """A Python ``aws`` (aws-cli v1) must not import the gateway's packages.
+
+        This chokepoint is also the Polly consent gate's account probe, so an
+        inherited ``PYTHONPATH`` breaks consent before any synthesis runs.
+        """
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, timeout):
+                return "out", "err"
+
+        seen: dict = {}
+
+        def fake_popen(*a, **k):
+            seen["env"] = k.get("env")
+            return FakeProc()
+
+        monkeypatch.setenv("PYTHONPATH", "/bundle/site-packages")
+        monkeypatch.setenv("PYTHONHOME", "/bundle")
+        monkeypatch.setenv("KC_UNRELATED_SETTING", "kept")
+        monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
+        monkeypatch.setattr(aws, "popen_limited", fake_popen)
+
+        assert aws.run_aws(["sts", "get-caller-identity"]) == (0, "out", "err")
+        env = seen["env"]
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert env.get("KC_UNRELATED_SETTING") == "kept"
+
     def test_spawn_gets_widened_path_for_credential_process(self, monkeypatch, tmp_path):
         """A GUI-launched gateway's minimal PATH must not hide ``credential_process``.
 
@@ -91,6 +122,7 @@ class TestRunAws:
         head = str(bin_dir / "aws")
         monkeypatch.setattr(aws, "resolve_aws_bin", lambda: head)
         monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(bin_dir),))
+        monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ((str(bin_dir), str(bin_dir)),))
         monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
         monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
         monkeypatch.setattr(aws, "cgroup_scope_argv", lambda argv: argv)

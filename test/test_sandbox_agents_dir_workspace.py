@@ -11,6 +11,7 @@ import os
 import pytest
 
 from kiro_crew import sandbox as sandbox_mod
+from kiro_crew.instances import run_marker
 
 
 @pytest.fixture
@@ -148,3 +149,37 @@ class TestDelegatedWorkspaceExposesAgentsDir:
         link = tmp_path / "WS-Link"
         link.symlink_to(agents_dir, target_is_directory=True)
         assert sandbox_mod.delegated_workspace_exposes_sealed_target(link) is not None
+
+
+class TestDelegatedWorkspaceExposesDefaultRunDir:
+    @pytest.fixture
+    def default_run(self, tmp_path, monkeypatch):
+        run = tmp_path / "home" / ".kiro" / "crew" / "run"
+        monkeypatch.setattr(run_marker, "_DEFAULT_RUN_DIR", run)
+        monkeypatch.setattr(sandbox_mod, "_resolved_kiro_agents_targets", list)
+        return run
+
+    @pytest.mark.parametrize(("platform", "internal"), [("win32", False), ("darwin", True)])
+    def test_a_delegated_spawn_refuses_a_workspace_at_inside_or_around_the_default_run_dir(
+        self, monkeypatch, default_run, platform, internal
+    ):
+        monkeypatch.setattr(sandbox_mod.sys, "platform", platform)
+        monkeypatch.setattr(sandbox_mod, "kiro_internal_sandbox_enabled", lambda: internal)
+        for workspace in (default_run, default_run / "nested", default_run.parent):
+            reason = sandbox_mod.delegated_workspace_exposes_sealed_target(workspace)
+            assert reason is not None, workspace
+            assert "default run dir" in reason
+            assert str(workspace) in reason
+
+    @pytest.mark.parametrize(("platform", "internal"), [("linux", True), ("darwin", False)])
+    def test_launcher_wrapped_spawns_leave_a_default_run_dir_workspace_alone(
+        self, monkeypatch, default_run, platform, internal
+    ):
+        monkeypatch.setattr(sandbox_mod.sys, "platform", platform)
+        monkeypatch.setattr(sandbox_mod, "kiro_internal_sandbox_enabled", lambda: internal)
+        assert sandbox_mod.delegated_workspace_exposes_sealed_target(default_run) is None
+
+    def test_a_sibling_of_the_default_run_dir_is_allowed(self, monkeypatch, default_run):
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "win32")
+        for workspace in (default_run.parent / "work", default_run.parent / "run-archive"):
+            assert sandbox_mod.delegated_workspace_exposes_sealed_target(workspace) is None

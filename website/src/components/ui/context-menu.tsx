@@ -64,17 +64,21 @@ const STABLE_TRIGGER_OUTLET = <StableTriggerOutlet />
  * keyboard, right-click and focus behaviour are the same as the plain form.
  * Pass a referentially stable `content` (memoized by the caller): a new
  * element on every render rebuilds the tree each time and saves nothing.
+ *
+ * `disabled` is the trigger's own `disabled`. A draggable row passes its drag
+ * state, so a touch hold that lifted the row cannot also open the menu 700 ms in.
  */
-function ContextMenuStableTrigger({ children, content }: {
+function ContextMenuStableTrigger({ children, content, disabled = false }: {
   children: React.ReactElement
   content: React.ReactNode
+  disabled?: boolean
 }) {
   const menu = React.useMemo(() => (
     <ContextMenu>
-      <ContextMenuTrigger asChild>{STABLE_TRIGGER_OUTLET}</ContextMenuTrigger>
+      <ContextMenuTrigger asChild disabled={disabled}>{STABLE_TRIGGER_OUTLET}</ContextMenuTrigger>
       {content}
     </ContextMenu>
-  ), [content])
+  ), [content, disabled])
   return <StableTriggerChild.Provider value={children}>{menu}</StableTriggerChild.Provider>
 }
 

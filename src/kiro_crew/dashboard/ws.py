@@ -17,6 +17,7 @@ from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.constants import crew_log_enabled
 from kiro_crew.dashboard import websocket_hub as _ws_hub
+from kiro_crew.dashboard import ws_slot_diff as _ws_slot_diff
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG, is_relay_teammate
 from kiro_crew.dashboard.origin import check_origin
@@ -28,7 +29,7 @@ from kiro_crew.dashboard.state import (
     _safe_folder_tree,
     _slots_serialization_note,
 )
-from kiro_crew.dashboard.status_counts import cached_status_snapshot
+from kiro_crew.dashboard.status_counts import cached_status_snapshot, yolo_grant_fields
 from kiro_crew.dashboard.subagent_replay_scope import (
     UNIT_INDEX,
     SubagentReplayQueue,
@@ -62,6 +63,12 @@ from kiro_crew.dashboard.ws_side_frames import (  # noqa: F401 -- re-exported: c
     broadcast_side_result,
     broadcast_thread_reply,
 )
+from kiro_crew.dashboard.ws_subagent_send import (  # noqa: F401 (re-exported)
+    SUBAGENT_REPLAY_BATCH_THRESHOLD,
+    _send_subagent_replay,
+    _subagent_replay_has_owner,
+    send_subagent_replay_done,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.shared_crew import presence as shared_presence
 from kiro_crew.shared_crew.collab import FRAME_ACTIVITY
@@ -76,6 +83,20 @@ _WS_STATUS_INTERVAL = 5  # seconds between dashboard status pushes
 #: wording the run-folder reader gives an orphan, because it is the same fact: the
 #: writer went away without recording how the run ended.
 _ORPHANED_UNKNOWN = "Orphaned (unknown cause)"
+
+
+async def _send_browser_live_snapshot(ws: web.WebSocketResponse) -> None:
+    """Send each chat's current ``browser_live`` state to a NEW owner socket.
+
+    The hub publishes on change only, so without this a reloaded tab shows no
+    browser card, and a quick ask waiting on the person stays hidden until it
+    times out. Same frame and same redaction as the hub's own publish; owner
+    sockets only, like every other ``browser_live`` frame.
+    """
+    from kiro_crew.browser_harness.live_hub import LIVE_EVENT, get_live_hub
+
+    for data in get_live_hub().snapshot_events():
+        await ws.send_str(json.dumps({"type": LIVE_EVENT, "data": data}))
 
 
 async def _send_slot_projection_subscribed(ws: web.WebSocketResponse) -> None:
@@ -102,7 +123,7 @@ async def _send_slot_projection_subscribed(ws: web.WebSocketResponse) -> None:
     await ws.send_str(json.dumps({"type": SLOT_SUBSCRIBED_FRAME, "data": {"revisions": revisions}}))
 
 
-async def _status_frame(state: DashboardState) -> dict[str, Any]:
+async def _status_frame(state: DashboardState, *, dashboard_user: bool) -> dict[str, Any]:
     """Build the Tier-0 ``dashboard`` frame payload.
 
     Routes the lesson/cron counts through the shared
@@ -113,76 +134,25 @@ async def _status_frame(state: DashboardState) -> dict[str, Any]:
     loading skeleton — instead of ``status_snapshot``'s inline on-loop fallback
     ever running here. The ``version``/``platform`` fields the periodic frame
     carries are appended on top.
+
+    The client replaces its stored status with each frame, so the dashboard
+    user's frame also carries the live auto-approve grant ``/api/status``
+    reports. An app socket's frame goes without it: Tier 0 reaches every app
+    token, whatever it declared.
     """
-    return {
+    frame = {
         **await cached_status_snapshot(state),
         "version": _local_version,
         "platform": sys.platform,
     }
+    if dashboard_user:
+        frame.update(yolo_grant_fields())
+    return frame
 
-
-# Reconnect replay: more subagent frames than this collapse into ONE
-# subagent_snapshot_batch frame (scale plumbing — a per-agent burst at
-# 60-100 agents saturates the socket the moment a client reconnects).
-SUBAGENT_REPLAY_BATCH_THRESHOLD = 8
 
 #: The one replay request a crew-log-off install makes per subscribe. Its folder
 #: reader has no per-slot index, and no client slot name can be this string.
 _FOLDER_REPLAY = "\x00folders"
-
-
-def _subagent_replay_has_owner(frame: object) -> bool:
-    """Whether a replay frame names the chat that owns the subagent.
-
-    ``spawn_run`` can continue in degraded mode when caller identity cannot be
-    resolved, leaving ``parent_session_key == ""``. Such a run is visible in the
-    global spawn inventory, but it has no session-scoped destination. Sending an
-    empty ``slot`` to a chat client is unsafe: older reducers interpreted it as
-    the currently active slot, so a fresh popout adopted unrelated agents.
-    """
-    if not isinstance(frame, dict):
-        return False
-    data = frame.get("data")
-    if not isinstance(data, dict):
-        return False
-    slot = data.get("slot")
-    return isinstance(slot, str) and bool(slot.strip())
-
-
-async def _send_subagent_replay(ws: Any, state: Any, frames: list[dict]) -> None:
-    """Send replay *frames* to *ws* through the same gates the live frames take.
-
-    Per-slot scope gate on the reconnect replay. The broadcast chokepoint covers
-    live events, but this replay writes to the socket directly, so it must apply
-    the same check. Dashboard users pass through ``_ws_client_allowed``
-    unconditionally.
-
-    Ownership is a separate prerequisite: an unresolved parent produces
-    ``slot: ''``. That run remains visible through the global spawn inventory, but
-    there is no chat authorized to adopt it. Filtered before batching so even an
-    older client with an empty-slot fallback never receives the orphan as
-    session-scoped state.
-    """
-    frames = [
-        _f
-        for _f in frames
-        if _subagent_replay_has_owner(_f)
-        and state._ws_client_allowed(ws, str(_f.get("type", "")), _f.get("data", {}))
-    ]
-    try:
-        if len(frames) > SUBAGENT_REPLAY_BATCH_THRESHOLD:
-            # ``subagent_snapshot_batch`` is deliberately absent from every
-            # ws_event_scope table: it is delivery packaging for frames THIS socket
-            # is already cleared for (filtered item-by-item above), never a
-            # broadcast. Routing it through the gate would reject it as an unknown
-            # event and cost the app its whole replay, so keep this send and the
-            # per-item filter together.
-            await ws.send_json({"type": "subagent_snapshot_batch", "data": {"items": frames}})
-        else:
-            for _frame in frames:
-                await ws.send_json(_frame)
-    except Exception:
-        pass
 
 
 def build_persisted_subagent_frame(record: dict, *, redact: Callable[[str], str]) -> dict:
@@ -583,6 +553,7 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
         "requested_model": _r(a.requested_model),
         "streaming": _r(a.streaming_text),
         "last_tool": _r(a.last_tool),
+        "last_tool_call_id": _r(getattr(a, "last_tool_call_id", "") or ""),
         "tool_count": a.tool_count,
         "stalled": a.stalled,
     }
@@ -870,8 +841,15 @@ async def _serve_ws(
     # ``getattr``: request doubles in the suite are plain dicts with no query.
     query = getattr(request, "query", None) or {}
     declared_caps = {cap.strip() for cap in str(query.get("caps", "")).split(",")}
+    # The operator's rollback lever: a capability named there is served as absent.
+    declared_caps = _ws_slot_diff.without_disabled_caps(declared_caps)
+    _ws_slot_diff.note_missing_caps(bool(ws["_is_dashboard_user"]), declared_caps)
     ws[SLOT_PATCH_WS_FLAG] = bool(ws["_is_dashboard_user"]) and (
         SLOT_PATCH_CAPABILITY in declared_caps
+    )
+    # ``slot_diff.1`` beside it: send the coalesced list as row deltas.
+    ws[_ws_hub.SLOT_DIFF_WS_FLAG] = bool(ws[SLOT_PATCH_WS_FLAG]) and (
+        _ws_hub.SLOT_DIFF_CAPABILITY in declared_caps
     )
     # ``fold_delta.1``: send this tab only the boards it watches (dashboard users only).
     state.set_fold_delta_capable(ws, _ws_hub.FOLD_DELTA_CAPABILITY in declared_caps)
@@ -1003,6 +981,10 @@ async def _serve_ws(
                 await state.send_members_subscribed(ws)
             except Exception:
                 logger.debug("members_subscribed baseline not sent", exc_info=True)
+            try:
+                await _send_browser_live_snapshot(ws)
+            except Exception:
+                logger.debug("browser_live snapshot not sent", exc_info=True)
         if is_dashboard_user:
             # The same shape for SLOT folds, and the same reason: a revision floor the
             # client holds BEFORE it issues a baseline read, so a read already on the
@@ -1061,7 +1043,9 @@ async def _serve_ws(
                 # cache immediately unless it is the one that refreshes it.
                 # Counts are None (published as null → loading skeleton) until
                 # the first successful refresh — never an authoritative false 0.
-                data = await _status_frame(state)
+                data = await _status_frame(
+                    state, dashboard_user=ws.get("_is_dashboard_user", False)
+                )
                 if ws.get("_is_dashboard_user", False):
                     shared_presence.sweep_and_broadcast(state)
                 if not ws.get("_is_dashboard_user", False):
@@ -1454,6 +1438,7 @@ async def _serve_ws(
                             if isinstance(_f.get("data"), dict) and _f["data"].get("id")
                         }
                         await _send_subagent_replay(ws, state, _replay)
+                        await send_subagent_replay_done(ws, ws_app)
 
                         async def _durable_replay(_requested: list[str]) -> None:
                             """Replay the finished runs of the *_requested* slots.
@@ -1755,6 +1740,8 @@ async def _serve_ws(
                         )
                     elif msg_type == "fold_watch":  # replaces the set; no-op unless capable
                         state.set_fold_watch(ws, data.get("slots"))
+                    elif msg_type == "slots_resync":  # a diff missed its base
+                        _ws_slot_diff.handle_slots_resync(state, ws)
                     elif msg_type == "slot_focused":
                         if not owner_request:
                             # SEL: the owner gate is a permission decision —
@@ -1788,7 +1775,6 @@ async def _serve_ws(
                                 id(ws),
                                 data.get("slot"),
                                 announce=data.get("announce") is True,
-                                hidden=data.get("hidden") is True,
                             )
                             note_foreground(state, id(ws), data.get("slot"))
                     elif msg_type == "slot_read":

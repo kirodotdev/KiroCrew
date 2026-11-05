@@ -172,8 +172,9 @@ class TestAHealthyInstallIsUntouched:
         monkeypatch.setattr(updates, "resolve_restart_launcher", lambda: None)
         state = _state()
 
-        await updates._restart_gateway(state, resolver=lambda: exe)
+        assert await updates._restart_gateway(state, resolver=lambda: exe) is True
 
+        assert state._gateway_restart_in_progress is False
         module_exec.assert_called_once()
         launcher_exec.assert_not_called()
         assert "error" not in [c.args[0] for c in state.push_update_progress.call_args_list]

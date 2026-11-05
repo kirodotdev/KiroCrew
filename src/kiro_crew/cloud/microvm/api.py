@@ -911,15 +911,25 @@ def image_version_status(
 def staging_dir(prefix: str) -> Iterator[Path]:
     """A private directory for a file the AWS CLI must read by name.
 
-    Cut under the ``aws-control-staging`` root, which every agent sandbox masks,
-    so a same-UID sandboxed agent cannot read a control secret or an activation
-    code while the call runs. A ``0600`` file in the shared temp directory does
-    not stop that, because the agent runs as the same user. The CLI child is
-    granted this one directory through ``visible_dirs``. Removed on exit.
-    """
-    from kiro_crew.apps.builtins.aws_control.backend.storage import pinned_staging
+    Cut by the app that provides the ``transfer_staging`` seam, under the
+    ``aws-control-staging`` root, which every agent sandbox masks, so a same-UID
+    sandboxed agent cannot read a control secret or an activation code while the
+    call runs. A ``0600`` file in the shared temp directory does not stop that,
+    because the agent runs as the same user. The CLI child is granted this one
+    directory through ``visible_dirs``. Removed on exit.
 
-    with pinned_staging(prefix) as (path, _fd):
+    Refused, with :class:`RuntimeError`, when no app provides the seam: falling back
+    to the shared temp directory would hand the secret to that same agent.
+    """
+    from kiro_crew.apps import seams
+
+    staging = seams.transfer_staging()
+    if staging is None:
+        raise RuntimeError(
+            "no sandbox-masked staging root is available, so no secret is written: "
+            "the app that provides the transfer_staging seam is not installed"
+        )
+    with staging.pinned_staging(prefix) as (path, _fd):
         yield Path(path)
 
 
@@ -929,6 +939,7 @@ def put_recipe_object(
     body_path: str,
     *,
     kms_key_id: str = "",
+    expected_bucket_owner: str = "",
     profile: str = "",
     region: str = "",
     endpoint_url: str = "",
@@ -944,6 +955,11 @@ def put_recipe_object(
     unencrypted puts tests the request HEADER, and a bucket default does not set
     one, so an omitted header is a 403 rather than a default-encrypted object.
     Only which algorithm it names depends on whether a key was chosen.
+
+    ``expected_bucket_owner`` makes S3 refuse the put when the bucket belongs to
+    any other account. Bucket names are global, so a name left in settings after
+    its stack is gone can be claimed by a stranger, and the zip carries the crew
+    bundle. Empty sends no pin, for a lane whose ARNs name no account.
     """
     for label, value in (("bucket", bucket), ("key", key), ("body path", body_path)):
         if not value:
@@ -962,6 +978,8 @@ def put_recipe_object(
         args += ["--server-side-encryption", "aws:kms", "--ssekms-key-id", kms_key_id]
     else:
         args += ["--server-side-encryption", "AES256"]
+    if expected_bucket_owner:
+        args += ["--expected-bucket-owner", expected_bucket_owner]
     if endpoint_url:
         args += ["--endpoint-url", endpoint_url]
     checked_json(

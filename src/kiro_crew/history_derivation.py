@@ -35,6 +35,15 @@ if TYPE_CHECKING:
 # can't silently diverge between surfaces.
 INCOGNITO_MEMORY_MODES = frozenset({"incognito", "temporary"})
 
+#: Response header ``GET /api/sessions/{key}?exclude_incognito=1`` sets on every
+#: 200 it answers through the guarded arm. It is the wire form of the exclusion
+#: above for a reader on ANOTHER machine: a gateway from before the arm existed
+#: ignores the unknown parameter and serves a marked transcript with no header, so
+#: the crew read on the hub treats its absence as "the peer cannot vouch" and
+#: refuses the reply rather than trusting it. Beside the mode set because it is the
+#: same privacy contract, stated once for both ends of the tunnel.
+INCOGNITO_EXCLUDED_HEADER = "X-KiroCrew-Incognito-Excluded"
+
 #: The most of a transcript's first line any reader parses for its mode. The
 #: metadata line is a small JSON object; a longer first line is unknown to every
 #: reader alike, so the write gate and the export cannot disagree about it.

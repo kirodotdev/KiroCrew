@@ -130,6 +130,22 @@ def outbox(tmp_path):
         shutil.rmtree(base, ignore_errors=True)
 
 
+class TestOutboxNotifyFieldTypes:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["path", "filename", "description"])
+    @pytest.mark.parametrize("value", [5, None, ["a"], {"a": 1}])
+    async def test_a_non_string_field_is_400(self, outbox, mock_sel, field, value):
+        """redact() raises on a non-string, so this was a 500 TypeError."""
+        body = {"path": str(outbox / "a.txt"), "filename": "a.txt", "description": "d"}
+        body[field] = value
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/outbox/notify", json=body)
+            assert resp.status == 400
+            assert (await resp.json())["error"] == (
+                "path, filename and description must be strings"
+            )
+
+
 class TestOutboxNotifyBinary:
     @pytest.mark.asyncio
     async def test_binary_mp3_accepted(self, outbox, mock_sel):
@@ -298,6 +314,17 @@ class TestOutboxDownloadRange:
             )
             assert resp.status == 416
             assert resp.headers["Content-Range"] == f"bytes */{len(_MP4)}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("header", ["bytes=200-100", "bytes=0-1,5-9", "bytes=+5-20"])
+    async def test_malformed_range_serves_whole_file_200(self, outbox, mock_sel, header):
+        """RFC 9110 14.2: a malformed Range is ignored, never answered 416."""
+        (outbox / "clip.mp4").write_bytes(_MP4)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/clip.mp4", headers={"Range": header})
+            assert resp.status == 200
+            assert "Content-Range" not in resp.headers
+            assert await resp.read() == _MP4
 
     @pytest.mark.asyncio
     async def test_range_does_not_bypass_the_content_scan(self, outbox, mock_sel):

@@ -4,7 +4,7 @@
  * policy-pinned and floor-locked tooltip keys the governance rows reuse. One of
  * the sections `SecurityPanel.tsx` composes.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Lock, AlertTriangle, ChevronRight, ChevronDown, Plus, Trash2 } from 'lucide-react'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -16,6 +16,7 @@ import {
   api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule,
 } from '../../api/client'
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 import { trustFailureMessage } from './SecurityPanelTrust'
 
@@ -232,31 +233,35 @@ function CustomDenyRow({ rule, onToggle, onDelete, error, errorHandoff }: { rule
   )
 }
 
-/** Add-a-custom-pattern input with client-side RegExp validation (Card B).
+/** Add-a-custom-pattern input (Card B).
  *
  *  `value` and `note` are CONTROLLED from the panel shell rather than held here,
  *  because the rules section unmounts when the reader picks another rail section
  *  — local state would silently discard a half-typed deny pattern or note.
- *  `error` stays local: it is derived from the value and costs nothing to
- *  recompute. */
-function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submitError }: { value: string; onChange: (next: string) => void; note: string; onNoteChange: (next: string) => void; onAdd: (pattern: string, note: string) => void; busy: boolean; submitError: string }) {
+ *
+ *  There is no client-side regex check. The gate matches with Python `re`, whose
+ *  syntax is not JavaScript's: `(?P<name>...)`, `\A` and `\Z` compile there and
+ *  throw in `new RegExp()`, while some JS-only forms are a Python error. A
+ *  browser parse would refuse valid rules and wave through invalid ones, so the
+ *  server's `re.compile` is the one judge; its 400 (`invalid regex: ...`) reaches
+ *  the reader through `submitError`. */
+function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submitError }: { value: string; onChange: (next: string) => void; note: string; onNoteChange: (next: string) => void; onAdd: (pattern: string, note: string) => Promise<unknown>; busy: boolean; submitError: string }) {
   const ime = useImeGuard()
-  const [error, setError] = useState('')
 
+  // Enter reaches `submit` from both inputs, which stay editable while an add
+  // is in flight: a second Enter would post the same rule again, and the
+  // server mints a fresh id for each, so it would list twice. `busy` only
+  // arrives on the next render, so a synchronous latch covers two Enters
+  // landing before it; it is released when the add settles.
+  const submitting = useRef(false)
   const submit = () => {
     const pattern = value.trim()
-    if (!pattern) return
-    try {
-      new RegExp(pattern)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : i18nT('pages.settings.securityPanel.invalid_regular_expression'))
-      return
-    }
-    setError('')
+    if (!pattern || busy || submitting.current) return
+    submitting.current = true
     // Deliberately does NOT clear the drafts. The server can still reject this
     // (a note carrying the refusal prefix is a 400), and clearing here would
     // discard text the operator has to retype. The parent clears on SUCCESS.
-    onAdd(pattern, note.trim())
+    void onAdd(pattern, note.trim()).finally(() => { submitting.current = false })
   }
 
   return (
@@ -264,7 +269,7 @@ function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submit
       <div className="flex items-center gap-2">
         <Input
           value={value}
-          onChange={e => { onChange(e.target.value); if (error) setError('') }}
+          onChange={e => onChange(e.target.value)}
           {...ime.bindEnter({ onEnter: submit })}
           placeholder={i18nT('pages.settings.securityPanel.add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi')}
           aria-label={i18nT('pages.settings.securityPanel.custom_deny_pattern')}
@@ -288,20 +293,13 @@ function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submit
           maxLength={200}
         />
       </div>
-      {/* Two surfaces, because they have two sources. `error` is invalid-regex
-          feedback on the input the user is still typing — a form hint, not a
-          failure to diagnose, so it stays plain text. `submitError` carries a
-          SERVER rejection (e.g. a note carrying the refusal prefix): without it
-          the 400 is silent, the list does not change, and Add looks like it did
-          nothing. Local hint wins — it is about what is on screen. */}
-      {error ? (
-        <p className="text-[12px] text-danger mt-1.5 mb-0" data-testid="deny-pattern-hint">{error}</p>
-      ) : (
-        /* No hand-off: the pattern (`value`) and note (`note`) the user typed are
-           kept on a rejected add so they can be corrected — the navigation would
-           discard both. */
-        <ErrorNotice message={submitError} className="mt-1.5" />
-      )}
+      {/* `submitError` carries the SERVER rejection (a pattern `re` cannot
+          compile, an unsafe regex, a note carrying the refusal prefix): without
+          it the 400 is silent, the list does not change, and Add looks like it
+          did nothing. No hand-off: the pattern (`value`) and note (`note`) the
+          user typed are kept on a rejected add so they can be corrected — the
+          navigation would discard both. */}
+      <ErrorNotice message={submitError} className="mt-1.5" />
     </div>
   )
 }
@@ -477,6 +475,18 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
   // are empty.
   const errorHandoff = !draft.trim() && !noteDraft.trim()
 
+  // The server's rejection of the LAST add, shown only while the form still
+  // holds exactly what was sent (compared trimmed, as submit() sends it). Once
+  // the reader edits either field the rejection describes text that is gone,
+  // and an "invalid regex" line under a corrected pattern reads as a refusal
+  // of the new one.
+  const addRejectionForDraft = addUser.isError
+    && addUser.variables
+    && draft.trim() === addUser.variables.pattern
+    && noteDraft.trim() === addUser.variables.note
+    ? trustFailureMessage(addUser.error)
+    : ''
+
   // Whether the row that owns `ruleError` is on screen right now. A write can be
   // rejected after the user has typed a filter that drops the row, or folded its
   // category — the row-level notice then has nowhere to render, so the section
@@ -582,12 +592,12 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
             <div className="flex items-center justify-between mt-1 mb-0.5">
               {/* While filtering, report matched-of-total as a RATIO — but keep
                   every category badge on its full enabled/total, so a filter can
-                  never make the gate read as smaller than it is. A ratio also
-                  sidesteps count grammar, so this needs no plural forms. */}
+                  never make the gate read as smaller than it is. The noun agrees
+                  with the total, so the total is the plural count. */}
               <span className="text-[11px] text-muted tabular-nums">
                 {filtering
-                  ? <>{matchedRules} / {dc.builtins.length} {i18nT('pages.settings.securityPanel.rules')}</>
-                  : <>{Object.keys(grouped).length} {i18nT('pages.settings.securityPanel.categories')} {dc.builtins.length} {i18nT('pages.settings.securityPanel.rules')}</>}
+                  ? i18nT('pages.settings.securityPanel.rules_matched', { matched: fmtNumber(matchedRules), count: dc.builtins.length, n: fmtNumber(dc.builtins.length) })
+                  : <>{i18nT('pages.settings.securityPanel.categories_count', { count: Object.keys(grouped).length, n: fmtNumber(Object.keys(grouped).length) })} {i18nT('pages.settings.securityPanel.rules_count', { count: dc.builtins.length, n: fmtNumber(dc.builtins.length) })}</>}
               </span>
               {/* Hidden while filtering: matches render open regardless, so both
                   controls would record state the user cannot see take effect. */}
@@ -675,7 +685,7 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
             {i18nT('pages.settings.securityPanel.custom_patterns_hidden_by_filter')}
           </div>
         )}
-        <AddDenyInput value={draft} onChange={onDraftChange} note={noteDraft} onNoteChange={onNoteDraftChange} onAdd={(pattern, note) => addUser.mutate({ pattern, note })} busy={addUser.isPending} submitError={addUser.isError ? trustFailureMessage(addUser.error) : ''} />
+        <AddDenyInput value={draft} onChange={onDraftChange} note={noteDraft} onNoteChange={onNoteDraftChange} onAdd={(pattern, note) => addUser.mutateAsync({ pattern, note }).catch(() => undefined)} busy={addUser.isPending} submitError={addRejectionForDraft} />
       </SettingsCard>
 
       {/* ── Confirm modal (disable a built-in rule / disable all) ── */}

@@ -95,49 +95,28 @@ async def _reaper_loop(self: CronService) -> None:
         # irrelevant to force-killing a locally-running task.
         jobs_by_id = {j.id: j for j in self._jobs}
         for job_id, claim in list(self._claims.items()):
-            # The list is a snapshot for iteration order only; the job's
-            # run is whatever the store holds NOW. An earlier job's reap in
-            # this same sweep awaited (its session reset, the locked
-            # persist, the history append), and in that window this job's
-            # run can end and a replacement claim the job: the snapshot's
-            # claim then holds a run that is gone, with stamps that put the
-            # job far past its deadline. Measure and reap only the stored
-            # claim -- a replacement is a different object, measured on its
-            # own stamps by the next sweep. (The six-dict shape this
-            # replaces read the monotonic and jitter stamps live per
-            # iteration, so a replacement's fresh stamp made the sweep
-            # continue; the claim gives the same guarantee by identity.)
+            # The list is a snapshot for iteration order only. An earlier reap
+            # in this sweep awaited, and meanwhile this run can end and a
+            # replacement claim the job; the snapshot's stale stamps would put
+            # it past its deadline. Reap only the stored claim; a replacement
+            # is measured on its own stamps by the next sweep.
             if self._claims.get(job_id) is not claim:
                 continue
             # A claim cancel() or an earlier reap has taken is theirs to
-            # finish: they popped the run's stamps, in the shape this
-            # replaces, exactly so a sweep landing inside their kill awaits
-            # would not reap the run a second time.
+            # finish, so a sweep inside their kill awaits never reaps it twice.
             if claim.taken:
                 continue
-            # A task that is done() while its claim is still here never
-            # reached _run_job_isolated's finally (a run that ends normally
-            # releases the claim there, before its task finishes), so the
-            # job still reads as running to the due-scan, _next_wake_secs
-            # and run_job. Release it on THIS sweep, not once the run's
-            # deadline passes: that is at least _JOB_TIMEOUT_SECS and up to
-            # a day away, and every scheduled fire until then is skipped.
-            # A live task or no tracked task falls through to the timeout
-            # backstop below unchanged.
+            # A done() task whose claim is still here never reached
+            # _run_job_isolated's finally, so the job still reads as running.
+            # Release it on THIS sweep: the deadline can be a day away, and
+            # every scheduled fire until then would be skipped.
             if self.discard_finished_run(job_id):
                 continue
             elapsed = now - claim.claimed_at
-            # DECIDE and REPORT on the monotonic clock. A claim with no
-            # monotonic stamp (a manual run still parked in its store
-            # refresh, or a test that seeds only the epoch stamp) falls back
-            # to the wall-clock elapsed, so the backstop never stops reaping
-            # — it just cannot tell suspend time apart for that run.
-            #
-            # The reported duration is monotonic too, not wall-clock: a
-            # backward wall-clock step during a >=30-min run would otherwise
-            # render a negative "ran -Ns"/"Reaped after -Ns" in the log and
-            # the persisted history. Monotonic elapsed is equally legible
-            # ("seconds since start") and cannot go negative.
+            # Decide and report on the monotonic clock, so a backward
+            # wall-clock step never logs or persists a negative duration. A
+            # claim with no monotonic stamp (a manual run still in its store
+            # refresh) falls back to wall-clock elapsed, so reaping never stops.
             started_mono = claim.started_monotonic
             elapsed_mono = now_mono - started_mono if started_mono is not None else elapsed
             job = jobs_by_id.get(job_id)
@@ -160,10 +139,8 @@ async def _reaper_loop(self: CronService) -> None:
                 elapsed_mono,
             )
             try:
-                # Named for the claim measured above: the reap takes that
-                # claim or nothing (``RunClaims.take``'s ``expected``), so a
-                # claim that changed under this sweep is never killed on
-                # the snapshot's stamps.
+                # The reap takes the measured claim or nothing, so a claim
+                # that changed under this sweep is never killed.
                 await self._force_reap(job_id, elapsed_mono, deadline, claim=claim)
             except Exception:
                 logger.exception("Reaper: failed to reap cron job %s", job_id)
@@ -179,65 +156,40 @@ async def _force_reap(
 ) -> None:
     """Kill the run ``claim`` stands for: its session process and its task.
 
-    ``claim`` is the run the caller measured over its deadline -- the
-    sweep, the only caller, passes the claim it iterated. The reap takes
-    that claim or nothing (identity): a stored claim that is a different
-    object is a replacement run the caller never measured, a claim that is
-    gone was a run that ended on its own, and a claim already taken is a
-    teardown someone else owns -- none is killed, and the job's session,
-    which is the replacement's now, is left alone. There is no reap by
-    job id alone: a kill needs a run to answer for, and the run is the
-    claim.
+    ``claim`` is the run the sweep measured over its deadline. The reap takes
+    that claim or nothing (by identity): a replacement claim, a claim that is
+    gone, or one already taken by another teardown is not killed, and the
+    job's session is left alone. There is no reap by job id alone.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
     taken = self._runs.take(job_id, expected=claim)
     if taken is None:
-        # Either the stored claim is taken -- cancel() or an earlier reap
-        # owns this run's teardown and is inside its kill awaits; its
-        # claim is not this reap's to pop below, and its terminal row is
-        # the only one owed (a second "Reaped" row here would draw a
-        # generation that could outrank a replacement run's) -- or the
-        # measured run is gone, or a replacement this reap was not named
-        # for stands in its place. The sweep skips all three itself; this
-        # covers a store that changed under the sweep's awaits.
+        # Taken by another teardown (a second "Reaped" row would draw a
+        # generation that could outrank a replacement run's), gone, or
+        # replaced. The sweep skips all three; this covers a store that
+        # changed under the sweep's awaits.
         return
     # Flag the run this reap took: its finalizer reads the flag off its
     # own claim, so no other run of the job can see it.
     taken.reaped = True
     reap_started_at = taken.claimed_at
     reap_trigger = taken.trigger
-    # The kill, then the finish -- in a ``finally``, so the claim this reap
-    # took is finished however the kill ends. ``taken`` is a lock with no
-    # other owner-death recovery: from the take on, by design, the run's
-    # own fences fail, the sweep skips the claim and discard_finished_run
-    # refuses it. A kill that raised would otherwise leave the claim taken
-    # for the life of the gateway -- the sweep swallows this coroutine's
-    # exception and skips the claim on every later sweep, and every manual
-    # run of the job 409s. What can raise here is a cancellation (the
-    # reaper task cancelled at shutdown); the ``Exception`` arm of the
-    # handler is a net for a reset failure the inner handlers let through,
-    # and today none does: they catch every ``Exception`` the reset raises,
-    # and ``_sigkill_session`` raises nothing. What the SIGKILL could not
-    # do it REPORTS instead -- the guard's refusal of the pid, an error
-    # the kill raised, an error ahead of the signal -- as its result, so
-    # a process group it left alive is never recorded as reaped: the
-    # failure, raised or reported, is carried into the terminal record
-    # below (the run's finally writes none for a taken run) and audited as
-    # ``failed``; a raised one is re-raised after the record, so the sweep
-    # still logs it.
+    # The kill, then the finish in a ``finally``: ``taken`` has no other
+    # owner-death recovery, so a kill that raised (a cancellation at
+    # shutdown) would leave the claim taken for the life of the gateway and
+    # every manual run would 409. ``_sigkill_session`` REPORTS what it could
+    # not kill instead of raising, so a live process group is never recorded
+    # as reaped: a raised or reported failure goes into the terminal record
+    # (the run's finally writes none for a taken run), is audited as
+    # ``failed``, and a raised one is re-raised after the record.
     #
     # EVERY key the run registered is ended (``_run_session_keys``): a
-    # sequential job holds one key per agent, and an earlier agent's session
-    # is kept alive for its pending sub-agents while a later agent runs --
-    # a reap that ends only the newest key records ``reaped`` while that
-    # earlier session and its sub-agents survive. Each key is FENCED from
-    # before its first pass until the record and the audit are written
-    # (``SessionManager.ending_key``, see ``_end_run_processes``): a claim
-    # or cold start under it meets a key that is either being ended --
-    # held at the door -- or recorded, never one that is neither. The
-    # fences lift however the block ends; a kill failure that escaped is
-    # re-raised after the lift.
+    # sequential job keeps an earlier agent's session alive for its pending
+    # sub-agents. Each key is FENCED until the record and audit are written
+    # (``SessionManager.ending_key``, see ``_end_run_processes``), so a claim
+    # or cold start meets a key being ended or already recorded, never
+    # neither. The fences lift however the block ends.
     with ExitStack() as fences:
         keys = self._fence_run_keys(job_id, taken, fences)
         # The run's newest key names the record and the audit; the audit's
@@ -298,18 +250,13 @@ async def _force_reap(
             job.last_status = "error"
             job.last_error = last_error
             job.last_run_ts = last_run_ts
-            # A reaped one-shot is parked the way a timed-out one is: both are
-            # the system ending a run it judged stuck, and the finalizer skips
-            # the result merge for a reaped run, so _execute's own disable
-            # never runs. Held off the schedule here at once, with the pause
-            # saved by the merge below. A delete_after_run one is kept and
-            # auto-paused as a failed run; a run whose payload never started
-            # parks nothing and stays due. Whether the payload ever started is
-            # read off the object the run executed on (``taken.job``), not
-            # ``job``: a store reload during the run or the kill awaits made
-            # ``job`` a different object, and ``run_never_started`` (like
-            # ``fire_time_denied`` and ``refusal_cannot_clear``, which the park
-            # decision reads) is runtime-only and does not survive a reload.
+            # A reaped one-shot is parked like a timed-out one, because the
+            # finalizer skips the result merge and _execute's disable never
+            # runs; the merge below saves the pause. A delete_after_run one is
+            # kept and auto-paused as failed. A run whose payload never started
+            # parks nothing and stays due. Read that off ``taken.job``,
+            # not ``job``: a reload may have replaced ``job``, and
+            # ``run_never_started`` and the other park inputs are runtime-only.
             ran = taken.job if taken.job is not None else job
             park_one_shot = taken.started_monotonic is not None and run_parks_one_shot(ran)
             if park_one_shot:
@@ -445,33 +392,15 @@ async def cancel(self: CronService, job_id: str) -> bool:
     is_agent_job = job is None or not (job.script or job.command)
 
     # Steps 1-2 are the kill awaits; step 3 finishes the claim in a
-    # ``finally``, so it runs however they end. ``taken`` is a lock with no
-    # other owner-death recovery: from the take on, by design, the run's
-    # own fences fail, the reaper sweep skips the claim and
-    # discard_finished_run refuses it. A kill that raised would otherwise
-    # leave the claim taken until restart: every manual run of the job 409s
-    # and every scheduled fire is skipped. What can raise here: step 1's
-    # executor hop (a pool shut down under it, a thread refused at
-    # interpreter exit -- RuntimeError either way) and a cancellation of
-    # this handler when the client disconnects. Step 2 raises nothing but
-    # a cancellation: its inner handlers catch every ``Exception`` the
-    # reset raises, and ``_sigkill_session`` raises nothing -- it REPORTS
-    # a refused pid or a failed kill as its result instead, so a process
-    # group it left alive is never recorded as cancelled. The failure,
-    # raised or reported, is carried into the terminal record (the run's
-    # finally writes none for a taken run) and audited as ``failed``; a
-    # raised one is re-raised after the record, so the caller still learns
-    # the kill failed.
+    # ``finally``, as in _force_reap, so a raised kill never leaves the claim
+    # taken until restart. What can raise: step 1's executor hop (RuntimeError
+    # from a shut-down pool) and a cancellation when the client disconnects.
+    # A raised or reported failure goes into the terminal record, is audited
+    # as ``failed``, and a raised one is re-raised after the record.
     #
-    # EVERY key the run registered is ended (``_run_session_keys``; a
-    # sequential job holds one per agent, an earlier agent's kept alive for
-    # its pending sub-agents), each FENCED from before step 1 until step 4's
-    # record and the audit are written (``SessionManager.ending_key``, see
-    # ``_end_run_processes``): a claim or cold start under it meets a key
-    # that is either being ended -- held at the door -- or recorded, never
-    # one that is neither. A script or command job's key names no session,
-    # so the fence gates nothing for it. The fences lift however the block
-    # ends; a kill failure that escaped is re-raised after the lift.
+    # EVERY key the run registered is ended and FENCED until step 4's record
+    # and the audit are written, as in _force_reap. A script or command job's
+    # key names no session, so the fence gates nothing for it.
     killed_proc = False
     with ExitStack() as fences:
         keys = self._fence_run_keys(job_id, claim, fences)
@@ -570,20 +499,15 @@ async def cancel(self: CronService, job_id: str) -> bool:
             except Exception as exc:
                 logger.exception("Cancel: failed to persist state for cron %s", job_id)
                 park_failure = failure_name(exc)
-            # A scheduled terminal record that did not land is retried by
-            # the existing held-record owner. The history entry and caller still
-            # report this attempt's failure because no durable write returned.
-            # The held-record merge preserves choices made since. The caller
-            # (below) say so, from the job as it is now: the cancel's own text
-            # first, because another run of the job can replace
-            # ``job.last_error`` while the merge is awaited. The merge's own
-            # rules first, for one that did not run (a busy store raises before
-            # it) or whose job a reload replaced since: a newer run's record, or
-            # a schedule that is not a one-shot, takes the hold off as a reload
-            # derives it; a one-shot the cancel's record never reached is held.
-            # A failed park answers success only when the saved store shows the
-            # job cannot run again: flags a failed save left in memory are not
-            # proof, so a job gone or paused here is read from the store.
+            # A scheduled terminal record that did not land is retried by the
+            # held-record owner, but the history entry and caller still report
+            # this attempt's failure, from the job as it is now and with the
+            # cancel's own text (another run can replace ``job.last_error``).
+            # When the merge did not run or the job was reloaded, apply its
+            # rules here: a newer run's record or a non-one-shot schedule takes
+            # the hold off; a one-shot the record never reached stays held. A
+            # failed park answers success only when the SAVED store shows the
+            # job cannot run again; in-memory flags are not proof.
             live = self.get_job(job_id)
             saved: str | None = None
             with self._held_run_records_guard:

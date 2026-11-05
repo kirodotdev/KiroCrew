@@ -19,7 +19,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.composer_action_grants import composer_action_grant_row
 from kiro_crew.apps.execution import shipped_builtin_app_root
+from kiro_crew.apps.link_open_grants import link_open_grant_row
+from kiro_crew.apps.link_preview_grants import link_preview_grant_row
 from kiro_crew.apps.manager_builtins import detect_orphaned_builtins
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
@@ -34,6 +37,8 @@ from kiro_crew.apps.manager_records import (
     holds_app_record_locks,
 )
 from kiro_crew.apps.manifest import AppManifest, contain_command_agents
+from kiro_crew.apps.message_action_grants import message_action_grant_row
+from kiro_crew.apps.selection_action_grants import selection_action_grant_row
 from kiro_crew.platform_compat import is_link_or_junction
 
 logger = logging.getLogger("kiro_crew.apps.manager")
@@ -323,8 +328,8 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
     :func:`owning_app_for_agent`; call it off the event loop.
     """
     owner = owning_app_for_agent(agent)
-    subject = f'Crew member "{member}"' if member else f'The agent "{agent}"'
-    target = "this crew member" if member else "it"
+    subject = f'Bot "{member}"' if member else f'The agent "{agent}"'
+    target = "this Bot" if member else "it"
     if owner is None:
         if member:
             return (
@@ -350,6 +355,7 @@ def list_apps() -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     orphaned_set = detect_orphaned_builtins()
+    adoption_markers = _adoption_rows_context()
     result: list[dict[str, Any]] = []
     for entry in sorted(root.iterdir()):
         if not entry.is_dir():
@@ -394,6 +400,11 @@ def list_apps() -> list[dict[str, Any]]:
         app_info: dict[str, Any] = {
             **meta.to_dict(),
             **_approved_grants_row(entry.name),
+            **link_preview_grant_row(entry.name, manifest_data),
+            **message_action_grant_row(entry.name, manifest_data),
+            **link_open_grant_row(entry.name, manifest_data),
+            **composer_action_grant_row(entry.name, manifest_data),
+            **selection_action_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -402,6 +413,8 @@ def list_apps() -> list[dict[str, Any]]:
         # Mark orphaned builtins
         if entry.name in orphaned_set:
             app_info["orphaned"] = True
+        if adoption_markers is not None:
+            _add_adoption_row(app_info, entry.name, meta, manifest_data, adoption_markers)
         result.append(app_info)
     return result
 
@@ -426,7 +439,57 @@ def get_app(name: str) -> dict[str, Any] | None:
                 meta.version = manifest.version
         except Exception:
             pass
-    return {**meta.to_dict(), **_approved_grants_row(name), "manifest": manifest_data}
+    row = {
+        **meta.to_dict(),
+        **_approved_grants_row(name),
+        **link_preview_grant_row(name, manifest_data),
+        **message_action_grant_row(name, manifest_data),
+        **link_open_grant_row(name, manifest_data),
+        **composer_action_grant_row(name, manifest_data),
+        **selection_action_grant_row(name, manifest_data),
+        "manifest": manifest_data,
+    }
+    adoption_markers = _adoption_rows_context()
+    if adoption_markers is not None:
+        _add_adoption_row(row, name, meta, manifest_data, adoption_markers)
+    return row
+
+
+def _adoption_rows_context() -> dict[str, Any] | None:
+    """``builtin_adoption.adoption_rows_context``; None (no field) when it cannot answer."""
+    try:
+        from kiro_crew.apps.builtin_adoption import adoption_rows_context
+
+        context = adoption_rows_context()
+        return None if context is None else dict(context)
+    except Exception:  # noqa: BLE001 - the field is display state
+        logger.debug("adoption state unavailable for the app listing", exc_info=True)
+        return None
+
+
+def _add_adoption_row(
+    app_info: dict[str, Any],
+    name: str,
+    meta: InstalledApp,
+    manifest_data: dict[str, Any],
+    markers: dict[str, Any],
+) -> None:
+    """Set ``app_info["adoption"]`` for a pinned or adopted former built-in."""
+    try:
+        from kiro_crew.apps.builtin_adoption import adoption_row
+
+        min_version = manifest_data.get("minKiroCrewVersion", "")
+        row = adoption_row(
+            name,
+            meta,
+            min_kirocrew_version=min_version if isinstance(min_version, str) else "",
+            markers=markers,
+        )
+    except Exception:  # noqa: BLE001 - the field is display state
+        logger.debug("an adoption row is unavailable", exc_info=True)
+        return
+    if row is not None:
+        app_info["adoption"] = row
 
 
 def _absence_is_genuine(meta_path: Path) -> bool:

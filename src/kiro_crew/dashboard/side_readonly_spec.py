@@ -514,12 +514,16 @@ def _read_base_spec(base_name: str, project_dir: str | None) -> tuple[dict[str, 
 
     Mirrors kiro-cli's own order: ``$PWD/.kiro/agents`` (the session's project,
     which is also the cwd the side session is spawned in) before the user-level
-    registry. Both reads go through the hardened, size-capped reader every other
-    agent-spec consumer uses. Function-local imports keep this module off the
-    gateway boot path (``kiro_crew.agent`` is heavy and imports the ACP stack).
+    registry. A user-scope base no regular spec claims is read through links by
+    :func:`kiro_crew.member_essential_context.linked_global_template_spec`. Every
+    read goes through the hardened, size-capped reader every other agent-spec
+    consumer uses. Function-local imports keep this module off the gateway boot
+    path (``kiro_crew.agent`` is heavy and imports the ACP stack) and out of an
+    import cycle with ``agent_discovery``.
     """
-    from kiro_crew.agent import agent_spec_path
+    from kiro_crew.agent import session_agent_spec_path
     from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
+    from kiro_crew.member_essential_context import linked_global_template_spec
 
     if project_dir:
         for spec_file in project_agent_files(
@@ -535,9 +539,18 @@ def _read_base_spec(base_name: str, project_dir: str | None) -> tuple[dict[str, 
                     )
                 return data, str(Path(project_dir).resolve())
     try:
-        user_path = agent_spec_path(base_name)
+        user_path = session_agent_spec_path(base_name)
+        linked = (
+            None
+            if user_path is not None
+            else linked_global_template_spec(
+                base_name, operation="side_readonly_spec", source="dashboard"
+            )
+        )
     except ValueError as exc:  # two safe specs declare the same name
         raise ReadOnlySpecError("base_spec_unreadable", str(exc)) from exc
+    if linked is not None:
+        return linked[1], None
     if user_path is None:
         raise ReadOnlySpecError(
             "base_spec_missing", f"no agent spec declares {base_name!r} in either scope"
@@ -827,11 +840,19 @@ def _user_base_resolves(base: str, agents_dir: Path) -> bool:
     """
     from kiro_crew.agent import agent_spec_path
     from kiro_crew.agent_spec_format import agent_spec_candidates
+    from kiro_crew.member_essential_context import linked_global_template_spec
 
     if any(os.path.lexists(path) for path in agent_spec_candidates(agents_dir, base)):
         return True
     try:
-        return agent_spec_path(base, agents_dir=agents_dir) is not None
+        if agent_spec_path(base, agents_dir=agents_dir) is not None:
+            return True
+        # The publisher reads a base no regular spec claims through a link
+        # (:func:`_read_base_spec`), so the reaper must count the same base.
+        return (
+            linked_global_template_spec(base, operation="side_readonly_reap", source="unknown")
+            is not None
+        )
     except ValueError:
         return True
 

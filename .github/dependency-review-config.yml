@@ -150,6 +150,20 @@ allow-dependencies-licenses:
   # product. Evidence: https://unpkg.com/bowser@2.14.1/LICENSE
   - pkg:npm/bowser                               # MIT (+ MITNFA attribution clause) -- CI-only, via pi's @aws-sdk/core
 
+  # heic-to is LGPL-3.0-or-later: libheif and the libde265 HEVC decoder (both
+  # LGPL-3.0) compiled to JavaScript. It is the one SHIPPED exception in this
+  # list, and the reason is that no permissively licensed HEVC decoder exists to
+  # use instead: every in-browser HEIC decoder found (heic2any, libheif-js,
+  # heic-decode) wraps the same LGPL libraries. It turns iPhone HEIC photos into
+  # JPEG on the user's device before upload (website/src/utils/heicImage.ts).
+  # How the LGPL terms are met: the package is consumed unmodified at an exact
+  # pin, it is reached only through a dynamic import() and so is emitted as its
+  # own chunk (assets/heic-to-<hash>.js) that a user can replace without
+  # touching first-party code, and its license text and source location are
+  # recorded with the other notices. No first-party file includes or derives
+  # from its code. Evidence: https://github.com/hoppergee/heic-to/blob/main/LICENSE
+  - pkg:npm/heic-to                              # LGPL-3.0 -- lazily loaded, unmodified, separate chunk; see above
+
 # License gate only — vulnerability scanning is covered separately by the
 # nightly/release Dependency Audit and the Semgrep / CodeQL jobs, so we don't duplicate it here.
 license-check: true

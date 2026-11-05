@@ -1,31 +1,14 @@
-"""Regression: a reaped subagent is reported EXACTLY once and frees EXACTLY one slot.
+"""A reaped subagent is reported exactly once and frees exactly one slot.
 
-Two paths finish a subagent — ``_force_reap`` and ``_run``'s ``finally`` — and
-between them there are FOUR distinct one-time concerns. Earlier revisions tried
-to arbitrate them with two flags (``reaped`` and ``done``) and each attempt
-satisfied two while breaking a third:
+Two paths finish a subagent, ``_force_reap`` and ``_run``'s ``finally``, and they share four
+separate one-time concerns, each with its own guard:
 
-===============================  ==========================================
-``reaped`` set after teardown    duplicate delivery
-``reaped`` set before teardown   outcome lost if the reaper is cancelled
-+ hand the claim back on cancel  outcome lost if ``_run`` already exited
-separate ``_finalized`` claim    outcome lost if the claimer is cancelled
-claim gated on ``not done``      NO reporter *and* a leaked slot
-===============================  ==========================================
-
-The design under test separates all of them:
-
-* ``info.reaped``      — CLASSIFICATION (was this a deliberate reap?). The
-  cancel-recovery scheduler reads it; the marker must precede the intentional
+* ``info.reaped``: classification (a deliberate reap). It must precede the intentional
   cancel or an unexpected-cancel respawn fires.
-* ``if not info.done`` — the terminal RECORD (error/stat/tombstone/cost),
-  first-arrival-wins.
-* ``_release_slot``    — SLOT accounting, its own one-shot token, so
-  ``_running_count`` is decremented exactly once regardless of report or record
-  ordering.
-* ``_claim_finalize``  — REPORT ownership (``subagent_done`` + ``_on_done``),
-  deliberately independent of ``done``, and executed under ``asyncio.shield`` so
-  an interrupted claimer cannot strand the outcome.
+* ``if not info.done``: the terminal record (error/stat/tombstone/cost), first arrival wins.
+* ``_release_slot``: slot accounting, a one-shot token so ``_running_count`` drops once.
+* ``_claim_finalize``: report ownership (``subagent_done`` + ``_on_done``), independent of
+  ``done`` and run under ``asyncio.shield`` so an interrupted claimer cannot strand it.
 """
 
 from __future__ import annotations
@@ -214,13 +197,10 @@ def test_slot_token_independent_of_reaped_and_done():
 
 @pytest.mark.asyncio
 async def test_done_set_during_reap_teardown_still_reports_and_frees_one_slot():
-    """THE round-5 regression.
+    """``done`` set during the reap teardown still reports once and frees one slot.
 
-    ``_run_inner`` sets ``info.done`` while ``_force_reap`` is suspended in the
-    session reset. A reaper gated on ``not info.done`` would then decline the
-    report claim, still set ``reaped``, and let ``_run``'s finally skip BOTH its
-    claim and its slot decrement — so nothing is reported and ``_running_count``
-    stays inflated, starving the spawn queue.
+    A reaper gated on ``not info.done`` would decline the claim, set ``reaped``, and let
+    ``_run``'s finally skip both its claim and its slot decrement.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False)
@@ -304,13 +284,10 @@ async def test_uncontested_reap_reports_once():
 
 @pytest.mark.asyncio
 async def test_cancel_during_subagent_done_still_delivers_once():
-    """Cancelling the claimer while it fires `subagent_done`.
+    """Cancelling the claimer while it fires `subagent_done` still delivers once.
 
-    The report runs on a shielded task, so it COMPLETES (delivery reaches the
-    parent) even though the caller receives CancelledError. Asserts completion,
-    not mere invocation — a cancelled-mid-flight injection is invoked but never
-    completes, which is how an earlier revision's test passed against broken
-    code.
+    The report runs on a shielded task, so the test asserts it completes: a cancelled
+    injection is invoked but never completes, so checking invocation alone pins nothing.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False)
@@ -424,14 +401,10 @@ async def test_reaped_precedes_intentional_cancel():
 
 @pytest.mark.asyncio
 async def test_reap_during_recovering_still_reports_and_supersedes_respawn():
-    """A user Stop / reap landing inside the cancel-recovery window.
+    """A reap inside the cancel-recovery window still reports.
 
-    `_claim_finalize` withholds the claim while `_recovering` so a pending
-    respawn is not reported done prematurely. But a reap is DEFINITIVELY
-    terminal: a reap that only refused the claim would do its teardown, set
-    `reaped=True` and report nothing — and `_resume`'s `reaped` abort path
-    bare-returns, so no path ever reported. The agent sat unfinished until the
-    reaper's wall-clock deadline.
+    `_claim_finalize` withholds the claim while `_recovering`, but a reap is terminal and
+    `_resume`'s `reaped` abort path bare-returns, so the reap itself must report.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False, _recovering=True)
@@ -579,13 +552,10 @@ async def test_cancel_all_cancels_reports_that_exceed_the_drain_timeout(monkeypa
 
 @pytest.mark.asyncio
 async def test_cancel_all_readmits_an_undelivered_report_to_orphan_recovery(monkeypatch):
-    """A report cancelled by shutdown must not become an unrecoverable loss.
+    """Shutdown clears the tombstone of a report it cancelled before delivery.
 
-    The terminal RECORD (including the tombstone) is written before delivery is
-    attempted, and `list_orphans()` uses the tombstone to EXCLUDE a folder from
-    the next start's reconciliation. So cancelling a still-pending report leaves
-    an outcome that was never injected AND is invisible to the only path that
-    could still inject it. Shutdown must clear the tombstone in that case.
+    The tombstone is written before delivery and makes `list_orphans()` skip the folder,
+    so keeping it would hide an outcome that was never injected from the next start.
     """
     import kiro_crew.subagent as mod
 
@@ -621,19 +591,14 @@ async def test_cancel_all_readmits_an_undelivered_report_to_orphan_recovery(monk
 
 @pytest.mark.asyncio
 async def test_cancel_all_keeps_the_tombstone_when_delivery_already_happened(monkeypatch):
-    """The converse: a report whose `_on_done` has returned is never re-admitted.
+    """A report whose `_on_done` has returned is never re-admitted.
 
-    Re-admitting it would make the next start inject the same completion a
-    second time — the duplicate delivery this PR exists to remove. Only
-    `_reported_to_parent == False` may be re-admitted.
+    Only `_reported_to_parent == False` may be re-admitted; else the next start injects
+    the completion twice.
 
-    The teardown gate handed to the report never opens. The report waits for it
-    BEFORE it publishes (the payload names the teardown's kill verdict), for
-    `_RESET_TIMEOUT + _TEARDOWN_REPORT_GRACE`, then publishes with the kill
-    named undecided and delivers. Both constants are pinned small here for the
-    same reason the sibling tests pin `_REPORT_DRAIN_TIMEOUT`: at their shipped
-    values (30 s + 30 s) this test spent 60 s in that wait every run, to reach
-    an assertion that does not depend on the length of the wait.
+    The teardown gate never opens, so the report waits `_RESET_TIMEOUT +
+    _TEARDOWN_REPORT_GRACE` before it publishes. Both are pinned small: at shipped values
+    (30 s + 30 s) the test would spend 60 s in that wait.
     """
     import kiro_crew.subagent as mod
 
@@ -677,13 +642,10 @@ async def test_cancel_all_keeps_the_tombstone_when_delivery_already_happened(mon
 
 @pytest.mark.asyncio
 async def test_recovery_failure_reports_through_the_claim():
-    """A failed cancel-recovery respawn must report via `_claim_finalize`.
+    """A failed cancel-recovery respawn reports only via `_claim_finalize`.
 
-    This site must not fire `subagent_done` and `_on_done` DIRECTLY, gated only
-    on `done`/`reaped` — a fourth reporter outside the claim, so it could
-    deliver on top of a concurrent reaper. Here the claim is already spent (as
-    a reaper would leave it) and the respawn is forced to fail, so a compliant
-    implementation stays silent.
+    The claim is already spent here (as a reaper leaves it), so a compliant site stays
+    silent instead of firing `subagent_done` and `_on_done` directly.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False)
@@ -728,16 +690,11 @@ async def test_recovery_failure_still_reports_when_it_owns_the_claim():
 
 @pytest.mark.asyncio
 async def test_reap_suppression_marker_is_set_before_the_teardown_await():
-    """The RESPAWN-suppression marker must be visible during teardown.
+    """The respawn-suppression marker is visible during the teardown await.
 
-    The marker and the recovery-task cancel must not sit AFTER the session reset
-    await. A recovery task whose bounded handshake expired inside that window
-    respawned the run being killed — tools running after a user Stop. Asserting
-    from inside the reset proves the ordering.
-
-    Note this is `_reap_started`, not `reaped`: see
-    `test_run_woken_by_reaper_reset_still_synthesizes_its_error` for why setting
-    `reaped` this early causes a false success instead.
+    Set after the session reset, a recovery task whose handshake expired in that window
+    respawns the run being killed. The marker is `_reap_started`, not `reaped`; see
+    `test_run_woken_by_reaper_reset_still_synthesizes_its_error`.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False)
@@ -774,13 +731,11 @@ async def test_reap_suppression_marker_is_set_before_the_teardown_await():
 
 @pytest.mark.asyncio
 async def test_recovery_respawn_releases_its_fresh_slot():
-    """The respawn's slot token must be re-armed, and then actually spent.
+    """The respawn's slot token is re-armed, and then actually spent.
 
-    The interrupted run's `finally` consumed this info's one-shot slot token, so
-    without re-arming (`info._slot_released = False`) the respawned run's own
-    release no-ops and `_running_count` stays inflated forever, starving the
-    spawn queue. Reverting the re-arm line must fail here: the test drives the
-    respawn to completion and asserts the count returns to its pre-spawn value.
+    The interrupted run's `finally` used the one-shot token, so without
+    `info._slot_released = False` the respawn's release no-ops and `_running_count`
+    stays inflated.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False)
@@ -808,15 +763,11 @@ async def test_recovery_respawn_releases_its_fresh_slot():
 
 @pytest.mark.asyncio
 async def test_recovery_respawn_is_priced_as_a_fresh_process():
-    """A respawn is a NEW process; the dead one's RSS readings must not settle it.
+    """A respawn is a new process; the dead one's RSS readings must not settle it.
 
-    The spawn guard treats a dedicated worker as settled once two sweeps have
-    measured it and then reserves only its own peak-vs-RSS gap. A respawned
-    run reuses the same record, so without a reset the fresh process would be
-    priced at ~zero for the sweep before the reaper sees it -- exactly the
-    unmeasured window the reserve exists to cover. The peak stays (a high-water
-    mark, and the conservative direction); the sample count and last reading
-    start over.
+    The respawn reuses the record, so without a reset the spawn guard would price the
+    fresh process at ~zero for its first unmeasured sweep. The peak stays (a high-water
+    mark); the sample count and last reading start over.
     """
     from kiro_crew.subagent import _startup_memory_reserve_gb
 
@@ -852,18 +803,11 @@ async def test_recovery_respawn_is_priced_as_a_fresh_process():
 
 @pytest.mark.asyncio
 async def test_run_woken_by_reaper_reset_still_synthesizes_its_error():
-    """A run woken by the REAPER's own session reset must not report success.
+    """A run woken by the reaper's own session reset must not report success.
 
-    `reaped` carries two incompatible requirements. The recovery scheduler needs
-    it set before the teardown awaits (or it respawns the run being killed), so
-    an earlier revision hoisted it to the top of `_force_reap`. But `_run` skips
-    its error synthesis when `reaped` is set — so a run woken by the reaper's
-    reset (the reset kills the provider, `_run_inner` raises) fell through with
-    NO error, claimed the report first while the reaper was still tearing down,
-    and delivered a FALSE SUCCESS the reaper could not correct.
-
-    The flag is therefore split: `_reap_started` early (respawn suppression),
-    `reaped` late (record/teardown ownership).
+    `reaped` cannot serve both needs: recovery needs a marker before the teardown awaits,
+    but `_run` skips its error synthesis when `reaped` is set. So `_reap_started` is set
+    early (respawn suppression) and `reaped` late (record/teardown ownership).
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False, started=time.time() - 5.0)
@@ -898,11 +842,9 @@ async def test_run_woken_by_reaper_reset_still_synthesizes_its_error():
 async def test_cancelled_teardown_still_releases_slot_and_gate():
     """A cancellation at a teardown await must not skip the bookkeeping.
 
-    Every statement in the teardown awaits, and `CancelledError` is not caught by
-    the `except Exception` arms — so it propagated straight out of `_run`'s
-    `finally`, skipping the slot release, the task pop and the teardown gate.
-    That leaks a concurrency slot (the bug this PR exists to fix) and leaves an
-    injected result unmarked, so restart reconciliation re-injects it.
+    `CancelledError` escapes the `except Exception` arms, so it would skip the slot
+    release, the task pop and the teardown gate: a leaked slot and an injected result
+    left unmarked for restart reconciliation to re-inject.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False)
@@ -931,13 +873,10 @@ async def test_cancelled_teardown_still_releases_slot_and_gate():
 
 @pytest.mark.asyncio
 async def test_run_does_not_block_on_its_report_during_shutdown():
-    """`_run` must hand its report to the bounded drain once shutting down.
+    """`_run` hands its report to the bounded drain once shutting down.
 
-    `_run`'s `CancelledError` arm does not re-raise, so by the time it reaches
-    `_await_report` the cancellation has been CONSUMED — `shield` would then wait
-    out the full `_ON_DONE_TIMEOUT` injection cap and hold `cancel_all()`'s
-    gather for it. (An earlier version of this test kept the cancellation pending
-    and so measured a path the real `_run` never takes.)
+    `_run`'s `CancelledError` arm does not re-raise, so the cancellation is consumed by
+    `_await_report`; `shield` would wait out `_ON_DONE_TIMEOUT` and hold `cancel_all()`.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False)
@@ -979,13 +918,10 @@ async def test_run_does_not_block_on_its_report_during_shutdown():
 
 @pytest.mark.asyncio
 async def test_user_stop_during_pending_recovery_is_not_recorded_as_failure():
-    """A neutral user Stop must not be persisted as a failure by the recovery arm.
+    """A neutral user Stop is not persisted as a failure by the recovery arm.
 
-    `_force_reap` cancels a pending recovery task BEFORE setting `reaped` (which
-    must stay false until the reaper owns the record). `_resume_guarded`'s
-    CancelledError arm consulted only `reaped`, so it won that race and wrote
-    `error="cancelled"` plus a failure stat over a neutral stop — an outcome the
-    reaper could not correct. It must consult `_reap_started`.
+    `_force_reap` cancels recovery before setting `reaped`, so `_resume_guarded`'s
+    CancelledError arm must consult `_reap_started` or it writes `error="cancelled"`.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False, user_stopped=True, started=time.time() - 5.0)
@@ -1023,14 +959,10 @@ async def test_user_stop_during_pending_recovery_is_not_recorded_as_failure():
 
 @pytest.mark.asyncio
 async def test_stop_during_pending_spawn_approval_reports_and_releases_once():
-    """The spawn-approval rejection path is a FIFTH terminal site.
+    """A Stop during a pending spawn approval reports and releases once.
 
-    It set `done`, decremented `_running_count` with a bare decrement and
-    announced via `_safe_announce` — outside both one-shot tokens. A user Stop
-    funnels into `_force_reap` and can land while the approval is still pending
-    (a human prompt has no deadline), so the reap released the slot and reported,
-    then the rejection path released and reported AGAIN: a negative concurrency
-    count and a duplicate completion.
+    The approval rejection path is a terminal site too, and a human prompt has no
+    deadline, so a reap can land first; both must go through the one-shot tokens.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False, started=time.time() - 5.0)

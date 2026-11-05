@@ -127,6 +127,7 @@ async def deliver(
     *,
     admission: dict | None = None,
     queue_meta: dict | None = None,
+    relay_meta: dict | None = None,
     evict_oldest: bool = False,
 ) -> str:
     """Deliver *text* from *origin* into *slot*; return a ``DELIVERED_*`` outcome.
@@ -151,7 +152,7 @@ async def deliver(
     its out-of-session fallback.
     """
     if origin.kind == ORIGIN_PEER:
-        return await _deliver_peer(state, slot, text, origin, admission, queue_meta)
+        return await _deliver_peer(state, slot, text, origin, admission, queue_meta, relay_meta)
     if slot.running:
         return await _deliver_running(state, slot, text, origin, admission, evict_oldest)
     if origin.kind == ORIGIN_AUTOMATION:
@@ -316,6 +317,7 @@ async def _deliver_peer(
     origin: Origin,
     admission: dict | None,
     queue_meta: dict | None,
+    relay_meta: dict | None = None,
 ) -> str:
     """A peer's text: the steer arm when asked, else queue or run it.
 
@@ -337,7 +339,7 @@ async def _deliver_peer(
         )
 
         outcome = await steer_into_running_turn(
-            state, slot, text, user_origin=False, admission=admission
+            state, slot, text, user_origin=False, admission=admission, relay_meta=relay_meta
         )
         if outcome == STEER_STEERED:
             return DELIVERED_STEERED
@@ -346,5 +348,7 @@ async def _deliver_peer(
         return NOT_DELIVERED
     from kiro_crew.dashboard.chat_runner import _run_chat
 
-    started = slot.enqueue_or_run_prompt(text, _run_chat, state, extra_meta=queue_meta)
+    started = slot.enqueue_or_run_prompt(
+        text, _run_chat, state, extra_meta=queue_meta, relay_meta=relay_meta
+    )
     return DELIVERED_TURN if started else DELIVERED_QUEUED

@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationFeed, { SEEN_CHANNELS_STORAGE_KEY } from '../components/notifications/NotificationFeed'
 import type { RootState } from '../store'
+import { addNotification } from '../store/notificationsSlice'
 import type { Notification } from '../types'
 import { approvalNotificationBody } from '../lib/approvalNotificationBody'
 
@@ -130,11 +131,96 @@ describe('NotificationFeed Phase 3: keep/mute prompt', () => {
     expect(mockUpdateChannelSettings).not.toHaveBeenCalled()
   })
 
-  it('Mute channel calls the settings API and dismisses', () => {
+  it('Mute channel calls the settings API and dismisses once it lands', async () => {
     renderFeed([appNote])
     fireEvent.click(screen.getByRole('button', { name: 'Mute channel' }))
-    expect(screen.queryByText(/Keep receiving these\?/)).toBeNull()
     expect(mockUpdateChannelSettings).toHaveBeenCalledWith('oncall-radar.ticket-update', { muted: true })
+    await waitFor(() => expect(screen.queryByText(/Keep receiving these\?/)).toBeNull())
+    expect(JSON.parse(localStorage.getItem(SEEN_CHANNELS_STORAGE_KEY) || '[]'))
+      .toContain('oncall-radar.ticket-update')
+  })
+
+  it('keeps the prompt and the channel undecided while the mute is in flight', () => {
+    mockUpdateChannelSettings.mockReturnValueOnce(new Promise(() => {}))
+    renderFeed([appNote])
+    fireEvent.click(screen.getByRole('button', { name: 'Mute channel' }))
+    expect(screen.getByText(/Keep receiving these\?/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Mute channel' }) as HTMLButtonElement).disabled).toBe(true)
+    // Keep waits too, so a second answer cannot race the pending mute.
+    expect((screen.getByRole('button', { name: 'Keep' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(localStorage.getItem(SEEN_CHANNELS_STORAGE_KEY)).toBeNull()
+  })
+
+  it('a failed mute keeps the prompt, shows an error, and a retry can land', async () => {
+    mockUpdateChannelSettings.mockRejectedValueOnce(new Error('503'))
+    renderFeed([appNote])
+    fireEvent.click(screen.getByRole('button', { name: 'Mute channel' }))
+    expect(await screen.findByText("Couldn't mute this channel. Try again.")).toBeTruthy()
+    expect(screen.getByText(/Keep receiving these\?/)).toBeTruthy()
+    expect(localStorage.getItem(SEEN_CHANNELS_STORAGE_KEY)).toBeNull()
+
+    const retry = screen.getByRole('button', { name: 'Mute channel' }) as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+    fireEvent.click(retry)
+    await waitFor(() => expect(screen.queryByText(/Keep receiving these\?/)).toBeNull())
+    expect(screen.queryByText("Couldn't mute this channel. Try again.")).toBeNull()
+    expect(mockUpdateChannelSettings).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(localStorage.getItem(SEEN_CHANNELS_STORAGE_KEY) || '[]'))
+      .toContain('oncall-radar.ticket-update')
+  })
+
+  // Two new app channels: A's note is older, B's is newer.
+  const noteA = mkN({ ts: '2026-07-23T10:00:00Z', title: 'Alpha note', kind: 'agent', source: 'app-a', channel: 'app-a.events' })
+  const noteB = mkN({ ts: '2026-07-23T11:00:00Z', title: 'Beta note', kind: 'agent', source: 'app-b', channel: 'app-b.events' })
+  const promptFor = (label: string) => screen.queryAllByText(label).length > 0
+
+  it("another channel's mute does not unlock a pending one", () => {
+    mockUpdateChannelSettings
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockReturnValueOnce(new Promise(() => {}))
+    const store = createTestStore(stateWith([noteA]))
+    renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: 'Mute channel' }))
+    // B arrives while A's save is pending; both prompts are shown.
+    act(() => { store.dispatch(addNotification(noteB)) })
+    const muteButtons = () => screen.getAllByRole('button', { name: 'Mute channel' }) as HTMLButtonElement[]
+    expect(muteButtons()).toHaveLength(2)
+    // Mute B too; A's Keep and Mute must stay locked.
+    fireEvent.click(muteButtons().find(b => !b.disabled)!)
+    const keeps = screen.getAllByRole('button', { name: 'Keep' }) as HTMLButtonElement[]
+    expect(keeps.every(b => b.disabled)).toBe(true)
+    expect(muteButtons().every(b => b.disabled)).toBe(true)
+  })
+
+  it("a newer channel's note does not hide a failed mute", async () => {
+    let fail: (e: unknown) => void = () => {}
+    mockUpdateChannelSettings.mockReturnValueOnce(new Promise((_, rej) => { fail = rej }))
+    const store = createTestStore(stateWith([noteA]))
+    renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} />, { store })
+    expect(promptFor('app-a / events')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Mute channel' }))
+    act(() => { store.dispatch(addNotification(noteB)) })
+    await act(async () => { fail(new Error('503')) })
+    expect(await screen.findByText("Couldn't mute this channel. Try again.")).toBeTruthy()
+    expect(promptFor('app-a / events')).toBe(true)
+    expect(promptFor('app-b / events')).toBe(true)
+    // Keep on B leaves A's error and retry in place.
+    const keepB = screen.getAllByRole('button', { name: 'Keep' })[0]
+    fireEvent.click(keepB)
+    expect(promptFor('app-b / events')).toBe(false)
+    expect(promptFor('app-a / events')).toBe(true)
+    expect(screen.getByText("Couldn't mute this channel. Try again.")).toBeTruthy()
+  })
+
+  it('records a mute that lands after the feed unmounted', async () => {
+    let land: (v: unknown) => void = () => {}
+    mockUpdateChannelSettings.mockReturnValueOnce(new Promise(r => { land = r }))
+    const { unmount } = renderFeed([appNote])
+    fireEvent.click(screen.getByRole('button', { name: 'Mute channel' }))
+    unmount()
+    land({})
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(SEEN_CHANNELS_STORAGE_KEY) || '[]'))
+      .toContain('oncall-radar.ticket-update'))
   })
 
   it('does not prompt again for an already-decided channel', () => {

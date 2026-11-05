@@ -1349,6 +1349,28 @@ class TestSigninRestartRoute:
         assert _read(resp)["code"] == "launch_already_running"
 
     @pytest.mark.asyncio
+    async def test_a_restart_is_refused_while_a_job_record_is_not_utf8(self, tmp_path, monkeypatch):
+        """The race guard reads the job list, which skips a job file whose bytes are
+        not UTF-8. That record may be a launch or sign-in still running on this
+        instance, so the restart refuses rather than start a second remote login."""
+        state, job_id = await self._unsigned_job(tmp_path)
+        store = state.cloud_launch_store
+        other = store.create(profile="dev", region="us-east-1", size_key="balanced")
+        store._path(other.id).write_bytes(b'\xff\xfe{"status": "running"}')
+        monkeypatch.setattr(
+            hc, "_start_signin_worker", lambda *a, **k: pytest.fail("a sign-in worker started")
+        )
+
+        resp = await hc.api_cloud_launch_signin_restart(
+            _req("POST", "/x", state=state, match_info={"id": job_id})
+        )
+
+        assert resp.status == 409
+        body = _read(resp)
+        assert body["code"] == "launch_record_unreadable"
+        assert f"{other.id}.json" in body["error"]
+
+    @pytest.mark.asyncio
     async def test_a_launch_with_no_instance_yet_still_blocks(self, tmp_path):
         """Until `provision` returns, nothing says which instance a launch will sign
         in on, so a launch that has none yet blocks a restart on every crew."""

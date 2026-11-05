@@ -15,6 +15,7 @@ from knowledge_helpers import store_fixture  # noqa: F401
 
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.wait import default_timeout
 
 
 class TestCjkKeywordRecall:
@@ -545,8 +546,8 @@ class TestCjkKeywordRecall:
             for t in threads:
                 t.start()
             for t in threads:
-                # flake-ok: joins four threads that each run one bounded search; moved verbatim, tracked for a de-flake pass
-                t.join()
+                t.join(timeout=default_timeout())
+                assert not t.is_alive(), "a concurrent reader did not finish"
             assert len(calls) == 1, f"rebuilt {len(calls)} times, expected once"
             assert all(self._titles(r) == ["run"] for r in results)
         finally:

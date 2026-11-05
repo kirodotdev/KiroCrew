@@ -1,19 +1,12 @@
 """Stop-reason consistency across every completion consumer.
 
-``EVENT_COMPLETE`` only says a stream ENDED. Before this change the sub-agent
-run (``subagent_manager/run.py``) recorded EVERY completion as success --
-``done=True, error="", outcome=completed, record_success()`` -- whatever the
-stop reason said, so a watchdog tool stall, a runtime cancel or a transport
-death reached the parent as "completed ✅" with the partial as the answer.
-The task runner (``task_executor.py``) had the same shape.
+``EVENT_COMPLETE`` only says a stream ended, so a watchdog tool stall, a runtime cancel or a
+transport death must not be recorded as success, in the sub-agent run
+(``subagent_manager/run.py``) or the task runner (``task_executor.py``).
 
-These tests drive the REAL production paths -- ``SubagentManager.spawn`` ->
-``_run`` -> ``_run_inner_impl`` and ``TaskRunner._execute_single_task`` ->
-``execute_single_task`` -- with only the ACP session provider faked, which is
-the seam every other run test uses. Nothing in ``run.py`` is mocked.
-
-The mapping lives in ONE place, ``acp.types.classify_stop_reason``; the table
-tests pin it and the path tests pin that each entry actually uses it.
+The real paths (``SubagentManager.spawn`` -> ``_run`` -> ``_run_inner_impl`` and
+``TaskRunner._execute_single_task`` -> ``execute_single_task``) run with only the ACP
+session provider faked. The mapping lives in ``acp.types.classify_stop_reason``.
 """
 
 from __future__ import annotations
@@ -275,11 +268,9 @@ async def test_runtime_cancel_is_cancelled_not_completed():
 async def test_exhausted_stream_without_complete_is_not_marked_result_complete():
     """A stream that dies between chunks must not be recorded as a finished result.
 
-    ``classify_stop_reason("")`` resolves to ``succeeded``, so a generator that
-    simply stops -- no EVENT_COMPLETE at all -- takes the success branch unless
-    the complete event is checked. The durable flag must reflect the missing
-    complete event, not the absent stop reason: nothing else on disk tells a
-    reader after a restart that ``result.txt`` holds a fragment.
+    ``classify_stop_reason("")`` resolves to ``succeeded``, so the durable flag must
+    follow the missing complete event; nothing else tells a reader after a restart that
+    ``result.txt`` holds a fragment.
     """
 
     # ...the stream dies after its chunk: no EVENT_COMPLETE, no stop reason.
@@ -363,16 +354,11 @@ class _GatedResultWrite:
 
 
 class _HeldResultDrain:
-    """Parks the bounded drain of a claimed result write until the test
-    starts its bound.
+    """Parks the bounded drain of a claimed result write until the test starts its bound.
 
-    The bound counts wall-clock from the drain's first await, while
-    :class:`_GatedResultWrite` can report ``entered`` only once a pool thread
-    has picked the write up and the loop has run two more callbacks. Timed
-    against each other, a late executor lets the bound expire first and the
-    run is ``done`` before the test looks at it. Parked here, "claimed, write
-    pending, not done" lasts until :meth:`start_bound`, and the bound then
-    expires against a write the gate still holds.
+    :class:`_GatedResultWrite` reports ``entered`` only after a pool thread picks the write
+    up, so a late executor could let the bound expire first. Parked, "claimed, write
+    pending, not done" lasts until :meth:`start_bound`.
     """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -748,11 +734,8 @@ async def test_a_failed_result_write_records_no_flag_and_the_run_completes(
 class _DeadlineOnDemand:
     """The run's deadline, fired by the test rather than by the clock.
 
-    Stands in for ``asyncio.wait_for`` on the one call that carries the run's
-    budget, which is set far past any test, so the run is held where the test
-    wants it before its deadline lands: on firing, the run is cancelled and its
-    ``TimeoutError`` raised, as ``wait_for`` does when time runs out. Every
-    other ``wait_for`` passes straight through.
+    Stands in for ``asyncio.wait_for`` on the one call carrying the run's budget: on firing
+    the run is cancelled and ``TimeoutError`` raised. Every other ``wait_for`` passes through.
     """
 
     _BUDGET = 86_400.0
@@ -1070,6 +1053,94 @@ async def test_a_reap_in_flight_names_whether_the_answer_had_finished(
     assert info.outcome == "failed"
     assert info.error.endswith(f" — {unfinished}"), info.error
     sessions.record_success.assert_not_called()
+
+
+async def _race_a_reap_against_the_answer(reason: str, *, user_stop: bool = False):
+    """A reap that begins while the answer streams; the answer then finishes."""
+    complete_go = asyncio.Event()
+    reset_go = asyncio.Event()
+
+    def factory(msg: str, *a, **kw):
+        async def _gen():
+            yield _text(_ANSWER)
+            await complete_go.wait()
+            yield _complete(STOP_REASON_END_TURN)
+
+        return _gen()
+
+    sessions = _mock_sessions(factory)
+    resets: list[str] = []
+
+    async def _reset(key, **_kw):
+        resets.append(key)
+        if len(resets) == 1:
+            await reset_go.wait()
+
+    sessions.reset = AsyncMock(side_effect=_reset)
+    mgr = _manager(sessions)
+    try:
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = mgr.spawn("do work")
+            assert info is not None
+            run = mgr._tasks[info.id]
+            await _wait_until(lambda: info.streaming_text, "the first chunk")
+            if user_stop:
+                info.user_stopped = True
+                info._reap_reason = "user_stop"
+                info._stop_origin = "stopped by user"
+            reaping = asyncio.ensure_future(mgr._force_reap(info.id, info, 601.0, reason=reason))
+            await _wait_until(lambda: resets, "the reap's reset")
+            complete_go.set()
+            await _wait_until(lambda: run.done(), "the run's own ending")
+            reset_go.set()
+            await await_until(reaping, what="the reap finishing")
+            await _wait_settled(mgr, info)
+    finally:
+        complete_go.set()
+        reset_go.set()
+    return info
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_stop", [False, True], ids=["deadline", "user stop"])
+async def test_a_finished_answer_a_reap_got_to_first_reaches_the_parent(user_stop: bool):
+    """The reap owns the report of a run whose answer finished under it, and
+    that report must still hand the parent the answer, named as finished --
+    not drop it behind the stop's error, nor call it a partial."""
+    from kiro_crew.slack.gateway import _compose_subagent_completion
+
+    info = await _race_a_reap_against_the_answer("deadline", user_stop=user_stop)
+    assert info._answer_finished and not info._ending_claimed
+    assert info.outcome == ("stopped" if user_stop else "failed")
+
+    report = _compose_subagent_completion(info, _flush_only=False)
+    assert _ANSWER.strip() in report.announce, report.announce
+    assert "finished its answer" in report.detail
+    assert "Partial output" not in report.detail
+
+
+@pytest.mark.parametrize("user_stop", [False, True], ids=["deadline", "user stop"])
+def test_a_truncated_finished_answer_under_a_reap_points_at_its_transcript(user_stop: bool):
+    """A finished answer the completion copy cut short reaches the parent as
+    any truncated result does -- a preview and the result.txt pointer -- so
+    the tail of the answer is not silently lost behind 'Its answer:'."""
+    from kiro_crew.slack.gateway import _compose_subagent_completion
+
+    info = SubagentInfo(
+        id="cut1",
+        task="do work",
+        result="HEAD OF THE ANSWER " * 400,
+        result_truncated=True,
+        result_path="/runs/cut1/result.txt",
+        user_stopped=user_stop,
+        error="" if user_stop else "reaped after 601s (deadline) — finished its answer",
+    )
+    info._answer_finished = True
+    info.done = True
+
+    report = _compose_subagent_completion(info, _flush_only=False)
+    assert "/runs/cut1/result.txt" in report.detail, report.detail
+    assert "finished its answer" in report.detail
 
 
 @pytest.mark.asyncio

@@ -292,7 +292,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
       {step === 1 && <div className="space-y-4">
         <span className="text-sm font-medium block">{i18nT('apps.autoResearch.researchLabPage.when_should_the_agent_stop')}</span>
         <div className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.stops_at_the_cycle_cap_when_the_definition_of_do')}</div>
-        <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.max_cycles')}</span><input type="number" aria-label={i18nT('apps.autoResearch.researchLabPage.max_cycles_2')} min={5} max={100} value={maxCycles} className="w-20 text-sm px-3 py-2 rounded-md bg-bg-elevated border border-border text-text outline-hidden focus-ring" onChange={e => { setMaxCyclesTouched(true); setMaxCycles(Number(e.target.value)) }} />{subCount > 0 && !maxCyclesTouched && <span className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.suggested_from')} {subCount} {i18nT('apps.autoResearch.researchLabPage.sub_questions_2')}</span>}</div>
+        <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.max_cycles')}</span><input type="number" aria-label={i18nT('apps.autoResearch.researchLabPage.max_cycles_2')} min={5} max={100} value={maxCycles} className="w-20 text-sm px-3 py-2 rounded-md bg-bg-elevated border border-border text-text outline-hidden focus-ring" onChange={e => { setMaxCyclesTouched(true); setMaxCycles(Number(e.target.value)) }} />{subCount > 0 && !maxCyclesTouched && <span className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.suggested_from_sub_questions', { count: subCount })}</span>}</div>
         {/* Values are seconds; SimpleSelect is string-only, so they round-trip through
             String/Number. `options` and `optionLabels` are positional — keep them in step. */}
         <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.idle_between_cycles')}</span><SimpleSelect aria-label={i18nT('apps.autoResearch.researchLabPage.idle_between_cycles_2')} options={['30', '60', '120']} optionLabels={[i18nT('apps.autoResearch.researchLabPage.30s'), i18nT('apps.autoResearch.researchLabPage.60s'), i18nT('apps.autoResearch.researchLabPage.120s')]} value={String(idleSecs)} onChange={v => setIdleSecs(Number(v))} /></div>
@@ -323,7 +323,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
           {validation.warnings.map((w, i) => <div key={i} className="text-sm text-warn flex items-center gap-1"><AlertTriangle size={14} /> {w}</div>)}
           <div className="mt-3 p-3 rounded text-sm bg-bg border border-border">
             <div>{i18nT('apps.autoResearch.researchLabPage.research_question', { question: `${question.slice(0, 50)}${question.length > 50 ? '...' : ''}` })}</div>
-            <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.up_to')} {maxCycles} {i18nT('apps.autoResearch.researchLabPage.cycles')} {idleSecs}{i18nT('apps.autoResearch.researchLabPage.s_idle')}{validation.estimated_duration_min} {i18nT('apps.autoResearch.researchLabPage.min')}</div>
+            <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.estimate', { count: maxCycles, idle: idleSecs, minutes: validation.estimated_duration_min })}</div>
             {successCriteria && <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.done_when')} {successCriteria}</div>}
             {executionMode === 'agent' && <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.model_line', { model: model || i18nT('apps.autoResearch.researchLabPage.model_default_inherit') })}</div>}
           </div>
@@ -713,7 +713,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
       </div>
     })()}
     <div className="flex items-center justify-between mb-4">
-      <div className="text-sm text-muted flex flex-wrap gap-x-3"><span>{i18nT('apps.autoResearch.researchLabPage.cycle')} {campaign.total_cycles}/{campaign.max_cycles} · {findings.filter(f => f.new_findings_count > 0).length} {i18nT('apps.autoResearch.researchLabPage.findings')}</span><ModelLine c={campaign} /></div>
+      <div className="text-sm text-muted flex flex-wrap gap-x-3"><span>{i18nT('apps.autoResearch.researchLabPage.cycle')} {campaign.total_cycles}/{campaign.max_cycles} · {i18nT('apps.autoResearch.researchLabPage.findings_tally', { count: findings.filter(f => f.new_findings_count > 0).length })}</span><ModelLine c={campaign} /></div>
       {isActive && <div className="flex gap-2">
         {campaign.status === 'running' && <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('pause')}><Pause size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.pause')}</button>}
         {campaign.status !== 'running' && <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.resume')}</button>}
@@ -842,7 +842,7 @@ export default function ResearchLabPage() {
               <StateBadge status={c.status} />
               <div className="text-sm line-clamp-2 flex-1" title={c.question}>{c.parent_id && <span className="text-[10px] font-medium text-accent bg-accent-subtle rounded px-1 py-0.5 mr-1 inline-flex items-center gap-0.5 align-middle"><GitFork size={10} /> {i18nT('apps.autoResearch.researchLabPage.forked')}</span>}{c.question}</div>
             </div>
-            <div className="text-xs text-muted mt-1 flex flex-wrap gap-x-3"><span>{c.total_cycles} {i18nT('apps.autoResearch.researchLabPage.cycles_2')}</span><ModelLine c={c} /></div>
+            <div className="text-xs text-muted mt-1 flex flex-wrap gap-x-3"><span>{i18nT('apps.autoResearch.researchLabPage.cycles_count', { count: c.total_cycles })}</span><ModelLine c={c} /></div>
           </Clickable>
         ))}
       </div>}

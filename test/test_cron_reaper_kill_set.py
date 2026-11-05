@@ -62,24 +62,14 @@ def _vouching_child(client: MagicMock, cpid: int, start: str = "5150001") -> int
 class TestALeaderlessGroupIsNeverReaped:
     """A dead group leader is not an empty process group.
 
-    A late child spawn followed by the leader's exit leaves members under the
-    group id while every pid-addressed lookup of the leader fails, and a kill
-    that resolved the group from the pid -- or read the leader's absence as the
-    group's -- audited ``reaped`` over processes still running. The handle keeps
-    the group id captured while the leader was alive and identity-checked
-    (``ProcessHandle.pgid``), and that captured id is the ONLY group the kill
-    ever signals (``platform_compat.kill_process_group``, alive leader or gone):
-    once the leader is gone the group decides -- members are signalled by the
-    captured id once a member verified as this run's vouches for it,
-    ``ProcessLookupError`` from that signal means "empty" only for a verified
-    group, and a live group that cannot be verified as this run's is a kill
-    failure. The POSIX branch is exercised on EVERY platform the suite runs on:
-    ``IS_WINDOWS`` is False (the module's autouse kill seam), and the two group
-    primitives the capture site reads through ``getattr`` -- ``os.getpgid``,
-    supplied per test, and ``os.getpgrp`` -- are patched into existence where the
-    runner lacks them, so no shard skips these assertions. The Windows kill
-    branch has its own expectations in ``TestReaperRecordsAFailedSigkill`` --
-    nothing sweeps descendants there.
+    After the leader exits, members can remain under the group id. The kill signals
+    only the group id captured while the leader was alive (``ProcessHandle.pgid``);
+    ``ProcessLookupError`` means "empty" only for a verified group, and a live
+    unverified group is a kill failure.
+
+    The POSIX branch runs on every platform: ``IS_WINDOWS`` is False here, and
+    ``os.getpgid`` / ``os.getpgrp`` are patched in where the runner lacks them. Windows
+    has its own expectations in ``TestReaperRecordsAFailedSigkill``.
     """
 
     @pytest.fixture(autouse=True)
@@ -366,16 +356,10 @@ class TestALeaderlessGroupIsNeverReaped:
 class TestARecordedChildTheSweepLeftStandingIsNamed:
     """A recorded child the escaped-children sweep left running is a kill failure, not a reap.
 
-    The client's sweep signals a recorded descendant only once it is verified by
-    start id AND basename, and reports nothing: a child that kept its pid and
-    start id but ``exec``'d into another name is refused by that guard and stays
-    alive with no return path, so a kill that returned the group signal's outcome
-    alone recorded ``reaped`` over it. After the sweep every recorded child whose
-    start id reads back and that is still running -- not a zombie -- is named
-    (``process_identity._sweep_children``), reported, not signalled: the guard
-    refused it, and this record does not overrule the guard. The liveness reads
-    (``pid_exists`` / ``pid_is_zombie``) are pinned everywhere: a made-up pid
-    answers whatever the host runs otherwise.
+    The sweep signals a child only when start id AND basename match, so one that
+    ``exec``'d into another name stays alive. It is reported, not signalled: the
+    record does not overrule the guard. ``pid_exists`` / ``pid_is_zombie`` are pinned,
+    since a made-up pid answers whatever the host runs otherwise.
     """
 
     @staticmethod
@@ -542,12 +526,9 @@ class TestARecordedChildTheSweepLeftStandingIsNamed:
 class TestEveryProcessUnderTheKeyIsAnswered:
     """A live successor under the key does not hide the run's torn-down process, or the reverse.
 
-    The run's own teardown reset pops session A and stalls in an await; a
-    completion cold-starts session B under the same key. The reap reads BOTH
-    handles (the torn-down one first), resets the key -- which is B's teardown
-    -- and then verifies and kills every candidate on its own handle. Before,
-    the live session won the snapshot, so the reap killed B and its cancel
-    abandoned A mid-hung-shutdown while the audit recorded ``reaped``.
+    The run's teardown pops session A and stalls; a completion cold-starts B under the
+    same key. The reap reads BOTH handles, A first, and kills each on its own handle,
+    so A is not abandoned mid-shutdown.
     """
 
     def _two_sessions(self, svc: CronService, key: str, run_pid: int, successor_pid: int) -> None:
@@ -689,13 +670,9 @@ class TestEveryProcessUnderTheKeyIsAnswered:
 class TestTheSessionTheResetPopsIsCaptured:
     """A registration that lands after the snapshot is what the reset pops -- and what the fallback must kill.
 
-    The pre-reset snapshot is keyed by name. A cold start can register a new
-    session under the key between that snapshot and the reset's pop; the reset
-    pops THAT session and hangs on it, and a fallback fed the snapshot alone finds
-    nothing to kill and records ``reaped`` over a live process. The reset now runs
-    under a scope whose ``on_pop`` hook takes the popped session's handle in the
-    same lock hold as the pop, and the fallback kills it; a popped session with
-    no recorded pid is a named kill failure, never ``reaped``.
+    A cold start can register between the snapshot and the reset's pop. The
+    ``on_pop`` hook takes the popped handle under the same lock, and the fallback
+    kills it; a popped session with no recorded pid is a kill failure, never ``reaped``.
     """
 
     @staticmethod
@@ -814,13 +791,9 @@ class TestTheSessionTheResetPopsIsCaptured:
     ) -> None:
         """End to end: a cold start attempted inside the reap's pass is held at the door -- the fence, not the pop capture, answers it -- and lands after the record.
 
-        Through the real manager the pop capture is the net under the fence: a
-        cold start under the key between the reap's snapshot and the reset's pop
-        (the late completion's ``get_or_create``) never registers under the run,
-        because ``_end_run_processes`` raised the key's ending fence before the
-        snapshot. Nothing lands during the passes, nothing is killed, the record
-        is ``reaped`` over an empty key -- and the held call is not dropped: it
-        lands once the fence lifts, a new life under the recorded key.
+        ``_end_run_processes`` raises the ending fence before the snapshot, so the late
+        ``get_or_create`` never registers under the run. The held call is not dropped:
+        it lands once the fence lifts.
         """
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.session import SessionManager

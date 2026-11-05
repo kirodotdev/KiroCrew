@@ -7,6 +7,7 @@ disable switch, fail-open) and the ``resource_status`` pull tool wired into
 
 from __future__ import annotations
 
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -37,6 +38,9 @@ def _unmeasurable_slice(monkeypatch: pytest.MonkeyPatch) -> None:
     :data:`_REAL_SLICE_PROBE`, captured past this default.
     """
     monkeypatch.setattr(rs, "_read_agent_slice_tasks", lambda: (-1, -1, -1))
+    # A pressured probe also asks whether the agent slice binds; a host whose
+    # slice is near its ceiling would otherwise reword every pressured line.
+    monkeypatch.setattr(rs, "_read_agent_ceiling", lambda: None, raising=False)
     # The pull tool also reads the spawn gate's own figure; pin it clear of any
     # floor so a tool case never turns on the CI host's free memory.
     monkeypatch.setattr(rs, "_read_spawn_floor_figure", lambda _min_gb: (32.0, ""))
@@ -162,6 +166,91 @@ def test_summary_lines_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "unknown" in joined.lower()
 
 
+# ── a figure the agent slice's ceiling binds ───────────────────────────────────
+
+
+def _full_slice() -> rs.AgentCeiling:
+    """The incident's shape: agents at their 370 GB ceiling with 89 GB of it in
+    tmpfs files, while the host still had 165 GB available."""
+    return rs.AgentCeiling(ceiling_gb=370.0, host_available_gb=165.0, shmem_gb=89.0)
+
+
+_FULL = object()  # sentinel: "the incident's ceiling", resolved at call time
+
+
+def _slice_bound(monkeypatch: pytest.MonkeyPatch, available_gb: float, ceiling=_FULL):
+    reading = _full_slice() if ceiling is _FULL else ceiling
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: available_gb)
+    monkeypatch.setattr(rs, "_read_agent_ceiling", lambda: reading, raising=False)
+    return rs.probe(_cfg(4.0, 2.0))
+
+
+def test_ample_probe_never_reads_the_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _must_not_run() -> rs.AgentCeiling:
+        raise AssertionError("the ceiling is read only on a pressured probe")
+
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    monkeypatch.setattr(rs, "_read_agent_ceiling", _must_not_run)
+    assert rs.probe(_cfg(4.0, 2.0)).agent_ceiling is None
+
+
+def test_pressured_probe_carries_the_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    status = _slice_bound(monkeypatch, 0.0)
+    assert status.posture == rs.POSTURE_CRITICAL
+    assert status.agent_ceiling == _full_slice()
+    assert status.memory_subject == "Agent memory"
+
+
+def test_slice_bound_context_line_names_the_ceiling_and_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    line = _slice_bound(monkeypatch, 0.0).context_line()
+    assert line.startswith("[RESOURCES] Agent memory is CRITICALLY low (~0.0 GB left under")
+    assert "370 GB agent memory ceiling" in line
+    assert "~165 GB free on the host" in line
+    assert "Host memory" not in line
+
+
+def test_slice_bound_remote_line_names_the_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    line = _slice_bound(monkeypatch, 3.0).context_line(remote=True)
+    assert "is tight on memory (~3.0 GB left under the 370 GB agent memory ceiling" in line
+
+
+def test_host_bound_wording_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    line = _slice_bound(monkeypatch, 1.0, ceiling=None).context_line()
+    assert line.startswith("[RESOURCES] Host memory is CRITICALLY low (~1.0 GB free")
+
+
+def test_slice_bound_summary_names_ceiling_host_and_shared_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    joined = "\n".join(_slice_bound(monkeypatch, 0.0).summary_lines())
+    assert "Measured against the agent memory ceiling (370 GB)" in joined
+    assert "the host has 165.0 GB available" in joined
+    assert "89 GB of agent memory is shared memory" in joined
+    assert "/dev/shm" in joined
+
+
+def test_a_small_host_reads_in_tenths(monkeypatch: pytest.MonkeyPatch) -> None:
+    small = rs.AgentCeiling(ceiling_gb=3.0, host_available_gb=2.4, shmem_gb=0.0)
+    line = _slice_bound(monkeypatch, 0.3, ceiling=small).context_line()
+    assert "(~0.3 GB left under the 3.0 GB agent memory ceiling, ~2.4 GB free on the host" in line
+
+
+@pytest.mark.parametrize(
+    ("shmem_gb", "named"),
+    [
+        pytest.param(36.9, False, id="test_shmem_under_a_tenth_is_not_named"),
+        pytest.param(37.0, True, id="test_shmem_at_a_tenth_is_named"),
+        pytest.param(0.0, False, id="test_no_shmem_is_not_named"),
+    ],
+)
+def test_shared_memory_is_named_only_when_it_holds_a_tenth(shmem_gb, named) -> None:
+    ceiling = rs.AgentCeiling(ceiling_gb=370.0, host_available_gb=165.0, shmem_gb=shmem_gb)
+    assert ceiling.shmem_notable is named
+    assert bool(ceiling.shmem_sentence()) is named
+
+
 # ── mcp_core pull tool ──────────────────────────────────────────────────────────
 
 
@@ -245,7 +334,30 @@ def test_temp_headroom_unmeasurable_is_none(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(rs.os, "statvfs", _gone, raising=False)
     assert rs.temp_headroom("/missing") is None
     monkeypatch.delattr(rs.os, "statvfs", raising=False)
-    assert rs.temp_headroom("/tmp") is None
+    monkeypatch.setattr(shutil, "disk_usage", _gone)
+    assert rs.temp_headroom("C:\\Missing") is None
+
+
+def test_temp_headroom_without_statvfs_measures_disk_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native Windows has no ``os.statvfs``; free space still comes through."""
+    monkeypatch.delattr(rs.os, "statvfs", raising=False)
+    usage = SimpleNamespace(total=1000, used=913, free=87)
+    monkeypatch.setattr(shutil, "disk_usage", lambda root: usage)
+    monkeypatch.setattr(rs, "temp_roots", lambda: ["C:\\Temp"])
+
+    reading = rs.temp_headroom("C:\\Temp")
+    assert reading is not None and reading.low
+    assert reading.text() == "LOW on space, 9% space free, no inode limit"
+
+    monkeypatch.delenv("KIROCREW_SCRATCH", raising=False)
+    lines = rs.temp_headroom_lines()
+    assert lines[:2] == [
+        "Temp space (advisory):",
+        "  C:\\Temp: LOW on space, 9% space free, no inode limit",
+    ]
+    assert any(line.startswith("\nGuidance: temp space is low on C:\\Temp") for line in lines)
 
 
 def _fake_devices(monkeypatch: pytest.MonkeyPatch, devices: dict[str, int]) -> None:

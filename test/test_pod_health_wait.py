@@ -1,13 +1,8 @@
 """Tests for the configurable ``pod up`` health-wait budget.
 
-A slow-but-healthy first boot (config migration, CLI staging, a fresh
-``.local_secret``) on a loaded host must be reportable as such, not with the
-same "never became healthy" verdict as a dead gateway. These tests pin the
-three pieces of that contract: the flag > env > default resolver (with its
-malformed-value fallback and floor/ceiling clamp), the resolved budget
-actually reaching ``_wait_healthy`` as a wall-clock deadline, and the
-exhausted-budget message telling a live, still-starting gateway apart from
-one that died or serves errors.
+Pins the flag > env > default resolver (malformed fallback, floor/ceiling clamp),
+the budget reaching ``_wait_healthy`` as a wall-clock deadline, and a verdict that
+tells a slow but live first boot apart from a dead gateway.
 """
 
 from __future__ import annotations
@@ -157,14 +152,10 @@ class TestHealthWaitSecsResolver:
         assert f"--wait-secs {pod_cli._POD_HEALTH_WAIT_CEIL_SECS}" in exact
 
     def test_a_budget_below_the_ceiling_is_never_told_it_is_at_the_ceiling(self) -> None:
-        """The question is whether THIS budget is at the ceiling, not whether doubling
-        it would pass one.
+        """The advice checks THIS budget against the ceiling, not its double.
 
-        `_health_wait_secs` clamps only ABOVE the ceiling, so a 2000s budget is honoured
-        verbatim -- and testing the DOUBLED value declared every budget past the halfway
-        mark to be at the ceiling, withholding the one remedy that helps. Below the
-        ceiling there is always more to ask for, and the advice names a value the
-        resolver will honour rather than one it would clamp away.
+        `_health_wait_secs` clamps only above the ceiling, so the advised value must be
+        one the resolver honours rather than clamps away.
         """
         ceil = pod_cli._POD_HEALTH_WAIT_CEIL_SECS
         for budget in (ceil // 2 + 1, 2000, ceil - 1):
@@ -192,11 +183,8 @@ class TestHealthWaitSecsResolver:
 def _pin_clock(monkeypatch: pytest.MonkeyPatch) -> ManualClock:
     """A clock only the wait reads, starting at 0.
 
-    Installed on ``pod_cli``'s own ``time`` binding. That binding IS the stdlib
-    module, so patching ``pod_cli.time.sleep`` replaces ``time.sleep`` for every
-    thread in the worker: a thread an earlier test left running then returns from
-    its sleep at once and adds its duration to the wait's clock, and the budget
-    expires between two polls of a test that publishes its credential on poll 3.
+    ``pod_cli.time`` IS the stdlib module, so patching its ``sleep`` hits every
+    thread in the worker; a leftover thread would then advance the wait's clock.
     """
     clock = ManualClock(monotonic_start=0.0)
     clock.install(monkeypatch, pod_cli)
@@ -440,11 +428,8 @@ class TestUpThreadsTheBudget:
     ) -> None:
         """`up` must not tear down a pod it did not start over a credential.
 
-        `stop_pod` reaches `cleanup_home`, which rmtree's the pod's isolated HOME --
-        its sessions and its config -- and nothing restores that. The credential
-        verdict is the only failure a SERVING pod can reach, so an `up` against an
-        already-running pod whose credential file is missing, blank or corrupt would
-        otherwise destroy a healthy instance the caller merely asked about.
+        `stop_pod` reaches `cleanup_home`, which rmtree's the pod's HOME for good, and
+        the credential verdict is the one failure a serving pod can reach.
         """
         _audits, stops = self._fail_up(
             tmp_path,
@@ -471,13 +456,8 @@ class TestUpThreadsTheBudget:
     ) -> None:
         """The notice has to be as verdict-independent as the guard is.
 
-        The teardown is skipped on every verdict, so announcing it on only one of the
-        five exits leaves the operator of a foreign-port, crashed or slow-booting pod
-        believing `up` cleaned up after itself -- and what they do next is derived from
-        that belief, whether that is rerunning or reallocating the port under a live
-        gateway. The notice states only what this command DID, because a pre-existing
-        pod that has genuinely failed is not running and claiming otherwise would swap
-        one false impression for another.
+        The teardown is skipped on all five exits, so each must say so. It states only
+        what this command did: a failed pre-existing pod is not running either.
         """
         verdict = {
             "foreign": rt.HEALTH_FOREIGN,
@@ -566,11 +546,8 @@ class TestUpThreadsTheBudget:
     ) -> None:
         """`code == 0` covers two states and only one of them is a silent port.
 
-        `_wait_healthy` returns `last_http` for a pod that was serving on the final
-        poll but for less than the credential verdict's span, and `last_http` is 0 when
-        no error status was ever seen. Asserting "/api/health not yet answering" there
-        was false, and false in the direction that sends the operator hunting a dead
-        process instead of raising the budget.
+        `_wait_healthy` returns `last_http` (0 if no error status was seen) for a pod
+        serving on the final poll for less than the credential span. That pod answered.
         """
         _audits, _stops = self._fail_up(
             tmp_path,
@@ -593,12 +570,8 @@ class TestUpThreadsTheBudget:
     ) -> None:
         """Stopping is owed when we started it; deleting only when we made the home.
 
-        Sparing the home must not mean walking away from the unit. The pod unit is
-        `Restart=on-failure` with `RestartSec=5` and no `StartLimit` override, and a
-        gateway that raises at import exits 1 -- not a terminal boot code -- so an
-        unstopped crash-looping unit respawns every five seconds indefinitely: the 5s
-        gap never fills systemd's default ten-second burst window, so the rate limiter
-        never retires it either. `halt_pod` ends the respawn without reaching
+        With `Restart=on-failure` and `RestartSec=5`, systemd's rate limiter never retires
+        a crash loop, so the unit must be stopped. `halt_pod` does that without reaching
         `cleanup_home`.
         """
         _audits, stops = self._fail_up(
@@ -644,11 +617,8 @@ class TestUpThreadsTheBudget:
     ) -> None:
         """The notice may only claim what this command did, not what the unit is doing.
 
-        Sparing a pod is decided by `started_here`/`home_was_populated`, neither of
-        which says the unit is healthy -- a pre-existing pod whose unit has genuinely
-        FAILED is spared and is not running. Asserting that it is would swap the false
-        impression that `up` cleaned up for the false impression that there is a live
-        gateway to talk to.
+        Sparing rests on `started_here`/`home_was_populated`, which say nothing about
+        health: a pre-existing pod whose unit FAILED is spared and is not running.
         """
         _audits, stops = self._fail_up(
             tmp_path,
@@ -679,14 +649,9 @@ class TestUpThreadsTheBudget:
     ) -> None:
         """The destruction guard must not rest on a liveness probe.
 
-        `rt.is_active` shells `systemctl is-active --quiet`, which succeeds only for
-        `active`, so a pod in `activating` or in `Restart=on-failure` backoff -- the
-        crash-loop this package documents as the ordinary case -- answers False. A
-        guard keyed on that reading treats a PRE-EXISTING pod as one this command
-        created, and an unsatisfied health wait then rmtree's a home that predates the
-        invocation, with no recovery path. `started_here` plus `home_was_populated`
-        are facts about what actually happened, so neither can be wrong about the
-        past.
+        `rt.is_active` is False for a pod `activating` or in restart backoff, so it would
+        mark a pre-existing pod as ours. `started_here` and `home_was_populated` record
+        what actually happened.
         """
         verdict = {
             "foreign": rt.HEALTH_FOREIGN,
@@ -719,12 +684,8 @@ class TestUpThreadsTheBudget:
     ) -> None:
         """`up` never tears down a pod it did not start, whatever the verdict.
 
-        `stop_pod` reaches `cleanup_home`, which rmtree's the pod's isolated HOME --
-        its sessions and its config -- and nothing restores it. The mutex rationale
-        beside that call already claims "the pod we stop here can only be the one we
-        started"; keying the guard on the VERDICT instead left that claim false for
-        every verdict the carve-out did not enumerate, which is how a recovered pod
-        carrying a cumulative restart count could still be deleted.
+        `stop_pod` reaches `cleanup_home`, which rmtree's the pod's HOME for good. The
+        guard keys on who started the pod, never on the verdict.
         """
         verdict = {
             "foreign": rt.HEALTH_FOREIGN,
@@ -829,13 +790,8 @@ class TestUpThreadsTheBudget:
     ) -> None:
         """A gateway seen serving on the final poll is starting, not dead.
 
-        The population this matters for is precisely the one the recovered-pod
-        rationale rests on: ``restarts`` is systemd's cumulative ``NRestarts`` and
-        nothing in this package resets it, so any pod that ever auto-restarted
-        carries it forever. Resolving liveness from the unit therefore condemns it,
-        and the operator is told the gateway never became healthy -- with the only
-        applicable remedy, a bigger budget, withheld -- about a pod that answered
-        200 moments earlier.
+        ``restarts`` is systemd's cumulative ``NRestarts``, never reset here, so a pod
+        that ever restarted must not be called dead while it answers 200.
         """
         # ("failed", 9) is the strongest possible contradiction: if the verdict
         # consulted the unit at all it would land on "never became healthy". Naming
@@ -979,17 +935,9 @@ class TestUpThreadsTheBudget:
 class TestWaitHealthyRequiresTheCredential:
     """A serving port is not a ready pod.
 
-    A pod's gateway publishes its internal-API credential only AFTER its listener
-    is bound, so between the bind and the end of the remaining startup work the
-    port already answers ``/api/health`` while the credential does not exist.
-    ``_up`` mints immediately after this wait returns, so a wait that stopped at
-    the HTTP status handed the mint a pod whose credential was still unwritten and
-    died with "no internal-API credential ... is it running?" -- intermittently, on
-    whichever runner happened to be slow, blaming a pod that was running fine.
-
-    Pinned here with a fake clock and real files rather than a real gateway: the
-    window is milliseconds wide on an idle host and seconds wide on a loaded one,
-    so only a test that controls the ordering can pin it on every platform.
+    The gateway publishes its internal-API credential only after the listener binds,
+    and ``_up`` mints right after this wait. A fake clock and real files pin the
+    ordering, since the window is milliseconds wide on an idle host.
     """
 
     def _pin_clock(self, monkeypatch: pytest.MonkeyPatch) -> ManualClock:
@@ -1188,12 +1136,8 @@ class TestWaitHealthyRequiresTheCredential:
     ) -> None:
         """A live port outranks the unit's restart history, not the other way round.
 
-        `restarts` is the unit's CUMULATIVE NRestarts, which nothing in this package
-        resets, so a pod that ever auto-restarted carries it for good. Reading it
-        while the port is SERVING would condemn a healthy recovered pod as a crash
-        and the caller's cleanup would delete its home. The fast-fail is for a
-        gateway that is not coming up; one that answers has come up, so the wait
-        stays on the credential and ends in the credential verdict instead.
+        `restarts` is the unit's cumulative NRestarts, never reset here. While the port
+        serves, the wait stays on the credential and ends in the credential verdict.
         """
         self._pin_clock(monkeypatch)
         cfg = PodConfig.load()
@@ -1229,12 +1173,8 @@ class TestWaitHealthyRequiresTheCredential:
     ) -> None:
         """Binding at the end of the budget is not a failed credential write.
 
-        The gap between the bind and the credential write is seconds wide on a
-        loaded host, so a gateway that comes up in the final second of its budget is
-        serving on the last poll while having had no chance at all to publish.
-        Reporting that as the credential verdict blames a write that never ran and,
-        because the credential branch is tested before the slow-boot one, would
-        withhold the one remedy that helps: a bigger budget.
+        The bind-to-credential gap is seconds wide on a loaded host, so a late bind had
+        no chance to publish. The credential branch is checked before the slow-boot one.
         """
         self._pin_clock(monkeypatch)
         cfg = PodConfig.load()
@@ -1294,12 +1234,8 @@ class TestWaitHealthyRequiresTheCredential:
     ) -> None:
         """A cumulative restart count must not condemn a gateway that is answering.
 
-        `unit_state` returns the unit's NRestarts, which nothing in this package
-        resets, so a pod that ever auto-restarted carries `restarts > 0` forever.
-        Consulting the crash fast-fail while the port is SERVING therefore turned a
-        healthy recovered pod -- answering, new credential not yet published -- into
-        the crash verdict, and the caller's cleanup then deleted the home of the pod
-        that had just recovered.
+        `unit_state` returns the cumulative NRestarts, so a recovered pod keeps
+        `restarts > 0`; the crash fast-fail must not fire while the port serves.
         """
         self._pin_clock(monkeypatch)
         cfg = PodConfig.load()
@@ -1350,12 +1286,8 @@ class TestWaitHealthyRequiresTheCredential:
     ) -> None:
         """A slow 200 must not satisfy the span requirement by itself.
 
-        The span exists to separate "watched it serve, waited, still no credential"
-        from "it had no chance to publish yet". `health` does real I/O, so timing the
-        observation from BEFORE the probe credits its latency as serving time, and one
-        slow 200 then clears the span on its very first poll -- reporting a slow boot
-        as a credential failure, the verdict that also tells the caller the gateway is
-        healthy.
+        `health` does real I/O, so serving time is counted from after the probe. Timing
+        it from before would let one slow 200 clear the span on the first poll.
         """
         cfg = PodConfig.load()
         clock = _pin_clock(monkeypatch)
@@ -1408,13 +1340,9 @@ class TestWaitHealthyRequiresTheCredential:
     ) -> None:
         """ "Not provably foreign" is not "provably ours".
 
-        `health` downgrades to HEALTH_FOREIGN only when ownership is PROVEN foreign,
-        and hands back the status unchanged for OWNER_UNPROVEN -- a pid on the port
-        with no fresh record behind it, which is what an unavailable or failed
-        listener lookup leaves on a host that cannot see another process's sockets.
-        Reading that serving code as proof of a handover would clear the latch for a
-        port still held by somebody else, dropping the one attribution that sends the
-        operator to the right diagnosis.
+        `health` returns HEALTH_FOREIGN only for proven-foreign ownership and passes the
+        status through for OWNER_UNPROVEN (a host that cannot see other processes'
+        sockets). That serving code must not clear the foreign latch.
         """
         cfg = PodConfig.load()
         self._pin_clock(monkeypatch)
@@ -1464,14 +1392,8 @@ class TestWaitHealthyRequiresTheCredential:
     def test_the_gateway_mints_a_fresh_credential_per_generation(self) -> None:
         """Drift guard for the assumption `live != superseded` rests on.
 
-        The supersede check can only tell a new generation's credential from its
-        predecessor's if a starting gateway MINTS a new one rather than reusing what
-        it finds on disk. Nothing in this package can enforce that -- the mint lives
-        in the dashboard -- and the failure mode if it ever changes is silent and
-        expensive: every reboot of a crashed pod would keep reading the stale secret
-        as "not yet superseded" and burn the entire readiness budget before failing.
-        Asserting the property at its source is what makes that coupling visible to
-        whoever edits the mint.
+        The supersede check needs a starting gateway to mint a new credential, not reuse
+        the one on disk. The mint lives in the dashboard, so this pins it at the source.
         """
         server = (
             Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / "server.py"
@@ -1515,12 +1437,8 @@ class TestWaitHealthyRequiresTheCredential:
     ) -> None:
         """A crashed pod's home keeps its secret, and that must not read as ready.
 
-        ``clear_marker`` runs only on a graceful shutdown and the stale-marker prune
-        deliberately never removes the credential, so rebooting a crashed pod finds
-        the PREVIOUS generation's secret already on disk. Without the supersede
-        check the wait is satisfied on its very first poll and hands the mint a
-        credential the new gateway never minted -- the defect this whole wait exists
-        to prevent, just with a stale value instead of a missing one.
+        ``clear_marker`` runs only on a graceful shutdown and the prune keeps the
+        credential, so a rebooted crashed pod finds the previous generation's secret.
         """
         self._pin_clock(monkeypatch)
         cfg = PodConfig.load()
@@ -1550,12 +1468,8 @@ class TestWaitHealthyRequiresTheCredential:
     ) -> None:
         """The verdict rests on a fresh read, not on one taken before the I/O.
 
-        Every reading in a poll predates the work that poll does: the credential is
-        read first, then `health` and `unit_state` each make a real call. Those calls
-        are exactly as long as the bind-to-credential window this wait exists to
-        cover, so a credential published while one of them runs is present but
-        unseen -- and the exhausted-budget branch would then report that the gateway
-        published none, on which `_up` tears down a pod it started.
+        The credential is read before `health` and `unit_state` make real calls, so a
+        credential published during them is unseen until the exhausted branch re-reads.
         """
         clock = self._pin_clock(monkeypatch)
         cfg = PodConfig.load()

@@ -113,15 +113,9 @@ class KiroHarness(MembershipHarness):
             await asyncio.to_thread(agent_mod.require_fork_governance, ctx.agent, ctx.work_dir)
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
-        # kiro-cli honours the spec file's own grants before Crew's gate, and Crew
-        # never rewrites a crew-bound spec it does not own, so a start on one the
-        # ceiling would narrow is refused.
-        try:
-            await asyncio.to_thread(
-                agent_mod.require_shared_template_within_ceiling, ctx.agent, ACP_BACKEND_KIRO
-            )
-        except agent_mod.SharedTemplateOverCeiling as exc:
-            raise AcpRuntimeError(str(exc)) from exc
+        # The over-ceiling check on a crew-bound spec Crew does not own is not here:
+        # it judges the name kiro-cli is finally handed, a skill view or the authored
+        # name, which the runtime decides after this plan (``runtime_spawn_launch``).
         # kiro-cli resolves ``--agent`` against ``ctx.work_dir`` first, so a checkout
         # that declares a managed agent name would run its own copy in place of the
         # installed one. Off the loop: it scans the checkout's agents directory.
@@ -210,6 +204,7 @@ class KiroHarness(MembershipHarness):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        worker_stub_names: frozenset[str] | None = None,
     ) -> SessionExtras:
         """Nothing. kiro-cli already has the agent from its spawn flag.
 

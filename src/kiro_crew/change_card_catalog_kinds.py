@@ -26,7 +26,7 @@ from typing import Any
 
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
-from kiro_crew.config.sections import MEMBER_APPROVAL_MODES
+from kiro_crew.config.sections import FEATURE_PREVIEW_FLAGS, MEMBER_APPROVAL_MODES
 from kiro_crew.terminal_safe import _is_invisible
 
 KIND_SETTING_CHANGE = "setting.change"
@@ -188,8 +188,23 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, an agent may add documents to the knowledge library
     # (``knowledge_add_document``); off, that tool refuses.
     "knowledge.auto_add_documents": (False, True),
+    # Fair admission on holds each person to their limit; off lets one person
+    # take the whole host.
+    "dashboard.shared_crew.admission_enabled": (True, False),
+    # On, the dashboard also listens on this machine's tailnet addresses.
+    "dashboard.shared_crew.tailnet_direct": (False, True),
     "skills.approval_required": (True, False),
     "telemetry.beacon_enabled": (False, True),
+    # Kiro's own Chromium holds none of the person's logins; ``auto`` and
+    # ``user_chrome`` hand the agent the person's Chrome, signed in.
+    "browser.choice": ("headless", "kiro_chromium", "auto", "user_chrome"),
+    # Off, password boxes show in the live picture.
+    "browser.live.mask_passwords": (True, False),
+    # On, Kiro's Chromium starts signed in to the edition's sites.
+    "browser.credentials.enabled": (False, True),
+    # On, a conductor may run sessions on a connected remote crew (``crew=``) and
+    # this crew answers its headroom and takes bound work items.
+    "work_ledger.remote_dispatch": (False, True),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen
@@ -215,10 +230,25 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "agent.soft_stop_budget_secs",
         "agent.tool_search",
         "auto_update",
+        # A list, so no card reaches it (see ``skills.extra_paths``). Adding a
+        # domain can widen where the edition's sign-in is used, so if cards ever
+        # carry list values this moves to a widening class.
+        "browser.credentials.domains",
+        # The live view's shape: on/off, picture quality, frame-rate ceiling.
+        "browser.live.enabled",
+        "browser.live.max_fps",
+        "browser.live.quality",
         "computer_use.max_tree_nodes",
         "computer_use.screenshot_max_px",
+        # A list, so no card reaches it (see ``skills.extra_paths``). Loopback
+        # ``host:port`` entries only, for the Preview tab, which no agent drives.
+        "dashboard.browser_local_origins",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
+        # A feature preview only decides whether the dashboard OFFERS an
+        # unreleased page or menu entry; the feature's own routes and checks
+        # are the same either way.
+        *(f"dashboard.feature_previews.{_name}" for _name in FEATURE_PREVIEW_FLAGS),
         "dashboard.folder_sort",
         "dashboard.mcp_probe_timeout_secs",
         "dashboard.prevent_sleep",
@@ -283,6 +313,12 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # Local recording only: the write route refuses the enable on a host
         # where it would start sending data out.
         "telemetry.enabled",
+        # Shared Crew capacity numbers and the typing lock: they size how much
+        # work runs at once and how long a draft holds the composer, never who
+        # may act or what an agent may reach.
+        "dashboard.shared_crew.crew_concurrency",
+        "dashboard.shared_crew.principal_concurrency",
+        "dashboard.shared_crew.typing_idle_seconds",
     }
 )
 
@@ -317,6 +353,16 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         "session_environments.coder_url",
         "session_environments.sprites_profiles",
         "session_environments.boxd_profiles",
+        # Which vault secret the Strands harness is handed, and which provider
+        # address (a LiteLLM proxy, an Ollama host) its conversation is sent to.
+        "agent.strands_env",
+        # The provider and model a Strands session runs: where its conversation goes.
+        "agent.strands_provider",
+        "agent.strands_model",
+        # A Kiro Cloud profile moves a session's agent and tools into a Kiro
+        # cloud sandbox outside Kiro Crew's tool gate, with the repositories
+        # it names checked out there.
+        "session_environments.kiro_cloud_profiles",
     }
 )
 
@@ -416,7 +462,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_CREATE,
-            "Create a crewmate that owns a goal, optionally on a daily/cron schedule.",
+            "Create a Bot that owns a goal, optionally on a daily/cron schedule.",
             _obj(
                 {
                     "name": {"type": "string", "maxLength": _CREWMATE_NAME_MAX},
@@ -429,7 +475,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_UPDATE,
-            "Change one crewmate's description, display name, model, effort or the "
+            "Change one Bot's description, display name, model, effort or the "
             "approval mode of its own chat (normal, trust_reads, trust), or let it "
             "request tools for its worker itself (dynamic_capabilities).",
             _obj(
@@ -453,7 +499,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_CAPABILITIES,
-            "Change one crewmate's tools / MCP servers / skills / autoApprove. `draft` is "
+            "Change one Bot's tools / MCP servers / skills / autoApprove. `draft` is "
             "{operations:[{section,id,action:set|remove|inherit,value?}], enroll?}.",
             _obj(
                 {
@@ -469,7 +515,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_GOAL,
-            "Add one goal for a crewmate, or replace one of its goals: what it works "
+            "Add one goal for a Bot, or replace one of its goals: what it works "
             "toward. Without `goal_id` the text is added as a new goal; with the id of "
             "one of its goals (goal_read lists them) "
             "it replaces that goal's text. Goals are stored in its goal record, never "
@@ -490,7 +536,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_KEY_RESULTS,
-            "Set one crewmate's key results: readings that show how far it "
+            "Set one Bot's key results: readings that show how far it "
             "is from its goals, replacing the current set. `items` is "
             "[{text, target, goal_ids?}], target a number or a word such as 'yes', "
             "goal_ids the ids of the goals that key result serves.",
@@ -518,12 +564,12 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_CHECK_INS,
-            "Turn one crewmate's check-ins on or off and set when they run: daily "
+            "Turn one Bot's check-ins on or off and set when they run: daily "
             "(the Daily Goal Reminder), weekly (the Weekly report, on `weekday`, "
             "0 = Sunday) and monthly (the Monthly review, on `month_day`, 1-28), "
             "all at `time` (HH:MM, 24-hour), and heartbeat (a wake every `interval` "
             f"minutes, {_goals.interval_minutes_text()}, read as "
-            f"{_goals.interval_choices()}, in which the crewmate moves its "
+            f"{_goals.interval_choices()}, in which the Bot moves its "
             "work forward on its own; each run uses credits). Give only the fields "
             "that change.",
             _obj(
@@ -553,8 +599,8 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_DASHBOARD_PAGE,
-            "One crewmate offers, once, to write its own Dashboard page around its goal "
-            "(the crewmate's own offer_dashboard_page).",
+            "One Bot offers, once, to write its own Dashboard page around its goal "
+            "(the Bot's own offer_dashboard_page).",
             _obj({"member": _STR}, ["member"]),
             (),
         ),
@@ -613,6 +659,7 @@ KINDS: dict[str, KindDef] = {
                     "server": _STR,
                     "entry": {"type": "object"},
                     "origin": {"type": "object"},
+                    "mount_only": _BOOL,
                 },
                 ["template", "server", "entry", "origin"],
             ),
@@ -708,7 +755,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_IMPORT,
-            "Import one crewmate from a .crewmate file (owner only).",
+            "Import one Bot from a .kirobot file (owner only).",
             _obj(
                 {
                     "name": {"type": "string", "maxLength": _CREWMATE_NAME_MAX},
@@ -1409,7 +1456,7 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
             out_goal["heartbeat"] = _clean_bool(p, "heartbeat")
         if "goal_id" in p:
             if not _goals.is_goal_id(p["goal_id"]):
-                raise _fail("invalid_param", "'goal_id' must be one of the crewmate's goal ids")
+                raise _fail("invalid_param", "'goal_id' must be one of the Bot's goal ids")
             out_goal["goal_id"] = p["goal_id"]
         return out_goal
     if kind == KIND_CREWMATE_KEY_RESULTS:
@@ -1431,7 +1478,7 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
             if "goal_ids" in item:
                 links = item["goal_ids"]
                 if not isinstance(links, list) or not all(_goals.is_goal_id(g) for g in links):
-                    raise _fail("invalid_param", "'goal_ids' is a list of the crewmate's goal ids")
+                    raise _fail("invalid_param", "'goal_ids' is a list of the Bot's goal ids")
                 kr["goal_ids"] = list(dict.fromkeys(links))
             items.append(kr)
         return {"member": _member_name(p, "member"), "items": items}
@@ -1499,12 +1546,17 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
     if kind == KIND_TEMPLATE_MCP_SERVER:
         from kiro_crew import template_mcp_additions as _additions
 
-        _only(p, {"template", "server", "entry", "origin"})
+        _only(p, {"template", "server", "entry", "origin", "mount_only"})
         out_srv: dict[str, Any] = {
             "template": _clean_str(p, "template", pattern=_TEMPLATE_NAME_RE),
             # One path segment of plain characters: the Undo names it in its path.
             "server": _clean_str(p, "server", pattern=_TEMPLATE_NAME_RE),
         }
+        if "mount_only" in p:
+            if not isinstance(p["mount_only"], bool):
+                raise _fail("invalid_param", "'mount_only' must be a boolean")
+            if p["mount_only"]:
+                out_srv["mount_only"] = True
         entry = p.get("entry")
         if not isinstance(entry, dict):
             raise _fail("invalid_param", "'entry' must be an object")

@@ -27,6 +27,7 @@ from handlers_taskrunner_coverage_helpers import (  # noqa: F401 -- the autouse 
 
 from kiro_crew.dashboard.handlers.taskrunner import api_taskrunner_from_chat, api_taskrunner_start
 from kiro_crew.taskrunner import TaskRun
+from kiro_crew.testing.wait import await_until
 
 # ── AUTOSDE no-blocking-call-on-event-loop ──
 
@@ -180,8 +181,7 @@ class TestSpecIoRunsOffTheEventLoop:
                 _request(_state(runner), json_body={"spec": "__inline__:# cancel late"})
             )
         )
-        # flake-ok: set when the request task reaches the stand-in start; pre-existing, moved verbatim
-        await started.wait()
+        await await_until(started, what="the request task reaching the stand-in start")
         assert list(runner._work_dir.glob("TASK_*.md")) != []  # spec exists mid-flight
         request_task.cancel()
         release.set()
@@ -221,8 +221,7 @@ class TestSpecIoRunsOffTheEventLoop:
                 _request(_state(runner), json_body={"spec": "__inline__:# cancel late"})
             )
         )
-        # flake-ok: set when the request task reaches the stand-in start; pre-existing, moved verbatim
-        await started.wait()
+        await await_until(started, what="the request task reaching the registering start")
         request_task.cancel()
         release.set()
 

@@ -189,11 +189,13 @@ def _submit_index(value: Any) -> str | None:
     traceback and leave a dead button, the exact outcome this module's strictness
     exists to avoid. No legitimate index can exceed the number of buttons or
     sessions actually offered, so three digits is generous.
+
+    ASCII digits only: ``"²".isdigit()`` is True while ``int("²")`` raises.
     """
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         return None
     text = str(value)
-    if not text.isdigit() or len(text) > _MAX_INDEX_DIGITS:
+    if not (text.isascii() and text.isdigit()) or len(text) > _MAX_INDEX_DIGITS:
         return None
     return text
 

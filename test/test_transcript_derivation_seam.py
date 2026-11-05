@@ -65,12 +65,20 @@ PLAIN_READS = frozenset(
 # goes through the derivation seam. Keep this sorted; a stale entry fails too.
 PLUMBING: frozenset[tuple[str, str]] = frozenset(
     {
+        # An app's test snapshotting a transcript it wrote, to assert it survives.
+        (
+            "kiro_crew/apps/builtins/auto_improvement/tests/test_auto_improvement_members.py",
+            "recent",
+        ),
         # An app reading its own slot's conversation for the user.
         ("kiro_crew/apps/builtins/spec_builder/backend/runtime.py", "read_messages"),
         # Channel file migration: moves rows between stems, derives nothing.
         ("kiro_crew/channel_transcript_migration.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
         ("kiro_crew/cli_commands_security.py", "recent"),
+        # `kirocrew consolidate`: a yes/no sensitive-session check on a tail
+        # consolidate_now left, to report the skip; no rows leave.
+        ("kiro_crew/cli_knowledge.py", "_read_messages"),
         # The live session's OWN rows into its OWN prompt / compaction.
         ("kiro_crew/context.py", "read_messages"),
         ("kiro_crew/context.py", "read_messages_chained"),
@@ -97,6 +105,10 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/dashboard/cron_inject.py", "read_messages"),
         # Rendering the transcript's own artifacts / rows to its user.
         ("kiro_crew/dashboard/handlers/artifacts_parts/session_documents.py", "read_messages"),
+        # The Files tab listing the paths this session edited, to its user.
+        ("kiro_crew/dashboard/session_files.py", "read_file_change_messages"),
+        # The same tab showing one of those edits, as the transcript's own card does.
+        ("kiro_crew/dashboard/session_files.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
         ("kiro_crew/dashboard/handlers/core_security.py", "recent"),
         ("kiro_crew/dashboard/handlers/cron_runs.py", "read_messages"),

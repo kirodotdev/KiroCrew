@@ -10,10 +10,10 @@ Two halves, and the split matters:
   it lands exactly once per activation, and that untrusted text is redacted
   before it reaches the persisted window.
 
-``agent_welcome_message`` is the field's only reader, and the bundled
-pptx-maker agents ship values for it, so both the reader and those agents are
-covered here. Tests use a ``tmp_path`` fake ``$HOME`` so the real agents
-directory is never read.
+``agent_welcome_message`` is the field's only reader, so the reader is covered
+here; an app whose bundled agents ship values for it pins those in its own
+``tests/``. Tests use a ``tmp_path`` fake ``$HOME`` so the real agents directory is
+never read.
 """
 
 from __future__ import annotations
@@ -211,23 +211,6 @@ class TestAgentWelcomeMessageResolution:
         clear_list_agents_cache()
         out = agent_welcome_message("loud", agents_dir=d)
         assert len(out) == WELCOME_MESSAGE_MAX_CHARS
-
-
-class TestBundledAgentsShipAReadableHint:
-    """The project's own agents demonstrated the trap; they must now work."""
-
-    def test_every_bundled_pptx_maker_hint_is_readable(self) -> None:
-        import kiro_crew
-
-        agents = Path(kiro_crew.__file__).parent / "apps/builtins/pptx_maker/agents"
-        specs = sorted(agents.glob("*.json"))
-        assert specs, f"no bundled pptx_maker agent specs under {agents}"
-        rendered = {
-            p.stem: spec_welcome_message(json.loads(p.read_text(encoding="utf-8"))) for p in specs
-        }
-        assert [s for s, text in rendered.items() if text], (
-            "the bundled agents that ship a welcomeMessage must now render one: " f"{rendered}"
-        )
 
 
 class TestSurfaceAgentWelcome:

@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import LayoutEditor from '../components/crew/layout/LayoutEditor'
 import { trackIndexAtFraction } from '../components/crew/layout/LayoutEditor'
 import LayoutEditorHarnessPage from '../pages/LayoutEditorHarnessPage'
@@ -53,6 +54,32 @@ describe('LayoutEditor (core)', () => {
     expect(onChange).toHaveBeenCalledTimes(1)
     const next: GridSpec = onChange.mock.calls[0][0]
     expect(next.items.map((i) => i.id)).toEqual(['a'])
+  })
+
+  it.each(['{Enter}', ' '])('removes a pane from the keyboard (%s) on its close button', async (key) => {
+    const onChange = vi.fn()
+    const user = userEvent.setup()
+    render(<LayoutEditor spec={baseSpec()} onChange={onChange} />)
+    const close = screen.getByLabelText('Remove Side panel')
+    close.focus()
+    await user.keyboard(key)
+    // The close button used to sit inside the drag handle, whose key handler
+    // cancelled Space before the button saw it.
+    expect(onChange).toHaveBeenCalledTimes(1)
+    const next: GridSpec = onChange.mock.calls[0][0]
+    expect(next.items.map((i) => i.id)).toEqual(['a'])
+    // The close button must not sit inside another control.
+    expect(close.parentElement?.closest('button, [role="button"]')).toBeNull()
+  })
+
+  it('does not move the pane on an arrow key pressed on its close button', async () => {
+    const onChange = vi.fn()
+    const user = userEvent.setup()
+    render(<LayoutEditor spec={baseSpec()} onChange={onChange} />)
+    screen.getByLabelText('Remove Side panel').focus()
+    // (1,1) below sidePanel 'b' is free, so the handle would move it here.
+    await user.keyboard('{ArrowDown}')
+    expect(onChange).not.toHaveBeenCalled()
   })
 
   it('does not shrink columns below the occupied edge (stepper min)', () => {

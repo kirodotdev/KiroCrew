@@ -5,11 +5,12 @@
  * raw tool title when they're off, so the two surfaces agree.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { ThemeProvider } from '../hooks/useTheme'
 // Through `/all` so the German catalog the locale cases assert on is registered.
 import { i18next } from '../i18n/all'
@@ -73,6 +74,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
+import { expectLoopIcon } from './GoalLoopIconTestUtils'
 
 const TOOL_DETAIL = {
   kind: 'tool',
@@ -81,7 +83,7 @@ const TOOL_DETAIL = {
   ts: 1,
 }
 
-function renderSidebar(slots: ChatSlot[], chat: Record<string, unknown>) {
+async function renderSidebar(slots: ChatSlot[], chat: Record<string, unknown>) {
   const legacyFixtures = chat.goalLoops as Record<string, { cycle_count: number; max_cycles: number }> | undefined
   const { goalLoops: _legacyFixtures, ...chatState } = chat
   const automations = Object.fromEntries(Object.entries(legacyFixtures ?? {}).map(([slotKey, loop]) => [
@@ -104,7 +106,7 @@ function renderSidebar(slots: ChatSlot[], chat: Record<string, unknown>) {
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])
-  return render(
+  const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
@@ -118,6 +120,9 @@ function renderSidebar(slots: ChatSlot[], chat: Record<string, unknown>) {
       </Provider>
     </QueryClientProvider>,
   )
+  // ThemeProvider's catalog fetch and the sidebar's mount-time reads answer after render returns.
+  await waitFor(() => expect(qc.isFetching()).toBe(0), namedCeiling('SIDEBAR_READS_SETTLED', 5000))
+  return view
 }
 
 beforeEach(() => {
@@ -126,30 +131,31 @@ beforeEach(() => {
 })
 afterEach(async () => {
   vi.clearAllMocks()
-  await i18next.changeLanguage('en')
+  // The sidebar is still mounted, and i18next emits languageChanged even for en -> en.
+  await act(async () => { await i18next.changeLanguage('en') })
 })
 
 describe('chat sidebar — tool status honors simplifiedToolNames', () => {
   const slots = [{ key: 'k', title: 'sess', running: true, messages: 5, last_message: 'stale' }] as unknown as ChatSlot[]
 
-  it('shows the agent purpose when the setting is on', () => {
-    const { getByText, queryByText } = renderSidebar(slots, { slotStatusDetail: { k: TOOL_DETAIL } })
+  it('shows the agent purpose when the setting is on', async () => {
+    const { getByText, queryByText } = await renderSidebar(slots, { slotStatusDetail: { k: TOOL_DETAIL } })
     expect(getByText(/Looking up the mic permission handler/)).toBeTruthy()
     expect(queryByText(/setPermissionCheckHandler/)).toBeNull()
   })
 
-  it('shows the raw tool title when the setting is off', () => {
+  it('shows the raw tool title when the setting is off', async () => {
     cfg.value = { ...cfg.value, simplifiedToolNames: false }
-    const { getByText, queryByText } = renderSidebar(slots, { slotStatusDetail: { k: TOOL_DETAIL } })
+    const { getByText, queryByText } = await renderSidebar(slots, { slotStatusDetail: { k: TOOL_DETAIL } })
     expect(getByText(/setPermissionCheckHandler/)).toBeTruthy()
     expect(queryByText(/Looking up the mic permission handler/)).toBeNull()
   })
 
-  it('still localizes the fixed thinking phase with the setting off', () => {
+  it('still localizes the fixed thinking phase with the setting off', async () => {
     // Only the `tool` phase carries two forms; thinking/streaming must keep
     // going through the catalog rather than falling into the tool branch.
     cfg.value = { ...cfg.value, simplifiedToolNames: false }
-    const { getByText } = renderSidebar(slots, {
+    const { getByText } = await renderSidebar(slots, {
       slotStatusDetail: { k: { kind: 'thinking', ts: 1 } },
     })
     expect(getByText(/Thinking…/)).toBeTruthy()
@@ -162,7 +168,7 @@ describe('chat sidebar — tool status honors simplifiedToolNames', () => {
     await i18next.changeLanguage('de')
     const localized = i18next.t('pages.chatSidebar.thinking')
     expect(localized).not.toBe('Thinking…')
-    const { getByText, queryByText } = renderSidebar(slots, {
+    const { getByText, queryByText } = await renderSidebar(slots, {
       slotStatusDetail: { k: { kind: 'thinking', ts: 1 } },
     })
     expect(getByText(localized)).toBeTruthy()
@@ -173,20 +179,20 @@ describe('chat sidebar — tool status honors simplifiedToolNames', () => {
     // `chat_status` frames land as `kind: 'thinking'` with their own label, so
     // the catalog mapping applies only when no label came with the phase.
     await i18next.changeLanguage('de')
-    const { getByText, queryByText } = renderSidebar(slots, {
+    const { getByText, queryByText } = await renderSidebar(slots, {
       slotStatusDetail: { k: { kind: 'thinking', label: 'Compacting…', ts: 1 } },
     })
     expect(getByText(/Compacting…/)).toBeTruthy()
     expect(queryByText(i18next.t('pages.chatSidebar.thinking'))).toBeNull()
   })
 
-  it('composes the goal-loop detail from the same setting-aware label', () => {
+  it('composes the goal-loop detail from the same setting-aware label', async () => {
     cfg.value = { ...cfg.value, simplifiedToolNames: false }
-    const { getByText } = renderSidebar(slots, {
+    const { container, getByText } = await renderSidebar(slots, {
       goalLoops: { k: { cycle_count: 3, max_cycles: 24 } },
       slotStatusDetail: { k: TOOL_DETAIL },
     })
-    expect(getByText('Loop 3/24')).toBeTruthy()
+    expectLoopIcon(container, 3, 24)
     expect(getByText(/setPermissionCheckHandler/)).toBeTruthy()
   })
 })

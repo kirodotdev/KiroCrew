@@ -124,7 +124,11 @@ class WheelUpdateBusy(WheelUpdateError):
 
 
 class WheelUpdateNotReady(WheelUpdateError):
-    """A precondition is still settling (memory is being prepared); retry soon."""
+    """A precondition does not hold yet; retry soon.
+
+    Memory is still being prepared, or the security policy turned unattended
+    installs off while a routine install built (the retry then only notifies).
+    """
 
 
 class WheelUpdateSnapshotFailed(WheelUpdateError):

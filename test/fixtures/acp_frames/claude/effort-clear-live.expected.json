@@ -1,0 +1,340 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {},
+        "claudeCode": {
+          "promptQueueing": true
+        }
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "systemPrompt": {
+          "mode": {
+            "override": {}
+          }
+        }
+      }
+    },
+    "agent_version": "0.94.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "skip",
+    "frame": "_auth/status_update",
+    "params": {
+      "authStatus": {
+        "kind": "external",
+        "label": "AWS Bedrock"
+      }
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "auto",
+        "description": "Session permission mode",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Always ask before making changes",
+            "name": "Manual",
+            "value": "default"
+          },
+          {
+            "description": "Automatically accept all file edits",
+            "name": "Accept edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Create a plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          },
+          {
+            "description": "Claude handles permission decisions",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Accepts all permissions",
+            "name": "Bypass permissions",
+            "value": "bypassPermissions"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "",
+        "description": "AI model to use",
+        "id": "model",
+        "name": "Model",
+        "options": [],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "default",
+        "description": "Available effort levels for this model",
+        "id": "effort",
+        "name": "Effort",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          },
+          {
+            "name": "Xhigh",
+            "value": "xhigh"
+          },
+          {
+            "name": "Max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "",
+        "description": "Main-thread agent persona",
+        "id": "agent",
+        "name": "Agent",
+        "options": [],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "auto",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "auto",
+        "bypassPermissions"
+      ]
+    },
+    "session_id": "claude-session-1"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "auto",
+        "description": "Session permission mode",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Always ask before making changes",
+            "name": "Manual",
+            "value": "default"
+          },
+          {
+            "description": "Automatically accept all file edits",
+            "name": "Accept edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Create a plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          },
+          {
+            "description": "Claude handles permission decisions",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Accepts all permissions",
+            "name": "Bypass permissions",
+            "value": "bypassPermissions"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "",
+        "description": "AI model to use",
+        "id": "model",
+        "name": "Model",
+        "options": [],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "high",
+        "description": "Available effort levels for this model",
+        "id": "effort",
+        "name": "Effort",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          },
+          {
+            "name": "Xhigh",
+            "value": "xhigh"
+          },
+          {
+            "name": "Max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "",
+        "description": "Main-thread agent persona",
+        "id": "agent",
+        "name": "Agent",
+        "options": [],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "auto",
+        "description": "Session permission mode",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Always ask before making changes",
+            "name": "Manual",
+            "value": "default"
+          },
+          {
+            "description": "Automatically accept all file edits",
+            "name": "Accept edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Create a plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          },
+          {
+            "description": "Claude handles permission decisions",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Accepts all permissions",
+            "name": "Bypass permissions",
+            "value": "bypassPermissions"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "",
+        "description": "AI model to use",
+        "id": "model",
+        "name": "Model",
+        "options": [],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "default",
+        "description": "Available effort levels for this model",
+        "id": "effort",
+        "name": "Effort",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          },
+          {
+            "name": "Xhigh",
+            "value": "xhigh"
+          },
+          {
+            "name": "Max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "",
+        "description": "Main-thread agent persona",
+        "id": "agent",
+        "name": "Agent",
+        "options": [],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 4
+  }
+]

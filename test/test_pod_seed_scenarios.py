@@ -569,32 +569,13 @@ class TestBootAppliesTheScenario:
     def booted(self, tmp_path: Path, monkeypatch):
         """Run ``boot`` for a pod with SEED=<value>; return (rc, home, argv).
 
-        ``boot`` reaches two host-derived resolvers on every call, not just on
-        a real pod host: ``_seed_pod_os_home`` stages the OPERATOR's real
-        ``~/.local/share/kiro-cli`` / ``~/.local/share/amazon-q`` sign-in store
-        via ``_runtime_auth_store_mappings`` -> ``identity_stores.store_mappings
-        (sys.platform, Path.home(), os.environ)``, and
-        ``_probe_pod_child_bootstrap`` resolves and SPAWNS whatever real
-        kiro-cli ``kiro_cli.resolve_kiro_cli`` finds under ``Path.home()``
-        (``acp.client._resolve_kiro_bin`` defaults ``home=None`` to
-        ``Path.home()``). Both read the classmethod, not an
-        ``os.path.expanduser`` call, so pinning it here is what keeps every
-        test in this class from touching the operator's real credentials or
-        spawning their real CLI. ``HOME`` is pinned too because
-        ``build_pod_env`` copies ``os.environ.get("HOME", str(Path.home()))``
-        into the pod's own environment, and ``XDG_DATA_HOME`` is cleared
-        because ``identity_stores._source_root`` honours it as an override on
-        the *source* side of the mapping, which would otherwise still point at
-        a real store even under a fake home. ``KIROCREW_KIRO_BIN`` is cleared
-        because ``build_pod_env`` also inherits the operator's whole
-        ``os.environ`` and an override there is deliberately honoured by
-        ``find_kiro_cli_candidates`` ahead of every directory search. ``PATH``
-        is pinned to an empty directory for the same inheritance reason:
-        ``known_kiro_cli_dirs``'s inherited-PATH branch keeps every entry of
-        the REAL ``PATH`` verbatim (``env.augmented_path`` only APPENDS
-        home-templated extras), so a real kiro-cli install directory sitting
-        on the operator's actual ``PATH`` -- independent of ``home`` -- would
-        still resolve and get spawned even with ``Path.home()`` pinned.
+        ``boot`` stages the operator's real sign-in store and spawns the real kiro-cli
+        it finds, so every input that could reach them is pinned:
+        ``Path.home()`` (read by ``identity_stores.store_mappings`` and
+        ``resolve_kiro_cli``), ``HOME`` (copied by ``build_pod_env``),
+        ``XDG_DATA_HOME`` (a source-side override in ``_source_root``),
+        ``KIROCREW_KIRO_BIN`` (honoured before any directory search) and ``PATH``
+        (kept verbatim by ``known_kiro_cli_dirs``), set to an empty directory.
         """
         monkeypatch.setattr(rt, "IS_MACOS", False)
         fake_host_home = tmp_path / "fake-host-home"
@@ -642,16 +623,10 @@ class TestBootAppliesTheScenario:
             rt.write_env_file(cfg, "wt", {"CHECKOUT": str(checkout), "SEED": seed_value})
             rc = rt.boot(cfg, "wt")
             home = cfg.home_dir("wt")
-            # The fake host home never had a kiro-cli sign-in store, so the
-            # child-viability probe must report PROBE_UNAVAILABLE (no real
-            # kiro-cli resolved) rather than finding and spawning the
-            # operator's real binary -- and the staged os-home's identity-
-            # store tree (``.local/share/...``, where the real store would
-            # have been copied to) must be empty, holding no files copied in
-            # from the fake host's non-existent store. The ``.aws/sso/cache``
-            # sibling is excluded: it is unconditionally created EMPTY by
-            # ``_seed_pod_os_home`` for the pod's OWN future grants and is not
-            # host-derived.
+            # The fake host home has no sign-in store, so the staged
+            # ``.local/share`` tree must hold no files. ``.aws/sso/cache`` is
+            # excluded: ``_seed_pod_os_home`` always creates it empty for the
+            # pod's own grants.
             os_home = home / "os-home"
             staged_store_root = os_home / ".local" / "share"
             if staged_store_root.is_dir():
@@ -680,12 +655,8 @@ class TestBootAppliesTheScenario:
     def test_the_child_probe_finds_no_real_host_kiro_cli(self, booted) -> None:
         """The fixture's fake host home must starve the child-viability probe.
 
-        An unpinned ``Path.home()`` here lets
-        ``_probe_pod_child_bootstrap`` resolve and spawn whatever kiro-cli is
-        really installed on the operator's machine. With the fake home in
-        place ``resolve_kiro_cli`` must find nothing under it, so the boot
-        reaches ``rc == 0`` via ``PROBE_UNAVAILABLE`` rather than by actually
-        launching a real binary.
+        ``resolve_kiro_cli`` finds nothing, so the boot reaches ``rc == 0`` via
+        ``PROBE_UNAVAILABLE`` without launching the operator's real binary.
         """
         from kiro_crew import kiro_cli as kiro_cli_mod
 
@@ -817,25 +788,16 @@ class TestUpRefusesAnUnknownScenario:
 class TestSeedEnablesInstances:
     """`pod up --seed <dir>` can make the Remote Crew Set-up tab reachable.
 
-    A fresh pod home boots with the product default `instances.enabled=false`,
-    so `GET /api/instances` answers 403 and `RemoteCrewPanel` renders the
-    "off" card instead of its tabs -- a pod-e2e spec driving the "Set up a new
-    one" launch form times out on a locator that never mounts. The flag is
-    restart-marked, so it cannot be flipped on a running gateway; a seed dir
-    whose `config.json` sets it ON is the supported way to reach the surface,
-    WITHOUT changing the shipped product default.
+    The default `instances.enabled=false` makes `GET /api/instances` answer 403, and
+    the flag is restart-marked, so a seed `config.json` that sets it on is the way
+    for pod-e2e to reach the tab without changing the product default.
     """
 
     def test_sanitized_seed_config_keeps_instances_on(self, tmp_path: Path) -> None:
         """A `--seed <dir>` whose config enables `instances` boots with it on.
 
-        `instances` is deliberately absent from `SEED_DISABLED_SECTIONS`, so the
-        public sanitizer the pod boot calls leaves a seeded `instances.enabled`
-        alone -- unlike a self-activating channel, which it forces off (pinned
-        for every section by `test_pod_env.py::test_forces_every_disabled_section_off`).
-        If `instances` is ever added to that tuple, a seeded enable stops
-        working and this fails loudly rather than as a mystifying pod-e2e
-        timeout.
+        `instances` is absent from `SEED_DISABLED_SECTIONS`, so the sanitizer leaves a
+        seeded enable alone; adding it there fails this rather than a pod-e2e timeout.
         """
         (tmp_path / "config.json").write_text(json.dumps({"instances": {"enabled": True}}))
         sanitized = rt.sanitized_seed_config(tmp_path)

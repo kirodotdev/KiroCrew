@@ -6,7 +6,7 @@
  * eligibility in KiroPrerequisiteGate.agentPicker.test.tsx; the status and probe
  * fixtures they share live in KiroPrerequisiteGateTestUtils.tsx.
  */
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { KiroPrerequisiteStatus } from '../api/client'
 import KiroPrerequisiteGate, {
@@ -430,7 +430,7 @@ describe('KiroPrerequisiteGate', () => {
       // retry affordance — the banner is the single action.
       expect(screen.queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
       // Clearing the banner flips the whole surface back to the setup copy.
-      window.dispatchEvent(new CustomEvent('mc-auth-cleared'))
+      act(() => { window.dispatchEvent(new CustomEvent('mc-auth-cleared')) })
       expect(await screen.findByText(/Ask the .* owner to install/)).toBeInTheDocument()
       expect(screen.getByText(/gateway owner needs to finish setup/)).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
@@ -901,6 +901,23 @@ describe('KiroPrerequisiteGate', () => {
     expect(await screen.findByText('We could not check Kiro CLI.')).toBeInTheDocument()
     expect(screen.getByText(/Probe failed/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('asks a signed-out browser to sign in again instead of reporting a Kiro CLI check failure', async () => {
+    // A 403 X-Auth-Required refusal: the gateway never ran the check, so the
+    // banner's sign-in is the one remedy and no retry can succeed before it.
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(403, 'session expired', '', true))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Sign in again to continue.' })).toBeInTheDocument()
+    // The refusal is announced as an error, not dropped into a plain paragraph.
+    expect(screen.getByRole('alert')).toHaveTextContent(/Your sign-in is no longer valid/)
+    expect(screen.queryByText('We could not check Kiro CLI.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
   })
 

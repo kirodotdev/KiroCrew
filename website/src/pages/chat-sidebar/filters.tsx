@@ -2,7 +2,6 @@
  *  and tag filter state, the Recent window, the status sets the chips count, and the
  *  unread auto-drain. */
 import { Circle, Zap, Pin, Clock } from 'lucide-react'
-import { KiroGhostMark } from '../../components/KiroGhostMark'
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { shallowEqual } from 'react-redux'
 import type { SessionFilterKey, Slot } from './types'
@@ -56,8 +55,8 @@ export const SESSION_FILTERS: SessionFilterDef[] = [
     // workers are never rows here, so there is nothing for a hide to drop.
     key: 'crew', storageKey: 'mc-session-crew-only',
     color: 'var(--accent)',
-    // The crew's own ghost on the gradient, the mark the root rows wear.
-    icon: (active) => <span className={`w-3 h-3 rounded-full grid place-items-center ${active ? 'crew-grad' : 'bg-aim-subtle text-aim'}`}><KiroGhostMark size={8} className="inline-block shrink-0" /></span>,
+    // The Ultra Mode lightning bolt on the gradient, the mark the root rows wear.
+    icon: (active) => <span className={`w-3 h-3 rounded-full grid place-items-center ${active ? 'crew-grad' : 'bg-aim-subtle text-aim'}`}><Zap size={8} aria-hidden="true" className="inline-block shrink-0" /></span>,
   },
 ]
 
@@ -472,20 +471,22 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
     const id = setInterval(() => setRecentTick(t => t + 1), recentTickIntervalMs(recentWindowMs))
     return () => clearInterval(id)
   }, [recentFilterActive, recentWindowMs])
-  // Wider than the payload's `s.running`: a live workflow run or an active goal
-  // loop counts as in progress, so neither drops out of the filter or its count.
+  // Wider than the payload's `s.running`: a live workflow, an active loop, or a started
+  // sub-agent not blocked on approval counts, matching the row's "N agents running".
   const runningSet = useMemo<Set<string>>(() => {
     const out = new Set<string>()
     for (const s of localSlots) {
       // Set membership over selector-produced keys is own-property by
       // construction (Object.keys), so no safeKey guard is needed here.
       const automationRunning = automationRunningSet.has(s.key)
+      const subagentsWorking = (subagentStartedCounts[s.key] || 0) - (subagentApprovalCounts[s.key] || 0) > 0
       if (s.running
         || workflowActiveSet.has(normalizeRunSessionKey(s.key))
-        || automationRunning) out.add(s.key)
+        || automationRunning
+        || subagentsWorking) out.add(s.key)
     }
     return out
-  }, [localSlots, workflowActiveSet, automationRunningSet])
+  }, [localSlots, workflowActiveSet, automationRunningSet, subagentStartedCounts, subagentApprovalCounts])
   // A running turn is recent BY DEFINITION: the ordering key stops advancing
   // mid-turn, so a long turn would age out while it is the busiest row on screen.
   const recentSet = useMemo<Set<string>>(() => {
@@ -516,6 +517,8 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
   // tick. See the helper's docstring for the known accepted batched-update
   // edge case.
   const prevUnreadCount = useRef<number | null>(null)
+  const otherFiltersOn = useMemo(() => [...activeFilters].some(key => key !== 'unread'), [activeFilters])
+  const prevOtherFiltersOn = useRef<boolean | null>(null)
   useEffect(() => {
     // Guard the ENTIRE body on slotsLoaded: without this, the unconditional
     // `prevUnreadCount.current = unreadSlots.length` assignment below would
@@ -537,10 +540,13 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
       current: unreadSlots.length,
       slotsLoaded,
       showUnreadOnly: activeFiltersRef.current.has('unread'),
+      otherFiltersOn,
+      prevOtherFiltersOn: prevOtherFiltersOn.current,
     })
     if (action === 'disable') disableFilter('unread')
     prevUnreadCount.current = unreadSlots.length
-  }, [unreadSlots.length, slotsLoaded, disableFilter, filtersPaused])
+    prevOtherFiltersOn.current = otherFiltersOn
+  }, [unreadSlots.length, slotsLoaded, disableFilter, filtersPaused, otherFiltersOn])
   return {
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,

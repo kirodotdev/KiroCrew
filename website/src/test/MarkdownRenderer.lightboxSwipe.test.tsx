@@ -21,7 +21,7 @@ const touch = (y: number, x = 100, pointerId = 1) => ({ pointerType: 'touch', po
 
 describe('Lightbox swipe-to-dismiss', () => {
   it('follows a downward touch drag and dismisses past the release threshold', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(100)) })
@@ -35,11 +35,11 @@ describe('Lightbox swipe-to-dismiss', () => {
     // Released past LIGHTBOX_DISMISS_DISTANCE (96px) the viewer closes.
     act(() => { fireEvent.pointerMove(overlay, touch(240)) })
     act(() => { fireEvent.pointerUp(overlay, touch(240)) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('springs back when released short of the threshold, without closing via the click', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(100)) })
@@ -54,11 +54,11 @@ describe('Lightbox swipe-to-dismiss', () => {
     act(() => { fireEvent.pointerDown(overlay, touch(10, 100, 2)) })
     act(() => { fireEvent.pointerUp(overlay, touch(10, 100, 2)) })
     act(() => { fireEvent.click(overlay) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('rubber-bands an upward drag and never dismisses on it', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(300)) })
@@ -73,7 +73,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   // Horizontal intent pages through the set (see MarkdownRenderer.lightboxPaging);
   // a lone image has nowhere to page to, so there the gesture is dropped instead.
   it('drops the gesture when a single-image drag is horizontal', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(100)) })
@@ -87,7 +87,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   })
 
   it('restores the image when the touch is cancelled mid-drag', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(100)) })
@@ -102,7 +102,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   // ── multi-touch: a pinch must never read as a dismiss ─────────────────────
 
   it('abandons the drag when a second finger lands, so a pinch cannot dismiss', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(100)) })
@@ -122,7 +122,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   })
 
   it('ignores a second finger that never owned the drag', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(100)) })
@@ -134,11 +134,11 @@ describe('Lightbox swipe-to-dismiss', () => {
     act(() => { fireEvent.pointerMove(overlay, touch(250)) })
     expect(inner.getAttribute('style')).toContain('translateY(150.0px)')
     act(() => { fireEvent.pointerUp(overlay, touch(250)) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('owns every gesture on the overlay rather than leaving one to the browser', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay } = surfaces(container)
     // Page zoom is off across the touch shell, so `pinch-zoom` here would ask for
@@ -151,7 +151,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   // ── pinch-to-zoom: the viewer owns it, because the shell has no page zoom ──
 
   it('scales the image by the ratio the fingers spread', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay } = surfaces(container)
     const img = () => container.querySelector('img') as HTMLImageElement
@@ -169,7 +169,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   })
 
   it('is bounded by the same max the toolbar is', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(100, 100, 1)) })
@@ -180,7 +180,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   })
 
   it('keeps the pinch alive when a finger lands while the image is already zoomed', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay } = surfaces(container)
     // Zoom past fit first: at this point the <img> pan owns one-finger drags, and
@@ -194,7 +194,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   })
 
   it('does not let the click after a pinch close the viewer', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(100, 100, 1)) })
@@ -207,7 +207,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   })
 
   it('ignores a two-finger mouse-typed sequence, so no desktop path is armed', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay } = surfaces(container)
     const mouse = (y: number, id: number) => ({ pointerType: 'mouse', pointerId: id, clientX: 100, clientY: y })
@@ -217,14 +217,14 @@ describe('Lightbox swipe-to-dismiss', () => {
     expect((container.querySelector('img') as HTMLImageElement).getAttribute('style')).toContain('scale(1)')
   })
 
-  it('drops the contacts when the viewer closes mid-pinch', () => {    const { container } = render(<Lightbox />)
+  it('drops the contacts when the viewer closes mid-pinch', () => {    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(100, 100, 1)) })
     act(() => { fireEvent.pointerDown(overlay, touch(200, 100, 2)) })
     act(() => { fireEvent.pointerMove(overlay, touch(400, 100, 2)) })
     act(() => { fireEvent.keyDown(window, { key: 'Escape' }) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
     // Reopened, a single finger is a dismiss-drag again — not the survivor of a
     // pair whose partner is still recorded from the previous open.
     act(() => open([{ src: 'a.png', alt: 'a' }]))
@@ -239,7 +239,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   // contact set changing in a way a `size < 2` test cannot see.
 
   it('keeps scaling when a third finger joins and an original one lifts', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay } = surfaces(container)
     const scale = () => (container.querySelector('img') as HTMLImageElement).getAttribute('style')
@@ -262,7 +262,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   })
 
   it('re-seats the baseline on a pair change instead of jumping the zoom', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay } = surfaces(container)
     const scale = () => (container.querySelector('img') as HTMLImageElement).getAttribute('style')
@@ -281,7 +281,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   // ── the gesture must not take anything away ───────────────────────────────
 
   it('ignores a mouse drag so desktop click-to-close is unchanged', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, { pointerType: 'mouse', pointerId: 1, clientX: 100, clientY: 100 }) })
@@ -290,11 +290,11 @@ describe('Lightbox swipe-to-dismiss', () => {
     act(() => { fireEvent.pointerUp(overlay, { pointerType: 'mouse', pointerId: 1, clientX: 100, clientY: 400 }) })
     // No suppression was armed, so the click still closes.
     act(() => { fireEvent.click(overlay) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('yields to pan once the image is zoomed past fit', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.keyDown(window, { key: '+' }) })
@@ -306,7 +306,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   })
 
   it('does not start a drag from a toolbar control', () => {
-    const { container, getByLabelText } = render(<Lightbox />)
+    const { getByLabelText } = render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { inner } = surfaces(container)
     const zoomIn = getByLabelText('Zoom in (+)')
@@ -318,7 +318,7 @@ describe('Lightbox swipe-to-dismiss', () => {
   })
 
   it('starts each newly shown image undragged', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }, { src: 'b.png', alt: 'b' }]))
     const { overlay, inner } = surfaces(container)
     act(() => { fireEvent.pointerDown(overlay, touch(100)) })

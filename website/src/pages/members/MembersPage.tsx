@@ -86,6 +86,7 @@ import { FACE_FLIGHT_EASE, FACE_FLIGHT_SECS, MembersPageProfileCard, useMembersP
 import { MembersPageRosterColumn, useMembersPageRosterView } from './MembersPageRoster'
 import { MembersPageSidePanel, useMembersPageSidePanel } from './MembersPageSidePanel'
 import { MembersPageThreadColumn, useMembersPageThread, useMembersPageThreadView } from './MembersPageThread'
+import { wantsMateSessions } from '../../lib/crewMode'
 import { MEMBER_PARAM, ROSTER_DRAWER_UNCOVERED_PX, type GoneNotice, type PostCreateFailure, type ProfileCardOpen } from './membersPageModel'
 import { useMembersPageCrewEditor } from './useMembersPageCrewEditor'
 import { useMembersPageDrawers, useMembersPageDrawerSwipes, useMembersPageTrackpadSwipe } from './useMembersPageDrawers'
@@ -477,6 +478,17 @@ export default function MembersPage() {
   const { isMobile, winW, rosterShown } = layout
   const profileCard = useMembersPageProfile({ layout, activeName, profile, setProfile })
   const { schedGuardRef, schedAtStakeRef, openMemberRef } = profileCard
+  // A mate session's breadcrumb asks for the named crewmate's Profile on
+  // Sessions. Declared after the card's own reset-on-switch effect, so it opens
+  // once that member is active; the state is then cleared so a reload does not
+  // reopen it.
+  const openMateSessions = wantsMateSessions(location.state)
+  const { openProfile } = profileCard
+  useEffect(() => {
+    if (!openMateSessions || !urlMember || activeName !== urlMember) return
+    openProfile('sessions')
+    navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null })
+  }, [openMateSessions, urlMember, activeName, openProfile, navigate, location.pathname, location.search])
   const drawers = useMembersPageDrawers({
     teamsRead, layout, navigate, location, activeName, createOpen, navigationType, active,
   })
@@ -535,15 +547,15 @@ export default function MembersPage() {
     layout, profileCard, drawers, rosterView, thread, navigate, location, queryClient, activeName, searchParams,
     setSearchParams, profile, setProfile, liveSlots, slotsLoaded, active, activeMemberName,
   })
-  const { schedAtStake, schedulesMountedRef, runInTerminalScope } = sidePanel
+  const { runInTerminalScope } = sidePanel
   // Desktop: a two-finger trackpad swipe moves the same side panel the phone
   // drag above does -- left reveals the Dashboard tab, right hides the panel.
   useMembersPageTrackpadSwipe({ layout, profileCard, sidePanel, drawers, active, createOpen, membersRootRef })
   const schedules = useMembersPageSchedules({
-    crewEditing, layout, rosterView, sidePanel, t, profile, activeSlug, activeMemberName,
+    crewEditing, layout, rosterView, t, profile, activeSlug, activeMemberName,
   })
   const {
-    schedDraftDirty, schedSaving, confirmSched, schedConfirmDialog, releaseSchedRetention, mayLeaveSchedules,
+    schedAtStake, schedulesMountedRef, schedDraftDirty, schedSaving, confirmSched, schedConfirmDialog, releaseSchedRetention, mayLeaveSchedules,
   } = schedules
   // ONE guard for exits that unmount Profile. The ref is what lets callbacks declared
   // in the owners (the header's panel reveal in MembersPageProfile.tsx, a roster

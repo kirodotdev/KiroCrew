@@ -20,6 +20,7 @@ allowed", which means more redaction, the safe direction.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -27,11 +28,28 @@ from pathlib import Path
 
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
+from kiro_crew.security.exfil import (
+    _OAUTH_EXTENSION_HOST_RE,
+    _log_operator_list_use,
+    forget_allowed_host_use,
+)
+
+logger = logging.getLogger(__name__)
 
 _LOCK = threading.RLock()
-_HOST_RE = re.compile(
-    r"^(?:[a-z0-9._-]{1,253}\.[a-z]{2,63}|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:.]{1,45}\])$"
-)
+# A lowercase DNS name, never an IP literal: an address names one machine, often
+# the reader's own loopback. Shared with the OAuth extension list; a file entry
+# of another shape is dropped on load.
+_HOST_RE = _OAUTH_EXTENSION_HOST_RE
+# A browser maps every ``*.localhost`` name to loopback without a lookup
+# (RFC 6761 section 6.3), so it names the reader's own machine like an IP does.
+# Refused here, not in the shared regex, so the OAuth list's shape is unchanged.
+LOOPBACK_SUFFIX = ".localhost"
+# DNS caps a label at 63 octets. The shared regex leaves the top-level label
+# open-ended, so the cap sits here, as the list checked hosts before sharing it.
+MAX_TLD_LEN = 63
+#: How many dropped entries one load's audit event names (the count is exact).
+_DROP_REPORT_MAX = 50
 _WORKSPACE_RE = re.compile(r"^[A-Za-z0-9 _.-]{1,128}$")
 MAX_HOSTS_PER_WORKSPACE = 200
 #: How many workspaces the list holds. With the per-workspace cap it bounds the
@@ -61,8 +79,19 @@ def normalize_workspace(workspace: str | None) -> str | None:
     return ws if _WORKSPACE_RE.match(ws) else None
 
 
+def _refusal(host: object) -> str | None:
+    """Why ``host`` cannot be allowed, or None when it can."""
+    if not isinstance(host, str) or not _HOST_RE.match(host):
+        return "not_a_dns_name"
+    if host.endswith(LOOPBACK_SUFFIX):
+        return "loopback_name"
+    if len(host.rsplit(".", 1)[-1]) > MAX_TLD_LEN:
+        return "not_a_dns_name"
+    return None
+
+
 def valid_host(host: object) -> bool:
-    return isinstance(host, str) and bool(_HOST_RE.match(host))
+    return _refusal(host) is None
 
 
 # The gateway is the list's only writer, so it holds the list in memory: the
@@ -138,14 +167,50 @@ def _load(path: Path) -> dict[str, list[str]]:
     if not isinstance(raw, dict):
         return {}
     out: dict[str, list[str]] = {}
+    dropped: list[dict[str, str]] = []
+    count = 0
     for ws, hosts in raw.items():
         if len(out) >= MAX_WORKSPACES:
             break
         if isinstance(ws, str) and _WORKSPACE_RE.match(ws) and isinstance(hosts, list):
-            kept = [h for h in hosts if valid_host(h)][:MAX_HOSTS_PER_WORKSPACE]
+            kept = []
+            for h in hosts:
+                reason = _refusal(h)
+                if reason is None:
+                    kept.append(h)
+                    continue
+                count += 1
+                if len(dropped) < _DROP_REPORT_MAX:
+                    shown = h[:253] if isinstance(h, str) else type(h).__name__
+                    dropped.append({"workspace": ws, "host": shown, "reason": reason})
+            kept = kept[:MAX_HOSTS_PER_WORKSPACE]
             if kept:
                 out[ws] = kept
+    if count:
+        _report_dropped(path, count, dropped)
     return out
+
+
+# Each file's drops are reported once per process: the list is re-read on
+# every write and on a config-home change, and an unchanged file drops the same
+# entries each time. Bounded by the config homes one process reads.
+_DROPS_REPORTED: set[Path] = set()
+
+
+def _report_dropped(path: Path, count: int, dropped: list[dict[str, str]]) -> None:
+    """Log and SEL-audit entries a load refused, so a narrowed list is visible."""
+    if path in _DROPS_REPORTED:
+        return
+    _DROPS_REPORTED.add(path)
+    logger.warning("allowed-hosts list: dropped %d entries no longer allowed", count)
+    meta = {"count": count, "dropped": dropped}
+    _log_operator_list_use(
+        "redaction.allowed_hosts.dropped_invalid",
+        "redaction_allow_load",
+        ",".join(sorted({d["host"] for d in dropped})),
+        lambda: meta,
+        outcome="removed",
+    )
 
 
 def _write(data: dict[str, list[str]]) -> None:
@@ -208,4 +273,5 @@ def revoke_host(workspace: str | None, host: str) -> bool:
         if not hosts:
             data.pop(ws, None)
         _write(data)
+    forget_allowed_host_use(host)
     return True

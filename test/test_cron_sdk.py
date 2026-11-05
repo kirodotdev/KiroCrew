@@ -20,24 +20,18 @@ from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.cron import CronService
 from kiro_crew.llm_helpers import ToolApprovalPolicy
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 def _run(value: Any) -> Any:
     """Passthrough for the synchronous CronSDK mutation API.
 
-    The public ``CronSDK`` mutation methods (``add_job`` / ``remove_job`` /
-    ``update_job`` / ``remove_all``) are synchronous (they preserve the
-    published App Kit contract; loop-native callers use the ``*_async``
-    siblings). These unit tests exercise them against a mock service on a
-    loop-less thread, so ``sdk.add_job(...)`` already returns its result
-    directly — this wrapper simply returns it (kept so call sites read
-    uniformly and any raised ``ValueError`` still surfaces from the argument
-    evaluation).
+    The ``CronSDK`` mutation methods are synchronous (the App Kit contract), so this
+    only returns the result; it keeps call sites uniform.
     """
     return value
 
-# ---------------------------------------------------------------------------
 # Mock CronService and CronJob
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -162,9 +156,7 @@ class MockCronService:
         return self.update_job(job_id, **kwargs)
 
 
-# ---------------------------------------------------------------------------
 # Strategies
-# ---------------------------------------------------------------------------
 
 def _app_name() -> st.SearchStrategy[str]:
     return st.from_regex(r"[a-z][a-z0-9-]{2,12}", fullmatch=True)
@@ -187,9 +179,7 @@ def _env_dict() -> st.SearchStrategy[dict[str, str]]:
     return st.dictionaries(key, val, max_size=3)
 
 
-# ---------------------------------------------------------------------------
 # Property 3: Cron job creation preserves ownership and fields
-# ---------------------------------------------------------------------------
 
 
 class TestCronJobCreation:
@@ -279,20 +269,14 @@ class TestCronJobCreation:
         assert updated in svc.list_jobs()
 
 
-# ---------------------------------------------------------------------------
 # Calendar fields (timezone / skip_dates) are settable AT CREATE
-# ---------------------------------------------------------------------------
 
 
 class TestCronCalendarFieldsOnCreate:
     """``timezone``/``skip_dates`` reach ``CronService.add_job`` from the SDK.
 
-    The gap this closes: ``_add_job_kwargs`` was a closed allowlist that
-    omitted both fields, so an app could only ever create jobs with an empty
-    timezone -- resolving to UTC at fire time -- and had to issue a SECOND
-    ``update_job`` write to correct it. That second write is exactly the
-    half-formed-job window the single locked build+persist exists to remove: a
-    "run at 06:00 local" job briefly exists as 06:00 UTC.
+    Without them an app needs a second ``update_job`` write, and in between a
+    "run at 06:00 local" job exists as 06:00 UTC.
     """
 
     def test_add_job_threads_timezone_and_skip_dates(self) -> None:
@@ -428,15 +412,8 @@ class TestCronCalendarFieldsAgainstRealService:
 class TestCronApprovalAndTimeoutFieldsOnCreate:
     """``approval_mode``/``timeout_secs``/``timeout`` reach the service from the SDK.
 
-    The gap this closes is the same shape as the calendar-field gap above:
-    ``_add_job_kwargs`` was a closed allowlist, so passing any of these three
-    to an ``add_job*`` method was a ``TypeError`` and an app could only get
-    them onto a job with a SECOND ``update_job`` write.
-
-    For ``approval_mode`` that second write is not merely inelegant. The job
-    exists on disk with hook-based approval until it lands, so a due-scan in
-    that window runs the job under a mode the app did not ask for, and an
-    unattended agent job stalls on a prompt nobody answers.
+    A second ``update_job`` write would leave a window where a due-scan runs the job
+    with hook-based approval, and an unattended job stalls on a prompt nobody answers.
     """
 
     def test_add_job_threads_approval_mode(self) -> None:
@@ -658,13 +635,9 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
     ) -> None:
         """Why ``timeout`` is threaded alongside ``timeout_secs``.
 
-        ``build_job`` cross-checks the wake budget against the subprocess
-        timeout, falling back to 300s for a command when that is unset. So on a
-        command job a short budget is REFUSED unless the pair is set together,
-        and threading only ``timeout_secs`` would leave an app unable to create
-        a command job with a budget under 305s at all. Both arms are asserted:
-        a test that only showed the refusal would also pass if the create path
-        rejected every budget.
+        ``build_job`` checks the wake budget against the subprocess timeout (300s
+        default for a command), so a command budget under 305s needs both. Both arms
+        are asserted: the refusal alone would pass if every budget were rejected.
         """
         svc = self._service(tmp_path)
         sdk = CronSDK("digest-app", svc)
@@ -695,12 +668,9 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
     ) -> None:
         """The reason an app wants this field, measured rather than asserted.
 
-        Takes the job the SDK actually persisted and feeds it to the real
-        gateway cron callback, then reads what that callback hands the agent
-        stream. ``auto`` must yield AUTO_APPROVE with no approval callback --
-        that absent callback is what "unattended" means. Both modes are
-        checked, because the auto arm alone would also pass on a callback that
-        never installed an approval hook for anything.
+        Feeds the persisted job to the real gateway cron callback. ``auto`` must yield
+        AUTO_APPROVE with no approval callback; both modes are checked, since the auto
+        arm alone would pass on a callback that never installs an approval hook.
         """
         svc = self._service(tmp_path)
         sdk = CronSDK("digest-app", svc)
@@ -729,6 +699,7 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
             gw._owner_id = "U000"
             gw.subagent_mgr = None
             gw._cron_injecting = {}
+            gw._cron_runs_holding = set()
             gw._no_crons = False
             gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
             gw.sessions.release = MagicMock()
@@ -784,9 +755,7 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
         assert hook["on_tool_approval"] is not None
 
 
-# ---------------------------------------------------------------------------
 # Property 4: Cron ownership enforcement on mutations
-# ---------------------------------------------------------------------------
 
 
 class TestCronOwnershipEnforcement:
@@ -834,9 +803,7 @@ class TestCronOwnershipEnforcement:
         assert svc._jobs[0].message == "msg"
 
 
-# ---------------------------------------------------------------------------
 # Property 5: Cron list filtering by owner
-# ---------------------------------------------------------------------------
 
 
 class TestCronListFiltering:
@@ -872,9 +839,7 @@ class TestCronListFiltering:
         assert len(sdk_b.list_jobs()) == n_b
 
 
-# ---------------------------------------------------------------------------
 # Property 6: Cron remove_all completeness
-# ---------------------------------------------------------------------------
 
 
 class TestCronRemoveAll:
@@ -917,9 +882,7 @@ class TestCronRemoveAll:
         assert len(sdk_b.list_jobs()) == 1
 
 
-# ---------------------------------------------------------------------------
 # Storage-layer command/script vetting (deny-by-default)
-# ---------------------------------------------------------------------------
 
 
 class TestCronVettingDenyPath:

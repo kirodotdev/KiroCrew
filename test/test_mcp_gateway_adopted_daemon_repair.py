@@ -1,35 +1,14 @@
 """Repairing a stale adopted daemon, not just reporting it.
 
-``test_mcp_gateway_target_map_drift`` pins the DETECTION half: an adopted
-survivor whose baked target map does not cover the configured stub set is
-found and warned about, and an unknown target at the pre-flight degrades to a
-per-session exec instead of dying. What that leaves is the cost the warning
-itself names -- pooling and the strict session key stay lost for every drifted
-server, for as long as the daemon holds the socket.
+The incumbent is asked to release the socket and a daemon with the current target map
+binds in its place (detection lives in ``test_mcp_gateway_target_map_drift``).
 
-This module pins the REPAIR: the incumbent is asked to release the socket, and a
-daemon carrying the current map binds in its place.
+The gateway asks rather than unlinking: ``_clear_stale_socket`` has a false-stale window
+that could steal a live incumbent's socket. Also pinned: the wait is on the singleton
+LOCK, not the endpoint (they differ through a Windows drain); a daemon still draining
+is never adopted; an incumbent that REFUSES is still adopted, since it still serves.
 
-Doing it by asking rather than taking is the whole design. The starting gateway
-must not unlink the endpoint itself: ``_clear_stale_socket`` is a
-connect-probe-then-unlink whose documented false-stale window would take a LIVE
-incumbent's socket, which is the socket-theft class the flock guard exists to
-prevent. A voluntary stand-down has no such window -- the request only ever
-reaches a daemon that just answered on that socket.
-
-Three properties beyond "it works" are pinned here, each found by review:
-
-* the wait is on the singleton LOCK, not the endpoint (they part company for a
-  daemon's whole drain on Windows);
-* a daemon that ACCEPTED but is still draining is never adopted (it accepts
-  nothing, so adopting it is worse than the drift);
-* an incumbent that REFUSES is still adopted, exactly as before, because it is
-  still serving -- the fail-open is deliberate and must not regress.
-
-Every test that starts a real daemon isolates KIROCREW_HOME and the working
-directory: the suite sets neither, and ``manager._gatewayd_log_path`` falls back
-to ``config_dir()`` -- the operator's real data home -- while a spawned daemon
-inherits pytest's CWD, which is the checkout.
+Tests that start a real daemon isolate KIROCREW_HOME and the CWD (see ``_isolate``).
 """
 
 from __future__ import annotations
@@ -213,11 +192,8 @@ class TestRequestStandDown:
     ) -> None:
         """The Windows shape: the endpoint is gone long before the lock is free.
 
-        run_gatewayd closes its server FIRST and releases the lock LAST, so on
-        Windows the pipe name stops resolving at the very start of shutdown and
-        the whole drain sits inside that gap. Waiting on the endpoint would
-        return here immediately, the replacement would lose the still-held lock,
-        exit rc=0 without binding, and nothing would rebind.
+        run_gatewayd closes its server first and releases the lock last. Waiting on the
+        endpoint would let the replacement lose the held lock and exit without binding.
         """
         manager = _manager(tmp_path, {})
         monkeypatch.setattr(
@@ -360,13 +336,9 @@ class TestOscillationCap:
     ) -> None:
         """Settling is a decision, not a condition, so it is logged as one.
 
-        The watchdog's drift re-check re-enters ``_repair_or_adopt`` every
-        ``_DRIFT_RECHECK_INTERVAL_SECS`` for as long as the refusing incumbent
-        holds the socket, and the verdict past the cap never changes. Logging
-        it at ERROR each time turned one upgrade skew into a permanent
-        ~288-line/day log storm in the field (a pre-fingerprint survivor from
-        a replaced install held the socket and rejected every stand-down).
-        The first settle is ERROR; every repeat is DEBUG.
+        The drift re-check re-enters ``_repair_or_adopt`` every
+        ``_DRIFT_RECHECK_INTERVAL_SECS`` with an unchanging verdict, so ERROR every time
+        would be a ~288-line/day storm. The first settle is ERROR; repeats are DEBUG.
         """
         manager = _manager(tmp_path, {})
         monkeypatch.setattr(manager, "_request_stand_down", AsyncMock(return_value=mgr._REFUSED))
@@ -390,11 +362,8 @@ class TestOscillationCap:
     ) -> None:
         """The cap message must say WHY the incumbent is unfit, whichever ground.
 
-        The pre-fix message interpolated only the missing stems, so a
-        stale-code-only settle rendered as "still cannot resolve , but" --
-        an empty list where the reason belongs, about an incumbent that in
-        fact resolved every stem. The message now composes the same grounds
-        the stand-down request itself was built from.
+        Interpolating only the missing stems renders a stale-code-only settle as "still
+        cannot resolve , but"; the message uses the stand-down request's own grounds.
         """
         manager = _manager(tmp_path, {})
         monkeypatch.setattr(manager, "_request_stand_down", AsyncMock(return_value=mgr._REFUSED))
@@ -442,16 +411,9 @@ class TestOscillationCap:
 class TestAdoptedDriftRecheck:
     """Re-checking coverage while the daemon is merely being kept alive.
 
-    ``TestElection`` pins the start-time repair. That fires only at a
-    transition -- adoption, or the pre-respawn gate -- and an adopted daemon
-    that keeps answering ping is in neither: the watchdog supervises it for
-    LIVENESS alone. So a survivor that goes stale AFTER adoption (the gateway
-    restarts with a new stub_servers set while the daemon lives on) kept its
-    stale map for as long as it held the socket. That is the 25-day-old daemon
-    from the field; this class pins the loop that now catches it.
-
-    The re-check rides the liveness ping's own reply, so it costs nothing extra
-    on the wire -- the coverage report is in a frame the watchdog already reads.
+    The start-time repair fires only at a transition, so a daemon that goes stale after
+    adoption (new stub_servers set, daemon lives on) is caught only by this loop. The
+    coverage report rides the liveness ping's reply, so it costs nothing on the wire.
     """
 
     @pytest.mark.asyncio
@@ -475,11 +437,8 @@ class TestAdoptedDriftRecheck:
     ) -> None:
         """The cadence is the whole reason this is safe to run in the loop.
 
-        The liveness ping is every 30s and a manager may only ever issue
-        _MAX_STAND_DOWN_REQUESTS stand-downs, so re-assessing on every ping
-        would spend that entire budget within ~90s against an incumbent that
-        refuses to yield -- and then never ask again for the life of the
-        process. One assessment per interval is what keeps the repair available.
+        Pings are every 30s and the manager has only _MAX_STAND_DOWN_REQUESTS
+        stand-downs for its lifetime; re-assessing per ping would spend them in ~90s.
         """
         # A fresh macOS hosted runner can have less uptime than the five-minute
         # interval.  Zero is the manager's "never checked" sentinel, not a real
@@ -533,15 +492,9 @@ class TestAdoptedDriftRecheck:
     ) -> None:
         """Neither refusal nor draining may make the watchdog hot-loop.
 
-        Returning True here would send the loop straight back around with no
-        sleep, re-pinging a daemon that just declined -- burning CPU for as long
-        as the drift lasts. False means the caller sleeps out its liveness
-        interval, which is also what gives a draining daemon time to finish (the
-        next ping then fails and the death path spawns a replacement).
-
-        Note this differs from ``start()``, which FAILS on _ABORT: a start that
-        reported ready would hand sessions a daemon accepting nothing, whereas
-        the watchdog is already supervising and simply keeps doing so.
+        False makes the caller sleep its liveness interval, which also lets a draining
+        daemon finish. Unlike ``start()``, which FAILS on _ABORT, the watchdog just keeps
+        supervising.
         """
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         # _reconcile_adopted is only ever reached from the watchdog's adopted
@@ -564,15 +517,9 @@ class TestAdoptedDriftRecheck:
     ) -> None:
         """Two ways our spawn does not end up ours, one recovery.
 
-        The incumbent released the socket, but either the spawn failed outright
-        or a sibling gateway won the freed lock first. Either way this manager
-        holds no usable process, so it must go back to the adopted branch --
-        leaving _adopted False with _process None idles the watchdog forever
-        with no daemon and no retry.
-
-        Recovery deliberately does NOT go through _adopt_incumbent(), which
-        starts a watchdog task: calling it from inside the watchdog would leave
-        a second, uncancellable supervisor running.
+        The spawn failed or a sibling won the freed lock; either way the manager must
+        return to the adopted branch, or _adopted False with _process None idles forever.
+        Recovery skips _adopt_incumbent(), which would start a second watchdog.
         """
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         # _reconcile_adopted is only ever reached from the watchdog's adopted
@@ -634,15 +581,8 @@ class TestAdoptedDriftRecheck:
     ) -> None:
         """The repair may not cost us the supervisor.
 
-        _spawn_and_confirm guards _spawn_once, but its _clear_stale_socket and
-        prepare_dir steps run OUTSIDE that guard, so an OSError there (a full
-        disk, a vanished parent dir, a permission change) propagates. Unguarded,
-        it escapes the watchdog's adopted branch and terminates the supervisor
-        task -- the daemon then has NO watchdog at all, which is strictly worse
-        than the drift the repair came to fix.
-
-        Asserted on the loop, not just the helper: a passing return value proves
-        nothing if the exception killed the caller.
+        An OSError from _clear_stale_socket or prepare_dir (outside _spawn_once's guard)
+        must not kill the watchdog task. Asserted on the loop, not just the helper.
         """
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         manager._adopted = True
@@ -687,12 +627,8 @@ class TestAdoptedDriftRecheck:
     ) -> None:
         """Every path that ADOPTS owes the clock stamp, not just _adopt_incumbent.
 
-        The watchdog's pre-respawn gate adopts an incumbent inline (it must not
-        call _adopt_incumbent, which would start a second watchdog). It had
-        assessed coverage one line earlier but left _last_drift_check at 0.0, so
-        the adopted branch's very first iteration saw an elapsed interval of
-        `now - 0.0` and re-assessed immediately -- spending a stand-down from the
-        lifetime cap to re-derive what the gate had just decided.
+        The pre-respawn gate adopts inline. With _last_drift_check left at 0.0 the first
+        adopted iteration would re-assess at once and spend a stand-down from the cap.
         """
         monkeypatch.setattr(mgr, "_RESPAWN_BACKOFF_START_SECS", 0.0)
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
@@ -735,15 +671,8 @@ class TestAdoptedDriftRecheck:
     ) -> None:
         """The sibling call site, and the contract that made it matter.
 
-        `_spawn_and_confirm` has two callers. Guarding only the watchdog's would
-        leave `_start_locked`'s untouched, where the same OSError escapes
-        `start()` -- whose docstring promises "Never raises -- callers treat a
-        False return as fall back to per-session MCP" -- and reaches the
-        unguarded `await manager.start()` in the gateway bootstrap, failing
-        gateway startup instead of degrading to per-session MCP.
-
-        Guarding the producer covers both callers at once, which is why this
-        test lives beside the watchdog one: they are the same defect.
+        Via `_start_locked`, the same OSError would escape `start()` ("Never raises") and
+        fail gateway startup instead of degrading to per-session MCP.
         """
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         # Nobody holds the socket, so the election goes straight to spawning.
@@ -975,12 +904,8 @@ async def _await_endpoint(socket_path: Path, *, timeout: float = 60.0) -> None:
 def _isolate(monkeypatch: pytest.MonkeyPatch, home: Path) -> Path:
     """Scope a real daemon's side effects: its data home AND its CWD.
 
-    KIROCREW_HOME because the suite does not set it and
-    ``manager._gatewayd_log_path`` falls back to ``config_dir()`` -- the
-    operator's real data home. The working directory because a spawned daemon
-    INHERITS pytest's CWD, which is the checkout; ``_spawn_once`` deliberately
-    passes no ``cwd`` (in production the daemon should inherit the gateway's), so
-    the test moves itself rather than changing that.
+    ``_gatewayd_log_path`` falls back to the real ``config_dir()``, and ``_spawn_once``
+    passes no ``cwd``, so a daemon inherits pytest's CWD (the checkout).
     """
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("KIROCREW_HOME", str(home))
@@ -1063,16 +988,9 @@ async def test_a_stale_survivor_is_repaired_end_to_end(
 ) -> None:
     """The field case, start to finish, with TWO real daemon processes.
 
-    The survivor is a real subprocess launched with an OLD target map, standing
-    in for the 25-day-old daemon the drift module describes. That matters: its
-    environment is genuinely frozen at spawn, so the manager cannot influence
-    what it reports -- the invariant the whole check rests on, and one an
-    in-process survivor sharing ``os.environ`` cannot model.
-
-    The gateway then starts wanting a stem the survivor does not have. Before
-    this change it adopted the survivor and every session's stub for that server
-    degraded to per-session exec; now the survivor yields and a daemon with the
-    current map binds.
+    The survivor is a real subprocess with an OLD target map, its environment frozen at
+    spawn, which an in-process survivor sharing ``os.environ`` cannot model. The gateway
+    wants a stem it lacks, so the survivor yields and a current daemon binds.
     """
     home = tmp_path / "home"
     run_dir = _isolate(monkeypatch, home)
@@ -1162,8 +1080,7 @@ async def test_a_covering_survivor_is_still_adopted_end_to_end(
     """The behaviour adoption exists for must survive the repair layer.
 
     A survivor already covering the wanted stems is adopted with no spawn and no
-    teardown -- otherwise this change would trade a partial degradation for a
-    full broker cycle on every ordinary restart.
+    teardown, so an ordinary restart costs no full broker cycle.
     """
     _isolate(monkeypatch, tmp_path / "home")
     sock = short_sock_dir / "gw.sock"

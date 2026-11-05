@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -365,7 +365,7 @@ describe('ModelEffortDropdown — inline effort', () => {
     const toggle = screen.getByRole('switch', { name: 'Use default effort' })
     const options = screen.getAllByRole('option')
     const last = options[options.length - 1]
-    input.focus()
+    act(() => { input.focus() })
     await user.tab()
     expect(help).toHaveFocus()
     await user.tab()
@@ -376,7 +376,7 @@ describe('ModelEffortDropdown — inline effort', () => {
     expect(toggle).toHaveFocus()
     fireEvent.keyDown(toggle, { key: 'ArrowUp' })
     expect(last).toHaveFocus()
-    help.focus()
+    act(() => { help.focus() })
     fireEvent.keyDown(help, { key: 'ArrowUp' })
     expect(last).toHaveFocus()
     expect(onListKeyDown).not.toHaveBeenCalled()

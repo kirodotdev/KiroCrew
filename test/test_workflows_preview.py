@@ -78,6 +78,29 @@ class TestPhases:
         assert _titles(plan) == ["Read"]
         assert plan["phases"][0]["certain"] is True
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            'with ctx.phase(title="Read"):\n    await ctx.agent("look")\n',
+            'ctx.phase(title="Read")\nawait ctx.agent("look")\n',
+        ],
+        ids=["with", "bare"],
+    )
+    def test_a_keyword_phase_title_opens_the_same_phase_as_a_positional_one(self, body):
+        # ``title`` is positional-or-keyword on the runner, so both spellings name it.
+        plan = _plan(body)
+        assert plan["phases"] == [
+            {
+                "title": "Read",
+                "certain": True,
+                "nodes": [{"kind": "agent", "label": "look", "certain": True}],
+            }
+        ]
+
+    def test_a_keyword_phase_title_that_is_not_a_literal_is_still_unknown(self):
+        plan = _plan('ctx.phase(title=name)\nawait ctx.agent("look")\n')
+        assert _nodes(plan, "")[0] == {"kind": "unknown", "label": "phase", "certain": False}
+
     def test_a_bare_phase_call_opens_a_phase_for_the_statements_after_it(self):
         # The runner's phase persists until the next call; __exit__ restores nothing.
         plan = _plan('ctx.phase("Read")\nawait ctx.agent("look")\n')
@@ -219,6 +242,20 @@ class TestUnpredictableRegions:
         assert [n["label"] for n in _nodes(plan, "")] == ["try", "try", "finally", "except"]
         assert all(n["certain"] is False for n in _nodes(plan, ""))
 
+    def test_an_except_star_try_is_marked_like_a_plain_try(self):
+        # ``try`` / ``except*`` parses to ``ast.TryStar``, not ``ast.Try``; a handler
+        # body still runs only when its exception group matches.
+        plan = _plan(
+            "try:\n"
+            '    await ctx.agent("try")\n'
+            "except* ValueError:\n"
+            '    await ctx.agent("except")\n'
+            "finally:\n"
+            '    await ctx.agent("finally")\n'
+        )
+        assert [n["label"] for n in _nodes(plan, "")] == ["try", "try", "finally", "except"]
+        assert all(n["certain"] is False for n in _nodes(plan, ""))
+
     def test_a_while_loop_is_marked(self):
         plan = _plan('while go:\n    await ctx.agent("again")\n')
         assert _nodes(plan, "")[0]["label"] == "while"
@@ -322,6 +359,20 @@ class TestContextNameIsTakenFromTheSignature:
     def test_a_renamed_context_parameter_is_followed(self):
         plan = plan_from_source(
             'async def workflow(c):\n    with c.phase("Read"):\n        await c.agent("x")\n'
+        )
+        assert plan is not None
+        assert plan["phases"] == [
+            {
+                "title": "Read",
+                "certain": True,
+                "nodes": [{"kind": "agent", "label": "x", "certain": True}],
+            }
+        ]
+
+    def test_a_positional_only_context_parameter_is_followed(self):
+        # ``def workflow(ctx, /)`` validates, and keeps ``ctx`` in ``posonlyargs``.
+        plan = plan_from_source(
+            'async def workflow(ctx, /):\n    with ctx.phase("Read"):\n        await ctx.agent("x")\n'
         )
         assert plan is not None
         assert plan["phases"] == [

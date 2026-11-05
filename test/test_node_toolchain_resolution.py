@@ -10,6 +10,7 @@ reported "no trusted executable for 'npm'".
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -502,3 +503,101 @@ def test_the_all_versions_cache_is_keyed_on_the_xdg_root(nvm_home, tmp_path, mon
     assert env_mod.node_all_bin_dirs() == (str(d),)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(second))
     assert env_mod.node_all_bin_dirs() == ()
+
+
+# --- Windows default manager roots ---
+@pytest.fixture
+def windows_roots(nvm_home, tmp_path, monkeypatch):
+    """A Windows-shaped host: ``IS_WINDOWS`` on, ``APPDATA`` / ``LOCALAPPDATA`` /
+    ``ProgramFiles`` pointed at empty dirs under ``tmp_path``.
+
+    ``_fake_windows_node_bin`` writes ``node`` on a POSIX host and ``node.exe``
+    on Windows, and ``_has_node`` accepts both under ``IS_WINDOWS``, so the same
+    layout runs on Linux CI and on a real Windows runner.
+    """
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    roots = {
+        "APPDATA": tmp_path / "AppData" / "Roaming",
+        "LOCALAPPDATA": tmp_path / "AppData" / "Local",
+        "ProgramFiles": tmp_path / "Program Files",
+    }
+    for var, path in roots.items():
+        path.mkdir(parents=True)
+        monkeypatch.setenv(var, str(path))
+    return roots
+
+
+def _fake_windows_node_bin(d: Path) -> Path:
+    """A Windows ``node.exe`` stub that the REAL host's ``shutil.which`` also finds.
+
+    Under the patched ``IS_WINDOWS`` the executable check wants ``node.exe``,
+    while ``shutil.which("node")`` follows the real host and wants ``node`` on
+    POSIX, so a POSIX host gets both names.
+    """
+    d.mkdir(parents=True, exist_ok=True)
+    names = ("node.exe",) if sys.platform == "win32" else ("node.exe", "node")
+    for name in names:
+        f = d / name
+        f.write_text("#!/bin/sh\nexit 0\n")
+        f.chmod(0o755)
+    return d
+
+
+def test_windows_fnm_default_root_is_found(windows_roots):
+    """fnm on Windows keeps ``node.exe`` in ``%APPDATA%\\fnm\\node-versions\\<v>\\installation``."""
+    d = _fake_windows_node_bin(
+        windows_roots["APPDATA"] / "fnm" / "node-versions" / "v22.1.0" / "installation"
+    )
+    assert str(d) in env_mod.node_bin_dirs()
+    found = env_mod.find_node_tool("node", "")
+    assert found is not None
+    assert Path(found).parent == d
+    assert str(d) in env_mod.node_all_bin_dirs()
+
+
+def test_windows_nvm_default_root_is_found(windows_roots):
+    """nvm-windows keeps ``node.exe`` in ``%APPDATA%\\nvm\\<v>``; newest version wins."""
+    old = _fake_windows_node_bin(windows_roots["APPDATA"] / "nvm" / "v20.0.0")
+    new = _fake_windows_node_bin(windows_roots["APPDATA"] / "nvm" / "v22.11.0")
+    assert str(new) in env_mod.node_bin_dirs()
+    assert str(old) not in env_mod.node_bin_dirs()
+    all_dirs = env_mod.node_all_bin_dirs()
+    assert all_dirs.index(str(new)) < all_dirs.index(str(old))
+
+
+@pytest.mark.parametrize(
+    ("var", "parts"),
+    [("LOCALAPPDATA", ("Volta", "bin")), ("ProgramFiles", ("Volta",))],
+)
+def test_windows_volta_dirs_are_found(windows_roots, var, parts):
+    d = _fake_windows_node_bin(windows_roots[var].joinpath(*parts))
+    assert str(d) in env_mod.node_bin_dirs()
+    assert str(d) in env_mod.augmented_path("").split(os.pathsep)
+
+
+def test_windows_roots_fall_back_to_the_profile_folder(windows_roots, nvm_home, monkeypatch):
+    """With ``APPDATA`` unset, ``<profile>\\AppData\\Roaming`` is the fnm root."""
+    monkeypatch.delenv("APPDATA")
+    d = _fake_windows_node_bin(
+        nvm_home / "AppData" / "Roaming" / "fnm" / "node-versions" / "v22.1.0" / "installation"
+    )
+    assert str(d) in env_mod.node_bin_dirs()
+
+
+def test_windows_roots_are_not_scanned_off_windows(windows_roots, monkeypatch):
+    """POSIX and macOS results are unchanged: the Windows roots are never read there."""
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    _fake_windows_node_bin(windows_roots["APPDATA"] / "fnm" / "node-versions" / "v22.1.0" / "installation")
+    _fake_windows_node_bin(windows_roots["LOCALAPPDATA"] / "Volta" / "bin")
+    assert env_mod.node_bin_dirs() == ()
+    assert env_mod.node_all_bin_dirs() == ()
+    assert env_mod.find_node_tool("node", "") is None
+
+
+def test_windows_root_carrying_a_path_separator_is_dropped(windows_roots, monkeypatch):
+    """A ``LOCALAPPDATA`` holding ``os.pathsep`` would put two PATH entries in one."""
+    _fake_windows_node_bin(windows_roots["LOCALAPPDATA"] / "Volta" / "bin")
+    monkeypatch.setenv("LOCALAPPDATA", f"{windows_roots['LOCALAPPDATA']}{os.pathsep}/evil")
+    entries = env_mod.augmented_path("").split(os.pathsep)
+    assert "/evil" not in entries and not any(e.endswith("evil/Volta/bin") for e in entries)
+    assert env_mod.node_bin_dirs() == ()

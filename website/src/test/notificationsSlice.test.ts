@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
+import { configureStore } from '@reduxjs/toolkit'
+import { api } from '../api/client'
 import reducer, {
   addNotification,
   ackNotificationByTs,
@@ -12,8 +14,15 @@ import reducer, {
   unackNotification,
   ackAllNotifications,
   NOTIFICATIONS_RING_CAP,
+  endApprovalRow,
+  approvalDecisionBegan,
+  approvalDecisionSettled,
+  liveApprovalRows,
+  dismissLocalApprovalRow,
 } from '../store/notificationsSlice'
 import type { Notification } from '../types'
+
+const mkLocalStore = () => configureStore({ reducer: { notifications: reducer } })
 
 vi.mock('../api/client', () => ({
   api: {
@@ -396,5 +405,338 @@ describe('notificationsSlice', () => {
       const state = reducer({ items: [n1, n2] }, action)
       expect(state.items.every(n => n.acked)).toBe(true)
     })
+  })
+})
+
+// Nothing below removes a row except a DELETE the server confirmed.
+describe('notificationsSlice: server-confirmed removal', () => {
+  const approvalNote: Notification = { kind: 'approval', title: 'Approve?', body: 'tool X', ts: '2', approval_id: 'ap-2' }
+  const mkStore = (items: Notification[]) =>
+    configureStore({ reducer: { notifications: reducer }, preloadedState: { notifications: { items, clearSeq: 0 } } })
+
+  it('retiring an approval keeps its row and only marks it', () => {
+    const state = reducer({ items: [n1, approvalNote] }, approvalDecisionSettled({ ts: '2', outcome: 'refused' }))
+    expect(state.items.map(n => n.ts)).toEqual(['1', '2'])
+    expect(state.retiredApprovals).toEqual({ '2': true })
+  })
+
+  it('nothing absent is marked', () => {
+    const state = reducer({ items: [approvalNote] }, approvalDecisionSettled({ ts: 'absent', outcome: 'refused' }))
+    expect(state.retiredApprovals ?? {}).toEqual({})
+    expect(state.items).toHaveLength(1)
+  })
+
+  it('after a reload no expired approval comes back: the server lists no approval note', () => {
+    // An approval row is the tab's own copy of a pending request (raised by
+    // the approval frame and the approvals reconcile); the server's
+    // notification log never holds one. A reload starts from that log, so an
+    // approval that expired while the tab was closed is simply absent, and
+    // the reconcile adds back only what /api/approvals still lists.
+    const before = { items: [n1, approvalNote], clearSeq: 0, retiredApprovals: { '2': true as const } }
+    const fresh = reducer(undefined, fetchNotifications.fulfilled({ items: [n1], seq: 0, ackSeq: 0 }, '', undefined))
+    expect(fresh.items.some(n => n.kind === 'approval')).toBe(false)
+    // The same holds for a refetch in a tab that kept running.
+    const refetched = reducer(before, fetchNotifications.fulfilled({ items: [n1], seq: 0, ackSeq: 0 }, '', undefined))
+    expect(refetched.items.map(n => n.ts)).toEqual(['1'])
+    expect(refetched.retiredApprovals).toEqual({})
+  })
+
+  it('retiring an approval marks it read in this tab and sends nothing', async () => {
+    vi.mocked(api.ackNotification).mockClear()
+    vi.mocked(api.deleteNotification).mockClear()
+    const store = mkStore([{ ...approvalNote, acked: false }])
+    store.dispatch(approvalDecisionSettled({ ts: '2', outcome: 'refused' }))
+    const s = store.getState().notifications
+    expect(s.retiredApprovals).toEqual({ '2': true })
+    expect(s.items.filter(n => !n.acked)).toEqual([])
+    // The row is this tab's own copy: the server holds no note to ack.
+    expect(api.ackNotification).not.toHaveBeenCalled()
+    expect(api.deleteNotification).not.toHaveBeenCalled()
+  })
+
+  it('a refetch drops the marks of rows the server no longer lists and keeps the rest', () => {
+    const other: Notification = { ...approvalNote, ts: '3', approval_id: 'ap-3' }
+    const seeded = {
+      items: [approvalNote, other], clearSeq: 0,
+      retiredApprovals: { '2': true as const, '3': true as const },
+    }
+    const state = reducer(seeded, fetchNotifications.fulfilled({ items: [approvalNote], seq: 0, ackSeq: 0 }, '', undefined))
+    expect(state.retiredApprovals).toEqual({ '2': true })
+  })
+
+  // A stored note of kind `approval` is unread on the server; settling it
+  // marks it read in this tab only, so a refetch (a reconnect) must not
+  // reinstall the server's unread flag on a row that asks for nothing.
+  it.each([
+    ['refused', 'retired'],
+    ['dismiss_failed', 'decided with a failed DELETE'],
+  ] as const)('a refetch keeps a %s (%s) stored approval note read', (outcome) => {
+    const stored: Notification = { ...approvalNote, acked: false }
+    const other: Notification = { ...n1, acked: false }
+    let state = reducer({ items: [other, stored], clearSeq: 0 }, approvalDecisionSettled({ ts: '2', outcome }))
+    expect(state.items.find(n => n.ts === '2')?.acked).toBe(true)
+    state = reducer(state, fetchNotifications.fulfilled({ items: [other, stored], seq: 0, ackSeq: 0 }, '', undefined))
+    expect(state.items.find(n => n.ts === '2')?.acked).toBe(true)
+    // Only the settled row keeps its local read state: the other row still
+    // takes the server's flag.
+    expect(state.items.find(n => n.ts === '1')?.acked).toBe(false)
+  })
+
+  // Mark unread, then a decide whose refusal lands before the unread
+  // response: the settlement is newer, so that late receipt must not make
+  // the settled row unread again.
+  it.each(['refused', 'dismiss_failed'] as const)('a late unread receipt does not relight a %s approval row', async (outcome) => {
+    let release!: () => void
+    vi.mocked(api.unackNotification).mockImplementationOnce(() => new Promise(r => { release = () => r({}) }))
+    const store = mkStore([{ ...approvalNote, acked: true }])
+    const unread = store.dispatch(unackNotification('2'))
+    expect(store.getState().notifications.items[0].acked).toBe(false)
+    store.dispatch(approvalDecisionSettled({ ts: '2', outcome }))
+    expect(store.getState().notifications.items[0].acked).toBe(true)
+    release()
+    await unread
+    expect(store.getState().notifications.items[0].acked).toBe(true)
+  })
+
+  it('a refetch still takes the server flag for a row whose close X failed (not settled)', () => {
+    const stored: Notification = { ...approvalNote, acked: true }
+    // The close X is a one-note clear: a refused DELETE leaves no mark.
+    let state = reducer({ items: [stored], clearSeq: 0 }, deleteNotification.rejected(new Error('offline'), '', '2'))
+    state = reducer(state, fetchNotifications.fulfilled({ items: [{ ...stored, acked: false }], seq: 0, ackSeq: 0 }, '', undefined))
+    expect(state.items[0].acked).toBe(false)
+  })
+})
+
+describe('notificationsSlice: approval decision lifecycle', () => {
+  const row: Notification = { kind: 'approval', ts: 'r', title: 't', body: 'b', approval_id: 'apr', acked: false, _local: true }
+  const seeded = () => reducer(undefined, addNotification(row))
+  // mulberry32: a fixed seed per case, so a failure names a reproducible case.
+  const rng = (seed: number) => () => {
+    seed = (seed + 0x6D2B79F5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  type Outcome = 'refused' | 'failed' | 'dismiss_failed' | 'landed'
+  const OUTCOMES: Outcome[] = ['refused', 'failed', 'dismiss_failed', 'landed']
+
+  it('an end frame on an idle row removes it; on a deciding row it only marks it', () => {
+    expect(reducer(seeded(), endApprovalRow('r')).items).toEqual([])
+    const deciding = reducer(reducer(seeded(), approvalDecisionBegan('r')), endApprovalRow('r'))
+    expect(deciding.items.map(n => n.ts)).toEqual(['r'])
+    expect(deciding.approvalDecisions).toEqual({ r: { inFlight: 1, ended: true } })
+  })
+
+  it('the last press failing on a row a frame ended retires it with that failure; an earlier one does not', () => {
+    let state = reducer(seeded(), approvalDecisionBegan('r'))
+    state = reducer(state, approvalDecisionBegan('r'))
+    state = reducer(state, endApprovalRow('r'))
+    state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: '' }))
+    expect(state.retiredApprovals ?? {}).toEqual({})
+    state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: 'needs an owner' }))
+    expect(state.retiredApprovals).toEqual({ r: { failed: 'needs an owner' } })
+    expect(state.items.map(n => [n.ts, n.acked])).toEqual([['r', true]])
+    expect(liveApprovalRows(state, 'apr')).toEqual([])
+    // A failure on a row no frame ended leaves it live, buttons and all.
+    const live = reducer(reducer(seeded(), approvalDecisionBegan('r')), approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: '' }))
+    expect(live.retiredApprovals ?? {}).toEqual({})
+    expect(liveApprovalRows(live, 'apr').map(n => n.ts)).toEqual(['r'])
+  })
+
+  // A double press, or one press from the feed and one from the panel, settles
+  // twice. A later retryable failure must not overwrite what the first claimed.
+  it('a later failure keeps an earlier refusal: the row still says only "no longer pending"', () => {
+    let state = reducer(seeded(), approvalDecisionBegan('r'))
+    state = reducer(state, approvalDecisionBegan('r'))
+    state = reducer(state, endApprovalRow('r'))
+    state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'refused' }))
+    state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: '' }))
+    expect(state.retiredApprovals).toEqual({ r: true })
+    expect(state.items.map(n => n.ts)).toEqual(['r'])
+  })
+
+  it('a later failure keeps an earlier landed decision whose DELETE failed: the row still says it was recorded', () => {
+    let state = reducer(seeded(), approvalDecisionBegan('r'))
+    state = reducer(state, approvalDecisionBegan('r'))
+    state = reducer(state, endApprovalRow('r'))
+    state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'dismiss_failed' }))
+    state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: '' }))
+    expect(state.dismissFailed).toEqual({ r: 'decided' })
+    expect(state.retiredApprovals ?? {}).toEqual({})
+    expect(state.items.map(n => n.ts)).toEqual(['r'])
+  })
+
+  it('a decided row whose DELETE failed is not live, so a later frame for its id leaves it', () => {
+    let state = reducer(seeded(), approvalDecisionBegan('r'))
+    state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'dismiss_failed' }))
+    expect(liveApprovalRows(state, 'apr')).toEqual([])
+    expect(state.dismissFailed).toEqual({ r: 'decided' })
+  })
+
+  it('a failed retry of a decided note\'s close X keeps saying the decision was recorded', () => {
+    let state = reducer(seeded(), approvalDecisionBegan('r'))
+    state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'dismiss_failed' }))
+    // The close X is a one-note clear: its DELETE is sent, then refused.
+    state = reducer(state, deleteNotification.pending('', 'r'))
+    state = reducer(state, deleteNotification.rejected(new Error('offline'), '', 'r'))
+    expect(state.dismissFailed).toEqual({ r: 'decided' })
+    expect(state.items.map(n => n.ts)).toEqual(['r'])
+  })
+
+  it('a full ring of arriving notes keeps a deciding row and evicts it once settled', () => {
+    let state = reducer(seeded(), approvalDecisionBegan('r'))
+    const fill = (tag: string) => {
+      for (let i = 0; i < NOTIFICATIONS_RING_CAP; i++) {
+        state = reducer(state, addNotification({ kind: 'cron', title: `c${i}`, body: '', ts: `${tag}${i}` }))
+      }
+    }
+    fill('a')
+    expect(state.items.some(n => n.ts === 'r')).toBe(true)
+    // The held row counts toward the cap: the oldest unheld note left instead.
+    expect(state.items).toHaveLength(NOTIFICATIONS_RING_CAP)
+    expect(state.approvalDecisions?.r?.inFlight).toBe(1)
+    state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'refused' }))
+    expect(state.retiredApprovals?.r).toBe(true)
+    fill('b')
+    // Settled, the retired row is evicted like any other note, with its mark.
+    expect(state.items.some(n => n.ts === 'r')).toBe(false)
+    expect(state.retiredApprovals).toEqual({})
+    expect(state.items).toHaveLength(NOTIFICATIONS_RING_CAP)
+    expect(state.items.some(n => n.ts.startsWith('a'))).toBe(false)
+  })
+
+  it("a local row's close X holds it while its decision is in flight, so a refusal still shows", async () => {
+    const store = configureStore({ reducer: { notifications: reducer } })
+    store.dispatch(addNotification(row))
+    store.dispatch(approvalDecisionBegan('r'))
+    const result = await store.dispatch(dismissLocalApprovalRow(row.ts))
+    expect(result.payload).toBe(false)
+    expect(store.getState().notifications.items.map(n => n.ts)).toEqual(['r'])
+    store.dispatch(approvalDecisionSettled({ ts: 'r', outcome: 'refused' }))
+    expect(store.getState().notifications.retiredApprovals?.r).toBe(true)
+    // Idle, the close X takes the row out at once.
+    expect((await store.dispatch(dismissLocalApprovalRow(row.ts))).payload).toBe(true)
+    expect(store.getState().notifications.items).toEqual([])
+  })
+
+  // The user closes the row, or clears the list, while a press is in flight,
+  // and the press then fails retryably. The server still holds the request
+  // pending, so the row must not say "no longer pending": it leaves, as asked.
+  it.each([
+    ['its close X', async (store: ReturnType<typeof mkLocalStore>) => { await store.dispatch(dismissLocalApprovalRow('r')) }],
+    ['Clear all', async (store: ReturnType<typeof mkLocalStore>) => { store.dispatch(clearAllNotifications()) }],
+  ] as const)('a row dismissed through %s mid-flight leaves on a retryable failure, not retired', async (_label, dismiss) => {
+    const store = mkLocalStore()
+    store.dispatch(addNotification(row))
+    store.dispatch(approvalDecisionBegan('r'))
+    await dismiss(store)
+    expect(store.getState().notifications.items.map(n => n.ts)).toEqual(['r'])
+    store.dispatch(approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: '' }))
+    expect(store.getState().notifications.items).toEqual([])
+    expect(store.getState().notifications.retiredApprovals ?? {}).toEqual({})
+  })
+
+  it('a row a frame ended mid-flight still retires with the failure, even if the user also closed it', async () => {
+    const store = mkLocalStore()
+    store.dispatch(addNotification(row))
+    store.dispatch(approvalDecisionBegan('r'))
+    await store.dispatch(dismissLocalApprovalRow('r'))
+    store.dispatch(endApprovalRow('r'))
+    store.dispatch(approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: 'gateway busy' }))
+    expect(store.getState().notifications.retiredApprovals?.r).toEqual({ failed: 'gateway busy' })
+  })
+
+  it('holds across 500 seeded interleavings of presses, end frames, snapshots, clears, ring fills and settles', () => {
+    for (let seed = 1; seed <= 500; seed++) {
+      const rand = rng(seed)
+      let state = seeded()
+      let pending = 0
+      let ended = false
+      let dismissed = false // this tab's user cleared the list mid-flight
+      let claimed = false // a refusal or a failed DELETE settled on the row
+      let removedByLanding = false
+      let fills = 0
+      const steps = 2 + Math.floor(rand() * 10)
+      for (let i = 0; i < steps || pending > 0; i++) {
+        const present = state.items.some(n => n.ts === 'r')
+        const r = rand()
+        if (i < steps && r < 0.35 && present) {
+          state = reducer(state, approvalDecisionBegan('r')); pending += 1
+        } else if (i < steps && r < 0.55) {
+          state = reducer(state, endApprovalRow('r'))
+          if (pending > 0 && present) ended = true
+        } else if (i < steps && r < 0.65) {
+          // A reconnect snapshot: the server holds no copy of this tab's row.
+          state = reducer(state, fetchNotifications.fulfilled({ items: [], seq: state.clearSeq, ackSeq: state.ackSeq ?? 0 }, '', undefined))
+          if (pending > 0 && present) expect(state.approvalDecisions?.r?.inFlight, `seed ${seed} step ${i}`).toBe(pending)
+        } else if (i < steps && r < 0.7) {
+          // A clear-all dismisses the row for this tab. It ends no request.
+          state = reducer(state, clearAllNotifications())
+          if (pending > 0 && present) dismissed = true
+        } else if (i < steps && r < 0.78) {
+          // The ring fills: a busy channel pushes a full cap of notes. A row
+          // with a decision in flight must survive the eviction.
+          const heldBefore = present && pending > 0
+          fills += 1
+          for (let k = 0; k < NOTIFICATIONS_RING_CAP; k++) {
+            state = reducer(state, addNotification({ kind: 'cron', ts: `f${fills}-${k}`, title: 't', body: 'b', acked: false }))
+          }
+          if (heldBefore) expect(state.items.some(n => n.ts === 'r'), `seed ${seed} step ${i} fill`).toBe(true)
+          if (pending > 0 && present) expect(state.approvalDecisions?.r?.inFlight, `seed ${seed} step ${i} fill`).toBe(pending)
+          // Only held rows may sit over the cap.
+          expect(state.items.length, `seed ${seed} step ${i} fill`).toBeLessThanOrEqual(NOTIFICATIONS_RING_CAP + 1)
+        } else if (pending > 0) {
+          const outcome = OUTCOMES[Math.floor(rand() * OUTCOMES.length)]
+          pending -= 1
+          if (outcome === 'landed') {
+            // The thunk removes the row for a landed decision.
+            state = reducer(state, removeNotificationByTs('r')); removedByLanding = true
+          } else {
+            state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome }))
+            // A failed press claims the row only as the last one on a row a
+            // frame ended: the failure is then shown on it, like a refusal.
+            if ((outcome !== 'failed' || (pending === 0 && ended)) && state.items.some(n => n.ts === 'r')) claimed = true
+          }
+        }
+        const nowPresent = state.items.some(n => n.ts === 'r')
+        // A row with a press in flight never leaves except by a landed decision.
+        if (pending > 0 && present && !removedByLanding) expect(nowPresent, `seed ${seed} step ${i}`).toBe(true)
+        if (!nowPresent) {
+          expect(state.approvalDecisions?.r, `seed ${seed}`).toBeUndefined()
+          break
+        }
+      }
+      const present = state.items.some(n => n.ts === 'r')
+      if (!present) continue
+      expect(state.approvalDecisions ?? {}, `seed ${seed}`).toEqual({})
+      // A row a frame ended or the user dismissed leaves once settled, unless
+      // a settle claimed it.
+      if ((ended || dismissed) && !claimed) expect(present, `seed ${seed}`).toBe(false)
+      // Only a frame says the request ended: a dismissed row never shows a
+      // retryable failure as no longer pending.
+      if (!ended) expect(typeof state.retiredApprovals?.r, `seed ${seed}`).not.toBe('object')
+      const retired = !!state.retiredApprovals?.r
+      const dismissFailed = !!state.dismissFailed?.r
+      if (ended) expect(retired || dismissFailed, `seed ${seed}`).toBe(true)
+    }
+  })
+})
+
+describe('notificationsSlice: an unread broadcast on a settled approval row', () => {
+  const approvalNote: Notification = { kind: 'approval', title: 'Approve?', body: 'tool X', ts: '2', approval_id: 'ap-2' }
+
+  // Another view marks the stored note unread, and the server broadcasts that
+  // to every view. A settled row is read in this tab and asks for nothing, so
+  // the broadcast leaves it out of the unread counts. An unsettled row still takes the broadcast.
+  it.each([
+    ['refused', 'retired'],
+    ['dismiss_failed', 'decided with a failed DELETE'],
+  ] as const)('leaves a %s (%s) row read through the broadcast', (outcome) => {
+    const other: Notification = { ...n1, acked: true }
+    let state = reducer({ items: [other, { ...approvalNote, acked: false }], clearSeq: 0 }, approvalDecisionSettled({ ts: '2', outcome }))
+    expect(state.items.find(n => n.ts === '2')?.acked).toBe(true)
+    state = reducer(state, unackNotificationByTs('2'))
+    state = reducer(state, unackNotificationByTs('1'))
+    expect(state.items.filter(n => !n.acked).map(n => n.ts)).toEqual(['1'])
   })
 })

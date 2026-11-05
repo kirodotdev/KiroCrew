@@ -147,3 +147,37 @@ class TestWorkspaceUpdateAbsolutePath:
             )
             assert resp.status == 400
             assert "Invalid" in (await resp.json())["error"]
+
+
+class TestWorkspaceCreateFieldTypes:
+    """A non-string ``name`` or ``copy_from`` has no ``.strip()``, so it is a coded 400."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body,field",
+        [
+            ({"name": 5}, "name"),
+            ({"name": ["ws"]}, "name"),
+            ({"name": None}, "name"),
+            ({"name": "newws", "copy_from": 5}, "copy_from"),
+            ({"name": "newws", "copy_from": {"a": 1}}, "copy_from"),
+            ({"name": "newws", "copy_from": None}, "copy_from"),
+        ],
+        ids=repr,
+    )
+    async def test_non_string_field_is_a_coded_400(self, cfg_env, mock_sel, body, field):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/workspaces", json=body)
+            assert resp.status == 400
+            assert await resp.json() == {
+                "error": f"{field} must be a string",
+                "code": "invalid_field_type",
+            }
+        assert "newws" not in json.loads((cfg_env / "config.json").read_text())["workspaces"]
+
+    @pytest.mark.asyncio
+    async def test_blank_name_keeps_its_answer(self, cfg_env, mock_sel):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/workspaces", json={"name": "  "})
+            assert resp.status == 400
+            assert await resp.json() == {"error": "Workspace name is required"}

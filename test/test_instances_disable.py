@@ -87,7 +87,9 @@ def env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
     monkeypatch.setattr(pa, "_is_port_free", lambda port, host="127.0.0.1": True)
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    (tmp_path / "config.json").write_text(json.dumps({"instances": {"enabled": True}}))
+    (tmp_path / "config.json").write_text(
+        json.dumps({"instances": {"enabled": True}}), encoding="utf-8"
+    )
     loader._invalidate_config_cache()
     _Tunnel.built = []
     reg = InstancesRegistry(path=tmp_path / "instances.json")

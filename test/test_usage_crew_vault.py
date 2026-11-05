@@ -268,6 +268,7 @@ class TestVaultOwnership:
     @staticmethod
     def _store(token):
         store = MagicMock()
+        store.holds_no_identity.return_value = token is None
         store.resolve.return_value = token
         return patch("kiro_crew.auth.bridge.default_token_store", return_value=store)
 
@@ -275,6 +276,8 @@ class TestVaultOwnership:
     def _token(usable: bool):
         tok = MagicMock()
         tok.is_usable.return_value = usable
+        tok.is_expired.return_value = not usable
+        tok.profile_arn = "arn:aws:codewhisperer:us-east-1:1:profile/p"
         return tok
 
     @staticmethod
@@ -307,15 +310,17 @@ class TestVaultOwnership:
             assert sessions_mod._vault_owns_usage_sync() is False
         holds.assert_called_once_with(warn=False)
 
-    def test_unusable_vault_identity_does_not_own_and_does_not_warn(self, caplog):
+    def test_unusable_vault_identity_still_owns_and_does_not_warn(self, caplog):
         # This probe runs on every poll; the spawn-time WARNING must not repeat
-        # here. Drives the real predicate over a store holding an unusable entry.
+        # here. Drives the real predicate over a store holding an unusable entry:
+        # the vault is still the sign-in (the spawn never falls back to kiro-cli),
+        # so usage never relabels kiro-cli's account as this one's.
         with (
             patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kas")),
             self._store(self._token(False)),
             caplog.at_level("DEBUG", logger="kiro_crew.auth.bridge"),
         ):
-            assert sessions_mod._vault_owns_usage_sync() is False
+            assert sessions_mod._vault_owns_usage_sync() is True
         assert not [r for r in caplog.records if r.levelno >= 30]
         # The predicate did reach the unusable entry: its diagnostic is at DEBUG.
         assert any(

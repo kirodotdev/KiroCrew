@@ -198,14 +198,11 @@ class TestStartNextQueuedTurn:
     async def test_a_user_message_ends_the_batch_only_when_nothing_is_out(
         self, tmp_path, children, ends_batch
     ):
-        """A user message drained at a turn's end (`_hand_off_queue`, the
-        ending turn still holding the floor) disarms the synthesis either way.
-        It clears the batch's turn count only when the fire gate answers clear,
-        so no child of the batch is still out: clearing a live batch's count
-        loses its synthesis, while keeping a stale one costs at most one extra
-        synthesis. A store nobody could read keeps it too. The running child is
-        flagged stalled so the drain's own child hold lets the message through;
-        the fire gate still counts it as running."""
+        """A user message at a turn's end disarms the synthesis either way.
+
+        The batch's turn count clears only when no child is still out (an unreadable store
+        keeps it). The running child is flagged stalled so the drain lets the message by.
+        """
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
         slot._synthesis_completion_turns = 2
@@ -551,11 +548,8 @@ class TestRunPendingSynthesis:
     async def test_synthesis_prompt_is_appended_as_an_inject_row(self, tmp_path):
         """The prompt must reach the transcript as `inject`, never as user speech.
 
-        This site bypasses `_start_next_queued_turn` (it runs no queue entry),
-        which is the only other place a turn-dispatching path appends a row.
-        Without a row of its own the prompt reaches the conversation log with
-        nothing on the dashboard, and resurfaces attributed to the USER on
-        replay.
+        This site bypasses `_start_next_queued_turn`; without its own row the prompt
+        replays attributed to the USER.
         """
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
@@ -598,12 +592,8 @@ class TestRunPendingSynthesis:
     def test_inject_provenance_survives_the_persistence_boundary(self):
         """`injectKind` must round-trip; the older `cls` channel does not.
 
-        This is the property the whole render decision now rests on. An inject
-        row's ``cls`` is persisted only for ``role == "system"``, so the
-        ``cronLabel`` the frontend reads (synthesized from ``cls`` at emit time)
-        silently disappears on the next rehydrate — which is exactly how a
-        carve-out keyed on it swallowed every restored cron notification. Assert
-        the durable channel directly rather than trusting the live shape.
+        ``cls`` is persisted only for ``role == "system"``, so a ``cronLabel`` built from it
+        vanishes on rehydrate. The render decision rests on the durable channel.
         """
         from kiro_crew.dashboard.chat_persistence import _build_message_entry_uncached
 

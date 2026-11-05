@@ -71,6 +71,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, clear_session_execution
 from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool
 from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
+from kiro_crew.metrics.usage_attrs import ORIGIN_WEBHOOK, TRIGGER_WEBHOOK
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -665,7 +666,7 @@ def _capability_refusal_text(
     a save or could not be verified after the process ran, which a resend may
     clear, so its text asks for a resend first.
     """
-    member = (getattr(exc, "member", "") or agent or "").strip() or "this crew member"
+    member = (getattr(exc, "member", "") or agent or "").strip() or "this Bot"
     if isinstance(exc, CapabilityStartupError):
         return (
             f"Hook agent did not run: the start of {member} could not be verified "
@@ -769,6 +770,8 @@ async def _run_hook_inner(
             message,
             is_new,
             session_key,
+            # Unattended: a webhook turn has no user reading it live.
+            interactive=False,
             agent=agent,
             resumed=resumed,
             # Fallback label only: with the session's provider passed below,
@@ -984,6 +987,8 @@ async def _run_hook_inner(
             context_window=_window,
             elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
             model_source=client,
+            trigger=TRIGGER_WEBHOOK,
+            origin=ORIGIN_WEBHOOK,
         )
     except Exception:
         logger.debug("usage row (webhook) persist failed", exc_info=True)

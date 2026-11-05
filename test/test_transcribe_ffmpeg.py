@@ -24,6 +24,11 @@ from kiro_crew import platform_compat as _pc
 from kiro_crew import transcribe
 from kiro_crew.stt import decoder
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.testing.wait import async_wait_until
+
+# Lost-run bound for a cancelled task that never finishes. The cancel path
+# takes milliseconds, so this only names a hang.
+_LOST_RUN_SECS = 30.0
 
 # ---------------------------------------------------------------------------
 # ffmpeg discovery: bundled with desktop releases, with system fallback for source
@@ -795,20 +800,10 @@ class TestBundledFfmpeg:
         assert captured[0][:2] == (flag, "file,pipe")
         assert captured[0].index(flag) < captured[0].index("-i")
 
-    def test_every_import_suffix_has_a_forced_demuxer(self):
-        """GPT review r20: the protocol pin stops NETWORK fetches, but an
-        auto-probed playlist demuxer could still open other LOCAL files its
-        text names — reads that never went through ``validate_file_path``.
-        Forcing the validated suffix's own demuxer turns playlist text into a
-        decode error. Every import-admissible suffix must therefore map to a
-        demuxer, so no attacker-influenced input ever falls back to content
-        sniffing."""
-        from kiro_crew.apps.builtins.meetings.backend import constants as k
-
-        for suffix in k.IMPORT_AUDIO_EXTENSIONS:
-            forced = transcribe._forced_demuxer_args(f"/tmp/talk{suffix}")
-            assert forced and forced[0] == "-f", f"no forced demuxer for {suffix}"
-        # Internal temp files with unrecognized names keep the old behaviour.
+    def test_an_unrecognized_suffix_forces_no_demuxer(self):
+        """Internal temp files with unrecognized names keep FFmpeg's own probe.
+        That every suffix an app's audio import admits DOES map to a forced
+        demuxer is the importing app's pin, in its own tests."""
         assert transcribe._forced_demuxer_args("/tmp/unknown.xyz") == ()
 
     @pytest.mark.skipif(os.name == "nt", reason="descriptor paths are the POSIX branch")
@@ -946,23 +941,34 @@ class TestBundledFfmpeg:
 
         def slow_resolver():
             resolver_started.set()
-            # flake-ok: pre-existing 5 s timed Event wait that parks the fake resolver thread until the test releases it after the cancel, moved verbatim; tracked for a de-flake pass
-            release_resolver.wait(timeout=5)
+            # Parks until the test releases it (in the finally below), so a
+            # failed assertion cannot leave this pool thread waiting forever.
+            release_resolver.wait()
             return opened
 
         monkeypatch.setattr(transcribe._AuthenticatedFfmpeg, "close", recording_close)
         monkeypatch.setattr(transcribe, "_open_ffmpeg_for_execution", slow_resolver)
         task = asyncio.create_task(transcribe._resolve_ffmpeg_for_execution())
-        # flake-ok: pre-existing 1 s timed Event wait parked on a pool thread that asserts the resolver thread started before the task is cancelled, moved verbatim; tracked for a de-flake pass
-        assert await asyncio.to_thread(resolver_started.wait, 1)
+        try:
+            # Wait on the resolver thread's own signal, not a fixed interval.
+            assert await async_wait_until(
+                resolver_started.is_set,
+                describe=lambda: "resolver thread never started",
+            )
 
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            # flake-ok: pre-existing await of the cancelled resolver task with no timeout bound that expects CancelledError to surface, moved verbatim; tracked for a de-flake pass
-            await task
-        release_resolver.set()
-        # flake-ok: pre-existing 2 s timed Event wait parked on a pool thread that asserts the abandoned handle is closed off the event loop after the release, moved verbatim; tracked for a de-flake pass
-        assert await asyncio.to_thread(handle_closed.wait, 2)
+            task.cancel()
+            # A cancelled task that ignores cancellation is a lost run: the
+            # bound only names that, and the cancel path itself takes milliseconds.
+            _, pending = await asyncio.wait({task}, timeout=_LOST_RUN_SECS)
+            assert not pending, "cancelled resolver task did not finish"
+            with pytest.raises(asyncio.CancelledError):
+                task.result()
+        finally:
+            release_resolver.set()
+        assert await async_wait_until(
+            handle_closed.is_set,
+            describe=lambda: "abandoned handle was never closed",
+        )
 
         assert close_threads
         assert close_threads[0] != event_loop_thread

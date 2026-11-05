@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +20,7 @@ from kiro_crew.acp_backends import (
     backend_to_stored,
     routing_for,
 )
-from kiro_crew.agent_discovery import AgentInfo, list_agents
+from kiro_crew.agent_discovery import AgentInfo, agents_dir_revision, list_agents
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
     DASHBOARD_MANAGER_AGENT_FILENAME,
@@ -30,8 +33,14 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     default_template,
     dispatch_kiro_agent,
+    materialized_agents_generation,
+    materialized_refresh_ticket,
+    materialized_skipped_stems,
+    materialized_snapshot_complete,
     refresh_materialized_agents,
+    reset_dangling_default_agent,
 )
+from kiro_crew.config.paths import kiro_agents_dir, mate_agents_dir
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
     _agent_roster_row,
@@ -98,6 +107,130 @@ def _agent_runtime_policy(name: str, engine_identity: str) -> dict[str, Any] | N
         log_message=f"Failed to read runtime policy for crew {name}",
     )
     return policy if isinstance(policy, dict) else None
+
+
+def _dir_stamp(directory: Path) -> object | None:
+    """The content revision of one agents directory, ``None`` when it cannot be proved.
+
+    A missing directory is a stamp of its own, not an unprovable one: the
+    crewmate folder does not exist until the first crewmate file is written.
+    Any other failure to stat it raises, for :func:`_scan_inputs_stamp` to turn
+    into an unprovable stamp.
+    """
+    try:
+        directory.stat()
+    except FileNotFoundError:
+        return ("absent", str(directory))
+    revision = agents_dir_revision(directory)
+    return None if revision is None else (str(directory), revision)
+
+
+def _scan_inputs_stamp() -> bytes | None:
+    """A digest of what :func:`refresh_materialized_agents` reads, ``None`` if unprovable.
+
+    Both agents directories by :func:`agents_dir_revision` (every spec entry's
+    metadata, a digest of an entry too young to trust, and the in-process spec
+    generation), and the snapshot's publish count, because a publish adds names
+    without a scan. Taking the stamp never raises: a probe that fails is a stamp
+    that cannot be proved, so the fetch scans as it would without the gate, and
+    the scan handles the error its own way.
+    """
+    try:
+        user = _dir_stamp(kiro_agents_dir())
+        mate = _dir_stamp(mate_agents_dir())
+    except OSError:
+        logger.debug("agent catalog stamp unavailable", exc_info=True)
+        return None
+    if user is None or mate is None:
+        return None
+    parts = (user, mate, materialized_agents_generation())
+    return hashlib.sha256(repr(parts).encode("utf-8", "backslashreplace")).digest()
+
+
+# Catalog fetches whose snapshot scan the gate skipped, and those that scanned.
+catalog_scan_hit = 0
+catalog_scan_miss = 0
+
+
+class _RefreshGate:
+    """Skips the catalog's snapshot scan while nothing the scan reads has moved.
+
+    A stamp is recorded only after a scan whose snapshot landed, when the inputs
+    were the same before and after it; it is kept with the stems that scan
+    skipped, so one unparseable spec keeps the gate on under its own key, and
+    with the installed snapshot's refresh ticket, and only while that snapshot
+    is the gate's own scan. A fetch skips only while all three match, so a snapshot another caller's refresh installed is never
+    served as the recorded one, even when the directories later return to the
+    recorded state. The lock spans check and scan, so concurrent misses scan once; an
+    unprovable stamp scans outside it, as every fetch did before the gate.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._recorded: tuple[bytes, frozenset[str], int] | None = None
+        self._declined: bytes | None = None
+
+    def refresh(self) -> bool:
+        """Scan unless the inputs are unchanged. ``True`` when it scanned."""
+        global catalog_scan_hit, catalog_scan_miss
+        with self._lock:
+            before = _scan_inputs_stamp()
+            if before is not None:
+                installed = (before, materialized_skipped_stems(), materialized_refresh_ticket())
+                if self._recorded == installed:
+                    catalog_scan_hit += 1
+                    return False
+                catalog_scan_miss += 1
+                landed = _timed_scan()
+                skipped = materialized_skipped_stems()
+                ticket = materialized_refresh_ticket()
+                # Tickets are issued in order and a landed scan leaves the ticket
+                # at least at its own, so the next ticket after the one seen
+                # before the scan is this scan's: the installed snapshot is the
+                # one this scan read, not a refresh another caller landed beside it.
+                own = landed and ticket == installed[2] + 1
+                if own and skipped is not None and _scan_inputs_stamp() == before:
+                    self._recorded = (before, skipped, ticket)
+                elif self._declined != before:
+                    self._declined = before
+                    logger.info(
+                        "agent catalog scan not recorded (landed=%s, skipped known=%s)",
+                        landed,
+                        skipped is not None,
+                    )
+                return True
+        catalog_scan_miss += 1
+        _timed_scan()
+        return True
+
+
+def _timed_scan() -> bool:
+    started = time.perf_counter()
+    landed = refresh_materialized_agents(heal_default=False)
+    logger.debug(
+        "agent catalog snapshot scan took %.1f ms (landed=%s, hits=%d, misses=%d)",
+        (time.perf_counter() - started) * 1000,
+        landed,
+        catalog_scan_hit,
+        catalog_scan_miss,
+    )
+    return landed
+
+
+def _refresh_for_catalog(*, owner: bool) -> None:
+    """The catalog fetch's snapshot refresh: a gated scan, then the owner's heal.
+
+    The heal runs on every owner fetch over a complete snapshot, because it also
+    reads inputs no stamp covers (``config.local.json``, the edition's agents,
+    the alias workspace's ``.kiro/agents``). Its first step is an in-memory read
+    of the snapshot, so a fetch with nothing removed does no I/O there.
+    """
+    _REFRESH_GATE.refresh()
+    if owner and materialized_snapshot_complete():
+        reset_dangling_default_agent()
+
+
+_REFRESH_GATE = _RefreshGate()
 
 
 def _templates(project_dir: Path | None) -> list[AgentInfo]:
@@ -223,9 +356,11 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # for the template rows, so the snapshot refresh -- whose landed scan
         # resets a default agent whose template is gone -- rides the same
         # executor call, and the config is read AFTER it so the response names
-        # the default the user will actually get.
+        # the default the user will actually get. The gate skips the scan while
+        # nothing it reads has moved (:class:`_RefreshGate`), so a removal is
+        # still noticed on the first fetch after it.
         def _refreshed_templates() -> tuple[list[AgentInfo], frozenset[str]]:
-            refresh_materialized_agents(heal_default=owner)
+            _refresh_for_catalog(owner=owner)
             discovered = list_agents(project_dir=project_dir)
             # From the WHOLE scan, not the template choices: a crewmate may be
             # bound to an agent the template list withholds.

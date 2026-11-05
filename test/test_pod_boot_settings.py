@@ -31,16 +31,9 @@ class TestBootTimeSettings:
     """``pod up --approval`` / ``--crons`` / ``--no-embeddings`` are persisted per
     pod and applied at boot.
 
-    None of them can ride the unit file: both backends re-enter the pod as
-    ``kirocrew pod _run <name>`` with no flags. On systemd one template unit is
-    shared by every instance, so it cannot carry per-pod flags; launchd writes a
-    per-pod plist but still execs that same flagless argv. So they travel through
-    the per-pod env file, exactly as ``SEED`` does.
-
-    ``--approval`` and ``--crons`` land on the gateway ARGV; ``--no-embeddings``
-    lands in the gateway's ENV instead, because the setting it expresses is an env
-    var the embedder reads rather than a flag the gateway parses. Hence two boot
-    helpers below.
+    Both backends run a flagless ``kirocrew pod _run <name>``, so they travel through
+    the per-pod env file, as ``SEED`` does. ``--approval`` and ``--crons`` reach the
+    gateway argv; ``--no-embeddings`` is an env var the embedder reads.
     """
 
     def _booted_argv(
@@ -139,20 +132,14 @@ class TestBootTimeSettings:
         # unit's Restart=on-failure/RestartSec=5 (no RestartPreventExitStatus)
         # turns that into a restart loop every 5s.
         #
-        # So the flag is dropped and the pod STILL BOOTS. Such a checkout simply
-        # does not receive the new guarantee -- exactly its behaviour before the
-        # flag existed.
+        # So the flag is dropped and the pod STILL BOOTS, just without the guarantee.
         root = tmp_path / "old"
         root.mkdir()
         c = PodConfig.load()
         rt.pin_checkout(c, "x", _ready_worktree(root, "x", flags=False))
-        # Seed the HOME with tunnel.enabled=TRUE. boot() must leave it ALONE: a
-        # boot-time config re-pin was tried and withdrawn, because
-        # KiroCrewConfig.load() deep-merges config.local.json OVER config.json with
-        # the overlay winning (and `config set` writes the overlay by default), so
-        # pinning this file does not pin the setting -- while writing it does mutate
-        # an operator's file. Starting from true is what makes the assertion below
-        # able to observe a re-pin if one is ever reintroduced.
+        # Seed tunnel.enabled=TRUE; boot() must leave it alone. KiroCrewConfig.load()
+        # lets config.local.json win over config.json, so rewriting this file would not
+        # pin the setting and would mutate an operator's file. True makes a re-pin visible.
         home = c.home_dir("x")
         home.mkdir(mode=0o700, parents=True, exist_ok=True)
         (home / "config.json").write_text(json.dumps({"tunnel": {"enabled": True}}))
@@ -174,12 +161,8 @@ class TestBootTimeSettings:
     def test_the_probe_accepts_this_very_repo(self) -> None:
         """The ratchet: THIS checkout must satisfy its own probe.
 
-        Without this, a refactor that moves the gateway flag declarations out of
-        ``cli.py`` (or changes how they are quoted) would silently DROP the flag for
-        EVERY current-checkout pod with nothing going red -- each one falling back to
-        its pre-flag tunnel behaviour while still looking guarded. Failing here is
-        the signal to teach ``target_supports_flag`` the new location, not to relax
-        it.
+        Moving the gateway flag declarations out of ``cli.py`` would silently drop the
+        flag for every pod; teach ``target_supports_flag`` the new place instead.
         """
         repo_root = Path(rt.__file__).resolve().parents[3]
         assert (repo_root / "src" / "kiro_crew" / "cli.py").is_file(), repo_root
@@ -343,6 +326,7 @@ class TestBootTimeSettings:
     def test_up_on_a_running_pod_notes_the_restart(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
         c = self._prep_up(tmp_path, monkeypatch, active=True)
         pod_cli._up(
             c,
@@ -351,9 +335,26 @@ class TestBootTimeSettings:
             ),
         )
         err = capsys.readouterr().err
-        assert "already running" in err and "pod down demo" in err
+        assert "already running" in err and "pod restart demo" in err
         # Recorded either way, so the next boot picks it up.
         assert rt.read_env_file(c, "demo").get("APPROVAL") == "reads"
+
+    def test_up_on_a_running_windows_pod_names_down_then_up(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """`pod restart` refuses on Windows, so the note must name the remedy that works."""
+        monkeypatch.setattr(rt, "IS_WINDOWS", True)
+        monkeypatch.setattr(rt.win_backend, "unsupervised_reason", lambda cfg, n: None)
+        c = self._prep_up(tmp_path, monkeypatch, active=True)
+        pod_cli._up(
+            c,
+            argparse.Namespace(
+                name="demo", json=False, seed="", ttl="2h", provision=False, approval="reads"
+            ),
+        )
+        err = capsys.readouterr().err
+        assert "kirocrew pod down demo && kirocrew pod up demo --approval reads" in err
+        assert "pod restart" not in err
 
     def test_up_tolerates_a_namespace_without_the_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -383,7 +384,7 @@ class TestBootTimeSettings:
         assert allowed, "pod.up allowed was never audited"
         assert "approval=yolo" in allowed[0][2]
 
-    # --- crons -------------------------------------------------------------
+    # crons
 
     def test_boot_enables_the_scheduler(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -440,7 +441,7 @@ class TestBootTimeSettings:
         assert allowed, "pod.up allowed was never audited"
         assert "crons=on" in allowed[0][2]
 
-    # --- embeddings --------------------------------------------------------
+    # embeddings
 
     def test_the_skip_download_env_name_matches_the_embedder(self) -> None:
         # runtime.py restates the name instead of importing embeddings (which drags

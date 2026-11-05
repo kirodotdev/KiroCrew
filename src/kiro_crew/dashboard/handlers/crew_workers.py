@@ -1,5 +1,10 @@
 """A Crew Mode root's workers: list them, and type into one as the person.
 
+A crewmate (mate) thread is answered as a root too, by its own ``mate_root`` stamp
+(``crew_mode.MATE_ROOT_FIELD``), so its sessions are read without any ``crew_root``
+rule firing for them; a mate's list answer names ``root_kind: "mate"``. The gate is
+the same for both kinds of root.
+
 ``GET /api/chat/slots/{slot}/crew-workers`` lists every session the root dispatched,
 directly or through another worker (``crew_mode.stamp_rows`` decides who is whose).
 ``POST /api/chat/slots/{slot}/crew-workers/{worker}/steer`` delivers the person's text
@@ -60,11 +65,62 @@ def _stamped_rows(state: Any) -> list[dict[str, Any]]:
     return list(state.serialize_slots(dashboard_user=True))
 
 
+#: The two kinds of root these routes answer: a Crew Mode conductor, and a crewmate
+#: (mate) thread (``crew_mode.MATE_ROOT_FIELD``). A mate root is read through its own
+#: stamps, so no ``crew_root`` rule fires for a mate's sessions.
+ROOT_KIND_CREW = "crew"
+ROOT_KIND_MATE = "mate"
+
+
 def _root_row(rows: list[dict[str, Any]], root: str) -> dict[str, Any] | None:
+    """*root*'s live row when it is a Crew Mode root or a mate thread, else ``None``."""
+    return _live_root(rows, root)[1]
+
+
+def _live_root(rows: list[dict[str, Any]], root: str) -> tuple[str, dict[str, Any] | None]:
+    """``(kind, row)`` of live root *root*, ``("", None)`` when it is no live root.
+
+    A mate thread is a root when the slot frame's own walk recorded it as one
+    (``crew_mode.known_mate_roots``, set by ``stamp_rows`` in the same read).
+    """
     for row in rows:
-        if row.get("key") == root and row.get(crew_mode.ROOT_FIELD):
-            return row
-    return None
+        if row.get("key") != root:
+            continue
+        if row.get(crew_mode.ROOT_FIELD):
+            return ROOT_KIND_CREW, row
+        if row.get("mode") == crew_mode.MATE_SLOT_MODE and root in crew_mode.known_mate_roots():
+            return ROOT_KIND_MATE, row
+        return "", None
+    return "", None
+
+
+def _closed_root_kind(state: Any, root: str) -> str:
+    """The kind of CLOSED known root *root* (its tab gone), ``""`` when it is none."""
+    if not root or root in (getattr(state, "_slots", None) or {}):
+        return ""
+    if root in crew_mode.known_roots():
+        return ROOT_KIND_CREW
+    if root in crew_mode.known_mate_roots():
+        return ROOT_KIND_MATE
+    return ""
+
+
+def _tree_workers(rows: Iterable[Mapping[str, Any]], root: str) -> list[Mapping[str, Any]]:
+    """*root*'s live sessions by its own stamp: ``crew_root`` for a Crew Mode root,
+    ``mate_root`` for a mate thread. A key is a root of one kind only."""
+    rows = list(rows)
+    return crew_mode.workers_of(rows, root) or crew_mode.mate_workers_of(rows, root)
+
+
+def _dispatcher_of(row: Mapping[str, Any]) -> str:
+    """The row's direct dispatcher, from whichever tree stamped it."""
+    return str(
+        row.get(crew_mode.DISPATCHER_FIELD) or row.get(crew_mode.MATE_DISPATCHER_FIELD) or ""
+    )
+
+
+def _not_root() -> web.Response:
+    return _bad("not_crew_mode_root", "this session is not an Ultra Mode root or a Bot", status=404)
 
 
 def _status(row: Mapping[str, Any]) -> str:
@@ -254,6 +310,23 @@ def _ledger_items(root: str) -> dict[str, LedgerFacts]:
     worker bound by another worker's ledger shows no item. A root that owns no
     ledger has none to show.
     """
+    from kiro_crew.dashboard.handlers import work_ledger_board
+
+    out: dict[str, LedgerFacts] = {}
+    for worker, item in _ledger_work_items(root).items():
+        line = work_ledger_board._redact_deep({"line": item.summary or item.title}).get("line")
+        out[worker] = LedgerFacts(
+            item.item_id, _one_line(line if isinstance(line, str) else ""), _progress_of(item)
+        )
+    return out
+
+
+def _ledger_work_items(root: str) -> dict[str, Any]:
+    """Worker slot key -> its work item on *root*'s own ledger, unredacted. BLOCKING.
+
+    The item :func:`_ledger_items` summarizes: a worker with an old closed item and
+    a new open one is the open one's. Read through the board's seam, as there.
+    """
     from kiro_crew import session_ledger
     from kiro_crew.dashboard.handlers import work_ledger_board
 
@@ -264,21 +337,21 @@ def _ledger_items(root: str) -> dict[str, LedgerFacts]:
         return {}
     from kiro_crew.work_ledger import TERMINAL_ITEM_STATES
 
-    out: dict[str, LedgerFacts] = {}
+    out: dict[str, Any] = {}
     open_for: set[str] = set()
     for item in items:
+        # An item bound on a PEER crew names that crew's slot key, which can equal
+        # a local one: it is never a local session's item.
+        if getattr(item, "worker_instance_id", None):
+            continue
         worker = session_ledger.ledger_key(item.worker_session_key or "")
         if worker and item.item_id:
-            # A worker with an old closed item and a new open one is the open one's.
             is_open = getattr(item, "state", "") not in TERMINAL_ITEM_STATES
             if worker in open_for and not is_open:
                 continue
             if is_open:
                 open_for.add(worker)
-            line = work_ledger_board._redact_deep({"line": item.summary or item.title}).get("line")
-            out[worker] = LedgerFacts(
-                item.item_id, _one_line(line if isinstance(line, str) else ""), _progress_of(item)
-            )
+            out[worker] = item
     return out
 
 
@@ -367,14 +440,16 @@ async def api_crew_workers(request: web.Request) -> web.Response:
     root = request.match_info.get("slot", "")
     rows = _stamped_rows(state)
     root_closed = False
-    if _root_row(rows, root) is None:
-        # A closed root (its tab gone, its saved session a known Crew Mode root)
-        # still has workers: the list is read from saved data, and says so, so a
-        # worker page reloaded under it keeps the root's name and the real state.
-        if root not in crew_mode.known_roots() or root in (getattr(state, "_slots", None) or {}):
-            return _bad("not_crew_mode_root", "this session is not a Crew Mode root", status=404)
+    kind = _live_root(rows, root)[0]
+    if not kind:
+        # A closed root (its tab gone, its saved session a known root) still has
+        # workers: the list is read from saved data, and says so, so a worker page
+        # reloaded under it keeps the root's name and the real state.
+        kind = _closed_root_kind(state, root)
+        if not kind:
+            return _not_root()
         root_closed = True
-    live = crew_mode.workers_of(rows, root)
+    live = _tree_workers(rows, root)
     live_keys = {str(row.get("key")) for row in rows}
     closed = _closed_workers(root, live_keys)
     items = await asyncio.to_thread(
@@ -398,7 +473,7 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 "ledger_item": item,
                 "summary": _worker_line(row, line, get_slot(key) if callable(get_slot) else None),
                 "created_by": str(row.get("created_by") or ""),
-                "dispatched_by": str(row.get(crew_mode.DISPATCHER_FIELD) or ""),
+                "dispatched_by": _dispatcher_of(row),
                 "approval": _approval_of(row),
             }
         )
@@ -424,6 +499,9 @@ async def api_crew_workers(request: web.Request) -> web.Response:
             }
         )
     out: dict[str, Any] = {"root": root, "workers": workers}
+    if kind == ROOT_KIND_MATE:
+        # Only a mate's answer names its kind, so a Crew Mode root's stays as it was.
+        out["root_kind"] = ROOT_KIND_MATE
     if root_closed:
         out["root_closed"] = True
         out["root_title"] = closed_meta.get(root, ("", ""))[0]
@@ -521,8 +599,8 @@ async def api_crew_worker_approve(request: web.Request) -> web.Response:
         return _bad("missing_request_id", "request_id is required")
     rows = _stamped_rows(state)
     if _root_row(rows, root) is None:
-        return _bad("not_crew_mode_root", "this session is not a Crew Mode root", status=404)
-    if not any(row.get("key") == worker for row in crew_mode.workers_of(rows, root)):
+        return _not_root()
+    if not any(row.get("key") == worker for row in _tree_workers(rows, root)):
         return _bad(
             "not_a_worker", "that session is not one of this conductor's crew members", status=404
         )
@@ -600,9 +678,7 @@ async def _load_worker_window(state: Any, root: str, worker: str, slot: Any) -> 
     await _load_window(slot)
     if state.get_slot(worker) is not slot:
         return _bad("worker_closed", "that crew member's tab is closed", status=409)
-    if not any(
-        row.get("key") == worker for row in crew_mode.workers_of(_stamped_rows(state), root)
-    ):
+    if not any(row.get("key") == worker for row in _tree_workers(_stamped_rows(state), root)):
         return _bad(
             "not_a_worker", "that session is not one of this conductor's crew members", status=404
         )
@@ -696,11 +772,11 @@ async def api_crew_timeline(request: web.Request) -> web.Response:
         # A closed root answers like the worker list does (``api_crew_workers``):
         # its own lane is drawn from its saved transcript, so the Timeline under a
         # closed conductor shows the same sessions the List does.
-        if root not in crew_mode.known_roots() or root in (getattr(state, "_slots", None) or {}):
-            return _bad("not_crew_mode_root", "this session is not a Crew Mode root", status=404)
+        if not _closed_root_kind(state, root):
+            return _not_root()
         root_closed = True
     heads = [] if root_row is None else [_lane_head(root_row, "conductor")]
-    heads.extend(_lane_head(row, "worker") for row in crew_mode.workers_of(rows, root))
+    heads.extend(_lane_head(row, "worker") for row in _tree_workers(rows, root))
     windows: list[list[dict[str, Any]]] = []
     for head in heads:
         slot = state.get_slot(head["key"])
@@ -832,8 +908,8 @@ async def api_crew_worker_steer(request: web.Request) -> web.Response:
         return _bad("message_too_long", f"message exceeds {MAX_SEND_MESSAGE_CHARS} characters")
     rows = _stamped_rows(state)
     if _root_row(rows, root) is None:
-        return _bad("not_crew_mode_root", "this session is not a Crew Mode root", status=404)
-    if not any(row.get("key") == worker for row in crew_mode.workers_of(rows, root)):
+        return _not_root()
+    if not any(row.get("key") == worker for row in _tree_workers(rows, root)):
         return _bad(
             "not_a_worker", "that session is not one of this conductor's crew members", status=404
         )
@@ -977,8 +1053,11 @@ async def person_steer(
         except Exception:
             rows = []
     stamped = rows
-    tree = frozenset(
-        str(row.get("key")) for row in crew_mode.workers_of(stamped, root) if row.get("key")
+    tree = frozenset(str(row.get("key")) for row in _tree_workers(stamped, root) if row.get("key"))
+    # A Crew Mode metric: a steer into a mate's session is not counted as one.
+    # Every other steer is counted, as before, even if its root changed meanwhile.
+    is_mate = _live_root(stamped, root)[0] == ROOT_KIND_MATE or (
+        root in crew_mode.known_mate_roots() and root not in crew_mode.known_roots()
     )
     board, item_id = await asyncio.to_thread(_worker_item, root, worker, tree)
     landed, why = "", STEER_NO_ITEM
@@ -990,7 +1069,8 @@ async def person_steer(
         except Exception:
             logger.warning("crew steer: the ledger event was not written", exc_info=True)
             landed, why = "", "not_recorded"
-    crew_mode_metrics.record_steer(on_item=bool(landed))
+    if not is_mate:
+        crew_mode_metrics.record_steer(on_item=bool(landed))
     return {"ledger_event": landed or None, "ledger_error": None if landed else why}
 
 

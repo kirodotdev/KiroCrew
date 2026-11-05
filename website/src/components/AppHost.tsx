@@ -37,6 +37,8 @@ export interface AppHostProps {
     displayName?: string
     enabled?: boolean
     origin?: string
+    /** Set when the gateway skipped this built-in at boot; its routes were never registered. */
+    unavailable?: { reason: string }
     /** Cached update state, carried by both `GET /api/apps` and
      *  `GET /api/apps/{name}` so a routed page and a side-panel tab publish the
      *  same answer. Absent whenever no cache has seen this app, so the SDK
@@ -59,6 +61,8 @@ export interface AppHostProps {
         api?: string[]
         events?: string[]
       }
+      /** The app's own listing copy per locale, read by the title helpers. */
+      l10n?: unknown
     }
   }
   /** Bundle to mount, overriding `manifest.ui.entry`. Resolved against the app's
@@ -192,13 +196,33 @@ function AppDisabled({ app }: { app: AppHostProps['app'] }) {
   )
 }
 
+function AppUnavailable({ app }: { app: AppHostProps['app'] & { unavailable: { reason: string } } }) {
+  const navigate = useNavigate()
+  return (
+    <>
+      <PageHeader title={appDisplayName(app)} />
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="max-w-md grid gap-4 justify-items-center">
+          {/* A caught import error, so it renders through ErrorNotice; leaving this
+              page loses nothing, so the agent hand-off is on. */}
+          <ErrorNotice
+            message={i18nT('pages.appDetailPage.unavailable_notice', { reason: app.unavailable.reason })}
+            askAgent
+          />
+          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
+        </div>
+      </div>
+    </>
+  )
+}
+
 function AppNoUI({ app }: { app: AppHostProps['app'] }) {
   const navigate = useNavigate()
   return (
     <>
       <PageHeader
         title={appDisplayName(app)}
-        subtitle={appDescription({ name: app.name, description: app.manifest?.description, origin: app.origin })}
+        subtitle={appDescription({ name: app.name, description: app.manifest?.description, origin: app.origin, l10n: app.manifest?.l10n })}
       />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center max-w-md">
@@ -337,6 +361,8 @@ export default function AppHost({ app, entry, active, sessionKey, requestedName 
   if (!app) return <AppNotFound name={requestedName || 'unknown'} />
   // Guard: disabled
   if (app.enabled === false) return <AppDisabled app={app} />
+  // Guard: skipped at boot. Its bundle may load, but every route behind it is missing.
+  if (app.unavailable) return <AppUnavailable app={{ ...app, unavailable: app.unavailable }} />
   // Guard: no UI bundle. An explicit `entry` (a panel-tab body) is its own
   // bundle, so it does not require the app to also declare a routed `ui.entry`.
   if (!entry && !app.manifest?.ui?.entry) return <AppNoUI app={app} />

@@ -63,6 +63,8 @@ from typing import IO, Callable
 
 from aiohttp.multipart import BodyPartReader
 
+from kiro_crew.atomic_write import replace_with_retry
+
 #: Bytes buffered before the signature predicate is consulted. Every container
 #: signature the callers check lives well inside this window (the MP4 family's
 #: ``ftyp`` box ends at 12, EBML's magic is 4, PNG's is 8).
@@ -82,6 +84,10 @@ SNIFF_BYTES = 16
 #: can raise is not a bound, and the guarantee here is only as good as its
 #: worst caller. Raising it means re-arguing the trade above.
 CHUNK_BYTES = 64 * 1024
+
+#: Appended to the destination name for the file a part streams into before it is
+#: committed; a caller sizing names to a file-name limit must leave room for it.
+TEMP_SUFFIX = ".part"
 
 
 class PartTooLarge(Exception):
@@ -112,7 +118,7 @@ class _TempSink:
 
     def __init__(self, dest: Path) -> None:
         self.dest = dest
-        self.tmp = dest.with_name(dest.name + ".part")
+        self.tmp = dest.with_name(dest.name + TEMP_SUFFIX)
         self.sink: IO[bytes] | None = None
         self.committed = False
 
@@ -166,7 +172,7 @@ class _TempSink:
         """
         assert self.sink is not None
         self.sink.close()
-        os.replace(self.tmp, self.dest)
+        replace_with_retry(self.tmp, self.dest)
         self.committed = True
 
 

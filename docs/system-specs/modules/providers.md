@@ -80,7 +80,8 @@ providers. Shared helpers live in `session_environment.py` (the start-stage and
 remote-workspace records, the local-only tool fence,
 `SessionEnvironmentUnavailable`), apart from the LLM provider selector:
 placement adds no `agent.provider` value and selects no model. Gateway hosting
-and whole-Crew deployment are out of scope.
+and whole-Crew deployment are out of scope. Kiro Cloud Sessions (below) is the
+one provider that moves the agent itself.
 
 Configuration lives in Settings > Session Environments, shown by the per-device
 toggle under Settings > Developer > Feature Previews (schema in
@@ -329,7 +330,7 @@ without reading or attaching a gateway credential. Object transfers run directly
 from the workspace: public LFS remains anonymous, while private LFS requires
 workspace-side authentication. `test_remote_git_channel_bounds.py` verifies real LFS
 clone/smudge and pre-push upload through this exclusion, as well as bounded wire
-receive flow.
+receive flow and git status/log/diff failure reporting through `ErrorNotice`.
 
 A vendor tunnel is not assumed to deliver ACP byte for byte (an SSM port forward
 rewrote LF into CR; ECS Exec does not forward piped stdin), so tunnels use
@@ -448,7 +449,9 @@ Archiving a session (tab close, session control's close, the idle sweep) calls
 `coder/retention.schedule_archived` as a background task that never delays or
 fails the close. `warn_unsaved_work` first reads `git status` in each running
 workspace within `UNSAVED_CHECK_SECS` and publishes one `system.agent` notice
-naming unsaved work. The workspace is then stopped and stamped
+naming unsaved work. A status the guest cut at its read cap (`truncated`) has
+its partial last record dropped and its file count worded "at least N". The
+workspace is then stopped and stamped
 `deletion_due_at` = now + `ARCHIVED_RETENTION_DAYS` (7, fixed: a stopped workspace
 still holds its disk). Reopening before
 the deadline clears the stamp: a History resume awaits `retention.keep_reopened`
@@ -584,16 +587,126 @@ listing renders `ErrorNotice` with a Retry that preserves drafts.
 ### Dashboard views
 
 Views that read the gateway's project switch on `useSlotRemoteEnvironment`:
-the composer drops the project chip, the Git view gets no folder, and the Files
+the composer drops the project chip, the Git view renders `RemoteGitPanel`
+(below), and the Files
 tab renders `RemoteFilesPanel`. It reads through
 `GET /api/chat/slots/{slot}/environment/browse?op=list|read&path=`
 (owner-only; `coder.session_browse` runs `workspace_tools.py --browse` with the
 request on stdin and the tools' confinement and caps) and saves through
 `PUT /api/chat/slots/{slot}/environment/file` `{path, content, expected}`
 (owner-only, SEL-audited, the separate `--write` mode). A save whose `expected`
-differs from the file answers 409 `file_changed`, a truncated or binary read is
-not offered for saving, a stopped workspace answers 409 `workspace_stopped`, and
-outdated guest files are reinstalled once before a retry. A terminal opened
+differs from the file answers 409 `file_changed`, a truncated or binary read is not
+offered for saving, a stopped workspace answers 409 `workspace_stopped`, and
+outdated guest files are reinstalled once before a retry: a guest lacking the
+mode, or one that answers a browse op with `op must be …`. The Git view becomes
+`RemoteGitPanel`: the branch (plain text titled read-only) and its unpushed
+and unpulled commit counts as plain muted text titled as read-only counts, one
+coloured status letter per file (`??` shown as `?`, each titled
+with what happened to the file), a per-file HEAD-to-worktree diff opened directly
+under its row, with a notice when the bodies exceed a combined 256 KB,
+and the last 50 commits, from the dashboard browse ops
+`git_status|git_log|git_diff`. The gateway asks the guest for `git_bodies` for a
+diff; a guest that does not know that op is reinstalled once, never asked for a
+patch of raw content. `git_log` sends each commit's date as unix
+seconds (`%at`), which the panel formats in the reader's language as the local
+Git panel does; a value no date can hold is shown as sent. The panel's "Ask the agent" links stage a draft in the chat
+composer, titled to say nothing is sent until the user sends it. The git ops'
+output and error text pass the shared credential and exfiltration-URL redactor
+at the gateway; status and log preserve NUL records and newlines (withholding
+record bodies if a multiline match consumes newlines; a status record keeps its
+`XY ` code and only its name is masked), while archive-warning
+counts read the raw guest status. Status arrives as NUL porcelain; newline
+records from older guest files are read too. For `git_diff`, the guest reads the
+HEAD blob with `ls-tree` and `cat-file` and the worktree file directly. A renamed
+row (`R`) sends its old path as `from`; the guest reads the HEAD side there,
+confined like the path itself, and names it `old_path` (a `from` that HEAD does
+not hold is ignored), so the gateway writes git's `rename from` and
+`rename to` lines and diffs the two bodies; it writes no `similarity index`,
+since it does not reproduce git's score. A copy (`C`) diffs
+as a new file. The guest also returns `old_mode` (the HEAD entry's) and
+`new_mode` (from `lstat`: `100755` when the owner execute bit is set, `100644`
+otherwise, `120000` for a symlink, `160000` for a gitlink), taking the index
+entry's mode (HEAD's when the index lacks the path) where `core.fileMode` or
+`core.symlinks` is false, as git does; an absent side's
+mode is null. The gateway writes `old mode`/`new mode`, `new file mode` or
+`deleted file mode` after `diff --git`, so a mode-only change or a pure rename is
+a header-only patch, never an empty diff. A missing
+side is absent, an unborn HEAD is empty, and directories and paths missing on
+both sides fail. Gitlinks use `Subproject commit <sha>` bodies from the
+superproject's `--submodule=short` diff with `--ignore-submodules=dirty`, without
+running inside a submodule (the raw format reports an all-zero new id for an
+unstaged gitlink). Only the synthetic commit line is retained, never its patch.
+That diff runs only for a worktree directory or a removed gitlink: a gitlink
+replaced by a regular file or symlink keeps its synthetic HEAD body and reads the
+replacement with the bounded worktree read, so no unbounded git output is buffered.
+A gitlink whose index entry was replaced by files under the path is refused as a
+directory before that diff runs, and every body read, the index listing and the
+submodule summary included, is streamed to `MAX_READ_BYTES + 1` bytes.
+The path's parent is confined; a symlink's body is its link text,
+even when it names a file outside the workdir. NUL in either body's first 8000
+bytes yields a binary notice without bodies, and so do differing bodies that are
+not valid UTF-8, whose replacement characters could otherwise make them read as
+equal text. HEAD blobs are streamed with at most
+`MAX_READ_BYTES + 1` bytes retained; reaching that bound stops the read, and a
+timeout keeps the same 30-second cleanup as the other Git reads. Every Git read
+runs under coreutils `timeout`, as `run_command` does, so the stop reaches the
+read's whole process group; the guest itself calls no kill primitive. The status
+and history reads are streamed to the same bound, so one huge commit subject or
+untracked list is never buffered whole. When `timeout` is present but `git` is
+not, the read still reports "git is not installed".
+The worktree read has the same bound. When the two bodies together exceed
+`MAX_READ_BYTES`, the guest sets `truncated` and sends no body, only `git`, the
+path, the modes and any `old_path`. The gateway builds no hunks for a truncated
+reply, whatever bodies it carries: it returns `truncated` with only the
+`diff --git` and extended header lines (mode, rename, new or deleted file) when
+there are any, and otherwise empty output, which the panel shows as its cut-off
+notice with the link to ask the agent for the full diff. Regular worktree CRLF
+endings are converted to LF when `check-attr text eol` or `core.autocrlf` enables
+Git's text conversion: explicit `-text` wins, while `text=auto` and automatic
+conversion require a NUL-free body and, as git's `has_crlf_in_index` does, an
+index blob that is not text with CRLF (HEAD stays the old side; the index blob
+is read, bounded, only when a staged change makes it differ from HEAD's).
+Attribute/config reads use the same guarded
+Git prefix and never run filter drivers. Truncation is recorded before newline
+normalization, so reducing CRLF bytes cannot hide an incomplete read.
+Before whole-body redaction, the gateway withholds every line from an unmatched
+PEM `BEGIN` marker through the body's end, using one credential tag per line and
+preserving the final-newline state. Any indentation and label are covered; only
+a later `END` of the same label closes a block. This applies to both bodies of
+every complete read: the shared redactor masks a footerless key only through
+unindented base64 lines, so an indented key with no `END` would otherwise show.
+Complete blocks still pass through the normal whole-body redactor.
+The gateway redacts each entire returned body and the path with
+`redact_via_context` BEFORE building the patch. The hunks are git's own:
+`git_no_index_diff.no_index_diff` runs `git diff --no-index` over the two masked
+bodies in a private temp dir, the same spawn and argv the file panel's
+`/api/file-diff` uses, and the gateway keeps only the lines from the first
+`@@`, under its own header. A CR inside a line stays in it. Git output with
+no `@@` but a `Binary files` line shows as binary; a git diff past its 10 s
+timeout returns the same cut-off reply as an over-cap file (header only,
+`truncated`), and any other failure is `git_failed` with no patch.
+Identical masked bodies with no mode change or
+rename yield an empty diff;
+raw bodies and guest patches never reach the dashboard. All of it is
+fixed-argv read-only git in the guest's own checkout, with `core.fsmonitor`,
+the pager, external diff, textconv and `log.showSignature` disabled, and every
+filter driver the repository configures blanked for the read (a driver name
+that cannot be given to `-c` stops the read as `git_failed`); status and the
+gitlink short diff pass `--ignore-submodules=dirty`, so git never runs inside a
+submodule, whose own config could name filters too. Lazy object fetches are disabled
+with `--no-lazy-fetch` and `GIT_NO_LAZY_FETCH=1`; a missing object fails as
+`git_failed`. Git lacking the flag (before 2.44, which also ignores the
+variable) runs a config-only probe for an `extensions.partialClone`,
+`remote.*.promisor` or `remote.*.partialclonefilter` key (any value counts; a
+failed probe refuses every read). With none, every read runs as usual. With one,
+`git_bodies` reports that git 2.44 or later is needed, since a HEAD body is a
+blob the clone may lack; `git_status` (with `--no-renames`, because only inexact
+rename detection reads blobs) and `git_log` (commits only) still run, with
+`GIT_ALLOW_PROTOCOL` empty, so a lazy fetch's `git fetch` is refused before any
+transport starts and a read that needs a missing object, such as a treeless
+clone's missing HEAD tree, fails as `git_failed` instead of fetching.
+It reads only the local repository, so it needs no gateway git login and implies no
+private-remote access, which the `strict` tier withholds. A terminal opened
 from a remote chat carries `remote_slot` and opens
 `coder ssh --disable-autostart <workspace>`, or closes the socket with a coded
 error (`terminal_wrong_machine`, or `terminal_placement_unavailable` while the
@@ -637,10 +750,11 @@ from saved configuration and validated registry names; guest commands are
 quoted remote arguments with payloads on stdin. They need the host login, so
 each has a justified entry in `test/test_spawn_audit.py` instead of the agent
 sandbox. The guest-script rule covers only execution inside the guest
-(`worker.run`, `workspace_tools.run_command` and `_git_status`, which cannot
-import the gateway sandbox), never a gateway CLI reaching a guest; gateway-side
-agent-influenced commands use the sandbox chokepoint. The two `main` entries
-are in-process `asyncio.run`. No directory-wide exemption exists.
+(`worker.run`, `workspace_tools.run_command` and `_run_grouped`, which runs
+the browse git reads; none can import the gateway sandbox), never a gateway
+CLI reaching a guest; gateway-side agent-influenced commands use the sandbox
+chokepoint. The two `main` entries are in-process `asyncio.run`. No
+directory-wide exemption exists.
 The boxd lifecycle CLI is a gateway spawn with fixed machine verbs, validated
 gateway-created names, saved snapshot/CPU settings and a validated retention
 duration, no local shell or agent-selected cwd, and stdin closed; it needs the
@@ -710,6 +824,134 @@ files go when the compute stops. `retention.compute_survives_stop` reads the
 flag from the bound profile when it still names the template, else from every
 profile on that template; no match reads `false`. Without systemd the
 `setsid`/`nohup` worker fallback may not survive Coder's SSH session cleanup.
+
+### Kiro Cloud Sessions
+
+Kiro Cloud Sessions is Kiro Agent's feature that runs a whole session in a
+cloud sandbox. Kiro Crew reaches it only through Kiro Agent (the KAS backend),
+never by calling Kiro's cloud itself. Kiro Cloud Sessions profiles (`session_environments.kiro_cloud_profiles`: `id`, `name`,
+`repositories`, each `name` or `owner/name`, at most 10, no other key) are the
+one provider whose AGENT runs remotely, so the "engine stays on the gateway"
+rule above does not hold for them. A profile id names one provider: the config
+writer refuses an id a Coder profile also uses, and `session_launch.profile_provider`
+is the one resolver the launch path, `session_browse`, the picker (`_profiles()`)
+and the choice lock share. An id a hand edit saved for both providers names
+neither: the picker omits it, a launch or browse raises
+`SessionEnvironmentUnavailable`, and a started session bound to it stays fixed.
+The choice row records the provider the id resolved to when it was picked
+(`coder` or `kiro_cloud`; a subagent's row copies its parent's). A launch or
+browse derives the provider from the id and refuses with
+`SessionEnvironmentUnavailable` when it differs from the row's
+(`session_launch.chosen_provider`), so an id reused across providers never
+moves a started session. The choice lock also reads the row's recorded provider,
+so deleting a cloud profile or reusing its id does not unlock a started cloud
+session. `prepare_for_session` provisions nothing and returns
+`PreparedCloudSession` after the same `before_compute` KAS check once the
+governance ceiling allows it. The provider passes its execution agent through
+to active-profile resolution, including task/agent bindings. An explicit
+policy or profile denial of `capabilities.kiro_cloud_sessions` always refuses
+the start, even on an otherwise ungoverned host. When the policy or
+profile governs any other scope, only a policy opt-in can permit the
+start; a profile can withdraw that allowance. An unreadable ceiling or profile
+refuses. The check emits a SEL governance-decision event for grants, denials
+and fail-closed evaluation errors, naming the session, execution agent,
+capability and reason (see governance.md). `AcpRuntime.set_cloud_sandbox` (KAS backend
+only, before spawn) installs `KasCloudSandboxHarness`
+(`acp/harness/kas_cloud.py`) as that runtime's harness and declares the runtime
+MCP-free. Every cloud answer comes from that harness through the existing
+seams (`session_extras`, `session_mcp_servers`, `notification_aliases`) and the
+`session_request` seam, which every host the backend table serves answers by
+returning the request and agent unchanged; `load_session` asks it only inside
+its KAS branch. The ordinary session request shaping is unchanged, and so is the
+runtime's `load_session`. Replayed approvals are held by a resume hold only the
+provider's cloud start takes around its reopen (`hold_cloud_resume`), and by two
+reader seams every served host answers as a no-op (`holds_replayed_permission`,
+`False`; `unroutable_permission`, the runtime's audited reject): the runtime asks the
+host instead of testing for the cloud harness (harness-parity H13), and only the cloud
+harness keeps those approvals until local registration succeeds. The cloud harness makes `session/new` carry the `_meta.kiro` keys kiro-cli's
+own `--cloud` flag sends (confirmed against kiro-cli 2.21.1's ACP client
+`newSession`/`loadSession`): `executionTarget: {kind: "cloud-sandbox"}`,
+`sessionSource: "remote"` when KAS lists it in `sessionSources`, and
+`repositories` or `isEmptyWorkspace: true`. `session/load` carries only
+`sessionSource: "remote"`. KAS relays such a session to Kiro's cloud and
+forwards only the mode, target and repositories, so Kiro Crew sends
+`mcpServers: []`, no `customAgents` and no `set_mode`, and waits for no MCP
+readiness reports. The session runs Kiro's default agent with that sandbox's
+tools; Kiro Crew's MCP servers, agent spec and PreToolUse gate do not apply to
+it, which is what the operator opts into by choosing the profile (the change
+card catalog classes `kiro_cloud_profiles` as code-exec). A start is refused,
+never run locally, when KAS's `initialize` does not list `cloud-sandbox` in
+`agentCapabilities._meta.kiro.executionTargets`. The provider binds the sandbox
+through the same `attach_remote_workspace` seam as a workspace, so an engine
+respawn re-binds it, and records the session with an empty workdir: the
+`[PROJECT]` rail then names the cloud sandbox instead of a gateway or guest
+path. `session_browse._resolve` raises `CloudSandboxOnly` (a
+`SessionEnvironmentUnavailable`) before any Coder call, so files, git, the
+terminal and the unsaved-work check all refuse it; the browse and file routes
+answer 409 `cloud_sandbox`. The slot environment response also names its recorded
+provider, even after its profile was removed or reused. The Files view waits for
+that placement query: a recorded `kiro_cloud` renders an informational
+`StatusNotice` without mounting any browse, read or terminal controls.
+Requests actually sent and rejected still render `ErrorNotice` with an agent
+hand-off. A failed placement read is an error, never permission to browse locally.
+Before publishing the runtime, the provider records Kiro's session id on the
+choice row, under the writer lock and only if it still names the prepared cloud
+profile. A cleared or changed choice refuses startup and the normal failed-setup
+cleanup kills the unpublished runtime without overwriting the new choice. A cloud
+session with messages and that durable record is locked even though no registry
+row exists, since its history lives in Kiro's cloud store. Archiving leaves the
+cloud session to Kiro.
+
+Kiro Cloud Sessions turns survive client disconnects. `turn_survives_disconnect` is False
+on `LLMProvider` and True only on the installed cloud harness's providers, so a
+graceful gateway shutdown skips their cooperative cancel and kills only the local
+relay. An explicit user Stop still cancels normally. The cloud teardown policy is
+local-only: chat teardown and post-load setup failures unregister without sending
+KAS delete, which would remove the sandbox. Incognito and temporary chats are no
+exception: the same provider shutdown runs on idle eviction, compaction, resets and
+gateway restarts, so it cannot tell a chat ending from Kiro Crew letting go, and a
+delete there would destroy the sandbox with any unpushed work in it. Only a start's
+own cleanup of a session it minted and recorded nowhere deletes; other KAS and local
+sessions are unchanged.
+
+Kiro Cloud Sessions is unavailable to incognito and temporary chats. Such a chat never reopens
+its native session (resume is for persistent chats only), so after an idle eviction
+or a restart a cloud start would mint a new sandbox and silently strand the earlier
+one's files. It is refused before any sandbox exists, at three points: the start
+(`_start_kiro_runtime_impl` raises `SessionEnvironmentUnavailable` once
+`prepare_for_session` returns a `PreparedCloudSession`), the chat's environment
+choice (`PUT /api/chat/slots/{slot}/environment` answers 400 `choice_refused` with
+`reason: private_chat`), and a configured default (`apply_default_environment`
+leaves the chat on this machine). Memory mode only tightens, so the strictest known
+mode, a committed tightening included, decides. Coder and other remotes stay
+choosable.
+
+`session/load` can replay `session/request_permission` before returning. Only the
+exact cloud session being loaded may hold those requests, off the reader loop,
+under the existing answer-task/frame-size bounds and a 60-second registration
+limit. Successful local setup queues them for the normal approval dispatcher;
+init and stale-frame drains cannot reject them as an abandoned local turn.
+Failure to register or expiry answers with the existing audited rejection path.
+History replay frames are still dropped, not inserted into a fresh turn.
+
+When cloud load fails, the existing fresh-session/history-replay fallback remains.
+A successful replacement logs the event and stores a one-shot startup notice on
+the provider. The next dashboard claim surfaces it as a persisted `error` row
+(something the user had did not reopen, so it renders through the transcript's
+`ErrorCard`, per `errors-use-error-notice`), not prompt context, with
+`meta.kind = cloud_session_replayed`; the card renders that kind's localized
+sentence in every locale. A load that replays no earlier turn is a failed load
+here too (`require_replay`), so it takes the same fallback and notice.
+
+A start that reaches `session/new` with no reopen attempted, because Edit &
+Resend, a reset or compaction dropped the session's resume id, still replaces
+the cloud session the chat's choice row recorded. `record_cloud_session` returns
+that earlier id, read under the same lock as the write; when it differs from the
+new one the start stores the same kind of notice with
+`meta.kind = cloud_session_replaced`, saying the chat now runs on a new sandbox
+and that the earlier one was not deleted and is still listed in Kiro Web. No row
+is emitted for a successful reload, a first start, or an ordinary local/KAS
+fallback.
 
 ## Essential-context delivery contract
 
@@ -936,8 +1178,8 @@ the built-in mode ids `vibe`, `spec`, `quick-spec`, `bug-fix`, `plan`,
 `agent_files.kas_wire_agent_id(id)` (`<id>-crewmate`) -- the engine accepts an
 entry under the id itself and either drops it or keeps its own built-in under
 it, so it would surface only as an unadvertised mode or as the built-in running
-under the mate's name. The projection and every Crew-side record keep the
-mate's id (`crew-mode.md`, "Template names the harness cannot activate"). This repository does not establish a universal native model or
+under the Bot's name. The projection and every Crew-side record keep the
+Bot's id (`crew-mode.md`, "Template names the harness cannot activate"). This repository does not establish a universal native model or
 resource truncation limit; real harness versions still need that integration check.
 Resume and replacement snapshots retain complete text. Frameworks without native steering receive a
 conditional discovery index: the agent reads a guide only after its explicit
@@ -946,11 +1188,14 @@ always-on body.
 
 ### Managed-source root checks
 
-Each `_refuse_managed_source` call loads configuration anew and resolves each
-unique declared admin/workspace root once through `_comparable_root`. The local
-results serve only that call's overlap and containment checks. Later calls
-revalidate configuration and link targets; no authorization is cached across
-requests or turns. Candidate paths remain lexical until the existing path gate
+The root table is read once per `documents_for_member` call: that call loads
+configuration and resolves each unique declared admin/workspace root once
+through `_comparable_root`, and every `_refuse_managed_source` check inside it
+(the `_read` pre- and post-validation checks and the walk checks) reuses that
+table. A `_refuse_managed_source` call outside such a read builds its own. The
+next `documents_for_member` call, and so the next turn, revalidates
+configuration and link targets; no authorization is cached across requests or
+turns. Candidate paths remain lexical until the existing path gate
 admits them, and rejected UNC roots are never resolved. Every admin-overlap and
 managed-memory exclusion remains in force.
 
@@ -1046,7 +1291,7 @@ harness can get wrong:
 | `steer_needs_loss_recovery` | Whether a steer the provider accepted can still be dropped (codex drops injected text when a later approval is denied or the turn is cancelled); when `True`, `AcpProvider` refuses wrapper steers and only a caller that keeps and requeues the text may steer. Default `False`. |
 | `has_active_turn`, `has_unfinished_turn`, `wait_turn_done` | Turn-state probes the session layer reads before reusing a process. |
 | `is_session_sharing_eligible` | Whether one process may host multiplexed sessions. |
-| `manual_compact_unsupported_backend`, `compaction_self_managed`, `compaction_unmanaged_backend`, `harness_managed_compaction_backend`, `mcp_config_hot_reload`, `uses_kiro_identity_store` | Capability answers, each defaulting to the safe value so a Kiro path never needs a `hasattr` probe (harness-parity H14). The three compaction answers are deliberately separate questions, because a backend Crew cannot hand `/compact` to is one of three things: the harness bounds its own context (`compaction_self_managed`, default `True`), nothing bounds it and Crew recycles (`compaction_unmanaged_backend`, default `None` — the one destructive answer, so it is granted by `ACP_BACKENDS_CONTEXT_RECYCLE` membership and never by exclusion), or nobody has established which, in which case Crew declines and logs the gap. Collapsing them told a deepseek user their harness summarizes on its own, which it does not. `harness_managed_compaction_backend` (default `None`) is asked only by the threshold: it names a harness that summarizes on its own even when Crew can also serve its manual `/compact` (KAS), so the threshold leaves it to its engine. |
+| `manual_compact_unsupported_backend`, `compaction_self_managed`, `compaction_unmanaged_backend`, `harness_managed_compaction_backend`, `harness_compact_verb_advertised`, `mcp_config_hot_reload`, `uses_kiro_identity_store` | Capability answers, each defaulting to the safe value so a Kiro path never needs a `hasattr` probe (harness-parity H14). The three compaction answers are deliberately separate questions, because a backend Crew cannot hand `/compact` to is one of three things: the harness bounds its own context (`compaction_self_managed`, default `True`), nothing bounds it and Crew recycles (`compaction_unmanaged_backend`, default `None` — the one destructive answer, so it is granted by `ACP_BACKENDS_CONTEXT_RECYCLE` membership and never by exclusion), or nobody has established which, in which case Crew declines and logs the gap. Collapsing them told a deepseek user their harness summarizes on its own, which it does not. `harness_managed_compaction_backend` (default `None`) is asked only by the threshold: it names a harness that summarizes on its own even when Crew can also serve its manual `/compact` (KAS), so the global threshold leaves it to its engine; an explicit per-session or agent threshold is compacted by Crew when the backend serves `/compact` and `harness_compact_verb_advertised` (default `False`, answered for KAS from the engine's `initialize` extension methods) is `True`. |
 | `member_capabilities_supported`, `loaded_capability_template` | Full member-spec support defaults to false and is granted only by `ACP_BACKENDS_MEMBER_CAPABILITIES` membership (harness-parity H6); the observed loaded template defaults to empty. Only a dedicated Kiro or KAS runtime with a confirmed active template provides evidence; the session layer also validates the saved version and MCP registration report before showing applied. |
 | `billing_stats`, `child_fidelity_aware` | Accounting and subagent-fidelity reporting. |
 
@@ -1150,7 +1395,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 - `approve_tool()`/`reject_tool()` → JSON-RPC response
 - `context_usage_pct()` → reads `last_prompt_stats.context_pct`
 - `context_window_tokens()` → reads `last_prompt_stats.context_window_tokens` (the real served window from `usage_update.size`, 0 if unknown). Used by the dashboard token text instead of re-deriving the window from the model id. A mid-session `set_model` (live switch on both `AcpClient` and `AcpSessionHandle`) rebases these stats via `AcpPromptStats.rebase_to_window`: the window is re-derived from `model_registry.model_window` (0 on a registry miss), `context_used_tokens` is kept, `context_pct` is recomputed and clamped, and `context_tokens_from_usage` is cleared so the next metadata `contextUsagePercentage` can backfill against the NEW model instead of being gated forever by the old model's `usage_update`. The dashboard model-switch endpoint then broadcasts one `context_usage` WS event with `reset: true` (both live-switch and session-reset paths, single and bulk), which lets the frontend reducer replace or delete its stored per-slot token counts — per-turn events without `reset` never delete. The post-compaction pct-0 broadcast carries the same flag.
-- `compact()` → sends `/compact` via `send_command()`. The **dashboard's** manual `/compact` gates on `ACP_BACKENDS_COMPACT` first, as a pre-acquisition local command: the live session's `manual_compact_unsupported_backend` capability property (declared on the `LLMProvider` ABC with a `None` (supported) default per harness-parity H14, answered by the ACP implementations from set membership) is read when the session's provider is positively alive, else for the backend `select_provider_backend` would build (the member backend for a member session, otherwise `agent.acp_backend`) — so a refused `/compact` behaves as if the turn never started (no session created, no Slack OPTIONS expired, no one-shot turn state consumed). The reply is informational — the backend manages compaction automatically, mirroring the `cc_managed` relationship — not an error: kiro-cli answers the prompt with `_kiro.dev/compaction/status`, claude-agent-acp compacts natively in-prompt, and codex-acp intercepts the prompt as the `compact` command it advertises and reports the compaction as a `tool_call` pair, marked `_meta.contextCompaction` on 1.11.0 and unmarked on 2.2.2 (`_dispatch.parse_codex_compaction_update`; the unmarked shape only for `ACP_BACKENDS_UNMARKED_COMPACTION_PAIR`), and on KAS `AcpSessionHandle.prompt` sends the engine's own `_kiro/session/compact` verb in place of the prompt (as prompt text, the KAS model only writes a summary and the context does not shrink). That request's `{success}` answer ends the turn and the turn carries a compaction status: the engine's `summarization_completed`, else a synthesized `completed` (nothing to summarize, meter left alone) or `failed` (refused while a turn or another compaction runs). A backend outside the set would strand `wait_for_compaction()` for the full `COMPACT_WAIT_TIMEOUT_SECS` (#7800). The **auto-compact** path consults the same capability from the compaction gate ladder (`session_compaction._compact_unsupported_backend`) and then takes one of THREE arms, because a backend it cannot dispatch to is not one thing. A member of `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` (KAS, read through `harness_managed_compaction_backend`, so it declines here even though its manual `/compact` is served) declines with `"compact_unsupported"` before the compaction task is scheduled, so no `/compact` is dispatched and the turn semaphore is never acquired — an ungated dispatch stranded the status wait for the whole `COMPACT_WAIT_TIMEOUT_SECS` while HOLDING that semaphore and then recycled the session (#7812) — and declining costs nothing there because its `summarization_completed` frame resets the meter. A member of `ACP_BACKENDS_CONTEXT_RECYCLE` (deepseek) is **recycled** instead, via `_recycle_unmanaged`: no compaction reaches it from either side, so a decline bounds nothing and its context grows into the harness's own window. That arm falls THROUGH the decline rung rather than returning from it, so `unconfirmed`, `in_progress` and `cooldown` still run first — an ambiguous reading must not spend a recycle. A backend in NEITHER set declines and is logged at WARNING naming the missing membership, because ending a conversation is not something a harness earns by never having been classified; `compaction_self_managed` is what tells that case apart from KAS's. The callback reports which arm ran (`compacted` / `recycled` / `restarted_uncompactable` / `cancelled`, plus `waiting_for_subagents` during a hold) so a surface cannot announce a summary that never happened, and only `restarted_uncompactable` may say the backend cannot compact — a kiro-cli session whose in-place `/compact` merely timed out reaches `recycled`. `cancelled` means a user Stop ended the compaction: the cooldown is armed and the session is not recycled. Every context restart — a failed in-place `/compact` and an uncompactable restart alike — is first HELD while session-sharing sub-agents still run on the parent's process, because shutting that process down would end them unreported (`CompactionCoordinator._await_cotenants`): the callback reports `waiting_for_subagents` with `success=False`, the hold re-checks every `cotenant_poll_secs` (the manager's per-key completion event is shared, so another waiter may release it), and past `cotenant_wait_secs` only those runs are stopped with the ordinary per-run `SubagentManager.cancel`, bounded and shielded, so each still reports "stopped" into the conversation, which carries on after the restart (the parent-end helper would mark them out of delivery). A user Stop during the hold ends it: the stale restart is abandoned, the sub-agents are not stopped, and the compaction settles `cancelled` (cooldown, no recycle). Channel messages queued behind the held turn are not dropped with the old session: `CompactionCoordinator._restart_held` starts the successor first (past the recycling marker, holding its lease), moves the old session's live queue into the successor's real queue, then recycles the old one and wakes each entry's channel drain before releasing the lease, so queue verbs, teardowns and ordering behave as for any queue. Slack registers a drain for this (`_drain_slack_queue`). If the successor cannot start, the old session, its queue and its resume id are kept and the failure cooldown applies. A report that waits on the parent during the hold cannot reach the old process: every waiting acquire re-validates the session's identity, so it lands on the fresh session. The **messaging-surface** `/compact` commands (Slack, Telegram, Discord, Webex, Teams, Feishu, iMessage, WeCom, Weixin and WhatsApp) gate on the same capability through `messaging.commands.compact_unsupported_backend` before dispatching, answering with `compact_unsupported_reply` (translated on the Chinese-language surfaces, plain-voiced on iMessage and WhatsApp); their context-threshold notices decline silently on such a backend — no forced hard-threshold compaction to run, and no soft nudge whose `/compact` advice cannot work (#8156) — with one exception: a member of `ACP_BACKENDS_CONTEXT_RECYCLE` is WARNED once, before its session is restarted, with a message that offers `/new` instead (`messaging.commands.context_recycle_warning`, `context_recycle_warning_zh` on the Chinese surfaces). That warning is keyed to the session's live `session.autocompact_pct` rather than the channel's `soft_threshold_pct` — it fires in `[threshold - CONTEXT_WARN_MARGIN_PCT, threshold)` (`recycle_warning_due`), because the channel soft default (80) sits above the recycle default (70) and a warning keyed to it would land after the restart — and the per-conversation latch is cleared outside that band so the next fill after a restart warns again (#11948). Gating covers only command dispatch — KAS auto-summarization frames keep mapping to compaction status.
+- `compact()` → sends `/compact` via `send_command()`. The **dashboard's** manual `/compact` gates on `ACP_BACKENDS_COMPACT` first, as a pre-acquisition local command: the live session's `manual_compact_unsupported_backend` capability property (declared on the `LLMProvider` ABC with a `None` (supported) default per harness-parity H14, answered by the ACP implementations from set membership) is read when the session's provider is positively alive, else for the backend `select_provider_backend` would build (the member backend for a member session, otherwise `agent.acp_backend`) — so a refused `/compact` behaves as if the turn never started (no session created, no Slack OPTIONS expired, no one-shot turn state consumed). The reply is informational — the backend manages compaction automatically, mirroring the `cc_managed` relationship — not an error: kiro-cli answers the prompt with `_kiro.dev/compaction/status`, claude-agent-acp compacts natively in-prompt, and codex-acp intercepts the prompt as the `compact` command it advertises and reports the compaction as a `tool_call` pair, marked `_meta.contextCompaction` on 1.11.0 and unmarked on 2.2.2 (`_dispatch.parse_codex_compaction_update`; the unmarked shape only for `ACP_BACKENDS_UNMARKED_COMPACTION_PAIR`), and on KAS `AcpSessionHandle.prompt` sends the engine's own `_kiro/session/compact` verb in place of the prompt (as prompt text, the KAS model only writes a summary and the context does not shrink). That request's `{success}` answer ends the turn and the turn carries a compaction status: the engine's `summarization_completed`, else a synthesized `completed` (nothing to summarize, meter left alone) or `failed` (refused while a turn or another compaction runs). A backend outside the set would strand `wait_for_compaction()` for the full `COMPACT_WAIT_TIMEOUT_SECS` (#7800). The **auto-compact** path consults the same capability from the compaction gate ladder (`session_compaction._compact_unsupported_backend`) and then takes one of THREE arms, because a backend it cannot dispatch to is not one thing. A member of `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` (KAS, read through `harness_managed_compaction_backend`, so at the global threshold it declines here even though its manual `/compact` is served; with an explicit per-session or agent threshold and a served `/compact`, Crew compacts it instead, see `session.md`) declines with `"compact_unsupported"` before the compaction task is scheduled, so no `/compact` is dispatched and the turn semaphore is never acquired — an ungated dispatch stranded the status wait for the whole `COMPACT_WAIT_TIMEOUT_SECS` while HOLDING that semaphore and then recycled the session (#7812) — and declining costs nothing there because its `summarization_completed` frame resets the meter. A member of `ACP_BACKENDS_CONTEXT_RECYCLE` (deepseek) is **recycled** instead, via `_recycle_unmanaged`: no compaction reaches it from either side, so a decline bounds nothing and its context grows into the harness's own window. That arm falls THROUGH the decline rung rather than returning from it, so `unconfirmed`, `in_progress` and `cooldown` still run first — an ambiguous reading must not spend a recycle. A backend in NEITHER set declines and is logged at WARNING naming the missing membership, because ending a conversation is not something a harness earns by never having been classified; `compaction_self_managed` is what tells that case apart from KAS's. The callback reports which arm ran (`compacted` / `recycled` / `restarted_uncompactable` / `cancelled`, plus `waiting_for_subagents` during a hold) so a surface cannot announce a summary that never happened, and only `restarted_uncompactable` may say the backend cannot compact — a kiro-cli session whose in-place `/compact` merely timed out reaches `recycled`. `cancelled` means a user Stop ended the compaction: the cooldown is armed and the session is not recycled. Every context restart — a failed in-place `/compact` and an uncompactable restart alike — is first HELD while session-sharing sub-agents still run on the parent's process, because shutting that process down would end them unreported (`CompactionCoordinator._await_cotenants`): the callback reports `waiting_for_subagents` with `success=False`, the hold re-checks every `cotenant_poll_secs` (the manager's per-key completion event is shared, so another waiter may release it), and past `cotenant_wait_secs` only those runs are stopped with the ordinary per-run `SubagentManager.cancel`, bounded and shielded, so each still reports "stopped" into the conversation, which carries on after the restart (the parent-end helper would mark them out of delivery). A user Stop during the hold ends it: the stale restart is abandoned, the sub-agents are not stopped, and the compaction settles `cancelled` (cooldown, no recycle). Channel messages queued behind the held turn are not dropped with the old session: `CompactionCoordinator._restart_held` starts the successor first (past the recycling marker, holding its lease), moves the old session's live queue into the successor's real queue, then recycles the old one and wakes each entry's channel drain before releasing the lease, so queue verbs, teardowns and ordering behave as for any queue. Slack registers a drain for this (`_drain_slack_queue`). If the successor cannot start, the old session, its queue and its resume id are kept and the failure cooldown applies. A report that waits on the parent during the hold cannot reach the old process: every waiting acquire re-validates the session's identity, so it lands on the fresh session. The **messaging-surface** `/compact` commands (Slack, Telegram, Discord, Webex, Teams, Feishu, iMessage, WeCom, Weixin and WhatsApp) gate on the same capability through `messaging.commands.compact_unsupported_backend` before dispatching, answering with `compact_unsupported_reply` (translated on the Chinese-language surfaces, plain-voiced on iMessage and WhatsApp); their context-threshold notices decline silently on such a backend — no forced hard-threshold compaction to run, and no soft nudge whose `/compact` advice cannot work (#8156) — with one exception: a member of `ACP_BACKENDS_CONTEXT_RECYCLE` is WARNED once, before its session is restarted, with a message that offers `/new` instead (`messaging.commands.context_recycle_warning`, `context_recycle_warning_zh` on the Chinese surfaces). That warning is keyed to the session's live `session.autocompact_pct` rather than the channel's `soft_threshold_pct` — it fires in `[threshold - CONTEXT_WARN_MARGIN_PCT, threshold)` (`recycle_warning_due`), because the channel soft default (80) sits above the recycle default (70) and a warning keyed to it would land after the restart — and the per-conversation latch is cleared outside that band so the next fill after a restart warns again (#11948). Gating covers only command dispatch — KAS auto-summarization frames keep mapping to compaction status.
 - Dashboard manual `/compact` while conversation-history replay is still pending (the replay lease is armed and the provider session holds nothing yet): it answers at once with `COMPACT_REPLAY_PENDING_NOTICE` ("Nothing to compact yet: the restored history is delivered with your next message."), awaits no compaction status, does not re-arm skills context, and leaves the replay lease armed for the next prompt.
 - Dashboard manual `/compact` on a fresh provider session no ordinary prompt has reached yet (a brand-new chat; the first-turn history debt `first_turn_history_owed` is still armed) on a backend that does not compact inline: kiro-cli ends that turn with "Conversation too short to compact." and no compaction status, so it answers at once with `COMPACT_FRESH_SESSION_NOTICE` ("Nothing to compact yet: the agent's session starts with your next message."), awaits no compaction status, does not re-arm skills context, and leaves the debt armed for the next prompt (#15722).
 - `cancel()` → sends `session/cancel` notification
@@ -1158,7 +1403,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 - `is_alive()` → `AcpClient.is_responsive()` (600s stale threshold)
 - `is_process_alive()` → OS-level process check
 
-**Reasoning effort** (Opus/Sonnet/Fable **and GPT-5.x** — shared vocabulary in `effort.py`: levels `low|medium|high|xhigh|max`, resolution via `resolve_effort_for_model` with priority slot-override > workspace default > None). Capability authority is per harness. For kiro and claude the registry answers (`model_supports_effort`). For members of `ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION` (pi, deepseek, goose, opencode) the session's advertised config option answers `supports_effort` (False when the advertised list contains only `off` — an off-only option signals no real thinking level; for every member `_sync_effort_levels` admits the advertised levels to the validation set through `register_reasoning_effort_values` and never replaces the global fallback order, which a slot whose provider advertises no effort option of its own, kiro-cli, is served; after a live `set_model` the option read is the one the `model` write's own `session/set_config_option` result carries, which `AcpClient.set_config_option` stores as `AcpSessionHandle.set_config_option` does, because the `config_option_update` that precedes it is only buffered by `_wait_for_response`) and the allowed levels: `_resolve_effort` passes `levels=` (the advertised list) and `normalize=` (`effort_config_option_value`, the backend's spelling of a level) to `resolve_effort_for_model`, so the fold runs before the advertised-list filter and before the write. A Crew level a member has no spelling for (deepseek's `medium` and `xhigh`) is hidden, not mapped: `AcpProvider.accepts_effort_level` answers False for it, the dashboard effort route refuses it with a 400 `effort_level_not_offered` before anything persists, `change_effort` raises on it, and `_set_effort_config_option` writes nothing for it and walks its step-down over advertised rungs only, so every value pushed to a member is one that session advertised. The registry capability is a conservative allowlist of known-capable families (`opus`/`sonnet`/`fable`/`gpt`, minus a hard `haiku` exclusion), verified against kiro-cli 2.12/2.13 over ACP — kiro rejects `/effort` on the other third-party models (deepseek/minimax/glm/qwen/auto) with "Effort configuration is currently not available on <model>". A new model family lands as unsupported until confirmed (safe default: the slider hides). On kiro-cli (`ACP_BACKENDS_EFFORT_OVERLAY`) it is applied via a workspace `cli.json` overlay at `<work_dir>/.kiro/settings/cli.json` → `chat.modelDefaults.<model>.<key>.effort`, written before every spawn (`_write_cli_overlay`) and read back on init (`_read_cli_overlay`) so the provider's map names the level kiro-cli will run. The overlay's scope is the work dir, so every session in one project shares one entry per model. KAS never opens it and takes the level as the `effortLevel` config option, so the file is neither written, read back nor cleared for it: read back there, it started a new chat at whatever level another chat in the same work dir picked last. A KAS slot keeps its pick across a gateway restart through its own transcript metadata, which the dashboard hands the factory as `reasoning_effort_override`, and across a compaction restart or reset successor through the session's recorded override, which the dashboard effort route replaces with the live pick (`SessionManager.record_effort_override`). A session the dashboard does not start (cron, Slack, webhook) resolves its level from config (crew pin, role, `agent.reasoning_effort`) on every cold start: a level picked live on such a session from a dashboard slot reaches its successors, but a cold start from the channel side reads no dashboard slot, for effort as for the model. The `<key>` sub-object is **family-specific** (`effort_settings_key`): `output_config` for Claude models, `reasoning` for GPT models — kiro silently ignores the wrong key, so a mismatched shape would survive a live push but drop on respawn. `_write_cli_overlay` removes stale effort from the other family key while preserving unrelated settings; `_clear_cli_overlay_effort`/`_read_cli_overlay` sweep both keys. Every in-product writer of that file takes the shared `.kirocrew-cli-settings.lock` sidecar (see [acp-client](acp-client.md)), under one of TWO ceilings: a native launch takes the startup one (it cannot wait, and a launch that loses the lock falls back to authored agents), while an operator action takes a ceiling far above projection's own sub-second critical section. `_clear_cli_overlay_effort` is an operator action, so it runs through `asyncio.to_thread` — waiting that long on the loop would freeze every session — and losing the lock there means a stuck holder rather than routine contention. The WRITE side is the same shape and gets the same treatment: `change_effort` applies the overlay off-loop under the action ceiling and refuses to push live at all unless it persisted, rolling the per-model override back and raising, because the file is what a respawn reads — reporting a live change over a write that did not land promises a level the next reset undoes. The pre-spawn overlay writes keep the startup ceiling on the loop: a launch cannot wait, and a launch whose overlay is missing still pushes at spawn. That is what keeps its answer two-valued: a failure that happened by design would need a third state for "nothing changed", and one that means something is wrong does not. It returns whether the file stopped naming the model: an absent file, an absent entry and a malformed file are all successes (`_read_cli_overlay` reads a malformed file as `{}` too, so nothing re-seeds), while a lock failure and a read that fails on a file that EXISTS under the held lock leave the level on disk. `clear_effort` answers that case with a THIRD outcome (`None`), not a bool: both bool values make the handler commit the cleared slot value — the reset branch before its teardown, and the success path before its final 200 — so either would show "default" over an overlay that still holds the level, and `False` additionally resets into re-reading that same level. `None` means nothing changed on either side, and the handler answers it with a retryable 409 `effort_overlay_busy` that commits nothing and resets nothing. `change_effort` has no such case: it raises, because a change that did not persist is a failure rather than a no-op. Clearing to a resolvable workspace default runs under the same write-first discipline: it applies the overlay off-loop under the action ceiling and pushes `/effort` only once that landed, because a live push over a write that did not persist reports a default the next spawn replaces with the level just cleared — a failed write there restores the popped override and answers `None` as well. `clear_effort` must not report a clear on that answer — the level is still on disk and `_read_cli_overlay` re-seeds `_effort_per_model` at construction, so the session reset a clear asks for would re-apply it. It restores the popped entry and logs a warning naming the model, and returns True — not False: the handler resets the session on False, and that reset would re-read the same level, so the operator would pay a reset and still run the old effort. True here means "no reset needed", which is the true answer when nothing changed on either side; the warning is what asks for a retry. The `change_effort` rollback path restores the level the same way for the same reason, in both of its shapes: the one that clears an overlay its live push never applied, and the one that rewrites the overlay back to the prior level. When either write loses the lock the file keeps the attempted level and construction re-seeds from it, so the map follows the FILE and a warning names the level a respawn adopts — reporting an undo the next spawn contradicts would be worse than admitting the rollback is incomplete. Live change pushes `/effort` with the TuiCommand args form (`send_command(args={"level": …})`). The factory threads `reasoning_effort_override` → `effort_per_model[current_model]`, keyed by the configured spelling; on the claude client path `start` moves that entry to the model the session records after `ensure_ready` (claude records the advertised spelling, e.g. `claude-opus-5-5[1m]` for a `claude-opus-5.5` pin), and leaves it in place when every spelling was refused and the session runs the backend default. For an advertised-option harness the factory carries the level forward and leaves judgement to `_resolve_effort` once `session/new` has advertised the option, so a cold start does not drop it on the registry's answer. When nothing is pinned (the resolved model is empty, as with an explicitly empty `agent.model` or a pin that collapses to `auto`), the factory passes a valid level, or any level on an advertised-option harness, as `unbound_effort` instead of keying it, because no model id exists until the backend answers `session/new`. Every effort read and write keys on `_effort_model`: the pinned model, else the backend-reported `served_model` once known. `_bind_unbound_effort` runs on every (re)start, after the session is ready and before `_apply_initial_effort`. It stores the level under the served model, replacing any level already stored there: a live change moves the unbound level with it, so a stored level that differs can only be one a previous run left in the workspace overlay, which construction seeds the map from on kiro-cli, and keeping it would run the session at a level the caller did not ask for. On the kiro family, whose level otherwise rides the spawn-time overlay, it pushes the level live through `change_effort` whenever the overlay does not already hold it, which also writes the overlay for the next spawn. That covers an unpinned kiro-cli, which is launched without `--model` and serves its own `chat.defaultModel` when one is set. Before that call the map holds the level the session was spawned with (the overlay's, or none), so a push kiro-cli refuses rolls back to that level rather than leaving the requested one in the map and the overlay while the session runs another. kiro-cli reports `currentModelId` `auto` for an `auto` session, and `served_model` filters that to `""`, so such a session still offers no effort, as before. A level the serving model does not take, or one with no served model at all, is logged as not applied once per provider. `clear_effort` drops the unbound level so the next restart does not bring it back, and a successful `change_effort` replaces it. Otherwise, when a valid requested effort cannot be threaded on a cold start (the resolved model is not effort-capable) the factory's gate logs one warning naming the level, the session, and the resolved model — reporting its own drop decision on surfaces that construct a fresh provider, an explicit `reasoning_effort_override` always warns (a caller's own dropped request is the event the gate exists to surface), while a drop sourced only from the config default (`agent.reasoning_effort`) is deduped once per (model, level) for the factory's lifetime so one static configuration fact does not repeat on every construction. A `reasoning_effort_override` on a warm-pool claim is applied post-claim via `provider.change_effort` (updating `_effort_per_model` and the `cli.json` overlay write) rather than bypassing the pool, recovering pool-hit startup latency; if the claimed model does not support effort, `change_effort` returns False and a corresponding drop warning is logged. The dashboard handler routes through `change_effort`/`clear_effort` and only resets the session when there is no live provider. Non-effort-capable models persist the slot value without a live apply or reset.
+**Reasoning effort** (Opus/Sonnet/Fable **and GPT-5.x** — shared vocabulary in `effort.py`: levels `low|medium|high|xhigh|max`, resolution via `resolve_effort_for_model` with priority slot-override > workspace default > None). Capability authority is per harness. For kiro and claude the registry answers (`model_supports_effort`). For members of `ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION` (pi, deepseek, goose, opencode) the session's advertised config option answers `supports_effort` (False when the advertised list contains only `off` — an off-only option signals no real thinking level; for every member `_sync_effort_levels` admits the advertised levels to the validation set through `register_reasoning_effort_values` and never replaces the global fallback order, which a slot whose provider advertises no effort option of its own, kiro-cli, is served; after a live `set_model` the option read is the one the `model` write's own `session/set_config_option` result carries, which `AcpClient.set_config_option` stores as `AcpSessionHandle.set_config_option` does, because the `config_option_update` that precedes it is only buffered by `_wait_for_response`) and the allowed levels: `_resolve_effort` passes `levels=` (the advertised list) and `normalize=` (`effort_config_option_value`, the backend's spelling of a level) to `resolve_effort_for_model`, so the fold runs before the advertised-list filter and before the write. A Crew level a member has no spelling for (deepseek's `medium` and `xhigh`) is hidden, not mapped: `AcpProvider.accepts_effort_level` answers False for it, the dashboard effort route refuses it with a 400 `effort_level_not_offered` before anything persists, `change_effort` raises on it, and `_set_effort_config_option` writes nothing for it and walks its step-down over advertised rungs only, so every value pushed to a member is one that session advertised. The registry capability is a conservative allowlist of known-capable families (`opus`/`sonnet`/`fable`/`gpt`, plus Haiku 5.5 and later through a version gate that refuses every older or unversioned `haiku` id before the registry is asked, since the claude_code registry folds `claude-haiku-4.5` onto an effort-capable Sonnet), verified against kiro-cli 2.12/2.13 over ACP and, for `claude-haiku-5.5`, kiro-cli 2.31.1 — kiro rejects `/effort` on the other third-party models (deepseek/minimax/glm/qwen/auto) with "Effort configuration is currently not available on <model>". A new model family lands as unsupported until confirmed (safe default: the slider hides). On kiro-cli (`ACP_BACKENDS_EFFORT_OVERLAY`) it is applied via a workspace `cli.json` overlay at `<work_dir>/.kiro/settings/cli.json` → `chat.modelDefaults.<model>.<key>.effort`, written before every spawn (`_write_cli_overlay`) and read back on init (`_read_cli_overlay`) so the provider's map names the level kiro-cli will run. The overlay's scope is the work dir, so every session in one project shares one entry per model. KAS never opens it and takes the level as the `effortLevel` config option, so the file is neither written, read back nor cleared for it: read back there, it started a new chat at whatever level another chat in the same work dir picked last. A KAS slot keeps its pick across a gateway restart through its own transcript metadata, which the dashboard hands the factory as `reasoning_effort_override`, and across a compaction restart or reset successor through the session's recorded override, which the dashboard effort route replaces with the live pick (`SessionManager.record_effort_override`). A session the dashboard does not start (cron, Slack, webhook) resolves its level from config (crew pin, role, `agent.reasoning_effort`) on every cold start: a level picked live on such a session from a dashboard slot reaches its successors, but a cold start from the channel side reads no dashboard slot, for effort as for the model. The `<key>` sub-object is **family-specific** (`effort_settings_key`): `output_config` for Claude models, `reasoning` for GPT models — kiro silently ignores the wrong key, so a mismatched shape would survive a live push but drop on respawn. `_write_cli_overlay` removes stale effort from the other family key while preserving unrelated settings; `_clear_cli_overlay_effort`/`_read_cli_overlay` sweep both keys. Every in-product writer of that file takes the shared `.kirocrew-cli-settings.lock` sidecar (see [acp-client](acp-client.md)), under one of TWO ceilings: a native launch takes the startup one (it cannot wait, and a launch that loses the lock falls back to authored agents), while an operator action takes a ceiling far above projection's own sub-second critical section. `_clear_cli_overlay_effort` is an operator action, so it runs through `asyncio.to_thread` — waiting that long on the loop would freeze every session — and losing the lock there means a stuck holder rather than routine contention. The WRITE side is the same shape and gets the same treatment: `change_effort` applies the overlay off-loop under the action ceiling and refuses to push live at all unless it persisted, rolling the per-model override back and raising, because the file is what a respawn reads — reporting a live change over a write that did not land promises a level the next reset undoes. The pre-spawn overlay writes keep the startup ceiling on the loop: a launch cannot wait, and a launch whose overlay is missing still pushes at spawn. That is what keeps its answer two-valued: a failure that happened by design would need a third state for "nothing changed", and one that means something is wrong does not. It returns whether the file stopped naming the model: an absent file, an absent entry and a malformed file are all successes (`_read_cli_overlay` reads a malformed file as `{}` too, so nothing re-seeds), while a lock failure and a read that fails on a file that EXISTS under the held lock leave the level on disk. `clear_effort` answers that case with a THIRD outcome (`None`), not a bool: both bool values make the handler commit the cleared slot value — the reset branch before its teardown, and the success path before its final 200 — so either would show "default" over an overlay that still holds the level, and `False` additionally resets into re-reading that same level. `None` means nothing changed on either side, and the handler answers it with a retryable 409 `effort_overlay_busy` that commits nothing and resets nothing. `change_effort` has no such case: it raises, because a change that did not persist is a failure rather than a no-op. Clearing to a resolvable workspace default runs under the same write-first discipline: it applies the overlay off-loop under the action ceiling and pushes `/effort` only once that landed, because a live push over a write that did not persist reports a default the next spawn replaces with the level just cleared — a failed write there restores the popped override and answers `None` as well. `clear_effort` must not report a clear on that answer — the level is still on disk and `_read_cli_overlay` re-seeds `_effort_per_model` at construction, so the session reset a clear asks for would re-apply it. It restores the popped entry and logs a warning naming the model, and returns True — not False: the handler resets the session on False, and that reset would re-read the same level, so the operator would pay a reset and still run the old effort. True here means "no reset needed", which is the true answer when nothing changed on either side; the warning is what asks for a retry. The `change_effort` rollback path restores the level the same way for the same reason, in both of its shapes: the one that clears an overlay its live push never applied, and the one that rewrites the overlay back to the prior level. When either write loses the lock the file keeps the attempted level and construction re-seeds from it, so the map follows the FILE and a warning names the level a respawn adopts — reporting an undo the next spawn contradicts would be worse than admitting the rollback is incomplete. Live change pushes `/effort` with the TuiCommand args form (`send_command(args={"level": …})`). The factory threads `reasoning_effort_override` → `effort_per_model[current_model]`, keyed by the configured spelling; on the claude client path `start` moves that entry to the model the session records after `ensure_ready` (claude records the advertised spelling, e.g. `claude-opus-5-5[1m]` for a `claude-opus-5.5` pin), and leaves it in place when every spelling was refused and the session runs the backend default. For an advertised-option harness the factory carries the level forward and leaves judgement to `_resolve_effort` once `session/new` has advertised the option, so a cold start does not drop it on the registry's answer. When nothing is pinned (the resolved model is empty, as with an explicitly empty `agent.model` or a pin that collapses to `auto`), the factory passes a valid level, or any level on an advertised-option harness, as `unbound_effort` instead of keying it, because no model id exists until the backend answers `session/new`. Every effort read and write keys on `_effort_model`: the pinned model, else the backend-reported `served_model` once known. `_bind_unbound_effort` runs on every (re)start, after the session is ready and before `_apply_initial_effort`. It stores the level under the served model, replacing any level already stored there: a live change moves the unbound level with it, so a stored level that differs can only be one a previous run left in the workspace overlay, which construction seeds the map from on kiro-cli, and keeping it would run the session at a level the caller did not ask for. On the kiro family, whose level otherwise rides the spawn-time overlay, it pushes the level live through `change_effort` whenever the overlay does not already hold it, which also writes the overlay for the next spawn. That covers an unpinned kiro-cli, which is launched without `--model` and serves its own `chat.defaultModel` when one is set. Before that call the map holds the level the session was spawned with (the overlay's, or none), so a push kiro-cli refuses rolls back to that level rather than leaving the requested one in the map and the overlay while the session runs another. kiro-cli reports `currentModelId` `auto` for an `auto` session, and `served_model` filters that to `""`, so such a session still offers no effort, as before. A level the serving model does not take, or one with no served model at all, is logged as not applied once per provider. `clear_effort` drops the unbound level so the next restart does not bring it back, and a successful `change_effort` replaces it. Otherwise, when a valid requested effort cannot be threaded on a cold start (the resolved model is not effort-capable) the factory's gate logs one warning naming the level, the session, and the resolved model — reporting its own drop decision on surfaces that construct a fresh provider, an explicit `reasoning_effort_override` always warns (a caller's own dropped request is the event the gate exists to surface), while a drop sourced only from the config default (`agent.reasoning_effort`) is deduped once per (model, level) for the factory's lifetime so one static configuration fact does not repeat on every construction. A `reasoning_effort_override` on a warm-pool claim is applied post-claim via `provider.change_effort` (updating `_effort_per_model` and the `cli.json` overlay write) rather than bypassing the pool, recovering pool-hit startup latency; if the claimed model does not support effort, `change_effort` returns False and a corresponding drop warning is logged. The dashboard handler routes through `change_effort`/`clear_effort` and only resets the session when there is no live provider. Non-effort-capable models persist the slot value without a live apply or reset.
 
 **MCP Tool Search** (kiro-family backends — see https://kiro.dev/docs/cli/mcp/tool-search/): loads MCP tool specs on demand ("search-and-call") instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. Gated by the `agent.tool_search` config toggle (default **on**; auto-surfaces as a Settings toggle since the schema is generated from the dataclass).
 - **kiro-cli (Rust engine):** applied via the **same** workspace `cli.json` overlay used for effort (`<work_dir>/.kiro/settings/cli.json`), written deterministically before every spawn and on each restart by `_write_tool_search_overlay` (called from `AcpProvider.__init__` and `start()`), scoped to `ACP_BACKENDS_TOOL_SEARCH_OVERLAY`. The engine activates deferral only when the agent's `tools` also grants `tool_search`, so on this channel the loader invariant is the engine's. When enabled it writes the flat keys `toolSearch.enabled=true` plus `toolSearch.minPct`/`toolSearch.minTokens`, taken from `agent.tool_search_min_pct` / `agent.tool_search_min_tokens` (defaults `5` / `50000`, mirroring kiro-cli's own thresholds; clamped to 0-100 and >= 0, non-numeric falls back to the default); when disabled it writes `toolSearch.enabled=false` and drops both thresholds.
@@ -1414,7 +1659,12 @@ restore: codex resolves a load from the sessionId alone.
 KAS answers no, and that is the whole of its exclusion: `_kiro/session/delete`
 REMOVES the persisted record, so there is nothing for a load to restore and a
 shared subagent would strand `spawn_continue` on `conversation_gone`. A different
-gap, owned by whoever gives KAS a non-destroying teardown. The invariants governing what an
+gap, owned by whoever gives KAS a non-destroying teardown. A KAS engine that advertises
+`sessionCapabilities.close` now has one, `session/close`. Crew sends it to keep a finished
+task-runner or workflow session's record for `session.kas_delete_delay_secs`
+([session.md](session.md#released-kas-session-records)), and to reload a live session
+with a changed MCP projection (`AcpRuntime.evict_session`); the sharing membership is
+unchanged. The invariants governing what an
 added harness may and may not change are in
 [harness-parity.md](harness-parity.md).
 
@@ -1436,8 +1686,33 @@ servers remain withheld. A granted gateway broker stub is also admitted through
 the same restriction checks; gatewayd verifies its claim and supplies per-call
 identity to the managed backend.
 
+Every other identity-bound Crew server (`kirocrew-work`, `kirocrew-guide`,
+`kirocrew-mate` and the rest) is admitted only as that gateway broker stub, and
+only in its exact shape: a stdio element running the broker stub module under
+one `--server <name>`, whose `env` is exactly one stub-token pair equal to this
+session's nonempty token. The server must also consume the per-call caller that
+gatewayd injects (`managed_server_is_session_bound` is false for it). The same
+restriction, `disabled` and `tools` checks apply. A spec-described entry for one
+of these servers, and an unbound or foreign stub, stay withheld. So a Codex user
+gets Crew's tools by listing those servers in `mcp_gateway.stub_servers`; without
+that setting nothing changes.
+
 On an enforced sandbox, credential-bearing host readers need the broker route:
 configure `mcp_gateway.stub_servers` to include `kirocrew-core` and
 `kirocrew-dashboard`. Direct children cannot read the gateway credential or SEL
 trust root there; the Codex dashboard mount does not relax those masks. Global Codex MCP entries
 are not a substitute for this session mount.
+
+### opencode work-ledger stub mount
+
+The opencode mirror (`providers/mirrors/opencode.py`) withholds every
+identity-bound Crew server, from both the spec-described half of the array and
+the pooled broker stubs. The work ledger (`kirocrew-work`) is admitted only as
+the gateway's broker stub, and only in its exact shape: a stdio element running
+the broker stub module under one `--server kirocrew-work`, whose `env` is
+exactly one stub-token pair equal to this session's nonempty token. It still
+passes the `tools` allowlist and `disabled`, and a switched-off tool keeps the
+stub mounted only while its deny rule is in force. A spec-described work-ledger
+entry, an unbound or foreign stub, and every other identity-bound server stay
+withheld. The admission is opt-in on the shared `place_single_binary_array`, so
+goose, copilot and deepseek are unchanged.

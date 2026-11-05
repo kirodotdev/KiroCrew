@@ -144,6 +144,10 @@ def crew_agent(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: agents_dir)
     monkeypatch.setattr("kiro_crew.agent.ensure_agent_materialized", lambda _a: True)
+    # The stub launches no MCP server, so a custom agent's default Crew servers
+    # (acp/default_crew_servers.py) would never report ready. These tests pin mode
+    # binding; the defaults are pinned in test_default_crew_servers.py.
+    monkeypatch.setattr("kiro_crew.acp.default_crew_servers.DEFAULT_CREW_SERVERS", ())
     return agents_dir
 
 
@@ -496,7 +500,7 @@ class TestModeBinding:
             await runtime.spawn()
             with pytest.raises(Exception) as exc:
                 await runtime.create_session(cwd=tmp_path / "ws5", agent="review")
-            assert str(exc.value).startswith("Rename this mate's template: “review” is reserved")
+            assert str(exc.value).startswith("Rename this Bot's template: “review” is reserved")
             assert "Agent Template tab" in str(exc.value)
             assert "kas-mode-session" not in str(exc.value)
         finally:

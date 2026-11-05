@@ -41,7 +41,7 @@ from push_guard_helpers import (
 )
 
 from kiro_crew import platform_compat
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import default_timeout, wait_until
 
 # pytest resolves a fixture in the requesting test's module, so each shared
 # fixture this module uses is bound here by name.
@@ -502,8 +502,9 @@ class TestPushGuardSquash:
         finally:
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGKILL)
-                # flake-ok: reaps the guard this finally block just SIGKILLed; moved verbatim
-                proc.wait()
+                # A guard that outlives its SIGKILL raises TimeoutExpired here
+                # instead of hanging the worker.
+                proc.wait(timeout=default_timeout())
         assert proc.returncode == 40, err
         assert b"interrupted" in err
         assert _rev(clone_dir, "HEAD") == head
@@ -906,8 +907,9 @@ class TestPushGuardSquashMessage:
         finally:
             if proc.poll() is None:
                 platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
-                # flake-ok: reaps the guard this finally block just SIGKILLed; moved verbatim
-                proc.wait()
+                # A guard that outlives its SIGKILL raises TimeoutExpired here
+                # instead of hanging the worker.
+                proc.wait(timeout=default_timeout())
         assert proc.returncode == 0, err
         assert "SSH SIGNATURE" in _git(clone_dir, "cat-file", "commit", "HEAD")
 

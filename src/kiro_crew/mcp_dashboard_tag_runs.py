@@ -277,15 +277,28 @@ def _run_chat_tag_assign(args: dict[str, Any], ctx: ToolContext) -> str:
                 "written — call chat_tag_assign again; it re-reads the current list."
             )
         return redact(f"Error: {refused.error}")
-    final = [str(t) for t in (d.get("tags") or new_tags) if isinstance(t, str)]
+    # The endpoint filters the PUT to the live vocabulary and returns what it
+    # stored, so report that list: an empty one is authoritative. Only a reply
+    # without a list at all falls back to the request.
+    raw_final = d.get("tags")
+    if isinstance(raw_final, list):
+        final = [str(t) for t in raw_final if isinstance(t, str)]
+    else:
+        final = new_tags
     shown = ", ".join(f"`{names_by_id.get(t, t)}`" for t in final) or "none"
-    added = ", ".join(f"`{names_by_id.get(t, t)}`" for t in add_ids if t not in current)
-    removed = ", ".join(f"`{names_by_id.get(t, t)}`" for t in remove_ids if t in current)
+    added = ", ".join(
+        f"`{names_by_id.get(t, t)}`" for t in add_ids if t not in current and t in final
+    )
+    removed = ", ".join(
+        f"`{names_by_id.get(t, t)}`" for t in remove_ids if t in current and t not in final
+    )
     parts = []
     if added:
         parts.append(f"added {added}")
     if removed:
         parts.append(f"removed {removed}")
+    if not parts:
+        parts.append("nothing changed")
     return redact(f"Session `{slot_key}`: {'; '.join(parts)}. Tags now: {shown}.")
 
 
@@ -338,7 +351,7 @@ def _run_chat_session_pin(args: dict[str, Any], ctx: ToolContext) -> str:
     # can be stale, so the route decides under its lock, after the
     # generation and ownership re-checks, and reports ``changed``.
     # ``expected_created`` pins the write to the slot generation resolved
-    # above, the same token chat_folder_file_self sends; the endpoint
+    # above, the same token the drop below sends; the endpoint
     # checks it under its lock, so a slot key recreated for a different
     # conversation in between is refused instead of pinned.
     pin_body: dict[str, Any] = {"pinned": want}
@@ -541,7 +554,7 @@ def _run_chat_tag_column_create(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         if refused.code == "app_forbidden":
             return (
-                "Error: an app agent or crew member cannot add a board column — the "
+                "Error: an app agent or Bot cannot add a board column — the "
                 "board is the person's own layout. Read it with chat_tag_column_list."
             )
         return redact(f"Error: {refused.error}")
@@ -611,7 +624,7 @@ def _run_chat_tag_column_move(args: dict[str, Any], ctx: ToolContext) -> str:
             )
         if refused.code == "app_forbidden":
             return (
-                "Error: an app agent or crew member cannot reorder the board — it "
+                "Error: an app agent or Bot cannot reorder the board — it "
                 "is the person's own layout."
             )
         return redact(f"Error: {refused.error}")

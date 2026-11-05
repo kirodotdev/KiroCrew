@@ -64,10 +64,17 @@ vi.mock('../api/client', () => ({ api: { resolveApproval: vi.fn(async () => unde
 import ChatPaneChrome from './chat/page/ChatPaneChrome'
 import SessionsSidebarChrome from './chat/page/SessionsSidebarChrome'
 import ChatTitleOverlay from './chat/page/ChatTitleOverlay'
+import { registeredCopies } from '../uiLocations/targetRegistry'
 import ChatTranscriptView from './chat/page/ChatTranscriptView'
 import { api } from '../api/client'
 import { requestSlotReveal } from '../store/chatSlice'
 import { transcriptShownFor } from '../hooks/useAckCronNotesInView'
+
+// Placeholder Slack thread timestamps (the link builder needs ``\d{10}.\d{6}``);
+// expected permalinks are built from them, never written out.
+const TS1 = '1700000000.000001'
+const threadUrl = (channel: string, ts: string) =>
+  `https://slack.com/archives/${channel}/p${ts.replace('.', '')}`
 
 /** A view's props: the fields a case sets, the rest left undefined (each view reads only what its branch needs). */
 const props = <T,>(over: Partial<T>) => over as T
@@ -158,7 +165,7 @@ describe('ChatTitleOverlay', () => {
   const base = (over: Partial<TitleProps>): TitleProps => props<TitleProps>({
     isMobile: false, titleInTopbar: false, filteredSlots: [], activeSlot: 'slot-a', pinned: null,
     sidebarAutoHidden: { current: 'focus' as never }, dispatch: vi.fn() as never,
-    popOutTip: { handlers: {}, bubble: null } as never, activityTip: { handlers: {}, bubble: null } as never, ...over,
+    ...over,
   })
 
   it('reveals the session in the sidebar: pins the desktop sidebar, or opens the phone drawer', () => {
@@ -176,6 +183,35 @@ describe('ChatTitleOverlay', () => {
     act(() => { seen.headerMenu!.onReveal!() })
     expect(openSidebar).toHaveBeenCalled()
     expect(phone.setSidebarPinned).not.toHaveBeenCalled()
+  })
+
+  it('marks a Slack code channel session in the header, and nothing else', () => {
+    const codeChannel = {
+      channel_name: 'fix-login', status: 'active' as const,
+      web_url: 'https://slack.com/app_redirect?channel=C0CODE1&team=T0TEAM1',
+    }
+    const { unmount } = render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false } as never })} />)
+    expect(screen.queryByTestId('code-channel-badge-header')).toBeNull()
+    unmount()
+    render(<ChatTitleOverlay {...base({ currentSlot: {
+      key: 'slot-a', messages: 0, running: false, code_channel: codeChannel,
+      // A bound session is also Slack-linked (its anchor thread): the code
+      // channel's own link must win over the thread link.
+      slack_linked: true, slack_channel: 'C0CODE1', slack_thread_ts: '1700000000.000001',
+    } as never })} />)
+    expect(screen.getByTestId('code-channel-badge-header')).toHaveAttribute('href', codeChannel.web_url)
+    expect(screen.queryByTestId('slack-thread-link-header')).toBeNull()
+  })
+
+  it('links a session mirrored to a Slack thread to that thread in the header', () => {
+    const { unmount } = render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false, slack_linked: false } as never })} />)
+    expect(screen.queryByTestId('slack-thread-link-header')).toBeNull()
+    unmount()
+    render(<ChatTitleOverlay {...base({ currentSlot: {
+      key: 'slot-a', messages: 0, running: false, slack_linked: true, slack_channel: 'C0THREAD1', slack_thread_ts: '1700000000.000001',
+    } as never })} />)
+    expect(screen.getByTestId('slack-thread-link-header')).toHaveAttribute('href', threadUrl('C0THREAD1', TS1))
+    expect(screen.queryByTestId('code-channel-badge-header')).toBeNull()
   })
 
   it('offers no reveal on an embedded chat, and renames the active session', () => {
@@ -204,6 +240,26 @@ describe('ChatTitleOverlay', () => {
     render(<ChatTitleOverlay {...base({ activePoppedOut: false, openActivePopout, currentSlot: { key: 'slot-a', title: 'Alpha' } as never })} />)
     fireEvent.click(screen.getByRole('button', { name: /pop out/i }))
     expect(openActivePopout).toHaveBeenCalledWith('slot-a', 'Alpha')
+  })
+
+  it('the pop-out control\'s tip does not come back stale after the session pops out and returns', async () => {
+    const over = { activePoppedOut: false, currentSlot: { key: 'slot-a', title: 'Alpha' } as never }
+    const { rerender } = render(<ChatTitleOverlay {...base(over)} />)
+    const btn = screen.getByRole('button', { name: /pop out/i })
+    fireEvent.mouseEnter(btn)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(btn.getAttribute('aria-label')!)
+    // Popping out swaps the control for the "Popped out" chip under the
+    // pointer; returning brings it back with no tip up.
+    rerender(<ChatTitleOverlay {...base({ ...over, activePoppedOut: true })} />)
+    rerender(<ChatTitleOverlay {...base(over)} />)
+    expect(screen.getByRole('button', { name: /pop out/i })).toBeInTheDocument()
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('the side-panel toggle registers itself as the chat.side-panel-open location', () => {
+    render(<ChatTitleOverlay {...base({ activityOpen: false, embedMode: undefined, popout: false })} />)
+    const btn = screen.getByRole('button', { name: 'Open activity panel' })
+    expect(registeredCopies('location', 'chat.side-panel-open')).toEqual([btn])
   })
 
   it('toggles and jumps to the pinned prompt', () => {

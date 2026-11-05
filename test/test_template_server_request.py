@@ -72,16 +72,23 @@ def env(tmp_path, monkeypatch):
         return name, dict(GATEWAY_ENTRY), {"source": "gateway"}
 
     monkeypatch.setattr(capability_catalog, "resolve_server", resolve)
-    monkeypatch.setattr(
-        tsr,
-        "addition_reach_view",
-        lambda state, template: {
+
+    def reach_view(state, template, *, mount_only=False, **_kw):
+        if mount_only:
+            return {
+                "templates": [template, "kirocrew-worker"],
+                "aliases": {},
+                "sessions": ["Default chat"],
+                "members": [],
+            }
+        return {
             "templates": [template, "kirocrew-ledger-conductor"],
             "aliases": {"kirocrew-ledger-conductor": template},
             "sessions": ["Patrol"],
             "members": [],
-        },
-    )
+        }
+
+    monkeypatch.setattr(tsr, "addition_reach_view", reach_view)
     monkeypatch.setattr(tsr, "live_apply", lambda state: True)
     monkeypatch.setattr(tsr, "server_tools", lambda name: ["read_file", "list_dir"])
     monkeypatch.setattr(tsr, "template_declares", lambda template, server: False)
@@ -91,14 +98,22 @@ def env(tmp_path, monkeypatch):
     def rebuild():
         seen["applied"] += 1
         seen.setdefault("rebuilds", []).append(seen["rebuild_ok"])
+        if seen["rebuild_ok"]:
+            # What a written kirocrew.json then holds as card additions.
+            seen["default_spec"] = set(additions.read_additions("kirocrew"))
         return seen["rebuild_ok"]
 
     async def reach(request):
         return 0
 
     monkeypatch.setattr(tsr, "_rebuild_specs", rebuild)
+    monkeypatch.setattr(
+        tsr, "_default_spec_mounts", lambda server: server in seen.get("default_spec", set())
+    )
     monkeypatch.setattr(tsr, "_reach_sessions", reach)
-    monkeypatch.setattr(tsr, "existing_grants", lambda template, server: seen.get("grants", []))
+    monkeypatch.setattr(
+        tsr, "existing_grants", lambda template, server, **_kw: seen.get("grants", [])
+    )
     monkeypatch.setattr(tsr, "_audit", lambda *a, **k: None)
     return seen
 
@@ -473,23 +488,123 @@ def test_the_ledger_alias_records_under_its_target():
     assert "kirocrew-ledger-conductor" in addition_reach("kirocrew-conductor")
 
 
-# ── the default agent and the worker: refused, pointed at the MCP page ──
+# ── the default agent and the worker: a mount-only card ──
 
 
 @pytest.mark.parametrize("template", ["kirocrew", "kirocrew-worker"])
-def test_a_default_or_worker_request_raises_no_card(env, tmp_path, template):
+def test_a_default_or_worker_request_raises_a_mount_only_card(env, tmp_path, template):
+    """Both are recorded on the default spec, which the worker mirrors, and the
+    record never grants a tool: the MCP page's add is the grant path."""
     env["template"] = template
     store = CardStore(tmp_path / "c.json")
 
-    status, body = _run(
-        store, lambda c: _request(c, {"source": "registry", "registry_id": "io.example/fetch"})
-    )
-    # The record's own refusal (``addition_support``): the MCP page, no card.
-    assert (status, body["code"]) == (409, "unsupported")
-    assert body["error"] == additions.DEFAULT_REASON
-    # Nothing was resolved, so nothing could be proposed.
-    assert env["resolved"] == []
+    async def go(c):
+        status, card = await _request(c, {"source": "registry", "registry_id": "io.example/fetch"})
+        step = card["plan"]["apply"][0]
+        applied = await c.post(step["path"], json=step["body"], headers=_card_headers(card))
+        return status, card, applied.status, applied.url
+
+    status, card, applied, _url = _run(store, go)
+    assert status == 200, card
+    assert card["params"]["template"] == "kirocrew"
+    assert card["params"]["mount_only"] is True
+    assert card["plan"]["apply"][0]["body"]["mount_only"] is True
+    agents_row = {r["label"]: r for r in card["changes"]}["Agents"]
+    assert "kirocrew-worker" in agents_row["add"]
+    assert applied == 200
+    recorded = additions.read_additions("kirocrew")
+    assert set(recorded) == {"fetch"}
+    assert recorded["fetch"].mount_only is True
     assert additions.read_additions("kirocrew-conductor") == {}
+    # The card says plainly that no tool of the server is approved by it.
+    each_tool = {r["label"]: r for r in card["changes"]}["Each tool"]["after"]
+    assert "nothing is auto-approved" in each_tool
+
+
+def test_a_failed_default_spec_rewrite_puts_the_mount_only_record_back(env, tmp_path):
+    """kirocrew.json carries the default agent's addition, so a rebuild that could
+    not rewrite it leaves the card unapplied, exactly as for a conductor."""
+    env["template"] = "kirocrew"
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        _status, card = await _request(c, {"source": "registry", "registry_id": "io.example/fetch"})
+        step = card["plan"]["apply"][0]
+        env["rebuild_ok"] = False
+        failed = await c.post(step["path"], json=step["body"], headers=_card_headers(card))
+        return failed.status, (await failed.json())["code"]
+
+    assert _run(store, go) == (503, "spec_not_rewritten")
+    assert additions.read_additions("kirocrew") == {}
+
+
+def test_a_default_undo_whose_spec_landed_is_not_rolled_back(env, tmp_path):
+    """The rebuild can report failure after kirocrew.json was already committed
+    (a held conductor spec, another installer raising). The default spec no
+    longer holds the server, so the Undo happened: rolling it back would restore
+    the record on top of a spec whose per-tool grants were already pruned."""
+    env["template"] = "kirocrew"
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        _status, card = await _request(c, {"source": "registry", "registry_id": "io.example/fetch"})
+        step = card["plan"]["apply"][0]
+        ok = await c.post(step["path"], json=step["body"], headers=_card_headers(card))
+        applied = store.public(store.get(card["id"]))
+        undo = applied["plan"]["undo"][0]
+        env["rebuild_ok"] = False
+        env["default_spec"] = set()
+        done = await c.delete(undo["path"], headers=_card_headers(applied, op="undo"))
+        return ok.status, done.status
+
+    assert _run(store, go) == (200, 200)
+    assert additions.read_additions("kirocrew") == {}
+
+
+def test_a_default_apply_whose_server_did_not_land_is_rolled_back(env, tmp_path):
+    """A rebuild that writes kirocrew.json without the server (its launcher did
+    not resolve) is not an applied card."""
+    env["template"] = "kirocrew"
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        _status, card = await _request(c, {"source": "registry", "registry_id": "io.example/fetch"})
+        step = card["plan"]["apply"][0]
+        tsr_mounts = tsr._default_spec_mounts
+        tsr._default_spec_mounts = lambda server: False
+        try:
+            failed = await c.post(step["path"], json=step["body"], headers=_card_headers(card))
+        finally:
+            tsr._default_spec_mounts = tsr_mounts
+        return failed.status, (await failed.json())["code"]
+
+    assert _run(store, go) == (503, "spec_not_rewritten")
+    assert additions.read_additions("kirocrew") == {}
+
+
+def test_a_failed_default_undo_puts_the_mount_only_record_back(env, tmp_path):
+    """The restore after a failed Undo keeps the disposition: a default-agent
+    addition is only recordable mount-only, so dropping the flag would refuse
+    the restore and lose the record."""
+    env["template"] = "kirocrew"
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        _status, card = await _request(c, {"source": "registry", "registry_id": "io.example/fetch"})
+        step = card["plan"]["apply"][0]
+        ok = await c.post(step["path"], json=step["body"], headers=_card_headers(card))
+        applied = store.public(store.get(card["id"]))
+        undo = applied["plan"]["undo"][0]
+        env["rebuild_ok"] = False
+        failed = await c.delete(undo["path"], headers=_card_headers(applied, op="undo"))
+        return ok.status, (failed.status, (await failed.json())["code"]), card["id"]
+
+    ok, undo_failed, card_id = _run(store, go)
+    assert ok == 200
+    assert undo_failed == (503, "spec_not_rewritten")
+    kept = additions.read_additions("kirocrew")
+    assert set(kept) == {"fetch"}
+    assert kept["fetch"].mount_only is True and kept["fetch"].card_id == card_id
 
 
 def test_a_failed_spec_rewrite_puts_the_record_back(env, tmp_path):

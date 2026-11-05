@@ -156,7 +156,7 @@ let backNav: (() => void) | null = null
  * observable rather than an inert no-op at the bottom of the stack — that is
  * the whole defect in #5795.
  */
-function renderChat(initialEntries: string[] = ['/before-chat', '/chat?sid=slot-0']) {
+async function renderChat(initialEntries: string[] = ['/before-chat', '/chat?sid=slot-0']) {
   const store = createTestStore()
   act(() => {
     // BEFORE the slots: `sseConnected` also clears `slotsLoaded`. Connected is
@@ -171,7 +171,7 @@ function renderChat(initialEntries: string[] = ['/before-chat', '/chat?sid=slot-
     store.dispatch(setActiveSlot('slot-0'))
   })
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  render(
+  await act(async () => { render( // the mount's history and model fetches settle inside this act
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
         <ThemeProvider>
@@ -185,7 +185,7 @@ function renderChat(initialEntries: string[] = ['/before-chat', '/chat?sid=slot-
         </ThemeProvider>
       </Provider>
     </QueryClientProvider>,
-  )
+  ) })
   return store
 }
 
@@ -231,8 +231,8 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
   })
   afterEach(() => { vi.clearAllMocks(); cleanup() })
 
-  it('opening the drawer PUSHES one entry at the same url', () => {
-    renderChat()
+  it('opening the drawer PUSHES one entry at the same url', async () => {
+    await renderChat()
     // Whatever the sync effect settled on, slug and all -- the assertion is that
     // the push does not MOVE it.
     const before = { pathname: probe().dataset.pathname, sid: probe().dataset.sid }
@@ -248,8 +248,8 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
     expect(probe().dataset.sid).toBe(before.sid)
   })
 
-  it('Back closes the drawer and stays on /chat', () => {
-    renderChat()
+  it('Back closes the drawer and stays on /chat', async () => {
+    await renderChat()
     openDrawer()
     expect(drawerMounted()).toBe(true)
 
@@ -265,8 +265,8 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
     expect(probe().dataset.sid).toBe('slot-0')
   })
 
-  it('switching sessions from the drawer consumes the entry — Back does not resurrect the outgoing session', () => {
-    const store = renderChat()
+  it('switching sessions from the drawer consumes the entry — Back does not resurrect the outgoing session', async () => {
+    const store = await renderChat()
     openDrawer()
 
     // What picking a row in the drawer does: `activeSlot` moves, and the
@@ -289,7 +289,7 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
   })
 
   it('creating a session from the drawer consumes the entry without restoring the outgoing chat', async () => {
-    const store = renderChat()
+    const store = await renderChat()
     openDrawer()
     vi.mocked(api.createChatSlot).mockResolvedValueOnce({
       key: 'slot-new', title: 'New Session', messages: 0, running: false,
@@ -309,8 +309,8 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
     expect(store.getState().chat.activeSlot).toBe('slot-new')
   })
 
-  it('a backdrop tap consumes the entry too, so the next Back is not an invisible no-op', () => {
-    renderChat()
+  it('a backdrop tap consumes the entry too, so the next Back is not an invisible no-op', async () => {
+    await renderChat()
     openDrawer()
     fireEvent.click(screen.getByTestId('sessions-backdrop'))
     finishSlide()
@@ -323,8 +323,8 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
     expect(screen.getByTestId('off-chat')).toBeTruthy()
   })
 
-  it('a DRAG open mints the entry at RELEASE, so Back during the opening slide closes the drawer', () => {
-    renderChat()
+  it('a DRAG open mints the entry at RELEASE, so Back during the opening slide closes the drawer', async () => {
+    await renderChat()
     const before = probe().dataset.pathname
     dragDrawerOpen()
 
@@ -364,8 +364,8 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
    * all settle before React can commit, so a test written through the drawer
    * passes on the broken tree.
    */
-  it('a POP onto a stale ?sid does not switch sessions on mobile', () => {
-    const store = renderChat(['/chat?sid=slot-1', '/chat?sid=slot-0'])
+  it('a POP onto a stale ?sid does not switch sessions on mobile', async () => {
+    const store = await renderChat(['/chat?sid=slot-1', '/chat?sid=slot-0'])
     expect(store.getState().chat.activeSlot).toBe('slot-0')
 
     platformBack()
@@ -390,7 +390,7 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
    */
   it('honours a Back onto an entry a desktop push created, even after narrowing to mobile', async () => {
     viewport.isMobile = false
-    const store = renderChat(['/before-chat', '/chat?sid=slot-0'])
+    const store = await renderChat(['/before-chat', '/chat?sid=slot-0'])
 
     // A real desktop session switch — this is the write that PUSHES, leaving the
     // slot-0 entry behind as a Back target.
@@ -401,6 +401,7 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
     // The window narrows (or the tablet rotates) — same session, same stack.
     viewport.isMobile = true
     platformBack()
+    await act(async () => { await vi.mocked(api.chatSlotDetail).mock.results.at(-1)?.value })
 
     expect(store.getState().chat.activeSlot).toBe('slot-0')
     expect(probe().dataset.sid).toBe('slot-0')
@@ -415,16 +416,18 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
    */
   it('restores the pushed destination on Forward after narrowing to mobile', async () => {
     viewport.isMobile = false
-    const store = renderChat(['/before-chat', '/chat?sid=slot-0'])
+    const store = await renderChat(['/before-chat', '/chat?sid=slot-0'])
 
     await act(async () => { await store.dispatch(switchSlot('slot-1')) })
     expect(probe().dataset.sid).toBe('slot-1')
 
     viewport.isMobile = true
     platformBack()
+    await act(async () => { await vi.mocked(api.chatSlotDetail).mock.results.at(-1)?.value })
     expect(store.getState().chat.activeSlot).toBe('slot-0')
 
     platformForward()
+    await act(async () => { await vi.mocked(api.chatSlotDetail).mock.results.at(-1)?.value })
 
     expect(store.getState().chat.activeSlot).toBe('slot-1')
     expect(probe().dataset.sid).toBe('slot-1')

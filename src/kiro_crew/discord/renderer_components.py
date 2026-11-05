@@ -11,6 +11,9 @@ surface.
 
 from __future__ import annotations
 
+import hashlib
+import threading
+from collections import OrderedDict
 from collections.abc import Sequence
 
 # Button style constants (Discord component styles).
@@ -29,17 +32,70 @@ _MAX_BUTTONS = _BUTTONS_PER_ROW * _MAX_ACTION_ROWS
 #: Component-spec ceiling on a button label.
 _BUTTON_LABEL_CHARS = 80
 
+#: Full text of every ``[OPTIONS:]`` choice whose button label was cut, keyed by
+#: ``(origin_tag, choice_ref)``. A press reads the label Discord sends back, and a
+#: cut label is not the choice the agent offered, so the press answers with the
+#: text kept here. Process-local and bounded (oldest dropped first): after a
+#: restart, or once evicted, a press on a cut button asks the person to type it.
+_FULL_CHOICES: OrderedDict[tuple[str, str], str] = OrderedDict()
+_FULL_CHOICES_MAX = 1024
+_FULL_CHOICES_LOCK = threading.Lock()
+#: Longest choice text kept, so the map is bounded in characters as well as in
+#: entries (at most 1024 x 1000). A longer choice is not kept, and its press asks
+#: the person to type it. 1000 also keeps the press echo (``> `` + the choice)
+#: inside one 2000-character Discord message.
+_FULL_CHOICE_MAX_CHARS = 1000
+
+
+def _choice_ref(index: int, option: str) -> str:
+    """The ``custom_id`` middle part: the index, plus a digest when the label is cut.
+
+    The digest names the full text, so two long choices that share their first 80
+    characters still answer with their own text. ``:`` never appears in it, so the
+    dispatcher's ``split(":", 2)`` still reads the origin tag as the third part.
+    """
+    if len(option) <= _BUTTON_LABEL_CHARS:
+        return str(index)
+    digest = hashlib.sha256(option.encode("utf-8")).hexdigest()[:12]
+    return f"{index}~{digest}"
+
+
+def _remember_full_choice(origin_tag: str, choice_ref: str, option: str) -> None:
+    if len(option) > _FULL_CHOICE_MAX_CHARS:
+        return
+    with _FULL_CHOICES_LOCK:
+        key = (origin_tag, choice_ref)
+        _FULL_CHOICES[key] = option
+        _FULL_CHOICES.move_to_end(key)
+        while len(_FULL_CHOICES) > _FULL_CHOICES_MAX:
+            _FULL_CHOICES.popitem(last=False)
+
+
+def full_choice_text(origin_tag: str, choice_ref: str, shown_label: str) -> str:
+    """The choice a press on ``opt:<choice_ref>:<origin_tag>`` answers with.
+
+    A short choice answers with its label as Discord sent it back. A cut choice
+    (a ``choice_ref`` with a digest) answers with the full text kept here, or with
+    ``""`` when it is not kept (a restart, or evicted): its label is not the
+    choice, so the caller asks the person to type it rather than send the cut text.
+    """
+    if "~" not in choice_ref:
+        return shown_label
+    with _FULL_CHOICES_LOCK:
+        return _FULL_CHOICES.get((origin_tag, choice_ref), "")
+
 
 def build_option_components(options: list[str], origin_tag: str = "") -> list[dict] | None:
     """Build Discord button action rows from ``[OPTIONS:]`` labels.
 
-    ``custom_id`` is ``opt:<i>:<origin_tag>`` (``opt:<i>`` when no tag is given --
+    ``custom_id`` is ``opt:<ref>:<origin_tag>`` (``opt:<ref>`` when no tag is given --
     the pre-provenance legacy shape) -- Discord caps it at 100 chars, which the
-    12-hex tag fits comfortably, and the label is recovered from the button text
-    at interaction time. Labels cap at 80 chars per the component spec. The
-    ``max_buttons`` cap is applied UPSTREAM via ``apply_options_cap`` (overflow
-    degrades to numbered text); the slice below is the platform hard-limit
-    backstop only.
+    12-hex tag fits comfortably. ``<ref>`` is the index, plus a digest of the full
+    text when the label is cut (see :func:`_choice_ref`). Labels cap at 80 chars per
+    the component spec; a press recovers the choice from the button text, or from
+    :func:`full_choice_text` when the label was cut. The ``max_buttons`` cap is
+    applied UPSTREAM via ``apply_options_cap`` (overflow degrades to numbered
+    text); the slice below is the platform hard-limit backstop only.
     """
     if not options:
         return None
@@ -47,12 +103,15 @@ def build_option_components(options: list[str], origin_tag: str = "") -> list[di
     rows: list[dict] = []
     row: list[dict] = []
     for i, opt in enumerate(options[:_MAX_BUTTONS]):
+        ref = _choice_ref(i, opt)
+        if origin_tag and ref != str(i):
+            _remember_full_choice(origin_tag, ref, opt)
         row.append(
             {
                 "type": 2,  # button
                 "style": _STYLE_SECONDARY,
                 "label": opt[:_BUTTON_LABEL_CHARS],
-                "custom_id": f"opt:{i}{suffix}",
+                "custom_id": f"opt:{ref}{suffix}",
             }
         )
         if len(row) == _BUTTONS_PER_ROW:

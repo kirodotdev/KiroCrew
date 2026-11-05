@@ -236,7 +236,7 @@ def _proven_record(tmp_path: Path) -> tuple[str, str, str]:
 
 
 def test_a_proven_record_cannot_be_answered_with_a_not_provable_line(tmp_path: Path) -> None:
-    """The reviewer's case: prove.py proved it, the author writes an excuse instead."""
+    """prove.py proved it, but the author writes a not-provable excuse instead."""
     path, tree, _ = _proven_record(tmp_path)
     for reason in ("test-only change", "docs or config only", "other: " + "x" * 25):
         line = f"Proof: not provable -- {reason}"
@@ -461,7 +461,7 @@ def test_a_post_checkout_hook_does_not_run_in_the_proof_worktree(tmp_path: Path)
 
 
 def test_a_global_hooks_path_does_not_run_either(tmp_path: Path) -> None:
-    """The reviewer's case: the developer's own config names a hooks directory."""
+    """The developer's own git config names a global hooks directory."""
     repo = _repo(tmp_path)
     hooks = tmp_path / "global-hooks"
     hooks.mkdir()

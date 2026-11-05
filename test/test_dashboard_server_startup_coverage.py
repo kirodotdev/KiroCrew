@@ -1,26 +1,12 @@
 """Coverage tests for ``kiro_crew.dashboard.server``'s startup path.
 
-Sibling of ``test_dashboard_server_coverage.py``, which pins the module's
-extracted *helpers*. What was left uncovered is the one thing no helper test can
-reach: the body of :func:`~kiro_crew.dashboard.server.start_dashboard` itself —
-the app factory that wires every route, middleware and lifecycle hook the
-gateway serves. Nothing asserted here is reachable from a helper, because the
-wiring order and the hook/middleware inventory only exist inside that function.
+Pins the body of :func:`~kiro_crew.dashboard.server.start_dashboard`: the wiring order
+and the route, middleware and hook inventory. Helpers are in
+``test_dashboard_server_coverage.py``.
 
-The listener is never bound. ``start_dashboard`` builds
-``web.TCPSite(runner, addr, port)`` and binds it inside ``_start_site``;
-constructing the site is inert, so stubbing ``_start_site`` means no host port
-is opened. That is the pattern the sibling module established for
-``start_api_server`` — AUTOSDE ``no-test-side-effects`` is ``blocking: true`` and
-an ephemeral ``port=0`` would not exempt a real bind.
-
-Everything else that reaches outside the process is replaced rather than
-tolerated: app-backend launches, the builtin-app registration sweep, the Kiro
-prerequisite probe, the Playwright registration migration (which writes the
-operator's REAL ``~/.kiro/settings/mcp.json``, outside ``KIROCREW_HOME``), the
-terminal reaper (shells out to ``ps``) and the MCP probe. ``KIROCREW_HOME`` is
-pinned to ``tmp_path`` by ``test/conftest.py``, so the state files the startup
-writes stay inside the test's own directory.
+``_start_site`` is stubbed, so no host port is bound (AUTOSDE ``no-test-side-effects``
+blocks even ``port=0``). Every other step that reaches outside the process is replaced,
+including the Playwright migration, which writes the REAL ``~/.kiro/settings/mcp.json``.
 """
 
 from __future__ import annotations
@@ -28,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import functools
+import importlib
 import logging
 import os
 import socket
@@ -43,11 +30,21 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestClient, TestServer
 
-from kiro_crew.browser_cli import launch as browser_cli_launch
-from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
-from kiro_crew.browser_cli import token as browser_cli_token
+from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.dashboard import server as srv
 from kiro_crew.testing.wait import async_wait_until
+
+# ``start_dashboard`` imports every built-in app package on its first call, and some
+# of them bind ``config_dir`` by name at import time. The tests below patch
+# ``loader.config_dir`` with a lambda; a package first imported under that patch keeps
+# the lambda after teardown and points later tests in the worker at a dead tmp dir.
+# Import them here, before any patch, so they bind the real function.
+for _builtin_name in BUILTIN_NAMES:
+    try:
+        importlib.import_module(f"kiro_crew.apps.builtins.{_builtin_name}")
+    except ModuleNotFoundError as exc:
+        if exc.name != f"kiro_crew.apps.builtins.{_builtin_name}":
+            raise
 
 requires_unix_socket = pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"),
@@ -229,11 +226,8 @@ class _FakeSockSite:
 def _neutralise_outside_process_work(monkeypatch) -> dict[str, Any]:
     """Replace every startup step that reaches outside this process.
 
-    Returns the spies, so a test can assert a step ran without the step itself
-    launching anything. Grouped in one helper because omitting any single entry
-    does not fail the test — it silently spawns a real subprocess, writes the
-    operator's real config, or shells out to ``ps``, which is the shape of side
-    effect AUTOSDE ``no-test-side-effects`` is blocking on.
+    Returns the spies. Kept in one helper because a missing entry fails nothing: it
+    silently spawns a subprocess or writes the operator's real config.
     """
     import kiro_crew.apps.dev_mode as dev_mode
     import kiro_crew.kiro_prerequisite as kiro_prereq
@@ -241,8 +235,6 @@ def _neutralise_outside_process_work(monkeypatch) -> dict[str, Any]:
     spies: dict[str, Any] = {
         # Spawns a real backend process per enabled app.
         "start_enabled_app_backends": MagicMock(return_value=[]),
-        # The bound-port wave (Dev Fleet) — spawned after the site is bound.
-        "start_deferred_app_backends": MagicMock(return_value=[]),
         # Writes into the apps dir and re-materialises builtin manifests.
         "register_builtin_apps": MagicMock(),
         # Rewrites the operator's REAL ~/.kiro/settings/mcp.json — the one step
@@ -314,19 +306,14 @@ async def _start_dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     )
     monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
     spies = _neutralise_outside_process_work(monkeypatch)
-    # start_dashboard mutates os.environ directly (browser_cli_snapshots /
-    # browser_cli_token / browser_cli_launch cli_env_overrides()) so descendant
-    # `playwright-cli` invocations inherit them -- real, deliberate production
-    # behavior, not a bug. monkeypatch has no visibility into a raw
-    # os.environ.update(), so snapshot+restore the concrete keys it can touch
-    # here instead. `delenv(raising=False)` on an ABSENT key registers no undo,
+    # start_dashboard mutates os.environ directly (the bound-port evidence
+    # below) -- real, deliberate production behavior, not a bug. monkeypatch has
+    # no visibility into a raw os.environ.update(), so snapshot+restore the
+    # concrete keys it can touch here instead. `delenv(raising=False)` on an ABSENT key registers no undo,
     # so a value production writes afterwards would survive teardown; setenv
     # to "" first records the absence and restores it, and start_dashboard
     # overwrites the placeholder before anything reads it.
     for _leak_key in (
-        browser_cli_snapshots.OUTPUT_DIR_ENV,
-        browser_cli_token.TOKEN_ENV,
-        browser_cli_launch.CONFIG_ENV,
         # The port-reservation boot path exports the reserved socket's name as
         # bound-port evidence before the app-backend pass -- same raw
         # os.environ write, same snapshot+restore need.
@@ -359,13 +346,8 @@ async def _start_dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
 class _RunningAppServer(BaseTestServer):
     """A loopback listener over an AppRunner that ``start_dashboard`` ALREADY set up.
 
-    ``TestServer(runner.app)`` would wrap the app in a second ``AppRunner`` and
-    run every ``on_startup`` hook again on the frozen app: a second proxy
-    ``ClientSession`` and knowledge watcher (the first of each is orphaned),
-    plus aiohttp's deprecation warning on each ``app[...]`` write. Serving the
-    runner's existing protocol factory through a ``ServerRunner`` binds a port
-    without touching the application's lifecycle; the app is torn down once,
-    by ``_dashboard``, through the real cleanup path.
+    ``TestServer(runner.app)`` would run every ``on_startup`` hook a second time. A
+    ``ServerRunner`` over the existing protocol factory leaves the lifecycle alone.
     """
 
     def __init__(self, runner: web.AppRunner, **kwargs: Any) -> None:
@@ -386,22 +368,9 @@ class _RunningAppServer(BaseTestServer):
 async def _dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     """A fully wired dashboard app, torn down through the real cleanup path.
 
-    An ``async with`` helper rather than an ``@pytest_asyncio.fixture``, by this
-    suite's convention (the pinned pytest-asyncio does not collect async
-    generator fixtures declared with plain ``@pytest.fixture``).
-
-    The teardown is not incidental: ``runner.cleanup()`` dispatches every
-    ``on_cleanup`` hook the startup registered, so the hooks are exercised as
-    well as counted.
-
-    The task sweep afterwards is this harness's own hygiene, not a product
-    contract. Four perpetual loops the startup creates — the loop heartbeat, the
-    channel-slot reconciler, the state flush loop and the chat sweeper — have no
-    cleanup hook, because in production the process exits at shutdown. In a test
-    they would outlive the case and be reported against whichever one runs next,
-    so they are cancelled here. The same reasoning covers the two process-level
-    handles the startup opens and no cleanup hook closes; see
-    :func:`_release_process_handles`.
+    ``runner.cleanup()`` runs every ``on_cleanup`` hook. The task sweep afterwards is
+    harness hygiene: four perpetual loops have no cleanup hook (production exits) and
+    would leak into the next test. See also :func:`_release_process_handles`.
     """
     runner, state, spies = await _start_dashboard(tmp_path, monkeypatch, **kwargs)
     try:
@@ -415,21 +384,10 @@ async def _dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
 def _release_process_handles(state: Any) -> None:
     """Close the file descriptors ``start_dashboard`` opens for the process lifetime.
 
-    Two handles outlive ``runner.cleanup()`` by design, because production closes
-    them by exiting: the loop-stall crash-dump file (a raw ``os.open`` fd held by
-    the watchdog, which no garbage collection ever closes and whose own
-    ``close()`` is a deliberate no-op) and the knowledge store's SQLite
-    connections (``db`` + ``-wal`` + ``-shm`` each). In a test they accumulate
-    one set per dashboard start on the worker, so the harness closes them once
-    the real shutdown path has run. The dump fd is closed at the OS level, which
-    is safe only after the watchdog has stopped: ``stop()`` cancels the
-    ``faulthandler`` timer that would otherwise write into it. The store keeps a
-    connection PER THREAD, and startup opens three on default-executor threads
-    (the source watcher's first sweep and the orphan reclaim, via
-    ``asyncio.to_thread``) besides the loop thread's own; ``close()`` releases
-    only the calling thread's (its pinned contract), so the harness calls
-    ``KnowledgeStore._close_all_for_tests``, which releases every connection the store
-    opened, whichever thread owns it, so none is left to the collector.
+    Production closes them by exiting: the crash-dump fd (raw ``os.open``, closed at the
+    OS level only after the watchdog's ``stop()``) and the knowledge store's SQLite
+    connections. The store keeps one connection PER THREAD and ``close()`` frees only the
+    caller's, so ``KnowledgeStore._close_all_for_tests`` is used.
     """
     watchdog = getattr(state, "_loop_watchdog", None)
     if watchdog is not None:
@@ -456,11 +414,8 @@ _HARNESS_EXECUTOR_JOIN_SECS = 25.0
 def _pool_threads(pool: Any) -> Any:
     """Return a ``ThreadPoolExecutor``'s worker threads, or ``()`` for no pool.
 
-    The threads are read from the pool's private ``_threads`` set, which the
-    standard library does not promise to keep. A missing attribute fails by
-    name: a silent empty default would make every "is a pool thread alive"
-    check here pass vacuously, and the teardown would close the store under
-    a live query again.
+    Reads the private ``_threads`` set. A missing attribute fails by name, since an empty
+    default would make every "pool thread alive" check pass vacuously.
     """
     if pool is None:
         return ()
@@ -475,21 +430,9 @@ def _pool_threads(pool: Any) -> Any:
 async def _cancel_stray_tasks() -> None:
     """Cancel every task other than the caller's own, await them, then join the executor.
 
-    Cancelling a task that awaits ``asyncio.to_thread`` does not stop the
-    thread: the job keeps running on the loop's default executor. The boot
-    starts two such jobs against the knowledge store (the orphan reclaim with
-    its one-time FTS and search-index builds, and the source watcher's first
-    sweep), each on its own thread-local SQLite connection. The callers close
-    every one of those connections next (:func:`_release_process_handles`),
-    and closing a connection while its thread is inside ``execute`` is
-    undefined: it is a segfault or access violation that takes the xdist
-    worker down, seen on Linux (Python 3.12) and on Windows. So the executor is
-    joined here, before anything is closed, and a job that outlives the bound
-    fails the test by name.
-
-    The join latches the loop into refusing new executor work; the latch and
-    the pool reference are cleared afterwards, as the rootdir conftest's own
-    teardown join does, so a later ``to_thread`` on this loop builds a fresh pool.
+    Cancelling a ``to_thread`` task leaves its thread running, and closing its SQLite
+    connection mid-``execute`` crashes the xdist worker. So the executor is joined before
+    anything is closed. The latch and pool reference are then cleared for a fresh pool.
     """
     stray = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     for task in stray:
@@ -517,11 +460,8 @@ async def _cancel_stray_tasks() -> None:
 def _record_states(monkeypatch) -> list[Any]:
     """Record every ``DashboardState`` the boot builds, for a boot that raises.
 
-    A failing ``start_dashboard`` never returns its state, yet by the time it
-    fails it has already opened the knowledge store's connections (the route
-    registration reads the lazy property), and production releases those by
-    exiting. Handing the recorded state to :func:`_release_process_handles`
-    is what lets a failure-path test close them.
+    A failing ``start_dashboard`` has already opened store connections but returns no
+    state, so the recorded one goes to :func:`_release_process_handles`.
     """
     built: list[Any] = []
     real_state = srv.DashboardState
@@ -540,11 +480,8 @@ class TestReserveDashboardPort:
     def _assert_kernel_confirms_listening(sock: socket.socket) -> None:
         """Assert *sock* is in LISTEN posture, however this kernel reports it.
 
-        ``SO_ACCEPTCONN`` is the direct query, but defining the constant does
-        not mean supporting the query: macOS exposes it and then refuses the
-        ``getsockopt`` with ENOPROTOOPT. Fall back to the behavioural proof —
-        a completed ``connect()``/``accept()`` round trip is possible only
-        against a listening socket.
+        macOS defines ``SO_ACCEPTCONN`` but refuses it with ENOPROTOOPT, so fall back to a
+        ``connect()``/``accept()`` round trip.
         """
         if hasattr(socket, "SO_ACCEPTCONN"):
             try:
@@ -567,16 +504,9 @@ class TestReserveDashboardPort:
     def _ipv6_loopback_is_assignable() -> bool:
         """Whether this host can ASSIGN ``::1``, not merely whether CPython knows IPv6.
 
-        ``socket.has_ipv6`` is a BUILD flag: it reports that CPython was compiled with
-        IPv6 support, which says nothing about whether the running kernel has an IPv6
-        loopback address. The Linux backend shards run in a container where IPv6 is
-        compiled in and ``::1`` is not assigned, so the build flag passes and the bind
-        below then fails with ``EADDRNOTAVAIL``.
-
-        ``instances/port_allocator.py`` draws the same distinction with the same errno
-        pair, for the same reason, so this follows its spelling. Every OTHER errno means
-        the probe could not be RUN rather than answered, so it propagates: coercing
-        ``EMFILE`` into "no IPv6 here" would skip the assertion on a host that has it.
+        ``socket.has_ipv6`` is a BUILD flag; Linux CI containers lack ``::1``. Same errno pair
+        as ``instances/port_allocator.py``. Other errnos propagate, so ``EMFILE`` cannot
+        skip the assertion.
         """
         unusable = {errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT}
         try:
@@ -674,12 +604,8 @@ class TestReserveDashboardPort:
     def test_the_ipv6_assertion_runs_wherever_the_address_is_assignable(self, monkeypatch) -> None:
         """Negative control for the guard: it must not have become an unconditional skip.
 
-        Drives the real test body with the probe forced BOTH ways against a socket that
-        reports ``IPV6_V6ONLY`` as UNSET. With the probe True the body must raise, which
-        proves the live assertion is load-bearing rather than merely reached; with it
-        False the body must pass, which proves the skip is what the probe decides.
-        Host-independent, so it holds on a container shard as well as on a host with
-        ``::1``.
+        With ``IPV6_V6ONLY`` UNSET, the body must raise when the probe says True and pass
+        when it says False. Host-independent.
         """
         bound: list[tuple[str, int]] = []
         real_bind_once = srv._bind_once
@@ -769,12 +695,8 @@ class TestStartDashboardWiring:
     ) -> None:
         """The reserved socket's REAL name is exported before the spawn pass.
 
-        The origin/proof injection in ``apps.backend`` is fail-closed on
-        ``KIROCREW_BOUND_PORT``. The boot path reserves (bound and listening,
-        not yet accepting) the dashboard port BEFORE the app-backend pass and
-        exports the socket's kernel-assigned name — so the spawn pass must observe
-        exactly that port, for a fixed port and ``--port auto`` alike, and a
-        squatter can never hold the port the backends were told to trust.
+        ``apps.backend`` fails closed on ``KIROCREW_BOUND_PORT``. The port is reserved before
+        the spawn pass, so a squatter cannot hold the port backends trust (fixed or auto).
         """
         import kiro_crew.config.loader as _loader
         import kiro_crew.dashboard.state as _st
@@ -798,9 +720,6 @@ class TestStartDashboardWiring:
             [],
         )[1]
         for _leak_key in (
-            browser_cli_snapshots.OUTPUT_DIR_ENV,
-            browser_cli_token.TOKEN_ENV,
-            browser_cli_launch.CONFIG_ENV,
             "KIROCREW_BOUND_PORT",
             "KIROCREW_BOUND_HOST",
         ):
@@ -841,11 +760,8 @@ class TestStartDashboardWiring:
     async def test_ipv6_loopback_bind_exports_v6_host_evidence(self, tmp_path, monkeypatch) -> None:
         """A ::1 bind exports ::1 as the callback host, never IPv4 loopback.
 
-        KIROCREW_BIND=::1 listens ONLY on the IPv6 loopback — IPv4
-        127.0.0.1:<port> stays unbound and seizable by a co-resident process.
-        Defaulting the origin host to 127.0.0.1 would therefore route the
-        backends' secrets to whatever grabs the v4 port: the host evidence
-        must say ::1 (which the injection brackets into http://[::1]:<port>).
+        With KIROCREW_BIND=::1 the IPv4 port stays seizable, so a 127.0.0.1 origin would
+        route backend secrets to whoever grabs it.
         """
         import kiro_crew.config.loader as _loader
         import kiro_crew.dashboard.state as _st
@@ -868,9 +784,6 @@ class TestStartDashboardWiring:
             [],
         )[1]
         for _leak_key in (
-            browser_cli_snapshots.OUTPUT_DIR_ENV,
-            browser_cli_token.TOKEN_ENV,
-            browser_cli_launch.CONFIG_ENV,
             "KIROCREW_BOUND_PORT",
             "KIROCREW_BOUND_HOST",
         ):
@@ -924,9 +837,6 @@ class TestStartDashboardWiring:
         monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
         spies = _neutralise_outside_process_work(monkeypatch)
         for _leak_key in (
-            browser_cli_snapshots.OUTPUT_DIR_ENV,
-            browser_cli_token.TOKEN_ENV,
-            browser_cli_launch.CONFIG_ENV,
             "KIROCREW_BOUND_PORT",
             "KIROCREW_BOUND_HOST",
         ):
@@ -981,9 +891,6 @@ class TestStartDashboardWiring:
         if backend_start_side_effect is not None:
             spies["start_enabled_app_backends"].side_effect = backend_start_side_effect
         for _leak_key in (
-            browser_cli_snapshots.OUTPUT_DIR_ENV,
-            browser_cli_token.TOKEN_ENV,
-            browser_cli_launch.CONFIG_ENV,
             "KIROCREW_BOUND_PORT",
             "KIROCREW_BOUND_HOST",
         ):
@@ -1102,9 +1009,6 @@ class TestStartDashboardWiring:
         spies = _neutralise_outside_process_work(monkeypatch)
         states = _record_states(monkeypatch)
         for _leak_key in (
-            browser_cli_snapshots.OUTPUT_DIR_ENV,
-            browser_cli_token.TOKEN_ENV,
-            browser_cli_launch.CONFIG_ENV,
             "KIROCREW_BOUND_PORT",
             "KIROCREW_BOUND_HOST",
         ):
@@ -1174,36 +1078,27 @@ class TestStartDashboardWiring:
         assert built_on[0] != loop_thread
 
     @pytest.mark.asyncio
-    async def test_bound_port_backends_start_only_after_the_export_and_the_rest_before_setup(
+    async def test_every_app_backend_starts_in_one_wave_before_setup(
         self, tmp_path, monkeypatch
     ) -> None:
-        """Two waves, one contract each. The main wave runs before ``runner.setup()``
-        so an app's startup hooks find its backend running — and under the
-        reservation (``_reserve_dashboard_port`` above it) it already observes
-        ``KIROCREW_BOUND_PORT``, which
-        ``test_backends_spawn_with_the_reserved_ports_evidence_exported`` pins.
-        The second wave (``start_deferred_app_backends``) still runs only after
-        the site serves: the admission split lives in ``apps/backend_runtime/startup.py`` and is
-        shared with the headless entrypoint, where the bound port only exists
-        post-listen."""
-        seen: dict[str, bool] = {}
+        """One wave, before ``runner.setup()``, so startup hooks find their backend running.
+
+        Under the reservation it already sees ``KIROCREW_BOUND_PORT`` (pinned by
+        ``test_backends_spawn_with_the_reserved_ports_evidence_exported``), so a bound-port
+        backend such as Dev Fleet needs no second wave after the bind.
+        """
+        seen: dict[str, int] = {}
         real_setup = web.AppRunner.setup
 
         async def _setup(self_runner):
-            seen["main_wave_before_setup"] = srv.start_enabled_app_backends.called
-            seen["deferred_wave_before_setup"] = srv.start_deferred_app_backends.called
+            seen["waves_before_setup"] = srv.start_enabled_app_backends.call_count
             return await real_setup(self_runner)
 
         monkeypatch.setattr(web.AppRunner, "setup", _setup)
         async with _dashboard(tmp_path, monkeypatch) as (_runner, _state, spies):
-            assert seen == {
-                "main_wave_before_setup": True,
-                "deferred_wave_before_setup": False,
-            }
-            import kiro_crew.apps.backend as backend_mod
-
-            assert backend_mod.DEV_FLEET_APP_NAME == "dev-fleet"
-            assert spies["start_deferred_app_backends"].called
+            assert seen == {"waves_before_setup": 1}
+            assert spies["start_enabled_app_backends"].call_count == 1
+            assert not hasattr(srv, "start_deferred_app_backends")
 
     @pytest.mark.asyncio
     async def test_gateway_launch_can_defer_restored_channel_agents(
@@ -1256,12 +1151,8 @@ class TestStartDashboardWiring:
     ) -> None:
         """Ordering is a security property, not a style choice.
 
-        The ``Host`` barrier must run OUTSIDE the audit middleware: aiohttp runs
-        middlewares outermost-first, and a rebinding attempt refused inside the
-        audit layer would 403 without ever being recorded (which is why
-        ``_audit_denied`` exists at all). The deny-audit boundary must in turn
-        run outside the ``Host`` barrier: that is what makes the recording
-        positional rather than dependent on every deny site calling the helper.
+        The deny-audit boundary must wrap the ``Host`` barrier, so every refused rebinding
+        attempt is recorded by position rather than by each deny site calling the helper.
         """
         async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
             names = [getattr(mw, "__name__", type(mw).__name__) for mw in runner.app.middlewares]
@@ -1310,17 +1201,9 @@ class TestStartDashboardWiring:
     async def test_lifecycle_hooks_are_registered_by_name(self, tmp_path, monkeypatch) -> None:
         """Every long-lived subsystem must have a teardown hook.
 
-        Selected BY NAME: the lists are appended to as subsystems are added, so a
-        positional assertion silently repoints at whatever landed last.
-
-        The tunnel hook's *relative* position is asserted, because being ahead of
-        the others is its documented contract — ``on_cleanup`` runs in
-        registration order under a hard shutdown deadline, and a tunnel hook
-        queued behind the instances teardown (which waits on SSH children that
-        may ignore SIGTERM) can be starved, leaving the tunnel running after a
-        clean Ctrl+C. Index 0 belongs to aiohttp's own ``CleanupContext``, which
-        every ``web.Application`` registers in its constructor, so first-among-
-        product-hooks is the strongest true claim here.
+        Selected BY NAME, so a new hook cannot repoint a positional assertion. The tunnel
+        hook must come first among product hooks: behind the instances teardown it can be
+        starved by the shutdown deadline. Index 0 is aiohttp's own ``CleanupContext``.
         """
         async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
             cleanup = [hook.__name__ for hook in runner.app.on_cleanup]
@@ -1373,11 +1256,8 @@ class TestStartDashboardWiring:
     async def test_a_configured_url_joins_the_csrf_origin_set(self, tmp_path, monkeypatch) -> None:
         """A published URL widens the CSRF allowlist — but only behind token auth.
 
-        The widening is guarded by an explicit re-check that the token-auth
-        middleware is installed, because ``dashboard.url`` means the dashboard is
-        reachable by something other than a loopback browser; widening the origin
-        set without authentication would accept state-changing requests from that
-        origin unauthenticated.
+        ``dashboard.url`` means non-loopback reach; widening without token auth would accept
+        unauthenticated state-changing requests from that origin.
         """
         url = "http://dash.example.com:5476"
         async with _dashboard(tmp_path, monkeypatch, dashboard_url=url, local_only=False) as (
@@ -1392,13 +1272,10 @@ class TestStartDashboardWiring:
     async def test_cleanup_stops_the_tunnel_it_never_started(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """No manager is built when the tunnel is disabled, so the provider is
-        stopped directly.
+        """With the tunnel disabled no manager exists, so the provider is stopped directly.
 
-        The on-demand link path provisions a tunnel straight on the provider and
-        never constructs a manager, so a hook that bailed out on
-        ``state.tunnel_manager is None`` left exactly the orphan it exists to
-        prevent.
+        The on-demand link path starts a tunnel on the provider without a manager, so the
+        hook must not bail out on ``state.tunnel_manager is None``.
         """
         provider = SimpleNamespace(stop=AsyncMock(), enabled=lambda: False)
         monkeypatch.setattr(
@@ -1441,11 +1318,8 @@ class TestStartDashboardWiring:
     async def test_no_tunnel_reaches_the_tunnel_gate(self, tmp_path: Path, monkeypatch) -> None:
         """A ``--no-tunnel`` process must not get a tunnel manager on its state.
 
-        Driven end to end through the REAL ``setup_tunnel`` with the enable gate
-        forced open and token auth irrelevant, because the boot-flag refusal is
-        checked ahead of both. The flag is read from process state rather than
-        passed down here -- ``slack.allowlist`` opens a second door that never
-        reaches this function, so a parameter would have guarded only this one.
+        The flag is checked ahead of the enable gate, and read from process state because
+        ``slack.allowlist`` opens a second door that never reaches ``setup_tunnel``.
         """
         from kiro_crew.tunnel import set_publish_disabled
 
@@ -1466,13 +1340,9 @@ class TestStartDashboardWiring:
     async def test_an_ordinary_gateway_still_asks_for_its_tunnel(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Without the flag the gate is asked exactly as before, so a normal
-        install's remote access cannot be taken away by this change.
+        """Without the flag the tunnel gate is still asked.
 
-        Asserted at the call rather than on the returned state: ``setup_tunnel``
-        also returns None for an unrelated reason (no token auth in this harness),
-        so a state-only assertion would pass even if the tunnel were never
-        attempted at all.
+        Asserted at the call: ``setup_tunnel`` also returns None here for lack of token auth.
         """
         from kiro_crew.tunnel import set_publish_disabled
 
@@ -1515,9 +1385,7 @@ class TestGatewayShutdownIsGuaranteed:
             _release_process_handles(state)
 
 
-# ---------------------------------------------------------------------------
 # Reservation ladder: Windows TIME_WAIT patience (no-live-holder EADDRINUSE)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1526,12 +1394,8 @@ async def test_windows_time_wait_no_holder_stretches_the_reservation_ladder(
 ) -> None:
     """On Windows, EADDRINUSE with NO live holder out-waits TIME_WAIT.
 
-    The exclusive bind (SO_EXCLUSIVEADDRUSE in _bind_once) is documented to
-    refuse the port while the previous generation's connections sit in
-    TIME_WAIT — a state with no process to reclaim. A routine restart right
-    after serving must out-wait that (TcpTimedWaitDelay) rather than die on
-    the short graceful-handover ladder, so the NO_HOLDER outcome stretches
-    the budget to _TIME_WAIT_BUDGET_SECS on Windows.
+    SO_EXCLUSIVEADDRUSE refuses a port in TIME_WAIT, which has no process to reclaim, so
+    NO_HOLDER stretches the budget to _TIME_WAIT_BUDGET_SECS (TcpTimedWaitDelay).
     """
     from kiro_crew.dashboard.port_reclaim import NO_HOLDER
 
@@ -1600,11 +1464,8 @@ async def test_non_time_wait_outcomes_keep_the_short_ladder_on_windows(
 ) -> None:
     """Only NO_HOLDER stretches the Windows ladder — nothing else.
 
-    UNAVAILABLE (probe tooling missing) and RECLAIM_FAILED (a live holder
-    that would not die) are not the TIME_WAIT signature: waiting four
-    minutes cannot free the port, so stretching on them would stall boot on
-    a rare collision — the no-new-work-on-gateway-boot-path harm. They keep
-    the short ladder's prompt exit.
+    For UNAVAILABLE and RECLAIM_FAILED, waiting four minutes cannot free the port and
+    would only stall boot.
     """
     from kiro_crew.dashboard import port_reclaim
 
@@ -1637,13 +1498,8 @@ async def test_non_time_wait_outcomes_keep_the_short_ladder_on_windows(
 class TestTheHarnessJoinsStoreJobsBeforeClosing:
     """The teardown closes the store's connections only after the default pool has joined.
 
-    The boot's orphan reclaim runs the store's one-time builds on a
-    default-executor thread. Cancelling the task that awaits it leaves that
-    thread running, and ``_release_process_handles`` closes every connection
-    the store opened, the running thread's included. That close under a live
-    ``execute`` is a segfault or access violation (seen on Linux 3.12 and on
-    Windows) that kills the xdist worker, reported against whichever startup
-    test was running.
+    A close under a live ``execute`` on the orphan-reclaim thread is a segfault that
+    kills the xdist worker.
     """
 
     @pytest.mark.asyncio
@@ -1652,19 +1508,9 @@ class TestTheHarnessJoinsStoreJobsBeforeClosing:
     ) -> None:
         """Hold the job until the harness starts joining the pool, then check at each close.
 
-        The job is released by the pool's own ``shutdown`` (the join), never
-        earlier, so it is still running when teardown begins. A harness that
-        drops the join, bounds it too tightly, or joins after the close
-        reaches ``_close_all_for_tests`` while the default pool's jobs are
-        still running.
-
-        "Still running" means the held build has not returned or any thread of
-        the default pool is alive: after the held build the same job goes on
-        to the orphan sweeps, which also query the store. The close spy
-        records first. While any default-pool thread is alive it frees the
-        held build and skips the real close, because a close under a live
-        ``execute`` is the crash this test guards against: a wedged job or a
-        broken harness stays a named failure.
+        The job is released only by the pool's ``shutdown``. While any default-pool thread
+        is alive the close spy frees the build and skips the real close, so a broken harness
+        is a named failure, not a segfault.
         """
         import concurrent.futures
 

@@ -489,25 +489,29 @@ export default function LayoutEditor({ spec, onChange }: { spec: GridSpec; onCha
                     zIndex: isMoving ? 2 : 1,
                   }}
                 >
-                  <div
-                    className="le-bar"
-                    role="button"
-                    tabIndex={0}
-                    aria-roledescription={i18nT('components.crewLayout.dragHandle')}
-                    aria-label={i18nT('components.crewLayout.moveElement', { label: i18nT(meta.labelKey) })}
-                    onPointerDown={(e) => startMove(e, item)}
-                    onKeyDown={(e) => onBarKeyDown(e, item)}
-                  >
-                    <span className="le-bar-icon">
-                      <BarIcon size={11} strokeWidth={2.25} />
-                    </span>
-                    <span className="le-bar-title">{i18nT(meta.labelKey)}</span>
+                  {/* A plain bar holding two siblings: the drag handle and the
+                      close button. The close button used to sit inside the
+                      handle, whose key handler took its Space and arrow keys. */}
+                  <div className="le-bar">
+                    <div
+                      className="le-bar-handle"
+                      role="button"
+                      tabIndex={0}
+                      aria-roledescription={i18nT('components.crewLayout.dragHandle')}
+                      aria-label={i18nT('components.crewLayout.moveElement', { label: i18nT(meta.labelKey) })}
+                      onPointerDown={(e) => startMove(e, item)}
+                      onKeyDown={(e) => onBarKeyDown(e, item)}
+                    >
+                      <span className="le-bar-icon">
+                        <BarIcon size={11} strokeWidth={2.25} />
+                      </span>
+                      <span className="le-bar-title">{i18nT(meta.labelKey)}</span>
+                    </div>
                     <button
                       type="button"
                       className="le-close"
                       title={i18nT('components.crewLayout.remove')}
                       aria-label={i18nT('components.crewLayout.removeElement', { label: i18nT(meta.labelKey) })}
-                      onPointerDown={(e) => e.stopPropagation()}
                       onClick={() => onChange({ ...spec, items: removeItemById(spec.items, item.id) })}
                     >
                       <X size={13} />

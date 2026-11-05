@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { HardDriveDownload, RotateCcw, Save, ShieldAlert } from 'lucide-react'
@@ -22,6 +22,18 @@ export default function MemoryBackupsCard({ store, privateMemory = false }: { st
    *  time: arming a second row disarms the first, so there is never more than one
    *  primed destructive control on screen. */
   const [armed, setArmed] = useState<string | null>(null)
+  // Focus follows the confirm step, because each step unmounts the control that
+  // started it: arming moves it to the strip's Cancel, Cancel returns it to the
+  // row's Restore, and a staged restore moves it to "Cancel staged restore".
+  const restoreButtons = useRef(new Map<string, HTMLButtonElement>())
+  const cancelArmedRef = useRef<HTMLButtonElement>(null)
+  const cancelStagedRef = useRef<HTMLButtonElement>(null)
+  const [focusTarget, setFocusTarget] = useState<'armed' | 'staged' | { row: string } | null>(null)
+  // Moves that land after a request settles (a refusal, a staged restore) only
+  // fill in focus the page dropped: the reader may have moved on meanwhile.
+  const focusIfDropped = useRef(false)
+  // The confirm strip's warning, read with each of its buttons (one strip at a time).
+  const warningId = useId()
 
   const backups = useQuery({
     queryKey: ['memory-backups', store],
@@ -41,10 +53,18 @@ export default function MemoryBackupsCard({ store, privateMemory = false }: { st
     mutationFn: (name: string) => api.memoryRestoreBackup(name, store || undefined),
     onSuccess: () => {
       setArmed(null)
+      focusIfDropped.current = true
+      setFocusTarget('staged')
       // Refresh persisted staging status and the other recovery diagnostics.
       for (const prefix of MEMORY_QUERY_PREFIXES) {
         queryClient.invalidateQueries({ queryKey: prefix })
       }
+    },
+    // Confirm was disabled while the request ran, which drops its focus; a
+    // refusal hands focus back to the still-open strip.
+    onError: () => {
+      focusIfDropped.current = true
+      setFocusTarget('armed')
     },
   })
 
@@ -69,8 +89,28 @@ export default function MemoryBackupsCard({ store, privateMemory = false }: { st
   })
 
   const rows = backups.data?.backups ?? []
+
   const taken = backUpNow.data
   const pendingRestore = backups.data?.pending ?? restore.data?.pending
+  useEffect(() => {
+    if (focusTarget === null) return
+    const el = focusTarget === 'armed'
+      ? cancelArmedRef.current
+      : focusTarget === 'staged'
+        ? cancelStagedRef.current
+        : restoreButtons.current.get(focusTarget.row) ?? null
+    // The staged-restore control can wait for the status refresh the restore
+    // started; keep the request open until that read settles.
+    if (!el && focusTarget === 'staged' && backups.isFetching) return
+    const dropped = !document.activeElement || document.activeElement === document.body
+    if (el && (!focusIfDropped.current || dropped)) el.focus()
+    focusIfDropped.current = false
+    // A target that is still not on screen will not come (no restore is
+    // pending, or the row is gone after a refresh), so the request ends here.
+    setFocusTarget(null)
+    // Re-run when a target can appear: the strip with `armed`, the staged-restore
+    // control with `pendingRestore`, a row's Restore once the strip closes.
+  }, [focusTarget, armed, pendingRestore, backups.isFetching])
   const recovery = backups.data?.recovery
   const recoveryError = backups.data?.restore_error
     ? new Error([
@@ -128,7 +168,7 @@ export default function MemoryBackupsCard({ store, privateMemory = false }: { st
         {!recoveryError && <SettingsLink className="inline-flex min-h-11 items-center text-[13px] text-accent underline underline-offset-2" tab="about">
           {i18nT('memoryV2.open_restart_controls')}
         </SettingsLink>}
-        <Btn className="min-h-11" disabled={cancelRestore.isPending} onClick={() => cancelRestore.mutate()}>{i18nT('memoryV2.cancel_restore')}</Btn>
+        <Btn ref={cancelStagedRef} className="min-h-11" disabled={cancelRestore.isPending} onClick={() => cancelRestore.mutate()}>{i18nT('memoryV2.cancel_restore')}</Btn>
       </div>}
       {cancelRestore.isSuccess && !pendingRestore && <p role="status" className="my-3 text-[13px] text-muted">
         {i18nT(cancelRestore.data?.activation_failed ? 'memoryV2.restore_cancelled_after_failure' : 'memoryV2.restore_cancelled')}
@@ -161,23 +201,35 @@ export default function MemoryBackupsCard({ store, privateMemory = false }: { st
                 <td className="px-2.5 py-2 border-b border-border text-sm">
                   <div className="flex flex-col items-start gap-2">
                     <Btn
+                      ref={(el: HTMLButtonElement | null) => {
+                        if (el) restoreButtons.current.set(row.name, el)
+                        else restoreButtons.current.delete(row.name)
+                      }}
                       aria-expanded={armed === row.name}
                       disabled={restore.isPending || !!pendingRestore || armed === row.name}
-                      onClick={() => { restore.reset(); setArmed(row.name) }}
+                      onClick={() => { restore.reset(); setArmed(row.name); focusIfDropped.current = false; setFocusTarget('armed') }}
                     >
                       <RotateCcw className="lucide-inline" aria-hidden="true" /> {i18nT('pages.overview.memoryBackupsCard.restore')}
                     </Btn>
                     {armed === row.name && (
                       <div className="flex max-w-xl flex-col items-start gap-2">
-                        <span className="flex items-start gap-1.5 text-[13px] text-warn">
+                        <span id={warningId} className="flex items-start gap-1.5 text-[13px] text-warn">
                           <ShieldAlert className="lucide-inline mt-0.5 shrink-0" aria-hidden="true" />
                           {i18nT('memoryV2.restore_confirm')}
                         </span>
                         <div className="flex flex-wrap gap-2">
-                          <Btn danger disabled={restore.isPending || !!pendingRestore} onClick={() => { cancelRestore.reset(); restore.mutate(row.name) }}>
+                          <Btn danger aria-describedby={warningId} disabled={restore.isPending || !!pendingRestore} onClick={() => { cancelRestore.reset(); restore.mutate(row.name) }}>
                             {i18nT('pages.overview.memoryBackupsCard.confirm_restore')}
                           </Btn>
-                          <Btn onClick={() => setArmed(null)}>{i18nT('pages.overview.memoryBackupsCard.cancel')}</Btn>
+                          {/* Cancel also drops a failed attempt's error: the restore it
+                              describes is no longer being asked for. */}
+                          <Btn
+                            ref={cancelArmedRef}
+                            aria-describedby={warningId}
+                            onClick={() => { restore.reset(); setArmed(null); focusIfDropped.current = false; setFocusTarget({ row: row.name }) }}
+                          >
+                            {i18nT('pages.overview.memoryBackupsCard.cancel')}
+                          </Btn>
                         </div>
                       </div>
                     )}

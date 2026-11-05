@@ -246,16 +246,9 @@ class TestUnfurlAlwaysOff:
     async def test_edit_and_ephemeral_paths_send_no_unfurl_args(self) -> None:
         """The edit path sends NO unfurl flags, and that is intended.
 
-        ``chat.update`` and ``chat.postEphemeral`` accept no
-        ``unfurl_links``/``unfurl_media`` argument — an unknown argument earns
-        ``invalid_arg_name``, so passing them here turns every streamed edit
-        into an API error, which is why this path is asymmetric with
-        ``post_message`` by design. The renderer delivers streamed agent text
-        through this path, so a URL that first appears in a later chunk is
-        edited into a message posted without it; whether Slack's fetchers unfurl
-        that is a property of their servers, established by live check rather
-        than by a flag this client can set. Read the API reference before
-        changing this assertion.
+        ``chat.update`` and ``chat.postEphemeral`` reject ``unfurl_links``/``unfurl_media``
+        with ``invalid_arg_name``, so passing them would fail every streamed edit. Read
+        the API reference before changing this assertion.
         """
         calls: list[dict[str, Any]] = []
 
@@ -366,14 +359,9 @@ class TestUnfurlAlwaysOff:
 class TestStartStreamQuietNoRecipientLog:
     """A no-recipient ``chat.startStream`` rejection logs one quiet line.
 
-    A turn with no originating Slack user -- a subagent run, or a cron job
-    streaming into a channel -- carries ``user_id=""``, so the body omits
-    ``recipient_user_id``. On an org-wide install Slack rejects that with
-    ``missing_recipient_user_id``; the call is still made and
-    ``start_stream`` returns ``None`` so the caller demotes to
-    ``chat.update``. That rejection is routine, so it is logged as a single
-    warning line WITHOUT a stack trace. Any other failure keeps the full
-    traceback.
+    A turn with no Slack user (subagent, cron) omits ``recipient_user_id``, which an
+    org-wide install rejects with ``missing_recipient_user_id``. That is routine: one
+    warning line without a stack trace, and ``None`` so the caller uses ``chat.update``.
     """
 
     def _client(self) -> RealSlackClient:

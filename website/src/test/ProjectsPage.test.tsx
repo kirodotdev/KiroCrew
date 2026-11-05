@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { useEffect } from 'react'
 import { useNavigate, type NavigateFunction } from 'react-router-dom'
 import { renderWithProviders } from './helpers'
@@ -7,6 +7,7 @@ import ProjectsPage from '../pages/ProjectsPage'
 import PhasedView from '../pages/aidlc/PhasedView'
 import DagView from '../pages/aidlc/DagView'
 import type { ProjectRun, TaskDetail } from '../types'
+import { api } from '../api/client'
 
 // Mock child components for ProjectsPage isolation
 vi.mock('../pages/ProjectDetailPage', () => ({ default: () => <div data-testid="project-detail">Detail</div> }))
@@ -34,6 +35,10 @@ vi.mock('../api/client', () => ({
   },
 }))
 
+// The mount load (api.taskRunnerStatus, polled every 3s) lands its state update after the
+// render. Tests that assert on the mounted page wait for that call before they read the DOM.
+const taskRunnerStatusMock = () => vi.mocked(api.taskRunnerStatus)
+
 const mockTasks: TaskDetail[] = [
   { index: 1, title: 'Setup', description: '', status: 'passed', error: '', result: '', attempts: 1, depends_on: [], requires_approval: false },
   { index: 2, title: 'Build', description: '', status: 'in_progress', error: '', result: '', attempts: 1, depends_on: [1], requires_approval: false },
@@ -48,8 +53,9 @@ const mockTasks: TaskDetail[] = [
 describe('ProjectsPage', () => {
   beforeEach(() => { vi.clearAllMocks(); sessionStorage.clear() })
 
-  it('renders page header and mode toggle', () => {
+  it('renders page header and mode toggle', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     expect(screen.getByText('Task Runner')).toBeInTheDocument()
     expect(screen.getByText(/Compose/)).toBeInTheDocument()
     expect(screen.getByText(/From Spec/)).toBeInTheDocument()
@@ -117,8 +123,9 @@ describe('ProjectsPage', () => {
     expect(order).toEqual(['Newest', 'Middle', 'Oldest', 'PlanB', 'PlanA'].map(n => `Open project ${n}`))
   })
 
-  it('renders compose textarea by default', () => {
+  it('renders compose textarea by default', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     expect(screen.getByPlaceholderText('Describe your task...')).toBeInTheDocument()
   })
 
@@ -140,7 +147,7 @@ describe('ProjectsPage', () => {
     fireEvent.change(ws, { target: { value: '/custom/dir' } })
     fireEvent.change(screen.getByPlaceholderText('Describe your task...'), { target: { value: 'do the thing' } })
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
-    expect(mockApi.planTask).toHaveBeenCalledWith('do the thing', 'text', '', '', '/custom/dir')
+    await waitFor(() => expect(mockApi.planTask).toHaveBeenCalledWith('do the thing', 'text', '', '', '/custom/dir'))
   })
 
   it('sends an empty workspace (no override) when the field is untouched', async () => {
@@ -150,28 +157,32 @@ describe('ProjectsPage', () => {
     await screen.findByPlaceholderText('/ws/root')
     fireEvent.change(screen.getByPlaceholderText('Describe your task...'), { target: { value: 'do it' } })
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
-    expect(mockApi.planTask).toHaveBeenCalledWith('do it', 'text', '', '', '')
+    await waitFor(() => expect(mockApi.planTask).toHaveBeenCalledWith('do it', 'text', '', '', ''))
   })
 
-  it('switches to From Spec mode with file upload', () => {
+  it('switches to From Spec mode with file upload', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     fireEvent.click(screen.getByText(/From Spec/))
     expect(screen.getByPlaceholderText('Paste spec content or upload a file...')).toBeInTheDocument()
   })
 
-  it('renders agent selector', () => {
+  it('renders agent selector', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     expect(screen.getByTestId('agent-select')).toBeInTheDocument()
   })
 
-  it('shows empty state when no runs', () => {
+  it('shows empty state when no runs', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     // With no runs, the project list renders but is empty
     expect(screen.queryByTestId('agent-select')).toBeInTheDocument()
   })
 
-  it('persists mode to sessionStorage', () => {
+  it('persists mode to sessionStorage', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     fireEvent.click(screen.getByText(/From Spec/))
     expect(sessionStorage.getItem('tr-mode')).toBe('spec')
   })
@@ -281,6 +292,60 @@ describe('ProjectsPage', () => {
       message: 'run __inline__:my spec content',
       every: 86400,
     })
+  })
+
+  it('a fast second click on Schedule creates one cron job, not two', async () => {
+    const completedRun: ProjectRun = {
+      task_id: 'run-6', name: 'Cron Once', running: false, status: 'completed',
+      tasks: 1, completed: 1, failed: 0, skipped: 0, current_task: 1,
+      spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
+      task_details: [], started_at: 0, finished_at: 0,
+      work_dir: '', branch_name: '', spec_content: 'my spec content', lessons_learned: [],
+      commits: 0, original_input: '', source: '', groups: [],
+    }
+    const { api: mockApi } = await import('../api/client')
+    vi.mocked(mockApi.taskRunnerStatus).mockResolvedValue({ running: false, available: true, runs: [completedRun] })
+    let land!: (v: { ok: boolean }) => void
+    vi.mocked(mockApi.createCron).mockImplementationOnce(() => new Promise(resolve => { land = resolve }))
+    window.alert = vi.fn()
+    renderWithProviders(<ProjectsPage />)
+    await screen.findByText('Cron Once')
+    fireEvent.click(screen.getByText('Cron Once'))
+    const schedule = screen.getByRole('button', { name: /Schedule/ })
+    fireEvent.click(schedule)
+    fireEvent.click(schedule)
+    expect(mockApi.createCron).toHaveBeenCalledTimes(1)
+    expect(schedule).toBeDisabled()
+    await act(async () => { land({ ok: true }) })
+    expect(schedule).toBeEnabled()
+  })
+
+  it('a fast second click on Execute starts one run, and the guard is per run', async () => {
+    const plannedRun: ProjectRun = {
+      task_id: 'run-exec', name: 'Exec Once', running: false, status: 'planned',
+      tasks: 1, completed: 0, failed: 0, skipped: 0, current_task: 0,
+      spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
+      task_details: [], started_at: 0, finished_at: 0,
+      work_dir: '', branch_name: '', spec_content: 'spec', lessons_learned: [],
+      commits: 0, original_input: '', source: 'text', groups: [],
+    }
+    const otherRun: ProjectRun = { ...plannedRun, task_id: 'run-other', name: 'Other Run', status: 'completed' }
+    const { api: mockApi } = await import('../api/client')
+    vi.mocked(mockApi.taskRunnerStatus).mockResolvedValue({ running: false, available: true, runs: [plannedRun, otherRun] })
+    let land!: (v: { ok: boolean }) => void
+    vi.mocked(mockApi.executePlan).mockImplementationOnce(() => new Promise(resolve => { land = resolve }))
+    renderWithProviders(<ProjectsPage />)
+    await screen.findByText('Exec Once')
+    fireEvent.click(screen.getByText('Exec Once'))
+    const execute = screen.getByRole('button', { name: /Execute/ })
+    fireEvent.click(execute)
+    fireEvent.click(execute)
+    expect(mockApi.executePlan).toHaveBeenCalledTimes(1)
+    // Another run's row action is not held up by this one.
+    const rowDeletes = screen.getAllByRole('button', { name: 'Delete' })
+    expect(rowDeletes.some(b => !(b as HTMLButtonElement).disabled)).toBe(true)
+    await act(async () => { land({ ok: true }) })
+    expect(execute).toBeEnabled()
   })
 
   // ── Auto-approve compose-panel toggle + badge indicator ──
@@ -430,7 +495,7 @@ describe('ProjectsPage', () => {
     // selectedRun updates; auto-run useEffect fires and reads
     // pendingAutoApproveRef — MUST be false (not the stale true from step 1).
     await waitFor(() => expect(capturedNavigate).not.toBeNull())
-    capturedNavigate!('/?applied=plan-url&autoRun=true')
+    await act(async () => { capturedNavigate!('/?applied=plan-url&autoRun=true') })
 
     await waitFor(() => {
       expect(mockApi.executePlan).toHaveBeenCalledWith('plan-url', '', false)
@@ -504,7 +569,7 @@ describe('ProjectsPage', () => {
     // task ('plan-url'). Under the buggy design the stale intent from
     // 'plan-compose' would be consumed by 'plan-url'.
     await waitFor(() => expect(capturedNavigate).not.toBeNull())
-    capturedNavigate!('/?applied=plan-url&autoRun=true')
+    await act(async () => { capturedNavigate!('/?applied=plan-url&autoRun=true') })
 
     // The URL-triggered task must be executed WITHOUT the stale trust.
     await waitFor(() => {
@@ -536,8 +601,8 @@ describe('ProjectsPage', () => {
     // back to "Compose". The checkbox must be unticked in its new render —
     // the intent from the previous compose session did not survive the mode
     // switch.
-    fireEvent.click(screen.getByRole('button', { name: /From YAML/ }))
-    fireEvent.click(screen.getByRole('button', { name: /^Compose$/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From YAML/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /^Compose$/ }))
     const composeCheckboxAfterModeSwitch = await screen.findByRole(
       'checkbox', { name: /auto-approve tool calls/i },
     )
@@ -597,6 +662,8 @@ describe('ProjectsPage', () => {
     // the visible signal is synchronous with the click, matching Fable UX
     // recommendation A ("clear the compose checkbox when Plan is clicked").
     expect(composeAutoApproveCheckbox).not.toBeChecked()
+    // The Plan click starts planTask; wait for that call so its settle lands inside the test.
+    await waitFor(() => expect(api.planTask).toHaveBeenCalled())
   })
 
   it('shows the auto-approve badge on a project card when the run has a live grant', async () => {

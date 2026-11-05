@@ -54,6 +54,8 @@ OWNERS = {"pr_status_issue_links": "_issue_links", "pr_status_verdict": "_verdic
 OWNER_PATHS = {stem: SCRIPTS / f"{stem}.py" for stem in OWNERS}
 #: The loader units the verdict owner carries as a byte-identical twin of the facade's.
 LOADER_TWIN = ("_NoBytecodeSourceLoader", "_load_sibling")
+#: The modules ``_review_contract.py`` loads, so the sweep needs them too.
+CONTRACT_OWNERS = ("_review_fences.py", "_review_pushes.py", "_review_rounds.py")
 #: A dotted load name OUTSIDE ``kiro_crew``: a ``kiro_crew.`` prefix would make a
 #: coverage run start measuring these files from this module's partial use of them.
 DOTTED = "s56_probe.pr_status"
@@ -681,7 +683,12 @@ def test_the_readiness_sweeps_sparse_checkout_holds_every_file_the_facade_loads(
         _run_gate(_sparse_tree(tmp_path / "sweep", paths) / "pr_status.py", tmp_path)
     )
     prefix = SCRIPTS.relative_to(REPO).as_posix() + "/"
-    loaded = ["_review_contract.py", "green_age.py", *(f"{stem}.py" for stem in OWNERS)]
+    loaded = [
+        "_review_contract.py",
+        *CONTRACT_OWNERS,
+        "green_age.py",
+        *(f"{stem}.py" for stem in OWNERS),
+    ]
     assert {prefix + name for name in loaded} <= set(paths), paths
     for name in loaded:
         kept = [path for path in paths if path != prefix + name]

@@ -61,8 +61,43 @@ class TestWorkerAdditions:
 
     def test_approvals_are_taken_only_for_servers_the_file_adds(self):
         adds = mate_worker.worker_additions(BASE, _mate())
-        # A built-in grant and a grant on a BASE server are not the file's to give.
+        # A built-in grant and a grant on Crew's managed base server are not the
+        # file's to give.
         assert adds["allowedTools"] == ["@jira/search"]
+
+    def test_a_selector_for_a_base_declared_server_reaches_the_worker(self):
+        """The base declares ``notes`` but grants none of its tools; the Bot's file
+        selects them, so the worker gets them. A ``*`` in the file does not."""
+        base = dict(BASE, mcpServers={**BASE["mcpServers"], "notes": {"command": "n"}})
+        mate = _mate(
+            tools=["*", "@notes/read"],
+            allowedTools=["@notes/read", "@kirocrew-core/spawn_run"],
+            mcpServers={},
+        )
+        merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate))
+        assert "@notes/read" in merged["tools"]
+        assert "@notes" not in merged["tools"]
+        assert "@notes/read" in merged["allowedTools"]
+        assert "@kirocrew-core/spawn_run" not in merged["allowedTools"]
+
+        star_only = mate_worker.worker_additions(base, _mate(tools=["*"], mcpServers={}))
+        assert not [t for t in star_only["tools"] if t.startswith("@notes")]
+
+    def test_a_base_server_selection_keeps_the_files_restrictions(self):
+        base = dict(BASE, mcpServers={**BASE["mcpServers"], "notes": {"command": "n"}})
+        mate = _mate(
+            tools=["@notes"],
+            allowedTools=["@notes/write"],
+            excludedTools=["@notes/write"],
+            mcpServers={},
+        )
+        merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate))
+        assert "@notes" in merged["tools"]
+        assert "@notes/write" in merged["excludedTools"]
+        assert "@notes/write" not in merged["allowedTools"]
+        muted = _mate(tools=["@notes"], mcpServers={"notes": {"disabled": True}})
+        merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, muted))
+        assert "@notes" not in merged["tools"]
 
     def test_a_copy_of_the_base_adds_nothing(self):
         adds = mate_worker.worker_additions(BASE, dict(BASE, name="pixel"))
@@ -286,10 +321,18 @@ class TestTheWorkerSpecIsSourceDefined:
         from kiro_crew.mate_worker import MATE_WORKER_PROMPT
 
         template = agent.build_agent_config()
+        # The work-ledger mount only adds (``test_mate_work_ledger_mount.py``).
+        mounted = ("tools", "allowedTools", "mcpServers")
         for key, value in template.items():
-            if key in ("name", "description", "prompt"):
+            if key in ("name", "description", "prompt", *mounted):
                 continue
             assert installed.get(key) == value, key
+        servers = {k: v for k, v in installed["mcpServers"].items() if k != "kirocrew-work"}
+        assert servers == template["mcpServers"]
+        assert [t for t in installed["tools"] if t != "@kirocrew-work"] == template["tools"]
+        assert [
+            t for t in installed["allowedTools"] if not t.startswith("@kirocrew-work/")
+        ] == template["allowedTools"]
         # The default prompt, then the worker's own principles after it.
         assert installed["prompt"] == f"{template['prompt'].rstrip()}\n\n{MATE_WORKER_PROMPT}"
 

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import json
 import logging
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
@@ -33,8 +32,11 @@ except ImportError:  # pragma: no cover — exercised by test_import_error_*
 
 from kiro_crew import aws_consent, stt
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.config.sections import SttConfig
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
+from kiro_crew.dashboard.stt_stream_transcribe_args import (
+    _client_identifies_languages,
+    _transcribe_language_kwargs,
+)
 from kiro_crew.extras import install_hint
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -1186,50 +1188,6 @@ def _transcribe_start_failure(exc: Exception) -> tuple[str, str]:
     return "failed to start transcription", _CODE_SESSION_FAILED
 
 
-#: The ``start_stream_transcription`` keyword mixed-language detection needs. SDK
-#: 0.6.3 and later accept it; an older install raises ``TypeError`` on it.
-_IDENTIFY_MULTIPLE_LANGUAGES_KWARG = "identify_multiple_languages"
-
-
-def _client_identifies_languages(client: Any) -> bool:
-    """Whether *client*'s ``start_stream_transcription`` accepts mixed-language options.
-
-    Read from the method's own signature, so an outdated SDK is reported as the
-    package to upgrade instead of failing the stream with a ``TypeError`` that reads
-    as a service fault. A method taking ``**kwargs`` accepts it too.
-    """
-    try:
-        parameters = inspect.signature(client.start_stream_transcription).parameters
-    except (TypeError, ValueError):
-        return False
-    return _IDENTIFY_MULTIPLE_LANGUAGES_KWARG in parameters or any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
-    )
-
-
-def _transcribe_language_kwargs(stt_cfg: SttConfig) -> dict[str, Any]:
-    """The language and vocabulary arguments of a live Transcribe stream.
-
-    One language: ``language_code`` plus ``vocabulary_name``. Two or more
-    candidates (:attr:`SttConfig.transcribe_language_identification`): Amazon Transcribe
-    refuses a stream that names a ``LanguageCode`` beside
-    ``IdentifyMultipleLanguages``, so the code is None (the SDK then sends no header)
-    and a custom vocabulary travels as ``VocabularyNames``, the only vocabulary
-    parameter identification accepts. None, not ``""``, for an unset vocabulary: the
-    SDK omits the header only for None.
-    """
-    vocabulary = stt_cfg.transcribe_vocabulary or None
-    candidates = stt_cfg.transcribe_language_identification
-    if not candidates:
-        return {"language_code": stt_cfg.effective_language_code, "vocabulary_name": vocabulary}
-    return {
-        "language_code": None,
-        _IDENTIFY_MULTIPLE_LANGUAGES_KWARG: True,
-        "language_options": candidates,
-        "vocabulary_names": [vocabulary] if vocabulary else None,
-    }
-
-
 async def _run_apple_session(
     ws: web.WebSocketResponse,
     cfg: "KiroCrewConfig",
@@ -1323,6 +1281,9 @@ async def _drive_helper_session(
         _emit_end_audit(caller, outcome="error")
         raise
     if problem:
+        # Logged as well as sent: the audit trail records only `outcome=error`, and
+        # an operator reading gateway.log for a silent microphone needs the reason.
+        logger.warning("%s streaming session did not start: %s", label, problem)
         await _send_error(ws, problem, start_failure_code())
         await _close_and_end_audit(ws, caller, outcome="error")
         if endpointer is not None:

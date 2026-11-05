@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api, type ProjectAwsProfile } from '../api/client'
 import { ApiError } from '../api/apiError'
-import { isDeadlineError } from '../api/queryClient'
+import { isDeadlineError, retryThroughRestart } from '../api/queryClient'
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
 
@@ -17,11 +17,14 @@ export const projectAwsProfileQueryKey = (project: string) => ['project-aws-prof
 /** The binding read shared by the pill status and the picker section. A 403 is the
  *  owner-only gate answering a non-owner, which is an expected outcome, not a failure. */
 function useProjectAwsProfile(project: string) {
-  const query = useQuery({
+  // Typed: `retryThroughRestart` takes `error: unknown`, which would widen the inferred error type.
+  const query = useQuery<ProjectAwsProfile, Error>({
     queryKey: projectAwsProfileQueryKey(project),
     queryFn: () => api.projectAwsProfile(project),
     staleTime: 60_000,
-    retry: false,
+    // A failure is a standing notice, so a gateway restart or a dropped link is
+    // ridden out first (see `retryThroughRestart`).
+    retry: retryThroughRestart,
     enabled: !!project,
   })
   const refused = query.error instanceof ApiError && query.error.status === 403

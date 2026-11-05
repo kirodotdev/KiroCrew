@@ -19,7 +19,7 @@ Two main pages, one set of data:
 | Page | Route | What it is for |
 |---|---|---|
 | **Discover** | `/apps` | The storefront: featured collections, a category rail, and every app the catalog offers. Install from here. |
-| **Library** | `/apps/library` | Your installed apps as an icon grid, with each tile offering the actions that apply to that app in its current state. |
+| **Library** | `/apps/library` | Your installed apps as an icon grid: enabled apps first, disabled ones in their own section below. Click a tile to open the app; its ⋯ menu holds the actions that apply to it in its current state. |
 | Detail | `/apps/detail/:name` | One app's description, screenshots, highlights, publisher and version. |
 | Updates | `/apps/-/updates` | Every pending update in one worklist, with **Update All**. |
 | Migration | `/apps/migrate/:name` | Guidance for an app that used to ship inside the package and no longer does. |
@@ -40,8 +40,8 @@ registry, or install a local directory from a path.
 - **Uninstall** applies to apps you installed; a shipped app cannot be uninstalled,
   only disabled. Uninstalling keeps the app's data by default. Pass `--purge-data` on
   the CLI to delete that too — which is not reversible.
-- The pin badge on a Library tile controls whether an enabled app shows in the
-  sidebar. It does not disable anything.
+- **Pin** and **Unpin**, in a Library tile's ⋯ menu, control whether an enabled app
+  shows in the sidebar; the tile's caption says which. They do not disable anything.
 
 Two shipped apps are on from a fresh install: **Command Bar** and **Task Runner**.
 Everything else waits for you.
@@ -170,6 +170,18 @@ package and now lives outside it. The page tells you whether to install the exte
 version, or clean up what the old one left behind. Your app data is not touched
 either way.
 
+Some built-in apps move to their own repository. When one of yours does, there is
+nothing to do: Kiro Crew fetches the repository version in the background and
+switches the app over the next time it starts, keeping your data, your settings,
+its permissions and whether it is enabled. Until then the built-in keeps running.
+Only a Kiro Crew release that supports the switch makes it; on an earlier one the
+built-in keeps running unchanged. If the switch cannot happen yet (for example an
+app admission policy on this machine refuses it), the app's page says why, and the
+built-in keeps running. Once the cause is fixed, the next start prepares the switch
+and the start after that makes it.
+After the switch the app updates and uninstalls like any App Store app, and once
+uninstalled it stays uninstalled.
+
 ## From the command line
 
 ```bash
@@ -178,9 +190,16 @@ kirocrew app info meetings             # one app's details
 kirocrew app enable meetings
 kirocrew app disable meetings
 kirocrew app install /path/to/my-app   # install a local app directory
+kirocrew app update my-app             # re-copy it from that directory, keeping its data
+kirocrew app update my-app --source /path/to/my-app-v2   # ...or from another directory
 kirocrew app uninstall my-app          # keeps app data
 kirocrew app uninstall my-app --purge-data   # deletes it permanently
 ```
+
+`update` is what the Update (or Sync) button on an app's page does, from a terminal: the
+running gateway stops the app, replaces its files, keeps its data and whether it
+was enabled, and starts it again. It needs the gateway running; with none to
+reach it changes nothing and says so.
 
 Four more subcommands exist for people building apps rather than using them:
 `import` converts a manifest-declared plugin package into an app directory, `init`
@@ -194,6 +213,12 @@ The App Kit is the developer documentation: scaffolding, every `app.json` field,
 SDK surface, publishing, and migrating across a breaking platform version. It lives
 in the repository, not in this package —
 [docs/app-kit/](https://github.com/kirodotdev/KiroCrew/blob/main/docs/app-kit/README.md).
+
+A new app, first-party included, ships from a dedicated GitHub repository listed in
+the App Store's official registry
+([kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)); Kiro Crew
+does not take new apps into the package itself. The apps that
+ship inside the package today keep working as described above.
 
 ## See also
 

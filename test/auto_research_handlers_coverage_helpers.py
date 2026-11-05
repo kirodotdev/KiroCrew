@@ -47,10 +47,9 @@ def _no_stray_sse_queues():
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the auto-research coverage modules' autouse no-autonudge default, moved verbatim; tracked for a de-flake pass
-def _no_autonudge(monkeypatch: pytest.MonkeyPatch):
+def _no_autonudge(_floor_monkeypatch: pytest.MonkeyPatch):
     """Default to 'no autonudge service' so nothing touches a live loop registry."""
-    monkeypatch.setattr(h, "_autonudge_instance", lambda: None)
+    _floor_monkeypatch.setattr(h, "_autonudge_instance", lambda: None)
 
 
 def _app(**keys: Any) -> web.Application:

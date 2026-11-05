@@ -39,13 +39,12 @@ def _fresh_trusted_bot_turn_ledger(_floor_monkeypatch):
 
 
 @pytest.fixture(name="_isolated_home", autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_slack_events_coverage*.py modules calls monkeypatch.undo()
-def _isolated_home_fixture(tmp_path, monkeypatch):
+def _isolated_home_fixture(tmp_path, _floor_monkeypatch):
     """Point every home-derived path at ``tmp_path`` so nothing touches real HOME."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".kiro" / "crew"))
-    monkeypatch.setenv("KIRO_HOME", str(tmp_path / ".kiro"))
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".kiro" / "crew"))
+    _floor_monkeypatch.setenv("KIRO_HOME", str(tmp_path / ".kiro"))
+    _floor_monkeypatch.setenv("HOME", str(tmp_path))
+    _floor_monkeypatch.setenv("USERPROFILE", str(tmp_path))
     return tmp_path
 
 
@@ -140,7 +139,7 @@ class _capture_respond:
         # _handle_slash reads response_url straight off the payload, so inject it
         # by patching the module's dict lookup target instead: simplest is to let
         # callers pass the URL through the payload. Tests using this helper set a
-        # response_url on the payload via _patch_payload below.
+        # response_url on the payload.
         self._orig = ev._handle_slash
         url = self._response_url
 

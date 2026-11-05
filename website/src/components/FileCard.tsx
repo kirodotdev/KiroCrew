@@ -28,6 +28,7 @@ function FileHeader({ file, url, saveLink = true }: { file: FileData; url: strin
     file.size != null && file.size > 0 ? fmtBytes(file.size) : '',
   ].filter(Boolean)
   const save = <><Download className="lucide-inline" aria-hidden /> {i18nT('components.fileCard.save')}</>
+  const saveUrl = saveDownloadUrl(url)
 
   return (
     <div className="grid grid-cols-[28px_1fr_auto] items-center gap-x-3">
@@ -48,12 +49,22 @@ function FileHeader({ file, url, saveLink = true }: { file: FileData; url: strin
         )}
       </span>
       {saveLink ? (
-        <a href={url} download className={ACTION}>{save}</a>
+        <a href={saveUrl} download={file.filename} className={ACTION}>{save}</a>
       ) : (
         <span className={ACTION}>{save}</span>
       )}
     </div>
   )
+}
+
+/**
+ * The URL Save points at. `?download=1` makes the server answer
+ * `Content-Disposition: attachment`, so a browser that ignores the link's
+ * `download` attribute still saves the file instead of opening a viewer for a
+ * type it can render inline (a PDF).
+ */
+function saveDownloadUrl(url: string): string {
+  return `${url}?download=1`
 }
 
 /**
@@ -159,7 +170,7 @@ export const FileCard = memo(function FileCard({ file }: { file: FileData }) {
   }
 
   return (
-    <a href={url} download className={`${CARD} no-underline text-text hover:ring-accent transition-colors cursor-pointer`}>
+    <a href={saveDownloadUrl(url)} download={file.filename} className={`${CARD} no-underline text-text hover:ring-accent transition-colors cursor-pointer`}>
       <FileHeader file={file} url={url} saveLink={false} />
     </a>
   )

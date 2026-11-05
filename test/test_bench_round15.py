@@ -70,9 +70,9 @@ def test_a_link_planted_after_the_check_can_no_longer_be_followed(
         open_write_nofollow(target, what="JSON report")
 
     monkeypatch.setattr(Path, "is_symlink", real_is_symlink)
-    assert victim.read_text(encoding="utf-8") == "PRECIOUS", (
-        "the write followed a link planted after the check and destroyed its target"
-    )
+    assert (
+        victim.read_text(encoding="utf-8") == "PRECIOUS"
+    ), "the write followed a link planted after the check and destroyed its target"
 
 
 def test_the_atomic_writer_refuses_a_hardlink_alias_without_dir_fd(
@@ -142,5 +142,5 @@ def test_the_staging_name_carries_the_pid(tmp_path: Path) -> None:
     source = Path(datasets.__file__).read_text(encoding="utf-8")
     effective = [ln for ln in source.splitlines() if not ln.lstrip().startswith("#")]
     assert any(
-        'os.getpid()' in ln and '.part' in ln for ln in effective
+        "os.getpid()" in ln and ".part" in ln for ln in effective
     ), "the staging name no longer includes the pid"

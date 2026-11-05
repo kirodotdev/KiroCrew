@@ -100,12 +100,8 @@ class TestRefParsing:
     def test_the_two_array_readers_agree(self):
         """``wire_server_names`` and the report's ``roster_names`` read one array.
 
-        The SDK resolver may not import the ACP layer, so it carries its own
-        reader -- and a detector warning that a server is missing while the
-        dashboard panel lists it two rows down is worse than no detector. Their
-        agreement is therefore pinned here instead of by a shared import. The two
-        differ only where the report deliberately bounds a browser payload, which
-        no case below reaches.
+        The SDK resolver may not import the ACP layer, so it has its own reader; a
+        detector that disagrees with the dashboard panel is worse than none.
         """
         for array in (
             _wire("a", "b"),
@@ -120,15 +116,9 @@ class TestRefParsing:
     def test_a_large_spec_is_parsed_in_linear_time(self):
         """Both readers must not be quadratic: a session waits on them.
 
-        The spec is only SIZE-capped (50 MB, ``hooks.MAX_FILE_BYTES``), never
-        entry-capped, so the number of refs is operator-controlled and large. A
-        linear ``in`` over the growing result list would make N distinct refs cost
-        O(N**2) on the session-establishment path -- minutes for the input below,
-        long enough for a watchdog to kill the gateway mid-session.
-
-        The ceiling is deliberately loose. Linear finishes this in milliseconds, so
-        a wide margin still separates the two shapes by orders of magnitude and
-        cannot flake on a loaded host.
+        The spec is size-capped (``hooks.MAX_FILE_BYTES``) but not entry-capped, so a
+        linear ``in`` over the result list would cost O(N**2) on session start. The
+        loose ceiling still separates linear from quadratic without flaking.
         """
         n = 60_000
         tools = [f"@srv{i}" for i in range(n)]
@@ -187,12 +177,8 @@ class TestResolution:
     def test_an_empty_array_on_a_mirrored_backend_reports_every_ref(self):
         """The shape that made the guard necessary, held as a pure-function case.
 
-        A backend in ``ACP_BACKENDS_SESSION_MCP_ARRAY`` whose array comes out empty
-        receives nothing at all while its spec declares and references Crew's whole
-        control plane -- the defect this guard reports, and the reason a session
-        could be fully broken with nothing anywhere saying so. Driven here with the
-        wire passed in, so it stays true of any backend that reaches this state
-        rather than of one release's hook.
+        A backend in ``ACP_BACKENDS_SESSION_MCP_ARRAY`` with an empty array receives
+        none of the servers its spec references, with nothing else saying so.
         """
         spec = {
             "tools": ["@kirocrew-core", "@kirocrew-cron", "fs_read"],
@@ -225,11 +211,8 @@ class TestResolution:
     def test_kas_resolves_its_refs_against_the_spec_not_the_wire(self):
         """KAS mounts the spec's servers as a projected agent definition, off the wire.
 
-        On the shared runtime the array KAS receives carries broker stubs at most --
-        its own ``mcpServers`` travel in ``_meta.kiro.customAgents`` -- so a guard
-        judging it by the wire alone would record every ref unresolved on a default
-        install, for tools that are present. The same false positive the kiro
-        exemption exists for, on the second host that mounts its spec off-wire.
+        KAS's ``mcpServers`` travel in ``_meta.kiro.customAgents``, so judging by the
+        wire alone would report every ref unresolved on a default install.
         """
         spec = {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": _CORE}}
         assert unresolved_server_refs(spec, [], backend=ACP_BACKEND_KAS) == []
@@ -363,19 +346,9 @@ class TestTheWarning:
     def test_the_verdict_claims_only_what_the_wire_proves_on_every_backend(self, backend, caplog):
         """No backend's array is provably the session's whole MCP surface.
 
-        Claude Code loads its own user- and project-scope ``mcpServers`` and its
-        plugins beside the array Crew sends; codex-acp merges Crew's array on top of
-        what its own ``config.toml`` declares; kiro-cli loads the global
-        ``settings/mcp.json`` into every agent by default (a spec may opt out with
-        ``includeMcpJson: false``). On any of
-        them a ref nothing of Crew's satisfies can still be served by a same-named
-        server the harness mounted itself -- and the detector, which reads the wire
-        (or the spec) alone by design, cannot tell the two apart. So the line says
-        the harness may mount such a server and never asserts the tools absent.
-        Pinned as the full line, on every known backend, so a backend-shaped branch
-        cannot creep back in -- and the leading clause claims only Crew's
-        projection, not what the session receives, which is the very thing the
-        verdict says the line cannot know.
+        Claude Code, codex-acp and kiro-cli each mount servers of their own beside
+        Crew's array, so the line says the harness may serve the ref and never claims
+        the tools absent. Pinned as the full line on every backend.
         """
         spec = {"tools": ["@glean", "@kirocrew-core"], "mcpServers": {"other": _CORE}}
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
@@ -469,13 +442,8 @@ class TestTheWarning:
     def test_the_logged_text_is_rebuilt_from_the_modules_own_alphabet(self):
         """The log line must not carry a string DERIVED from the spec.
 
-        ``py/clear-text-logging-sensitive-data`` follows the spec-derived dataflow
-        into this sink and does not model the sanitizer as a barrier, and code
-        scanning does not honour a per-line ``lgtm`` suppression either. This
-        repository's own answer is to return characters the module owns --
-        ``keeper._locus`` / ``_metric_slug``, ``name_grant``'s constant tables --
-        which is what ``_log_safe`` does. Pinned as the property, not as a comment:
-        every character out is one this module holds.
+        ``py/clear-text-logging-sensitive-data`` does not treat the sanitizer as a
+        barrier, so ``_log_safe`` returns characters the module owns.
         """
         out = mcp_ref_guard._log_safe("@srv-1.x_Y")
         assert out == "@srv-1.x_Y"
@@ -484,11 +452,8 @@ class TestTheWarning:
     def test_url_punctuation_never_reaches_the_log_line(self, caplog):
         """``:`` is outside the alphabet, so an endpoint cannot ride along.
 
-        Two independent cuts, and both are worth pinning because either alone would
-        look sufficient. ``parse_tools_refs`` keeps only the text before the first
-        ``/``, so the path half of a URL never becomes a ref at all; the alphabet
-        then drops the ``:`` that a host:port needs. Hardening on top of the
-        redactors, not instead of them.
+        Two cuts: ``parse_tools_refs`` keeps only the text before the first ``/``, and
+        the alphabet drops the ``:`` a host:port needs.
         """
         spec = {
             "tools": ["@host.example:8080", "@sneaky/../../etc/passwd"],
@@ -540,12 +505,8 @@ class TestTheWarning:
     def test_the_rebuild_returns_the_alphabets_own_characters(self):
         """The taint-severance property, which no output assertion can reach.
 
-        ``_LOG_ALPHABET[idx]`` and ``ch`` are equal strings, so swapping them
-        changes nothing observable -- and everything about whether a taint query
-        sees the result as derived from the input. The property therefore lives in
-        the source shape, which is exactly what the analyser reads, so that is
-        where it is pinned. Same reason ``keeper._locus`` spells out "append the
-        ALPHABET's own character object, not the input's" in a comment.
+        ``_LOG_ALPHABET[idx]`` and ``ch`` are equal strings, so only the source shape,
+        which the taint analyser reads, can tell them apart.
         """
         body = inspect.getsource(mcp_ref_guard._log_safe)
         assert "out.append(_LOG_ALPHABET[idx])" in body
@@ -585,12 +546,8 @@ class TestTheWarning:
 class TestTheDocumentedReach:
     """The module must claim exactly the reach it has, and the reach is both transports.
 
-    The resolver is provider-neutral and is evaluated at BOTH session-establishment
-    transports: ``AcpClient``'s composition and ``AcpRuntime``'s. A host served by
-    the shared runtime that reads no agent file of Crew's is the case the detector
-    was written for, so a runtime that skipped it would leave the one host that
-    needs it unreported -- and a docstring still naming the runtime as out of reach
-    would be the unexamined coverage claim this module exists to stop.
+    The resolver runs at both ``AcpClient``'s and ``AcpRuntime``'s composition; a
+    shared-runtime host that reads no agent file of Crew's needs it most.
     """
 
     def test_the_module_names_both_transports_as_in_reach(self):
@@ -708,18 +665,9 @@ class TestTheCompositionPath:
     def _codex_wire(self, tmp_path) -> tuple[list[dict[str, Any]], McpSessionReport]:
         """The array Crew sends a codex session, plus the report the guard wrote into.
 
-        codex is served by AcpRuntime, so its array is composed by the mirror
-        (:func:`codex_projection`, the producer) and then narrowed by the host
-        (:meth:`CodexHarness.session_mcp_servers`, which drops any element whose
-        transport this session's handshake did not advertise). Those two ARE the
-        composition on that path, and the guard question is asked over their result
-        exactly as the client asks it over its own: the detector and the report are
-        provider-neutral, which is what lets one behaviour be pinned on both
-        transports without a second detector.
-
-        The handshake advertises stdio, which every ACP agent must support, so the
-        narrowing keeps what the mirror projected and the finding below is the
-        mirror's withhold rather than a dropped transport.
+        The mirror (:func:`codex_projection`) composes the array and
+        :meth:`CodexHarness.session_mcp_servers` narrows it by advertised transport.
+        The handshake advertises stdio, so any finding is the mirror's withhold.
         """
         projected = codex_projection("kirocrew", work_dir=tmp_path).params["mcpServers"]
         wire = CodexHarness().session_mcp_servers(
@@ -743,18 +691,8 @@ class TestTheCompositionPath:
     def test_a_codex_session_records_what_its_mirror_withholds(self, tmp_path, agents_dir, caplog):
         """On a mirrored codex session the finding narrows to the withheld set.
 
-        The refs the mirror projects resolve, so the guard is silent about them.
-        What it still reports is what the mirror deliberately WITHHOLDS: an
-        identity-bound Crew server reaches codex from the spec unreplaced and would
-        answer ``not_bound`` to every call, so it is not mounted. Two lines, two
-        jobs: the mirror logs WHY it withheld, and this one records that the spec
-        asked for it -- with the hedged verdict every backend gets, since a same-named
-        server from the operator's own ``config.toml`` is the one thing the wire
-        cannot rule out.
-
-        Driven through the runtime-path composition (:meth:`_codex_wire`), because
-        that is where a codex array is built. The claim under test is unchanged by
-        the transport: what the mirror keeps back, the report names.
+        An identity-bound Crew server would answer ``not_bound`` on codex, so the mirror
+        withholds it; the mirror logs why, and this report records that the spec asked.
         """
         self._spec(
             agents_dir,
@@ -850,11 +788,8 @@ class TestTheCompositionPath:
 class TestTheCallSitesAreWired:
     """The guard is reached from the real composition path, not only from a test.
 
-    ``TestTheCompositionPath`` above reproduces the array the call site builds, so
-    it proves the GUARD is right while proving nothing about whether anything calls
-    it. These two do that half: one drives ``session/new`` for real, and one holds
-    every roster hand-off in the client to the pairing, which is the only way to
-    cover the ``session/load`` twin without standing up a resume.
+    One drives ``session/new`` for real; the other holds every roster hand-off to the
+    pairing, which covers ``session/load`` without standing up a resume.
     """
 
     @pytest.mark.asyncio
@@ -886,11 +821,8 @@ class TestTheCallSitesAreWired:
     def test_every_roster_handoff_is_paired_with_the_guard(self):
         """Both call sites, held to the pairing by structure.
 
-        ``_begin_session_report`` marks the point at which the wire array is final,
-        which is exactly where the guard can be evaluated -- so a new
-        session-establishment path that hands over a roster and forgets the guard is
-        the omission this pins. It also pins the ORDER: the report clear runs first,
-        and a guard that ran before it would have its row erased.
+        ``_begin_session_report`` marks where the wire array is final. The report clear
+        must run first, or it would erase the guard's row.
         """
         import sys
 
@@ -919,11 +851,8 @@ class TestTheCallSitesAreWired:
 class TestTheRuntimeCallSitesAreWired:
     """The shared-runtime twin of the class above.
 
-    Same two halves: one drives a runtime ``session/new`` for real against a host
-    whose harness NARROWS the array, and one holds every roster hand-off in the
-    runtime to the pairing. The narrowing host is the point -- it is what makes
-    "the array that went on the wire" and "the roster the caller composed" two
-    different lists, and every consumer that means the former must read it.
+    The host's harness narrows the array, so the wire array and the composed roster
+    differ, and consumers must read the wire array.
     """
 
     @pytest.mark.asyncio
@@ -1067,11 +996,8 @@ class TestTheRuntimeCallSitesAreWired:
     def test_the_runtime_guard_is_synchronous_and_reads_no_disk(self):
         """H13: the guard adds no suspension point to any host's session start.
 
-        The spec is read as a passenger of the off-loop hop each branch already
-        makes to resolve its array -- the mirror's projection hop, or the pooled-stub
-        hop -- never as a hop of its own. So the guard is a plain method that takes
-        the snapshot it is handed, and the module's only ``agent_spec_snapshot``
-        read sits in ``_ref_spec_snapshot``, which only those two hop bodies call.
+        The spec rides the off-loop hop each branch already makes; the only
+        ``agent_spec_snapshot`` read is in ``_ref_spec_snapshot``, called from those hops.
         """
         from kiro_crew.acp import runtime as runtime_mod
         from kiro_crew.acp.runtime import (
@@ -1105,15 +1031,9 @@ class TestTheRuntimeCallSitesAreWired:
     def test_the_snapshot_read_cannot_fail_the_session(self, monkeypatch):
         """A refused or unreadable spec is ``None`` to the guard, never an exception.
 
-        ``agent_spec_snapshot`` runs the derived-spec freshness gate, which raises
-        for a stale mirror it could not repair. That is the right answer for the
-        projection -- its output IS the session's MCP surface -- and the wrong one
-        for a diagnostic riding in the same hop: on the pooled kiro path the array
-        never read the derived spec at all, so a raise here would fail a
-        ``session/new`` that was going to succeed. The client twin
-        (``AcpClient._read_mcp_ref_spec``) resolves every failure to ``None``; the
-        runtime's wrapper must too, and the pooled hop must still hand back its
-        array when the snapshot fails.
+        ``agent_spec_snapshot`` raises for an unrepairable stale mirror; a diagnostic must
+        not fail a ``session/new`` that would succeed, so the pooled hop still returns its
+        array, as ``AcpClient._read_mcp_ref_spec`` does.
         """
         from kiro_crew.acp import runtime as runtime_mod
         from kiro_crew.acp.runtime import _pooled_session_servers_and_ref_spec, _ref_spec_snapshot
@@ -1146,11 +1066,8 @@ class TestTheRuntimeCallSitesAreWired:
 class TestTheSpawnHopCarriesTheSnapshot:
     """The warm rides in the hop ``_spawn`` already had, and adds no await.
 
-    An added ``await asyncio.to_thread`` on the Kiro construction path would be
-    a new suspension point in service of a diagnostic (harness-parity H13).
-    Folding the snapshot into the pre-existing ``mkdir`` hop means no added await
-    exists -- which is only true while nothing re-adds one, hence the structural
-    pin below.
+    A separate ``await asyncio.to_thread`` would add a suspension point for a
+    diagnostic (harness-parity H13), so the snapshot rides the ``mkdir`` hop.
     """
 
     def test_the_hop_creates_the_dir_and_warms_the_snapshot(self, tmp_path, monkeypatch):
@@ -1196,14 +1113,8 @@ class TestTheSpawnHopCarriesTheSnapshot:
     def test_the_detector_adds_no_await_to_the_construction_path(self, tmp_path):
         """The snapshot is never awaited on its own -- only inside the mkdir hop.
 
-        Pinned as the absence of a separate hop rather than as a total await count,
-        so an unrelated await added to ``_spawn`` later cannot fail this for the
-        wrong reason. What must stay true is narrow: the detector's read reaches
-        the executor ONLY as a passenger of the hop ``_spawn`` already had, which
-        is what keeps it off kiro-cli's suspension-point budget (H13). Read off a
-        real kiro-cli launch: every function the spawn hands a worker thread is
-        recorded, and the workspace hop is among them exactly once while the
-        detector's own read is never one of them.
+        Pinned as no separate hop, not a total await count, so an unrelated await in
+        ``_spawn`` cannot fail it. Every function handed to a worker thread is recorded.
         """
         import asyncio
         import functools

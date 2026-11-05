@@ -795,6 +795,7 @@ async def test_run_cmd_cancel_with_reaped_child_propagates_cancellation(monkeypa
     and the whole pytest-asyncio loop teardown.
     """
     entered = asyncio.Event()  # deterministic rendezvous, no sleeps
+    release = asyncio.Event()  # set in the finally below, so the stub never outlives the test
 
     class FakeProc:
         pid = 12345
@@ -802,8 +803,7 @@ async def test_run_cmd_cancel_with_reaped_child_propagates_cancellation(monkeypa
 
         async def communicate(self):
             entered.set()
-            # flake-ok: pre-existing stub that parks until the test cancels it; the test bounds its own wait on entry, moved verbatim
-            await asyncio.Event().wait()  # block until cancelled
+            await release.wait()  # parks until the test cancels the task or releases the stub
 
         def kill(self):
             raise ProcessLookupError  # child already reaped
@@ -828,11 +828,17 @@ async def test_run_cmd_cancel_with_reaped_child_propagates_cancellation(monkeypa
     monkeypatch.setattr(platform_compat, "REAP_TIMEOUT_SECS", 0.01)
 
     task = asyncio.ensure_future(mod._run_cmd(["/bin/true"]))
-    # Bounded so a future early-return in _run_cmd fails fast, not a hang.
-    await await_until(entered, what="run_cmd entered cancellation point")
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        # Bounded so a future early-return in _run_cmd fails fast, not a hang.
+        await await_until(entered, what="run_cmd entered cancellation point")
+        task.cancel()
+        # Lost-run ceiling: a cancel that never lands fails by name instead of hanging the run.
+        _done, pending = await asyncio.wait({task}, timeout=30)
+        assert not pending, "_run_cmd did not finish after cancel"
+        with pytest.raises(asyncio.CancelledError):
+            task.result()
+    finally:
+        release.set()
 
 
 # --- stream-overrun subprocess reaping (Codex R34 #2) ---

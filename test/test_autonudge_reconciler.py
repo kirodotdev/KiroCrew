@@ -55,27 +55,15 @@ def _enable(monkeypatch):
 def svc(tmp_path, event_loop):
     """Service with GUARANTEED teardown on every exit path.
 
-    Every test here calls ``start()``, which spawns the reconciler task and
-    publishes the module-global ``_INSTANCE``. A trailing ``svc.stop()`` in
-    the test body is skipped by any failing assertion before it, leaking a
-    pending task (and the global) past the test -- so the stop lives here,
-    where pytest runs it on failure too, and the cancelled reconciler is
-    drained on the test's still-open event loop. A SYNC fixture on purpose,
-    following the suite's convention for teardown that must await on the test's own loop: the drain goes
-    through the ``event_loop`` fixture, which outlives this one by fixture
-    ordering. ``stop()`` is idempotent, so the lifecycle test that exercises
-    it explicitly stays valid.
+    ``start()`` spawns the reconciler and publishes ``_INSTANCE``, so the stop lives
+    here where pytest runs it on failure too. SYNC on purpose: the drain runs on the
+    ``event_loop`` fixture, which outlives this one. ``stop()`` is idempotent.
     """
     service = AutoNudgeService(base_dir=tmp_path)
     yield service
-    # Snapshot EVERY background task the service may hold, not just the
-    # reconciler: ``stop()`` clears ``_timers`` (cancelling, not draining),
-    # and ``_inflight_adds`` holds detached ``_persist_locked`` writers --
-    # e.g. from a rescue's ``_persist_soon()`` -- that stop() deliberately
-    # leaves running. An undrained writer can recreate ``tmp_path`` AFTER
-    # pytest removes it, which is exactly the stray-directory shape the
-    # no-test-side-effects rule names. Draining here lets the writes finish
-    # while the directory still exists and retires every task in-loop.
+    # Snapshot EVERY background task: ``stop()`` cancels ``_timers`` without draining
+    # and leaves ``_inflight_adds`` writers running, which could recreate ``tmp_path``
+    # after pytest removes it.
     tasks = [
         t
         for t in (service._reconciler, *service._timers.values(), *service._inflight_adds)
@@ -124,14 +112,10 @@ async def _run_timer_as_production_would(svc: AutoNudgeService, loop: NudgeLoop)
 
 @pytest.mark.asyncio
 async def test_delivered_fire_without_turn_complete_is_rescued_by_reconciler(svc, caplog):
-    """The stranding the issue observed: fire delivered, stop hook never came.
+    """A delivered fire whose ``notify_turn_complete`` never came is rescued.
 
-    The dashboard fire path deliberately does not self-re-arm (the nudge
-    turn's end is supposed to do it via ``notify_turn_complete``), so after
-    the timer coroutine returns the loop is active with no live timer. Two
-    consecutive reconciler passes must arm it again -- toward the loop's own
-    deadline, which the delivered fire cleared, so the rescue starts a fresh
-    full countdown rather than firing immediately.
+    The dashboard fire path does not self-re-arm. Two reconciler passes re-arm it with a
+    fresh full countdown, since the delivered fire cleared the deadline.
     """
     fired: list[str] = []
 
@@ -145,7 +129,7 @@ async def test_delivered_fire_without_turn_complete_is_rescued_by_reconciler(svc
     with caplog.at_level(logging.INFO, logger="kiro_crew.autonudge"):
         await _run_timer_as_production_would(svc, loop)
     assert fired == [loop.id]
-    # Delivered fires are logged at INFO -- the observability half of the fix.
+    # Delivered fires are logged at INFO.
     assert any("fired cycle" in r.message for r in caplog.records)
     # Stranded: active, deadline cleared, timer entry present but finished.
     assert loop.active
@@ -167,7 +151,7 @@ async def test_delivered_fire_without_turn_complete_is_rescued_by_reconciler(svc
 async def test_delivered_fire_never_rearms_a_dashboard_loop_by_itself(svc):
     """Without a reconciler PASS nothing revives it (the running periodic
     task's first beat is a full wall-clock interval away, far beyond this
-    test), which is exactly the pre-fix stranding."""
+    test)."""
 
     async def on_fire(loop: NudgeLoop) -> bool:
         return True
@@ -189,12 +173,8 @@ async def test_delivered_fire_never_rearms_a_dashboard_loop_by_itself(svc):
 async def test_gate_exception_falls_through_to_fire_and_keeps_loop_alive(svc, caplog):
     """A raising gate must neither kill the timer task nor mute the loop.
 
-    The module's own contract is that every uncertain observation resolves
-    toward spending a turn; an exception escaping the gate is the most
-    uncertain observation there is, so the tick fires exactly as it would
-    have before the gate existed. The timer task must complete without the
-    exception propagating (a strong ref in ``_timers`` means a task killed by
-    an exception is never even reported by asyncio).
+    Uncertainty resolves toward spending a turn, so the tick fires. The timer task
+    must not die: with a strong ref in ``_timers`` asyncio never reports the error.
     """
     fired: list[str] = []
 
@@ -341,17 +321,11 @@ async def test_reconciler_skips_dead_wake_claim_but_rescues_live_one(svc):
 
 @pytest.mark.asyncio
 async def test_reconciler_rescues_busy_retry_and_inactive_terminal_waiter(svc):
-    """Two structured-monitor recovery states the skip predicates must NOT
-    exclude, both mirrored from the store's own semantics:
+    """Two structured-monitor recovery states the skip predicates must NOT exclude.
 
-    * a ``BUSY`` retry has ``wake_in_flight`` and an intentionally empty
-      evidence deadline, yet ``_load`` resumes it at its persisted retry
-      deadline on restart -- the in-process backstop must treat it as live;
-    * an INACTIVE loop still waiting for terminal-completion evidence owns a
-      finite accepted-turn correlation whose expiry needs a timer
-      (``_timer``'s own re-arm guard includes it), and
-      ``notify_turn_complete`` ignores inactive loops, so a user-input
-      cancel would otherwise strand the claim forever.
+    A ``BUSY`` retry has no evidence deadline, yet ``_load`` resumes it on restart. An
+    INACTIVE terminal waiter needs a timer for its expiry, as ``notify_turn_complete``
+    ignores inactive loops.
     """
     await svc.start()
     busy = await svc.add(slot_key="chat-1-111", message="a", idle_secs=300)

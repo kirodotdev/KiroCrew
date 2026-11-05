@@ -641,7 +641,10 @@ def test_terminate_on_windows_survives_a_failed_tree_kill() -> None:
             ),
             patch("kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS", 0.2),
         ):
-            _terminate_process_group(proc)  # must not raise
+            swept = _terminate_process_group(proc)
+        # The root outlived the failed kill, so the tree is NOT reported gone:
+        # the caller must keep the gateway's HOME.
+        assert swept is False
     finally:
         proc.kill()
         proc.wait(timeout=30)
@@ -682,8 +685,8 @@ def test_terminate_pgid_noop_when_pid_gone() -> None:
     # stall a fresh child process >5s under load (two consecutive Dry Run
     # failures on with TimeoutExpired at timeout=5).
     proc.wait(timeout=30)
-    # Reaped — getpgid raises ProcessLookupError, terminate_pgid swallows it.
-    terminate_pgid(proc.pid)
+    # Reaped: the group is empty, which counts as carried through teardown.
+    assert terminate_pgid(proc.pid) is True
 
 
 @_POSIX_ONLY
@@ -1865,6 +1868,22 @@ def test_harness_environment_skips_the_model_download_by_default(tmp_path, monke
     assert env["KIROCREW_HOME"] == str(tmp_path)
     assert env["KIRO_HOME"] == str(tmp_path / "kiro")
     assert env["PYTHONUNBUFFERED"] == "1"
+    # The adoption pin table is the test's own, absent and so empty: a harness
+    # boot never fetches a shipped pin from GitHub.
+    from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV
+
+    pins = Path(env[HARNESS_PINS_ENV])
+    assert pins.parent == tmp_path and not pins.exists()
+
+
+def test_harness_environment_pins_the_adoption_table_over_an_inherited_one(
+    tmp_path, monkeypatch
+) -> None:
+    from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV
+
+    monkeypatch.setenv(HARNESS_PINS_ENV, "/operator/pins.json")
+    env = harness_environment(tmp_path, tmp_path / "src")
+    assert env[HARNESS_PINS_ENV] == str(tmp_path / "harness-adoption-pins.json")
 
 
 def test_harness_environment_can_arm_the_download_path_for_one_gateway(

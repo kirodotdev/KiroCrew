@@ -28,6 +28,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 import type { CatPreset } from '../apps/mochi/src/shared/catPresets'
 import type { ColorMap } from '../apps/mochi/src/shared/colorCustomizer'
@@ -100,11 +101,18 @@ async function renderPanel(): Promise<HTMLElement> {
   return container
 }
 
-/** The card wrapper for a preset, addressed through its preview image. */
+/** The "apply" button for a preset, addressed through its preview image. */
 function card(name: string): HTMLElement {
-  const wrapper = screen.getByAltText(name).closest('[role="button"]')
-  if (!wrapper) throw new Error(`no preset card for ${name}`)
-  return wrapper as HTMLElement
+  const button = screen.getByAltText(name).closest('button')
+  if (!button) throw new Error(`no preset card for ${name}`)
+  return button
+}
+
+/** The whole tile for a preset: its "apply" button and, for a custom one, Delete. */
+function tile(name: string): HTMLElement {
+  const wrapper = card(name).parentElement
+  if (!wrapper) throw new Error(`no preset tile for ${name}`)
+  return wrapper
 }
 
 /** The manual colour input belonging to one body-part card, by its label. */
@@ -185,8 +193,8 @@ describe('ColorCustomizerPanel — what is on screen after mount', () => {
     presetsLoadCustom.mockResolvedValue([customPreset()])
     await renderPanel()
 
-    expect(within(card('Sunset Kitty')).getByRole('button', { name: 'Delete' })).toBeTruthy()
-    expect(within(card('Tuxedo')).queryByRole('button', { name: 'Delete' })).toBeNull()
+    expect(within(tile('Sunset Kitty')).getByRole('button', { name: 'Delete' })).toBeTruthy()
+    expect(within(tile('Tuxedo')).queryByRole('button', { name: 'Delete' })).toBeNull()
   })
 
   it('previews a colourless custom preset as the unmodified art', async () => {
@@ -214,19 +222,23 @@ describe('ColorCustomizerPanel — applying a preset', () => {
   })
 
   it('activates a card from the keyboard with Enter and with Space, and ignores other keys', async () => {
+    const user = userEvent.setup()
     await renderPanel()
 
-    fireEvent.keyDown(card('Siamese'), { key: 'Enter' })
+    card('Siamese').focus()
+    await user.keyboard('{Enter}')
     expect(lastPersistedMap()).toEqual(builtInMap('siamese'))
     expect(card('Siamese').getAttribute('aria-pressed')).toBe('true')
 
-    fireEvent.keyDown(card('Calico'), { key: ' ' })
+    card('Calico').focus()
+    await user.keyboard(' ')
     expect(lastPersistedMap()).toEqual(builtInMap('calico'))
     expect(card('Calico').getAttribute('aria-pressed')).toBe('true')
     expect(card('Siamese').getAttribute('aria-pressed')).toBe('false')
 
     const before = gallerySetColorMap.mock.calls.length
-    fireEvent.keyDown(card('Ragdoll'), { key: 'a' })
+    card('Ragdoll').focus()
+    await user.keyboard('a')
     expect(gallerySetColorMap.mock.calls).toHaveLength(before)
   })
 
@@ -358,12 +370,30 @@ describe('ColorCustomizerPanel — deleting a custom preset', () => {
     presetsLoadCustom.mockResolvedValue([customPreset()])
     await renderPanel()
 
-    fireEvent.click(within(card('Sunset Kitty')).getByRole('button', { name: 'Delete' }))
+    fireEvent.click(within(tile('Sunset Kitty')).getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(presetsSaveCustom).toHaveBeenCalledWith([]))
 
     expect(screen.queryByAltText('Sunset Kitty')).toBeNull()
     // The card's own click handler must not have fired through the delete button.
     expect(gallerySetColorMap).not.toHaveBeenCalled()
+  })
+
+  it.each(['{Enter}', ' '])('deletes from the keyboard (%s) without applying the preset', async (key) => {
+    presetsLoadCustom.mockResolvedValue([customPreset()])
+    const user = userEvent.setup()
+    await renderPanel()
+
+    const del = within(tile('Sunset Kitty')).getByRole('button', { name: 'Delete' })
+    del.focus()
+    await user.keyboard(key)
+    await waitFor(() => expect(presetsSaveCustom).toHaveBeenCalledWith([]))
+
+    expect(screen.queryByAltText('Sunset Kitty')).toBeNull()
+    // The tile used to be a role="button" whose key handler took this keystroke
+    // and applied the preset instead of deleting it.
+    expect(gallerySetColorMap).not.toHaveBeenCalled()
+    // Delete must not sit inside another control.
+    expect(del.parentElement?.closest('button, [role="button"]')).toBeNull()
   })
 
   it('keeps the active mark when a DIFFERENT preset is deleted', async () => {
@@ -376,7 +406,7 @@ describe('ColorCustomizerPanel — deleting a custom preset', () => {
     fireEvent.click(card('Sunset Kitty'))
     expect(card('Sunset Kitty').getAttribute('aria-pressed')).toBe('true')
 
-    fireEvent.click(within(card('Ocean Kitty')).getByRole('button', { name: 'Delete' }))
+    fireEvent.click(within(tile('Ocean Kitty')).getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(presetsSaveCustom).toHaveBeenCalled())
 
     const remaining = presetsSaveCustom.mock.calls[0][0]
@@ -392,7 +422,7 @@ describe('ColorCustomizerPanel — deleting a custom preset', () => {
     fireEvent.click(card('Sunset Kitty'))
     expect(card('Sunset Kitty').getAttribute('aria-pressed')).toBe('true')
 
-    fireEvent.click(within(card('Sunset Kitty')).getByRole('button', { name: 'Delete' }))
+    fireEvent.click(within(tile('Sunset Kitty')).getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(screen.queryByAltText('Sunset Kitty')).toBeNull())
 
     for (const name of BUILT_IN_NAMES) {

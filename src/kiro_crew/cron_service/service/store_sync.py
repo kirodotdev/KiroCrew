@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from contextlib import contextmanager
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Iterator
@@ -38,6 +39,10 @@ from kiro_crew.cron_service.store import (
     decode_store,
     encode_store,
 )
+from kiro_crew.cron_service.zone_default_migration import (
+    DEFERRED_STORE_VERSION,
+    store_extra_for_save,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronService
@@ -49,20 +54,11 @@ logger = logging.getLogger("kiro_crew.cron")
 def list_jobs(self: CronService, include_disabled: bool = False) -> list[CronJob]:
     """List jobs from the in-memory snapshot — CACHE-ONLY, never touches disk.
 
-    This is a hot path: it is called directly on the gateway event loop by
-    the dashboard WebSocket status push, the dashboard REST handlers, the
-    Slack handlers, the apps SDK, and MCP tools. It performs NO filesystem
-    I/O — no lock-file open, no ``read_bytes()``, no digest hash — so a
-    large ``crons.json`` can never freeze the loop with synchronous I/O
-    (the ``no-blocking-call-on-event-loop`` rule). ``list(self._jobs)`` is
-    never torn: CPython swaps the list reference atomically.
-
-    Cross-process freshness is maintained OFF the loop: the timer tick
-    (``_on_timer``, every ≤``_TIMER_POLL_SECS``) and every mutator
-    ``_sync()`` the in-memory snapshot under the store lock, so an external
-    write is picked up within one poll interval. Callers that need to
-    observe a cross-process write *immediately* use :meth:`list_jobs_async`,
-    which offloads a locked ``_sync()`` + snapshot to a worker thread.
+    A hot path called on the gateway event loop, so it does no file I/O
+    (``no-blocking-call-on-event-loop``); ``list(self._jobs)`` is never torn.
+    The timer tick and every mutator refresh the snapshot off the loop, so an
+    external write shows up within ``_TIMER_POLL_SECS``. For an immediate
+    cross-process read use :meth:`list_jobs_async`.
     """
     return self._snapshot(list(self._jobs), include_disabled)
 
@@ -70,37 +66,14 @@ def list_jobs(self: CronService, include_disabled: bool = False) -> list[CronJob
 def count_enabled_from_disk(self: CronService) -> int:
     """Count enabled jobs by reading ``crons.json`` directly — thread-safe.
 
-    Unlike :meth:`list_jobs`, which serves the in-memory snapshot that the
-    loop-side timer refreshes, this performs ONLY a read-only file parse. It
-    never mutates loop-owned state (``self._jobs``, ``self._last_mtime``) and
-    never touches the asyncio timer, so it is safe to invoke from a worker
-    thread via ``asyncio.to_thread``.
+    It only parses the file and never touches ``self._jobs`` or the timer, so a
+    worker thread may call it. The dashboard status count uses it to see a job
+    the CLI or MCP just added, before the next timer tick.
 
-    This exists specifically for the dashboard status count refresh, which
-    needs an enabled-job count off the event loop that is current across
-    processes: a job added by the CLI or an MCP tool reaches the snapshot
-    only on the next timer tick, while this read sees it at once.
-
-    Enabled semantics come from the shared ``_record_is_enabled`` predicate
-    (the single owner used by ``_load`` too): a job is enabled when it is
-    neither user-paused nor auto-paused (with the legacy ``!enabled``
-    fallback for stores written before those fields existed). A slightly stale count is
-    acceptable here — the caller caches it and the atomic tmp→rename write
-    in ``_save`` guarantees a concurrent read sees a whole file, never a
-    partial one.
-
-    The read, parse and shape guards are :func:`_read_job_records`, shared
-    with the other two direct readers. Routing through it is what keeps the
-    WS status pusher alive on a corrupt store: catching only
-    ``(OSError, json.JSONDecodeError)`` here would let invalid UTF-8
-    (``UnicodeDecodeError``, from a bare locale-dependent ``read_text()``)
-    and deeply nested JSON (``RecursionError``, a ``RuntimeError``) escape
-    and kill the pusher. A count of 0 is the correct degrade: an
-    unreadable store has no jobs anyone can schedule.
-
-    The reduction itself lives in :func:`enabled_count_from_disk`, whose
-    ``loadable`` half this method deliberately discards — the status pusher
-    wants a number it can always render, not a fault to handle.
+    Enabled means neither user-paused nor auto-paused (``_record_is_enabled``).
+    The ``_read_job_records`` guards keep a corrupt store from killing the
+    status pusher; it counts 0 there. The ``loadable`` half of
+    :func:`enabled_count_from_disk` is dropped: the pusher needs a number.
     """
     return enabled_count_from_disk(self._path)[0]
 
@@ -186,37 +159,16 @@ def _file_lock(
 ) -> Iterator[None]:
     """Cross-process advisory lock on the cron store.
 
-    Acquires the lock with a NON-BLOCKING ``try_acquire_lock`` in a bounded
-    spin instead of a blocking ``fcntl.flock(LOCK_EX)``. A blocking flock
-    parks the calling thread in an uninterruptible kernel wait for as long
-    as another holder keeps the lock — and every store *mutator*
-    (:meth:`add_job`, :meth:`update_job`, :meth:`remove_job`,
-    :meth:`enable_job`, …) takes this lock directly on the gateway's
-    asyncio event loop. A single slow holder (a large atomic save on
-    network storage, the CLI process, or the off-loop batch-remove worker)
-    would therefore freeze the ENTIRE event loop — every unrelated session,
-    timer, and reaper — until it released.
+    A bounded non-blocking spin, not a blocking ``flock``: a blocking wait
+    behind one slow holder would park the thread with no way out. The spin
+    sleeps between tries (freeing the GIL) and raises :class:`CronStoreBusy`
+    (a :class:`TimeoutError`) after ``timeout``. ``flock`` on separate open
+    descriptions also excludes within one process, so worker threads serialize.
 
-    The non-blocking spin polls with a short ``time.sleep`` between
-    attempts (releasing the GIL so worker threads make progress) and raises
-    :class:`CronStoreBusy` (a :class:`TimeoutError` subclass) after
-    ``timeout`` rather than blocking indefinitely. flock on separate open
-    descriptions mutually excludes within a single process too, so this
-    still serializes the loop-side mutators against the ``asyncio.to_thread``
-    batch-remove and mutator workers.
-
-    The loop-resident mutator boundaries do NOT call this directly on the
-    event loop — they use the ``*_async`` mutator variants (``add_job_async``
-    et al.), which offload this lock+save to a worker thread and translate a
-    raised :class:`CronStoreBusy` into a clean retryable error. The bounded
-    sync path here still serves the CLI/MCP server processes (no event loop
-    to park) and remains a strict improvement over the old unbounded flock.
-
-    The ``no-blocking-call-on-event-loop`` invariant is MACHINE-ENFORCED:
-    :meth:`_guard_off_event_loop` raises :class:`CronLoopSafetyError` (strict
-    mode) or warns (default) if this is entered on a thread with a running
-    asyncio loop — so a future writer that calls a sync mutator on the loop
-    is caught rather than silently re-freezing it.
+    Loop callers use the ``*_async`` mutators, which run this in a worker and
+    turn :class:`CronStoreBusy` into a retryable error; the sync path serves
+    the loop-less CLI/MCP processes. :meth:`_guard_off_event_loop` raises
+    :class:`CronLoopSafetyError` (strict) or warns if entered on a running loop.
     """
     self._guard_off_event_loop()
     with cron_store_lock(self._dir, timeout=timeout, poll=poll):
@@ -278,87 +230,25 @@ def _sync(self: CronService) -> None:
     it. The bytes read here are the same bytes :meth:`_load` parses when a
     reload is needed, so the file is read at most once per changed sync.
 
-    ─────────────────────────────────────────────────────────────────────
-    EXHAUSTIVE AUDIT — every ``_sync()`` caller and raw store-``read``
-    site in this module, classified by whether it can run on the gateway
-    event loop. INVARIANT: **no ``_sync()`` / whole-file ``read_bytes()`` +
-    hash ever runs on the loop.** All blocking store I/O is either in a
-    worker thread (``asyncio.to_thread``) or in a loop-less process
-    (CLI / MCP). Enforced mechanically by
-    ``test_cron_locking_regression.py::TestReadPathsLocked`` (on-loop reads
-    AND the timer tick must not touch the store on the loop).
-
-    ``_sync()`` callers
-      • _persist_add_locked / _update_job_locked_kw / _remove_job_locked /
-        _remove_jobs_locked / _enable_job_locked / _ack_job_locked /
-        _unack_job_locked  → OFF-LOOP: reached from the loop only via their
-        ``*_async`` wrappers, which ``await asyncio.to_thread(...)``; also
-        called directly by loop-less CLI/MCP/app-SDK processes.
-      • _synced_snapshot  → OFF-LOOP (worker): the body of
-        list_jobs_async / get_job_async / run_job's offloaded refresh.
-      • _tick_scan_locked  → OFF-LOOP (worker): the timer tick's
-        (``_on_timer``) offloaded lock+sync+drain+snapshot transaction.
-      • _merge_job_result  → OFF-LOOP on the gateway (``_run_job_isolated``
-        calls it via ``asyncio.to_thread``); loop-less CLI/MCP may call it
-        directly.
-      • run_job  → now OFF-LOOP: its former on-loop ``_sync()`` moved into
-        the ``_synced_snapshot`` offload; the claim stays on
-        the loop and does NO store I/O.
-
-    Raw store ``read_bytes()`` sites
-      • _record_fingerprint (post-load/save) / _sync / _load  → all reached
-        only through the OFF-LOOP ``_sync()`` callers above (or a loop-less
-        process). None on the loop.
-      • initial ``_load()`` (construction / ``start()``)  → the plain
-        constructor loads INLINE (loop-less CLI/MCP/apps-SDK/tests only —
-        no loop to park). Loop contexts (the gateway) build via the async
-        factory ``CronService.create()``, which sets
-        ``_defer_initial_load=True`` and runs ``_load()`` via
-        ``asyncio.to_thread``; ``start()`` likewise offloads its ``_load()``.
-        ``_running`` is False during both, so neither arms a timer off-loop.
-        OFF-LOOP on the gateway.
-
-    Cache-only (NO store I/O at all — never lock, read, or hash)
-      • list_jobs / get_job  → on-loop hot paths; return the atomically-
-        swapped in-memory snapshot.
-      • _reaper_loop's ``jobs_by_id`` snapshot  → on-loop; cache-only,
-        same atomic-reference-swap rationale as list_jobs.
-    ─────────────────────────────────────────────────────────────────────
+    INVARIANT: no ``_sync()`` or whole-file read + hash runs on the gateway
+    loop (``test_cron_locking_regression.py::TestReadPathsLocked``). Callers:
+    the ``*_locked`` mutators (reached via ``*_async`` -> ``to_thread``, or a
+    loop-less CLI/MCP process), ``_synced_snapshot``, ``_tick_scan_locked`` and
+    ``_merge_job_result`` (all in workers). The gateway's first ``_load()``
+    runs in a worker via ``CronService.create()`` / ``start()``; the plain
+    constructor loads inline only in loop-less processes. ``list_jobs``,
+    ``get_job`` and the reaper's ``jobs_by_id`` read the cache and do no I/O.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
     if not self._path.exists():
-        # Clear the refusal latch: a store that is GONE is not an unreadable
-        # one, and _load's docstring already promises that a load which
-        # resolves -- "including a missing file" -- leaves the store writable.
-        # Returning bare left the latch set, so the one remediation this
-        # refusal PRINTS (move the unreadable file aside) did nothing on a
-        # live gateway: every later write kept failing until a restart. A
-        # fresh CLI/MCP process was unaffected because it reconstructs.
-        #
-        # Deliberately NOT a call to _load(), even though its missing-file
-        # branch clears this same flag: that branch also replaces _jobs with
-        # an empty list, which discards in-memory jobs not yet persisted --
-        # the reaper mutates a job and only then saves, so wiping first loses
-        # the update and the save never happens (test_cron_reaper's
-        # test_reaper_persists_state catches exactly that). Clearing the flag
-        # is the whole of the defect; emptying the list is a separate
-        # behaviour change and not one this needs.
-        #
-        # The fingerprint is left alone on purpose: the failed load that set
-        # this latch already reset it, so a file that reappears mismatches the
-        # cleared digest below and reloads normally.
-        #
-        # Clearing the latch re-opens _save(), so the snapshot it would write
-        # has to be trustworthy. When the latch was SET, _jobs came from a
-        # load that could not read the store -- it may predate an external
-        # removal, and writing it back resurrects whatever that writer
-        # deleted. _load's own missing-file branch empties the list for the
-        # same reason; this branch bypasses _load, so it must do it too.
-        # Conditioned on the latch, NOT unconditional: with the latch clear
-        # this is the ordinary no-store path, where the reaper's in-memory
-        # mutation is still waiting to be saved and wiping it would lose the
-        # update (test_cron_reaper's test_reaper_persists_state).
+        # A GONE store is not an unreadable one: clear the refusal latch, or
+        # "move the unreadable file aside" never unblocks a live gateway.
+        # Not a call to _load(): it empties _jobs, losing a reaper update made
+        # in memory but not yet saved (test_reaper_persists_state). Empty the
+        # list only when the latch was set: those jobs came from a failed load
+        # and writing them back could resurrect an external removal. The
+        # fingerprint was already reset by that failed load.
         if self._load_failed:
             self._jobs = []
         self._load_failed = False
@@ -366,33 +256,49 @@ def _sync(self: CronService) -> None:
     try:
         raw = self._path.read_bytes()
     except OSError:
-        # LATCH, the same as _load's two failure paths do. This is the THIRD
-        # way a read of the store can fail and the only one that never reaches
-        # _load, so returning bare left _save()'s guard -- the one thing
-        # standing between stale memory and the file -- open: a store that went
-        # unreadable AFTER a good load (EIO, EACCES, a botched restore) was
-        # overwritten from memory, discarding whatever it had come to hold.
-        #
-        # Still deliberately NOT un-latched: the store is unreadable here, so
-        # keeping an existing refusal is correct and clearing it would suppress
-        # a live fault rather than report it.
-        #
-        # _jobs is deliberately NOT emptied, unlike _load's paths: the
-        # missing-file rationale above applies unchanged -- wiping the list
-        # discards a mutation the reaper has made but not yet saved.
-        #
-        # The fingerprint has to be cleared WITH the latch, exactly as both
-        # _load failure paths pair them. Left alone, a fault over an UNCHANGED
-        # store leaves the tracked digest still matching the file, so the next
-        # _sync sees no change, skips the _load that is the only thing that
-        # clears this latch, and a store that is now perfectly healthy refuses
-        # every write until the process restarts.
+        # Latch, as _load's failure paths do, so _save() will not overwrite a
+        # store that went unreadable after a good load (EIO, EACCES). _jobs is
+        # kept: it may hold an unsaved reaper update. Reset the fingerprint with
+        # the latch, or an unchanged file never reloads and the latch never
+        # clears once the store is healthy again.
         self._reset_fingerprint()
         self._load_failed = True
         return
     if seams.store_digest(raw) != self._last_digest:
         logger.info("Cron file changed externally, reloading")
         self._load(_preread=raw)
+
+
+def _keep_unzoned_jobs_on_utc(jobs: list[CronJob], extra: Mapping[str, Any]) -> bool:
+    """Stamp UTC on an older store's unzoned jobs that fired in UTC (``zone_default_migration``).
+
+    ``False`` when the config cannot be read: the zone those jobs inherited is
+    unknown, so nothing is stamped, they run in UTC in memory meanwhile, and the
+    caller keeps the store's older version for the next load to settle. A job an
+    earlier such save listed as following the default (*extra*) is never one of
+    them. It never makes the store unreadable.
+    """
+    from kiro_crew.cron_service.zone_default_migration import (
+        configured_default_zone,
+        follows_default_ids,
+        hold_jobs_on_utc_in_memory,
+        pin_jobs_read_in_utc,
+    )
+
+    follows_default = follows_default_ids(extra)
+
+    try:
+        zone = configured_default_zone()
+    except Exception:
+        logger.warning(
+            "Cron store upgrade deferred: config unreadable, jobs with no zone are not "
+            "stamped until it can be read",
+            exc_info=True,
+        )
+        hold_jobs_on_utc_in_memory(jobs, follows_default)
+        return False
+    pin_jobs_read_in_utc(jobs, zone, follows_default)
+    return True
 
 
 def _load(self: CronService, _preread: bytes | None = None) -> None:
@@ -419,27 +325,21 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
         raw = _preread if _preread is not None else self._path.read_bytes()
         document = decode_store(raw)
         if document is None:
-            # A document that parses but is not an object holding a jobs
-            # LIST (top-level [], a scalar, {"jobs": null}) cannot yield
-            # any job — same salvage story as unparseable JSON (there is
-            # nothing to keep), and without this guard the per-entry build
-            # would raise an uncaught AttributeError/TypeError into _sync
-            # and gateway startup.
+            # Parses but holds no jobs list ([], a scalar, {"jobs": null}):
+            # nothing to salvage, and building entries would raise into startup.
             logger.warning("Failed to load cron store: document is not an object with a jobs list")
             self._jobs = []
             self._reset_fingerprint()
             self._load_failed = True
             return
-        # One malformed or legacy record is warned about and skipped by
-        # decode_jobs; every well-formed job survives, and the whole-store
-        # reset below is reserved for a file that yields nothing parseable
-        # at all, where there is nothing to salvage.
-        # Fingerprint from the stat taken BEFORE the read: if a writer
-        # replaced the file between our stat and read we may have loaded the
-        # newer content under an older fingerprint, which only costs one
-        # redundant reload on the next _sync — never a lost update. The
-        # digest is taken from the exact bytes we parsed so _sync compares
-        # like for like.
+        settled = not document.predates_local_default or _keep_unzoned_jobs_on_utc(
+            document.jobs, document.extra
+        )
+        # decode_jobs skips a malformed record with a warning; only a file
+        # with nothing parseable resets the whole store.
+        # Fingerprint from the stat taken BEFORE the read: a writer racing in
+        # between costs one redundant reload, never a lost update. The digest
+        # is of the exact bytes parsed, so _sync compares like for like.
         self._last_mtime = st.st_mtime
         self._last_mtime_ns = st.st_mtime_ns
         self._last_size = st.st_size
@@ -453,18 +353,14 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
             self._apply_held_run_records_to(document.jobs)
             self._jobs = document.jobs
         self._keep_store_document(document)
+        if not settled:
+            # Saves keep the older version, so a load that can read the config
+            # still settles these jobs (zone_default_migration).
+            self._store_version = DEFERRED_STORE_VERSION
     except (OSError, ValueError, TypeError, RecursionError) as exc:
-        # Same class set as _read_job_records' json.loads guard, kept
-        # spelled identically so the two cannot drift. A decode-error-only
-        # handler here let two classes escape into _sync and gateway
-        # startup: UnicodeDecodeError (invalid UTF-8 — a SIBLING subclass
-        # of ValueError, not an ancestor of json.JSONDecodeError) and
-        # RecursionError (deeply nested JSON — a RuntimeError, outside the
-        # ValueError tree entirely). OSError covers the stat()/read_bytes()
-        # above, which _sync already guards but the constructor's
-        # _load() — and so gateway startup — does not. A genuinely absent
-        # file never reaches here: the exists() check returns early, so a
-        # fresh install still loads silently rather than warning.
+        # Same class set as _read_job_records' guard: ValueError covers
+        # UnicodeDecodeError, RecursionError is deeply nested JSON, and OSError
+        # covers stat()/read_bytes() at construction, which _sync does not guard.
         logger.warning("Failed to load cron store: %s", exc)
         self._jobs = []
         self._reset_fingerprint()
@@ -481,12 +377,9 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
 def _unreadable_error(self: CronService) -> CronStoreUnreadable:
     """The one wording for a refusal caused by an unreadable store.
 
-    Built in a single place because THREE guards raise it — :meth:`_sync_for_write`
-    before a mutation, :meth:`_save` at the disk boundary, and
-    :meth:`raise_if_store_unreadable` for a caller that must refuse without
-    attempting a write at all — and the message names the path plus the
-    remediation that the CLI, dashboard, MCP and Slack boundaries surface
-    verbatim. Two copies of that sentence would drift.
+    Three guards raise it (:meth:`_sync_for_write`, :meth:`_save`,
+    :meth:`raise_if_store_unreadable`), and the CLI, dashboard, MCP and Slack
+    show the message verbatim, so it is built in one place.
     """
     return CronStoreUnreadable(
         f"refusing to write cron store: the last load could not read {self._path}, "
@@ -498,18 +391,12 @@ def _unreadable_error(self: CronService) -> CronStoreUnreadable:
 def raise_if_store_unreadable(self: CronService) -> None:
     """Refuse if the last load could not read the store. NO I/O of its own.
 
-    Exists because every other guard is on a WRITE, and a caller that decides
-    whether to write by first comparing the loaded jobs against a desired state
-    never gets that far: an unreadable store loads as an EMPTY list — :meth:`_load`
-    warns, empties, latches ``_load_failed`` and RETURNS rather than raising, and
-    :meth:`_synced_snapshot` only translates :class:`CronStoreBusy` — so there is
-    no job to diverge, no mutation is attempted, and such a caller reports a
-    successful no-op over a corrupt file. That is the quiet-versus-broken
-    conflation, and it is invisible to :meth:`_sync_for_write`.
+    For a caller that compares loaded jobs with a desired state before writing:
+    an unreadable store loads as an EMPTY list without raising, so no write is
+    tried and the caller would report a no-op over a corrupt file.
 
-    Reads the latch only, so it is safe on the event loop and adds no second read
-    after a :meth:`list_jobs_async` — which has just refreshed the latch under the
-    store lock. Call it AFTER that read, or the answer is one poll stale.
+    Reads only the latch, so it is safe on the loop. Call it AFTER a
+    :meth:`list_jobs_async`, which refreshes the latch, or it is one poll stale.
     """
     if self._load_failed:
         raise self._unreadable_error()
@@ -518,29 +405,15 @@ def raise_if_store_unreadable(self: CronService) -> None:
 def _sync_for_write(self: CronService) -> None:
     """:meth:`_sync` for a MUTATING transaction — refuse BEFORE the mutation.
 
-    Every user-facing mutator edits ``self._jobs`` and only then reaches
-    ``_save()``, so refusing at the disk boundary alone left the caller told
-    "rejected" while the mutation stayed in the in-memory list — a resumed job
-    the timer can still fire, an ack already consumed, a removal already gone
-    from the cache. All TEN user-facing writers in ``_save``'s audit table now
-    route through here; the three BACKGROUND ones deliberately do not (below).
-    That is reachable, not theoretical:
-    :meth:`_tick_scan_locked` documents an in-memory-snapshot fallback for a
-    contended lock — it skips ``_sync()`` and returns ``list(self._jobs)`` — so
-    the due-scan could hand a refused job to the runner.
+    A mutator edits ``self._jobs`` before ``_save()``, so a refusal only at the
+    disk boundary would leave the change in memory (a resumed job the timer can
+    still fire, via :meth:`_tick_scan_locked`'s cache fallback). ``_save()``
+    cannot roll back fields it never saw, so the ten user-facing writers refuse
+    here first; the check follows ``_sync()``, which sets ``_load_failed``.
 
-    Refusing up front rather than undoing afterwards is what makes that
-    unrepresentable. ``_save()`` cannot roll back a mutation it never saw: its
-    write-path audit lists roughly a dozen writers, each touching different
-    fields, so a generic rollback there has nothing to key on and a partial one
-    would be a fresh defect. The check sits after ``_sync()`` because
-    ``_sync()`` is what sets ``_load_failed``.
-
-    ``_save()`` keeps its own guard rather than delegating to this one: it is
-    the backstop for any writer that does not come through here, and the three
-    BACKGROUND writers depend on it firing at the disk boundary — each wraps
-    only its ``_save()`` call, so an earlier raise would abort the reaper and
-    the tick instead of degrading them.
+    ``_save()`` keeps its own guard as the backstop: the three BACKGROUND
+    writers wrap only their ``_save()`` call, so raising earlier would abort
+    the reaper and the tick instead of degrading them.
     """
     self._sync()
     if self._load_failed:
@@ -554,32 +427,17 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
     save passes copies so a running job is written without being changed.
 
     RAISES :exc:`CronStoreUnreadable` when the last :meth:`_load` could not
-    read the store, instead of writing. ``_load`` degrades an unreadable
-    store to an empty job list, which is indistinguishable HERE from an
-    honestly empty one — and this method serialises ``self._jobs``
-    wholesale, so one mutation after a failed load would persist that empty
-    list over a store still holding records. Measured on the base handler
-    alone (a ``json.JSONDecodeError`` store plus one ``add_job``), so this
-    is not a hazard the widened ``_load`` guard introduced.
-
-    It RAISES rather than returning quietly because a silent refusal is the
-    same silence-shaped failure this change exists to break: the mutator
-    would return success to the dashboard/CLI/MCP caller for a write that
-    never happened. Every writer below reaches disk through this one
-    method, so the single check covers all of them; the three BACKGROUND
-    writers catch the error and degrade so a corrupt store cannot take down
-    the reaper, the tick scan or the job runner. A missing store and an
-    honestly empty one are NOT failures (``_load`` clears the flag for
-    both), so a fresh install still writes.
+    read the store: that load left an empty list, and writing it would wipe a
+    store that still holds records. Raising, not returning, keeps the caller
+    from reporting success for a write that never happened. The three
+    BACKGROUND writers catch it and degrade. A missing or honestly empty store
+    is not a failure, so a fresh install still writes.
 
     WRITE-PATH AUDIT — every ``_save()`` call site and every structural
-    ``self._jobs`` mutation, each classified locked/unlocked and
-    on-loop/off-loop. INVARIANT: every writer holds :meth:`_file_lock` and
-    is reached from the gateway event loop ONLY via ``asyncio.to_thread``
-    (or runs in a genuinely loop-less CLI/MCP process). No bare on-loop
-    ``_save()`` remains. Keep this table in sync when adding a writer.
-    Counted by EXECUTABLE call site: three other lines in this file mention
-    ``self._save()`` in a comment or docstring and are not calls.
+    ``self._jobs`` mutation. INVARIANT: every writer holds :meth:`_file_lock`
+    and is reached from the gateway loop ONLY via ``asyncio.to_thread`` (or
+    runs in a loop-less CLI/MCP process). Keep this table in sync when adding
+    a writer.
 
     ==============================  ==========  ======================================
     Writer (method)                 Locked?     Loop entry
@@ -610,16 +468,19 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
     if self._load_failed:
         raise self._unreadable_error()
     self._dir.mkdir(parents=True, exist_ok=True)
+    written = self._jobs if jobs is None else jobs
     document = encode_store(
-        self._jobs if jobs is None else jobs,
+        written,
         version=self._store_version,
-        extra=self._store_extra,
+        extra=store_extra_for_save(
+            self._store_extra, written, deferred=self._store_version == DEFERRED_STORE_VERSION
+        ),
         unknown_fields=self._unknown_fields,
     )
     # Atomic write: unique tmp → fsync → rename, then sync the directory so
     # the rename itself survives a sudden host restart. Without both syncs a
     # save that returned can come back as an empty or missing crons.json.
-    # Deferred import to avoid circular dependency (pre-existing)
+    # Deferred import to avoid a circular dependency.
     from kiro_crew.atomic_write import atomic_write, fsync_dir
 
     atomic_write(self._path, document, fsync=True)

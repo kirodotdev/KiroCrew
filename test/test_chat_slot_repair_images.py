@@ -6,7 +6,7 @@ rebind guard), passes it an ``after_reset_in_lock`` hook that repairs the
 transcript WHILE the kiro-cli process is down, and then re-issues the
 interrupted turn with ``continue_slot_turn``. These tests pin that composition
 and the repair hook, mocking the two shared helpers so this file does not
-re-test the reload two-lock dance (``test_chat_slot_reload`` owns that) or the
+re-test the reload two-lock dance (the reload's own tests own that) or the
 continuation machinery (``continue_turn`` owns that).
 """
 

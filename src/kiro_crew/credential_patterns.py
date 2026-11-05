@@ -9,8 +9,9 @@ read ``security.py`` as SOURCE TEXT and grepped it for a literal. That guard
 fires on a rename, not on a divergence in meaning, and it costs a test per
 duplicated pattern.
 
-This module is the single home for those spellings. Both consumers import from
-here, so there is nothing left to keep in sync.
+This module is the single home for those spellings, and for the ``token`` URL
+parameter's (:data:`TOKEN_PARAMETER`). Both consumers import from here, so there
+is nothing left to keep in sync.
 
 Why fragments rather than compiled patterns
 -------------------------------------------
@@ -19,15 +20,18 @@ five differently shaped patterns -- three plain alternation branches, one
 ``X-Amz-Credential=`` presigned-URL matcher and one fully anchored ``^...$``
 parameter validator -- and each needs its own anchors, continuations and compile
 flags. A compiled pattern could not be reused at four of those five sites.
+:data:`TOKEN_PARAMETER` is the one whole pattern here: both of its sites compile
+it as written.
 
 Why this module imports NOTHING
 -------------------------------
-Not even ``re``, and not even ``from __future__ import annotations`` -- the one
-annotation here needs none. ``log_redaction`` is a deliberate import leaf -- it is
+Not even ``re``, and not even ``from __future__ import annotations`` -- the
+annotations here need none. ``log_redaction`` is a deliberate import leaf -- it is
 installed before the heavy modules load -- so anything it imports is on the
-bootstrap path. Exporting plain strings keeps this module's import cost at zero
-and makes it impossible for a future edit here to drag a dependency into that
-path. ``test_credential_patterns.py`` pins the import-free shape.
+bootstrap path. Exporting plain strings, plus the few pure string builders behind
+:data:`TOKEN_PARAMETER`, keeps this module's import cost near zero and makes it
+impossible for a future edit here to drag a dependency into that path.
+``test_credential_patterns.py`` pins the import-free shape.
 
 The two AWS spellings deliberately DIVERGE
 ------------------------------------------
@@ -130,6 +134,176 @@ VENDOR_TOKEN_PATTERNS = (
     ("gitlab-pat", GITLAB_PAT),
     ("npm-token", NPM_TOKEN),
     ("pypi-token", PYPI_TOKEN),
+)
+
+
+# ── Token URL parameter ──
+# The scrubber's pass 4 and the log-redaction floor compile the same
+# :data:`TOKEN_PARAMETER`, so both read a token parameter the same way; what each
+# then skips or exempts is its own. The fragments below are its parts; the
+# scrubber also builds its streaming partial from them.
+#
+# Group 1 is the VALUE, and only the value is replaced: `token=` stays visible
+# so a redacted URL still reads as a token URL. The precedent is
+# `instances/token_mint._TOKEN_RE` (`[?&]token=([^\s&]+)`), which one caller
+# kept privately because the scrubber lacked the pass; the value class here is
+# WIDER-terminated per the issue's requirement -- it also stops at quotes and
+# `#` so a match cannot run past the parameter into a quoted string or a URL
+# fragment -- and additionally excludes the RFC 3986-forbidden bytes
+# (`<>{}|\^` and backtick): no legal URL query can carry them, while SOURCE
+# and DOC text quoting a token URL does (`?token={token}` in an f-string,
+# `` ?token=` `` in markdown, `?token=<your-token>` in prose). Without the
+# exclusion, pass 4 matches the template placeholder and the chip-diff path
+# (`chat_runner.py`) redacts a snapshot of `dashboard/urls.py` IN PLACE with
+# no recovery -- the exact non-cosmetic false-positive surface ``redaction_patterns``
+# cites as its reason for refusing to relax the JWT floor. A template whose
+# value starts with an excluded byte now yields an empty value and no match.
+#
+# The parameter NAME folds ASCII case (`(?ai:token)`) -- unlike `eyJ`, a
+# parameter name is not a fixed encoding prefix, and `?Token=` / `?TOKEN=`
+# from a third-party provider carries the same bearer value. ASCII scope keeps
+# Unicode lookalikes such as the Kelvin sign from spoofing the parser-visible
+# name; the value bytes are still matched exactly as written.
+#
+# ACCEPTED RESIDUAL: a template value made of LEGAL query bytes
+# (`?token=$TOKEN`, `?token=%s`) still matches and is redacted -- the class
+# excludes only bytes no legal query can carry, and a shape test on the value
+# would reintroduce the false-negative lever this pass exists to avoid.
+_TOKEN_PARAM_VALUE_CLASS = r"[^\s&\"'#<>{}|\\^`]"
+
+_HTML_REF_AMP = (
+    r"&(?:amp;|AMP;|amp(?![0-9A-Za-z])|AMP(?![0-9A-Za-z])"
+    r"|#0{0,8}38(?:;|(?![0-9;]))|#[Xx]0{0,8}26(?:;|(?![0-9A-Fa-f;])))"
+)
+_HTML_REF_QUEST = r"&(?:quest;|#0{0,8}63(?:;|(?![0-9;]))|#[Xx]0{0,8}3[Ff](?:;|(?![0-9A-Fa-f;])))"
+_HTML_REF_EQUALS = r"&(?:equals;|#0{0,8}61(?:;|(?![0-9;]))|#[Xx]0{0,8}3[Dd](?:;|(?![0-9A-Fa-f;])))"
+_TOKEN_PARAM_SEP_ENTITY_RE = rf"(?:{_HTML_REF_AMP}|{_HTML_REF_QUEST})"
+_TOKEN_PARAM_SEP_RE = rf"(?:[?&]|{_TOKEN_PARAM_SEP_ENTITY_RE})"
+_TOKEN_PARAM_EQ_RE = rf"(?:=|{_HTML_REF_EQUALS})"
+
+
+# Apply one standard decode per pipeline stage. An HTML parser decodes these
+# references into structure BEFORE handing an attribute value to a query parser,
+# while that query parser splits on raw separators BEFORE percent-decoding the
+# parameter name. HTML references are therefore structure here, while encoded
+# `%26` / `%3D` remain later-stage data rather than separators.
+#
+# Deliberate declines follow the HTML5 parser's actual table and attribute state:
+# `&amptoken=` is unchanged because semicolon-less `&amp`/`&AMP` is decoded
+# only before a NON-alphanumeric per the WHATWG flush rule; `&Amp;`,
+# `&quest`, and `&equals` are absent from the table; `&amp;amp;token=` decodes only once to a non-token parameter name;
+# and `%26token=` / `?token%3D` are data when the query parser performs its split.
+#
+# Numeric references stop at eight leading zeros. An unbounded `0*` would make
+# the streaming WEAK holdback unbounded, so this is a DoS bound rather than a
+# claim that longer spellings differ in the HTML specification.
+# Each letter composes bounded HTML references over its literal byte and all
+# three bytes of its percent escape.
+def _html_numeric_refs(cp: int) -> list[str]:
+    """The two bounded HTML numeric spellings of one code point.
+
+    Mirrors `_HTML_REF_AMP`'s shape byte for byte, including the <=8-leading-zero
+    DoS bound and the WHATWG flush rule (a semicolon-less numeric reference is
+    decoded when the next byte cannot extend the number).
+
+    The `;` is excluded from the zero-width alternative so a PRESENT semicolon
+    MUST be consumed by the reference. Without it the engine can backtrack the
+    reference to its semicolon-less branch and hand the `;` to a FOLLOWING pattern
+    that accepts it: on `?token&#61;` with an empty value, `_TOKEN_PARAM_RE`'s EQ
+    gave up its `;` and the value class captured it, so pass 4 spliced the
+    credential tag over the semicolon in text `chat_runner.py` redacts IN PLACE.
+    A real parser never leaves the terminator behind (`&#61;` decodes to `=`,
+    `&#61;;` to `=;`), so the zero-width branch with `;` next models a decode no
+    parser performs. Today only `_HTML_REF_EQUALS` is reachable -- `;` matches no
+    name-letter, nibble, or separator alternative -- but the exclusion is uniform
+    in this generator so the invariant is structural rather than per-site. The
+    named `amp`/`AMP` lookaheads are deliberately NOT changed: `amp;` is ordered
+    first and wins on every match, and the name position rejects `;`.
+    """
+    return [
+        rf"&#0{{0,8}}{cp}(?:;|(?![0-9;]))",
+        rf"&#[Xx]0{{0,8}}{cp:x}(?:;|(?![0-9A-Fa-f;]))",
+    ]
+
+
+def _html_or_literal(chars: str) -> str:
+    """One anchor byte: its literal spellings, or an HTML reference to any of them.
+
+    The literal class is left for the surrounding scoped `(?ai:...)` to fold, as
+    the percent ladder already relies on. A numeric reference carries DIGITS,
+    which no case fold reaches, so a letter byte emits references for BOTH cases
+    explicitly -- without that, `%6&#102;` matched while `%6&#70;` did not.
+    """
+    literals = sorted(set(chars))
+    alternatives = ["[" + "".join(literals) + "]" if len(literals) > 1 else literals[0]]
+    for char in literals:
+        alternatives += _html_numeric_refs(ord(char))
+        if char.isalpha():
+            alternatives += _html_numeric_refs(ord(char.swapcase()))
+    return "(?:" + "|".join(alternatives) + ")"
+
+
+#: `%` at the HTML stage. `&percnt;` REQUIRES its semicolon: unlike `amp`, it is
+#: absent from the 106-entry semicolon-less legacy set, so `&percnt74` is data.
+#: Named references are case-sensitive, so disable the surrounding name ladder's
+#: ASCII case fold for this literal while numeric references keep folding `X`.
+_PERCENT_SIGN_RE = "(?:" + "|".join(["%", *_html_numeric_refs(0x25), "(?-i:&percnt;)"]) + ")"
+
+
+def _token_name_letter(letter: str) -> tuple[str, str]:
+    """(complete, partial) spellings of one `token` letter.
+
+    COMPLETE is every spelling that decodes to the letter: the literal
+    (ASCII-case folded by the caller's `(?ai:...)`), an HTML reference to either
+    case, and a percent escape whose three bytes are EACH spellable at the HTML
+    stage -- the composition the two modelled stages admit (`&#37;74`,
+    `%&#55;&#52;`). ASCII case differs in the HIGH nibble only, so the low nibble
+    is case-invariant and the high nibble is a two-digit class.
+
+    PARTIAL adds every end-of-chunk prefix whose last byte is NOT in
+    `_CRED_CLASS` -- i.e. one ending at a `;` -- because `natural_cut` already
+    holds every other prefix. The bare-`%` forms are kept from the round-4
+    ladder so its committed behaviour is unchanged.
+    """
+    lower, upper = format(ord(letter), "x"), format(ord(letter.upper()), "x")
+    assert lower[1] == upper[1], letter
+    high = _html_or_literal(lower[0] + upper[0])
+    low = _html_or_literal(lower[1])
+    complete = (
+        "(?:"
+        + "|".join(
+            [
+                letter,
+                *_html_numeric_refs(ord(letter)),
+                *_html_numeric_refs(ord(letter.upper())),
+                _PERCENT_SIGN_RE + high + low,
+            ]
+        )
+        + ")"
+    )
+    partial = (
+        "(?:"
+        + "|".join(
+            [
+                complete,
+                _PERCENT_SIGN_RE + high,
+                _PERCENT_SIGN_RE,
+                rf"%[{lower[0]}{upper[0]}]?",
+            ]
+        )
+        + ")"
+    )
+    return complete, partial
+
+
+_TOKEN_PARAM_NAME_SPELLINGS = tuple(_token_name_letter(c) for c in "token")
+_TOKEN_PARAM_NAME_RE = "".join(c for c, _ in _TOKEN_PARAM_NAME_SPELLINGS)
+
+#: A ``token`` URL parameter; group 1 is its value. A ``${`` right after
+#: ``token=`` is a template literal, not a value.
+TOKEN_PARAMETER = (
+    rf"{_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE}){_TOKEN_PARAM_EQ_RE}"
+    rf"(?!\$\{{)({_TOKEN_PARAM_VALUE_CLASS}+)"
 )
 
 

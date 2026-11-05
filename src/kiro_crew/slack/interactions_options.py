@@ -161,8 +161,15 @@ async def _route_action_to_session(
     context_tag: str,
     action_id_value: str,
     blocks: list[dict],
+    user_meta: dict[str, Any] | None = None,
+    pinned_slot: str | None = None,
 ) -> None:
-    """Shared logic for routing an action:: interaction to the agent session."""
+    """Shared logic for routing an action:: interaction to the agent session.
+
+    *user_meta* is the routed user row's meta (a code channel's Slack sender).
+    *pinned_slot* is a bound code channel's session: the answer is delivered
+    there, and its label posts top-level like every other post in the channel.
+    """
     assert _orch and _orch.slack  # caller already checked  # noqa: S101
 
     # Redact label before any Slack surface
@@ -177,7 +184,7 @@ async def _route_action_to_session(
         logger.debug("Failed to update action message", exc_info=True)
 
     # Post display text as visible user message
-    new_ts = await _orch.slack.post_message(channel, label, thread_ts)
+    new_ts = await _orch.slack.post_message(channel, label, None if pinned_slot else thread_ts)
     if not new_ts:
         logger.warning("Failed to post action label — aborting action routing")
         return
@@ -221,19 +228,60 @@ async def _route_action_to_session(
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
             action_context=action_context,
+            target_slot_name=pinned_slot,
+            route_pinned=pinned_slot is not None,
             start_priority=StartPriority.FOREGROUND,
+            user_meta=user_meta,
         )
     )
     _orch._handler_tasks.add(t)
     t.add_done_callback(_orch._handler_tasks.discard)
 
 
+class ChannelAgentMismatchError(Exception):
+    """The thread's channel is served by a different agent than the import's slot."""
+
+
+IMPORT_AGENT_MISMATCH_NOTICE = (
+    "This channel is served by its own agent, so its threads cannot be imported"
+    " into a dashboard session on another agent. Open a dashboard session on this"
+    " channel's agent and link it from there."
+)
+
+
 async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: str) -> Any:
     """Fetch a Slack thread, redact messages, and import into a new dashboard slot."""
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+    from kiro_crew.slack.handler import (
+        channel_agent_mismatch,
+        channel_pinned_agent,
+        link_agent_mismatch,
+    )
 
     # Idempotency: return existing slot if already linked
     existing = ds.get_linked_slot(thread_ts)
+    # A channel pinned to an agent is served only by that agent. The import
+    # opens a slot on the default agent, so refuse it in such a channel
+    # (and an existing link on another agent) before any slot or link exists.
+    slot_agent = (getattr(existing, "agent", "") or "") if existing else ""
+    slot_kind = (getattr(existing, "agent_kind", "") or "") if existing else ""
+    # An existing slot is judged by the execution record its turns run on.
+    existing_record = None
+    if existing and channel_pinned_agent(channel) is not None:
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.slack.handler import read_link_record
+
+        existing_record = await read_link_record(effective_session_key(existing))
+        # The record read awaited: an existing link that changed meanwhile is
+        # not the one judged here.
+        if ds.get_linked_slot(thread_ts) is not existing:
+            raise ChannelAgentMismatchError(channel)
+    if (
+        link_agent_mismatch(channel, existing, existing_record)
+        if existing
+        else channel_agent_mismatch(channel, slot_agent, slot_kind)
+    ) is not None:
+        raise ChannelAgentMismatchError(channel)
     if existing:
         return existing
 
@@ -252,7 +300,17 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     truncated = len(msgs) > 50
     if truncated:
         msgs = msgs[-50:]
+    # The thread fetch awaited: read the channel's agent again before any slot.
+    if channel_agent_mismatch(channel, "", "") is not None:
+        raise ChannelAgentMismatchError(channel)
     slot = ds.get_or_create_slot()
+    pinned = channel_pinned_agent(channel)
+    if pinned and pinned != "<unknown>":
+        # The check above matched the default template to the channel's
+        # template; pin that choice on the slot so it is not left open to a
+        # later first-send adoption of another agent.
+        slot.agent = pinned
+        slot.agent_kind = "template"
     slot.title = f"Slack thread {thread_ts[:10]}" + (" (truncated)" if truncated else "")
     bot_id = getattr(ds, "_self_bot_id", None) or ""
     for m in msgs:
@@ -384,8 +442,11 @@ async def _answer_options(
     blocks: list[dict],
     selected_indices: list[int],
     tool_name: str,
+    user_meta: dict[str, Any] | None = None,
 ) -> None:
     """Answer the OPTIONS card posted as *msg_ts* with the choices at *selected_indices*.
+
+    *user_meta* is the routed user row's meta (a code channel's Slack sender).
 
     The one answer path for a one-click button and for the "Choose several..." modal,
     so both send exactly the same text down the same path: the chosen button values,
@@ -612,6 +673,7 @@ async def _answer_options(
             route_pinned=_route_pinned,
             asker_key=_asker_key,
             start_priority=StartPriority.FOREGROUND,
+            user_meta=user_meta,
         )
     )
     _orch._handler_tasks.add(t)
@@ -703,6 +765,21 @@ async def _handle_options_several_submission(payload: dict) -> None:
     ):
         logger.info("slack OPTIONS choice dropped: denied by channels governance policy")
         return
+    from kiro_crew.slack.code_channels.routing import (
+        action_user_meta,
+        answer_unroutable,
+        options_answer_permitted,
+    )
+
+    # A code channel's activation (and its origin's) is re-read at the submit: a
+    # card posted before the channel went to review/off must not run a turn.
+    if not options_answer_permitted(channel, user_id):
+        return
+    # Its session closed: say so, rather than run the answer as a thread turn.
+    if await answer_unroutable(_orch, channel, user_id):
+        return
+    # A modal answer in a code channel names its submitter on the routed row.
+    user_meta = action_user_meta(channel, payload)
     values = (view.get("state") or {}).get("values") or {}
     picked = ((values.get(OPTIONS_SEVERAL_BLOCK) or {}).get(OPTIONS_SEVERAL_INPUT) or {}).get(
         "selected_options"
@@ -723,6 +800,7 @@ async def _handle_options_several_submission(payload: dict) -> None:
         blocks=list(request.blocks),
         selected_indices=indices,
         tool_name="options_several",
+        user_meta=user_meta,
     )
 
 
@@ -748,6 +826,22 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
     thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
     user_id = payload.get("user", {}).get("id", "")
     team_id = (payload.get("team") or {}).get("id", "")
+    from kiro_crew.slack.code_channels.routing import (
+        action_answer_slot,
+        action_user_meta,
+        answer_unroutable,
+        options_answer_permitted,
+    )
+
+    # A code channel's activation (and its origin's) is re-read at the click: a
+    # control posted before the channel went to review/off must not run a turn.
+    if not options_answer_permitted(channel, user_id):
+        return
+    # Its session closed: say so, rather than run the click as a thread turn.
+    if await answer_unroutable(_orch, channel, user_id):
+        return
+    # A button answer in a code channel names its clicker on the routed row.
+    user_meta = action_user_meta(channel, payload)
     blocks = payload.get("message", {}).get("blocks", [])
 
     # ── Standard OPTIONS choice: one click answers with that button's choice ──
@@ -768,6 +862,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             blocks=blocks,
             selected_indices=[int(_suffix)],
             tool_name="options",
+            user_meta=user_meta,
         )
         return
 
@@ -790,6 +885,8 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             "Action button clicked",
             action_id_value,
             blocks,
+            user_meta=user_meta,
+            pinned_slot=action_answer_slot(channel),
         )
         return
 
@@ -826,5 +923,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             "Action element selected",
             action_id_value,
             blocks,
+            user_meta=user_meta,
+            pinned_slot=action_answer_slot(channel),
         )
         return

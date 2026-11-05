@@ -12,9 +12,7 @@ from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.cron import CronStoreBusy
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_app_source(tmp_path, name="api-test-app"):
@@ -64,9 +62,7 @@ def _make_app():
     return app
 
 
-# ---------------------------------------------------------------------------
 # Tests
-# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_list_empty(tmp_path, monkeypatch):
@@ -211,11 +207,8 @@ async def test_uninstall_aborts_409_when_cron_cleanup_busy(tmp_path, monkeypatch
     """Uninstall must ABORT (retryable 409) when app-cron cleanup cannot
     complete, instead of logging and proceeding.
 
-    Uninstall is irreversible: past this point the per-app cron manifest is
-    dropped and the app directory is deleted. If owned jobs are still persisted
-    and ENABLED then, they become permanent orphans that keep firing their
-    command/script/agent payload with no owning app left to clean them up. So
-    the app must stay installed and the uninstall be retryable.
+    Past this point the app is deleted, and ENABLED owned jobs would keep firing as
+    orphans.
     """
     _setup_env(tmp_path, monkeypatch)
     src = _make_app_source(tmp_path)
@@ -254,17 +247,10 @@ async def test_uninstall_aborts_409_when_cron_cleanup_busy(tmp_path, monkeypatch
 async def test_uninstall_aborts_non_retryable_when_cron_store_unreadable(tmp_path, monkeypatch):
     """Same abort as the busy case, but reported NON-retryable and never retried.
 
-    An unreadable store degrades the owned-job set to empty, so cleanup reports
-    zero removed for a reason unrelated to ownership. Continuing deletes the app
-    while its still-ENABLED jobs remain on disk to resume once the store parses.
-
-    Two things differ from `CronStoreBusy` and both come from the code, not from
-    symmetry. `handlers/cron_shared.py` documents unreadable as `retryable: False` --
-    "an unreadable file does not heal on its own, so a client that retries on busy
-    must NOT retry on this" -- so the abort must not tell the caller to retry. And
-    `_deregister_crons_with_retry` catches busy IN ORDER TO retry, so unreadable
-    must pass through it untouched rather than burn every attempt on a store that
-    cannot heal. The call count below is what pins that.
+    An unreadable store reads as zero owned jobs, which would delete the app while its
+    ENABLED jobs wait on disk. Unreadable is `retryable: False` in
+    `handlers/cron_shared.py`, so `_deregister_crons_with_retry` must not retry it; the
+    call count pins that.
     """
     _setup_env(tmp_path, monkeypatch)
     src = _make_app_source(tmp_path)
@@ -339,15 +325,10 @@ async def test_uninstall_retries_then_succeeds_on_transient_cron_busy(
 async def test_uninstall_cron_busy_runs_no_destructive_step_before_abort(
     tmp_path, monkeypatch
 ):
-    """ORDERING regression: when cron cleanup fails, the uninstall aborts
-    (retryable 409) BEFORE anything destructive runs.
+    """When cron cleanup fails, the uninstall aborts (retryable 409) before anything runs.
 
-    Cron cleanup is the FIRST precondition, so on a contended store neither the
-    (possibly destructive, non-idempotent) onUninstall script NOR the backend
-    stop may have executed, and the app must still be installed. If either ran
-    before the abort, the retryable 409's "app is still installed; retry"
-    message would be false in spirit and the retry would re-run a
-    non-idempotent teardown. We spy both and assert zero calls.
+    The onUninstall script and backend stop are not idempotent, so a retry after either
+    ran would re-run teardown.
     """
     _setup_env(tmp_path, monkeypatch)
 
@@ -404,9 +385,7 @@ async def test_uninstall_cron_busy_runs_no_destructive_step_before_abort(
         assert resp.status == 200
 
 
-# ---------------------------------------------------------------------------
 # UI file serving — cache policy
-# ---------------------------------------------------------------------------
 
 def _make_app_source_with_ui(tmp_path, name="ui-cache-app"):
     src = _make_app_source(tmp_path, name)
@@ -436,7 +415,7 @@ async def test_ui_file_no_cache_revalidation(tmp_path, monkeypatch):
         assert resp.headers.get("Cache-Control") == "no-cache"
         assert "max-age" not in resp.headers.get("Cache-Control", "")
         last_modified = resp.headers.get("Last-Modified")
-        assert last_modified  # descriptor-derived validator (see _read_ui_file)
+        assert last_modified  # descriptor-derived validator
 
         # A revalidation request with the validator must yield 304 (no body).
         resp304 = await client.get(
@@ -446,11 +425,9 @@ async def test_ui_file_no_cache_revalidation(tmp_path, monkeypatch):
         assert resp304.status == 304
 
 
-# ---------------------------------------------------------------------------
 # Registration must run off the event loop (blocking KIROCREW_HOME filesystem
 # work — manifest reads, skill symlink walks, mcp.json atomic writes — would
 # otherwise freeze the gateway on a stalled mount).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

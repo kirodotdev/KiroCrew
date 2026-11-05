@@ -41,6 +41,7 @@ def _app(handler, route: str, **store) -> web.Application:
     app = web.Application()
     app["state"] = SimpleNamespace(
         crons=SimpleNamespace(**store),
+        _folders=[],
         push_refresh=MagicMock(),
         ack_notification=AsyncMock(),
         has_slot=MagicMock(return_value=False),

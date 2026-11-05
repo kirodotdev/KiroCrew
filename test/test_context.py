@@ -276,8 +276,13 @@ class TestContextBuilder:
             skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
             lessons=LessonStore(base_dir=tmp_path),
         )
+        # A person sent this turn: the follow-up card is admitted only then.
         dash, _ = builder.build_message(
-            "done", is_new_session=False, interactive=True, session_key="dashboard:chat-1"
+            "done",
+            is_new_session=False,
+            interactive=True,
+            session_key="dashboard:chat-1",
+            directive_user_origin=True,
         )
         assert "ask_question" in dash, "dashboard session must get the question nudge"
         # The nudge must say ask_question blocks and returns the answers as its result.
@@ -495,6 +500,7 @@ class TestContextBuilder:
             session_key="dashboard:chat-1",
             project="/workspace/example",
             thread_meta=thread_meta,
+            directive_user_origin=True,
         )
 
         marker = "[REPLY FORMAT RULES]"

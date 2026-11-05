@@ -108,12 +108,12 @@ def test_sandbox_allow_unsandboxed_exec_default_resolves_per_platform(monkeypatc
 
     The resolution lives here, at the one place that sees the raw document, and the
     result is carried by the VALUE rather than by whether the key was present. That
-    is a safety property, not a style choice: :meth:`KiroCrewConfig.save` publishes
-    the whole in-memory snapshot through ``to_dict()`` -> ``asdict(self.agent)``, so
-    every full-document write (the boot default-config write, CLI one-shots)
-    materializes this key. Were the effective policy keyed on presence, such a write
-    would silently convert "never decided" into a declared lockdown and refuse every
-    agent subprocess on a host that has no backend to fall back on — see
+    is a safety property, not a style choice: :meth:`KiroCrewConfig.save` builds
+    the whole in-memory snapshot through ``to_dict()`` -> ``asdict(self.agent)``,
+    which holds the resolved value, and strips this key before writing unless the
+    operator declared it. If the key were written, every full-document write (the boot
+    default-config write, CLI one-shots) would turn "never decided" into a
+    declaration that outranks the platform default — see the save tests below and
     ``test_windows_default_survives_a_full_document_round_trip``.
 
     A declared value still wins in both directions, on every platform.
@@ -132,7 +132,12 @@ def test_sandbox_allow_unsandboxed_exec_default_resolves_per_platform(monkeypatc
         assert _load_from_dict({}).agent.sandbox_allow_unsandboxed_exec is False, plat
         with_section = _load_from_dict({"agent": {"approval_mode": "auto"}})
         assert with_section.agent.sandbox_allow_unsandboxed_exec is False, plat
-    # A declaration outranks the platform in both directions.
+    # A declaration outranks the platform in both directions. On Windows a stored
+    # false is adopted once as the stale pre-0.6.0 default, so mark that one-shot
+    # done: a false written after it is the owner's lockdown.
+    from kiro_crew.config.superseded_defaults import record_adoptions
+
+    record_adoptions({"agent.sandbox_allow_unsandboxed_exec": False})
     for plat in ("win32", "linux", "darwin"):
         monkeypatch.setattr("sys.platform", plat)
         declared_false = _load_from_dict({"agent": {"sandbox_allow_unsandboxed_exec": False}})

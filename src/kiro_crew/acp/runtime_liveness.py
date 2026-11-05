@@ -386,41 +386,24 @@ def redacted_stderr_tail(self: AcpRuntime) -> str:
 async def _exit_watch_loop(self: AcpRuntime) -> None:
     """Fail the runtime on the root process's OWN exit, not on stdout EOF.
 
-    The reader loop observes a death only as EOF on stdout. A descendant
-    that inherited the root's write end holds that pipe open after the root
-    is gone, so EOF does not arrive and the reader -- parked on ``readuntil``
-    while nothing is being written -- cannot notice the broken pipe either.
-    The death is then invisible until the survivor exits (the pipe finally
-    closing) or idle expiry force-reaps the session, on the order of an hour.
+    A descendant that inherited the root's stdout write end keeps the pipe open
+    after the root dies, so the reader sees no EOF and the death would stay
+    invisible until the survivor exits or idle expiry reaps the session (about
+    an hour).
 
-    This watcher keys on the exit itself, by polling ``process.returncode``.
-    ``returncode`` is set by the event loop's ``_process_exited`` -- the
-    SIGCHLD/waitpid path -- the instant the root is reaped, independent of
-    whether the pipes have disconnected. ``process.wait()`` cannot serve
-    here: its waiters are woken only from ``_call_connection_lost``, after
-    ALL pipe transports disconnect, so a descendant holding stdout open
-    parks ``wait()`` exactly as long as it parks the reader -- the watcher
-    would never fire for the very case it exists to catch. The poll sees a
-    non-``None`` returncode as soon as the root is gone, whatever the pipes
-    are doing. A still-``None`` returncode is NOT an exit (a closed pipe the
-    module deliberately refuses to treat as death), so the watcher keeps
-    looping rather than marking dead.
+    So this polls ``process.returncode``, which the loop's SIGCHLD/waitpid path
+    sets the instant the root is reaped. ``process.wait()`` cannot serve: its
+    waiters wake only from ``_call_connection_lost``, after ALL pipe transports
+    disconnect, which is exactly the case this exists to catch. A ``None``
+    returncode is not an exit, so the loop keeps polling.
 
-    On the confirmed exit it first gives the reader a bounded window to
-    drain any final frame still readable on stdout -- a completed turn's
-    response the backend wrote just before exiting -- then marks the runtime
-    dead, which fails every pending request and poisons every session queue,
-    so a waiting turn surfaces ``AcpProcessDied`` in seconds instead of
-    waiting for a backstop timer. The drain yields in short slices while the
-    reader keeps routing frames (it stamps ``_last_activity`` per frame) and
-    ends the moment the reader goes quiet with an empty buffer, so it costs
-    the fail-fast path at most one idle slice on a pipe with nothing left.
-
-    The reader keeps priority: the drain window lets an EOF that arrives in
-    the same breath (the ordinary same-second close) run the reader's own
-    death+retire path first, and ``_mark_dead`` is idempotent, so the loser
-    of that race is a no-op. The exit reason is read AFTER the returncode is
-    observed, so it carries the real code rather than ``<not reaped>``.
+    On exit it first gives the reader a bounded window to drain a final frame
+    (a turn response written just before exit), in short slices that end once
+    the reader goes quiet with an empty buffer, then marks the runtime dead so
+    pending requests fail and waiting turns get ``AcpProcessDied`` in seconds.
+    The reader keeps priority: an EOF arriving in the same window runs its own
+    death path, and ``_mark_dead`` is idempotent. The exit reason is read after
+    the returncode, so it carries the real code rather than ``<not reaped>``.
     """
     process = self._process
     if process is None:
@@ -906,8 +889,13 @@ async def _drain_stderr(self: AcpRuntime) -> None:
                     and is_delegate_launch_failure_output(text)
                 ):
                     self._saw_delegate_launch_failure = True
-                if self.recording_allowed:
-                    logger.debug("stderr: %s", text[:200])
+                if self.recording_allowed and logger.isEnabledFor(logging.DEBUG):
+                    # Child stderr can echo a credential (a failed login prints
+                    # the header it sent); redact before the cut so a token
+                    # split at the boundary is still recognised.
+                    from kiro_crew.platform.context import redact_log_via_context
+
+                    logger.debug("stderr: %s", redact_log_via_context(text)[:200])
     except asyncio.CancelledError:
         raise
     except Exception as exc:

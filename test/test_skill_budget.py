@@ -94,6 +94,9 @@ class TestAliasFold:
             def _owned_hint(self, path):
                 return True
 
+            def _is_user_authored(self, s):
+                return True
+
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
 
@@ -144,6 +147,9 @@ class TestAliasFold:
             def _owned_hint(self, path):
                 return True
 
+            def _is_user_authored(self, s):
+                return True
+
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
 
@@ -179,6 +185,9 @@ class TestAliasFold:
                 return {"name": "Brand New"}
 
             def _owned_hint(self, path):
+                return True
+
+            def _is_user_authored(self, s):
                 return True
 
             def resolve_ledger_aliases(self):
@@ -217,6 +226,9 @@ class TestAliasFold:
                 return {"name": "Measured"}
 
             def _owned_hint(self, path):
+                return True
+
+            def _is_user_authored(self, s):
                 return True
 
             def resolve_ledger_aliases(self):
@@ -262,6 +274,9 @@ class TestAliasFold:
             def _owned_hint(self, path):
                 return True
 
+            def _is_user_authored(self, s):
+                return True
+
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
 
@@ -292,6 +307,9 @@ class TestAliasFold:
                 return {"name": "Orphan"}
 
             def _owned_hint(self, path):
+                return True
+
+            def _is_user_authored(self, s):
                 return True
 
             def resolve_ledger_aliases(self):
@@ -361,6 +379,9 @@ class TestNestedFirstSkillBaseDir:
             def _owned_hint(self, path):
                 return True
 
+            def _is_user_authored(self, s):
+                return True
+
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
 
@@ -424,6 +445,9 @@ class TestAliasUnderExtraPath:
             def _owned_hint(self, path):
                 return True
 
+            def _is_user_authored(self, s):
+                return True
+
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
 
@@ -477,6 +501,9 @@ class TestServedAliasIsFolded:
                 return {"name": "Skill"}
 
             def _owned_hint(self, path):
+                return True
+
+            def _is_user_authored(self, s):
                 return True
 
             def resolve_ledger_aliases(self):
@@ -738,6 +765,9 @@ class TestUndecodableSkillDoesNotCrash:
             def _owned_hint(self, path):
                 return True
 
+            def _is_user_authored(self, s):
+                return True
+
             def resolve_ledger_aliases(self):
                 return {}
 
@@ -862,6 +892,9 @@ class TestNameIsRedacted:
             def _owned_hint(self, path):
                 return True
 
+            def _is_user_authored(self, s):
+                return True
+
             def resolve_ledger_aliases(self):
                 return {}
 
@@ -891,6 +924,9 @@ class TestNameIsRedacted:
                 return {"name": "kirocrew-worktree-dev"}
 
             def _owned_hint(self, path):
+                return True
+
+            def _is_user_authored(self, s):
                 return True
 
             def resolve_ledger_aliases(self):
@@ -935,6 +971,9 @@ class TestCostIsCharactersNotBytes:
                 return {"name": "Dashes"}
 
             def _owned_hint(self, path):
+                return True
+
+            def _is_user_authored(self, s):
                 return True
 
             def resolve_ledger_aliases(self):
@@ -1079,6 +1118,9 @@ class TestAlwaysTrueSkillCost:
             def _owned_hint(self, path):
                 return True
 
+            def _is_user_authored(self, s):
+                return True
+
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
 
@@ -1117,6 +1159,9 @@ class TestAlwaysTrueSkillCost:
                 return {"name": "Pinned", "always": "true"}
 
             def _owned_hint(self, path):
+                return True
+
+            def _is_user_authored(self, s):
                 return True
 
             def resolve_ledger_aliases(self):
@@ -1164,6 +1209,9 @@ class TestAlwaysTrueSkillCost:
                 return {"name": "Regular"}
 
             def _owned_hint(self, path):
+                return True
+
+            def _is_user_authored(self, s):
                 return True
 
             def resolve_ledger_aliases(self):
@@ -1286,3 +1334,121 @@ class TestBudgetEndpointAgainstTheRealLoader:
             "the budget view became project-aware; it now parses frontmatter for "
             "paths under a granted directory and must carry the vetted root"
         )
+
+
+class TestRowsExplainThemselves:
+    """Each row carries what the skill is and where it came from.
+
+    A reader who sees a skill they never added (a builtin the sync installed,
+    or one an installed app registered) must be able to tell what it is from
+    the row alone, so the row carries the SKILL.md description and its origin.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _close_loaders(self, close_skills_loaders):
+        # Each test builds a real loader; close it and join its catalog worker.
+        yield
+
+    def _loader(self, skills_root: Path):
+        from kiro_crew.skills import SkillsLoader
+
+        return SkillsLoader(skills_path=skills_root, install_builtins=False)
+
+    def test_description_and_origin_reach_the_row(self, tmp_path):
+        from kiro_crew.dashboard.handlers.skill_budget import _compute_budget
+        from kiro_crew.skills_builtin_provenance import _record_builtin_provenance
+
+        skills_root = tmp_path / "skills"
+        shipped = skills_root / "living-ui"
+        shipped.mkdir(parents=True)
+        (shipped / "SKILL.md").write_text(
+            "---\nname: living-ui\ndescription: Build live UI in chat.\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+        # What the builtin sync leaves behind in every directory it installs.
+        _record_builtin_provenance(shipped)
+        mine = skills_root / "my-notes"
+        mine.mkdir(parents=True)
+        (mine / "SKILL.md").write_text(
+            "---\nname: my-notes\ndescription: My own notes skill.\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+        bare = skills_root / "bare"
+        bare.mkdir(parents=True)
+        (bare / "SKILL.md").write_text("---\nname: bare\n---\n\nbody\n", encoding="utf-8")
+
+        rows = {r["key"]: r for r in _compute_budget(self._loader(skills_root))["rows"]}
+
+        assert rows["living-ui"]["description"] == "Build live UI in chat."
+        assert rows["living-ui"]["origin"] == "builtin"
+        assert rows["my-notes"]["description"] == "My own notes skill."
+        assert rows["my-notes"]["origin"] == "user"
+        # No description is an empty string, not a missing key or the name.
+        assert rows["bare"]["description"] == ""
+        assert rows["bare"]["origin"] == "user"
+
+    def test_installed_app_skill_is_app_not_builtin_or_yours(self, tmp_path, monkeypatch):
+        # An installed app's skill lives under <data home>/apps and is linked
+        # into the skills dir. It has no provenance marker and is not the
+        # user's (the loader says so), but Kiro Crew did not ship it either.
+        from kiro_crew import skills as skills_facade
+        from kiro_crew.dashboard.handlers import skill_budget
+
+        home = tmp_path / "home"
+        app_skill = home / "apps" / "some-app" / "skills" / "app-helper"
+        app_skill.mkdir(parents=True)
+        (app_skill / "SKILL.md").write_text(
+            "---\nname: app-helper\ndescription: From an app.\n---\n\nbody\n", encoding="utf-8"
+        )
+        apps_root = os.path.realpath(home / "apps")
+        monkeypatch.setattr(skill_budget, "config_dir", lambda: home)
+        monkeypatch.setattr(skills_facade, "_trusted_skill_roots", lambda: (apps_root,))
+
+        loader = self._loader(tmp_path / "skills")
+        skill_file = app_skill / "SKILL.md"
+        assert loader._is_user_authored({"key": "app-helper", "path": str(skill_file)}) is False
+        assert skill_budget._origin(loader, "app-helper", skill_file, None) == "app"
+
+    def test_skill_shipped_inside_the_package_is_builtin(self, tmp_path, monkeypatch):
+        # A built-in app keeps its skills inside the installed package, which
+        # is also a trusted root; that one IS shipped, so it stays "builtin".
+        from kiro_crew import skills as skills_facade
+        from kiro_crew.dashboard.handlers import skill_budget
+
+        pkg_skill = tmp_path / "pkg" / "apps" / "builtins" / "x" / "skills" / "pkg-helper"
+        pkg_skill.mkdir(parents=True)
+        (pkg_skill / "SKILL.md").write_text(
+            "---\nname: pkg-helper\n---\n\nbody\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(skill_budget, "config_dir", lambda: tmp_path / "home")
+        monkeypatch.setattr(
+            skills_facade, "_trusted_skill_roots", lambda: (os.path.realpath(tmp_path / "pkg"),)
+        )
+
+        loader = self._loader(tmp_path / "skills")
+        assert skill_budget._origin(loader, "pkg-helper", pkg_skill / "SKILL.md", None) == "builtin"
+
+    def test_description_goes_through_the_credential_redactor(self, tmp_path, monkeypatch):
+        # The redactor's own patterns are covered by its tests and by the name
+        # test above; here it is swapped for a marker-matching stand-in so the
+        # fixture needs no credential-shaped literal.
+        from kiro_crew.dashboard.handlers import skill_budget
+        from kiro_crew.dashboard.handlers.skill_budget import _compute_budget
+
+        planted = "LEAK-MARKER-26893"
+        monkeypatch.setattr(
+            skill_budget,
+            "redact_credentials",
+            lambda s: (s.replace(planted, "[REDACTED]"), ["planted"] if planted in s else []),
+        )
+
+        skills_root = tmp_path / "skills"
+        d = skills_root / "leaky"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: leaky\ndescription: {planted}\n---\n\nbody\n", encoding="utf-8"
+        )
+
+        row = _compute_budget(self._loader(skills_root))["rows"][0]
+        assert planted not in row["description"], row["description"]
+        assert "[REDACTED]" in row["description"]

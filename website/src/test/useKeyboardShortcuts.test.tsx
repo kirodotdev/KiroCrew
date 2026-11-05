@@ -1,5 +1,5 @@
 import React from 'react'
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { closeCrewWindow, currentCrewWindow, markCrewWindowShown, openCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
 import * as chatSlice from '../store/chatSlice'
 import { fireEvent, screen, act, render } from '@testing-library/react'
@@ -17,6 +17,7 @@ import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import ShortcutsModal from '../components/ShortcutsModal'
 import type { RootState } from '../store'
+import { stubAppConfirm } from './appConfirmStub'
 
 beforeEach(() => localStorage.clear())
 
@@ -740,6 +741,35 @@ describe('⌘/Ctrl+[ and ⌘/Ctrl+] session cycling', () => {
     expect(next).toMatchObject({ key: ']', meta: true, group: 'chat-navigation' })
     expect(prev?.alt).toBeUndefined()
     expect(next?.ctrl).toBeUndefined()
+  })
+
+  // The shortcuts list must say which of the two prev/next chords works while
+  // typing. Alt+←/→ is left to a focused text field (word-jump on macOS), so its
+  // rows carry that rule; the bracket rows, which work from the composer, keep
+  // the plain label. Both halves are pinned: the label, and the handler
+  // behaviour the label describes.
+  it('labels the Alt+arrow rows with their focus rule in the shortcuts list', () => {
+    renderWithProviders(<ShortcutsModal onClose={vi.fn()} />)
+    const altPrev = screen.getByText('Previous chat (outside text fields)').parentElement!
+    const altNext = screen.getByText('Next chat (outside text fields)').parentElement!
+    expect(altPrev).toHaveTextContent('←')
+    expect(altNext).toHaveTextContent('→')
+    expect(screen.getByText('Previous chat').parentElement!).toHaveTextContent('[')
+    expect(screen.getByText('Next chat').parentElement!).toHaveTextContent(']')
+  })
+
+  it('Alt+arrow switches chats from the page but not from a text field', () => {
+    const store = threeSlots('slot-1')
+    mount(store)
+    const altRight = (target: EventTarget) =>
+      !target.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowRight', altKey: true, cancelable: true, bubbles: true }))
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    expect(altRight(textarea)).toBe(false) // left to the field's word-jump
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+    expect(altRight(document)).toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('slot-2')
+    textarea.remove()
   })
 })
 
@@ -1734,7 +1764,7 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
   })
 
   it('Ctrl+W asks first when the session has a turn in flight, even with confirmCloseSession off; Alt+Shift+W does not', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = stubAppConfirm(false)
     const store = createTestStore({
       dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: true }] } as unknown as RootState['dashboard'],
       chat: { activeSlot: 'slot-1', slotHistory: [] } as unknown as RootState['chat'],
@@ -1744,13 +1774,12 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
     expect(confirmSpy).toHaveBeenCalledTimes(1)
     press({ code: 'KeyW', altKey: true, shiftKey: true })
     expect(confirmSpy).toHaveBeenCalledTimes(1) // alias keeps the shipped behaviour
-    confirmSpy.mockRestore()
   })
 
   it('Ctrl+W asks first for an armed goal loop between cycles (slot.running is false there)', () => {
     // deleteSlot retires the loop; `running` covers only the slot's own turn, so
     // the gate has to read the same signals the sidebar's Working lane does.
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = stubAppConfirm(false)
     const store = createTestStore({
       dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],
       chat: {
@@ -1769,13 +1798,12 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
     press({ code: 'KeyW', ctrlKey: true })
     expect(confirmSpy).toHaveBeenCalledTimes(1)
     expect(store.getState().dashboard.slots.find(s => s.key === 'slot-1')).toBeDefined() // declined → kept
-    confirmSpy.mockRestore()
   })
 
   it('Ctrl+W asks first for a session whose children are only queued (closing retires them)', () => {
     // Queued children are not Working, so the lane reads idle; the gate must
     // still confirm, because deleteSlot cancels the accepted spawns.
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = stubAppConfirm(false)
     const store = createTestStore({
       dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],
       chat: { activeSlot: 'slot-1', slotHistory: [], subagentQueued: { 'slot-1': 2 } } as unknown as RootState['chat'],
@@ -1784,15 +1812,32 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
     press({ code: 'KeyW', ctrlKey: true })
     expect(confirmSpy).toHaveBeenCalledTimes(1)
     expect(store.getState().dashboard.slots.find(s => s.key === 'slot-1')).toBeDefined() // declined → kept
-    confirmSpy.mockRestore()
+  })
+
+  it('Ctrl+W asks in-app, never through the browser-native confirm(), and closes the slot it was pressed on', async () => {
+    const native = vi.fn(() => true)
+    vi.stubGlobal('confirm', native)
+    onTestFinished(() => { vi.unstubAllGlobals() })
+    const ask = stubAppConfirm(true)
+    const spy = vi.spyOn(chatSlice, 'deleteSlot')
+    onTestFinished(() => { spy.mockRestore() })
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: true }] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: 'slot-1', slotHistory: [] } as unknown as RootState['chat'],
+    })
+    renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }), { store })
+    press({ code: 'KeyW', ctrlKey: true })
+    expect(native).not.toHaveBeenCalled()
+    expect(ask).toHaveBeenCalledTimes(1)
+    await act(async () => { await ask.mock.results[0].value })
+    expect(spy).toHaveBeenCalledWith('slot-1')
   })
 
   it('Ctrl+W on an idle session honours confirmCloseSession=false (no prompt)', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = stubAppConfirm(false)
     setup({ activeSlot: 'slot-1' })
     press({ code: 'KeyW', ctrlKey: true })
     expect(confirmSpy).not.toHaveBeenCalled()
-    confirmSpy.mockRestore()
   })
 
   it('Ctrl+W yields to an embedded terminal (Ctrl+W is kill-word in a shell)', () => {

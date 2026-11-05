@@ -46,6 +46,10 @@ document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-li
 const LEAD = 'chat-2548'
 const CONDUCTOR = 'chat-2552'
 const reparented = params.get('reparent') === '1'
+// &title=<text>: the closed conductor's last-known title, sent as `parent.title` when
+// the backend still remembers it; omitted, the payload is the base one.
+const closedTitle = params.get('title')
+const named = closedTitle ? { title: closedTitle } : {}
 
 /** One row of `/api/sessions/memory`, with the figures a quiet runtime reports. */
 const row = (
@@ -78,8 +82,8 @@ const row = (
 
 /** The citation every worker carries: the conductor opened it and has closed. */
 const cite = reparented
-  ? { slot: CONDUCTOR, key: `dashboard:${LEAD}`, ancestor: true }
-  : { slot: CONDUCTOR, key: null }
+  ? { slot: CONDUCTOR, key: `dashboard:${LEAD}`, ancestor: true, ...named }
+  : { slot: CONDUCTOR, key: null, ...named }
 
 const PAYLOAD = {
   sessions: [

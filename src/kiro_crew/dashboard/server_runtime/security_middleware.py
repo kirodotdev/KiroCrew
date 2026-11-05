@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _VIA_PROXY_SUFFIX,
         AUDIT_CLAIMED_KEY,
         PROBE_PATHS,
+        bears_session_cookie_for_host,
         bind_request_forwarded,
         check_host,
         check_origin,
@@ -364,8 +365,8 @@ def _would_soften_a_strict_path(candidate: str) -> bool:
 
     * candidate is a strict entry, or a CHILD of one — the obvious case.
     * candidate is an ANCESTOR of a strict entry — the case a one-directional
-      check misses. Contributing ``/api/browser`` against the strict
-      ``/api/browser/command`` admits every route beneath it, so a request for
+      check misses. Contributing ``/api/terminal`` against the strict
+      ``/api/terminal/external-grant`` admits every route beneath it, so a request for
       the strict path matches BOTH sets, and token_auth's off-loopback arm tests
       ``_matches_mixed`` first (``elif _matches_internal: if _matches_mixed:``) —
       the strict hard-deny is replaced by cookie acceptance.
@@ -543,6 +544,14 @@ def build_host_canonical_redirect(
     is that another process holds that family's port, which is the party the
     redirect would hand the cookie to.
 
+    A navigation that already bears THIS gateway's session cookie
+    (``mc_token_<port>`` or ``mc_refresh_<port>`` for the port it dialled) is also
+    served where it was sent. The cookie is host-only, so a browser signed in on
+    127.0.0.1 does not carry it to ``localhost``: the 302 would land it on a host
+    where it has no session, and the page would read "Session expired".
+    Another port's cookie in the same jar is not a session here and does not
+    hold the redirect.
+
     Omitting the callable keeps the redirect ungated, for callers whose
     *canonical_host* is not an ambiguous name (a literal names one listener) and
     for unit tests of the gating rules themselves.
@@ -562,7 +571,10 @@ def build_host_canonical_redirect(
             canonical_host,
             method=request.method,
             sec_fetch_dest=request.headers.get("Sec-Fetch-Dest"),
-            carries_credential=bool(request.query.get("token")),
+            carries_credential=(
+                bool(request.query.get("token"))
+                or bears_session_cookie_for_host(request.headers.get("Host", ""), request.cookies)
+            ),
         ):
             if holds_every_family is not None and not holds_every_family():
                 logger.warning(

@@ -584,6 +584,44 @@ def upstream_repo(tmp_path):
     return root, bares
 
 
+def _full_lend_frame(link: "ProxyLink") -> dict | None:
+    """The gateway's first complete ``lend`` frame on the link, once it is sent."""
+    for line in bytes(link.sent).splitlines():
+        frame = json.loads(line)
+        if frame.get("t") == "lend" and not frame.get("partial"):
+            return frame
+    return None
+
+
+async def _wait_for_full_lend(port_file: Path, lend: Path, link: "ProxyLink") -> None:
+    """Wait until the proxy's lend file holds the gateway's complete host list.
+
+    The lend file exists from the first partial list on, and the proxy then
+    swaps each newer list in with ``os.replace``. A read during a swap fails on
+    Windows (and a reader's open handle makes the swap itself fail), so the
+    wait never opens the lend file: it waits for the complete frame on the
+    link, then for the file to reach that list's size by ``stat``. The proxy
+    writes no other list after it, so ``git_proxy_env`` reads a settled file.
+    """
+    await async_wait_until(
+        port_file.exists, off_loop=True, describe=lambda: "guest proxy port unpublished"
+    )
+    port = (await asyncio.to_thread(port_file.read_text, encoding="ascii")).strip()
+    frame = await async_wait_until(
+        lambda: _full_lend_frame(link), describe=lambda: "no complete lend frame sent"
+    )
+    # The proxy writes the list in text mode, so its newline is ``os.linesep``
+    # on disk (``\r\n`` on Windows). ``_write_lend`` drops a host name outside
+    # ``[a-z0-9.-]``; the gateway hosts these tests use all match, so every
+    # name in the frame reaches the file.
+    size = len(" ".join([port, *frame["hosts"]])) + len(os.linesep)
+    await async_wait_until(
+        lambda: lend.exists() and lend.stat().st_size == size,
+        off_loop=True,
+        describe=lambda: f"lend file never reached the complete list ({size} bytes)",
+    )
+
+
 async def _run_channel(tmp_path, upstream, *, credential_source=None):
     port_file = tmp_path / "git-proxy.port"
     process = await asyncio.create_subprocess_exec(
@@ -615,15 +653,12 @@ async def _run_channel(tmp_path, upstream, *, credential_source=None):
             credential_source=credential_source or credential,
             agent="researcher",
             egress_permitted=lambda key, host, agent: True,
+            logins_lent=lambda: True,
             http_session=upstream,
         )
         serve = asyncio.ensure_future(channel.serve())
         lend = Path(str(port_file) + workspace_tools.GIT_PROXY_LEND_SUFFIX)
-        await async_wait_until(
-            lambda: port_file.exists() and lend.exists(),
-            off_loop=True,
-            describe=lambda: "guest proxy port or lendable hosts unpublished",
-        )
+        await _wait_for_full_lend(port_file, lend, link)
         return process, serve, port_file, link
     except BaseException:
         try:
@@ -1525,83 +1560,6 @@ async def test_a_slow_lookup_does_not_withhold_another_hosts_login(monkeypatch):
         channel._lend_stale.set()
         await async_wait_until(lambda: len(link.frames) == 3, describe=lambda: "refresh")
         assert link.frames[-1] == {"t": "lend", "id": 0, "hosts": ["github.com"]}
-    finally:
-        link.stdout.feed_eof()
-        await await_until(serve, what="gateway channel closed")
-
-
-@pytest.mark.asyncio
-async def test_a_rejected_gateway_login_is_republished_at_once(monkeypatch):
-    """After an upstream 401 the guest hears the new list without waiting out
-    the refresh, so the next command goes direct."""
-    monkeypatch.setattr(git_gateway, "LEND_REFRESH_SECS", 3600.0)
-    link, valid = FrameLink(), {"github.com"}
-
-    async def credential(host):
-        if host not in valid:
-            raise GitProxyRefusal(502, f"Kiro Crew: no {host} login found")
-        return HEADER
-
-    channel = GitProxyChannel(
-        link,
-        "dashboard:x",
-        credential_source=credential,
-        agent="researcher",
-        egress_permitted=lambda key, host, agent: True,
-        logins_lent=lambda: True,
-        http_session=HttpBackendUpstream(Path("/nonexistent"), status=401),
-    )
-    serve = asyncio.ensure_future(channel.serve())
-    try:
-        link.guest({"t": "lend", "id": 0})
-        await async_wait_until(lambda: link.frames, describe=lambda: "first list")
-        valid.clear()  # the stored login stops working
-        link.get(1, "/github.com/acme/w/info/refs?service=git-receive-pack")
-        await async_wait_until(
-            lambda: [f for f in link.frames if f["t"] == "lend"][-1]["hosts"] == [],
-            describe=lambda: f"frames: {link.frames}",
-        )
-    finally:
-        link.stdout.feed_eof()
-        await await_until(serve, what="gateway channel closed")
-
-
-@pytest.mark.asyncio
-async def test_a_revoked_login_its_source_still_returns_stops_being_lent(monkeypatch):
-    """`gh auth token` can keep printing a token the host has revoked. The same
-    refused value must not keep the host routed here; a fresh sign-in (a new
-    value) lends again."""
-    monkeypatch.setattr(git_gateway, "LEND_REFRESH_SECS", 3600.0)
-    link, token = FrameLink(), {"value": HEADER}
-
-    async def credential(host):
-        if host != "github.com":
-            raise GitProxyRefusal(502, f"Kiro Crew: no {host} login found")
-        return token["value"]
-
-    channel = GitProxyChannel(
-        link,
-        "dashboard:x",
-        credential_source=credential,
-        agent="researcher",
-        egress_permitted=lambda key, host, agent: True,
-        logins_lent=lambda: True,
-        http_session=HttpBackendUpstream(Path("/nonexistent"), status=401),
-    )
-    serve = asyncio.ensure_future(channel.serve())
-
-    def last_lend():
-        lends = [f for f in link.frames if f["t"] == "lend"]
-        return lends[-1]["hosts"] if lends else None
-
-    try:
-        link.guest({"t": "lend", "id": 0})
-        await async_wait_until(lambda: last_lend() == ["github.com"], describe=lambda: "lent")
-        link.get(1, "/github.com/acme/w/info/refs?service=git-receive-pack")
-        await async_wait_until(lambda: last_lend() == [], describe=lambda: f"{link.frames}")
-        token["value"] = "Basic " + base64.b64encode(b"x-access-token:fresh").decode()
-        channel._lend_stale.set()
-        await async_wait_until(lambda: last_lend() == ["github.com"], describe=lambda: "re-lent")
     finally:
         link.stdout.feed_eof()
         await await_until(serve, what="gateway channel closed")

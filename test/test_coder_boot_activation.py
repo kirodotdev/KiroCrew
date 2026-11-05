@@ -119,60 +119,66 @@ def test_retention_is_not_imported_on_gateway_boot_and_activation_follows_ready(
     assert "_start_coder_retention(live.snapshot() or self._cfg)" in source
 
 
-def test_test_mode_never_activates_compute(monkeypatch):
-    start = Mock()
-    monkeypatch.setattr(gateway, "_start_coder_retention", start)
+@pytest.mark.asyncio
+async def test_test_mode_never_activates_compute(monkeypatch):
+    from kiro_crew.coder import retention
+
+    parked = asyncio.Event()
+
+    async def sweep():
+        await parked.wait()
+
+    monkeypatch.setattr(gateway, "_CODER_RETENTION_TASK", None)
+    monkeypatch.setattr(retention, "run_sweeper", sweep)
     owner = object.__new__(gateway.GatewayOrchestrator)
     owner._session_environments_ready = True
     owner._test_mode = True
-    gateway.GatewayOrchestrator._on_session_environment_config_change(
-        owner, ConfigChange(None, config("https://coder.example.test"), frozenset())
-    )
-    start.assert_not_called()
+    try:
+        gateway.GatewayOrchestrator._on_session_environment_config_change(
+            owner, ConfigChange(None, config("https://coder.example.test"), frozenset())
+        )
+        assert gateway._CODER_RETENTION_TASK is None
+    finally:
+        parked.set()
+        if gateway._CODER_RETENTION_TASK is not None:
+            await asyncio.wait_for(gateway._CODER_RETENTION_TASK, 30)
+
+
+async def _retention_runs_for(section_cfg, monkeypatch):
+    """Start retention for *section_cfg*; return whether its task is still held once
+    the sweeper starts or the task ends, whichever comes first."""
+    from kiro_crew.coder import retention
+
+    started = asyncio.Event()
+    parked = asyncio.Event()
+
+    async def sweep():
+        started.set()
+        await parked.wait()
+
+    monkeypatch.setattr(gateway, "_CODER_RETENTION_TASK", None)
+    monkeypatch.setattr(retention, "run_sweeper", sweep)
+    try:
+        gateway._start_coder_retention(section_cfg)
+        task = gateway._CODER_RETENTION_TASK
+        started_wait = asyncio.ensure_future(started.wait())
+        await asyncio.wait({task, started_wait}, timeout=30, return_when=asyncio.FIRST_COMPLETED)
+        started_wait.cancel()
+        return task is not None and gateway._CODER_RETENTION_TASK is task and not task.done()
+    finally:
+        parked.set()
+        if gateway._CODER_RETENTION_TASK is not None:
+            await asyncio.wait_for(gateway._CODER_RETENTION_TASK, 30)
 
 
 @pytest.mark.asyncio
 async def test_sprites_profiles_alone_activates_retention(monkeypatch):
-    from kiro_crew.coder import retention
-
-    started = asyncio.Event()
-    parked = asyncio.Event()
-
-    async def sweep():
-        started.set()
-        await parked.wait()
-
-    monkeypatch.setattr(gateway, "_CODER_RETENTION_TASK", None)
-    monkeypatch.setattr(retention, "run_sweeper", sweep)
-    try:
-        gateway._start_coder_retention(config(sprites_profiles=[{"id": "p"}]))
-        await asyncio.wait_for(started.wait(), 30)
-    finally:
-        parked.set()
-        if gateway._CODER_RETENTION_TASK is not None:
-            await asyncio.wait_for(gateway._CODER_RETENTION_TASK, 30)
+    assert await _retention_runs_for(config(sprites_profiles=[{"id": "p"}]), monkeypatch)
 
 
 @pytest.mark.asyncio
 async def test_boxd_profiles_alone_activates_retention(monkeypatch):
-    from kiro_crew.coder import retention
-
-    started = asyncio.Event()
-    parked = asyncio.Event()
-
-    async def sweep():
-        started.set()
-        await parked.wait()
-
-    monkeypatch.setattr(gateway, "_CODER_RETENTION_TASK", None)
-    monkeypatch.setattr(retention, "run_sweeper", sweep)
-    try:
-        gateway._start_coder_retention(config(boxd_profiles=[{"id": "p"}]))
-        await asyncio.wait_for(started.wait(), 30)
-    finally:
-        parked.set()
-        if gateway._CODER_RETENTION_TASK is not None:
-            await asyncio.wait_for(gateway._CODER_RETENTION_TASK, 30)
+    assert await _retention_runs_for(config(boxd_profiles=[{"id": "p"}]), monkeypatch)
 
 
 @pytest.mark.asyncio

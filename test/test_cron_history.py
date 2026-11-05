@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import errno
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -614,14 +615,9 @@ class TestRunResultFreshness:
 
 # ── Unusable history directory degrades instead of killing cron ───────────
 #
-# The reported failure is a denial scoped to the ``cron-history`` leaf alone:
-# its sibling job store stays writable in the same process. `_deny_leaf`
-# reproduces that shape by refusing only calls whose path names that leaf.
-#
-# The denial is PERSISTENT, not construction-time: a sandbox profile refuses
-# for the process's whole life. Tests that lift the denial after construction
-# prove nothing about the paths that run later — `rotate_all()` in particular,
-# which `CronService.start()` awaits unguarded.
+# `_deny_leaf` refuses only paths naming the ``cron-history`` leaf; the sibling job
+# store stays writable. The denial is PERSISTENT, as a sandbox profile's is, so
+# later paths such as `rotate_all()` (awaited unguarded by `start()`) meet it too.
 #
 # Branch table for `_prepare_dir` / `_probe_usable` (every row is covered
 # below), where "stat" stands for the stat + directory-scan pair that
@@ -631,6 +627,8 @@ class TestRunResultFreshness:
 #   mkdir denied, stat ok,  open ok   -> enabled  (existing but un-mkdir-able)
 #   mkdir denied, stat DENIED, open ok-> disabled (lock file alone is not proof)
 #   mkdir denied, all denied          -> disabled
+#   mkdir EEXIST, stat DENIED         -> disabled, DEBUG only (sandbox mask)
+#   mkdir EEXIST, stat ok, not a dir  -> disabled, WARNING (a real fault)
 #   constructed enabled, later OSError-> degrades to disabled, never raises
 
 
@@ -691,6 +689,135 @@ def test_stat_denied_disables_history_even_when_lock_opens(tmp_path: Path) -> No
     with _deny_leaf("mkdir", "stat", "scandir", "listdir"):
         store = CronHistoryStore(base_dir=tmp_path)
         assert store.enabled is False
+
+
+def _exists_mkdir(func, leaf: str):
+    def _wrapped(path, *a, **kw):
+        if isinstance(path, (str, os.PathLike)) and leaf in os.fspath(path):
+            raise FileExistsError(errno.EEXIST, "File exists")
+        return func(path, *a, **kw)
+
+    return _wrapped
+
+
+def _confined(value: bool):
+    return patch.object(cron_history_mod, "_sandbox_confined", return_value=value)
+
+
+def _masked_mkdir_eexist():
+    return patch("os.mkdir", _exists_mkdir(os.mkdir, "cron-history"))
+
+
+def _masked_mkdir_eperm():
+    return _deny_leaf("mkdir")
+
+
+@pytest.mark.parametrize("mkdir_shape", [_masked_mkdir_eexist, _masked_mkdir_eperm])
+def test_sandbox_masked_dir_logs_debug_not_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, mkdir_shape
+) -> None:
+    """A sandbox mask is expected, so it must not print a fault warning.
+
+    Under an agent's sandbox the healthy history dir answers EPERM to stat,
+    and mkdir answers EEXIST or EPERM depending on the route. History stays
+    off in that process because the gateway records runs, so a WARNING on
+    every ``kirocrew cron`` CLI run would only be misread as a fault.
+    """
+    (tmp_path / "cron-history").mkdir()
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.cron_history")
+    with _confined(True), mkdir_shape(), _deny_leaf("stat", "scandir", "listdir"):
+        store = CronHistoryStore(base_dir=tmp_path)
+    assert store.enabled is False
+    ours = [r for r in caplog.records if r.name == "kiro_crew.cron_history"]
+    assert not [r for r in ours if r.levelno >= logging.WARNING]
+    assert any(
+        r.levelno == logging.DEBUG and "not available in this sandbox" in r.getMessage()
+        for r in ours
+    )
+
+
+def test_regular_file_at_history_path_still_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A regular file where the dir should be is a real fault: keep the WARNING."""
+    (tmp_path / "cron-history").write_text("not a directory")
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.cron_history")
+    with _confined(True):
+        store = CronHistoryStore(base_dir=tmp_path)
+    assert store.enabled is False
+    assert any(
+        r.levelno == logging.WARNING and "cron history disabled" in r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.cron_history"
+    )
+
+
+def test_denied_missing_dir_still_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Stat denied on a name the parent does not list is not a mask: warn."""
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.cron_history")
+    with _confined(True), _deny_leaf("mkdir", "stat", "scandir", "listdir"):
+        store = CronHistoryStore(base_dir=tmp_path)
+    assert store.enabled is False
+    assert any(
+        r.levelno == logging.WARNING and "cron history disabled" in r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.cron_history"
+    )
+
+
+def test_unconfined_process_with_mask_shape_still_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The gateway is not sandboxed, so the same denial there is a real fault.
+
+    A listed name whose stat is refused can also come from an operator's
+    symlink into storage with an unsearchable ancestor. Without evidence of
+    agent confinement that must stay a WARNING.
+    """
+    (tmp_path / "cron-history").mkdir()
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.cron_history")
+    with _confined(False), _deny_leaf("mkdir", "stat", "scandir", "listdir"):
+        store = CronHistoryStore(base_dir=tmp_path)
+    assert store.enabled is False
+    assert any(
+        r.levelno == logging.WARNING and "cron history disabled" in r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.cron_history"
+    )
+
+
+def test_sandbox_confined_reads_the_launch_mark_and_the_probe() -> None:
+    """``cli.main`` pops the env marker, so the noted launch mark must count."""
+    from kiro_crew import sandbox_launch_mark
+
+    with (
+        patch.object(sandbox_launch_mark, "launched_in_sandbox", return_value=True),
+        patch("kiro_crew.sandbox_unavailable.agent_confinement_evidence", return_value=None),
+    ):
+        assert cron_history_mod._sandbox_confined() is True
+    with (
+        patch.object(sandbox_launch_mark, "launched_in_sandbox", return_value=False),
+        patch(
+            "kiro_crew.sandbox_unavailable.agent_confinement_evidence",
+            return_value="cgroup scope",
+        ),
+    ):
+        assert cron_history_mod._sandbox_confined() is True
+    with (
+        patch.object(sandbox_launch_mark, "launched_in_sandbox", return_value=False),
+        patch("kiro_crew.sandbox_unavailable.agent_confinement_evidence", return_value=None),
+    ):
+        assert cron_history_mod._sandbox_confined() is False
+    with (
+        patch.object(sandbox_launch_mark, "launched_in_sandbox", return_value=False),
+        patch(
+            "kiro_crew.sandbox_unavailable.agent_confinement_evidence",
+            side_effect=RuntimeError("probe broke"),
+        ),
+    ):
+        assert cron_history_mod._sandbox_confined() is False
 
 
 def test_unwritable_dir_disables_history_without_raising(tmp_path: Path) -> None:
@@ -812,12 +939,8 @@ def test_cron_service_start_survives_stat_denied_history(tmp_path: Path) -> None
 def test_create_factory_prepares_history_off_the_event_loop(tmp_path: Path) -> None:
     """``CronService.create()`` must resolve history usability off the loop.
 
-    Directory setup is synchronous filesystem I/O (an ``os.stat`` and, on the
-    denied path, a lock-file ``os.open``). Running it in the constructor put it
-    on the gateway's sole event loop, which is the
-    no-blocking-call-on-event-loop violation ``_defer_initial_load`` already
-    exists to prevent for ``_load()``. Mechanical proof: ``prepare()`` runs, and
-    never on the loop thread.
+    Directory setup is synchronous filesystem I/O, so ``prepare()`` must run in a
+    worker thread, never on the gateway's sole event loop.
     """
     import threading
 
@@ -913,12 +1036,8 @@ async def test_append_under_the_cap_keeps_every_record(
 ) -> None:
     """Negative control: the trim must not fire AT or below the cap.
 
-    Asserting the retained rows alone would stay green if the no-rewrite guard
-    were loosened, so this also spies ``replace_with_retry`` and requires that
-    no append writes through the cap rewrite it. Appending exactly
-    ``cron_max_records_per_job`` (5) records sits the file ON the cap, the
-    boundary a ``<=`` -> ``<`` mutation would rewrite; a smaller count would let
-    that mutation stay green.
+    The retained rows alone cannot see a needless rewrite, so ``replace_with_retry`` is
+    spied. Exactly 5 records sit the file ON the cap, where a ``<=`` -> ``<`` slip shows.
     """
     with patch.object(cron_history_mod, "replace_with_retry") as replace_spy:
         for i in range(5):
@@ -952,11 +1071,8 @@ async def test_append_for_a_job_named_index_does_not_truncate_the_global_index(
     """A job whose id is ``_index`` must not trim the shared index at the
     smaller per-job cap.
 
-    ``_job_path('_index')`` resolves onto ``_index.jsonl``, so an unguarded
-    per-job trim would truncate the global index (cap 8 here) to the per-job
-    cap (5), silently dropping cross-job history. An imported or hand-edited
-    ``crons.json`` is the only way such an id reaches the store, but the store
-    must not corrupt the index when it does.
+    ``_job_path('_index')`` resolves onto ``_index.jsonl``; such an id arrives only
+    through an imported or hand-edited ``crons.json``.
     """
     for i in range(12):
         await small_store.append(_record(job_id="_index", run_id=f"r{i}"))
@@ -976,11 +1092,8 @@ async def test_append_trim_replaces_through_the_retrying_helper(
 ) -> None:
     """The append-time trim must replace through ``replace_with_retry``.
 
-    A lock-free dashboard read can hold the destination open, which on Windows
-    makes a bare ``os.replace`` raise a sharing violation (EACCES); that would
-    reach ``_degrade`` and disable history for a transient reader overlap. The
-    trim therefore routes its replace through the helper that retries the
-    Windows window.
+    On Windows a lock-free dashboard read holding the file open makes a bare
+    ``os.replace`` raise EACCES, which would reach ``_degrade`` and disable history.
     """
     replaced: list[str] = []
     real = cron_history_mod.replace_with_retry
@@ -997,3 +1110,59 @@ async def test_append_trim_replaces_through_the_retrying_helper(
     # so neither replace can raise a bare Windows sharing violation.
     assert "job1.jsonl" in replaced
     assert "_index.jsonl" in replaced
+
+
+# ── _lock fd on acquire failure ────────────────────────────────────────────
+
+
+def test_lock_closes_fd_when_acquire_raises(store: CronHistoryStore) -> None:
+    """A lock-acquire timeout must not leak the ``.history.lock`` fd.
+
+    ``_lock`` opens the lock file and then acquires it. When the acquire raises
+    (an ``OSError`` on timeout), no fd has been returned for the caller to
+    close, so ``_lock`` closes it itself before re-raising. A leaked handle on
+    Windows blocks deleting the lock file or the history folder.
+    """
+    from kiro_crew import platform_compat
+
+    store._dir.mkdir(parents=True, exist_ok=True)
+
+    opened: dict[str, int] = {}
+    real_open = platform_compat.open_create_or_existing
+
+    def _spy_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened["fd"] = fd
+        return fd
+
+    closed: list[int] = []
+    real_close = os.close
+
+    def _spy_close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    with patch.object(platform_compat, "open_create_or_existing", _spy_open), patch.object(
+        platform_compat, "acquire_lock", side_effect=OSError(errno.EAGAIN, "timeout")
+    ), patch("os.close", _spy_close):
+        with pytest.raises(OSError):
+            store._lock()
+        fd = opened["fd"]
+        assert fd in closed, "the opened lock fd was not closed on acquire failure"
+        with pytest.raises(OSError):
+            os.fstat(fd)  # a closed fd raises EBADF
+
+
+def test_lock_returns_open_fd_on_success(store: CronHistoryStore) -> None:
+    """The normal acquire path still hands back a usable, open fd."""
+    from kiro_crew import platform_compat
+
+    store._dir.mkdir(parents=True, exist_ok=True)
+    fd = store._lock()
+    try:
+        os.fstat(fd)  # open fd: no raise
+        # The fd really holds the lock: a second opener cannot take it.
+        with platform_compat.open_lock_file(store._lock_path()) as other:
+            assert platform_compat.try_acquire_lock(other, exclusive=True) is False
+    finally:
+        store._unlock(fd)

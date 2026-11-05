@@ -691,6 +691,7 @@ async def test_collection_status_reports_the_effective_switch_state(
         env_pinned=True,
         env_var=h.TELEMETRY_ENV_VAR,
         otlp_configured=True,
+        otlp_destinations=({"name": "ops", "source": "otlp_endpoints", "locked": False},),
     )
     monkeypatch.setattr(h, "_telemetry_cfg", lambda: state)
     monkeypatch.setattr(h, "_telemetry_overlay_pins", lambda leaf: False)
@@ -701,5 +702,6 @@ async def test_collection_status_reports_the_effective_switch_state(
         "env_var": h.TELEMETRY_ENV_VAR,
         "overlay_override": False,
         "otlp_configured": True,
+        "otlp_destinations": [{"name": "ops", "source": "otlp_endpoints", "locked": False}],
         "metrics_dir": str(tmp_path / "m"),
     }

@@ -76,6 +76,22 @@ class PendingApprovalRefused(Exception):
 PendingApprovalRefused.__module__ = "kiro_crew.skills"
 
 
+class PendingDismissRefused(Exception):
+    """A dismissal naming a digest was refused, with a machine-readable ``reason``.
+
+    ``content_changed`` (the candidate on disk differs from the digest the
+    reviewer's read returned, or cannot be read) or ``lock_unavailable`` (the slug
+    claim lock could not be taken). The candidate stays queued either way.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+PendingDismissRefused.__module__ = "kiro_crew.skills"
+
+
 def catalog_project_skills(self, project_dir: str | Path) -> list[dict]:
     """Return confined project rows without requiring or exercising trust.
 

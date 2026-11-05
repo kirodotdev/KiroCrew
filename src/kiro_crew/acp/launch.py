@@ -50,7 +50,7 @@ from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
-from kiro_crew.env import describe_search_path, mise_data_dir
+from kiro_crew.env import append_mcp_path_dirs, describe_search_path, mise_data_dir
 from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST, ssh_auth_sock_consent_notice
 
 # The client's logger name, because the helpers below were the client's and every
@@ -209,6 +209,29 @@ def _resolve_node_for_script(script_path: str) -> str | None:
     except (ValueError, IndexError):
         pass
     return None
+
+
+def _npm_windows_shim_target(shim: str, bin_name: str, package_target: Path) -> str | None:
+    """The file an npm Windows bin shim launches, or ``None`` when *shim* is not one.
+
+    On Windows, ``npm i -g`` cannot symlink a package's ``bin``, so it writes text
+    shims into the global bin directory -- ``<bin_name>.cmd`` among them -- each
+    running ``<that dir>/node_modules/<package_target>``. Python's ``CreateProcess``
+    runs such a ``.cmd``, but a Node child does not: since the CVE-2024-27980 fix
+    ``child_process.spawn``/``execFile`` refuse a ``.cmd`` or ``.bat`` without a shell
+    (``spawn EINVAL``). A path Crew hands to a Node child to run is therefore the
+    target the shim names, never the shim, with no shell in between.
+
+    Matched by layout, not by reading the shim: a shim whose name is *bin_name* (any
+    extension) sitting next to ``node_modules/<package_target>``. Reading the shim's
+    text would trust a script anything on PATH can write; the layout check accepts
+    only the file npm itself would have put there.
+    """
+    path = Path(shim)
+    if path.stem.casefold() != bin_name.casefold():
+        return None
+    target = path.parent / "node_modules" / package_target
+    return str(target) if target.is_file() else None
 
 
 #: Sentinel for "not yet resolved": every host's cached resolution starts here, and the
@@ -820,8 +843,6 @@ class LaunchTools:
     augmented_path: Callable[[str], str]
     scrub_agent_subprocess_env: Callable[..., dict[str, str]]
     apply_pod_home_remap: Callable[..., dict[str, str]]
-    browser_session_env: Callable[[Mapping[str, str]], dict[str, str]]
-    browser_socket_env: Callable[[Mapping[str, str]], dict[str, str]]
     inject_xdist_auto_cap: Callable[[dict[str, str]], Any]
     bind_voice_safe_agent_workspace_async: Callable[[Any], Awaitable[tuple[str, int | None]]]
     create_subprocess_limited: Callable[..., Awaitable[asyncio.subprocess.Process]]
@@ -883,6 +904,9 @@ class LaunchRequest:
     env_before_scrub: Callable[[dict[str, str], str | None], Awaitable[dict[str, str]]]
     extra_hidden_dirs: tuple[str, ...] = ()
     extra_expose_files: tuple[str, ...] = ()
+    #: More windows into the masked scratch root for this process alone: the
+    #: runtime's private-state directory.
+    extra_private_dirs: tuple[str, ...] = ()
     internal_sandbox: bool = False
     pod_home_remap: bool = False
     #: The runtime allocates scratch through its guarded hop; the client never has.
@@ -1098,6 +1122,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         )
     if host._shared_scratch is not None:
         scratch_window = (*scratch_window, str(host._shared_scratch))
+    scratch_window = (*scratch_window, *request.extra_private_dirs)
     # Resolve the SSH_AUTH_SOCK forward OFF the event loop (the governance
     # floor and the consent leaf are filesystem reads) ONCE, then pass the
     # resolved boolean into both the sandbox wrap below and the parent-side
@@ -1168,7 +1193,15 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         env.update(await host._to_thread_guarding_sandbox(tools.agent_env_overlay))
     if request.extra_env:
         env.update(request.extra_env)
-    env["PATH"] = tools.augmented_path(env.get("PATH", ""))
+    # The contributed MCP launcher dirs go LAST, after everything the gateway's
+    # PATH already resolves, so a bare-name MCP server kiro-cli starts is found
+    # even when the gateway itself was started without them (a service installed
+    # from a non-login shell). Read from the snapshot the config load above just
+    # refreshed, and never persisted: see ``env.append_mcp_path_dirs``. Off-loop:
+    # validating a ``~user`` entry expands it through a directory-service lookup.
+    env["PATH"] = await host._to_thread_guarding_sandbox(
+        append_mcp_path_dirs, tools.augmented_path(env.get("PATH", ""))
+    )
     env = await request.env_before_scrub(env, spawned_binary)
     # Whether the child would have had an agent socket before the scrub, read
     # here because the driver's credential repair above may have just found one.
@@ -1199,15 +1232,6 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # node) are identifiable as ours.
     env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
     request.env_after_marker(env)
-    # Own browser session per agent process: the CLI resolves a nameless command to
-    # one shared ``default`` browser, so without this two agents navigate and close
-    # each other's pages (see browser_session_env). Per PROCESS, not per agent: a
-    # shared runtime's sessions share this one.
-    browser_env = tools.browser_session_env(env)
-    env.update(browser_env)
-    if browser_env:
-        lifecycle_env = {**os.environ, **browser_env}
-        env.update(await host._to_thread_guarding_sandbox(tools.browser_socket_env, lifecycle_env))
     # The scratch dir was allocated before the sandbox wrap (carved out of the
     # masked root there); hand it to the child as its temp.
     if host._scratch_dir is not None:

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
-from kiro_crew import agent_state
+from kiro_crew import agent_state, crewmate_prompts
 from kiro_crew.agent_discovery import skill_resource_uris
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
@@ -555,6 +555,13 @@ def _refuse_foreign_worker_spec(path: Path, spec: dict[str, Any] | None) -> None
     )
 
 
+def worker_prompt() -> str:
+    """The kirocrew-worker prompt: its reporting contract, then the coding rules a
+    crewmate's worker carries too (``crewmate_prompts`` ``worker.coding_rules``)."""
+    rules = crewmate_prompts.text("worker.coding_rules")
+    return f"{agent_mod._WORKER_SYSTEM_PROMPT.rstrip()}\n\n{rules}\n"
+
+
 def _install_worker_agent() -> None:
     """Generate and install the kirocrew-worker agent config.
 
@@ -614,7 +621,7 @@ def _install_worker_agent() -> None:
         "default toolset, and reports status against that item as structured "
         "data its conductor reads without interpreting a transcript."
     )
-    config["prompt"] = agent_mod._WORKER_SYSTEM_PROMPT
+    config["prompt"] = worker_prompt()
 
     agents_dir = agent_mod.kiro_agents_dir_path()
     agents_dir.mkdir(parents=True, exist_ok=True)
@@ -1381,6 +1388,7 @@ def rederive_worker_agent(reason: str) -> bool:
     try:
         _install_worker_agent()
     except Exception:  # noqa: BLE001 — a stale worker spec must not fail a registration
+        # A PlatformCompositionError degrades the same way: the previous worker spec stays in place.
         agent_mod.logger.warning("Worker agent re-derive failed after %s", reason, exc_info=True)
         return False
     agent_mod.logger.info("Re-derived worker agent config after %s", reason)
@@ -1572,6 +1580,7 @@ def rederive_heartbeat_agent(reason: str) -> bool:
     try:
         agent_mod._install_heartbeat_agent()
     except Exception:  # noqa: BLE001 — the caller turns a failure into a refusal
+        # A PlatformCompositionError lands here too, and the spawn gate refuses the start.
         agent_mod.logger.warning("Heartbeat agent re-derive failed after %s", reason, exc_info=True)
         return False
     agent_mod.logger.info("Re-derived heartbeat agent config after %s", reason)

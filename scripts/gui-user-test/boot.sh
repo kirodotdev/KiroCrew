@@ -59,7 +59,7 @@ done
 # the sample project staged there as its project directory.
 
 # ---- 2b. sample notes folder for the Knowledge scenarios -------------------
-# The Knowledge "Add Source > Local Folder" form takes a typed absolute path
+# The Knowledge "Add Source > Add folder by path" form takes a typed absolute path
 # (the native picker is macOS-only), and the seeded home above lives at a
 # mktemp path a scenario's static YAML cannot spell. So the sample notes are
 # staged at ONE fixed path the scenario text names verbatim. Fixed means shared

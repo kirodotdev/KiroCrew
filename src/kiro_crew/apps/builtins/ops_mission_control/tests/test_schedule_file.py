@@ -740,16 +740,16 @@ class TestOffShiftCannotWrite(_Env):
         self.assertNotIn("strict_gating", source.config_fields)
 
     def test_no_rotation_source_advertises_an_identity_field_as_provider_config(self) -> None:
-        """The CLASS, not the three keys — five instances in two review rounds earned this.
+        """Pin the CLASS of identity fields, not the individual keys.
 
         Every input the off-shift refusal depends on must be unwritable by the party it
-        constrains. Per-key tests kept passing while the next key went unnoticed:
+        constrains. Per-key tests pass while the next key goes unnoticed. The known class:
 
-          1. `schedule-file.github_login`     — the rotation identity (Opus 5)
+          1. `schedule-file.github_login`     — the rotation identity
           2. `schedule-file.strict_gating`    — disable it and indeterminacy permits
           3. `config_fields` still listing the login — a second, non-keystone writer
           4. `configured()` in the vote       — flip `enabled` and the source abstains
-          5. `pagerduty.user_id`              — the SAME identity, one adapter over (GPT 5.6)
+          5. `pagerduty.user_id`              — the SAME identity, one adapter over
 
         So this asserts over the REAL registry: no rotation source may declare a
         config-writable field that names an identity or a gating switch. `config_fields` is

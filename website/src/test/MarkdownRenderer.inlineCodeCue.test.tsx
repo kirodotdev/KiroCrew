@@ -297,7 +297,7 @@ describe('inline-code chips: each class names its own click', () => {
       // Nothing else on the root changes (its click delegation and class list are main's).
       const root = document.querySelector('[data-tip-flow]') as HTMLElement | null
       expect(root).not.toBeNull()
-      expect(root!.getAttributeNames().filter(n => n.startsWith('data-'))).toEqual(['data-image-scope', 'data-tip-flow', 'data-guide-untrusted'])
+      expect(root!.getAttributeNames().filter(n => n.startsWith('data-'))).toEqual(['data-image-scope', 'data-tip-flow', 'data-message-body', 'data-guide-untrusted'])
       expect(root!.contains(screen.getByRole('button', { name: 'Copy npm test' }))).toBe(true)
       root!.getBoundingClientRect = () => rect(100, 0, 600, 140)
       const first = screen.getByRole('button', { name: 'Copy npm test' })

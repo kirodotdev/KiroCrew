@@ -313,6 +313,7 @@ class AgentRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             bufsize=1,  # line-buffered so streamed lines arrive promptly
             env=scrubbed_env,
             # Make the child its own process group so we can kill it (and any children it

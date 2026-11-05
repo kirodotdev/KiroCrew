@@ -166,6 +166,7 @@ class TestSessionTrust:
         sessions = MagicMock()
         trust.add_trusted_session("telegram:k", sessions)
         assert sessions.set_approval_policy.call_args.args == ("telegram:k", "auto")
+        assert trust.is_session_trusted("telegram:k") is True
         trust.clear_trusted_sessions()
 
     def test_revoking_trust_also_revokes_the_subagent_half(self) -> None:
@@ -271,7 +272,7 @@ class TestSessionTrust:
             "keep_policy=standing_trust" in src
         ), "the override-expiry revoke must exclude slots carrying standing trust"
         assert (
-            "if trust_carries(slot) or slot._trust_reads:" in src
+            "if trust_reaches_subagents(slot) or slot._trust_reads:" in src
         ), "the exclusion set must be built from the same condition the reset loop skips"
 
     def test_a_kept_key_loses_its_grant_but_keeps_its_policy(self) -> None:
@@ -308,6 +309,7 @@ class TestSessionTrust:
         sessions = MagicMock()
         trust.add_trusted_session("dashboard:slot-1", sessions)
         trust.clear_trusted_sessions()
+        assert trust.is_session_trusted("dashboard:slot-1") is False
         assert ("dashboard:slot-1", "") in [
             c.args for c in sessions.set_approval_policy.call_args_list
         ]

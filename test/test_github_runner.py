@@ -156,6 +156,9 @@ class TestResolveGh:
 
     def test_missing_gh_message_gives_install_guidance(self, monkeypatch):
         monkeypatch.setenv("PATH", "")
+        # The brew line is the POSIX arm; pin the platform so the Windows CI
+        # job (which now gets the winget arm) still exercises this assertion.
+        monkeypatch.setattr(runner.sys, "platform", "linux")
         monkeypatch.setattr(
             runner,
             "PROVIDER_EXECUTABLE_CANDIDATES",
@@ -171,6 +174,25 @@ class TestResolveGh:
         assert "KIROCREW_TEST_GH" in message
         # "path does not exist" rejections are noise, not guidance.
         assert "does not exist" not in message
+
+    def test_missing_gh_message_gives_winget_guidance_on_windows(self, monkeypatch):
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(runner.sys, "platform", "win32")
+        monkeypatch.setattr(
+            runner,
+            "PROVIDER_EXECUTABLE_CANDIDATES",
+            {"gh": ("/nonexistent-kirocrew/gh",), "glab": ()},
+        )
+        monkeypatch.setattr(runner, "_wellknown_windows_dirs", lambda _executable: ())
+
+        with pytest.raises(runner.SetupError) as excinfo:
+            runner.resolve_gh(override_env="KIROCREW_TEST_GH")
+
+        message = str(excinfo.value)
+        assert "winget install --id GitHub.cli" in message
+        assert "gh auth login" in message
+        assert "KIROCREW_TEST_GH" in message
+        assert "brew install" not in message
 
     def test_resolution_is_cached_and_reset_clears_it(self, monkeypatch, tmp_path):
         candidate = _fake_gh(tmp_path / "candidate-bin")
@@ -771,19 +793,6 @@ class TestReExports:
             source_providers._PROVIDER_EXECUTABLE_CANDIDATES
             is runner.PROVIDER_EXECUTABLE_CANDIDATES
         )
-
-    def test_github_client_url_parser_is_the_shared_function(self):
-        from kiro_crew.apps.builtins.issue_radar.backend import github_client
-
-        assert github_client.parse_github_repo_url is runner.parse_github_repo_url
-
-    def test_repo_url_error_is_one_class_across_layers(self):
-        from kiro_crew.apps.builtins.issue_radar.backend import errors, github_client
-
-        assert errors.RepoUrlError is runner.RepoUrlError
-        assert github_client.RepoUrlError is runner.RepoUrlError
-        with pytest.raises(errors.RepoUrlError):
-            runner.parse_github_repo_url("https://evil.example/o/r")
 
     def test_source_providers_gh_auth_keys_derive_from_the_canonical_union(self):
         """D3 lock-in: the sidebar's gh key set cannot drift from the

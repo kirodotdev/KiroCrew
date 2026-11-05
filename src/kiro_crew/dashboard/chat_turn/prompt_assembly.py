@@ -46,6 +46,7 @@ from kiro_crew.messaging.dispatch import (
     rearm_reinjection,
     rollback_skill_bodies,
 )
+from kiro_crew.prompt_segments import segments_of
 
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
@@ -71,9 +72,10 @@ if TYPE_CHECKING:
         validate_file_path,
     )
     from kiro_crew.dashboard.chat_turn.context_cap import (
-        CONTEXT_CAP_TAIL_CHARS,
         _context_cap_seed_head,
+        _context_cap_tail_chars,
         _drop_context_cap_seed,
+        _note_context_cap_tail,
         _spend_context_cap_seed,
         _take_context_cap_seed,
     )
@@ -158,7 +160,7 @@ async def _session_replay_history(
             # The cold start a conductor context-cap trim began (context_cap)
             # replays a longer tail, behind the trim note and the ledger snapshot.
             _trim_seed = _take_context_cap_seed(session_key)
-            _budget = {"budget_chars": CONTEXT_CAP_TAIL_CHARS} if _trim_seed else {}
+            _budget = {"budget_chars": _context_cap_tail_chars(session_key)} if _trim_seed else {}
             # Merge the disk transcript and a frozen live-window tail
             # before one budget pass. Exclude this request by identity,
             # whether or not the periodic flush has persisted it yet, and
@@ -177,6 +179,7 @@ async def _session_replay_history(
                 or ""
             )
             if _trim_seed and compressed:
+                _note_context_cap_tail(session_key, len(compressed))
                 compressed = await _context_cap_seed_head(session_key) + compressed
             logger.info(
                 "Session replay: key=%s result=%s",
@@ -610,6 +613,13 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
     slot = turn.slot
     state = turn.state
     user_typed_len = turn.user_typed_len
+    if turn._agent_started:
+        # The agent started this turn and is answering no prompt, so nothing is
+        # built and no one-shot input (a held note, a replay, the first-turn
+        # history) is spent on it: the next prompt still carries them.
+        full_message = ""
+        turn.full_message = full_message
+        return
     if is_slash:
         full_message = message
         turn.full_message = full_message
@@ -753,6 +763,15 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # mirror — avoids leaking injected context to the linked thread.
         _user_msg_for_mirror = message
         turn._user_msg_for_mirror = _user_msg_for_mirror
+        # Shared Crew: tell the agent who sent this message (prompt only).
+        from kiro_crew.shared_crew.attribution import sender_line
+
+        _sender = sender_line(
+            slot, _current_replay_message, owner_id=str(getattr(state, "owner_id", "") or "")
+        )
+        if _sender:
+            message = _sender + message
+            turn.message = message
         # Drain pending context injections (silent background context
         # from apps/subagents).  Expired entries are discarded.
         _ctx_prefix = drain_pending_context(slot)
@@ -1004,6 +1023,9 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 steering_dirs=_folder_steering_dirs,
                 context_provider=client,
                 skill_trigger_text=_trigger_text,
+                # The same provenance the directive applier reads, so the
+                # prompt offers no tool that applier would refuse.
+                directive_user_origin=bool(turn._directive_user_origin),
             )
             turn.full_message = full_message
         slot_ctx_omitted = dict(_ctx_omitted)
@@ -1024,6 +1046,10 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             turn._span_probe = _span_probe
             _span_base_len = len(full_message)
             turn._span_base_len = _span_base_len
+        # The prompt's provenance as build_message marked it; the runner
+        # re-applies it under the prefixes added below (chat_runner).
+        _prompt_segments = segments_of(full_message)
+        turn._prompt_segments = _prompt_segments
         full_message = _apply_incognito_prefix(slot, full_message)
         turn.full_message = full_message
         _trusted_prompt_tail = full_message

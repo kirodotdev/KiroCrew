@@ -48,6 +48,24 @@ def _fake_state() -> SimpleNamespace:
     return SimpleNamespace(notify=MagicMock(), _background_tasks=set())
 
 
+def _real_state(monkeypatch, tmp_path):
+    """A real ``DashboardState`` whose notification writes land under tmp_path."""
+    from kiro_crew.dashboard.state import DashboardState
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
+    state = DashboardState(
+        sessions=MagicMock(count=0), crons=MagicMock(), lessons=MagicMock(), start_time=0.0
+    )
+    state.broadcast_ws = MagicMock()
+    return state
+
+
+def _stored_notes(state) -> list[tuple[str, str]]:
+    """(channel, body) of every note the real state stored."""
+    return [(note["channel"], note["body"]) for note in state._notification_log]
+
+
 def _svc_with(*loops) -> MagicMock:
     svc = MagicMock()
     svc.list_all.return_value = list(loops)
@@ -98,6 +116,13 @@ class TestBothSurfacesAreNotified:
                     # Let the scheduled DM task run to completion.
                     await asyncio.sleep(0)
                     await asyncio.sleep(0)
+                    # A real state queues the note's append on its own executor; wait for
+                    # it here, while tmp_path is still patched in, so a busy executor
+                    # cannot write it after the patches are put back. Bounded so a stuck
+                    # executor fails here by name.
+                    persist = getattr(state, "last_notification_persist", None)
+                    if persist is not None:
+                        await asyncio.wait_for(persist, timeout=30)
                     return dm
 
         return asyncio.run(_run())
@@ -118,24 +143,28 @@ class TestBothSurfacesAreNotified:
         assert dm.call_count == 1, "the owner DM was never scheduled"
         assert "until_shutdown" in dm.call_args.args[1]
 
-    def test_both_surfaces_carry_the_same_body(self) -> None:
+    def test_both_surfaces_carry_the_same_body(self, monkeypatch, tmp_path) -> None:
         """One source of truth for the text, so the pushed message and the stored
         note cannot drift into saying different things about the same event."""
-        state = _fake_state()
+        state = _real_state(monkeypatch, tmp_path)
+        state.notify = MagicMock(wraps=state.notify)
         dm = self._drive(state, _svc_with(_loop()))
         body = _unattended_expiry_text(1, "dashboard")
+        assert _stored_notes(state) == [("system.safety_override", body)]
         assert state.notify.call_args.args[2] == body
         assert body in dm.call_args.args[1]
 
-    def test_nothing_is_sent_when_no_loop_is_running(self) -> None:
+    def test_nothing_is_sent_when_no_loop_is_running(self, monkeypatch, tmp_path) -> None:
         """An ordinary expiry is already reported by the existing path; this notice
         must not duplicate it.
 
         Mutation: drop the `if not armed: return` guard -- every ordinary expiry
         produces a second, wrong notice and this test fails.
         """
-        state = _fake_state()
+        state = _real_state(monkeypatch, tmp_path)
+        state.notify = MagicMock(wraps=state.notify)
         dm = self._drive(state, _svc_with(_loop(active=False)))
+        assert state._notification_log == []
         assert state.notify.call_count == 0
         assert dm.call_count == 0
 
@@ -151,16 +180,23 @@ class TestBothSurfacesAreNotified:
         dm = self._drive(state, _svc_with(_loop()))
         assert dm.call_count == 1
 
-    def test_no_running_loop_degrades_to_the_dashboard_note_only(self) -> None:
+    def test_no_running_loop_degrades_to_the_dashboard_note_only(
+        self, monkeypatch, tmp_path
+    ) -> None:
         """Called from a synchronous context (the expiry callback can be reached from
         one), there is no loop to schedule the DM on. The note must still land
         rather than the whole notice being lost.
         """
-        state = _fake_state()
+        state = _real_state(monkeypatch, tmp_path)
+        state.notify = MagicMock(wraps=state.notify)
         svc = _svc_with(_loop())
         with patch("kiro_crew.dashboard.server._autonudge_get", return_value=svc):
             _notify_unattended_expiry(state, "dashboard")
+        assert _stored_notes(state) == [
+            ("system.safety_override", _unattended_expiry_text(1, "dashboard"))
+        ]
         assert state.notify.call_count == 1
+        assert state._background_tasks == set()
 
 
 class TestTheNoticeNamesTheRemedy:
@@ -302,14 +338,18 @@ class TestTheNoticeHasItsOwnChannel:
         assert payload.channel == "system.safety_override"
         assert payload.channel != _FALLBACK_CHANNEL
 
-    def test_the_notifier_emits_that_kind(self) -> None:
+    def test_the_notifier_emits_that_kind(self, monkeypatch, tmp_path) -> None:
         """Ties the registration to the caller: registering a channel nothing emits,
         or emitting a kind matching no channel, are both silently wrong.
         """
-        state = _fake_state()
+        state = _real_state(monkeypatch, tmp_path)
+        state.notify = MagicMock(wraps=state.notify)
         svc = _svc_with(_loop())
         with patch("kiro_crew.dashboard.server._autonudge_get", return_value=svc):
             _notify_unattended_expiry(state, "dashboard")
+        assert [note["channel"] for note in state._notification_log] == [
+            "system.safety_override"
+        ]
         assert state.notify.call_args.args[0] == "safety_override"
 
     def test_it_is_default_priority_not_critical(self) -> None:

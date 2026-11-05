@@ -458,7 +458,7 @@ class TestIdentityComesFromTheSession(unittest.TestCase):
 
 
 class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
-    """The POSITIVE twin of ``test_a_subagent_resolved_identity_cannot_read_or_write``.
+    """The POSITIVE twin of ``test_a_subagent_resolved_identity_cannot_read_or_write_the_crew``.
 
     The strict gate refuses a subagent because it resolves to its PARENT slot;
     that test (above, in ``TestIdentityComesFromTheSession``) pins the refusal.

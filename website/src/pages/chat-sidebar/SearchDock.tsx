@@ -7,7 +7,7 @@
  *  writes and order, create, rename, title, peer sessions). */
 import { Fragment } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { X, ArrowUpDown, EyeOff, ChevronRight, Clock, Check, List, ListTree, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
+import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, Pin, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -33,6 +33,8 @@ import type { SessionFilterKey } from './types'
 import { SESSION_FILTERS } from './filters'
 import { modelFilterLabel } from './models'
 import { DisclosureChevron } from './chrome'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { renderResumeAllRow } from './resumeAll'
 import type { SidebarScope } from './scope'
 
 /**
@@ -40,12 +42,21 @@ import type { SidebarScope } from './scope'
  * phone, where those options render inline rather than in a flyout — the
  * dormant-collapse thresholds. One component so the two lists cannot drift, and
  * so the duplicated class/style pair does not read as copy-paste.
+ *
+ * `role="radio"`, not the toggle-button `aria-pressed`: each list is one choice
+ * out of a mutually exclusive set, so a screen reader must hear "which one is in
+ * effect", not "this toggle is on". The caller wraps the chips in the shared
+ * `RadioChipGroup` so the set is one named group, matching the desktop
+ * submenu's `menuitemradio` grammar. The group owns the roving tab stop (the
+ * checked chip, or the first when a custom Recent window matches no preset) and
+ * the arrow keys; `selectOnArrow` keeps #22330's "arrow moves AND selects", since
+ * a duration pick here is cheap and undone by the next arrow.
  */
 function DurationChip({ label, selected, onSelect }: { label: string; selected: boolean; onSelect: () => void }) {
   return (
     <button
       type="button"
-      aria-pressed={selected}
+      {...radioChip(selected)}
       className="px-2 py-0.5 rounded-full text-[11px] cursor-pointer border transition-colors"
       style={selected
         ? { background: 'color-mix(in srgb, var(--ok) 12%, transparent)', color: 'var(--ok)', borderColor: 'color-mix(in srgb, var(--ok) 35%, transparent)' }
@@ -278,7 +289,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                         onMouseDown={e => e.stopPropagation()}
                         onKeyDown={e => e.stopPropagation()}
                       >
-                        <div className="flex flex-wrap gap-1 px-1 mb-2">
+                        <RadioChipGroup selectOnArrow ariaLabel={i18nT(FILTER_LABEL_KEY.recent)} className="flex flex-wrap gap-1 px-1 mb-2">
                           {RECENT_WINDOW_PRESETS.map(preset => (
                             <DurationChip
                               key={preset.ms}
@@ -287,7 +298,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                               onSelect={() => selectRecentPreset(preset.ms)}
                             />
                           ))}
-                        </div>
+                        </RadioChipGroup>
                         <div className="px-1 text-[12px] text-muted">
                           <div className="mb-1">{i18nT('pages.chatSidebar.custom')}</div>
                           <div className="flex items-center gap-1.5">
@@ -422,35 +433,57 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   const hideLabel = hidden
                     ? i18nT('pages.chatSidebar.filter_unhide_named', { filter: filterLabel })
                     : i18nT('pages.chatSidebar.filter_hide_named', { filter: filterLabel })
+                  // "In progress" gets a named "Not in progress" row instead of the
+                  // hover-only EyeOff button, so hiding running sessions is discoverable
+                  // without hovering. Unread and Pinned keep the EyeOff. The row stays
+                  // in the menu while show-only is on, so the menu keeps its shape:
+                  // toggleHideFilter clears show-only and toggleFilter drops the hide,
+                  // so one click moves between the two.
+                  const notRow = filterDef.key === 'running'
                   return (
-                    <div
-                      key={filterDef.key}
-                      role="group"
-                      className="group/filter flex items-center rounded-md transition-colors hover:bg-bg-hover focus-within:bg-bg-hover"
-                    >
-                      {showRow}
-                      {!active && (
-                        <DropdownMenuItem
-                          aria-label={hideLabel}
-                          title={hideLabel}
-                          onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
-                          className="group/hide shrink-0"
-                          data-testid={`filter-hide-${filterDef.key}`}
-                          data-filter-hidden={hidden ? 'true' : undefined}
-                        >
-                          <span
-                            className={hidden
-                              ? 'inline-flex size-3.5 items-center justify-center rounded bg-accent-subtle text-accent ring-4 ring-accent-subtle'
-                              : 'inline-flex size-3.5 items-center justify-center text-muted group-focus/hide:text-text'}
+                    <Fragment key={filterDef.key}>
+                      <div
+                        role="group"
+                        className="group/filter flex items-center rounded-md transition-colors hover:bg-bg-hover focus-within:bg-bg-hover"
+                      >
+                        {showRow}
+                        {!active && !notRow && (
+                          <DropdownMenuItem
+                            aria-label={hideLabel}
+                            title={hideLabel}
+                            onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
+                            className="group/hide shrink-0"
+                            data-testid={`filter-hide-${filterDef.key}`}
+                            data-filter-hidden={hidden ? 'true' : undefined}
                           >
-                            <EyeOff
-                              size={12}
-                              className={hidden ? undefined : 'opacity-0 group-hover/filter:opacity-100 group-focus-within/filter:opacity-100 [@media(hover:none)]:opacity-100'}
-                            />
-                          </span>
+                            <span
+                              className={hidden
+                                ? 'inline-flex size-3.5 items-center justify-center rounded bg-accent-subtle text-accent ring-4 ring-accent-subtle'
+                                : 'inline-flex size-3.5 items-center justify-center text-muted group-focus/hide:text-text'}
+                            >
+                              <EyeOff
+                                size={12}
+                                className={hidden ? undefined : 'opacity-0 group-hover/filter:opacity-100 group-focus-within/filter:opacity-100 [@media(hover:none)]:opacity-100'}
+                              />
+                            </span>
+                          </DropdownMenuItem>
+                        )}
+                      </div>
+                      {notRow && (
+                        <DropdownMenuItem
+                          title={i18nT('pages.chatSidebar.filter_not_running_description')}
+                          onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
+                          data-testid={`filter-not-${filterDef.key}`}
+                          data-filter-hidden={hidden ? 'true' : undefined}
+                          role="menuitemcheckbox"
+                          aria-checked={hidden}
+                        >
+                          <ZapOff size={12} className={hidden ? 'text-[var(--warn)]' : 'text-muted'} />
+                          <span className="flex-1 truncate">{i18nT('pages.chatSidebar.filter_not_running')}</span>
+                          {hidden && <Check size={14} className="text-accent shrink-0" />}
                         </DropdownMenuItem>
                       )}
-                    </div>
+                    </Fragment>
                   )
                 })}
                 {/* Lift every active status filter at once, for a look at the
@@ -655,11 +688,12 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                         <DropdownMenuLabel
                           className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2"
                           data-testid="stale-collapse-menu"
+                          id="stale-collapse-presets-label"
                         >
                           {staleRowBody}
                         </DropdownMenuLabel>
                         {staleCaption}
-                        <div className="flex flex-wrap gap-1 px-2 pb-1.5">
+                        <RadioChipGroup selectOnArrow ariaLabelledBy="stale-collapse-presets-label" className="flex flex-wrap gap-1 px-2 pb-1.5">
                           {STALE_COLLAPSE_PRESETS_MS.map(ms => (
                             <DurationChip
                               key={ms}
@@ -668,7 +702,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                               onSelect={() => setStaleCollapseMs(ms)}
                             />
                           ))}
-                        </div>
+                        </RadioChipGroup>
                       </>
                     )
                   }
@@ -681,15 +715,27 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="min-w-[150px] max-w-[240px]">
                     {staleCaption}
-                    {STALE_COLLAPSE_PRESETS_MS.map(ms => (
-                      <DropdownMenuItem
-                        key={ms}
-                        onSelect={() => setStaleCollapseMs(ms)}
-                      >
-                        <span className="flex-1">{staleLabel(ms)}</span>
-                        {staleCollapseMs === ms && <Check size={14} className="text-accent shrink-0" />}
-                      </DropdownMenuItem>
-                    ))}
+                    {/* A switcher over mutually exclusive thresholds, so each row
+                        is a `menuitemradio` reporting `aria-checked` — a screen
+                        reader says WHICH threshold is in effect, which a plain
+                        item's check icon (kept, sighted-only) cannot convey. The
+                        write stays on each row's `onSelect`, not the group's
+                        `onValueChange`, so a re-pick of the already-active
+                        threshold still fires; the group's `value` is the ms
+                        preset serialized to a string (Radix radio values are
+                        strings). */}
+                    <DropdownMenuRadioGroup value={String(staleCollapseMs)}>
+                      {STALE_COLLAPSE_PRESETS_MS.map(ms => (
+                        <DropdownMenuRadioItem
+                          key={ms}
+                          value={String(ms)}
+                          onSelect={() => setStaleCollapseMs(ms)}
+                        >
+                          <span className="flex-1">{staleLabel(ms)}</span>
+                          {staleCollapseMs === ms && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
                   )
@@ -871,33 +917,67 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                         <span className="flex-1">{i18nT('pages.chatSidebar.show_all_folders')}</span>
                       </DropdownMenuItem>
                     )}
-                    {folderFilterRows.map(({ folder: f, depth, count, hidden, hiddenByAncestor }) => (
-                      <DropdownMenuItem
-                        key={f.id}
-                        style={{ paddingLeft: `${8 + depth * 14}px` }}
-                        title={hiddenByAncestor
-                          ? i18nT('pages.chatSidebar.hidden_because_parent_hidden', { name: f.name })
-                          : hidden ? i18nT('pages.chatSidebar.show_folder') : i18nT('pages.chatSidebar.hide_folder')}
-                        // Keep the menu open so several folders can be toggled.
-                        onSelect={e => { e.preventDefault(); toggleFolderFilter(f.id) }}
-                        data-testid={`folder-filter-${f.id}`}
-                        role="menuitemcheckbox"
-                        aria-checked={!hidden && !hiddenByAncestor}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center"
-                          style={hidden || hiddenByAncestor
-                            ? { borderColor: 'var(--border)', background: 'transparent' }
-                            : { borderColor: 'var(--accent)', background: 'var(--accent)' }}
+                    {folderFilterRows.map(({ folder: f, depth, count, hidden, hiddenByAncestor, pinned, pinnedDescendant }) => {
+                      // A folder under or above a pin reads checked and inert:
+                      // the pin steps over this checkbox, so a tick here would
+                      // change nothing on screen, and the row says why instead
+                      // of offering it. The reason is drawn as a line under the
+                      // row, not only as its title: a disabled item takes no
+                      // pointer events, so a hover tooltip never shows on
+                      // exactly the row that needs explaining.
+                      const inert = pinned || pinnedDescendant !== null
+                      const inertReason = pinned
+                        ? i18nT('pages.chatSidebar.pinned_folder_always_shown', { name: f.name })
+                        : pinnedDescendant !== null
+                          ? i18nT('pages.chatSidebar.holds_pinned_folder', { name: f.name, pinned: pinnedDescendant.name })
+                          : null
+                      return (
+                        <DropdownMenuItem
+                          key={f.id}
+                          style={{ paddingLeft: `${8 + depth * 14}px` }}
+                          // The reason wraps onto its own line under the row; the
+                          // first line keeps the one-row alignment of its neighbours.
+                          className={inert ? 'flex-wrap' : undefined}
+                          title={inertReason
+                            ?? (hiddenByAncestor
+                              ? i18nT('pages.chatSidebar.hidden_because_parent_hidden', { name: f.name })
+                              : hidden ? i18nT('pages.chatSidebar.show_folder') : i18nT('pages.chatSidebar.hide_folder'))}
+                          // Keep the menu open so several folders can be toggled.
+                          onSelect={e => { e.preventDefault(); if (!inert) toggleFolderFilter(f.id) }}
+                          disabled={inert}
+                          data-testid={`folder-filter-${f.id}`}
+                          role="menuitemcheckbox"
+                          aria-checked={inert || (!hidden && !hiddenByAncestor)}
                         >
-                          {!hidden && !hiddenByAncestor && <Check size={10} className="text-accent-fg" strokeWidth={3} />}
-                        </span>
-                        <FolderGlyph color={f.color} icon={f.icon} size={12} className="shrink-0 text-muted" />
-                        <span className={`flex-1 truncate${hiddenByAncestor ? ' opacity-50' : ''}`}>{f.name}</span>
-                        {count > 0 && <span className="text-muted text-[11px] shrink-0">{count}</span>}
-                      </DropdownMenuItem>
-                    ))}
+                          <span
+                            aria-hidden="true"
+                            className="w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center"
+                            style={!inert && (hidden || hiddenByAncestor)
+                              ? { borderColor: 'var(--border)', background: 'transparent' }
+                              : { borderColor: 'var(--accent)', background: 'var(--accent)' }}
+                          >
+                            {/* The pin, not a tick, for an inert row: a checked box that
+                             *  cannot be unchecked would read as an ordinary checked row,
+                             *  which in dark mode is exactly what it looks like, and the
+                             *  pin is the mark the folder header already wears for this
+                             *  state. A lock read as "private" instead. */}
+                            {inert
+                              ? <Pin size={11} className="text-accent-fg" strokeWidth={2.5} data-testid={`folder-filter-lock-${f.id}`} />
+                              : (!hidden && !hiddenByAncestor) && <Check size={10} className="text-accent-fg" strokeWidth={3} />}
+                          </span>
+                          <FolderGlyph color={f.color} icon={f.icon} size={12} className="shrink-0 text-muted" />
+                          <span className={`flex-1 truncate${hiddenByAncestor && !inert ? ' opacity-50' : ''}`}>{f.name}</span>
+                          {count > 0 && <span className="text-muted text-[11px] shrink-0">{count}</span>}
+                          {/* Indented past the checkbox and the glyph (14 + 8 + 12 + 8)
+                              so the reason lines up under the folder name. */}
+                          {inertReason && (
+                            <span className="basis-full pl-[42px] text-[11px] text-muted" data-testid={`folder-filter-reason-${f.id}`}>
+                              <span className="block w-0 min-w-[16rem] whitespace-normal">{inertReason}</span>
+                            </span>
+                          )}
+                        </DropdownMenuItem>
+                      )
+                    })}
                       </>
                     )}
                   </>
@@ -910,6 +990,11 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
   )
   const shelf = (
         <>
+      {/* Resume every interrupted idle session. FIRST in the shelf: after a
+          gateway restart this is the one list-level action the person came to
+          the sidebar for, and the chips below describe a view, not a repair.
+          Absent when nothing is interrupted (see renderResumeAllRow). */}
+      {renderResumeAllRow(shell)}
       {/* One aggregate chip in its OWN row, never per-tag chips in the row below.
           AUTOSDE max-two-buttons-per-row grandfathers that row's existing filter
           chips but forbids growing it, and per-tag chips grow it without bound.

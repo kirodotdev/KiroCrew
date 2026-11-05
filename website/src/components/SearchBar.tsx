@@ -131,7 +131,7 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
         const count = matches.length > 0
           ? (scopeLimited
               ? i18nT('components.searchBar.results_loaded_only', { current: currentIdx + 1, total: matches.length })
-              : `${currentIdx + 1} of ${matches.length} results`)
+              : i18nT('components.searchBar.result_position', { current: currentIdx + 1, count: matches.length }))
           : (scopeLimited
               ? i18nT('components.searchBar.no_results_loaded_only')
               : i18nT('components.searchBar.no_results'))

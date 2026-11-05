@@ -1310,6 +1310,8 @@ class WorkflowRunner:
         workflow_id: str = "",
         workflow_slug: str = "",
         workflow_revision: int = 0,
+        fallback_title: str = "",
+        fallback_folder_id: str = "",
         intent: str = "",
         author_fn: Optional[AuthorFn] = None,
         admission_closed: Optional[Callable[[], bool]] = None,
@@ -1445,5 +1447,7 @@ class WorkflowRunner:
             workflow_id=workflow_id,
             workflow_slug=workflow_slug,
             workflow_revision=workflow_revision,
+            fallback_title=fallback_title,
+            fallback_folder_id=fallback_folder_id,
             admission_closed=admission_closed,
         )

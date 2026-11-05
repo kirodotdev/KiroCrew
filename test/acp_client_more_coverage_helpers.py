@@ -18,8 +18,7 @@ from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_acp_client_more_coverage*.py modules calls monkeypatch.undo()
-def _pinned_kiro_cli_version(monkeypatch):
+def _pinned_kiro_cli_version(_floor_monkeypatch):
     """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
 
     A client start here materialises the agent spec (``ensure_agent_materialized``
@@ -30,7 +29,7 @@ def _pinned_kiro_cli_version(monkeypatch):
     install with the checkout as the child's cwd. Pinned to the floor release, as
     ``test_agent.py`` and the generated-writer suites pin it.
     """
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         "kiro_crew.kiro_cli.installed_kiro_cli_version",
         lambda: SPEC_PERMISSIONS_MIN_VERSION,
     )

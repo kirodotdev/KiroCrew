@@ -127,7 +127,20 @@ function measuredContentHeight(el: HTMLTextAreaElement): number {
  *  corrected. That is what makes the drag handle's double-click reset work
  *  without a measurement — it clears the inline height while the value stays
  *  put, so the cached height is both still correct and no longer applied. */
-const lastMeasured = new WeakMap<HTMLTextAreaElement, { inputs: string; height: string }>()
+const lastMeasured = new WeakMap<HTMLTextAreaElement, { inputs: string; height: string; width: number }>()
+
+/** Whether `el`'s current height was measured at a width other than its
+ *  current one, or was never measured. The width observer asks this instead of
+ *  comparing against the width it last saw, because measurements also run
+ *  outside the observer. An effect that runs while the layout is briefly
+ *  narrower measures at that narrow width. When the layout is restored before
+ *  the next rendering step, the observer never sees that width. A placeholder
+ *  measured at a near-zero width reaches the 140px cap, and without this check
+ *  the empty box would keep that height once the width returns. */
+function measuredAtOtherWidth(el: HTMLTextAreaElement): boolean {
+  const memo = lastMeasured.get(el)
+  return memo === undefined || memo.width !== el.clientWidth
+}
 
 /** Auto-size textarea to fit content (only when not manually sized).
  *
@@ -167,14 +180,15 @@ function applyHeight(
   // `measuredContentHeight`), so a placeholder swap changes the height too.
   // `value` last — it is user text and may itself contain the delimiter, so no
   // content can forge a boundary against the fields in front of it.
-  const inputs = [el.clientWidth, cap, el.placeholder, el.value].join('\u0000')
+  const width = el.clientWidth
+  const inputs = [width, cap, el.placeholder, el.value].join('\u0000')
   const memo = lastMeasured.get(el)
   let next: string
   if (memo !== undefined && memo.inputs === inputs) {
     next = memo.height
   } else {
     next = Math.max(INPUT_MIN_H, Math.min(measuredContentHeight(el), cap)) + 'px'
-    lastMeasured.set(el, { inputs, height: next })
+    lastMeasured.set(el, { inputs, height: next, width })
   }
   if (next !== prev) {
     el.style.height = next
@@ -390,7 +404,7 @@ export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessio
 /** Content-driven height for the textarea: every re-measure, and the paste
  *  mirror's scroll sync that follows one. Takes `textareaParked` from the voice
  *  hooks, which is why the composer calls this after them. */
-export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder }: {
+export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder, boxMounted = true }: {
   inputRef: React.RefObject<HTMLTextAreaElement>
   mirrorRef: React.RefObject<HTMLDivElement>
   value: string
@@ -399,6 +413,12 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
   dragging: React.MutableRefObject<boolean>
   textareaParked: boolean
   activePlaceholder: string
+  /** Whether the box that holds the textarea is mounted. The composer unmounts
+   *  the box for the approval ghost and for a collapse, and the box mounts a new
+   *  textarea when it returns. The effects below read `inputRef` only when a dep
+   *  changes, so this dep makes them measure the new textarea and move the width
+   *  observer onto it from the detached one. */
+  boxMounted?: boolean
 }) {
   /** Mirrors `textareaParked` for the handlers that read it at event time (the
    *  input handler, the width observer). Assigned during render, so it is
@@ -421,7 +441,7 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
     const valueChanged = lastMeasuredValueRef.current !== value
     lastMeasuredValueRef.current = value
     if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked, !valueChanged)
-  }, [value, prefillHint, manualHeight, textareaParked, inputRef, dragging])
+  }, [value, prefillHint, manualHeight, textareaParked, boxMounted, inputRef, dragging])
 
   // A pre-filled prompt is read from its first line. When the seed REPLACES what
   // the box held, a box that was scrolled for the previous text keeps that
@@ -449,9 +469,10 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
   // the height it had at the old width and clipped the placeholder's second
   // line mid-glyph on the Members DM thread (issue #9979, finding 4).
   // Width ONLY: the observer also fires for the height `applyHeight` itself
-  // writes, and re-running on that would measure for nothing (the memo makes it
-  // a no-op, but the guard makes the intent legible). `dragging` and `parked`
-  // are the same preconditions the two call sites above honour.
+  // writes, and re-running on that would measure for nothing. The width it
+  // compares with is the one the current height was measured at
+  // (`measuredAtOtherWidth`), not the one the observer last saw. `dragging` and
+  // `parked` are the same preconditions the two call sites above honour.
   // The height is written on the NEXT frame, never inside the callback: a
   // write there resizes the very element this observer watches, so the engine
   // owes it a second delivery in the same frame. WebKit reports that as
@@ -461,15 +482,12 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
   useEffect(() => {
     const el = inputRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
-    let lastWidth = el.clientWidth
     let frame = 0
     const remeasure = () => {
       if (!dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current, true)
     }
     const ro = new ResizeObserver(() => {
-      const width = el.clientWidth
-      if (width === lastWidth) return
-      lastWidth = width
+      if (!measuredAtOtherWidth(el)) return
       cancelAnimationFrame(frame)
       // A side panel sliding resizes the composer on every frame, and each new
       // width is a fresh twin measurement: measure once when it rests.
@@ -478,9 +496,9 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
     })
     ro.observe(el)
     return () => { ro.disconnect(); cancelAnimationFrame(frame); forgetAfterSlide(remeasure) }
-    // `textareaParked` re-arms the observer on the way back from the sr-only box,
-    // where the 1px width must not be the baseline the next change is judged from.
-  }, [manualHeight, prefillHint, textareaParked, inputRef, dragging])
+    // `textareaParked` re-arms the observer on the way back from the sr-only box.
+    // `boxMounted` re-arms it on the textarea a remounted box brings.
+  }, [manualHeight, prefillHint, textareaParked, boxMounted, inputRef, dragging])
 
   // Keep the paste-highlight mirror's scroll aligned with the textarea after
   // value/height changes (applyHeight mutates scrollTop programmatically, which

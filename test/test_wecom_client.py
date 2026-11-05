@@ -220,8 +220,8 @@ class TestSendReply:
             ws_url="wss://fake",
             on_message=AsyncMock(),
         )
-        # Should not raise
-        await client.send_reply("", "Hello!")
+        # No response_url means nothing was delivered, and the verdict says so.
+        assert await client.send_reply("", "Hello!") is False
 
     @pytest.mark.asyncio
     async def test_reuses_live_ws_session_without_closing_it(self) -> None:
@@ -260,6 +260,60 @@ class TestSendReply:
 
         assert posted == ["https://example.com/resp"]
         assert closed["n"] == 0  # a reused (not owned) session must not be closed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "body", "accepted"),
+        [
+            (200, None, True),
+            (200, [], True),
+            (200, "ok", True),
+            (200, 7, True),
+            (500, None, False),
+            (500, ["x"], False),
+            (200, {"errcode": 0}, True),
+            (200, {}, True),
+            (200, {"errcode": 40001}, False),
+        ],
+    )
+    async def test_a_body_that_is_not_an_object_is_read_without_raising(
+        self, status, body, accepted
+    ) -> None:
+        """A 200 whose JSON body is null, a list or a scalar carries no errcode.
+
+        It reads like an object with no errcode, rather than raising
+        ``AttributeError`` out of the last-resort reply path.
+        """
+
+        class FakeResp:
+            async def json(self, content_type=None):
+                return body
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+        FakeResp.status = status
+
+        class LiveSession:
+            closed = False
+
+            def post(self, url, json=None, proxy=None, timeout=None):
+                return FakeResp()
+
+            async def close(self):
+                pass
+
+        client = WeComClient(bot_id="b", secret="s", ws_url="wss://fake")
+        client._session = LiveSession()  # type: ignore[assignment]
+
+        try:
+            result = await client.send_reply("https://example.com/resp", "Hi")
+        except AttributeError as exc:
+            pytest.fail(f"send_reply raised on a {type(body).__name__} body: {exc}")
+        assert result is accepted
 
 
 # ------------------------------------------------------------------
@@ -455,6 +509,8 @@ class TestAckPongHandling:
             ws_url="wss://fake",
             on_message=AsyncMock(),
         )
+        client._stream_of_req["some-req"] = "stream-1"
+        client._mark_stream_rejected("stream-1")
         ack_frame = json.dumps(
             {
                 "headers": {"req_id": "some-req"},
@@ -462,6 +518,9 @@ class TestAckPongHandling:
             }
         )
         await client._handle_message(ack_frame)
+        # An acceptance supersedes the earlier refusal on the same stream.
+        assert client.stream_had_rejection("stream-1") is False
+        assert client.stream_is_dead("stream-1") is False
 
 
 # ------------------------------------------------------------------
@@ -616,6 +675,7 @@ class TestMalformedFrames:
         await client._handle_message(json.dumps(payload))
 
         handler.assert_not_awaited()
+        assert client._handler_tasks == set()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -647,6 +707,8 @@ class TestMalformedFrames:
         await client._handle_message(json.dumps(frame))
 
         handler.assert_not_awaited()
+        # No turn task was started for the malformed frame.
+        assert client._handler_tasks == set()
 
     @pytest.mark.asyncio
     async def test_handler_error_does_not_abort_receive_loop(self) -> None:

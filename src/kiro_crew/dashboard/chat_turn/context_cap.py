@@ -40,10 +40,20 @@ CONTEXT_CAP_CACHE_SECS = 300.0
 #: A session a trim started is not trimmed again until its reading has grown this far
 #: past its first one, so a trim that lands high cannot repeat on every cold turn.
 CONTEXT_CAP_DAMPING_TOKENS = 50_000
-#: The trim's replay budget in chars: the room LOW leaves after a fresh conductor
-#: session's ~55K-token start and ~5K for the note, the snapshot and the message, at
-#: 3 chars per token. Every other cold start keeps ``_REPLAY_BUDGET_CHARS``.
-CONTEXT_CAP_TAIL_CHARS = 270_000
+#: What a trimmed session holds besides its tail, in tokens: a fresh conductor
+#: session's ~55K-token start and ~5K for the note, the snapshot and the message.
+CONTEXT_CAP_SEED_BASE_TOKENS = 60_000
+#: The trim's replay budget in tokens: the room LOW leaves after the seed base. It is
+#: turned into chars with the chat's own chars per token (``_context_cap_tail_chars``).
+#: Every other cold start keeps ``_REPLAY_BUDGET_CHARS``.
+CONTEXT_CAP_TAIL_TOKENS = CONTEXT_CAP_LOW_TOKENS - CONTEXT_CAP_SEED_BASE_TOKENS
+#: Chars per token for a chat with no measured trim yet. Mixed Chinese and English
+#: conductor text with tables reads at ~1.65, so this lands at or under LOW.
+CONTEXT_CAP_FALLBACK_CHARS_PER_TOKEN = 1.6
+#: A measured ratio is held to this range. The top is the old fixed 3, so a tail is
+#: never longer than the 270,000 chars it was before it was measured.
+CONTEXT_CAP_MIN_CHARS_PER_TOKEN = 1.0
+CONTEXT_CAP_MAX_CHARS_PER_TOKEN = 3.0
 #: Trims remembered at once, one per conductor chat key; past it the oldest goes.
 _CONTEXT_CAP_MAX_TRIMS = 256
 
@@ -70,10 +80,15 @@ class _CapTrim:
     #: start that reads it. The damping guard counts from that reading.
     sid: str = ""
     first_tokens: int = 0
+    #: The chars of the tail the seed carried, set when the seed is built.
+    tail_chars: int = 0
 
 
 #: Session key -> the trim that started the session now on that key.
 _CONTEXT_CAP_TRIMS: dict[str, _CapTrim] = {}
+#: Session key -> chars per token measured off that chat's last trim. Kept apart from
+#: ``_CONTEXT_CAP_TRIMS`` so it outlives the session the trim started.
+_CONTEXT_CAP_CHARS_PER_TOKEN: dict[str, float] = {}
 
 
 async def _cap_conductor_context(
@@ -231,6 +246,7 @@ def _context_cap_damping_floor(state: DashboardState, session_key: str, tokens: 
         return None
     if not trim.sid:
         trim.sid, trim.first_tokens = sid, tokens
+        _measure_context_cap_ratio(session_key, trim)
     elif trim.sid != sid:
         _CONTEXT_CAP_TRIMS.pop(session_key, None)
         return None
@@ -259,6 +275,39 @@ async def _context_cap_discard(state: DashboardState, slot: _ChatSlot, session_k
         state.broadcast_ws("mcp_report_update", {"slot": slot.key, "mcp_report": None})
     _broadcast_expired_oauth_banners(state, slot)
     return True
+
+
+def _measure_context_cap_ratio(session_key: str, trim: _CapTrim) -> None:
+    """Record the chat's chars per token off the first reading of a session its trim seeded.
+
+    That reading is the seed base plus the tail plus the first turn's own growth, so
+    the ratio reads a little low and the next trim lands at or under LOW, never over.
+    A seed not yet delivered, or a reading no larger than the base, proves nothing and
+    records nothing.
+    """
+    tail_tokens = trim.first_tokens - CONTEXT_CAP_SEED_BASE_TOKENS
+    if not trim.tail_chars or not trim.seeded or trim.seed_pending or tail_tokens <= 0:
+        return
+    ratio = trim.tail_chars / tail_tokens
+    _CONTEXT_CAP_CHARS_PER_TOKEN.pop(session_key, None)
+    while len(_CONTEXT_CAP_CHARS_PER_TOKEN) >= _CONTEXT_CAP_MAX_TRIMS:
+        _CONTEXT_CAP_CHARS_PER_TOKEN.pop(next(iter(_CONTEXT_CAP_CHARS_PER_TOKEN)))
+    _CONTEXT_CAP_CHARS_PER_TOKEN[session_key] = min(
+        CONTEXT_CAP_MAX_CHARS_PER_TOKEN, max(CONTEXT_CAP_MIN_CHARS_PER_TOKEN, ratio)
+    )
+
+
+def _context_cap_tail_chars(session_key: str) -> int:
+    """The trim tail's char budget: ``CONTEXT_CAP_TAIL_TOKENS`` at the chat's chars per token."""
+    ratio = _CONTEXT_CAP_CHARS_PER_TOKEN.get(session_key, CONTEXT_CAP_FALLBACK_CHARS_PER_TOKEN)
+    return int(CONTEXT_CAP_TAIL_TOKENS * ratio)
+
+
+def _note_context_cap_tail(session_key: str, chars: int) -> None:
+    """The seed's tail was built *chars* long: the next ratio is measured against it."""
+    trim = _CONTEXT_CAP_TRIMS.get(session_key)
+    if trim is not None:
+        trim.tail_chars = chars
 
 
 def _remember_context_cap_trim(session_key: str) -> None:

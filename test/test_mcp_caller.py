@@ -106,12 +106,8 @@ def test_a_refusing_protected_record_never_reaches_the_memo(monkeypatch):
 def test_the_memo_never_shadows_a_session_scoped_rung(monkeypatch):
     """The ordering, not the key, is what keeps a rekey visible.
 
-    A memo consulted in front of the token would answer for the life of the
-    process, and no key can rescue that: a rekey rewrites the token's mapping
-    while the token STRING survives, so every value this process can read is
-    byte-identical before and after. On a runtime hosting several sessions that
-    is how the first co-tenant to resolve becomes every later caller's answer,
-    so the memo is reached only once rungs 1-3 have declined.
+    A rekey keeps the token STRING, so a memo read before the token would hand the first
+    co-tenant's answer to every later caller. The memo is reached only after rungs 1-3.
     """
     monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
     monkeypatch.delenv("KIROCREW_STUB_SESSION_TOKEN", raising=False)
@@ -244,16 +240,12 @@ def test_from_env_host_pid_missing_file_falls_back_to_walk(tmp_path, monkeypatch
     assert ctx.session_key == "walk-session-111"
 
 
-# --- Only an ANSWER stops the walk ------------------------------------------
+# Only an ANSWER stops the walk
 #
-# ``session_pid_<pid>.txt`` lives in the same-uid, agent-writable config dir, so
-# any local process can plant one at a NEARER ancestor pid. If an unparseable or
-# proven-stale file stopped the walk there, the caller would end up with no
-# session key -- and ``tools/call`` does not refuse on that (``no_session_key``
-# is not in ``mcp_shared._UNRESOLVED_REFUSES_CALL``), so the operator's tool
-# exclusions would go unenforced for a call the full walk resolves and enforces.
-# These pin that only a named key and a CO-TENANT refusal (a real answer about
-# this pid) stop it.
+# Any local process can plant ``session_pid_<pid>.txt`` at a nearer ancestor pid. If a
+# bad file stopped the walk, the call would run with no session key, which
+# ``tools/call`` does not refuse, so tool exclusions would go unenforced. Only a named
+# key or a CO-TENANT refusal stops the walk.
 
 _MALFORMED_BODY = "planted-key\nplain-one\nplain-two"  # two plain lines -> refused parse
 
@@ -413,11 +405,8 @@ def test_the_sweep_ends_a_recycled_ancestors_refusal(
 ) -> None:
     """HEADLINE: a recycled ancestor's record refuses only until the sweep runs.
 
-    The walk itself keeps refusing on it: it reads without a signature, so it
-    cannot tell a real recycle from a planted file. The publisher's sweep can, so
-    once it runs the chain is empty and the caller gets the unattributed answer
-    of a chain that never held a record -- no session key, so nothing trusted.
-    A record whose token still matches is not touched and still resolves.
+    The walk cannot tell a recycle from a planted file; the publisher's sweep can, and
+    after it the caller gets no session key. A record whose token matches still resolves.
     """
     from kiro_crew import session_pid
 
@@ -477,7 +466,7 @@ def test_the_policy_lookup_separates_an_absence_from_an_unusable_record(
     assert mcp_shared._policy_session_key() == expected
 
 
-# --- Per-connection tenant nonce --------------------------------------------
+# Per-connection tenant nonce
 #
 # The nonce exists for the case the caller block cannot serve: a connection the
 # gateway cannot NAME. It is a namespace separator, so what these pin is that it
@@ -590,11 +579,8 @@ def test_the_pid_rung_reports_a_broken_data_home_instead_of_raising(monkeypatch)
 def test_from_env_survives_a_broken_data_home(monkeypatch):
     """The direct rung-4 call must degrade, because the stub's caller cannot.
 
-    ``from_env`` consults the ladder in two halves so the memo can sit between
-    rung 3 and rung 4, which puts the second half outside the ladder function's
-    own guard. The register payload this feeds is built uncaught, so a raise here
-    takes the whole stub down -- losing every server in that session -- instead
-    of reaching the deliberate degradation below it.
+    Rung 4 sits outside the ladder's own guard (the memo goes between rungs 3 and 4), and
+    a raise here would take down the stub and every server in that session.
     """
     import kiro_crew.config.paths as paths
 

@@ -187,7 +187,7 @@ class TestProbeStoreBlocking:
         tier = env.tier(_FINANCE)
         tier.set_semantic("pref.editor", "vim", 1.0, "user_explicit")
 
-        def _boom(_db_path: Path) -> list[Path]:
+        def _boom(_db_path: Path, **_kwargs: Any) -> list[Path]:
             raise OSError("backups dir unreadable")
 
         monkeypatch.setattr(memory_backup, "list_backups", _boom)
@@ -197,6 +197,22 @@ class TestProbeStoreBlocking:
         assert row["newest_backup"] is None
         assert row["exists"] is True
         assert row["semantic_count"] == 1
+
+    def test_a_stray_file_in_the_backups_directory_is_not_the_newest_backup(self, env) -> None:
+        """A name with no stamp is neither counted nor reported as the newest backup."""
+        env.declare(_FINANCE)
+        path = owned_store_path(_FINANCE)
+        assert path is not None
+        env.tier(_FINANCE).set_semantic("pref.editor", "vim", 1.0, "user_explicit")
+        backup = memory_backup.backup_store(path)
+        assert backup is not None
+        (backup.parent / f"{path.stem}.pre-upgrade.db").write_bytes(b"")
+
+        row = memory_admin._probe_store_blocking(_FINANCE)
+
+        assert row["backup_count"] == 1
+        assert row["newest_backup"] == memory_admin._taken_at(backup)
+        assert row["newest_backup"] is not None
 
     def test_unavailable_store_records_the_redacted_reason_and_stops(
         self, env, monkeypatch
@@ -577,6 +593,28 @@ class TestApiMemoryRestore:
         assert resp.status == 503
         assert _body(resp)["code"] == "store_unavailable"
         assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
+
+    @pytest.mark.asyncio
+    async def test_a_backup_that_is_not_a_database_answers_409(self, env) -> None:
+        env.declare(_FINANCE)
+        path = owned_store_path(_FINANCE)
+        assert path is not None
+        env.tier(_FINANCE).close()
+        backup = memory_backup.backup_store(path)
+        assert backup is not None
+        backup.write_bytes(b"not a database")
+
+        resp = await memory_admin.api_memory_restore(
+            _request(
+                "POST",
+                "/api/memory/restore",
+                env.state(),
+                body={"store": _FINANCE, "name": backup.name},
+            )
+        )
+
+        assert resp.status == 409, resp.text
+        assert _body(resp)["code"] == "restore_refused"
 
     @pytest.mark.asyncio
     async def test_integrity_refusal_answers_409_with_redaction(self, env, monkeypatch) -> None:

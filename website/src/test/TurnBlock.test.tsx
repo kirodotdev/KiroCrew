@@ -595,6 +595,115 @@ describe('TurnBlock — answer before a tool-refusal recovery', () => {
 })
 
 /**
+ * An error, a capacity retry or a cancel stamps the reply it cut short, and the
+ * runner's recovery inject resumes the SAME turn, so the recovered remainder is
+ * the block's conclusion. The stamped first half is the answer the reader came
+ * for, not a working step: it and the recovery row stay out of the fold.
+ */
+describe('TurnBlock — a reply cut short and resumed', () => {
+  const renderItem = (it: TurnItem, i: number) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
+  const isFolded = (container: HTMLElement, i: number) =>
+    container.querySelector(`[data-testid="item-${i}"]`)?.closest('[data-collapsed="true"]') != null
+  const stamped = { turn_stats: { elapsed_ms: 9100, credits: 0.14, model: 'm' } }
+  const recovery = (ts: string): TurnItem['msg'] => ({ role: 'inject', content: '[Interrupted turn — automatic recovery]\nContinue from where it stopped.', ts, meta: { injectKind: 'recovery' } })
+
+  it('keeps the cut reply and the recovery row visible above the resumed half', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Both stacks build clean. The first one is faster on a cold start, but it pins an older bundler and', ts: '2', meta: stamped }, idx: 1 },
+      { kind: 'single', msg: { role: 'error', content: '⟳ Connection unstable — resuming…', ts: '3', meta: { kind: 'transient_retry' } }, idx: 2 },
+      { kind: 'single', msg: recovery('4'), idx: 3 },
+      { kind: 'single', msg: { role: 'assistant', content: 'The second stack keeps its lint config and tests in one place. Recommendation: the second stack.', ts: '5', meta: stamped }, idx: 4 },
+    ]
+    const { container } = render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(isFolded(container, 1)).toBe(false)
+    expect(isFolded(container, 2)).toBe(false)
+    expect(isFolded(container, 3)).toBe(false)
+    expect(isFolded(container, 4)).toBe(false)
+    expect(isFolded(container, 0)).toBe(true)
+    expect(screen.getByRole('button', { name: /Worked through 1 step$/ })).toBeInTheDocument()
+  })
+
+  it('passes over a system notice and another writer\'s envelope between the two', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Both stacks build clean. The first one is faster on a cold start, but it pins an older bundler and', ts: '2', meta: stamped }, idx: 1 },
+      { kind: 'single', msg: { role: 'assistant', content: '[Subagent completion event]\nAgent `c9d0e1f2` (kirocrew) completed ✅\nTask: measure', ts: '3', meta: { subagentCompletion: {} } }, idx: 2 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Context compacted', ts: '4', kind: 'compaction' }, idx: 3 },
+      { kind: 'single', msg: recovery('5'), idx: 4 },
+      { kind: 'single', msg: { role: 'assistant', content: 'The second stack keeps its lint config and tests in one place. Recommendation: the second stack.', ts: '6', meta: stamped }, idx: 5 },
+    ]
+    const { container } = render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(isFolded(container, 1)).toBe(false)
+    expect(isFolded(container, 4)).toBe(false)
+    expect(isFolded(container, 0)).toBe(true)
+  })
+
+  it('still folds stamped text that a tool call followed', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'assistant', content: 'Let me check the deployment logs to see why the canary failed before I answer.', ts: '1', meta: stamped }, idx: 0 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'error', content: '⟳ Tool appeared stalled — recovering…', ts: '3', meta: { kind: 'transient_retry' } }, idx: 2 },
+      { kind: 'single', msg: recovery('4'), idx: 3 },
+      { kind: 'single', msg: { role: 'assistant', content: 'The canary failed on a stale signing key; rotating it fixes the deploy.', ts: '5', meta: stamped }, idx: 4 },
+    ]
+    const { container } = render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(isFolded(container, 0)).toBe(true)
+    expect(isFolded(container, 3)).toBe(true)
+    expect(isFolded(container, 4)).toBe(false)
+  })
+
+  it('folds a cut reply that carries no stamp, as before', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Both stacks build clean. The first one is faster on a cold start, but it pins an older bundler and', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: recovery('3'), idx: 2 },
+      { kind: 'single', msg: { role: 'assistant', content: 'The second stack keeps its lint config and tests in one place. Recommendation: the second stack.', ts: '4', meta: stamped }, idx: 3 },
+    ]
+    const { container } = render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(isFolded(container, 1)).toBe(true)
+    expect(isFolded(container, 2)).toBe(true)
+    expect(isFolded(container, 3)).toBe(false)
+  })
+
+  const synthesis = (ts: string): TurnItem['msg'] => ({ role: 'inject', content: '[SYSTEM] Sub-agent synthesis: both profiles are in; write the comparison.', ts, meta: { injectKind: 'synthesis' } })
+
+  // The grouper opens a synthesis answer's turn on the synthesis row, so once
+  // the two halves are pinned that row would be the one step left to fold: a
+  // "Worked through 1 step" toggle hiding the wave's card, where `main` shows it.
+  it('keeps the synthesis row that led the cut reply with it, leaving nothing to fold', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: synthesis('1'), idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Both stacks build clean. The first one is faster on a cold start, but it pins an older bundler and', ts: '2', meta: stamped }, idx: 1 },
+      { kind: 'single', msg: { role: 'error', content: '⟳ Connection unstable — resuming…', ts: '3', meta: { kind: 'transient_retry' } }, idx: 2 },
+      { kind: 'single', msg: recovery('4'), idx: 3 },
+      { kind: 'single', msg: { role: 'assistant', content: 'The second stack keeps its lint config and tests in one place. Recommendation: the second stack.', ts: '5', meta: stamped }, idx: 4 },
+    ]
+    const { container } = render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(isFolded(container, 0)).toBe(false)
+    expect(isFolded(container, 1)).toBe(false)
+    expect(isFolded(container, 4)).toBe(false)
+    expect(screen.queryByRole('button', { name: /Worked through/ })).toBeNull()
+  })
+
+  it('still folds a synthesis row that a tool call separates from the cut reply', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: synthesis('1'), idx: 0 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Both stacks build clean. The first one is faster on a cold start, but it pins an older bundler and', ts: '3', meta: stamped }, idx: 2 },
+      { kind: 'single', msg: recovery('4'), idx: 3 },
+      { kind: 'single', msg: { role: 'assistant', content: 'The second stack keeps its lint config and tests in one place. Recommendation: the second stack.', ts: '5', meta: stamped }, idx: 4 },
+    ]
+    const { container } = render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
+    expect(isFolded(container, 0)).toBe(true)
+    expect(isFolded(container, 1)).toBe(true)
+    expect(isFolded(container, 2)).toBe(false)
+    expect(isFolded(container, 4)).toBe(false)
+    expect(screen.getByRole('button', { name: /Worked through 2 steps$/ })).toBeInTheDocument()
+  })
+})
+
+/**
  * chatSlice opens one `thinking` message per reasoning burst (one above each
  * tool step it explains, #4178). A long agentic turn therefore settles into a
  * WALL of collapsed "Thought process" rows once the interleaved tool calls

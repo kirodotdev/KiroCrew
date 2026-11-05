@@ -356,6 +356,32 @@ class TestInstall:
         assert kas_bundle.installed_bundle(root=root, version="0.66.33") is not None
         assert [p.name for p in root.iterdir() if p.name.startswith(".staging-")] == []
 
+    def test_a_forced_install_over_an_engine_in_use_is_a_named_refusal(
+        self, source_dir, tmp_path, monkeypatch
+    ):
+        """Windows refuses to move aside a directory a running node.exe holds open;
+        --force over it is an install error naming the cause, and the installed
+        engine and its record stay as they were."""
+        root = tmp_path / "root"
+        installed = _install(source_dir, root)
+        marker = installed.root / "in-use"
+        marker.write_text("held")
+        real_rename = os.rename
+
+        def rename_refusing_the_live_engine(src, dst):
+            if Path(src) == installed.root:
+                raise PermissionError(13, "Access is denied", str(src))
+            return real_rename(src, dst)
+
+        monkeypatch.setattr(kas_bundle.os, "rename", rename_refusing_the_live_engine)
+        with pytest.raises(
+            kas_bundle.KasBundleError, match="could not be replaced.*Access is denied.*retry"
+        ):
+            _install(source_dir, root, force=True)
+        assert marker.read_text() == "held"
+        assert kas_bundle.installed_bundle(root=root, version="0.66.33") is not None
+        assert [p.name for p in root.iterdir() if p.name.startswith(".staging-")] == []
+
     def test_a_zstd_engine_archive_installs_like_the_published_one(
         self, source_dir, tmp_path, monkeypatch
     ):
@@ -579,16 +605,48 @@ class TestSpawnRoute:
         assert plan.stderr_label == KAS_BUNDLE_SPAWN_LABEL
 
     @pytest.mark.asyncio
-    async def test_bundle_on_with_nothing_installed_refuses_and_names_the_install(self, tmp_path):
-        """A refusal, not a fallback to the relay: the operator chose the route, and a
-        silent relay spawn would make a kiro-cli problem look like a bundle one."""
+    async def test_bundle_on_with_nothing_installed_installs_the_pin_then_spawns_it(
+        self, source_dir, tmp_path
+    ):
+        """A missing engine is installed by the spawn itself, in the gateway, and the
+        spawn then runs what was laid down. Never a fallback to the relay."""
+        installed = _install(source_dir, tmp_path / "root")
+        calls = []
+
+        def fake_install_pinned(base_url, *, on_progress=None, root=None):
+            calls.append(base_url)
+            return installed
+
         with (
             patch("kiro_crew.acp.harness.kas._bundle_route_selected", return_value=True),
             patch.object(kas_bundle, "installed_bundle", return_value=None),
-            patch.object(kas_bundle, "kas_engines_root", return_value=tmp_path),
+            patch.object(kas_bundle, "install_pinned", side_effect=fake_install_pinned),
         ):
-            with pytest.raises(AcpRuntimeError, match="kirocrew kas install"):
+            plan = await KasHarness().resolve_spawn(_ctx(tmp_path))
+        assert len(calls) == 1
+        assert plan.argv == build_kas_bundle_argv(
+            str(installed.node_bin), str(installed.acp_server)
+        )
+        assert plan.host_auth is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_install_refuses_with_the_cause_and_the_retry_command(self, tmp_path):
+        """Offline: the refusal names the route, the cause and how to retry."""
+
+        def offline(*a, **k):
+            raise kas_bundle.KasBundleError("could not fetch https://h.test/kas: no route to host")
+
+        with (
+            patch("kiro_crew.acp.harness.kas._bundle_route_selected", return_value=True),
+            patch.object(kas_bundle, "installed_bundle", return_value=None),
+            patch.object(kas_bundle, "install_pinned", side_effect=offline),
+        ):
+            with pytest.raises(AcpRuntimeError) as caught:
                 await KasHarness().resolve_spawn(_ctx(tmp_path))
+        text = str(caught.value)
+        assert "Kiro Crew's own engine" in text
+        assert "no route to host" in text
+        assert "`kirocrew kas install`" in text
 
     @pytest.mark.asyncio
     async def test_bundle_off_keeps_the_relay(self, tmp_path):
@@ -639,7 +697,7 @@ class TestTheLeafIsSealed:
     def test_engines_is_read_only_in_the_sandbox_and_fenced_at_the_tool_gate(self):
         """A sandboxed KAS process must read and execute the engine; nothing in a
         sandbox may rewrite the code the next session runs. Same disposition as
-        ``playwright-cli``, and the same precreate + no-follow pins so an absent
+        ``browser-harness``, and the same precreate + no-follow pins so an absent
         directory on a fresh install is not a name the agent gets to create."""
         from kiro_crew import sandbox, security
 
@@ -806,8 +864,11 @@ class TestOldGlibcRefusal:
     def test_old_glibc_refuses_before_download_naming_the_reason(self, source_dir, tmp_path):
         root = tmp_path / "root"
         with _patch_glibc((2, 26)):
-            with pytest.raises(kas_bundle.KasBundleError) as exc:
+            with pytest.raises(kas_bundle.KasHostUnsupported) as exc:
                 _install(source_dir, root)
+        # A host that cannot run the engine is its own class, so callers can
+        # leave out "retry" advice; it is still a KasBundleError for the rest.
+        assert isinstance(exc.value, kas_bundle.KasBundleError)
         msg = str(exc.value)
         assert "2.26" in msg and "2.28" in msg and "onnxruntime" in msg
         # Nothing downloaded, extracted or published.

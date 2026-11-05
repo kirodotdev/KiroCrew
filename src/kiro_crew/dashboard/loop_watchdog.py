@@ -623,9 +623,7 @@ class LoopStallWatchdog:
             return False
         # Healthy / recovered — silence is back below the first threshold.
         if self._dumped:
-            self._log.warning(
-                "event loop recovered after stall (last beat %.1fs ago)", silence
-            )
+            self._log.warning("event loop recovered after stall (last beat %.1fs ago)", silence)
         if self._enriched and not self._dumped:
             self._log.warning(
                 "event loop recovered after stall enrichment (last beat %.1fs ago)",
@@ -784,9 +782,7 @@ class LoopStallWatchdog:
             except Exception:  # pragma: no cover - degrade to soft dump only
                 self._log.exception("loop watchdog failed to arm the stall alarm")
                 self._later_active = False
-        self._thread = threading.Thread(
-            target=self._run, name="loop-stall-watchdog", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="loop-stall-watchdog", daemon=True)
         self._thread.start()
         if self._exit_after is not None and self._enrich_after >= self._exit_after:
             # Not fatal — enrichment just never lands before the exit.  Flag it

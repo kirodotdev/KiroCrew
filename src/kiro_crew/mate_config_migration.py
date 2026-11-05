@@ -1,7 +1,7 @@
 """Startup migration: move every EXISTING crewmate onto its worker and its own file.
 
 RFC *mate-owned-agent-config* §6; the steps are in ``crew-mode.md``, "Existing
-crewmates move at startup". Per crewmate whose ``kiro_agent`` does not yet name
+Bots move at startup". Per crewmate whose ``kiro_agent`` does not yet name
 its own file: read and govern the agent it runs on, build the file from what that
 agent adds to the worker base (:func:`kiro_crew.mate_worker.worker_additions`),
 dry-run the merge (:func:`plan_move`: nothing gained and no limit loosened; a
@@ -43,6 +43,7 @@ from kiro_crew.mate_config import (
     source_agents_dir,
     write_mate_spec,
 )
+from kiro_crew.mate_spec_policy import POLICY_KEYS, SpecPolicyUncarried
 from kiro_crew.mate_worker import (
     MATE_CONDUCTOR_AGENT,
     MATE_WORKER_AGENT,
@@ -189,7 +190,8 @@ def _record_migrated(name: str, source: str = "", *, moved: bool = True, reason:
 def _dm_thread_keys(slugs: set[str]) -> list[str]:
     """The session keys of every DM thread transcript whose slot names one of *slugs*.
 
-    Read from file names only; returned as ``dashboard:<slot key>``.
+    Read from file names only; returned as ``dashboard:<slot key>``. No sessions
+    folder means no threads; any other error listing it raises ``OSError``.
     """
     import os
 
@@ -201,7 +203,7 @@ def _dm_thread_keys(slugs: set[str]) -> list[str]:
     try:
         with os.scandir(_sessions_dir()) as entries:
             names = sorted(e.name for e in entries if e.name.endswith(".jsonl"))
-    except OSError:
+    except FileNotFoundError:
         return keys
     for filename in names:
         stem = filename[: -len(".jsonl")]
@@ -225,7 +227,12 @@ def _repoint_member_threads(member_id: str, slugs: set[str], source: str) -> tup
 
     moved: list[str] = []
     complete = True
-    for key in _dm_thread_keys(slugs):
+    try:
+        keys = _dm_thread_keys(slugs)
+    except OSError:  # an unlistable sessions folder leaves the pass owed
+        logger.warning("crewmate migration: the sessions folder could not be listed", exc_info=True)
+        return moved, False
+    for key in keys:
         try:
             current = read_session_execution(key)
         except Exception:  # noqa: BLE001 - an unreadable record stays as it is
@@ -782,7 +789,13 @@ def differences(
     prompt, run every hook and keep every restriction.
     """
     additions = worker_additions(base, mate_file)
-    merged = merge_worker_spec(base, additions)
+    try:
+        merged = merge_worker_spec(base, additions)
+    except SpecPolicyUncarried:
+        # A policy field that cannot land is judged as not carried at all.
+        merged = merge_worker_spec(
+            base, {k: v for k, v in additions.items() if k not in POLICY_KEYS}
+        )
     base_servers = set(_servers(base.get("mcpServers")))
     have_base = _grants(base, base_servers)
     have_source = _grants(source, base_servers)
@@ -810,11 +823,11 @@ def differences(
     )
     if old_prompt.strip() and old_prompt.strip() != base_prompt.strip():
         out.prompt_lost = old_prompt.strip() not in new_prompt
-    out.hooks_lost = bool(_hook_entries(source) - _hook_entries(base))
-    # The worker merge carries no ``permissions`` or ``toolsSettings`` from the
-    # file, so an agent with a restriction there (a deny or ask rule, an
+    out.hooks_lost = bool(_hook_entries(source) - _hook_entries(base) - _hook_entries(merged))
+    # The worker merge carries the file's ``permissions`` and ``toolsSettings``
+    # (``mate_spec_policy``); a restriction there (a deny or ask rule, an
     # ``exclude``, a ``toolsSettings`` entry such as ``fs_write.deniedPaths``) the
-    # worker would not have is not moved: the restriction would be lost.
+    # merged worker does not hold would be lost.
     out.limits_lost = {k for k, _ in _restrictions(source) - _restrictions(merged)}
     return out
 
@@ -895,8 +908,9 @@ def dropped_restrictions(
 ) -> list[str]:
     """Each restriction *source* states that the worker *merged* would not keep.
 
-    The worker merge carries no ``hooks``, ``permissions`` or ``toolsSettings`` from
-    the file, so such a restriction does not apply to the moved crewmate. It
+    The upgrade migration's file (:func:`migration_file`) carries no ``hooks``,
+    ``permissions`` or ``toolsSettings``, so such a restriction does not apply to
+    the moved crewmate until its template is added again. It
     does not keep the crewmate where it is (owner decision, docs/decisions); the
     governance ceiling still governs the merged worker. One phrase per restriction,
     for the notice: a hook by its event and matcher, a ``permissions`` rule by its
@@ -952,10 +966,12 @@ def change_notice(diff: Differences, withheld: set[tuple[str, ...]]) -> str:
 
 
 def uncarried_restrictions(source: dict[str, Any]) -> list[str]:
-    """The sections of *source*'s restrictions its crewmate's worker would not keep.
+    """The fields of *source*'s restrictions its crewmate's worker would not keep.
 
-    ``permissions``, ``toolsSettings`` and ``hooks`` are not carried, so the create
-    path and the kit copy refuse them, as :func:`dry_run` does. Blocking.
+    ``hooks``, ``permissions`` and ``toolsSettings`` are layered on exactly
+    (``mate_spec_policy.layer_policy``); one that cannot land as written is named
+    here (``toolsSettings.<tool>`` for one tool's entry), so the create path and
+    the kit copy refuse it. Blocking.
     """
     try:
         base = _worker_base()
@@ -963,7 +979,10 @@ def uncarried_restrictions(source: dict[str, Any]) -> list[str]:
         logger.warning("worker base unreadable; refusing any template restriction")
         merged: dict[str, Any] = {}
     else:
-        merged = merge_worker_spec(base, worker_additions(base, source))
+        try:
+            merged = merge_worker_spec(base, worker_additions(base, source))
+        except SpecPolicyUncarried as exc:
+            return list(exc.fields)
     lost = {key for key, _ in _restrictions(source) - _restrictions(merged)}
     if _hook_entries(source) - _hook_entries(merged):
         lost.add("hooks")
@@ -983,8 +1002,11 @@ def _restrictions(spec: dict[str, Any]) -> set[tuple[str, str]]:
         if isinstance(rule, dict) and (rule.get("effect") != "allow" or rule.get("exclude")):
             out.add(("permissions", json.dumps(rule, sort_keys=True)))
     settings = spec.get("toolsSettings")
-    if isinstance(settings, dict) and settings:
-        out.add(("toolsSettings", json.dumps(settings, sort_keys=True)))
+    if isinstance(settings, dict):
+        # One per tool: a worker that keeps a tool's entry keeps its limits,
+        # whatever entries it holds for other tools.
+        for tool, entry in settings.items():
+            out.add(("toolsSettings", json.dumps({tool: entry}, sort_keys=True)))
     return out
 
 

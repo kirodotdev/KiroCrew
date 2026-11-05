@@ -11,8 +11,8 @@ never retrieved" message and a failure indistinguishable from the agent going
 quiet.
 
 The ceiling is an ordinary outcome of long-running work, not a rare edge case: a
-babysit loop polling a pull request reaches it routinely — ten review rounds at
-roughly five minutes of waiting each, plus the tool time in between.
+babysit loop polling a pull request reaches it routinely — ten rounds of feedback
+at roughly five minutes of waiting each, plus the tool time in between.
 
 This module owns the one dispatch path. Keeping the ceiling, the clamp against
 the transport's own timeout, and the visible-card guarantee together here is
@@ -29,6 +29,7 @@ from contextvars import ContextVar
 from typing import Any, Literal
 
 from kiro_crew.acp.client import resolve_prompt_timeout
+from kiro_crew.config import load_memo
 from kiro_crew.config.loader import (
     APPROVAL_TURN_MARGIN_SECS,
     CHAT_TURN_TIMEOUT_MAX,
@@ -136,7 +137,15 @@ def chat_turn_timeout_secs() -> float:
     ignored.
     """
     try:
-        configured = float(KiroCrewConfig.load().agent.chat_turn_timeout_secs)
+        # Read on the event loop at every turn dispatch: the config rebuild is
+        # skipped while the config files are unchanged (``config.load_memo``).
+        configured = float(
+            load_memo.memoized(
+                "agent.chat_turn_timeout_secs",
+                KiroCrewConfig.load,
+                lambda cfg: cfg.agent.chat_turn_timeout_secs,
+            )
+        )
     except Exception:
         logger.debug("chat-turn ceiling config unavailable; using default", exc_info=True)
         return CHAT_TURN_TIMEOUT
@@ -194,7 +203,13 @@ def resolve_turn_limit(slot: Any = None) -> tuple[float, str]:
 def native_cancel_ack_timeout_secs() -> float:
     """Resolve the bounded wait for a native turn-cancellation acknowledgement."""
     try:
-        configured = float(KiroCrewConfig.load().agent.soft_stop_budget_secs)
+        configured = float(
+            load_memo.memoized(
+                "agent.soft_stop_budget_secs",
+                KiroCrewConfig.load,
+                lambda cfg: cfg.agent.soft_stop_budget_secs,
+            )
+        )
     except Exception:
         logger.debug(
             "native cancel acknowledgement config unavailable; using default", exc_info=True
@@ -330,10 +345,20 @@ def format_approval_timeout_card(timeout_secs: float) -> str:
 
 
 def _approval_wait_phrase(timeout_secs: float) -> str:
-    """How long an approval prompt waited, in minutes or hours."""
+    """How long an approval prompt waited, in seconds, minutes or hours.
+
+    Picks the singular unit for a count of one, matching the minute/minutes
+    choice :func:`format_background_turn_abandoned_card` already makes, so the
+    note never reads "1 minutes" or "1 hours".
+    """
     if timeout_secs >= 3600:
-        return f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".") + " hours"
-    return f"{max(1, round(timeout_secs / 60))} minutes"
+        hours = f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".")
+        return f"{hours} hour" if hours == "1" else f"{hours} hours"
+    if timeout_secs < 60:
+        seconds = max(1, round(timeout_secs))
+        return f"{seconds} second" if seconds == 1 else f"{seconds} seconds"
+    minutes = round(timeout_secs / 60)
+    return f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
 
 
 #: Title of the bell-feed note an approval prompt nobody answered leaves.

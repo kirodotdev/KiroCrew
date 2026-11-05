@@ -81,3 +81,22 @@ def resolve_channel_crew(name: str | None) -> ChannelCrew | None:
     except Exception:
         logger.debug("slack channel agent %r: crew record not resolvable", name, exc_info=True)
         return None
+
+
+def context_template(name: str | None, crew: ChannelCrew | None = None) -> str | None:
+    """The kiro-cli template the context builder is given for a turn run as *name*.
+
+    ``ContextBuilder.build_message(agent=...)`` takes the EXECUTION TEMPLATE, the
+    same value the dashboard passes: it locates the agent spec, its prompt and
+    skill mapping, and a private crewmate's essentials read that template's
+    documents and refuse the turn when no such template exists. A Crew record's
+    name is not a template, so a record is collapsed to its ``kiro_agent``,
+    whether it reached the turn as the channel binding (*crew*, already
+    resolved) or as a dashboard-linked session's thread agent. Any other name
+    passes through unchanged. Blocking when *crew* does not already cover
+    *name*: call it off the loop.
+    """
+    if crew is not None and crew.crew_agent == name:
+        return crew.kiro_agent
+    record = resolve_channel_crew(name)
+    return record.kiro_agent if record is not None else name

@@ -373,12 +373,19 @@ def _build_undo(
         # above. The inverse binds to the revision the PUT returned (step 1's
         # evidence), never a fresh read's — a write another tab landed after ours
         # would otherwise become the baseline and Undo would overwrite it.
-        ops = capability_inverse(
-            p["draft"], before.get("rows") or [], severed=before.get("mode") == "mate"
-        )
+        rows = before.get("rows") or []
+        severed = before.get("mode") == "mate"
+        ops = capability_inverse(p["draft"], rows, severed=severed)
         revision = ev(1).get("revision")
         if ops is None:
-            return None, "redacted_server_definition"
+            touched = {(op.get("section"), op.get("id")) for op in p["draft"]["operations"]}
+            listed = severed and any(
+                isinstance(r, dict)
+                and r.get("listed")
+                and (r.get("section"), r.get("id")) in touched
+                for r in rows
+            )
+            return None, "listed_skill_entry" if listed else "redacted_server_definition"
         if not revision:
             return None, "revision_unknown"
         return _capability_plan(p["member"], revision, {"operations": ops}), None
@@ -466,15 +473,15 @@ def result_summary(
                     IMPORT_STEP_CRON: "its schedules",
                 }.get(roles[failed_step] if failed_step < len(roles) else "", "every part")
                 return (
-                    f"Created mate “{name}” without {part} or anything after it. "
-                    "Undo removes the mate and what was saved"
+                    f"Created Bot “{name}” without {part} or anything after it. "
+                    "Undo removes the Bot and what was saved"
                 )
             if failed_step == CREWMATE_CREATE_GOAL_STEP:
                 # A failed step stops the plan, so a schedule after it never ran.
                 rest = " or its schedule" if params.get("schedule") else ""
-                return f"Created mate “{name}”, but its goal{rest} was not saved"
+                return f"Created Bot “{name}”, but its goal{rest} was not saved"
             if failed_step == CREWMATE_CREATE_SCHEDULE_STEP:
-                return f"Created mate “{name}”, but its schedule was not saved"
+                return f"Created Bot “{name}”, but its schedule was not saved"
         return f"Partly applied: {title}"
     if status == "undone":
         return f"Restored: {title}"
@@ -518,12 +525,12 @@ def describe_manual_change(
     if route == ("PUT", "/api/members/{slug}/goals/key-results"):
         raw_items = b.get("items")
         count = len(raw_items) if isinstance(raw_items, list) else 0
-        return f"set {count} key results for mate {s(b.get('member'))}"
+        return f"set {count} key results for Bot {s(b.get('member'))}"
     if route == ("PUT", "/api/members/{slug}/goals/long-term"):
-        return f"set the goal of mate {s(b.get('member'))} to {s(b.get('long_term'))}"
+        return f"set the goal of Bot {s(b.get('member'))} to {s(b.get('long_term'))}"
     if route == ("PUT", "/api/members/{slug}/goals/schedules"):
         fields = ", ".join(s(k) for k in CHECK_IN_FIELDS if k in b)
-        return f"set the check-ins of mate {s(b.get('member'))} ({fields or 'none'})"
+        return f"set the check-ins of Bot {s(b.get('member'))} ({fields or 'none'})"
     if route == ("PUT", "/api/dashboard/config"):
         prior = before if isinstance(before, dict) else {}
         parts = []
@@ -543,12 +550,12 @@ def describe_manual_change(
     if route == ("DELETE", "/api/crons/{job_id}"):
         return f"deleted schedule {s(name)}"
     if route == ("POST", "/api/agents"):
-        return f"created mate “{s(b.get('name'))}”"
+        return f"created Bot “{s(b.get('name'))}”"
     if route == ("PUT", "/api/agents/{name}"):
-        return f"updated mate {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
+        return f"updated Bot {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
     if route == ("DELETE", "/api/agents/{name}"):
         shown = before if isinstance(before, str) and before else name
-        return f"deleted mate “{s(shown)}”"
+        return f"deleted Bot “{s(shown)}”"
     if route == ("PUT", "/api/agents/{name}/capabilities"):
         raw_ops = b.get("operations")
         ops: list[Any] = raw_ops if isinstance(raw_ops, list) else []
@@ -582,7 +589,8 @@ def describe_manual_change(
         verb = "enabled" if b.get("enabled", True) else "disabled"
         return f"{verb} MCP tool {s(b.get('server'))}/{s(b.get('tool'))}"
     if route == ("POST", "/api/connections/mint"):
-        return f"started connecting {s(b.get('slug'))}"
+        # Settings → MCP mints an owner-configured server by ``{"server": ...}``.
+        return f"started connecting {s(b.get('slug') or b.get('server'))}"
     if route == ("POST", "/api/connections/disconnect"):
         return f"disconnected {s(b.get('slug'))}"
     if route == ("POST", "/api/secrets"):
@@ -829,6 +837,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import mate_capability_catalog as _mate_catalog  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401
         DEFAULT_MODEL,
+        FEATURE_PREVIEW_FLAGS,
         MEMBER_APPROVAL_MODES,
         effective_pin_scope,
         normalize_agent_model,

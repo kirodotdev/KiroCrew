@@ -210,6 +210,7 @@ _URL_PREFIXES = (
     "https://github.com/",
     "http://github.com/",
     "https://www.github.com/",
+    "http://www.github.com/",
     "www.github.com/",
     "github.com/",
 )
@@ -361,6 +362,12 @@ def parse_repo_spec(raw: Any) -> RepoSpec | None:
     for prefix in _URL_PREFIXES:
         if lowered.startswith(prefix):
             text = text[len(prefix) :]
+            # A pasted URL may carry a fragment (``#readme``) or a query
+            # (``?tab=readme-ov-file``); neither names a ref or a path, so both are
+            # dropped. Only for a URL: no part of an address may hold ``?`` or
+            # ``#``, so a bare address keeps refusing them. Cut BEFORE the
+            # percent-decode below, so an encoded ``%3F`` still meets the path rules.
+            text = text.partition("#")[0].partition("?")[0]
             break
     text = text.strip("/")
     if not text:
@@ -505,32 +512,41 @@ class GitHubRepoProvider:
         if not blobs:
             return []
 
-        skill_dirs = _skill_directories(blobs)
-        if not skill_dirs:
+        installable: list[tuple[str, str]] = []
+        for skill_dir in _skill_directories(blobs):
+            full_path = posixpath.join(spec.path, skill_dir) if skill_dir else spec.path
+            problem = _path_problem(full_path)
+            if problem:
+                # Offering a row that cannot be installed is worse than omitting
+                # it: the user would only find out at the refusal. Dropped BEFORE
+                # the cap, so a refused directory never takes a result slot (a
+                # ".claude/skills/..." tree sorts ahead of "skills/") and is never
+                # fetched for a row that was not going to exist.
+                logger.warning(
+                    "Skipping GitHub skill %r because %s",
+                    spec.address(ref=commit, path=full_path),
+                    problem,
+                )
+                continue
+            installable.append((skill_dir, full_path))
+        if not installable:
             return []
-        capped = skill_dirs[: max(1, min(limit, _MAX_SKILLS_PER_REPO))]
+        capped = installable[: max(1, min(limit, _MAX_SKILLS_PER_REPO))]
 
         # One raw fetch per skill, concurrently: the frontmatter is what gives a
         # row its real name and description, and it is the same file the preview
         # and the install will read. A failed fetch degrades that row to its
         # directory name rather than dropping it — the skill is genuinely there.
-        heads = await asyncio.gather(*[self._fetch_skill_md(spec, commit, d) for d in capped])
+        heads = await asyncio.gather(*[self._fetch_skill_md(spec, commit, d) for d, _ in capped])
 
         results: list[SkillSearchResult] = []
-        for skill_dir, head in zip(capped, heads, strict=True):
-            full_path = posixpath.join(spec.path, skill_dir) if skill_dir else spec.path
+        for (_skill_dir, full_path), head in zip(capped, heads, strict=True):
             # The FULL commit, never an abbreviation. A 7-hex ref gets re-resolved
             # at preview and install time, and a branch whose NAME is hex can
             # shadow that prefix -- so the row would name one commit and the
             # install fetch another. The full SHA, plus the equality check in
             # ``_resolve_commit``, closes that substitution.
             address = spec.address(ref=commit, path=full_path)
-            problem = _path_problem(full_path)
-            if problem:
-                # Offering a row that cannot be installed is worse than omitting
-                # it: the user would only find out at the refusal.
-                logger.warning("Skipping GitHub skill %r because %s", address, problem)
-                continue
             fallback_name = posixpath.basename(full_path) or spec.repo
             meta = _frontmatter_of(head)
             results.append(

@@ -118,7 +118,6 @@ class TestMirrorSuppressionAfterUnlink:
         slot = state.get_or_create_slot("s1")
         session_key = _history_key_for(slot.key)
 
-        # ── Link the session to a Slack thread ──
         state.sessions.set_slack_link(session_key, "thread-1", "C-1")
         slot._slack_linked = True
         slot._slack_channel = "C-1"

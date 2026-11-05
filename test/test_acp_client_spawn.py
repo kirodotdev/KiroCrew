@@ -5,6 +5,7 @@ environment, session cwd, backend selection, ensure_ready and spawn-argv refusal
 import asyncio
 import os
 import sys
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from spawn_test_helpers import strip_spawn_shim
 import kiro_crew.acp.client as acp_client
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 
 class TestAcpClientInit:
@@ -57,8 +59,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -84,8 +85,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -133,8 +133,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -146,95 +145,6 @@ class TestAcpClientSessionKey:
             assert env["CLAUDE_CONFIG_DIR"] == iso
             # Bedrock flag must ride alongside (regression guard).
             assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-
-        await _stop_stderr_drain(client)
-
-    @pytest.mark.asyncio
-    async def test_spawn_gives_each_process_its_own_browser_session(self, tmp_path):
-        """Two agent processes must not address the same playwright-cli browser.
-
-        Sharing the CLI's ``default`` session lets one process navigate or close
-        the other's page; the name is per PROCESS, so two spawns differ even for
-        the same session key (a pooled process is spawned before it is claimed).
-        """
-        names = []
-        caller_sockets = str(tmp_path / "caller-controlled-sockets")
-        caller_daemons = str(tmp_path / "caller-controlled-daemons")
-
-        def _lifecycle_env(resolved_env):
-            assert resolved_env.get("PWTEST_SOCKETS_DIR") != caller_sockets
-            assert resolved_env.get("PWTEST_DAEMON_SESSION_DIR") != caller_daemons
-            assert resolved_env["PLAYWRIGHT_CLI_SESSION"].startswith("kc-")
-            return {}
-
-        for _ in range(2):
-            client = AcpClient(
-                work_dir=tmp_path,
-                session_key="same-key",
-                extra_env={
-                    "PWTEST_SOCKETS_DIR": caller_sockets,
-                    "PWTEST_DAEMON_SESSION_DIR": caller_daemons,
-                },
-            )
-            with (
-                patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
-                patch(
-                    "kiro_crew.acp.client.wrap_argv",
-                    return_value=(["/usr/bin/kiro-cli", "acp"], None),
-                ),
-                patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-                patch("kiro_crew.acp.client.browser_socket_env", side_effect=_lifecycle_env),
-                patch("kiro_crew.session._track_pid"),
-                patch("kiro_crew.session._track_session_pid"),
-            ):
-                mock_proc = MagicMock()
-                # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-                mock_proc.pid = 12345
-                mock_proc.returncode = None
-                mock_exec.return_value = mock_proc
-
-                await client._spawn()
-
-                call_kwargs = mock_exec.call_args
-                env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-                assert env is not None
-                assert env["PLAYWRIGHT_CLI_SESSION"].startswith("kc-")
-                names.append(env["PLAYWRIGHT_CLI_SESSION"])
-
-            await _stop_stderr_drain(client)
-
-        assert names[0] != names[1]
-
-    @pytest.mark.asyncio
-    async def test_spawn_keeps_an_operator_set_browser_session(self, tmp_path, monkeypatch):
-        """An operator who named a session means that one browser."""
-        monkeypatch.setenv("PLAYWRIGHT_CLI_SESSION", "chrome")
-        monkeypatch.delenv("PWTEST_SOCKETS_DIR", raising=False)
-        monkeypatch.delenv("PWTEST_DAEMON_SESSION_DIR", raising=False)
-        client = AcpClient(work_dir=tmp_path, session_key="k")
-        with (
-            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
-            patch(
-                "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
-            ),
-            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-            patch("kiro_crew.session._track_pid"),
-            patch("kiro_crew.session._track_session_pid"),
-        ):
-            mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
-            mock_proc.returncode = None
-            mock_exec.return_value = mock_proc
-
-            await client._spawn()
-
-            call_kwargs = mock_exec.call_args
-            env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-            assert env is not None
-            assert env["PLAYWRIGHT_CLI_SESSION"] == "chrome"
-            assert "PWTEST_SOCKETS_DIR" not in env
-            assert "PWTEST_DAEMON_SESSION_DIR" not in env
 
         await _stop_stderr_drain(client)
 
@@ -251,8 +161,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -280,8 +189,7 @@ class TestAcpClientSessionKey:
             patch.dict(os.environ, clean_env, clear=True),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -308,8 +216,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -347,8 +254,7 @@ class TestSpawnStderrDrainCleanup:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -377,8 +283,7 @@ class TestSpawnStderrDrainCleanup:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = AsyncMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -533,8 +438,7 @@ class TestAcpClientBackendSelection:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -547,6 +451,44 @@ class TestAcpClientBackendSelection:
             ], "claude backend must spawn node + script explicitly"
 
         await _stop_stderr_drain(client)
+
+    @pytest.mark.asyncio
+    async def test_spawn_claude_resolves_the_cli_off_the_event_loop(self, tmp_path, monkeypatch):
+        # The resolver shells out to mise, so it must run off the event loop.
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        resolved_on: list[int] = []
+
+        def _resolve() -> str:
+            resolved_on.append(threading.get_ident())
+            return "/usr/local/bin/claude"
+
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        with (
+            patch(
+                "kiro_crew.acp.client._resolve_claude_acp_bin",
+                return_value=(["/usr/local/bin/node", "/x/acp.js"], ""),
+            ),
+            patch("kiro_crew.acp.client._resolve_claude_code_executable", side_effect=_resolve),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                side_effect=lambda argv, mode, **kwargs: (argv, None),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = UNALLOCATABLE_PID
+            mock_proc.returncode = None
+            mock_exec.return_value = mock_proc
+
+            await client._spawn()
+
+            env = mock_exec.call_args.kwargs["env"]
+
+        await _stop_stderr_drain(client)
+        assert resolved_on and threading.get_ident() not in resolved_on
+        assert env["CLAUDE_CODE_EXECUTABLE"] == "/usr/local/bin/claude"
 
     @pytest.mark.asyncio
     async def test_spawn_claude_backend_missing_bin_raises(self, tmp_path):
@@ -686,8 +628,7 @@ class TestAcpClientBackendSelection:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -791,8 +732,7 @@ class TestEnsureReadyRetryOnAcpError:
             spawn_count += 1
             if spawn_count == 1:
                 raise FileNotFoundError("adapter replaced in place")
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            client._process = MagicMock(returncode=None, pid=101)
+            client._process = MagicMock(returncode=None, pid=UNALLOCATABLE_PID)
 
         async def fake_init():
             client._session_id = "sess-ok"
@@ -817,8 +757,7 @@ class TestEnsureReadyRetryOnAcpError:
         released: list[int] = []
 
         async def fake_spawn():
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            client._process = MagicMock(returncode=None, pid=123)
+            client._process = MagicMock(returncode=None, pid=UNALLOCATABLE_PID)
             client._bound_workspace_fd = 77
             client._spawn_work_dir = "/dev/fd/77"
 

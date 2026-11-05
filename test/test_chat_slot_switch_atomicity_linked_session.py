@@ -27,7 +27,7 @@ from kiro_crew.dashboard.chat import (
     api_chat_slots_model,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, until_parked
 
 
 def _make_app_as(state: DashboardState, app_name: str) -> web.Application:
@@ -52,12 +52,8 @@ def _make_app_as(state: DashboardState, app_name: str) -> web.Application:
 class TestLinkedSlotSessionKey:
     """A channel-/cron-born slot runs its turns under ``linked_session_key``.
 
-    The switch handlers must probe and reset THAT session (the reload
-    handler's rule), not the ``dashboard:<slot>`` spelling that names a
-    session which never existed — otherwise the busy probe sees nothing and
-    the reset "succeeds" against nothing while the live process keeps the old
-    model. And slot ownership does not imply ownership of the linked session,
-    so an app caller may not switch a channel thread's model.
+    The switch handlers must probe and reset THAT session, not ``dashboard:<slot>``, which
+    never existed. Slot ownership is not session ownership, so an app may not switch it.
     """
 
     @pytest.mark.asyncio
@@ -216,6 +212,42 @@ class TestLinkedSlotSessionKey:
             state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_bulk_switch_skips_an_app_slot_writing_a_channel_transcript(self):
+        # An unbound channel-born slot runs on its own dashboard: session but
+        # writes the channel thread's transcript, so the app does not own it:
+        # the per-slot checkpoint's rule (app_owns_slot_session).
+        slot = _ChatSlot("slack_1700000000.000100")
+        slot.model = _MODEL_A
+        slot._app = "demo-app"
+        slot.channel_origin = True
+        state = _mock_state(slot, provider=None)
+        async with TestClient(TestServer(_make_app_as(state, "demo-app"))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 200
+            assert (data["switched"], data["skipped_running"]) == ([], [])
+            assert slot.model == _MODEL_A
+            state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bulk_switch_switches_an_apps_own_task_review_tab(self):
+        # A task-review tab runs on the session the taskrunner minted for it,
+        # which is the tab's own (own_session_key): the per-slot route lets its
+        # owner app switch it, and the bulk route agrees.
+        slot = _ChatSlot("task-review-abc")
+        slot.model = _MODEL_A
+        slot._app = "demo-app"
+        slot.linked_session_key = "taskrunner:t1:chat:abc"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        async with TestClient(TestServer(_make_app_as(state, "demo-app"))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["switched"] == ["task-review-abc"]
+            assert state.sessions.reset.await_args.args[0] == "taskrunner:t1:chat:abc"
+
+    @pytest.mark.asyncio
     async def test_workspace_switch_resets_the_linked_session(self):
         slot = _ChatSlot("test")
         slot.linked_session_key = "slack:123.456"
@@ -239,12 +271,11 @@ class TestLinkedSlotSessionKey:
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
                 )
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Barrier: the racing request is observed parked on the held lock
+                # before the linked binding lands, so the switch must read it after.
+                await until_parked(slot._lock, timeout=30, describe=lambda: repr(task))
                 slot.linked_session_key = "cron:job-1"
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, timeout=30, what="model switch request")
             assert resp.status == 200
             assert slot.model == _MODEL_B
             probed = {c.args[0] for c in state.sessions.get_provider.call_args_list}
@@ -687,8 +718,7 @@ class TestLinkedSlotSessionKey:
 
         async def _blocked_warm(*_args, **_kwargs):
             entered_resolution.set()
-            # flake-ok: pre-existing unbounded wait inside the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release_resolution.wait()
+            await await_until(release_resolution, timeout=30, what="test releases resolution")
 
         cfg = MagicMock()
         cfg.agents = {}

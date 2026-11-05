@@ -436,57 +436,25 @@ def _migrate(self: KnowledgeStore):
     src_cols = {r[1] for r in self.db.execute("PRAGMA table_info(sources)").fetchall()}
     if "sync_status" not in src_cols:
         self.db.execute("ALTER TABLE sources ADD COLUMN sync_status TEXT DEFAULT 'pending'")
-    # ONE pass over the rows that still carry a blob copy of the status:
-    # repair the column where it was never written, then retire the copy.
-    # After this pass no row has a copy at all, so on a store that has
-    # already opened once the scan matches nothing.
+    # One pass over rows that still carry a blob copy of the status: repair
+    # the column where it was never written, then retire the copy, so later
+    # opens find nothing to do.
     #
-    # An INITIAL state is repaired onto a column still at its un-written
-    # 'pending' default (rows inserted before the column was written on
-    # INSERT). The dashboard picks the row's control from the column, so a
-    # divergent row renders Pause instead of Confirm and the source cannot be
-    # started. Only 'pending' rows are candidates: any row a handler has
-    # transitioned already had its column written, so a repair never
-    # overwrites a live state.
+    # An INITIAL state is repaired only onto a column still at its 'pending'
+    # default: the dashboard picks the row's control from the column, and any
+    # row a handler has moved already had its column written.
     #
-    # A LIFECYCLE value in the blob is deliberately NOT promoted, not even
-    # 'error'. It cannot be ordered against the column: a pre-column
-    # ``_record_failure`` wrote 'error' to the blob alone, and a later
-    # successful re-ingest wrote 'synced' to the column alone, so the two
-    # copies carry no evidence of which happened last. Promoting would mark a
-    # recovered source errored and, since the copy is retired in the same
-    # pass, nothing would correct it. Not promoting costs at most ONE sync
-    # attempt: ``_record_failure`` reads ``consecutive_failures`` from the
-    # blob, which such a row already has at or above its threshold, so the
-    # first attempt that fails writes the column and quiesces the source for
-    # good -- while an attempt that SUCCEEDS is the right outcome for a source
-    # that had recovered. The column is authoritative; a value that cannot be
-    # ordered against it does not get to overrule it.
+    # A LIFECYCLE value (even 'error') is NOT promoted: it cannot be ordered
+    # against the column, and promoting could mark a recovered source errored
+    # with nothing to correct it. The cost is at most one sync attempt, since
+    # ``_record_failure`` reads ``consecutive_failures`` from the blob.
     #
-    # The copy is then RETIRED. This runs on EVERY open, so leaving the key in
-    # place would make the repair above a standing reader of a value that goes
-    # stale the moment a column-only writer moves the row. Retiring makes it a
-    # one-time repair instead.
-    #
-    # The repair is compare-and-set on the row as READ -- the blob AND the
-    # column -- so a concurrent writer wins and the row is converged by the
-    # next open instead. The retirement predicates on the blob ALONE, which
-    # is the only field it writes: a column-only transition is what every
-    # live writer does, and requiring the column to be unmoved would abandon
-    # the copy for exactly the transitions that are expected to happen.
-    # No SQL prefilter on the blob text. A raw substring match cannot decide
-    # membership here: JSON escapes are legal inside a KEY, so a blob stored
-    # as {"sync_\u0073tatus": "paused"} parses to the very key this pass
-    # converges while `properties LIKE '%sync_status%'` never matches it. The
-    # key only exists once decoded, so the decision has to be made on the
-    # PARSED value. `sources` holds one row per knowledge source, so parsing
-    # each one is bounded and cheap -- and after this pass no row carries a
-    # copy at all, so later opens parse and skip.
-    #
-    # Nothing in-tree can write that escaped form any more (`json.dumps`
-    # never escapes ASCII, and `_without_sync_status` re-serializes on every
-    # insert and update), but a row imported by an early `import_bundle` --
-    # which stored properties text verbatim -- can still hold one.
+    # The repair is compare-and-set on blob AND column, so a concurrent writer
+    # wins; the retirement predicates on the blob alone, because live writers
+    # move only the column.
+    # No SQL LIKE prefilter: JSON escapes are legal in a key
+    # ({"sync_\u0073tatus": ...}), so only the parsed value decides. Rows
+    # imported verbatim by an early `import_bundle` can still hold that form.
     blob_copies = self.db.execute("SELECT id, properties, sync_status FROM sources").fetchall()
     for row in blob_copies:
         try:

@@ -1,19 +1,8 @@
 """``AppContext.http_app`` is handed out only where it is already reachable.
 
-An app whose background work must be anchored on the gateway's own aiohttp
-Application had no way to reach it: route handlers receive the real
-``web.Request`` and therefore ``request.app``, but a lifecycle hook receives only
-the ``AppContext``. So a poller that has to read the dashboard state its own
-handlers read, and stash the running service where those handlers look it up,
-could be written and declared and would never start -- serving requests while the
-background half stayed dead, with nothing on the app's page saying so.
-
-The field closes that, and the gate is what keeps it from widening anything: it
-is populated for an app that declares a ``routes`` hook and for no other, because
-such an app is dispatched the real request and already holds this exact object.
-The test that matters most here is therefore the negative one -- a lifecycle-only
-app must get ``None``, since it has no request path either and handing it the
-Application would be a genuinely new grant.
+Lifecycle hooks receive only the ``AppContext``, so background work needs the Application
+there. It is set only for apps declaring a ``routes`` hook, which already reach it via
+``request.app``; a lifecycle-only app must get ``None``, or it would be a new grant.
 """
 
 from __future__ import annotations
@@ -128,13 +117,8 @@ def test_the_factory_passes_the_handle_straight_through(tmp_path):
 async def test_the_handle_is_the_same_object_a_route_handler_would_see(tmp_path, monkeypatch):
     """The two paths must agree, or the gate's justification does not hold.
 
-    The claim is that a routes-declaring app already reaches this object through
-    its requests. That is only true while the registry dispatches on the very
-    Application the wiring hands over, so this drives a real HTTP request through
-    the catch-all and lets the HANDLER compare its own ``request.app`` against the
-    ``http_app`` on the context it was given. A future registry that dispatched
-    somewhere else would turn the field into a genuine widening, and the handler
-    would report ``same: false``.
+    A real HTTP request lets the handler compare its ``request.app`` with the context's
+    ``http_app``; a registry dispatching elsewhere would report ``same: false``.
     """
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -202,7 +186,11 @@ def test_written_manifest_on_disk_round_trips(wired, tmp_path):
     }
     path = Path(tmp_path) / "app.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
-    info = {"name": "ondisk", "enabled": True, "manifest": json.loads(path.read_text())}
+    info = {
+        "name": "ondisk",
+        "enabled": True,
+        "manifest": json.loads(path.read_text(encoding="utf-8")),
+    }
     ctx = hooks_mod._build_app_context_from_info(info)
     assert ctx.http_app is gateway_app
 
@@ -210,14 +198,8 @@ def test_written_manifest_on_disk_round_trips(wired, tmp_path):
 class TestTheTwoBuildersAgree:
     """A startup context and a shutdown context must carry the same handle.
 
-    The lifecycle dispatcher rebuilds a context of its own for every shutdown --
-    an ordinary disable and gateway teardown both go through it -- and it is NOT
-    the builder the enable path uses. An app whose ``on_startup`` received the
-    Application and whose ``on_shutdown`` received ``None`` can start background
-    work it can never be asked to stop: the teardown hook reads the missing handle
-    and returns as if there were nothing to do, so the poller, its client and its
-    interval task outlive the disable. Nothing re-supplies it either -- the cached
-    shutdown callable is a callable, not a context.
+    The shutdown dispatcher builds its own context, not the enable path's. A ``None``
+    there makes ``on_shutdown`` return early, and the background work outlives disable.
     """
 
     def test_a_shutdown_context_carries_the_handle(self, tmp_path, monkeypatch):
@@ -311,13 +293,8 @@ def test_the_gate_predicate_is_shared_not_copied():
 def test_the_live_wiring_feeds_both_builders_one_application(tmp_path, monkeypatch):
     """``init_hooks_system`` must seed the registry and the dispatcher alike.
 
-    The shared predicate keeps the two builders from spelling the gate
-    differently, but they read the Application from different places -- the
-    enable path from ``_route_registry.http_app``, the lifecycle path from the
-    dispatcher's own field. Equal answers there still mean divergence if the
-    production wiring seeded those two places from different objects, and every
-    other test in this file constructs both from one Application by hand, so none
-    of them can see that. This asserts the real entry point instead.
+    The enable path reads ``_route_registry.http_app`` and the lifecycle path the
+    dispatcher's field. Other tests seed both by hand, so only this checks the wiring.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     monkeypatch.setattr(hooks_mod, "_route_registry", None)
@@ -343,19 +320,9 @@ def test_the_live_wiring_feeds_both_builders_one_application(tmp_path, monkeypat
 class TestTeardownReadsTheEnableItIsTearingDown:
     """Teardown must reuse the grant from enable, not recompute it from the manifest.
 
-    The manifest a teardown sees is the CURRENT on-disk record, and the app writes
-    that record. So an app can declare ``routes`` plus ``on_shutdown``, receive the
-    Application at startup and anchor a worker on it, then ship a version that
-    drops ``routes`` while keeping ``on_shutdown``. Recomputing the gate at that
-    point hands ``None`` to the very hook the shipped guidance tells it to
-    early-return on, and the worker survives the disable -- the residual-execution
-    class ``apps/teardown.py`` exists to prevent, with no recovery short of a
-    gateway restart.
-
-    The mirror direction matters just as much and is the reason the recorded answer
-    is stored in BOTH directions rather than only when granted: a manifest that
-    ADDS ``routes`` after an enable that had none must not reach a shutdown hook
-    whose startup never held the object.
+    The app writes the on-disk manifest. Dropping ``routes`` later would hand ``None`` to
+    ``on_shutdown`` and the worker survives the disable; adding ``routes`` later must not
+    grant a shutdown hook whose startup never held it. So both answers are recorded.
     """
 
     @pytest.fixture(autouse=True)

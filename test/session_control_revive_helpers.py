@@ -80,8 +80,8 @@ def _settle_metadata_rewrite_before_read(monkeypatch):
 
     real_replace = _aw.replace_with_retry
 
-    def replace_with_retry(src, dst):
-        real_replace(src, dst)
+    def replace_with_retry(src, dst, *, budget_s=None):
+        real_replace(src, dst, budget_s=budget_s)
         dst_path = str(dst)
         if not dst_path.endswith(".jsonl"):
             return

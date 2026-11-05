@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew.dashboard import mcp_oauth_provenance
 from kiro_crew.dashboard.chat_utils import (
     _redact_meta,
     _redact_meta_for_role,
@@ -78,7 +79,9 @@ def test_redact_meta_survives_concurrent_key_insertion() -> None:
 
 def test_redact_meta_for_role_survives_concurrent_key_insertion() -> None:
     """The mcp_oauth branch iterates meta directly and needs the same snapshot."""
+    mcp_oauth_provenance.record_emitted("live-child", "https://example.com/authorize?client_id=abc")
     meta = _meta_that_mutates_mid_iteration()
+    meta["child"] = "live-child"
     meta["oauth_url"] = "https://example.com/authorize?client_id=abc"
 
     out = _redact_meta_for_role("mcp_oauth", meta)

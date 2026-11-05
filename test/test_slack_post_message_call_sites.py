@@ -72,6 +72,10 @@ BASELINE: dict[str, tuple[int, str]] = {
     "dashboard/server_runtime/owner_notices.py": (1, "owner DM notice"),
     "shared_crew/turn_gate.py": (1, "fixed capacity note for a message fair admission refused"),
     "slack/allowlist.py": (1, "access-request DM to an allowlist approver"),
+    "slack/code_channels/routing.py": (
+        1,
+        "one helper for a code channel's fixed notices: kickoff, refusals, hand-off line",
+    ),
     "slack/events.py": (5, "!stop and !restart notices and the not-authorized refusal"),
     "slack/files.py": (1, "notes for images Slack refused to upload"),
     "slack/gateway_runtime/cron_delivery.py": (
@@ -94,8 +98,9 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/gateway_runtime/subagent_wiring.py": (1, "owner DM with a subagent notice"),
     "slack/handler_runtime/commands.py": (
-        74,
-        "slash and text command replies: fixed status and help text",
+        75,
+        "slash and text command replies: fixed status and help text, and the"
+        " channel-agent link refusal",
     ),
     "slack/handler_runtime/delivery.py": (
         5,
@@ -105,13 +110,21 @@ BASELINE: dict[str, tuple[int, str]] = {
         9,
         "command and hook replies, status and permission notices",
     ),
-    "slack/handler_runtime/inbound.py": (2, "approval mode notice and the not-authorized refusal"),
+    "slack/handler_runtime/inbound.py": (
+        4,
+        "approval mode notice, the not-authorized refusal, and the fixed channel-agent"
+        " refusals for a live and a closed linked session",
+    ),
     "slack/handler_runtime/stream.py": (
         5,
         "stream continuations, Thinking placeholders, delivery-debt notice",
     ),
     "slack/handler_runtime/turn.py": (2, "replay and turn-ceiling notices"),
-    "slack/interactions.py": (3, "session thread header, DM resume header, replayed history lines"),
+    "slack/interactions.py": (
+        4,
+        "session thread header, DM resume header, replayed history lines, and the"
+        " fixed channel-agent resume refusal",
+    ),
     "slack/interactions_approvals.py": (
         3,
         "approved or edited draft posted to the channel, and its redaction notice",

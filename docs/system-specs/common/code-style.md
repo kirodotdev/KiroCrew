@@ -191,8 +191,8 @@ that were each green can together push a file over the cap.
 | A listed file that grew past its row | Reported, not failed. It must not grow; split it. |
 | A malformed or unsorted baseline | Fails. |
 
-Backend Lint and Frontend Lint run the script on the full history and enforce
-the scoped verdict, and the main ratchet audit judges the whole tree, so main
+CI's `backend-ratchets` and `frontend-ratchets` jobs run the script on the full
+history and enforce the scoped verdict, and the main ratchet audit judges the whole tree, so main
 drift turns red there. The test runs on the backend shards' shallow checkout,
 which cannot tell which files a change touched, so there it reports violations
 without failing.
@@ -254,7 +254,9 @@ body is the same for every facade (the known-seam scan, the corpus-gate derivati
 layering, manifest and logger scans) is written once in `test/test_facade_shared_checks.py`
 and parametrized per module: a facade test file names the ones it needs in a module-level
 `SHARED_FACADE_CHECKS` tuple instead of copying their bodies, and keeps only the checks
-particular to its facade.
+particular to its facade. The same holds for a composed class's contract file
+(`test_*composition*.py`) and a parts package's file (`test_*_parts*.py`): the
+owner-layering, bound-member, class-body and package-shape checks they share are opt-ins too.
 
 **A large class keeps one class body**, in the facade or in one home module that sets
 `__module__` to the facade when a pickle, repr or test reads it. Members move to owners as

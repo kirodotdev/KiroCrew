@@ -462,6 +462,10 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     spec_path = body.get("spec", "")
     if not spec_path:
         return web.json_response({"error": "spec path required"}, status=400)
+    if not isinstance(spec_path, str):
+        return web.json_response(
+            {"error": "spec must be a string", "code": "invalid_field_type"}, status=400
+        )
 
     # Validate non-inline paths against traversal, then forward the *validated*
     # resolved path (not the raw input) to the sink below so the guard and the
@@ -714,6 +718,16 @@ async def api_taskrunner_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def parse_run_name(value: object) -> tuple[str | None, str | None]:
+    """Return ``(value.strip(), None)`` for a string run name, else ``(None, error)``.
+
+    The trimmed name may be empty; each caller keeps its own rule for that.
+    """
+    if not isinstance(value, str):
+        return None, "name must be a string"
+    return value.strip(), None
+
+
 async def api_taskrunner_rename(request: web.Request) -> web.Response:
     """PATCH /api/taskrunner/{task_id}/name — rename a task run."""
     owner_denied = await _require_taskrunner_owner(request, "taskrunner.rename")
@@ -730,7 +744,9 @@ async def api_taskrunner_rename(request: web.Request) -> web.Response:
     if data_err is not None:
         return data_err
     assert data is not None  # read_bounded_json returns (dict, None) on success
-    name = data.get("name", "").strip()
+    name, name_err = parse_run_name(data.get("name", ""))
+    if name is None:
+        return web.json_response({"error": name_err, "code": "invalid_name"}, status=400)
     if not name:
         return web.json_response({"error": "name required"}, status=400)
     run.name = name
@@ -1494,7 +1510,12 @@ async def api_taskrunner_refine(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    user_input = body.get("input", "").strip()
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    user_input = body.get("input", "")
+    if (not_string := string_field_error("input", user_input)) is not None:
+        return not_string
+    user_input = user_input.strip()
     if not user_input:
         return web.json_response({"error": "input is required"}, status=400)
 
@@ -1551,7 +1572,12 @@ async def api_taskrunner_refine_answer(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    answer = body.get("answer", "").strip()
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    answer = body.get("answer", "")
+    if (not_string := string_field_error("answer", answer)) is not None:
+        return not_string
+    answer = answer.strip()
     if not answer:
         return web.json_response({"error": "answer required"}, status=400)
     future = getattr(state, "_refine_answer_future", None)

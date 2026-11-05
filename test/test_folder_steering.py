@@ -89,6 +89,18 @@ def test_non_always_inclusion_is_skipped(tmp_path, inclusion):
     assert [Path(path).name for path, _ in docs] == ["open.md"]
 
 
+def test_a_byte_order_mark_does_not_hide_the_inclusion(tmp_path):
+    """A document saved as "UTF-8 with BOM" keeps its declared ``inclusion``."""
+    root = tmp_path / "standards"
+    root.mkdir()
+    bom = b"\xef\xbb\xbf"
+    (root / "gated.md").write_bytes(bom + b"---\ninclusion: manual\n---\nGATED\n")
+    (root / "open.md").write_bytes(bom + b"---\ninclusion: always\n---\nOPEN\n")
+    docs = collect_folder_steering([str(root)], project=None, home=_fake_home(tmp_path))
+    assert [Path(path).name for path, _ in docs] == ["open.md"]
+    assert not docs[0][1].startswith("\ufeff")
+
+
 def test_truncated_read_with_an_unclosed_frontmatter_block_is_skipped(tmp_path):
     """Truncation must not turn ``manual`` into ``always``.
 

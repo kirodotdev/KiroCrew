@@ -49,7 +49,8 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.manifest import KEBAB_RE, app_name_error
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.apps.store_links import sanitize_links
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -128,7 +129,7 @@ def _read_cache() -> dict[str, Any] | None:
         if not path.is_file():
             return None
         age = time.time() - path.stat().st_mtime
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -200,7 +201,7 @@ def cached_entries() -> tuple[list[dict[str, Any]], float | None]:
         if not path.is_file():
             return [], None
         mtime = path.stat().st_mtime
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (OSError, ValueError):
         return [], None
     if not isinstance(data, dict) or _FAILED_KEY in data:
@@ -519,6 +520,13 @@ def _curated_tags(value: Any) -> list[str]:
     return [t for t in value if isinstance(t, str)]
 
 
+def _curated_links(entry: dict[str, Any]) -> list[dict[str, str]]:
+    """The entry's store-page ``links``, checked by the same rule as ``app.json``."""
+    if "links" not in entry:
+        return []
+    return sanitize_links(entry["links"], app_name=_curated_str(entry.get("name")))
+
+
 def _session_approval_manifest(entry: dict[str, Any]) -> dict[str, Any] | None:
     """Project the explicit session approval grant for pre-install disclosure."""
     permissions = entry.get("permissions")
@@ -664,10 +672,9 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if len(name) > _MAX_NAME_LEN:
             # NOT a competing identity rule -- `app_name_error` owns admissibility,
-            # and it does not bound length. This is a bound on the name AS A DIRECTORY
-            # COMPONENT, kept local because raising it into the shared contract would
-            # change every admission path in the product, which this change is not
-            # scoped to do.
+            # including its own APP_NAME_MAX_LENGTH bound. The official catalog keeps
+            # this tighter bound for its own entries; a name between the two limits
+            # is a valid app name that this catalog does not list.
             logger.warning("dropping catalog entry with an over-long name %r", name)
             continue
         if name in seen:
@@ -718,6 +725,8 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row["heroImageDetail"] = hero_detail
         if shots := _resolve_ref_list(entry.get("screenshotRefs")):
             row["screenshots"] = shots
+        if links := _curated_links(entry):
+            row["links"] = links
         if (stars := _curated_stars(entry)) is not None:
             row["stargazersCount"] = stars
         seen.add(name)
@@ -759,6 +768,16 @@ class CatalogUnavailable(Exception):
     indistinguishable from "this app is not in the catalog" -- and the install path
     reads the latter as permission to use the unpinned bundled coordinates, so a
     network failure silently downgraded a pinned app to a branch tip.
+    """
+
+
+class CatalogNoInstallSource(CatalogUnavailable):
+    """The catalog was read and names the app, but gives it no install source.
+
+    A ``builtin`` row for an app this host does not ship, or a row whose
+    ``source`` failed validation. A subclass so every ``except
+    CatalogUnavailable`` keeps refusing exactly as before; only a caller that
+    reports the cause to a person needs to tell it from an unreachable catalog.
     """
 
 
@@ -881,7 +900,7 @@ def inventory_for_install(name: str) -> dict[str, Any] | None:
         # (no git coordinates) or a row whose `source` failed validation. Reporting
         # absence here would let a caller fall back to unpinned coordinates for an
         # app the catalog is actually curating.
-        raise CatalogUnavailable(
+        raise CatalogNoInstallSource(
             f"catalog names {name!r} but supplies no usable install coordinates"
         )
     return None
@@ -954,6 +973,8 @@ def annotate(rows: list[dict[str, Any]], entries: list[dict[str, Any]]) -> None:
             row["heroImageDetail"] = hero_detail
         if shots := _resolve_ref_list(entry.get("screenshotRefs")):
             row["screenshots"] = shots
+        if links := _curated_links(entry):
+            row["links"] = links
         # ``stargazersCount`` is deliberately NOT overlaid here. This function
         # matches rows by NAME, and a same-name SEED row can pin a DIFFERENT
         # repository than the catalog entry (seed collisions keep the pin by
@@ -1012,6 +1033,8 @@ def list_catalog_rows() -> list[dict[str, Any]]:
             row["heroImageDetail"] = hero_detail
         if shots := _resolve_ref_list(entry.get("screenshotRefs")):
             row["screenshots"] = shots
+        if links := _curated_links(entry):
+            row["links"] = links
         source = entry.get("source")
         if isinstance(source, dict):
             # The source TYPE is a display marker (builtin vs git), not install

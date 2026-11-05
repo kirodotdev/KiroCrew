@@ -38,11 +38,10 @@ def unpinnable_argv() -> list[str]:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse gateway seam of the snapshot suites moved verbatim; no test in these modules calls monkeypatch.undo()
-def _no_gateway(monkeypatch):
+def _no_gateway(_floor_monkeypatch):
     """Prevent gateway-running check from blocking restore in tests.
 
     Uses the deterministic env seam (not a function patch) so refusal tests can
     override it with ``=1`` and the result never depends on a real socket probe.
     """
-    monkeypatch.setenv("KIROCREW_ASSUME_GATEWAY_RUNNING", "0")
+    _floor_monkeypatch.setenv("KIROCREW_ASSUME_GATEWAY_RUNNING", "0")

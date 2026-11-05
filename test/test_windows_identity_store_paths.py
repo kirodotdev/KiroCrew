@@ -194,9 +194,14 @@ class TestStagingToleratesTheUnusedAppDataRoot:
     exactly the hosts this change is meant to fix.
     """
 
-    def _stage(self, home: Path, monkeypatch, staging: Path) -> None:
+    def _stage(self, home: Path, monkeypatch, staging: Path) -> list[str]:
+        """Stage from *home* and return the staged identity databases, root-relative."""
         monkeypatch.setattr(kp, "_ensure_auth_staging_parent", lambda h: staging)
-        kp._prepare_auth_workspace("win32", home, {}, {})
+        workspace = kp._prepare_auth_workspace("win32", home, {}, {})
+        return sorted(
+            p.relative_to(workspace.root).as_posix()
+            for p in workspace.root.rglob(kp._AUTH_SQLITE_DB)
+        )
 
     def test_a_usable_root_survives_a_dead_store_in_the_other(
         self, tmp_path: Path, monkeypatch
@@ -206,7 +211,9 @@ class TestStagingToleratesTheUnusedAppDataRoot:
         _write_identity_store(tmp_path / "AppData" / "Local" / "kiro-cli" / kp._AUTH_SQLITE_DB)
         _write_unusable_store(tmp_path / "AppData" / "Roaming" / "kiro-cli" / kp._AUTH_SQLITE_DB)
 
-        self._stage(tmp_path, monkeypatch, staging)
+        staged = self._stage(tmp_path, monkeypatch, staging)
+
+        assert staged == [f"AppData/Local/kiro-cli/{kp._AUTH_SQLITE_DB}"]
 
     def test_the_reverse_shape_also_survives(self, tmp_path: Path, monkeypatch) -> None:
         """A downgraded host: live store in Roaming, stale leftover in Local."""
@@ -216,7 +223,9 @@ class TestStagingToleratesTheUnusedAppDataRoot:
         _write_unusable_store(tmp_path / "AppData" / "Local" / "kiro-cli" / kp._AUTH_SQLITE_DB)
         _write_identity_store(tmp_path / "AppData" / "Roaming" / "kiro-cli" / kp._AUTH_SQLITE_DB)
 
-        self._stage(tmp_path, monkeypatch, staging)
+        staged = self._stage(tmp_path, monkeypatch, staging)
+
+        assert staged == [f"AppData/Roaming/kiro-cli/{kp._AUTH_SQLITE_DB}"]
 
     def test_no_usable_store_in_any_root_still_aborts(self, tmp_path: Path, monkeypatch) -> None:
         """The signed-out-looking case must stay loud."""

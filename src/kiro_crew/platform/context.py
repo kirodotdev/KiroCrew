@@ -36,6 +36,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         AgentRuntime,
         AppRegistryPolicy,
         AppsLoader,
+        BrowserCredentialProvider,
         CapabilityManager,
         CloudInstancePolicyProvider,
         CredentialPolicy,
@@ -354,6 +355,11 @@ class PlatformContext:
     # the dashboard's ``setFeedbackTracker`` seam. v1 addition (no
     # CONTRACT_VERSION bump).
     feedback: "FeedbackTrackerProvider"
+    # Session cookies for Kiro's own Chromium, applied by the gateway's browser
+    # supervisor at every start and when the source or the settings changed
+    # before an agent navigation; never for the person's own Chrome. The Default
+    # supplies nothing. v1 addition (no CONTRACT_VERSION bump).
+    browser_credentials: "BrowserCredentialProvider"
     # Edition-registered STT / TTS providers and the edition's default choice.
     # ADD-only: a name colliding with a built-in or ``off`` fails boot. Read by
     # ``kiro_crew.speech_providers``. v1 addition (no CONTRACT_VERSION bump).
@@ -628,6 +634,14 @@ def set_context(ctx: PlatformContext) -> None:
 # must contain the phrase ``no-context answer`` so the justification is greppable
 # and cannot dodge the question it exists to answer.
 PEEK_CALLERS: "dict[str, str]" = {
+    "milestones.py::_policy_permits": (
+        "no-context answer is 'not permitted': with no installed policy the "
+        "milestone hooks count nothing, write no state and emit no metric, which "
+        "is the denial direction. The gateway and the MCP servers install a "
+        "context at boot, so only an unbooted process (a bare test) is affected; "
+        "composing one here would install process-wide state from a hook's "
+        "worker thread."
+    ),
     "security/redaction.py::_token_param_exempt_prefixes": (
         "no-context answer is the empty prefix set, which means MORE redaction: "
         "pass 4 redacts every `token=` URL value. The lookup can only skip a "

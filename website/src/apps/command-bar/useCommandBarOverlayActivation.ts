@@ -5,7 +5,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { commandFolderName, fileSessionInCommandFolder } from './sessionFolder'
 import type { ChatFolderRow } from './sessionFolder'
 import type { AppDispatch } from '../../store'
-import { createSlot, requestSlotFolderOpen, setPendingInput, switchSlot } from '../../store/chatSlice'
+import { createSlot, requestSlotFolderOpen, setPendingInput, stagePendingSend, switchSlot } from '../../store/chatSlice'
 import { i18nT } from '../../i18n/t'
 
 import { recordUse, type UsageMap } from './frecency'
@@ -83,7 +83,8 @@ export function useCommandBarOverlayActivation({
   commandByIdRef: MutableRefObject<Map<string, ContributedCommand>>
   chatFoldersRef: MutableRefObject<unknown>
   dispatch: AppDispatch
-  navigate: (route: string) => void
+  /** False when a leave guard kept the page on screen. */
+  navigate: (route: string) => boolean | void
   queryClient: QueryClient
 }) {
   /**
@@ -210,11 +211,15 @@ export function useCommandBarOverlayActivation({
               // before app-authored text becomes a message, and a disable that landed
               // during the switch must stop it here.
               if (!owned() || !stillOffered()) return
-              dispatch(setPendingInput(text))
               // `autoSend=1` alone, never with `newSession=1`: the session already
               // exists -- we just created and activated it -- and asking ChatPage to
               // force a new one would land the text in a second, different session.
-              navigate(autoSend ? '/chat?autoSend=1' : '/chat')
+              // A send is staged only once the page has agreed to leave: one left
+              // in the store after "stay" would fire the next time Chat opens.
+              // After "stay" the text is still kept, as a seed, so the reader's
+              // argument is never lost.
+              const left = navigate(autoSend ? '/chat?autoSend=1' : '/chat') !== false
+              dispatch(autoSend && left ? stagePendingSend(text) : setPendingInput(text))
               onClose()
               // Filed LAST, and deliberately not awaited. A contributed row opens a new
               // session on every run, so unfiled they bury the reader's own chats and two

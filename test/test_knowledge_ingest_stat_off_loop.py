@@ -86,7 +86,7 @@ async def test_the_file_sweep_stats_each_file_off_the_event_loop(
 ):
     """The sweep's existence check and mtime read both run in a worker thread."""
     doc = tmp_path / "doc.md"
-    doc.write_text("# doc")
+    doc.write_text("# doc", encoding="utf-8")
     # A stored mtime far ahead keeps a present file out of the re-ingest.
     sid = store.add_source("doc.md", "local_file", str(doc), properties={"mtime": 1 << 40})
     if not present:

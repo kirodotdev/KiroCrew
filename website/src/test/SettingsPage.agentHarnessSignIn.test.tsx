@@ -73,7 +73,9 @@ vi.mock('../store', () => ({ useAppSelector: () => '1.0.0' }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 
 import SettingsPage from '../pages/SettingsPage'
-import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { KIRO_SIGN_IN_PATH, KIRO_SIGN_IN_SETTING_ID } from '../pages/developer/kiroSignInLink'
+import { createSettingsProvider } from '../components/commandPalette/providers/settingsProvider'
+import type { NavigateFunction } from 'react-router-dom'
 import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../hooks/useSettingHighlight'
 
 function LocationProbe() {
@@ -96,6 +98,11 @@ function renderAt(route: string) {
 }
 
 const loc = () => screen.getByTestId('loc').textContent ?? ''
+
+/** Waits that cross SettingsPage's lazy `AgentBackendTab` import (and the
+ *  KAS row's detail that mounts after it): a cold worker can take past the
+ *  default 1 s to load that chunk, so these carry an explicit deadline. */
+const LAZY_TAB = { timeout: 10_000 }
 
 beforeEach(() => {
   sessionStorage.clear()
@@ -132,4 +139,30 @@ describe('Settings > Agent Harness sign-in deep link, through the real tab', () 
     expect(screen.getByRole('radio', { name: 'Kiro Agent' })).not.toBeChecked()
     expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
   })
+
+  it.each(['sign out', 'switch account', 'logout', 'log out'])(
+    'Settings search for "%s" lands on the sign-in card through the real tab',
+    async query => {
+      const nav = vi.fn()
+      const provider = createSettingsProvider(nav as unknown as NavigateFunction, {
+        decisionsEnabled: true,
+        tipsEnabled: true,
+        updateSwitches: { app: true, gateway: true },
+      })
+      const results = await Promise.resolve(provider.search(query))
+      const hit = results.find(r => r.id === `settings:${KIRO_SIGN_IN_SETTING_ID}`)
+      expect(hit, `no sign-in hit for "${query}"`).toBeTruthy()
+      // Among the first results a user sees, not buried.
+      expect(results.indexOf(hit!)).toBeLessThan(5)
+      hit!.onActivate?.()
+      const route = nav.mock.calls[0][0] as string
+
+      renderAt(route)
+      const kas = await screen.findByRole('radio', { name: 'Kiro Agent' }, LAZY_TAB)
+      await waitFor(() => expect(kas).toBeChecked(), LAZY_TAB)
+      const anchor = await screen.findByTestId('kiro-sign-in-card', {}, LAZY_TAB)
+      await waitFor(() => expect(anchor.scrollIntoView).toHaveBeenCalledTimes(1), LAZY_TAB)
+      await waitFor(() => expect(loc()).toBe('/settings/agent'))
+    },
+  )
 })

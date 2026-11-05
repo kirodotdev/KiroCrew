@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -80,7 +81,7 @@ def _entries(unit_id: str, count: int) -> None:
         crew_log_emit.on_ledger_recorded(
             unit_id, {"slot": SLOT, "event": f"e{step}", "event_kind": "progress"}
         )
-        crew_log_emit.flush(timeout=5.0)
+        assert_drained()
 
 
 def _log_lines(unit_id: str) -> "list[bytes]":
@@ -463,7 +464,7 @@ def test_a_point_read_while_a_cut_is_in_flight_is_refused():
     assert point.cuts is not None and point.cuts % 2 == 0, "a settled count is even"
 
     crew_log_store._open_cut(_dir(UNIT))
-    raw = (_dir(UNIT) / crew_log_store._CUTS_FILE).read_text().strip()
+    raw = (_dir(UNIT) / crew_log_store._CUTS_FILE).read_text(encoding="utf-8").strip()
     assert int(raw) % 2 == 1, "a cut in flight leaves an odd number on disk"
     assert crew_log_store.read_cuts(_dir(UNIT)) is None, "and it is reported as unproven"
 

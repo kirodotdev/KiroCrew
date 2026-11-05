@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -26,6 +27,25 @@ from kiro_crew.config import loader
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 pytestmark = pytest.mark.xdist_group("member_memory_backup")
+
+
+@pytest.fixture
+def cyclic_gc_quiesced():
+    """Keep a cyclic-GC pass (and any finalizer it runs) out of a deep JSON parse.
+
+    The nesting tests drive the parser to the bottom of the stack; a collection
+    firing there could run an inherited finalizer with no stack left. Drain
+    first, disable for the parse, then restore and drain again.
+    """
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+        gc.collect()
 
 
 @pytest.fixture
@@ -314,6 +334,42 @@ def test_checksum_corruption_is_refused_without_changing_live_data(env):
     assert (env.home / "memory" / "preferences.md").read_text() == "Use concise answers"
 
 
+def test_a_damaged_compressed_entry_is_refused_as_invalid(env):
+    """A corrupt deflate stream fails while the entry is read, as zlib.error, not BadZipFile."""
+    backup = memory_backup.backup_store(env.paths["alice"])
+    raw = bytearray(backup.read_bytes())
+    with zipfile.ZipFile(backup) as bundle:
+        info = max(bundle.infolist(), key=lambda entry: entry.compress_size)
+    assert info.compress_type == zipfile.ZIP_DEFLATED
+    header = info.header_offset
+    name_len = int.from_bytes(raw[header + 26 : header + 28], "little")
+    extra_len = int.from_bytes(raw[header + 28 : header + 30], "little")
+    start = header + 30 + name_len + extra_len
+    for i in range(start, start + min(info.compress_size, 256)):
+        raw[i] ^= 0xFF
+    bad = backup.parent / "deflate.zip"
+    bad.write_bytes(bytes(raw))
+
+    with pytest.raises(ValueError, match="invalid"):
+        memory_backup.restore_from_backup(bad, "member-alice")
+    assert not (backup.parent / member_backup.PENDING).exists()
+    assert (env.home / "memory" / "preferences.md").read_text() == "Use concise answers"
+
+
+def test_a_too_deeply_nested_snapshot_manifest_is_refused(env, cyclic_gc_quiesced):
+    """A crafted manifest nested past the recursion limit is an invalid snapshot."""
+    backup = memory_backup.backup_store(env.paths["alice"])
+    bad = backup.parent / "nested-manifest.zip"
+
+    def mutate(content):
+        content[member_backup.MANIFEST] = b"[" * 15000
+
+    rewrite_bundle(backup, bad, mutate)
+    with pytest.raises(ValueError, match="Snapshot manifest is invalid"):
+        member_backup.stage_restore(bad, env.paths["alice"])
+    assert not (backup.parent / member_backup.PENDING).exists()
+
+
 def test_archive_symlink_is_refused(env):
     backup = memory_backup.backup_store(env.paths["alice"])
     bad = backup.parent / "symlink.zip"
@@ -485,6 +541,20 @@ def test_private_zip_retention_is_per_store(env):
     assert memory_backup.list_backups(env.paths["bob"]) == [bob]
 
 
+def test_private_zip_retention_never_deletes_a_stray_file(env):
+    """A ZIP with no stamp in its name is neither pruned nor restore's default."""
+    path = env.paths["alice"]
+    stamp = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    older = memory_backup.backup_store(path, now=stamp)
+    newer = memory_backup.backup_store(path, now=stamp + timedelta(days=1))
+    stray = memory_backup.backup_dir_for(path) / "memory.pre-upgrade.zip"
+    stray.write_bytes(b"operator copy")
+    assert memory_backup.prune_backups(path, keep=1) == 1
+    assert stray.read_bytes() == b"operator copy"
+    assert newer.exists() and not older.exists()
+    assert memory_backup.list_backups(path, stamped_only=True) == [newer]
+
+
 def test_prune_leaves_member_backup_stages_alone(env):
     """The V1 stale-stage sweep does not reach a member store's ZIP stages."""
     path = env.paths["alice"]
@@ -578,6 +648,21 @@ def test_same_timestamp_snapshots_never_replace_prior_backup(env):
     assert member_backup.snapshot_time(first) == stamp
     assert member_backup.snapshot_time(Path("memory.20260907T123456Z.zip")) == stamp
     assert memory_backup._age_hours(first, stamp + timedelta(hours=2)) == 2
+
+
+def test_a_too_deeply_nested_pending_journal_reads_as_invalid(env, cyclic_gc_quiesced):
+    """Nesting past the recursion limit is refused like any invalid journal."""
+    path = env.paths["alice"]
+    backup = memory_backup.backup_store(path)
+    member_backup.stage_restore(backup, path)
+    env.tiers["alice"].close()
+    before = path.read_bytes()
+    (backup.parent / member_backup.PENDING).write_bytes(b"[" * 15000)
+    status = member_backup.pending_restore_status(path)
+    assert status["pending"] and status["restore_error"]
+    with pytest.raises(ValueError, match="Invalid member snapshot metadata"):
+        member_backup.apply_pending_restore(path)
+    assert path.read_bytes() == before
 
 
 def test_deleted_member_binding_still_allows_inspection_and_untouched_cancel(env):

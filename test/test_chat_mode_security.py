@@ -1,22 +1,11 @@
 """Security contract of ``api_chat_mode``.
 
-``api_chat_mode`` (``src/kiro_crew/dashboard/chat_handlers.py``) carried three
-defects, all in the ordering between slot validation and global mutation:
+Slot validation runs before any global mutation: an unknown slot is ``400`` for every
+mode, ``trust_reads`` included, and a refused request leaves the safety override and
+every slot untouched. ``deactivate()`` writes a SEL event, so it runs off-loop.
 
-1. ``trust_reads`` silently widened to EVERY slot when the named slot did not
-   resolve — its ``trust``/``normal`` siblings answer ``400 unknown slot``.
-2. A request rejected for an unknown slot had already revoked the
-   process-global safety override (``safety_override().deactivate()`` ran
-   before the ``400``). A refused request must leave the global grant and
-   every slot untouched.
-3. ``deactivate()`` — which writes a SEL event — ran inline on the gateway
-   loop, unlike the sibling ``activate()`` which is offloaded with
-   ``asyncio.to_thread``.
-
-Every test drives the real handler through an aiohttp ``TestClient``; the auth
-middleware is stood in by ``_dashboard_owner_request``, and ``safety_override``
-is either the real singleton (happy paths) or a recording fake (the rejection
-paths, where the contract is "never even called").
+``safety_override`` is the real singleton on happy paths and a recording fake on
+rejection paths, where it must never be called.
 
 An app's sends onto a user slot are tested in ``test_chat_mode_security_send.py``; the
 app-token middleware and its app, the fixtures, ``_app_client`` and the app-control target
@@ -456,6 +445,173 @@ async def test_dashboard_coordinator_target_without_an_instance_is_refused(state
     assert not coordinator.done()
 
 
+@pytest.mark.parametrize("action", ["approve", "reject"])
+@pytest.mark.asyncio
+async def test_a_slotless_coordinator_target_settles_only_the_instance_it_names(state, action):
+    """An approval with no owning slot (a cron, autonudge or task-runner request)
+    decides with an empty slot and its instance. A card left up from an earlier
+    request under the recurring id names that request's instance and settles
+    nothing; the card for the live request settles it; a target that omits the
+    slot key altogether is malformed. Negative control: an empty slot never
+    matches a record that has one."""
+    coordinator = asyncio.get_running_loop().create_future()
+    state._approval_futures["cron-id"] = coordinator
+    state._pending_approvals["cron-id"] = {"id": "cron-id", "slot": "", "instance": "live"}
+    slotted = asyncio.get_running_loop().create_future()
+    state._approval_futures["slotted-id"] = slotted
+    state._pending_approvals["slotted-id"] = {
+        "id": "slotted-id",
+        "slot": "dashboard:selected",
+        "instance": "shown",
+    }
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        stale = {"origin": "coordinator", "slot": "", "instance": "earlier"}
+        response = await client.post(f"/api/approvals/cron-id/{action}", params=stale, json={})
+        assert response.status == 404
+        assert not coordinator.done()
+
+        no_slot_key = {"origin": "coordinator", "instance": "live"}
+        response = await client.post(
+            f"/api/approvals/cron-id/{action}", params=no_slot_key, json={}
+        )
+        assert response.status == 400
+        assert not coordinator.done()
+
+        unslotted = {"origin": "coordinator", "slot": "", "instance": "shown"}
+        response = await client.post(
+            f"/api/approvals/slotted-id/{action}", params=unslotted, json={}
+        )
+        assert response.status == 404
+        assert not slotted.done()
+
+        live = {"origin": "coordinator", "slot": "", "instance": "live"}
+        response = await client.post(f"/api/approvals/cron-id/{action}", params=live, json={})
+        assert response.status == 200
+        assert coordinator.result() is (action == "approve")
+
+
+@web.middleware
+async def _internal_secret_request(request: web.Request, handler):
+    """Stand in for the auth middleware: a loopback ``X-Internal-Secret`` caller."""
+    request["internal_auth"] = True
+    return await handler(request)
+
+
+@web.middleware
+async def _peer_verified_request(request: web.Request, handler):
+    """Stand in for the auth middleware: a peer-verified unix-socket caller (an
+    MCP or agent subprocess), which carries no ``app`` claim."""
+    request["peer_verified"] = True
+    return await handler(request)
+
+
+@web.middleware
+async def _unclaimed_request(request: web.Request, handler):
+    """Stand in for the auth middleware leaving no caller claim at all."""
+    return await handler(request)
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [_internal_secret_request, _peer_verified_request, _unclaimed_request],
+    ids=["internal_auth", "peer_verified_no_app", "no_claim"],
+)
+@pytest.mark.parametrize("action", ["approve", "reject"])
+@pytest.mark.asyncio
+async def test_a_slotless_coordinator_target_is_refused_to_an_internal_caller(
+    state, action, caller
+):
+    """Before the empty-slot target, a slotless (cron, autonudge, task-runner)
+    approval could be decided only by id, from the owner's browser session. The
+    target names the request without widening who may decide it: every caller
+    that is not the owner's browser session (an internal-secret caller, a
+    peer-verified subprocess with no ``app`` claim, or a request with no claim)
+    naming the exact instance is refused and the request stays pending.
+    Control: the same caller may still decide a slotted record by its exact
+    target, as on main."""
+    coordinator = asyncio.get_running_loop().create_future()
+    state._approval_futures["cron-id"] = coordinator
+    state._pending_approvals["cron-id"] = {"id": "cron-id", "slot": "", "instance": "live"}
+    slotted = asyncio.get_running_loop().create_future()
+    state._approval_futures["slotted-id"] = slotted
+    state._pending_approvals["slotted-id"] = {
+        "id": "slotted-id",
+        "slot": "dashboard:selected",
+        "instance": "shown",
+    }
+    app = web.Application(middlewares=[caller])
+    app["state"] = state
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        live = {"origin": "coordinator", "slot": "", "instance": "live"}
+        response = await client.post(f"/api/approvals/cron-id/{action}", params=live, json={})
+        assert response.status == 403
+        assert (await response.json())["code"] == "approval_owner_required"
+        assert not coordinator.done()
+        assert "cron-id" in state._pending_approvals
+
+        exact = {"origin": "coordinator", "slot": "dashboard:selected", "instance": "shown"}
+        response = await client.post(f"/api/approvals/slotted-id/{action}", params=exact, json={})
+        assert response.status == 200
+        assert slotted.result() is (action == "approve")
+
+
+def test_a_coordinator_resolution_names_the_instance_it_resolved():
+    """Both coordinator exits -- a decision and an expiry -- broadcast the
+    instance of the record they resolved, so a client can tell it from an
+    earlier request's row under the same recurring id."""
+    from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
+
+    class _State:
+        _log = MagicMock()
+
+        def __init__(self) -> None:
+            self.frames: list[dict] = []
+            self._approval_futures: dict = {}
+            self._pending_approvals = {
+                "id": {"id": "id", "slot": "", "instance": "live"},
+                "exp": {"id": "exp", "slot": "cron:job", "instance": "gone"},
+            }
+
+        def broadcast_ws(self, kind: str, payload: dict) -> None:
+            self.frames.append({"kind": kind, **payload})
+
+        def _audit_and_broadcast_approval(
+            self, session_key, approval_id, approved, decision="", *, instance=""
+        ):
+            ApprovalCoordinator.audit_and_broadcast(
+                self,
+                session_key,
+                approval_id,
+                approved,
+                decision,
+                audit_provider=MagicMock(),
+                instance=instance,
+            )
+
+    fake = _State()
+    loop = asyncio.new_event_loop()
+    try:
+        fake._approval_futures["id"] = loop.create_future()
+        assert ApprovalCoordinator.resolve_state(fake, "id", True)
+    finally:
+        loop.close()
+    ApprovalCoordinator._retire_unresolved(fake, "exp", "cron:job")
+    assert fake.frames == [
+        {"kind": "approval_resolved", "id": "id", "approved": True, "instance": "live"},
+        {
+            "kind": "approval_resolved",
+            "id": "exp",
+            "approved": False,
+            "slot": "cron:job",
+            "decision": "expired",
+            "instance": "gone",
+        },
+    ]
+
+
 def test_coordinator_records_carry_a_distinct_instance_per_request():
     """The request id is the caller's and can recur; the instance is minted here,
     once per request, so two requests sharing an id are told apart."""
@@ -781,11 +937,8 @@ async def test_trust_reads_non_string_slot_key_is_rejected(state) -> None:
 async def test_falsy_non_string_slot_key_is_rejected_for_trust(state) -> None:
     """Falsy non-strings (``[]``/``{}``/``0``/``False``) must not erase into the all-slots scope.
 
-    ``body.get("slot") or None`` collapses an empty list -- and every other
-    falsy non-string -- into ``None``, which is the documented "all slots"
-    request; before this fix ``{"mode": "trust", "slot": []}`` trusted EVERY
-    slot. The raw value must be refused before that normalization, and the
-    live global grant must survive the refusal.
+    ``body.get("slot") or None`` turns ``[]`` into ``None``, the "all slots" request, so the
+    raw value is refused first. The live global grant survives the refusal.
     """
     state.get_or_create_slot("s1")
     state.get_or_create_slot("s2")

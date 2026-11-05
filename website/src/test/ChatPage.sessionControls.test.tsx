@@ -11,9 +11,9 @@
  * the X-Session-Key gate and `checkSessionExpired`, and a test that stubbed
  * `fetch` would pass just as well with the guarantee removed.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 
-import { waitFor } from '@testing-library/react'
+import { act, waitFor } from '@testing-library/react'
 import { renderHookWithProviders } from './helpers'
 import { useSessionControlStatuses, normalizeStatus, safeStatusPath } from '../hooks/useSessionControls'
 import type { ResolvedSessionControl } from '../hooks/useSessionControls'
@@ -111,7 +111,11 @@ describe('useSessionControlStatuses — what ChatPage forwards', () => {
     renderHookWithProviders(() =>
       useStatusesOf([control({ statusPath: '' })], 'chat-1', '', ''),
     )
-    await new Promise(r => setTimeout(r, 20))
+    // The clock is faked only now, after the render, so the reads that settle during the
+    // window land inside act() instead of after the test.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     expect(mockStatus).not.toHaveBeenCalled()
   })
 
@@ -119,7 +123,10 @@ describe('useSessionControlStatuses — what ChatPage forwards', () => {
     // `enabled: !!sessionKey` — there is nothing to ask about yet.
     mockStatus.mockResolvedValue({ state: 'ok' })
     renderHookWithProviders(() => useStatusesOf([control()], '', '', ''))
-    await new Promise(r => setTimeout(r, 20))
+    // Fake clock after the render, advanced inside act() (see the first window test).
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     expect(mockStatus).not.toHaveBeenCalled()
   })
 
@@ -232,7 +239,10 @@ describe('useSessionControlStatuses — what ChatPage forwards', () => {
         '',
       ),
     )
-    await new Promise(r => setTimeout(r, 20))
+    // Fake clock after the render, advanced inside act() (see the first window test).
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     expect(mockStatus).not.toHaveBeenCalled()
   })
 })
@@ -275,7 +285,10 @@ describe('useSessionControlStatuses — a detail without a state', () => {
     mockStatus.mockResolvedValue({ tooltip: 'bound' })
     const { result } = renderHookWithProviders(() => useStatusesOf([control()], 'chat-1', '', ''))
     await waitFor(() => expect(mockStatus).toHaveBeenCalled())
-    await new Promise(r => setTimeout(r, 20))
+    // Fake clock after the last real-timer wait, advanced inside act() (see the first window test).
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     expect(result.current['test-app:scope']).toBeUndefined()
   })
 })

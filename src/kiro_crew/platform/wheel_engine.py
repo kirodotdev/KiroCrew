@@ -1091,6 +1091,7 @@ def apply_wheel_update(
     before_promote: Callable[[], None] = lambda: None,
     held_lock_fd: int | None = None,
     trusted_env: bool = True,
+    install_engine: Callable[[Path, _BuildContext], None] | None = None,
 ) -> Path:
     """Run the full shadow flow; return the promoted tree's path.
 
@@ -1099,9 +1100,14 @@ def apply_wheel_update(
     exists, run *preflight*, fetch + verify the signed
     manifest, refuse a release the signed metadata excludes, download + verify
     the wheel, build the shadow tree, prove it serves the promised version, run
-    *before_promote*, promote the stable link, repoint the launcher, then prune
-    superseded trees. Every failure before :func:`promote` leaves the install
-    untouched; promote itself is atomic.
+    *install_engine* on the verified tree, run *before_promote*, promote the
+    stable link, repoint the launcher, then prune superseded trees. Every failure
+    before :func:`promote` leaves the install untouched; promote itself is atomic.
+
+    *install_engine* is the release step ``release_apply.apply_release`` supplies:
+    it gets the verified tree and this apply's build context (cancel, lock,
+    environment), so the new release's own engine install runs as one more child
+    of the apply, and a failure of it is a failure before promotion.
 
     *on_locked* runs once the lock is held, so a caller reports progress only
     for an apply that is actually running; a held lock raises
@@ -1132,6 +1138,7 @@ def apply_wheel_update(
             ctx=_BuildContext(cancel=cancel, lock_fd=lock_fd, trusted_env=trusted_env),
             preflight=preflight,
             before_promote=before_promote,
+            install_engine=install_engine,
         )
     finally:
         if held_lock_fd is None:
@@ -1223,6 +1230,7 @@ def _apply_locked(
     ctx: _BuildContext,
     preflight: Callable[[], None],
     before_promote: Callable[[], None],
+    install_engine: Callable[[Path, _BuildContext], None] | None = None,
 ) -> Path:
     """The lock-held body of :func:`apply_wheel_update`."""
     _sweep_layout_debris(layout, ctx.cancel)
@@ -1282,6 +1290,8 @@ def _apply_locked(
             build_shadow_venv(wheel_path, shadow_dir, stable_link=layout.stable_link, ctx=ctx)
             progress("Verifying the new environment…")
             verify_shadow_venv(shadow_dir, version, ctx=ctx)
+            if install_engine is not None:
+                install_engine(shadow_dir, ctx)
             before_promote()
             # The last point a cancel is honoured: past it the stable link flips.
             _raise_if_cancelled(ctx.cancel)

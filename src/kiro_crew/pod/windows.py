@@ -533,6 +533,22 @@ def task_exists(cfg: PodConfig, name: str) -> bool:
     return schtasks("/Query", "/TN", task_name(cfg, name)).returncode == 0
 
 
+def task_absent(cfg: PodConfig, name: str) -> bool:
+    """True only when Task Scheduler answered and holds no task for *name*.
+
+    ``task_exists`` keys on ``/Query /TN``'s exit code, but that code is
+    non-zero both for "no such task" and for "the service did not answer", so a
+    non-zero result alone is NOT proof of absence. A bare ``/Query`` (no
+    ``/TN``) exits zero only when Task Scheduler answers, which separates the
+    two. Only when the service answers AND holds no task is the name proven
+    gone; an unreachable service fails CLOSED here so a residue guard keyed on
+    this never deletes on an unanswered query.
+    """
+    if schtasks("/Query", "/TN", task_name(cfg, name)).returncode == 0:
+        return False  # the task is still present
+    return schtasks("/Query").returncode == 0  # bare /Query: did the service answer?
+
+
 # ------------------------------------------------------------------------- #
 # The supervised pid record
 # ------------------------------------------------------------------------- #
@@ -569,9 +585,13 @@ def _read_pid_record(cfg: PodConfig, name: str) -> tuple[int, str] | None:
         raw = pid_record_path(cfg, name).read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return None
-    if not raw or not raw[0].strip().isdigit():
+    if not raw or not raw[0].strip().isdecimal():
         return None
-    return int(raw[0].strip()), (raw[1].strip() if len(raw) > 1 else "")
+    try:
+        pid = int(raw[0].strip())
+    except ValueError:  # past int()'s digit limit
+        return None
+    return pid, (raw[1].strip() if len(raw) > 1 else "")
 
 
 def supervised_pid(cfg: PodConfig, name: str) -> int | None:
@@ -610,12 +630,17 @@ def supervised_pid(cfg: PodConfig, name: str) -> int | None:
 
 
 def last_result(cfg: PodConfig, name: str) -> int | None:
-    """The exit code pod *name*'s last boot recorded, or ``None`` if unknown."""
+    """The exit code pod *name*'s last boot recorded, or ``None`` if unknown.
+
+    ``ValueError`` covers both a body that is not UTF-8 (``UnicodeDecodeError``)
+    and one ``isdigit`` admits but ``int()`` refuses (U+00B2, ``--1``), so a
+    torn or foreign file reads as unknown instead of crashing ``unit_state``.
+    """
     try:
         raw = result_path(cfg, name).read_text(encoding="utf-8").strip()
-    except OSError:
+        return int(raw) if raw.lstrip("-").isdigit() else None
+    except (OSError, ValueError):
         return None
-    return int(raw) if raw.lstrip("-").isdigit() else None
 
 
 def record_result(cfg: PodConfig, name: str, code: int) -> None:
@@ -889,7 +914,7 @@ def stop(
                 # A stored receipt represents a kernel-zero proof with no further
                 # spawn/resume from that publisher. It survives cleanup retries.
         deleted = schtasks("/Delete", "/TN", task_name(cfg, name), "/F")
-        if deleted.returncode != 0 and task_exists(cfg, name):
+        if deleted.returncode != 0 and not task_absent(cfg, name):
             raise OSError("the drained pod's scheduled task could not be deleted")
         _unlink_waiting_out_sharing(task_script_path(cfg, name))
         # Supervisor cleanup is best-effort; authoritative teardown must surface

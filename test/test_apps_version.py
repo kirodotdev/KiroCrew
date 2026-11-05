@@ -59,3 +59,16 @@ class TestCheckMinVersion:
 
     def test_empty_min_version_passes(self) -> None:
         assert check_min_version("") is None
+
+    @pytest.mark.parametrize("raw", [["1.0.0"], {"min": "1.0.0"}, True])
+    def test_a_non_string_min_version_passes_instead_of_raising(self, raw) -> None:
+        assert check_min_version(raw) is None  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(("raw", "refused"), [(999, True), (1.5, False), (0, False)])
+    def test_a_bare_number_is_read_as_its_string(
+        self, monkeypatch: pytest.MonkeyPatch, raw, refused
+    ) -> None:
+        # The install itself reads the manifest value through str(), so the
+        # preflight must refuse the same apps instead of raising or passing them.
+        monkeypatch.setattr("kiro_crew.__version__", "1.6.0")
+        assert (check_min_version(raw) is not None) is refused  # type: ignore[arg-type]

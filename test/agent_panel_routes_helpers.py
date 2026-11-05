@@ -30,12 +30,8 @@ SLUG = "fleet-crew"
 def _crew_slot(crew_name: str) -> str:
     """The DM slot a crew's panel lives on, through the READ ROUTE's own resolver.
 
-    Not ``member_slot_key(slug)`` spelled out a second time: that is only the
-    resolver's FALLBACK branch, so a harness hard-coding it would bind every test
-    to the one case where the two spellings agree and never exercise the V2 path,
-    where the key carries the member's private store. Production files the entry
-    under the slot ``api_member_thread`` created, which is this same resolver, so
-    calling it here is what makes the round trip the real pairing.
+    ``member_slot_key(slug)`` is only the resolver's fallback; hard-coding it would never
+    exercise the V2 path, where the key carries the member's private store.
     """
     from kiro_crew.config.loader import KiroCrewConfig
 
@@ -51,11 +47,8 @@ def _crew_slot(crew_name: str) -> str:
 def _unit_for(crew_name: str) -> str:
     """Create the crew log unit a publish from *crew_name*'s DM session appends to.
 
-    The panel tool is mounted on nothing but a member's own DM session, so in
-    production the publishing unit always runs under slot ``member-<slug>`` -- which
-    is the slot the drawer's read folds. Binding the unit to that slot here is what
-    makes the round-trip tests exercise the real pairing rather than a slot of the
-    test's choosing. The handle is dropped immediately so it holds no lease.
+    Bound to the crew's DM slot, the one the drawer's read folds, since the panel tool
+    is mounted only there. The handle is dropped at once so it holds no lease.
     """
     unit = f"acp-{members_mod.member_slug(crew_name)}"
     # Idempotent: ``create`` refuses an existing unit, and a single test can mount
@@ -70,13 +63,8 @@ def _unit_for(crew_name: str) -> str:
 def _folded(crew_name: str = CREW) -> dict[str, Any] | None:
     """The crew's OWN panel record, read the way the drawer's route reads it.
 
-    THE FOLD IS THE RECORD, so a round-trip assertion belongs here rather than on
-    ``agent_panel.read``, which now only answers for crews that published before the
-    record moved into the crew log. Keyed the same two ways the route keys it: the
-    member's DM slot, and the publishing crew's ownership digest within it.
-
-    Warm folds are dropped first because the publish under test appended after any
-    earlier read in the same test warmed this cell's watermark.
+    The fold is the record, keyed by the member's DM slot and the crew's ownership
+    digest. Warm folds are dropped first, since an earlier read set the watermark.
     """
     crew_log_projection.forget_slot_folds()
     folded = off_loop(
@@ -94,15 +82,9 @@ def _folded(crew_name: str = CREW) -> dict[str, Any] | None:
 class _Sessions:
     """The SessionManager surface this handler uses, and only that.
 
-    On its own attribute rather than on ``_State`` because that is where the real
-    one lives (``DashboardState.sessions``). A stub that answered
-    ``state.get_agent_selection`` directly would make a handler calling the wrong
-    receiver pass here and fail in production, which is exactly what happened.
-
-    ``get_provider`` is the other half: a publish is appended to the CALLING
-    session's own crew log, and the unit resolver reads it off the provider the
-    session manager holds. A stub without it would make every publish refuse with
-    ``no_crew_log_unit``.
+    Its own attribute, like ``DashboardState.sessions``, so a handler calling the wrong
+    receiver fails here too. ``get_provider`` gives the calling session's unit;
+    without it every publish refuses with ``no_crew_log_unit``.
     """
 
     def __init__(self, agent: str | None, namespace: str):
@@ -113,12 +95,8 @@ class _Sessions:
     def has_session(self, _key) -> bool:
         """Whether a live allocation exists for the caller.
 
-        The gate asks this before it asks WHICH crew, because the two answers are
-        different refusals. This stub models one live session per mounted state,
-        so ``agent=None`` is a state with no allocation to resolve -- which is a
-        distinct case from an allocation that resolved to no crew, and the real
-        allocation tests in ``test_agent_panel_routes_allocation.py`` are what hold
-        the key-exactness this cannot.
+        ``agent=None`` means no allocation, a different refusal from one that resolved to
+        no crew. Key exactness is tested in ``test_agent_panel_routes_allocation.py``.
         """
         return self._agent is not None
 
@@ -138,11 +116,8 @@ class _State:
 
     def __init__(self, agent: str | None, *, namespace: str = "member", sessions: Any = None):
         self._agent = agent
-        # What the allocation SELECTED, which is the crew binding the resolver
-        # trusts. ``get_slot().agent`` carries the same string for a provider
-        # template of that name, so the two are kept separate here for the reason
-        # the resolver keeps them separate: a template selection must not read as
-        # a crew binding.
+        # What the allocation SELECTED, kept apart from ``get_slot().agent`` so a
+        # template of the same name does not read as a crew binding.
         self._namespace = namespace
         # A REAL ``SessionManager`` when one is injected, which is the only way to
         # exercise the key the resolver hands the registry -- the stub answers
@@ -169,16 +144,9 @@ def _mounted(
 ) -> web.Application:
     """The panel routes on a bare app.
 
-    ``internal`` mints what ``token_auth_middleware`` sets ONLY on a verified
-    ``X-Internal-Secret`` match. It defaults to True because the publish surface
-    is MCP-only and that is the shape of every real caller; the cookie-only case
-    gets its own test, which is the one that matters.
-
-    ``namespace`` is what the allocation selected: ``member`` for a crew, or
-    ``template`` for a provider template that merely shares the name.
-
-    ``sessions`` replaces the stub with a real ``SessionManager``, for the tests
-    that have to see which KEY the resolver looks the caller up under.
+    ``internal`` mimics a verified ``X-Internal-Secret`` match (every real publish is
+    MCP). ``namespace`` is ``member`` or ``template``. ``sessions`` swaps in a real
+    ``SessionManager`` to see which key the resolver looks up.
     """
     app = web.Application()
     app["state"] = _State(agent, namespace=namespace, sessions=sessions)
@@ -187,19 +155,10 @@ def _mounted(
 
         @web.middleware
         async def _owner(request, handler):
-            # Present an owner-dashboard identity: the panel READ route
-            # (`api_member_panel`) is owner-gated like its sibling member reads
-            # (`api_member_thread`, briefing, rules), so a caller with no owner
-            # identity is denied regardless of the internal secret. ``X-Test-User``
-            # names a NON-owner caller for the denial test; absent it, the
-            # local-owner subject the gate accepts when no owner_id is configured.
-            # Applied even when ``internal`` is False, because the drawer is an
-            # owner BROWSER caller: owner-identified, no internal secret.
-            #
-            # Non-destructive: a test that injects its OWN identity (an app token,
-            # a specific subject) does so with a middleware inserted at index 0,
-            # which runs first; this one must not clobber it, so it only fills a
-            # gap the test left open.
+            # `api_member_panel` is owner-gated, so present an owner identity even
+            # without ``internal`` (the drawer is an owner browser). ``X-Test-User``
+            # names a non-owner. Only fills gaps: a test's own identity middleware
+            # at index 0 runs first and must not be clobbered.
             if "app" not in request:
                 request["app"] = ""
             if "user" not in request:
@@ -221,15 +180,14 @@ def _mounted(
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_agent_panel_routes*.py modules calls monkeypatch.undo()
-def _crew_log_on(monkeypatch):
+def _crew_log_on(_floor_monkeypatch):
     """The panel record IS a crew log entry, so every test here runs with the log on.
 
     Warm slot folds are dropped on both sides: the kernel keeps one watermark per
     cell keyed by slot, and these tests reuse slot names across a fresh data home,
     so a fold carried in from a previous test would answer from the wrong unit.
     """
-    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    _floor_monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
     crew_log_emit.reset_caches()
     crew_log_projection.forget_slot_folds()
     yield
@@ -259,15 +217,9 @@ async def _client(
 ):
     """A started client that always closes.
 
-    An ``async with`` helper rather than an ``@pytest_asyncio.fixture``, by this
-    repo's convention: the pinned pytest-asyncio does not collect async-generator
-    fixtures declared with plain ``@pytest.fixture``.
-
-    Closing is not tidiness. A ``TestClient`` owns an aiohttp session AND a
-    listening socket, so a returned-but-never-closed client leaks two descriptors
-    per test and, on a loaded runner, fails UNRELATED tests with EMFILE. aiohttp
-    does say so -- "Unclosed client session" -- but on stderr, where a green run
-    hides it.
+    Not a fixture: the pinned pytest-asyncio does not collect async-generator fixtures
+    under plain ``@pytest.fixture``. An unclosed client leaks a session and a socket,
+    which fails unrelated tests with EMFILE on a loaded runner.
     """
     c = TestClient(
         TestServer(

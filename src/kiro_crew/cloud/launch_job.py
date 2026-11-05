@@ -40,6 +40,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cloud import sizes
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
 
 logger = logging.getLogger(__name__)
@@ -394,7 +395,7 @@ class LaunchJobStore:
             # would land as 0644 and any other local account could read the code
             # and redeem the sign-in, so the file is written 0600 and the
             # directory is owner-only.
-            self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            mkdirs_owner_only(self._root)
             if platform_compat.IS_POSIX:
                 # mode= only applies when mkdir creates the directory, so tighten
                 # an existing one too (a store written by an earlier build is
@@ -418,6 +419,22 @@ class LaunchJobStore:
             path = self._path(job_id)
         except ValueError:
             return None
+        return self._read(path)[0]
+
+    def _read(self, path: Path) -> "tuple[Optional[LaunchJob], bool]":
+        """The job in *path*, and whether the file exists but holds no readable job.
+
+        Unreadable covers every way an existing file yields no job: a read that
+        keeps failing, bytes that are not UTF-8, bad JSON (a file cut short) and
+        JSON that is not an object. Each leaves the record's status unknown, so
+        it may be a launch still running. A file that is gone is absent, not
+        unreadable. Temp files from :func:`atomic_write` end in ``.tmp``, so a
+        save in progress never shows here as a cut-short ``.json``.
+
+        One read answers both, so a caller that needs the jobs and the unreadable
+        records sees the same bytes for each file rather than two scans a
+        concurrent save() can land between.
+        """
         # Retry a transient read failure. A concurrent save() replaces this file via
         # os.replace; on Windows a read that collides with the in-progress replace
         # raises a sharing violation (an OSError), and without this list() would then
@@ -427,32 +444,56 @@ class LaunchJobStore:
         raw = None
         for attempt in range(5):
             if not path.exists():
-                return None
+                return None, False
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 break
             except OSError as e:
                 if attempt == 4:
                     logger.warning("Failed to read launch job %s: %s", path, e)
-                    return None
+                    return None, True
                 time.sleep(0.02 * (attempt + 1))
-            except json.JSONDecodeError as e:
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                # Skip the job, and say so: the record's status is now unknown.
                 logger.warning("Failed to parse launch job %s: %s", path, e)
-                return None
+                return None, True
         if not isinstance(raw, dict):
-            return None
-        return LaunchJob.from_dict(raw)
+            logger.warning("Launch job %s is not a JSON object", path)
+            return None, True
+        return LaunchJob.from_dict(raw), False
 
-    def list(self) -> list:
+    def snapshot(self) -> "tuple[list, List[str]]":
+        """Every readable job, newest first, and the ids of job files that cannot be read.
+
+        Both come from ONE read of each file. A decision that needs both -- launch
+        admission, the lane of a crew -- must take them from here: two separate
+        scans let a worker's save() rewrite a file between them, so a running job
+        could be skipped by one and missed by the other.
+        """
         if not self._root.exists():
-            return []
+            return [], []
         jobs: list = []
+        unreadable: List[str] = []
         for p in self._root.glob("*.json"):
-            job = self.get(p.stem)
+            job, cannot_read = self._read(p)
             if job is not None:
                 jobs.append(job)
+            elif cannot_read:
+                unreadable.append(p.stem)
         jobs.sort(key=lambda j: j.created_at, reverse=True)
-        return jobs
+        return jobs, sorted(unreadable)
+
+    def list(self) -> list:
+        return self.snapshot()[0]
+
+    def unreadable_ids(self) -> List[str]:
+        """Ids of job files that exist but hold no readable job, which :meth:`list` skips.
+
+        Launch admission refuses while one exists: such a record may be a launch
+        still in progress, and :meth:`list` cannot show its status. A caller that
+        also needs the jobs takes both from :meth:`snapshot`.
+        """
+        return self.snapshot()[1]
 
     def adopt(self, job_id: str) -> None:
         """Record that a worker in *this* process is driving ``job_id``.

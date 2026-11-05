@@ -23,6 +23,7 @@
  * BroadcastChannel.
  */
 
+import type { ChatLaunchOptions } from '../app-sdk'
 import { i18nT } from '../i18n/t'
 import { withBase } from '../lib/basePath'
 import { isElectron } from '../lib/electron'
@@ -50,8 +51,41 @@ export const NAV_CLAIM_MS = 250
 export type NavIntent = {
   /** Destination route in the main dashboard, e.g. '/chat' or '/artifacts'. Must not carry a query string. */
   path: string
+  /**
+   * Query string to replay onto `path` in the main window, with its leading
+   * `?`. An app pop-out forwards whatever navigation the app issued, and the
+   * app's chat exits spell their options as query flags (`?autoSend=1`,
+   * `?newSession=1`, `?history=1`) that ChatPage reads on arrival; a forwarder
+   * that knows the specific intent (an artifact's "draft in chat") leaves this
+   * unset and names its fields below.
+   */
+  search?: string
   /** Chat slot to activate before navigating. */
   slotKey?: string
+  /**
+   * The Redux `pendingInput` hand-off the forwarding window staged before it
+   * navigated: the prompt a page puts in the store for ChatPage's launch intake
+   * to pick up (the Projects page's "optimize this plan", the Dev Fleet page's
+   * "open a session on this worktree"). Store state is per window, so it rides
+   * the message and the main window re-dispatches it before navigating.
+   */
+  pendingInput?: string
+  /**
+   * Error prompts staged in the forwarding window before it navigated. The
+   * hand-off queue lives in sessionStorage, which is scoped to one window, so
+   * the main window must re-stage and announce these before navigating.
+   */
+  errorHandoffs?: string[]
+  /**
+   * An app's chat launch intent, claimed off the forwarding window: what the
+   * App SDK's `openChat` stages on `window.__mc_chat_launch` before it
+   * navigates to `/chat` — the message to send (or to draft, with `autoSend:
+   * false`), the agent for a new session, the existing session to send into.
+   * The window global is per window like the store, so the main window
+   * re-stages it on its own `window` before navigating, where ChatPage's launch
+   * intake reads it. The SDK's own type, less the `ts` the window slot adds.
+   */
+  chatLaunch?: ChatLaunchOptions
   /** Composer prefill to seed for a slot (rides the message — sessionStorage is per-window).
    *  `prompt` is the whole composer to seed. `append`, when set, is just the text
    *  this hand-off adds: if the destination composer is already open on that slot,
@@ -495,17 +529,41 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
 
   /**
    * Absolute destination URL for the no-main fallback. The new tab is a fresh
-   * JS context with no Redux store to dispatch into, so the slot selection and
-   * composer prefill ride as query params the main `/chat` route already (or
-   * newly) understands: `?sid=` selects the slot, `?prefill=` seeds the
-   * composer for it.
+   * JS context with no Redux store or sessionStorage queue to receive, so the
+   * slot selection and the first available prompt ride as the query params the
+   * main `/chat` route already understands: `?sid=` selects the slot and
+   * `?prefill=` seeds its composer; with no slot named, `?new=1&prefill=` creates
+   * a session seeded with the prompt — the one cold-URL prompt channel the chat
+   * page honours (a bare `?prefill=` is an in-app sentinel there, and is dropped).
+   * A diagnostic always opens a fresh session, never the session the intent
+   * names, because keyed prefill for an existing session replaces that session's
+   * composer; the in-main path and ChatPage's own hand-off intake make the same
+   * choice. A replayed `search` is the starting point, so the flags the forwarding
+   * page spelled survive. A cold URL only seeds; it never auto-sends, and an app
+   * launch's agent, which has no URL form, is not carried. One prompt is all a
+   * URL carries, so the first error prompt wins over the rest and over a
+   * `pendingInput` sent alongside: a single click stages a single prompt, and
+   * two staged at once is a race this fallback does not try to preserve.
    */
   function navFallbackUrl(intent: NavIntent): string {
-    const params = new URLSearchParams()
-    if (intent.slotKey) params.set('sid', intent.slotKey)
-    if (intent.prefill) params.set('prefill', intent.prefill.prompt)
+    const params = new URLSearchParams(intent.search ?? '')
+    const hasErrorHandoff = Boolean(intent.errorHandoffs?.length)
+    if (hasErrorHandoff) {
+      params.delete('sid')
+      params.delete('slot')
+    } else if (intent.slotKey) {
+      params.set('sid', intent.slotKey)
+    }
+    const prompt = intent.errorHandoffs?.[0]
+      || intent.prefill?.prompt || intent.pendingInput || intent.chatLaunch?.message
+    if (prompt) {
+      params.set('prefill', prompt)
+      if (!params.get('sid') && !params.get('slot')) params.set('new', '1')
+    }
     const qs = params.toString()
-    return `${window.location.origin}${intent.path}${qs ? `?${qs}` : ''}`
+    // `intent.path` is in app space (`/chat`); the tab must open under the
+    // build base (`/crew/chat` on a sub-path build), as `navigate` above does.
+    return `${window.location.origin}${withBase(intent.path)}${qs ? `?${qs}` : ''}`
   }
 
   function forwardToMain(intent: NavIntent): void {

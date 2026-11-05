@@ -344,7 +344,7 @@ that view; no local round log is needed.
   ambiguous large conflict; a hard external blocker (infra, permissions, a check
   that never runs). Recurrence, round count, a re-raised finding or self-added
   code is never one. When you pause, name the option you would take.
-- `monitor_start` is bounded to `max_cycles=288` and `max_runtime_secs=86400`
+- `monitor_start` is bounded to `max_cycles=144` and `max_runtime_secs=86400`
   (24 hours, Phase 4's watch included); the agent never raises either. At
   exhaustion, hand over `--rounds` and open findings. Phase 2 separately caps
   local review at 10 passes.
@@ -473,6 +473,8 @@ comes after a record, never instead of one:
   three facts.
 - **Rerun at most once**, only what failed (`gh run rerun <run-id> --failed`, or
   `--job <job-id>`).
+- **Rerun the job; never re-push an identical tree** to re-trigger it
+  (`references/ci.md`, *Rerun, don't re-push*).
 - **A test with two or more ledger reports in 14 days is fixed before more feature work
   lands on top of it**, not rerun again.
 
@@ -526,12 +528,13 @@ comes after a record, never instead of one:
    a member of the project, so after three
    green-age re-syncs on one PR it stops being your judgement call. Each re-sync
    discards a green the PR had already earned, which is the cost the cap exists to
-   bound. **The count is a total for the PR's lifetime and nothing resets it**, so
-   31 is permanent once reached: a later loop on the same PR gets 31 on its first
-   real overlap. That is deliberate — a PR that has needed three re-syncs wants a
-   person deciding, not a fresh budget — and the way back is a human's, by
-   splitting the PR, narrowing what it touches, or opening a new one. Do not clear
-   it by deleting the comments; they are the record the count is read from.
+   bound. **The way back is a member of the project commenting `Re-sync budget
+   reset`**, which restarts the count and grants another three. The PR's author
+   cannot: the loop drives a PR as its author, so a budget it could re-arm bounds
+   nothing. The account you run as may be such a member, so **ask for the reset,
+   never post one** — one you wrote is the cap deciding nothing. Do not clear the
+   count by deleting the `Rebased: main moved in` comments either; they are the
+   record it is read from.
 
    Then `python3 $SKILL_DIR/scripts/pr_status.py <pr#> --reviewers <profile reviewer names>`.
    **Always pin the fleet** (Kiro Crew: `--reviewers gpt,opus`): bare `pr_status.py`
@@ -545,7 +548,7 @@ comes after a record, never instead of one:
      bounded in-turn `wait` + re-poll and disclose that fallback.
 
      Arm it with the call in `references/monitor-loop.md` (read it first, swap in the
-     real PR URL): `interval_secs=300, max_cycles=288, max_runtime_secs=86400,
+     real PR URL): `interval_secs=600, max_cycles=144, max_runtime_secs=86400,
      judge=False`. The loop is gated: an unchanged PR costs no turn and any change
      wakes it. Under a merge hold, rewrite its `Exit 0` clause as that file says; a
      hold heard after arming goes in with `monitor_update(message=...)` that turn

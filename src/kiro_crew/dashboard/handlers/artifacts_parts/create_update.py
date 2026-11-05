@@ -551,11 +551,10 @@ async def api_artifact_update(request: web.Request) -> web.Response:
         event_type = raw_event_type if isinstance(raw_event_type, str) and raw_event_type else None
         if event_type == "reverted":
             snapshot = True
-        raw_from_version = body.get("from_version")
-        try:
-            from_version = int(raw_from_version) if raw_from_version is not None else None
-        except (TypeError, ValueError):
-            from_version = None
+        # Passed through as sent: store.update() refuses anything that is not a
+        # real version of this record (wrong type or out of range) with a 400,
+        # rather than coercing it here and recording a version that never was.
+        from_version = body.get("from_version")
         # Explicit render-kind change (the type control on the artifact page).
         # Restricted to the inline-editable kinds: `widget` / `html` render in a
         # sandboxed iframe and are NOT editable, so letting a caller select one

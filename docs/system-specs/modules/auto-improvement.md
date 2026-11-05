@@ -1354,6 +1354,52 @@ caller does not wait out its own timeout), and a
 request whose handling raises is answered `-32603`: neither ends the server
 mid-session.
 
+## Repository boundary
+
+Auto-Improvement is to leave this repository whole, so no module under `src/kiro_crew`
+outside `apps/builtins/`, and no `scripts/` file, imports
+`kiro_crew.apps.builtins.auto_improvement`. The dependency runs one way: the app imports
+core (`git_config_hooks`, `git_tmp_packs`, `sandbox`, `members`, `llm_helpers`, the
+redaction helpers), never the other way round, so it fills no seam in
+`kiro_crew/apps/seams.py`. The member-activity `via` value is the app's own id, which
+core records and the drawer renders without knowing it. Some of those imports are
+private core names (`llm_helpers._steer_host_deny`, `llm_helpers._extract_json_of_type`,
+`agent_discovery._read_agent_spec`, `config.loader._session_work_dir`,
+`workflows.registry._await_owned`); the app's own repository has to reach them through a
+public surface before it can build against an installed Kiro Crew.
+
+`test/test_core_auto_improvement_decoupling.py` is the gate, on the shared
+`test/core_app_independence.py` scanner. The core strings left naming the app are a
+pinned list that may only shrink, each deleted with what it names: the
+`security_posture.py` redaction-audit rows and the
+`security_posture_sinks_gateway.py` sink rows that classify the app's modules (core's
+audit of the app's code, which an app may not write for itself), and the
+`scripts/docs_lint_fact_checks.py` row for this spec. Its dashboard half is
+`website/src/apps/auto-improvement/autoImprovementBoundary.test.ts`: outside
+`src/apps/auto-improvement/`, only the `/auto-improvement` row of
+`apps/builtinRegistry.ts` imports the UI, and the app's frontend tests live beside it.
+
+What still names the app in core, deliberately for this wave:
+
+- the `quarantined-clones` crew-home leaf in `sandbox_leaves.py` and
+  `security/paths_lists.py`, the app's clone-quarantine markers under a core mask
+  (sandbox scope is not moved by a decoupling change);
+- prose in core's security modules (`git_config_hooks.py`, `sandbox_unavailable.py`,
+  `acp/mcp_ref_guard.py`, `sandbox_leaves.py`) that cites the app's files as a caller or
+  an example;
+- the app-store row in `appManifest.ts` and the app-store capture scripts under
+  `website/scripts/`, the `apps.autoImprovement.*` and `autoImprovement.*` catalog
+  keys, and the `BUILTIN_NAMES` row;
+- CI and baseline rows naming the app's files: the real-sandbox job's list in
+  `.github/workflows/ci.yml`, `setup.cfg`'s coverage omits, the black, docs-lint and
+  agent-sdk-boundary baselines, the semgrep rule scope, the native-dialog eslint
+  allowlist, and `test/requires-real-symlinks.txt` / `windows-expected-failures.txt`;
+- core tree-wide audits under `test/` whose tables list the app's sites beside every
+  other caller, such as the spawn audit, the read-only git-tree removal, the
+  replace-retry and launcher-stderr sweeps, the transport permission floor, the hook
+  override pins, the hardened agent-spec reads and the facade inventories; and core
+  tests that use the app's id or its shipped skill as real-world fixture data.
+
 ## Tests
 
 Automated coverage is the unit and regression suites below. The endpoint surface,
@@ -1369,21 +1415,30 @@ integration test — nothing in the tree runs the full loop against a live repos
   run in CI. Four sandbox-dependent files (`test_lint_findings.py`,
   `test_github_profile.py`, `test_profile_capture.py`, `test_runner.py`) are only
   omitted from coverage, a rule `test/test_coverage_omit_contract.py` enforces.
-- Repo-level handler and coverage tests under `test/`: `test_ai_backend_routes_coverage.py`,
-  `test_ai_agent_runner_coverage.py`, `test_ai_runner_coverage.py`,
-  `test_ai_pr_watchers_coverage.py`, `test_ai_spine_driver_coverage.py`,
-  `test_ai_spine_driver_coverage_cycle.py`,
-  `test_driver_owner_bindings.py`, `test_agent_runner_owner_bindings.py`,
+- The handler and coverage suites live in the same directory:
+  `test_ai_backend_routes_coverage.py`, `test_ai_agent_runner_coverage.py`,
+  `test_ai_runner_coverage.py`, `test_ai_pr_watchers_coverage.py`,
+  `test_ai_spine_driver_coverage.py`, `test_ai_spine_driver_coverage_cycle.py`,
   `test_ai_github_profile_coverage.py`, `test_ai_runner_purpose_not_identity.py`,
-  `test_auto_improvement_owner_gate.py`, `test_auto_improvement_members.py` and
-  `test_handlers_auto_improvement_deny_notice.py`.
-- `test/test_bug_keeper_maximize_direction.py`, `test_bug_keeper_noise_band_none.py`,
+  `test_auto_improvement_owner_gate.py`, `test_auto_improvement_members.py`,
+  `test_agent_runner_deny_notice.py` and `test_deps_install_owner_gate.py`, beside the
+  app's pins of core contracts it relies on (`test_git_safety_config_hooks.py`,
+  `test_fetch_timeout_reaps_tmp_packs.py`, `test_measure_env_allowlist.py`,
+  `test_run_archive_owner_only.py`).
+- `test_bug_keeper_maximize_direction.py`, `test_bug_keeper_noise_band_none.py`,
   `test_bug_proposal_skip_status_default.py` and `test_bug_proposer_fan_out_overlap.py`
-  — reproducing tests for defects the app found while dogfooding.
-- `website/src/test/autoImprovementSession.test.ts` — session-key
+  in the same directory — reproducing tests for defects the app found while dogfooding.
+- `test/test_driver_owner_bindings.py` and `test/test_agent_runner_owner_bindings.py`
+  stay under `test/`: they run the facade campaign's shared scanners
+  (`test/facade_mirror_scan.py`, `test/source_corpus.py`) and its inventories.
+- `website/src/apps/auto-improvement/autoImprovementSession.test.ts` — session-key
   namespacing/sanitization and prompt-constraint coverage.
-- `website/src/test/autoImprovementActivity.test.ts` — activity-feed line-builder
-  coverage, including app-locale (not host-locale) time formatting.
+- `website/src/apps/auto-improvement/autoImprovementActivity.test.ts` — activity-feed
+  line-builder coverage, including app-locale (not host-locale) time formatting.
+- `website/src/apps/auto-improvement/agentSessionSeedReceipt.test.ts` and
+  `agentSessionFolderResolve.test.ts` — the session seeder's receipt contract and its
+  repo-folder resolution, the same contracts Issue Radar's seeder pins in
+  `website/src/test/`.
 
 ### Manual acceptance plan
 

@@ -455,6 +455,33 @@ class TestRename:
         assert _body(resp)["error"] == "name required"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", [5, None, ["a"]], ids=["int", "null", "list"])
+    async def test_non_string_name_is_400_and_not_stored(
+        self, tmp_path: Path, name: object
+    ) -> None:
+        runner = _runner(tmp_path)
+        run = TaskRun(spec_path="s.md", spec_content="s", task_id="t1", name="old")
+        runner._runs["t1"] = run
+        resp = await api_taskrunner_rename(
+            _request(_state(runner), match_info={"task_id": "t1"}, json_body={"name": name})
+        )
+        assert resp.status == 400
+        assert _body(resp) == {"error": "name must be a string", "code": "invalid_name"}
+        assert run.name == "old"
+        runner._apersist_runs.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_long_name_is_kept(self, tmp_path: Path) -> None:
+        runner = _runner(tmp_path)
+        run = TaskRun(spec_path="s.md", spec_content="s", task_id="t1")
+        runner._runs["t1"] = run
+        resp = await api_taskrunner_rename(
+            _request(_state(runner), match_info={"task_id": "t1"}, json_body={"name": "n" * 5000})
+        )
+        assert _body(resp) == {"ok": True, "name": "n" * 5000}
+        assert run.name == "n" * 5000
+
+    @pytest.mark.asyncio
     async def test_rename_persists(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", task_id="t1")

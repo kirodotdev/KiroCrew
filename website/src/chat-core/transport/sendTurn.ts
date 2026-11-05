@@ -1,4 +1,5 @@
 import { api } from '../../api/client'
+import type { SendRaceFields } from '../../api/client/chat'
 import { noteUserChat } from '../../api/membersQuery'
 import { queryClient } from '../../api/queryClient'
 import { noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
@@ -104,6 +105,8 @@ export interface SendWirePayload {
   responsive?: boolean
   /** See `SendTurnOptions.colorTheme`. Dashboard wire only. */
   colorTheme?: string
+  /** See `SendTurnOptions.race`. Dashboard wire only. */
+  race?: SendRaceFields
 }
 
 /**
@@ -178,7 +181,9 @@ export function settleUnderSignal<T>(
 
 /** The dashboard client's wire: `POST /api/chat?ws=1` with the session key. */
 const dashboardSendWire: SendWire = (payload, signal) =>
-  api.sendChat(payload.message, payload.slot, payload.colorTheme, signal, payload.meta, payload.steer, ...(payload.responsive ? [true] : []))
+  payload.race
+    ? api.sendChat(payload.message, payload.slot, payload.colorTheme, signal, payload.meta, payload.steer, payload.responsive ? true : undefined, payload.race)
+    : api.sendChat(payload.message, payload.slot, payload.colorTheme, signal, payload.meta, payload.steer, ...(payload.responsive ? [true] : []))
 
 export interface SendTurnOptions {
   /** Wire text, already serialized (dir tokens, file markers). The server
@@ -203,6 +208,10 @@ export interface SendTurnOptions {
   /** The active colour theme, so a widget the turn renders inherits it. Sent
    *  only by surfaces that own a theme (ChatPage); embeds and panes omit it. */
   colorTheme?: string
+  /** Shared Crew first submit wins: the session revision this send is based on,
+   *  a deliberate Send now after a lost race, and the retry key. A lost race
+   *  comes back `refused` with a `send_race` body naming who sent first. */
+  race?: SendRaceFields
   /** Which fetch seam carries the POST. Defaults to the dashboard client. */
   wire?: SendWire
 }
@@ -233,6 +242,7 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
         steer: opts.steer,
         ...(opts.responsive ? { responsive: true } : {}),
         colorTheme: opts.colorTheme,
+        ...(opts.race ? { race: opts.race } : {}),
       },
       controller.signal,
     )

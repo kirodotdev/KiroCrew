@@ -3,7 +3,9 @@
 RFC ``docs/request-for-change/rfc-crew-enterprise-edition.md`` decision D3: in an
 enterprise build a scope the remote policy does not name is locked to its
 minimal set, or off when it has none. The remote policy may widen past it; a
-profile only narrows. The ``oss`` edition is unchanged.
+profile only narrows. The open controls of D3 keep Crew's
+own default when the policy is silent, and a policy that names one still wins.
+The ``oss`` edition is unchanged.
 """
 
 from __future__ import annotations
@@ -28,27 +30,36 @@ from kiro_crew.platform.governance_parts.baseline import BASELINE_CONTROLS, BASE
 
 _WORKSPACE_FILE = os.path.join("~", "workplace", "kirocrew-workspace", "notes.txt")
 
+# Built with the host's own separators: the path matcher absolutizes the item.
+_ETC = os.path.abspath(os.path.join(os.sep, "etc"))
+_ETC_FILE = os.path.join(_ETC, "passwd")
+_ETC_GLOB = os.path.join(_ETC, "**")
+
+# RFC D3: these keep Crew's own default when the remote
+# policy does not name them. ``folders.*`` are aliases of ``filesystem.*``.
+_OPEN_SCOPES: dict[str, str] = {
+    "mcp": "@other/tool",
+    "tools": "fs_write",
+    "commands": "ls",
+    "filesystem.read": _ETC_FILE,
+    "filesystem.write": _WORKSPACE_FILE,
+    "folders.read": _ETC_FILE,
+    "folders.write": _WORKSPACE_FILE,
+    "capabilities.spawn": "",
+    "capabilities.cron": "",
+    "apps": "any-app",
+}
+
 # scope -> (items the baseline permits, items it denies). One row per catalog scope.
 _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "tools": (
-        ("fs_read", "glob", "grep"),
-        ("fs_write", "execute_bash", "code", "web_fetch", "web_search"),
-    ),
     "approval_modes": (("normal", "trust", "trust_reads"), ("yolo",)),
-    "mcp": (("@kirocrew-core/local_knowledge_search",), ("@other/tool", "@other")),
-    "apps": ((), ("any-app",)),
     "app_versions": ((), ("any-app@1.0.0",)),
-    "commands": ((), ("ls", "git status")),
-    "filesystem.read": ((_WORKSPACE_FILE,), ("/etc/passwd", os.path.join("~", "notes.txt"))),
-    "filesystem.write": ((), (_WORKSPACE_FILE,)),
-    "folders.read": ((_WORKSPACE_FILE,), ("/etc/passwd",)),
-    "folders.write": ((), (_WORKSPACE_FILE,)),
     "network.egress": ((), ("example.com",)),
     "channels": ((), ("slack",)),
     "approval_mode": (("interactive",), ()),
     "sandbox.min_level": (("strict",), ()),
     "yolo_duration": ((), ("permanent", "until_shutdown", "1h")),
-    "agent_backend": (("kiro",), ("claude", "kas")),
+    "agent_backend": (("kas",), ("claude", "kiro")),
     "webhooks": ((), ("agent", "ops-mission-control")),
     "capabilities.publish": (
         ("", "destinations:default"),
@@ -84,13 +95,30 @@ def test_every_catalog_scope_has_a_baseline_entry() -> None:
 
 
 def test_every_catalog_scope_has_a_table_row() -> None:
+    assert set(_OPEN_SCOPES).isdisjoint(_BASELINE_TABLE)
     for scope in SCOPE_CATALOG:
+        if scope in _OPEN_SCOPES:
+            continue
         if not scope.startswith("capabilities.") or scope == "capabilities.publish":
             assert scope in _BASELINE_TABLE, scope
 
 
+def test_open_scopes_are_ungated_and_kept_off_scopes_are_not() -> None:
+    """The owner's split: eight scopes open, the rest of the asks stay off."""
+    canonical_open = {_SCOPE_ALIASES.get(s, s) for s in _OPEN_SCOPES}
+    assert canonical_open <= set(BASELINE_UNGATED)
+    for kept_off in (
+        "app_versions",
+        "capabilities.extension_install",
+        "channels",
+        "approval_modes",
+        "yolo_duration",
+    ):
+        assert kept_off in BASELINE_CONTROLS, kept_off
+
+
 @pytest.mark.parametrize("ceiling_kind", ["none", "empty"])
-@pytest.mark.parametrize("scope", sorted(SCOPE_CATALOG))
+@pytest.mark.parametrize("scope", sorted(set(SCOPE_CATALOG) - set(_OPEN_SCOPES)))
 def test_enterprise_unnamed_scope_answers_the_baseline(
     enterprise: None, scope: str, ceiling_kind: str
 ) -> None:
@@ -103,6 +131,39 @@ def test_enterprise_unnamed_scope_answers_the_baseline(
         assert not decision.permitted, (scope, item)
         assert decision.layer == "policy"
         assert "enterprise baseline" in decision.reason
+
+
+@pytest.mark.parametrize("ceiling_kind", ["none", "empty"])
+@pytest.mark.parametrize("scope", sorted(_OPEN_SCOPES))
+def test_enterprise_unnamed_open_scope_keeps_crews_default(
+    enterprise: None, scope: str, ceiling_kind: str
+) -> None:
+    """Policy silent: the open scope answers as in ``oss``, ungoverned."""
+    ceiling = None if ceiling_kind == "none" else _ceiling()
+    decision = resolve(ceiling, None, scope, _OPEN_SCOPES[scope])
+    assert decision.permitted, scope
+    assert decision.layer == "default"
+
+
+_OPEN_DENIES: dict[str, dict[str, object]] = {
+    "mcp": {"mcp": {"mode": "deny", "deny": ["@other"]}},
+    "tools": {"tools": {"mode": "deny", "deny": ["fs_write"]}},
+    "commands": {"commands": {"mode": "allow", "allow": []}},
+    "filesystem.read": {"filesystem": {"read": {"mode": "deny", "deny": [_ETC_GLOB]}}},
+    "filesystem.write": {"filesystem": {"write": {"mode": "allow", "allow": []}}},
+    "folders.read": {"filesystem": {"read": {"mode": "deny", "deny": [_ETC_GLOB]}}},
+    "folders.write": {"filesystem": {"write": {"mode": "allow", "allow": []}}},
+    "capabilities.spawn": {"capabilities": {"spawn": {"enabled": False}}},
+    "capabilities.cron": {"capabilities": {"cron": {"enabled": False}}},
+    "apps": {"apps": {"mode": "deny", "deny": ["any-app"]}},
+}
+
+
+@pytest.mark.parametrize("scope", sorted(_OPEN_SCOPES))
+def test_enterprise_policy_deny_still_closes_an_open_scope(enterprise: None, scope: str) -> None:
+    decision = resolve(_ceiling(**_OPEN_DENIES[scope]), None, scope, _OPEN_SCOPES[scope])
+    assert not decision.permitted, scope
+    assert decision.layer == "policy"
 
 
 def test_enterprise_scope_with_no_baseline_row_is_denied(enterprise: None) -> None:
@@ -151,7 +212,11 @@ def test_enterprise_alias_group_keeps_the_remote_grant_under_a_profile(enterpris
     profile = parse_profile({"name": "narrow", "mcp": {"mode": "deny", "deny": ["@x"]}})
     groups = (("shell", "execute_bash"),)
     assert gate_decision(ceiling, profile, "shell", alias_groups=groups).permitted
-    assert not gate_decision(_ceiling(), profile, "shell", alias_groups=groups).permitted
+    # ``commands`` and ``tools`` are open: an empty policy keeps Crew's default,
+    # and a policy that turns them off still refuses.
+    assert gate_decision(_ceiling(), profile, "shell", alias_groups=groups).permitted
+    closed = _ceiling(tools={"mode": "allow", "allow": []}, commands={"mode": "allow", "allow": []})
+    assert not gate_decision(closed, profile, "shell", alias_groups=groups).permitted
 
 
 def test_enterprise_may_skip_gate_asked_about_a_profile_adds_no_baseline(
@@ -172,17 +237,35 @@ def test_enterprise_profile_narrows_the_baseline(enterprise: None) -> None:
     assert not resolve(_ceiling(), profile, "agent_backend", "kiro").permitted
 
 
-def test_enterprise_gate_refuses_a_shell_command_with_an_empty_policy(enterprise: None) -> None:
-    assert not gate_decision(_ceiling(), None, "Running: ls").permitted
+def test_enterprise_gate_leaves_a_shell_command_to_crews_default(enterprise: None) -> None:
+    """``commands`` is open: the gate passes it on to the approval prompt."""
+    assert gate_decision(_ceiling(), None, "Running: ls").permitted
+    closed = _ceiling(commands={"mode": "allow", "allow": []})
+    assert not gate_decision(closed, None, "Running: ls").permitted
 
 
 @pytest.mark.parametrize("ceiling_kind", ["none", "empty"])
-@pytest.mark.parametrize("ref", ["web_fetch", "web_search", "use_subagent", "@other", "@other/x"])
+@pytest.mark.parametrize("ref", ["web_fetch", "web_search", "@other", "@other/x"])
 def test_enterprise_auto_approve_cannot_skip_the_gate_for_an_unnamed_scope(
     enterprise: None, ref: str, ceiling_kind: str
 ) -> None:
     ceiling = None if ceiling_kind == "none" else _ceiling()
     assert governance.may_skip_gate(ref, ceiling) is False
+
+
+@pytest.mark.parametrize("ceiling_kind", ["none", "empty"])
+def test_enterprise_auto_approve_skips_the_gate_for_an_open_scope(
+    enterprise: None, ceiling_kind: str
+) -> None:
+    """``capabilities.spawn`` is open, so a sub-agent call skips as in ``oss``."""
+    ceiling = None if ceiling_kind == "none" else _ceiling()
+    assert governance.may_skip_gate("use_subagent", ceiling) is True
+    assert (
+        governance.may_skip_gate(
+            "use_subagent", _ceiling(capabilities={"spawn": {"enabled": False}})
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize("ref", ["web_fetch", "web_search", "use_subagent", "@other"])
@@ -218,6 +301,15 @@ def test_enterprise_local_curl_deny_stays_denied(enterprise: None) -> None:
     assert resolve(composed, None, "commands", "ls").permitted
 
 
+def test_enterprise_local_tier_narrows_an_open_scope(enterprise: None) -> None:
+    """With the central policy silent on ``commands``, a local deny still narrows it."""
+    central = _tier(governance.TIER_CENTRAL)
+    home = _tier(governance.TIER_HOME, commands={"mode": "deny", "deny": ["curl *"]})
+    composed = governance.compose_tier_ladder(central, home)
+    assert not resolve(composed, None, "commands", "curl https://example.com").permitted
+    assert resolve(composed, None, "commands", "ls").permitted
+
+
 def test_enterprise_local_write_allowlist_still_narrows_writes(enterprise: None) -> None:
     central = _tier(
         governance.TIER_CENTRAL,
@@ -241,14 +333,17 @@ def test_enterprise_local_tier_cannot_permit_what_the_baseline_denies(
         local_tier,
         capabilities={"browse": {"enabled": True}},
         network={"egress": {"mode": "deny", "deny": []}},
-        tools={"mode": "allow", "allow": ["fs_read", "fs_write"]},
+        agent_backend={"mode": "allow", "allow": ["kas", "kiro", "claude"]},
     )
     composed = governance.compose_tier_ladder(central, local)
     assert not resolve(composed, None, "capabilities.browse", "").permitted
     assert not resolve(composed, None, "network.egress", "example.com").permitted
-    assert not resolve(composed, None, "tools", "fs_write").permitted
+    assert not resolve(composed, None, "agent_backend", "claude").permitted
+    # Kiro CLI is outside the enterprise baseline (RFC D6), so a local tier
+    # cannot add it either.
+    assert not resolve(composed, None, "agent_backend", "kiro").permitted
     # In the baseline and in the local allow-set, so both levels permit it.
-    assert resolve(composed, None, "tools", "fs_read").permitted
+    assert resolve(composed, None, "agent_backend", "kas").permitted
     # Named by the authority, the scope answers from the remote policy.
     central = _tier(governance.TIER_CENTRAL, capabilities={"browse": {"enabled": True}})
     assert resolve(
@@ -282,7 +377,8 @@ def test_enterprise_local_authority_with_no_central_only_narrows_the_baseline(
         governance.compose_tier_ladder(local, _tier(governance.TIER_HOME)),
     ):
         assert not resolve(composed, None, "network.egress", "example.com").permitted
-        assert not resolve(composed, None, "commands", "ls").permitted
+        # ``commands`` is open, so the local tier's own answer stands.
+        assert resolve(composed, None, "commands", "ls").permitted
         assert not resolve(composed, None, "capabilities.browse", "").permitted
         # Narrowing still holds: the baseline's ``kiro`` is denied by the local tier.
         assert not resolve(composed, None, "agent_backend", "kiro").permitted

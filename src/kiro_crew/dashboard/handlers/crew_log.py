@@ -573,18 +573,13 @@ def _settle_writes() -> bool:
     return emit.flush(timeout=_SETTLE_SECONDS)
 
 
-def _read_slot_fold(unit_id: str, name: str) -> Any:
-    """One slot-keyed fold for the slot *unit_id*'s header names. Blocking.
+def _read_slot_fold_labelled(unit_id: str, name: str) -> "tuple[Any, int | None]":
+    """One slot-keyed fold for the slot *unit_id*'s header names and, for a delta fold,
+    its ``published_revision``. Blocking.
 
     Takes the resolved UNIT id rather than the caller's spelling, because the slot is
     read off that unit's own header -- a slot key handed straight to the header lookup
     would miss and answer with the empty fold.
-    """
-    return _read_slot_fold_labelled(unit_id, name)[0]
-
-
-def _read_slot_fold_labelled(unit_id: str, name: str) -> "tuple[Any, int | None]":
-    """:func:`_read_slot_fold` and, for a delta fold, its ``published_revision``. Blocking.
 
     ``published_revision`` is the base the next pushed delta applies on. The value and
     the label come from ``eager.read_labelled``, which folds outside the publisher's
@@ -918,6 +913,10 @@ class CrewLogPublisher:
         # land and be broadcast last. When a pass finishes with more work marked,
         # it schedules the next pass itself.
         self._flushing = False
+        # The flush and session-send tasks, held until each finishes: the loop keeps
+        # only a weak reference to a task, and a collected flush would never run
+        # :meth:`_finished`, leaving ``_flushing`` set and the publisher stopped.
+        self._tasks: "set[asyncio.Task[None]]" = set()
         # True while a lineage push is armed on the loop (see :meth:`_mark_tree`).
         self._tree_scheduled = False
 
@@ -978,6 +977,12 @@ class CrewLogPublisher:
             # or the seed landing. The sidebar's nesting is pushed from here.
             crew_log_bus.subscribe(crew_log_bus.TREE_ADVANCED, self.on_tree_advanced),
         ]
+        # A Crew Mode root's open-work summary (``crew_work``) moving is pushed to
+        # its row. The boards are followed keyed, from the slot frame
+        # (:func:`kiro_crew.dashboard.crew_work.follow`).
+        from kiro_crew.dashboard import crew_work
+
+        crew_work.set_listener(self.on_crew_work)
 
     def unsubscribe_bus(self) -> None:
         """Drop every bus subscription. Idempotent."""
@@ -985,6 +990,10 @@ class CrewLogPublisher:
         for dispose in disposers:
             dispose()
         self._drop_slot_subscriptions()
+        from kiro_crew.dashboard import crew_work
+
+        crew_work.set_listener(None)
+        crew_work.unfollow_all()
 
     # -- slot subscriptions: wildcard, or keyed by watched board ------------ #
 
@@ -1199,6 +1208,43 @@ class CrewLogPublisher:
         except RuntimeError:
             logger.debug("crew log fold for %s/%s arrived after the loop closed", key, fold)
 
+    def on_crew_work(self, slot: str) -> None:
+        """A followed board's open items moved. On the fold worker's thread.
+
+        No I/O: one hop to the loop, which sends the row its ``slot_patch``.
+        """
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._push_crew_work, slot)
+        except RuntimeError:
+            logger.debug("crew work summary arrived after the loop closed")
+
+    def _push_crew_work(self, slot: str) -> None:
+        """Send one row's ``crew_work`` as a ``slot_patch``. On the loop. Never raises.
+
+        The summary is read here, against the live slots, so its closed and looping
+        answers are the ones the side board would give now.
+        """
+        from kiro_crew.dashboard import crew_work
+
+        state = self._state
+        try:
+            if slot not in (getattr(state, "_slots", None) or {}):
+                return
+            summary = crew_work.summary_for_state(slot, state)
+            if summary is None:
+                return
+            if state._has_legacy_slots_audience():
+                state.push_slots_update(legacy_only=True)
+            if state._has_slot_patch_clients():
+                state._send_slot_patch(
+                    {"slots": [{"key": slot, crew_work.CREW_WORK_FIELD: summary}]}
+                )
+        except Exception:
+            logger.debug("crew work push failed for %s", slot, exc_info=True)
+
     def on_session_fold(self, event: Any) -> None:
         """THE WS EXPORTER for a session fold: held for the next coalesced send.
 
@@ -1404,6 +1450,8 @@ class CrewLogPublisher:
         if loop is None or not pending:
             return
         task = loop.create_task(self._send_pending(pending))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         task.add_done_callback(_report_send_failure)
 
     async def _send_pending(
@@ -1507,8 +1555,9 @@ class CrewLogPublisher:
             return
         self._flushing = True
         task = loop.create_task(self._flush())
-        # Held only so the loop keeps a reference while it runs; the callback
-        # drops it and reports a failure rather than letting it be swallowed.
+        # The callback reports a failure rather than letting it be swallowed.
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         task.add_done_callback(self._finished)
 
     def _finished(self, task: "asyncio.Task[None]") -> None:

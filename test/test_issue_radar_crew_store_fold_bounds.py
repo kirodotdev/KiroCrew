@@ -10,6 +10,7 @@ The update entry itself lives in ``test_issue_radar_crew_store.py`` and the boun
 pre-projection carry applies in ``test_issue_radar_crew_store_legacy_carry.py``.
 """
 
+from crew_log_drain import assert_drained
 from issue_radar_crew_store_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     OWNER,
     REPO,
@@ -232,7 +233,7 @@ def test_an_entry_naming_another_crew_is_left_out_of_the_fold(tmp_path):
         "event_kind": "merge",
     }
     crew_log_emit.on_radar_recorded(sid, planted)
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     assert len(_entries(sid)) == 2, "the planted line is in the file"
 
     item = cs.read_work_item(OWNER, REPO, cid, 7, tmp_path)
@@ -278,7 +279,7 @@ def test_a_number_outside_the_tools_range_is_not_retained_from_the_log(tmp_path)
             "pr_number": huge,
         },
     )
-    assert crew_log_emit.flush(timeout=10.0)
+    assert_drained()
     crew_log_projection.forget_slot_folds()
 
     ledger = cs.read_ledger(OWNER, REPO, cid, tmp_path)
@@ -439,7 +440,7 @@ def test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed(tm
         built = cs._legacy_item_entries(OWNER, REPO, cid, {"number": number, "phase": "claimed"})
         assert len(built) == 1
         crew_log_emit.on_radar_recorded(sid, built[0])
-    assert crew_log_emit.flush(timeout=10.0)
+    assert_drained()
     assert cs._unit_last_seq(sid) > retired_seq, "the control: the new log outran the cached seq"
 
     fresh = cs.read_ledger(OWNER, REPO, cid, tmp_path)

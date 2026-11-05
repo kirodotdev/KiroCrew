@@ -42,7 +42,7 @@ bands under every social platform's re-encode. Functional gradients are not
 fills and are fine: `mask-image` scroll-edge fades, loading shimmer, and the
 streaming glow. So are the shipped gradient mechanisms — the appstore gradient
 art in `components/appstore/gradient.ts` (which reads as content, not chrome)
-and the session `'gradient'` color mode. So is the **crew gradient** (`.crew-grad`, `--aim` to `--info`) on Crew Mode's own surfaces -- the CREW MODE session row, the Crew Mode filter chip, the composer chip, the Crew panel's crew cards -- which the maintainer decision `docs/decisions/2026-10-28-the-crew-gradient-marks-crew-mode-surfaces.md` admits as the one mark of a chat run by a crew; it is not a style for anything else. The UX review lane
+and the session `'gradient'` color mode. So is the **crew gradient** (`.crew-grad`, `--aim` to `--info`) on Ultra Mode's own surfaces -- the ULTRA MODE session row, the Ultra Mode filter chip, the composer chip, the Crew panel's crew cards -- which the maintainer decision `docs/decisions/2026-10-28-the-crew-gradient-marks-crew-mode-surfaces.md` admits as the one mark of a chat run by a crew; it is not a style for anything else. The UX review lane
 (`.github/workflows/ux-review.yml` and its fork variant) applies this rule.
 Theme blocks in `src/styles/design-tokens.css` and `src/styles/theme-palettes.css` also set a few non-color properties that are
 deliberately NOT on the allowlist: the font tokens (`--font-body`, `--mono`)
@@ -339,9 +339,9 @@ rule aimed at anything else never reaches the document.
 | `topbar` | the header shell (`shell/topbar/shellHeader.tsx`) |
 | `sidebar` | the conversation-list cards: the chat session list (`ChatSidebar.tsx`) and the Crew Members roster (`members/MembersPageRoster.tsx`), both via `LIST_SHELL_CLS` in `components/listShell.ts` |
 | `chat-container` | the chat scroll region (`pages/chat/TranscriptScrollShell.tsx`) |
-| `message-bubble` | a user or assistant turn (`chat/UserMessage.tsx`, `chat/AssistantMessage.tsx`), and the pinned card that stands in for a user turn (`chat/PinnedPrompt.tsx`) |
+| `message-bubble` | a user or assistant turn (`pages/chat/UserMessage.tsx`, `pages/chat/AssistantMessage.tsx`), the pinned card that stands in for a user turn (`pages/chat/PinnedPrompt.tsx`), and a Bot's live typing bubble (`components/chat/CrewmateLiveActivity.tsx`) |
 | `input-area` | the composer (`ChatInput.tsx`) |
-| `code-block` | a rendered fenced block (`CodeBlock.tsx`) |
+| `code-block` | a rendered fenced block (`components/CodeBlock.tsx`), the same block while it is edited (`components/EditableCodeBlock.tsx`), and a fenced block shown with a credential masked (`RedactedCodeBlock` in `components/RedactionCards.tsx`) |
 
 Do not rename or drop one of these classes when refactoring the component that
 carries it. There is no compiler reference to break, so the only signal is a

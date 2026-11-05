@@ -14,6 +14,7 @@ from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F
 from source_providers_helpers import _app
 
 from kiro_crew.dashboard.handlers import source_providers as source
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.mark.asyncio
@@ -47,8 +48,12 @@ async def test_check_update_broadcasts_are_coalesced(monkeypatch) -> None:
 
     source._queue_check_update(callback)
     source._queue_check_update(callback)
-    # flake-ok: pre-existing 10 ms yield for the zero-debounce broadcast handle to run, moved verbatim; tracked for a de-flake pass
-    await source.asyncio.sleep(0.01)
+    # The flush clears the handle before it runs the callbacks, all in one
+    # synchronous step, so the handle reading None means the broadcast has run.
+    await async_wait_until(
+        lambda: source._check_update_handle is None,
+        describe=lambda: "the coalesced check-update flush to run",
+    )
 
     callback.assert_called_once_with()
     assert source._check_update_handle is None

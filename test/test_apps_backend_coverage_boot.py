@@ -67,6 +67,9 @@ def boot_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
         return None
 
     monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: 0)
+    # The fabricated apps are not in installed.json; the spawn-time enablement
+    # re-read is pinned in test_app_backend_spawn_env.py.
+    monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
     monkeypatch.setattr(bmod, "get_app_manifest", lambda _name: None)
     monkeypatch.setattr(bmod, "shipped_builtin_app_root", lambda _name: None)
     monkeypatch.setattr(bmod, "app_admission_denied", lambda _name, **_kw: None)

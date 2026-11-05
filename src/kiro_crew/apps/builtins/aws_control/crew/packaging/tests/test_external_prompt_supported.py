@@ -102,8 +102,8 @@ def test_the_anchor_passed_to_the_reader_is_the_validated_root(tmp_path, monkeyp
     """Pins WHICH anchor is chosen, because no behavioural test here distinguishes them.
 
     Measured: forcing the anchor to ``path.parent`` unconditionally leaves this file AND
-    ``test_prompt_parent_swap.py`` fully green, because that suite calls
-    ``_read_text_nofollow`` directly with an explicit root and never exercises the choice,
+    ``test_prompt_swap_race.py`` fully green, because that suite calls
+    ``_read_text_nofollow`` directly and never exercises the choice,
     while the swap this file stages is already refused earlier by
     ``_resolve_prompt_path``'s containment check.
 

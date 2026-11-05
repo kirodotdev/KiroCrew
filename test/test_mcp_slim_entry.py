@@ -453,7 +453,9 @@ def test_full_cli_keeps_registry_scan_off_the_gateway_readiness_path() -> None:
     guard = cli_src.index('\n    if args.command != "gateway":\n')
     prime = cli_src.index("\n        prime_extension_config_keys()\n")
     first_load = cli_src.index("\n    _setup_cli_logging(args.command, args.verbose)\n")
-    gateway_loop = cli_src.index("\n            asyncio.run(_gateway(**gw_kwargs))\n")
+    gateway_loop = cli_src.index(
+        "\n            asyncio.run(_gateway(**gw_kwargs), loop_factory=gateway_loop_factory())\n"
+    )
     assert guard < prime < first_load < gateway_loop
 
 
@@ -536,3 +538,49 @@ def test_mcp_guide_answers_initialize_without_the_gateway_stack(tmp_path: Path) 
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=30)
+
+
+def _deny_stat_under(monkeypatch: pytest.MonkeyPatch, denied: Path) -> None:
+    """Make ``stat`` under *denied* fail with EPERM, as a sandbox-masked mount does."""
+    import errno
+
+    real_stat = os.stat
+
+    def _stat(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(path).startswith(str(denied)):
+            raise PermissionError(errno.EPERM, "Operation not permitted", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", _stat)
+
+
+def test_project_dir_walk_skips_an_ancestor_that_answers_eperm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A CWD that resolves under a masked mount must not crash MCP start-up:
+    the denied ancestor counts as "no checkout here" and detection moves on to
+    the saved file."""
+    masked = tmp_path / "masked"
+    cwd = masked / "home" / "lg"
+    cwd.mkdir(parents=True)
+    checkout = tmp_path / "checkout"
+    for marker in project_dir.PROJECT_MARKERS:
+        (checkout / marker).mkdir(parents=True)
+    saved = tmp_path / "project_dir"
+    saved.write_text(str(checkout), encoding="utf-8")
+    monkeypatch.chdir(cwd)
+    _deny_stat_under(monkeypatch, masked.resolve())
+    assert project_dir.detect_project_dir(lambda: saved) == str(checkout)
+    assert project_dir.detect_project_dir(lambda: tmp_path / "missing") is None
+
+
+def test_project_dir_saved_file_that_answers_eperm_counts_as_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    _deny_stat_under(monkeypatch, denied.resolve())
+    assert project_dir.detect_project_dir(lambda: denied.resolve() / "project_dir") is None

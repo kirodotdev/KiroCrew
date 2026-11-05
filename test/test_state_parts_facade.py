@@ -215,10 +215,15 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, prompt: 'str', run_chat_coro: 'Callable[[DashboardState, "
         "_ChatSlot, str], Coroutine[Any, Any, None]]', state: "
-        "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None) "
-        "-> 'bool'",
+        "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None, "
+        "relay_meta: 'dict[str, Any] | None' = None) -> 'bool'",
     ),
-    "flush_deferred_notes": ("function", False, False, "(self) -> 'int'"),
+    "flush_deferred_notes": (
+        "function",
+        False,
+        False,
+        "(self, *, broadcast: 'bool' = True, retain: 'bool | None' = None) -> 'int'",
+    ),
     "forget_session_model_state": ("function", False, False, "(self) -> 'None'"),
     "has_pending_context_seat": ("function", False, False, "(self) -> 'bool'"),
     "invalidate_source_links": ("function", False, False, "(self) -> 'None'"),
@@ -271,7 +276,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, content: 'str', kind: 'str' = '', meta: 'dict | None' = None, *, "
         "directive_user_origin: 'bool' = False, directive_channel_origin: 'bool' = "
-        "False) -> 'str'",
+        "False, directive_owner_origin: 'bool' = False) -> 'str'",
     ),
     "queue_depth": ("property", False, False, "(self) -> 'int'"),
     "queue_edit_by_id": (
@@ -279,7 +284,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         False,
         "(self, queue_id: 'str', content: 'str', *, directive_user_origin: "
-        "'bool' = False, directive_channel_origin: 'bool' = False) -> 'bool'",
+        "'bool' = False, directive_channel_origin: 'bool' = False, "
+        "directive_owner_origin: 'bool' = False) -> 'bool'",
     ),
     "queue_insert": (
         "function",
@@ -289,7 +295,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "meta: 'dict | None' = None, on_consumed: 'Callable[[bool], None] | None' = "
         "None, on_irreversibly_consumed: 'Callable[[], Awaitable[None] | None] | "
         "None' = None, directive_user_origin: 'bool' = False, "
-        "directive_channel_origin: 'bool' = False) -> 'str'",
+        "directive_channel_origin: 'bool' = False, directive_owner_origin: 'bool' = "
+        "False) -> 'str'",
     ),
     "queue_persist_pending": ("property", False, False, "(self) -> 'bool'"),
     "queue_pop": ("function", False, False, "(self, index: 'int' = 0) -> 'dict[str, Any]'"),
@@ -422,6 +429,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_created_by": ("value", "''"),
     "_attribution": ("value", "None"),
     "_created_by_sid": ("value", "''"),
+    "_crew_dispatch_notice_turn_gen": ("value", "-1"),
     "_crew_log_opened_sid": ("value", "''"),
     "_crew_log_pending_channel": ("value", "False"),
     "_crew_log_previous_from_mapping": ("value", "False"),
@@ -501,6 +509,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_lock": ("type", "asyncio.locks.Lock"),
     "_mcp_report": ("value", "None"),
     "_mcp_report_session_id": ("value", "''"),
+    "_mcp_banner_shown": ("value", "{}"),
     "_member_approval_seeded": ("value", "False"),
     "_memory_assignment_from_history": ("value", "False"),
     "_messages": ("value", "[]"),
@@ -576,6 +585,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_steer_automation": ("value", "{}"),
     "_steer_channel_origin": ("value", "{}"),
     "_steer_clear": ("value", "None"),
+    "_steer_owner_origin": ("value", "{}"),
     "_steer_confirmed": ("value", "set()"),
     "_steer_decision_strips": ("value", "{}"),
     "_steer_delivery_ids": ("value", "{}"),
@@ -628,12 +638,15 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_trust_scope": ("value", "''"),
     "_trusted_pattern_deadlines": ("value", "{}"),
     "_trusted_patterns": ("value", "set()"),
+    "_deny_waivers": ("value", "set()"),
     "_turn_admission_reserved": ("value", "False"),
     "_turn_channel_narrowed": ("value", "False"),
     "_turn_channel_origin": ("value", "False"),
     "_turn_generation": ("value", "0"),
     "_turn_in_flight_generation": ("value", "0"),
     "_turn_in_flight_prompt": ("value", "None"),
+    "_turn_owner_sent": ("value", "False"),
+    "_turn_agent_started": ("value", "False"),
     "_turn_reply_mids": ("value", "[]"),
     "_turn_retries": ("value", "{}"),
     "_turn_timeout_hydrated": ("value", "True"),

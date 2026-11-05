@@ -849,9 +849,6 @@ def test_the_seam_finds_a_transcript_that_cited_the_item_only_by_url(plugin, tmp
     assert keys == {"by_url"}, keys
     # The control: the transcript spells the id `cr/123`, never `cr-123`, so the
     # hit came from the plugin's spelling. Withhold the hook and it disappears.
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(plugin, "search_ref", None)
-    try:
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(plugin, "search_ref", None)
         assert log.search_sessions("cr-123", 10) == []
-    finally:
-        monkeypatch.undo()

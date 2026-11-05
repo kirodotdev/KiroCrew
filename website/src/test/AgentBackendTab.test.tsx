@@ -122,14 +122,14 @@ describe('AgentBackendTab list', () => {
     expect(row('Kiro Agent')).toBeInTheDocument()
   })
 
-  it('puts KAS first, Kiro CLI second, and sorts adapters after', async () => {
+  it('puts KAS first, Kiro CLI second, Strands third, and sorts adapters after', async () => {
     acpBackendsMock.mockResolvedValue({
-      backends: [probeRow('kiro'), probeRow('claude'), probeRow('kas'), probeRow('zephyr')],
+      backends: [probeRow('kiro'), probeRow('claude'), probeRow('strands'), probeRow('kas'), probeRow('zephyr')],
     })
-    schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'kas', 'zephyr']))
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'strands', 'kas', 'zephyr']))
     wrap()
-    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(4))
-    expect(rows()).toEqual(['Kiro Agent', 'Kiro CLI', 'Claude Code', 'zephyr'])
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(5))
+    expect(rows()).toEqual(['Kiro Agent', 'Kiro CLI', 'Strands', 'Claude Code', 'zephyr'])
   })
 
   it('marks the configured backend as the current one', async () => {

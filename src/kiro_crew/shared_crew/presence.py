@@ -184,8 +184,27 @@ class PresenceRegistry:
     def entries(self, session_key: str) -> list[PresenceEntry]:
         """The folded, live presence of one session, one entry per principal."""
         with self._lock:
-            self._expire_locked(self._clock())
-            return self._fold_locked(session_key)
+            # A read only filters: removal stays with sweep/disconnect, which
+            # report the changed sessions so a broadcast follows.
+            return self._fold_locked(session_key, now=self._clock())
+
+    def live_by_principal(self) -> dict[str, tuple[Activity, str]]:
+        """Each connected principal's strongest activity and the session it is in.
+
+        Crew-wide: a person with tabs in several sessions reports the session of
+        their strongest activity (typing over viewing over idle), newest first.
+        """
+        with self._lock:
+            now = self._clock()
+            best: dict[str, _Connection] = {}
+            for conn in self._conns.values():
+                if now - conn.refreshed >= self._ttl:
+                    continue
+                prior = best.get(conn.principal.id)
+                rank = (_ACTIVITY_RANK[conn.activity], conn.refreshed)
+                if prior is None or rank > (_ACTIVITY_RANK[prior.activity], prior.refreshed):
+                    best[conn.principal.id] = conn
+            return {pid: (c.activity, c.session_key) for pid, c in best.items()}
 
     def _expire_locked(self, now: float) -> list[str]:
         stale = [cid for cid, c in self._conns.items() if now - c.refreshed >= self._ttl]
@@ -194,9 +213,11 @@ class PresenceRegistry:
             sessions.append(self._conns.pop(cid).session_key)
         return sessions
 
-    def _fold_locked(self, session_key: str) -> list[PresenceEntry]:
+    def _fold_locked(self, session_key: str, *, now: float | None = None) -> list[PresenceEntry]:
         by_principal: dict[str, list[_Connection]] = {}
         for conn in self._conns.values():
+            if now is not None and now - conn.refreshed >= self._ttl:
+                continue
             if conn.session_key == session_key:
                 by_principal.setdefault(conn.principal.id, []).append(conn)
         entries = []

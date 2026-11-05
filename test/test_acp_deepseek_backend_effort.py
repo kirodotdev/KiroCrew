@@ -64,6 +64,8 @@ _PROVIDER_EFFORT_ID_SITES = (
     "(``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``)",
     "the build check in ``supports_effort``, for a harness that takes a level only "
     "through its advertised option (``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``)",
+    "the capability answer in ``supports_effort`` for a session serving its "
+    "pseudo-model (``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``)",
 )
 
 
@@ -112,11 +114,8 @@ async def test_the_effort_push_uses_this_harness_own_option_id(tmp_path) -> None
 def test_a_grouped_model_select_is_flattened_before_the_value_filter(tmp_path) -> None:
     """This harness groups its model options, and the capture is the only vocabulary.
 
-    Its ``session/new`` nests the real choices under a ``{"group": …, "options": […]}``
-    wrapper that carries no ``value`` of its own. A filter keeping only entries with a
-    ``value`` empties on that shape, and an empty list reads as "advertised no
-    models" -- which for a harness whose ids exist nowhere else means no model can be
-    offered or resolved at all.
+    The choices sit under a ``{"group": …, "options": […]}`` wrapper with no ``value``, so
+    an unflattened filter reads "advertised no models" and no model could be offered.
     """
     client = _client(tmp_path, ACP_BACKEND_DEEPSEEK)
     grouped = {
@@ -183,11 +182,8 @@ def test_a_flat_model_select_is_still_read_unchanged(tmp_path) -> None:
 def test_a_malformed_group_degrades_instead_of_failing_the_session(tmp_path, malformed) -> None:
     """Every level of this payload comes off the wire, so none of it may be trusted.
 
-    A truthy non-iterable in a group's ``options`` raised ``TypeError`` from inside
-    ``session/new`` handling, so a malformed or hostile agent response failed session
-    initialization rather than degrading to "this harness advertised no models".
-    Parametrized over the shapes a wire payload can actually take, because the outer
-    list and the nested one need the SAME narrowing and only the outer one had it.
+    A truthy non-iterable ``options`` must degrade to "advertised no models", not raise
+    ``TypeError``. The outer and nested lists need the same narrowing.
     """
     client = _client(tmp_path, ACP_BACKEND_DEEPSEEK)
     payload = {

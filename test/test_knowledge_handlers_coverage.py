@@ -550,7 +550,7 @@ class TestExport:
         async with _client(_make_app(store)) as client:
             resp = await client.get("/api/knowledge/export")
             assert resp.status == 200
-            assert "filename=knowledge.knowledge" in resp.headers["Content-Disposition"]
+            assert "filename*=UTF-8''knowledge.knowledge" in resp.headers["Content-Disposition"]
 
     @pytest.mark.asyncio
     async def test_export_all_sanitizes_namespace_into_filename(self, store):
@@ -560,7 +560,8 @@ class TestExport:
             disp = resp.headers["Content-Disposition"]
         # Path separators and dots-with-slashes cannot survive into the
         # suggested filename, so the download cannot escape its directory.
-        assert "/" not in disp.split("filename=")[1]
+        name = disp.split("filename*=UTF-8''")[1]
+        assert "/" not in name and "%2F" not in name
         assert "work" in disp
 
 
@@ -1327,7 +1328,10 @@ class TestBatchEmbedItems:
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/embedding/generate")
             assert resp.status == 400
-            assert (await resp.json())["error"] == "Embedding not enabled"
+            assert await resp.json() == {
+                "error": "Embedding not enabled",
+                "code": "knowledge_embedding_disabled",
+            }
 
     @pytest.mark.asyncio
     async def test_unavailable_model_is_503(self, store):
@@ -1335,7 +1339,10 @@ class TestBatchEmbedItems:
         async with _client(app) as client:
             resp = await client.post("/api/knowledge/embedding/generate")
             assert resp.status == 503
-            assert (await resp.json())["error"] == "Embedding model not available"
+            assert await resp.json() == {
+                "error": "Embedding model not available",
+                "code": "knowledge_embedding_unavailable",
+            }
 
     @pytest.mark.asyncio
     async def test_fills_null_embeddings_synchronously(self, store):

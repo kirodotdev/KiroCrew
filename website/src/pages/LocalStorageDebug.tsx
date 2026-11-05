@@ -171,7 +171,7 @@ export default function LocalStorageDebug() {
                   <button
                     onClick={() => deleteGroup(g.prefix)}
                     className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] border border-danger/30 text-danger hover:text-danger-text hover:bg-danger-subtle transition-all"
-                    title={`Delete all ${g.count} keys`}
+                    title={i18nT('pages.localStorageDebug.delete_all_keys', { count: g.count })}
                   >
                     <Trash2 size={10} /> {i18nT('pages.localStorageDebug.clear')}
                   </button>

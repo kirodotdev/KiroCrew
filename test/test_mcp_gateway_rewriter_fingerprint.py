@@ -1,16 +1,13 @@
 """Rewrite-fingerprint cache for the MCP overlay rewriter.
 
 ``rewrite_agents`` skips the parse/resolve/write pass when a stat-only
-fingerprint of every input matches the previous completed run. These tests pin
-the two sides of that contract: an unchanged boot is served from cache with a
-byte-identical result, and EVERY input that can change the output invalidates
-the cache — a missed input would ship a stale overlay silently, which is
-strictly worse than the boot cost the cache removes.
+fingerprint of every input matches the previous completed run. An unchanged boot
+is served byte-identical from cache, and every input that can change the output
+invalidates it: a missed input ships a stale overlay silently.
 
-The keep on a settings read fault and its refusals, the content that stays cacheable, the
-legacy settings overlay, the fingerprint file and the transient-keep retention windows are
-tested in ``test_mcp_gateway_rewriter_fingerprint_keep.py``; the tree builder, the rewrite
-helper and the fixtures both files use live in ``mcp_gateway_rewriter_fingerprint_helpers.py``.
+The keep paths and the fingerprint file are tested in
+``test_mcp_gateway_rewriter_fingerprint_keep.py``; shared fixtures live in
+``mcp_gateway_rewriter_fingerprint_helpers.py``.
 """
 
 from __future__ import annotations
@@ -55,37 +52,30 @@ def test_rewrite_agents_signature_is_pinned_to_fingerprint_inputs() -> None:
         "pooling_enabled",
         # Fingerprinted through ``LaunchApprovals.digest``.
         "approvals",
+        # Fingerprinted as the ``mate_sources`` input.
+        "mate_source_dir",
     }
 
 
-# --- Ambient-read tripwire -------------------------------------------------
+# Ambient-read tripwire
 #
 # The signature pin above catches new *parameters*; this scan catches new
-# *ambient reads* — env vars, config-loader lookups, home/cwd resolution —
-# consulted inside the rewrite pass without a signature change. An ambient
-# read that affects the output but is absent from the fingerprint yields
-# silently stale overlays, so every read reaching the pass must be a conscious
-# decision: either fingerprinted or documented output-neutral.
+# *ambient reads* (env vars, config lookups, home/cwd) inside the rewrite pass.
+# One that affects the output but is absent from the fingerprint yields stale
+# overlays, so each read must be fingerprinted or documented output-neutral.
 #
-# Scope: top-level functions in ``rewriter.py`` and its ``rewriter_*`` owner
-# modules only. ``defs`` is built from their module bodies, so a method on a class
-# or a helper in another module is NOT scanned — the tripwire covers the in-module helper graph, not everything the
-# pass can transitively touch. A NEW entry point added to the pass must also be
-# added to ``_REWRITE_PASS_ROOTS`` to be covered.
+# Scope: top-level functions in ``rewriter.py`` and its ``rewriter_*`` modules
+# only; methods and other modules are NOT scanned. A NEW entry point to the pass
+# must be added to ``_REWRITE_PASS_ROOTS``.
 #
-# Each allowlist entry is (enclosing top-level function, channel). Env reads
-# with a literal key carry the variable name (``os.environ:PATH``), so a new
-# variable read in an already-listed function still trips. On a failure,
-# classify before touching this list:
-#   * NEW only            -> a genuinely new read. Output-affecting: add it to
-#     ``_rewrite_inputs_fingerprint`` AND an invalidation test in this file.
-#     Output-neutral: document why in the fingerprint docstring (see the
-#     ``forward_declared_env`` precedent). Then extend this allowlist.
-#   * same channel NEW in one function and STALE in another -> a MOVED read
-#     (refactor). Re-key the entry to the new function; do NOT change the
-#     fingerprint — a redundant key would force a full rewrite for every
-#     existing user on upgrade.
-#   * STALE only          -> the read is gone; prune the entry.
+# Each entry is (enclosing top-level function, channel); env reads with a literal
+# key carry the name (``os.environ:PATH``). On a failure:
+#   * NEW only -> output-affecting: add it to ``_rewrite_inputs_fingerprint`` plus
+#     an invalidation test; output-neutral: document it in the fingerprint
+#     docstring (see ``forward_declared_env``). Then extend this allowlist.
+#   * NEW in one function, STALE in another -> a moved read. Re-key the entry; do
+#     NOT change the fingerprint, or every user gets a full rewrite on upgrade.
+#   * STALE only -> the read is gone; prune the entry.
 _AMBIENT_READ_ALLOWLIST = frozenset(
     {
         # The fingerprint builder reading its own declared inputs.
@@ -146,11 +136,9 @@ def _referenced_defs(fn: ast.AST, defs: dict[str, ast.AST]) -> set[str]:
     """Module functions REFERENCED inside ``fn`` — not just directly called.
 
     Any ``Name`` or attribute mention counts, so aliasing (``f = helper``) and
-    callback passing (``run(helper)``) pull ``helper`` into the closure. This
-    deliberately over-approximates (a docstring cannot alias, but a mention in
-    code can): the tripwire is fail-closed by design — an over-scanned
-    function's reads surface as an explicit allowlist decision, never as a
-    silent pass.
+    callback passing (``run(helper)``) pull ``helper`` into the closure. It
+    over-approximates on purpose: an over-scanned read becomes an allowlist
+    decision, never a silent pass.
     """
     out: set[str] = set()
     for node in ast.walk(fn):
@@ -237,12 +225,8 @@ def _ambient_reads(func_name: str, fn: ast.AST, config_names: set[str]) -> set[t
 def test_rewrite_pass_ambient_reads_match_pinned_allowlist() -> None:
     """A new ambient read reaching the rewrite pass must fail until classified.
 
-    Walks the transitive in-module reference closure from the rewrite-pass
-    roots and asserts the exact set of detected ambient reads equals the
-    pinned allowlist — a NEW read fails (classify: fingerprint it or document
-    it output-neutral), a REMOVED read fails (prune the stale entry), and a
-    read that MOVED functions in a refactor shows up as one NEW + one STALE
-    for the same channel (re-key the entry; no fingerprint change).
+    The reads found in the reference closure of the pass roots must equal the
+    pinned allowlist exactly; the comment above it says how to fix each failure.
     """
     family = (rewriter.__name__, *rewriter._REWRITER_OWNERS)
     tree = ast.parse("".join(inspect.getsource(sys.modules[name]) for name in family))
@@ -334,11 +318,8 @@ def test_pool_identity_env_change_invalidates(
 ) -> None:
     """Naming a key in ``mcp_gateway.pool_identity_env`` regenerates the overlays.
 
-    The list decides which keys are folded into ``effective_env_hash`` and passed
-    on stub argv. Serving a cached overlay across an edit is not a cosmetic
-    staleness: the cached stub would keep hashing the OLD set while gatewayd
-    hashes the new one, so the coherence gate would refuse to forward and the
-    setting would appear to do nothing.
+    A cached stub would keep hashing the old set while gatewayd hashes the new
+    one, so the coherence gate would refuse to forward anything.
     """
     _mk_tree(tmp_path, with_env=True)
     # Declare a rotating-secret-shaped key so the list has something to act on.
@@ -371,11 +352,8 @@ def test_env_placeholder_pass_is_never_cached(
 ) -> None:
     """A declared ``${env:VAR}`` re-resolves on every boot.
 
-    The resolved value is baked into the sidecar at write time (so the stub and
-    gatewayd hash one agreed source), which makes the VARIABLE an input the
-    stat-based fingerprint cannot see. Rather than fingerprint the environment,
-    the pass is left uncacheable -- otherwise a rotated credential would keep
-    serving the OLD value for as long as no file changed.
+    The value is baked into the sidecar, and the stat fingerprint cannot see the
+    variable, so the pass stays uncacheable or a rotated credential would go stale.
     """
     monkeypatch.setenv("WH_TOKEN", "first")
     _mk_tree(tmp_path, n_agents=1, env={"TOKEN": "${env:WH_TOKEN}"})
@@ -532,12 +510,8 @@ def test_pre_governed_passthrough_schema_forces_regeneration(
 ) -> None:
     """A schema 7 overlay can hold a stub for a server that must not be pooled.
 
-    A registry-governed or muted entry passes through unwrapped, and its inputs
-    are identical either way -- so the stat fingerprint alone sees no change and
-    a kept overlay keeps a stub whose name ``injection_server_names`` collects.
-    That stub launches the server at session level: for a marked entry, one whose
-    launch belongs to the administrator's catalog; for a muted one, the server the
-    user silenced. The schema is what rejects such an overlay on upgrade.
+    A registry-governed or muted entry has the same inputs either way, so only the
+    schema rejects a kept overlay whose stub would launch it at session level.
     """
     _mk_tree(tmp_path)
     with monkeypatch.context() as patch:
@@ -553,11 +527,8 @@ def test_a_kept_overlay_from_before_the_vendor_denylist_drops_the_vendor_stub(
 ) -> None:
     """A schema 10 overlay can hold a stub for a credential vendor.
 
-    Before the vendors joined ``UNPOOLABLE_SERVERS`` an operator could list one
-    in ``stub_servers`` and the rewriter wrapped it. The denylist is not a
-    fingerprint input, so with every input unchanged a kept overlay would keep
-    that stub, and its shared backend would run outside every chat sandbox. The
-    schema bump is what rejects such an overlay on the next boot.
+    ``UNPOOLABLE_SERVERS`` is not a fingerprint input, so only the schema rejects a
+    kept overlay whose shared backend would run outside every chat sandbox.
     """
     from mcp_gateway_rewriter_fingerprint_helpers import _CMD
 
@@ -750,14 +721,10 @@ def test_transient_overlay_write_failure_keeps_the_previous_overlay(
 def test_transient_agent_read_failure_keeps_the_previous_overlay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same keying, other transient arm: a source spec that fails to READ this
-    pass keeps its previous overlay (a read-failure ``continue`` that skips
-    ``written.add`` lets the prune delete the healthy overlay) — AND its env
-    sidecars: the kept overlay's stub argv still
-    points ``--env-file`` at them, and a read-failure pass cannot enumerate
-    the victim's sidecar names, so the sidecar prune is skipped for the whole
-    (already-uncacheable) pass. Pruning them would spawn the kept overlay's
-    backends credential-less for the rest of the gateway's lifetime."""
+    """A source spec that fails to read keeps its overlay and its env sidecars.
+
+    The kept stub's ``--env-file`` still points at them, and the pass cannot list
+    their names, so the sidecar prune is skipped for the whole pass."""
     src = _mk_tree(tmp_path)
     _rewrite(tmp_path)
     victim = tmp_path / "mcp-gateway" / "agents" / "agent-1.json"

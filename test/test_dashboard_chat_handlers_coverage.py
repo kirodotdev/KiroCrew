@@ -16,13 +16,22 @@ injected rather than satisfied with a real credential directory.
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from windows_sim import (
+    read_sharing_violation,
+    read_text_sharing_violation,
+    replace_sharing_violation,
+)
 
+from kiro_crew import atomic_write as aw
+from kiro_crew import platform_compat
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
@@ -588,6 +597,132 @@ class TestRecentProjects:
             with pytest.raises(OSError):
                 ch._save_recent_project("/a")
         assert list(_recent_dir.glob("*.tmp")) == []
+
+    @staticmethod
+    def _seed(fp: Path) -> list[str]:
+        seed = [f"/seed{i}" for i in range(20)]
+        fp.write_text(json.dumps(seed), encoding="utf-8")
+        return seed
+
+    def test_a_read_that_keeps_failing_raises_and_leaves_the_list(self, _recent_dir, monkeypatch):
+        # A Windows sharing violation that outlasts the read retry: the save must not
+        # treat the unreadable file as empty and write one entry over the stored list.
+        # Both read spellings fault, so the assertion is about the save's handling of
+        # the error, not about which read call it happens to make.
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        fp = _recent_dir / "recent_projects.json"
+        self._seed(fp)
+        before = fp.read_bytes()
+        with read_sharing_violation(match=fp.name, times=10_000):
+            with read_text_sharing_violation(match=fp.name, times=10_000):
+                with pytest.raises(PermissionError):
+                    ch._save_recent_project("/new")
+        assert fp.read_bytes() == before
+        assert list(_recent_dir.glob("*.tmp")) == []
+
+    def test_a_transient_sharing_violation_is_retried_and_keeps_the_list(
+        self, _recent_dir, monkeypatch
+    ):
+        # The Windows read retry runs here on every host: one violation, then the read
+        # succeeds, and the save prepends to the full stored list.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        fp = _recent_dir / "recent_projects.json"
+        seed = self._seed(fp)
+        with read_sharing_violation(match=fp.name, times=1):
+            with read_text_sharing_violation(match=fp.name, times=1):
+                ch._save_recent_project("/new")
+        assert json.loads(fp.read_text(encoding="utf-8")) == ["/new", *seed]
+
+    def test_a_rename_sharing_violation_is_retried_and_the_save_lands(
+        self, _recent_dir, monkeypatch
+    ):
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        fp = _recent_dir / "recent_projects.json"
+        seed = self._seed(fp)
+        with replace_sharing_violation(match=fp.name, times=1):
+            ch._save_recent_project("/new")
+        assert json.loads(fp.read_text(encoding="utf-8")) == ["/new", *seed]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_the_saved_file_is_owner_only(self, _recent_dir):
+        ch._save_recent_project("/a")
+        mode = (_recent_dir / "recent_projects.json").stat().st_mode & 0o777
+        assert mode == 0o600
+
+    def test_the_save_loads_under_the_lock(self, _recent_dir):
+        # The save's read-modify-write holds _recent_projects_lock, so two saves cannot
+        # write back the same snapshot, and the picker read (below) waits for it.
+        real_load = ch._load_recent_projects
+        held: list[bool] = []
+
+        def spy_load():
+            held.append(ch._recent_projects_lock.locked())
+            return real_load()
+
+        with patch(f"{MOD}._load_recent_projects", side_effect=spy_load):
+            ch._save_recent_project("/a")
+        assert held == [True]
+
+    def test_overlapping_saves_keep_every_entry(self, _recent_dir):
+        fp = _recent_dir / "recent_projects.json"
+        seed = self._seed(fp)
+        paths = [f"/p{i}" for i in range(8)]
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                for _ in range(15):
+                    for p in paths:
+                        ch._save_recent_project(p)
+            except BaseException as exc:  # recorded for the assertion below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not any(t.is_alive() for t in threads), "a save thread never returned"
+        assert errors == []
+        stored = json.loads(fp.read_text(encoding="utf-8"))
+        assert sorted(stored) == sorted([*paths, *seed])
+
+    @pytest.mark.asyncio
+    async def test_the_picker_read_holds_the_lock(self, _recent_dir, _sel):
+        real = _recent_dir / "proj"
+        real.mkdir()
+        (_recent_dir / "recent_projects.json").write_text(json.dumps([str(real)]), "utf-8")
+        real_load = ch._load_recent_projects
+        held: list[bool] = []
+
+        def spy_load():
+            held.append(ch._recent_projects_lock.locked())
+            return real_load()
+
+        state = _state()
+        app = _app(state, "GET", "/api/recent-projects", ch.api_recent_projects)
+        with patch(f"{MOD}._load_recent_projects", side_effect=spy_load):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get("/api/recent-projects")
+                assert (await resp.json())["dirs"] == [str(real)]
+        assert held == [True]
+
+    @pytest.mark.asyncio
+    async def test_endpoint_answers_empty_when_the_read_keeps_failing(
+        self, _recent_dir, _sel, monkeypatch
+    ):
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        fp = _recent_dir / "recent_projects.json"
+        self._seed(fp)
+        state = _state()
+        app = _app(state, "GET", "/api/recent-projects", ch.api_recent_projects)
+        with read_sharing_violation(match=fp.name, times=10_000):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get("/api/recent-projects")
+                assert resp.status == 200
+                assert (await resp.json())["dirs"] == []
 
     @pytest.mark.asyncio
     async def test_endpoint_drops_missing_and_non_string_entries(self, _recent_dir, _sel):

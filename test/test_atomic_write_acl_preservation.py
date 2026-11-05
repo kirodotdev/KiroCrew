@@ -48,22 +48,22 @@ def test_refuses_when_an_access_control_attribute_cannot_be_carried(tmp_path, mo
     target = tmp_path / "doc.md"
     target.write_text("ORIGINAL", encoding="utf-8")
 
-    monkeypatch.setattr(os, "listxattr", lambda *a, **k: ["system.posix_acl_access"], raising=False)
-    monkeypatch.setattr(os, "getxattr", lambda *a, **k: b"acl-bytes", raising=False)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "listxattr", lambda *a, **k: ["system.posix_acl_access"], raising=False)
+        mp.setattr(os, "getxattr", lambda *a, **k: b"acl-bytes", raising=False)
 
-    def refuse_setxattr(*a, **k):
-        raise OSError(errno.EPERM, "Operation not permitted")
+        def refuse_setxattr(*a, **k):
+            raise OSError(errno.EPERM, "Operation not permitted")
 
-    monkeypatch.setattr(os, "setxattr", refuse_setxattr, raising=False)
+        mp.setattr(os, "setxattr", refuse_setxattr, raising=False)
 
-    src_fd = _open_source(target)
-    try:
-        with pytest.raises(OSError):
-            atomic_write(target, "new body", preserve_access_control_from=src_fd)
-    finally:
-        os.close(src_fd)
+        src_fd = _open_source(target)
+        try:
+            with pytest.raises(OSError):
+                atomic_write(target, "new body", preserve_access_control_from=src_fd)
+        finally:
+            os.close(src_fd)
 
-    monkeypatch.undo()
     # Original untouched, and no orphaned temp file left behind.
     assert target.read_text(encoding="utf-8") == "ORIGINAL"
     assert list(tmp_path.glob("*.tmp")) == []
@@ -80,21 +80,21 @@ def test_proceeds_when_only_an_informational_attribute_fails(tmp_path, monkeypat
     target = tmp_path / "doc.md"
     target.write_text("ORIGINAL", encoding="utf-8")
 
-    monkeypatch.setattr(os, "listxattr", lambda *a, **k: ["user.note"], raising=False)
-    monkeypatch.setattr(os, "getxattr", lambda *a, **k: b"x", raising=False)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "listxattr", lambda *a, **k: ["user.note"], raising=False)
+        mp.setattr(os, "getxattr", lambda *a, **k: b"x", raising=False)
 
-    def refuse_setxattr(*a, **k):
-        raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+        def refuse_setxattr(*a, **k):
+            raise OSError(errno.EOPNOTSUPP, "Operation not supported")
 
-    monkeypatch.setattr(os, "setxattr", refuse_setxattr, raising=False)
+        mp.setattr(os, "setxattr", refuse_setxattr, raising=False)
 
-    src_fd = _open_source(target)
-    try:
-        atomic_write(target, "new body", preserve_access_control_from=src_fd)
-    finally:
-        os.close(src_fd)
+        src_fd = _open_source(target)
+        try:
+            atomic_write(target, "new body", preserve_access_control_from=src_fd)
+        finally:
+            os.close(src_fd)
 
-    monkeypatch.undo()
     assert target.read_text(encoding="utf-8") == "new body"
 
 
@@ -112,16 +112,16 @@ def test_refuses_when_the_attribute_list_cannot_be_read(tmp_path, monkeypatch):
     def failing_list(*a, **k):
         raise OSError(errno.EACCES, "Permission denied")
 
-    monkeypatch.setattr(os, "listxattr", failing_list, raising=False)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "listxattr", failing_list, raising=False)
 
-    src_fd = _open_source(target)
-    try:
-        with pytest.raises(OSError):
-            atomic_write(target, "new body", preserve_access_control_from=src_fd)
-    finally:
-        os.close(src_fd)
+        src_fd = _open_source(target)
+        try:
+            with pytest.raises(OSError):
+                atomic_write(target, "new body", preserve_access_control_from=src_fd)
+        finally:
+            os.close(src_fd)
 
-    monkeypatch.undo()
     assert target.read_text(encoding="utf-8") == "ORIGINAL"
     # The refusal happens BEFORE staging, so there is nothing to clean up.
     assert list(tmp_path.glob("*.tmp")) == []
@@ -140,15 +140,15 @@ def test_proceeds_when_the_filesystem_has_no_xattrs(tmp_path, monkeypatch):
     def unsupported(*a, **k):
         raise OSError(errno.ENOTSUP, "Operation not supported")
 
-    monkeypatch.setattr(os, "listxattr", unsupported, raising=False)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "listxattr", unsupported, raising=False)
 
-    src_fd = _open_source(target)
-    try:
-        atomic_write(target, "new body", preserve_access_control_from=src_fd)
-    finally:
-        os.close(src_fd)
+        src_fd = _open_source(target)
+        try:
+            atomic_write(target, "new body", preserve_access_control_from=src_fd)
+        finally:
+            os.close(src_fd)
 
-    monkeypatch.undo()
     assert target.read_text(encoding="utf-8") == "new body"
 
 
@@ -162,23 +162,23 @@ def test_happy_path_reproduces_the_source_attribute_on_the_replacement(tmp_path,
     target = tmp_path / "doc.md"
     target.write_text("ORIGINAL", encoding="utf-8")
 
-    monkeypatch.setattr(os, "listxattr", lambda *a, **k: ["system.posix_acl_access"], raising=False)
-    monkeypatch.setattr(os, "getxattr", lambda *a, **k: b"captured-acl", raising=False)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "listxattr", lambda *a, **k: ["system.posix_acl_access"], raising=False)
+        mp.setattr(os, "getxattr", lambda *a, **k: b"captured-acl", raising=False)
 
-    recorded: list[tuple[str, bytes]] = []
+        recorded: list[tuple[str, bytes]] = []
 
-    def recording_setxattr(fd, attr, value, *a, **k):
-        recorded.append((attr, value))
+        def recording_setxattr(fd, attr, value, *a, **k):
+            recorded.append((attr, value))
 
-    monkeypatch.setattr(os, "setxattr", recording_setxattr, raising=False)
+        mp.setattr(os, "setxattr", recording_setxattr, raising=False)
 
-    src_fd = _open_source(target)
-    try:
-        atomic_write(target, "new body", preserve_access_control_from=src_fd)
-    finally:
-        os.close(src_fd)
+        src_fd = _open_source(target)
+        try:
+            atomic_write(target, "new body", preserve_access_control_from=src_fd)
+        finally:
+            os.close(src_fd)
 
-    monkeypatch.undo()
     assert target.read_text(encoding="utf-8") == "new body"
     assert ("system.posix_acl_access", b"captured-acl") in recorded
 
@@ -197,18 +197,18 @@ def test_no_source_descriptor_is_opened_where_xattrs_do_not_exist(tmp_path, monk
     target = tmp_path / "file.txt"
     target.write_text("before", encoding="utf-8")
 
-    monkeypatch.setattr(aw, "ACCESS_CONTROL_XATTRS_SUPPORTED", False)
+    with monkeypatch.context() as mp:
+        mp.setattr(aw, "ACCESS_CONTROL_XATTRS_SUPPORTED", False)
 
-    opened: list[object] = []
-    real_open = aw.os.open
+        opened: list[object] = []
+        real_open = aw.os.open
 
-    def recording_open(*args, **kwargs):
-        opened.append(args[:1])
-        return real_open(*args, **kwargs)
+        def recording_open(*args, **kwargs):
+            opened.append(args[:1])
+            return real_open(*args, **kwargs)
 
-    monkeypatch.setattr(aw.os, "open", recording_open)
-    assert aw.open_access_control_source(target) is None
-    monkeypatch.undo()
+        mp.setattr(aw.os, "open", recording_open)
+        assert aw.open_access_control_source(target) is None
     assert opened == [], "no descriptor may be opened where xattrs do not exist"
 
 
@@ -305,30 +305,33 @@ def test_a_privilege_bearing_attribute_is_never_carried(tmp_path, monkeypatch):
         "system.posix_acl_access",
         "user.note",
     ]
-    monkeypatch.setattr(os, "listxattr", lambda *a, **k: list(present), raising=False)
-    monkeypatch.setattr(os, "getxattr", lambda fd, attr, *a, **k: attr.encode(), raising=False)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "listxattr", lambda *a, **k: list(present), raising=False)
+        mp.setattr(os, "getxattr", lambda fd, attr, *a, **k: attr.encode(), raising=False)
 
-    read: list[str] = []
-    real_getxattr = os.getxattr
+        read: list[str] = []
+        real_getxattr = os.getxattr
 
-    def recording_getxattr(fd, attr, *a, **k):
-        read.append(attr)
-        return real_getxattr(fd, attr, *a, **k)
+        def recording_getxattr(fd, attr, *a, **k):
+            read.append(attr)
+            return real_getxattr(fd, attr, *a, **k)
 
-    monkeypatch.setattr(os, "getxattr", recording_getxattr, raising=False)
+        mp.setattr(os, "getxattr", recording_getxattr, raising=False)
 
-    written: list[str] = []
-    monkeypatch.setattr(
-        os, "setxattr", lambda fd, attr, value, *a, **k: written.append(attr), raising=False
-    )
+        written: list[str] = []
+        mp.setattr(
+            os,
+            "setxattr",
+            lambda fd, attr, value, *a, **k: written.append(attr),
+            raising=False,
+        )
 
-    src_fd = _open_source(target)
-    try:
-        atomic_write(target, "new body", preserve_access_control_from=src_fd)
-    finally:
-        os.close(src_fd)
+        src_fd = _open_source(target)
+        try:
+            atomic_write(target, "new body", preserve_access_control_from=src_fd)
+        finally:
+            os.close(src_fd)
 
-    monkeypatch.undo()
     assert target.read_text(encoding="utf-8") == "new body"
     assert written == [
         "system.posix_acl_access",
@@ -352,23 +355,26 @@ def test_a_failed_privileged_carry_cannot_refuse_the_write(tmp_path, monkeypatch
     target = tmp_path / "doc.md"
     target.write_text("ORIGINAL", encoding="utf-8")
 
-    monkeypatch.setattr(
-        os, "listxattr", lambda *a, **k: ["security.capability", "security.selinux"], raising=False
-    )
-    monkeypatch.setattr(os, "getxattr", lambda *a, **k: b"privileged", raising=False)
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            os,
+            "listxattr",
+            lambda *a, **k: ["security.capability", "security.selinux"],
+            raising=False,
+        )
+        mp.setattr(os, "getxattr", lambda *a, **k: b"privileged", raising=False)
 
-    def refuse_setxattr(*a, **k):  # pragma: no cover - must never be reached
-        raise AssertionError("a privileged attribute must never be offered to setxattr")
+        def refuse_setxattr(*a, **k):  # pragma: no cover - must never be reached
+            raise AssertionError("a privileged attribute must never be offered to setxattr")
 
-    monkeypatch.setattr(os, "setxattr", refuse_setxattr, raising=False)
+        mp.setattr(os, "setxattr", refuse_setxattr, raising=False)
 
-    src_fd = _open_source(target)
-    try:
-        atomic_write(target, "new body", preserve_access_control_from=src_fd)
-    finally:
-        os.close(src_fd)
+        src_fd = _open_source(target)
+        try:
+            atomic_write(target, "new body", preserve_access_control_from=src_fd)
+        finally:
+            os.close(src_fd)
 
-    monkeypatch.undo()
     assert target.read_text(encoding="utf-8") == "new body"
 
 
@@ -382,26 +388,24 @@ def test_the_default_acl_is_carried_too(tmp_path, monkeypatch):
     target = tmp_path / "doc.md"
     target.write_text("ORIGINAL", encoding="utf-8")
 
-    monkeypatch.setattr(
-        os, "listxattr", lambda *a, **k: ["system.posix_acl_default"], raising=False
-    )
-    monkeypatch.setattr(os, "getxattr", lambda *a, **k: b"default-acl", raising=False)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "listxattr", lambda *a, **k: ["system.posix_acl_default"], raising=False)
+        mp.setattr(os, "getxattr", lambda *a, **k: b"default-acl", raising=False)
 
-    written: list[tuple[str, bytes]] = []
-    monkeypatch.setattr(
-        os,
-        "setxattr",
-        lambda fd, attr, value, *a, **k: written.append((attr, value)),
-        raising=False,
-    )
+        written: list[tuple[str, bytes]] = []
+        mp.setattr(
+            os,
+            "setxattr",
+            lambda fd, attr, value, *a, **k: written.append((attr, value)),
+            raising=False,
+        )
 
-    src_fd = _open_source(target)
-    try:
-        atomic_write(target, "new body", preserve_access_control_from=src_fd)
-    finally:
-        os.close(src_fd)
+        src_fd = _open_source(target)
+        try:
+            atomic_write(target, "new body", preserve_access_control_from=src_fd)
+        finally:
+            os.close(src_fd)
 
-    monkeypatch.undo()
     assert written == [("system.posix_acl_default", b"default-acl")]
 
 
@@ -417,9 +421,9 @@ def test_no_source_fd_leaves_the_write_untouched(tmp_path, monkeypatch):
     def boom(*a, **k):  # pragma: no cover - must never be reached
         raise AssertionError("xattr syscall consulted without preserve_access_control_from")
 
-    monkeypatch.setattr(os, "listxattr", boom, raising=False)
-    monkeypatch.setattr(os, "setxattr", boom, raising=False)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "listxattr", boom, raising=False)
+        mp.setattr(os, "setxattr", boom, raising=False)
 
-    atomic_write(target, "new body")
-    monkeypatch.undo()
+        atomic_write(target, "new body")
     assert target.read_text(encoding="utf-8") == "new body"

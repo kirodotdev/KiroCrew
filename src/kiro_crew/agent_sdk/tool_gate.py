@@ -67,6 +67,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     Readback,
     Routing,
     gate_probe_command_for,
@@ -931,18 +932,101 @@ def gate_marker_issue(
                 "transport whose programs reach Node's own APIs around the gate"
             )
         return _deepseek_child_env_issue(marker.get("child_env"), child_scrub_names)
+    if backend == ACP_BACKEND_STRANDS:
+        # The Strands gate module proves the same property on a child of the local
+        # sandbox it patched, in the same proof shape, and also proves the keys
+        # reached it through the one-time file rather than a launch environment.
+        return _deepseek_child_env_issue(
+            marker.get("child_env"),
+            child_scrub_names,
+            mapping="agent.strands_env",
+            quote_names=False,
+        ) or _strands_keys_route_issue(marker.get("keys"), child_scrub_names)
     return ""
 
 
-def _deepseek_child_env_issue(proof: object, expected_names: Sequence[str]) -> str:
+#: The status words the Strands gate module's ``_make_non_dumpable`` reports; a
+#: failure carries ``:<detail>`` after its word, which is never echoed.
+_STRANDS_DUMPABLE_STATUSES = frozenset(
+    {
+        "linux-non-dumpable",
+        "prctl-failed",
+        "darwin-deny-attach",
+        "ptrace-failed",
+        "unavailable",
+        "none-on-this-platform",
+    }
+)
+
+
+def _strands_keys_route_issue(proof: object, expected_names: Sequence[str]) -> str:
+    """Why the Strands marker does not prove the one-time key route, or ``""``.
+
+    A launch environment stays readable from ``/proc/<pid>/environ`` by every shell
+    the process's descendants run, so the keys must arrive by file, the file must be
+    gone, neither the worker's nor the Node CLI's launch environment may carry them,
+    and on Linux the worker must have made itself non-dumpable. Names only, never
+    values, in every message.
+    """
+    expected = sorted(set(expected_names))
+    if not expected:
+        return ""
+    if not isinstance(proof, dict):
+        return "the gate's load marker carries no key-route proof"
+    # The messages carry counts, never the names: they derive from the vault mapping,
+    # and the marker that reports them is the child's to write.
+    if proof.get("loaded") != expected:
+        return (
+            "the gate loaded a different set of provider settings from the key file than "
+            f"the {len(expected)} agent.strands_env configures"
+        )
+    if proof.get("file_left") is not False:
+        return "the gate left the one-time provider key file in place"
+    for field, owner in (("launch_env", "worker"), ("parent_launch_env", "Strands CLI")):
+        held = proof.get(field)
+        if held:
+            count = len(held) if isinstance(held, (list, tuple)) else 1
+            return (
+                f"the {owner}'s launch environment carries {count} provider setting(s), "
+                "which every shell the agent runs could read"
+            )
+        if held is None and platform_compat.IS_LINUX:
+            return f"the gate could not read the {owner}'s launch environment to prove it clean"
+    dumpable = proof.get("dumpable")
+    if platform_compat.IS_LINUX and dumpable != "linux-non-dumpable":
+        # Only the gate's own status words are echoed; anything else is the child's
+        # text and is not.
+        word = dumpable.split(":", 1)[0] if isinstance(dumpable, str) else ""
+        status = word if word in _STRANDS_DUMPABLE_STATUSES else "an unrecognised status"
+        return (
+            f"the gate could not make its worker non-dumpable ({status}), so a shell "
+            "could read the keys from its memory"
+        )
+    return ""
+
+
+def _deepseek_child_env_issue(
+    proof: object,
+    expected_names: Sequence[str],
+    *,
+    mapping: str = "agent.deepseek_env",
+    quote_names: bool = True,
+) -> str:
     """Why the marker's child-env proof does not clear the vault-fed names, or ``""``.
 
     *proof* is the plugin's ``child_env`` snapshot; *expected_names* the names Crew
     asked it to check. Each field is judged for the reason
     :func:`gate_marker_issue` gives, and the messages name only the operator's own
     env-var KEYS -- never a vault name and never a value -- so they are safe on the
-    log and in the chat error card.
+    log and in the chat error card. With *quote_names* False they carry counts
+    instead: a caller whose names are read straight off the vault mapping keeps
+    them out of the log altogether.
     """
+
+    def shown(values: Sequence[str]) -> str:
+        unique = sorted(set(values))
+        return repr(unique) if quote_names else f"{len(unique)} name(s)"
+
     if not isinstance(proof, dict):
         return (
             "the gate's load marker carries no child-environment proof, so nothing "
@@ -965,27 +1049,28 @@ def _deepseek_child_env_issue(proof: object, expected_names: Sequence[str]) -> s
         )
     error = proof.get("error")
     if error is not None:
+        # The child's own exception text may quote the names it was handed.
+        detail = f" ({str(error)[:200]!r})" if quote_names else ""
         return (
-            "the gate could not run its child-environment check "
-            f"({str(error)[:200]!r}), so nothing shows the harness withholds the provider "
-            "key from the shells it spawns"
+            f"the gate could not run its child-environment check{detail}, so nothing "
+            "shows the harness withholds the provider key from the shells it spawns"
         )
     expected = sorted(set(expected_names))
     if sorted(set(names)) != expected:
         return (
-            f"the gate's child-environment proof covers {sorted(set(names))!r} rather than "
-            f"the configured agent.deepseek_env names {expected!r}, so it does not vouch "
+            f"the gate's child-environment proof covers {shown(names)} rather than "
+            f"the configured {mapping} {shown(expected)}, so it does not vouch "
             "for the key this session would inject"
         )
     if parent_missing:
         return (
-            f"the gate's child-environment check never saw {sorted(parent_missing)!r} in "
+            f"the gate's child-environment check never saw {shown(parent_missing)} in "
             "the harness's own environment, so it could not observe whether the harness "
             "withholds them from its shells"
         )
     if child_visible:
         return (
-            f"the harness forwarded {sorted(child_visible)!r} into a child it spawned, so "
+            f"the harness forwarded {shown(child_visible)} into a child it spawned, so "
             "the provider key would be readable from every shell the model runs; this "
             "harness release no longer withholds credential-shaped names from its children"
         )

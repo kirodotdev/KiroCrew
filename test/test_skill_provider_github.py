@@ -248,6 +248,38 @@ class TestParseRepoSpec:
         assert gh.parse_repo_spec("https://github.com/acme/widgets/tree/main/a%00b") is None
         assert gh.parse_repo_spec("https://github.com/acme/widgets/tree/%2e%2e/x") is None
 
+    @pytest.mark.parametrize(
+        ("raw", "ref", "path"),
+        [
+            # Copied from the browser bar: GitHub appends a query or a fragment.
+            ("https://github.com/acme/widgets?tab=readme-ov-file", "", ""),
+            ("https://github.com/acme/widgets#readme", "", ""),
+            ("https://github.com/acme/widgets/?tab=readme-ov-file#x", "", ""),
+            ("https://github.com/acme/widgets/tree/main/skills/x?plain=1", "main", "skills/x"),
+            ("https://github.com/acme/widgets/blob/main/skills#L3", "main", "skills"),
+            ("github.com/acme/widgets/tree/v2/skills?x=1", "v2", "skills"),
+            # The one scheme/host spelling the prefix list missed.
+            ("http://www.github.com/acme/widgets", "", ""),
+            ("HTTP://WWW.GITHUB.COM/acme/widgets/tree/main/skills", "main", "skills"),
+        ],
+    )
+    def test_a_browser_copied_url_parses(self, raw, ref, path):
+        spec = gh.parse_repo_spec(raw)
+        assert spec is not None
+        assert (spec.repo_slug, spec.ref, spec.path) == ("acme/widgets", ref, path)
+
+    def test_query_and_fragment_are_only_dropped_from_a_url(self):
+        # No part of an address may hold ``?`` or ``#``, so a bare address that
+        # carries one is still refused rather than silently trimmed.
+        assert gh.parse_repo_spec("acme/widgets?tab=readme") is None
+        assert gh.parse_repo_spec("acme/widgets#readme") is None
+        assert gh.parse_repo_spec("acme/widgets@main:skills?x") is None
+        # The cut runs before the percent-decode, so an encoded ``?`` is judged
+        # by the path rules, not dropped.
+        assert gh.parse_repo_spec("https://github.com/acme/widgets/tree/main/a%3Fb") is None
+        # A query on a URL is still not a way to slip ``..`` past the path rules.
+        assert gh.parse_repo_spec("https://github.com/acme/widgets/tree/main/../x?y") is None
+
     def test_pasted_blob_url(self):
         spec = gh.parse_repo_spec("https://github.com/acme/widgets/blob/main/skills")
         assert spec is not None
@@ -342,7 +374,8 @@ class TestProviderShape:
         assert p.api_base == "https://api.github.com"
         # Always available: unauthenticated, so nothing can be unconfigured. The
         # discovery policy gate in _build_registry is what disables the provider,
-        # and test_a_refused_policy_keeps_the_provider_unregistered covers that.
+        # and test_skill_discovery_seam.py's
+        # test_a_refused_policy_keeps_the_github_provider_unregistered covers that.
         assert p.is_available()
 
 
@@ -387,6 +420,23 @@ class TestSearch:
             f"acme/widgets@{_COMMIT}:skills/releaser",
             f"acme/widgets@{_COMMIT}:skills/reviewer",
         ]
+
+    @pytest.mark.asyncio
+    async def test_skills_the_path_rules_refuse_do_not_use_up_the_limit(self):
+        # Directories sort before "skills/" when they start with "." -- the
+        # ".claude/skills" and ".kiro/skills" layouts -- and the path rules refuse
+        # every one of them. They are dropped either way; they must not also take
+        # the result slots, or a repository with enough of them lists nothing.
+        refused = [(f".claude/skills/s{i}/SKILL.md", 10) for i in range(3)]
+        fake = _Fake(
+            json_routes={"/git/trees/": _tree(*refused, ("skills/reviewer/SKILL.md", 10))},
+            text_routes={"/commits/": _COMMIT, "/SKILL.md": _SKILL_MD},
+        )
+        with fake.install():
+            results = await gh.GitHubRepoProvider().search("acme/widgets", limit=2)
+        assert [r.id for r in results] == [f"acme/widgets@{_COMMIT}:skills/reviewer"]
+        # A refused directory is not fetched either: its row was never going to exist.
+        assert not any("/.claude/" in u for u in fake.text_urls)
 
     @pytest.mark.asyncio
     async def test_row_carries_frontmatter_and_pinned_urls(self):

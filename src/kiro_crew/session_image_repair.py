@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry_checked
 from kiro_crew.imaging import (
     MAX_IMAGE_EDGE_PX,
     downscale_image_block,
@@ -655,9 +656,10 @@ def apply_repair(
             handle.flush()
             os.fsync(handle.fileno())
         # Last possible moment: everything expensive is already done, so this
-        # leaves only the stat-to-rename gap instead of the whole write.
-        _refuse_if_moved(path, expect)
-        os.replace(tmp_name, path)
+        # leaves only the stat-to-rename gap instead of the whole write. Run
+        # before every retried attempt, not once: an append that lands while a
+        # scanner holds the temp must stop the repair, not be overwritten.
+        replace_with_retry_checked(tmp_name, path, lambda: _refuse_if_moved(path, expect))
     except BaseException:
         if fd_owned and fd is not None:
             os.close(fd)

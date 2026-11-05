@@ -165,7 +165,7 @@ async def _resolve_app_writer(
             request,
             app_name,
             "member_not_found",
-            "no crewmate has this slug",
+            "no Bot has this slug",
             404,
             operation=_RECORD_OPERATION,
         )
@@ -174,7 +174,7 @@ async def _resolve_app_writer(
             request,
             app_name,
             "ambiguous_slug",
-            "two crewmates share this slug, so the record has no single log to land in",
+            "two Bots share this slug, so the record has no single log to land in",
             409,
             operation=_RECORD_OPERATION,
         )
@@ -250,5 +250,11 @@ async def api_member_record(request: web.Request) -> web.Response:
         )
     data: dict[str, Any] = body["data"]
     return await record_through_door(
-        request, resolved, stored_type, data, caller=app_name, operation=_RECORD_OPERATION
+        request,
+        resolved,
+        stored_type,
+        data,
+        caller=app_name,
+        operation=_RECORD_OPERATION,
+        max_age_s=body.get("max_age_s"),
     )

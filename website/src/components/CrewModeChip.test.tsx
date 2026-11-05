@@ -4,6 +4,13 @@ import { CrewModeChip } from './CrewModeChip'
 import CrewModeWelcome, { CREW_WELCOME_PLAY_SECS } from './CrewModeWelcome'
 
 describe('CrewModeChip', () => {
+  it('wears the lightning bolt, not the ghost', () => {
+    render(<CrewModeChip onTurnOn={vi.fn()} />)
+    const chip = screen.getByTestId('crew-mode-chip')
+    expect(chip.querySelector('.lucide-zap')).not.toBeNull()
+    expect(chip.querySelector('[data-testid="kiro-ghost-mark"]')).toBeNull()
+  })
+
   it('reads off and reports it through aria-pressed', () => {
     render(<CrewModeChip onTurnOn={vi.fn()} />)
     const chip = screen.getByTestId('crew-mode-chip')
@@ -66,6 +73,14 @@ describe('CrewModeChip', () => {
     expect(onTurnOn).not.toHaveBeenCalled()
   })
 
+  it('fills the bolt only while on, so on and off differ at a glance', () => {
+    const { rerender } = render(<CrewModeChip onTurnOn={vi.fn()} onTurnOff={vi.fn()} />)
+    const bolt = () => screen.getByTestId('crew-mode-chip').querySelector('.lucide-zap')
+    expect(bolt()).toHaveAttribute('fill', 'none')
+    rerender(<CrewModeChip onTurnOn={vi.fn()} onTurnOff={vi.fn()} pressed />)
+    expect(bolt()).toHaveAttribute('fill', 'currentColor')
+  })
+
   it('keeps the accessible name Ultra Mode', () => {
     render(<CrewModeChip onTurnOn={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Ultra Mode', pressed: false })).toBeInTheDocument()
@@ -87,17 +102,17 @@ describe('CrewModeWelcome', () => {
     render(<CrewModeWelcome onOpenTaskBoard={vi.fn()} />)
     const page = screen.getByTestId('crew-mode-welcome')
     expect(within(page).getByRole('heading', { name: 'Ultra Mode' })).toBeInTheDocument()
-    expect(within(page).getByRole('button', { name: 'Task board' })).toBeInTheDocument()
+    expect(within(page).getByRole('button', { name: 'Board' })).toBeInTheDocument()
     expect(within(page).getAllByRole('button')).toHaveLength(1)
     // Every visible word on the page, in order: nothing beyond these.
-    expect(page.textContent).toBe('Ultra ModeYou set the goal. Your crew does the work.GoalSplitOwn chatsBoardNeeds youTask board')
+    expect(page.textContent).toBe('Ultra ModeYou set the goal. Your crew does the work.ProjectsSplitOwn chatsBoardNeeds youBoard')
   })
 
   it('reads the flow as an ordered list a screen reader can follow', () => {
     render(<CrewModeWelcome />)
     const flow = screen.getByRole('list', { name: 'How Ultra Mode works' })
     const steps = within(flow).getAllByRole('listitem').map(li => li.textContent)
-    expect(steps).toEqual(['Goal', 'Split', 'Own chats', 'Board', 'Needs you'])
+    expect(steps).toEqual(['Projects', 'Split', 'Own chats', 'Board', 'Needs you'])
   })
 
   it('keeps the art and the arrows out of the accessibility tree', () => {
@@ -164,10 +179,10 @@ describe('CrewModeWelcome', () => {
     expect(CREW_WELCOME_PLAY_SECS).toBeLessThanOrEqual(4)
   })
 
-  it('opens the task board from its one button', () => {
+  it('opens the Board from its one button', () => {
     const onOpenTaskBoard = vi.fn()
     render(<CrewModeWelcome onOpenTaskBoard={onOpenTaskBoard} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Task board' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Board' }))
     expect(onOpenTaskBoard).toHaveBeenCalledTimes(1)
   })
 
@@ -175,10 +190,12 @@ describe('CrewModeWelcome', () => {
     render(<CrewModeWelcome onOpenTaskBoard={vi.fn()} />)
     const btn = screen.getByTestId('crew-mode-open-board')
     // The name lives on the button itself, so hiding the label never loses it.
-    expect(btn).toHaveAttribute('aria-label', 'Task board')
-    expect(btn).toHaveAttribute('title', 'Task board')
+    expect(btn).toHaveAttribute('aria-label', 'Board')
+    expect(btn).toHaveAttribute('title', 'Board')
+    // The Board tab's own glyph, the lightning bolt.
+    expect(btn.querySelector('svg.lucide-zap')).not.toBeNull()
     const label = screen.getByTestId('crew-mode-open-board-label')
-    expect(label).toHaveTextContent('Task board')
+    expect(label).toHaveTextContent('Board')
     // Hidden on a short screen and in a narrow column, by the page's own queries.
     expect(label.className).toContain('[@media(max-height:480px)]:hidden')
     expect(label.className).toContain('@max-[18rem]/crewwelcome:hidden')

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, fireEvent, screen, waitFor } from '@testing-library/react'
+import { render, fireEvent, screen, waitFor, act } from '@testing-library/react'
 
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { SidebarFolderCtx, type SidebarFolderActions } from '../components/markdown/contexts'
@@ -189,11 +189,13 @@ describe('folder chip — a sidebar folder path in prose', () => {
     expect(onFolderReveal).toHaveBeenCalledTimes(2)
   })
 
-  it('copies the normalised path on Ctrl/Cmd+click instead of revealing', () => {
+  it('copies the normalised path on Ctrl/Cmd+click instead of revealing', async () => {
     renderWithFolders('`goal › worker`')
     const chip = chipFor('f-goal-worker')
     expect(chip).toHaveTextContent('goal › worker')
-    fireEvent.click(chip, { metaKey: true })
+    await act(async () => {
+      fireEvent.click(chip, { metaKey: true })
+    })
     expect(copyToClipboard).toHaveBeenCalledWith('goal/worker')
     expect(onFolderReveal).not.toHaveBeenCalled()
   })

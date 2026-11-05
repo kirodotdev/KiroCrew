@@ -108,11 +108,53 @@ MAX_PER_SESSION = 8
 #: recently; this cap is the backstop for a burst inside one expiry window.
 MAX_SESSIONS = 256
 
-_lock = threading.Lock()
-_pending: dict[str, list[dict[str, Any]]] = {}
+
+class Store:
+    """One park/claim registry: its records, its lock, its bounds and the kinds it
+    accepts. The session directives use :data:`DIRECTIVES`; another record of the
+    same shape -- parked by the gateway for a tool call, claimed by that call's
+    own input digest in the same turn -- gets a store of its own, so it shares
+    this mechanism without sharing its records (a directive :func:`discard`, or a
+    directive claim's miss report, never sees them).
+    """
+
+    def __init__(
+        self,
+        label: str,
+        kinds: frozenset[str],
+        *,
+        max_per_session: int = MAX_PER_SESSION,
+        max_sessions: int = MAX_SESSIONS,
+        miss_log_level: int = logging.WARNING,
+    ) -> None:
+        #: Names the store in its log lines.
+        self.label = label
+        self.kinds = frozenset(kinds)
+        # The caps are read here, once: patch the store's own attribute, not the
+        # module constant, to change one.
+        self.max_per_session = max_per_session
+        self.max_sessions = max_sessions
+        #: How loudly a claim that matched nothing is logged. A lost directive is
+        #: a warning; a store whose misses are expected says so with a lower level.
+        self.miss_log_level = miss_log_level
+        self.lock = threading.Lock()
+        self.pending: dict[str, list[dict[str, Any]]] = {}
 
 
-def publish(session_key: str, kind: str, args: dict[str, Any], input_digest: str) -> str:
+#: The session directives' registry, the one every function here defaults to.
+DIRECTIVES = Store("session-directive", DIRECTIVE_TOOLS)
+_lock = DIRECTIVES.lock
+_pending = DIRECTIVES.pending
+
+
+def publish(
+    session_key: str,
+    kind: str,
+    args: dict[str, Any],
+    input_digest: str,
+    *,
+    store: Store = DIRECTIVES,
+) -> str:
     """Park a validated directive for *session_key*; return its record id.
 
     *input_digest* is :func:`session_directive.call_input_digest` of the raw
@@ -125,7 +167,7 @@ def publish(session_key: str, kind: str, args: dict[str, Any], input_digest: str
     an empty *input_digest* — the caller is the gateway handler, and a request
     missing any of them did not come from one of Kiro Crew's own directive tools.
     """
-    if kind not in DIRECTIVE_TOOLS:
+    if kind not in store.kinds:
         raise ValueError(f"unknown directive kind: {kind!r}")
     if not session_key:
         raise ValueError("session_key required")
@@ -140,29 +182,30 @@ def publish(session_key: str, kind: str, args: dict[str, Any], input_digest: str
         "input_digest": input_digest,
         "at": now,
     }
-    with _lock:
-        queue = _pending.setdefault(session_key, [])
+    with store.lock:
+        queue = store.pending.setdefault(session_key, [])
         queue.append(record)
-        while len(queue) > MAX_PER_SESSION:
+        while len(queue) > store.max_per_session:
             dropped = queue.pop(0)
             logger.warning(
-                "session-directive queue full for %s: dropped unclaimed %s "
+                "%s queue full for %s: dropped unclaimed %s "
                 "(cap %d). Nothing claimed these — the session may hold no "
                 "consumer.",
+                store.label,
                 session_key,
                 dropped.get("kind"),
-                MAX_PER_SESSION,
+                store.max_per_session,
             )
         # Reclaim on the write path, because for many sessions there is no read
         # path: a claim only ever runs for a session whose turn reaches the
         # dashboard consumer, so a bucket belonging to any other surface is never
         # visited again and would live for the gateway's whole lifetime.
-        _sweep_locked(now)
+        _sweep_locked(now, store)
     return rec_id
 
 
-def _sweep_locked(now: float) -> None:
-    """Drop expired records, and the buckets they leave empty. Caller holds ``_lock``.
+def _sweep_locked(now: float, store: Store = DIRECTIVES) -> None:
+    """Drop expired records, and the buckets they leave empty. Caller holds ``store.lock``.
 
     Bounds the store in BOTH dimensions. Records inside a bucket are bounded by
     age; the number of BUCKETS is bounded because a bucket whose records have all
@@ -176,30 +219,32 @@ def _sweep_locked(now: float) -> None:
     so its bucket sorts last for eviction. Both fall out of the ordering, which is
     why there is no exemption argument to get wrong.
     """
-    for key in list(_pending):
-        fresh = [r for r in _pending[key] if now - float(r.get("at", 0.0)) <= MAX_AGE_SECS]
+    pending = store.pending
+    for key in list(pending):
+        fresh = [r for r in pending[key] if now - float(r.get("at", 0.0)) <= MAX_AGE_SECS]
         if fresh:
-            _pending[key] = fresh
+            pending[key] = fresh
         else:
-            del _pending[key]
-    if len(_pending) <= MAX_SESSIONS:
+            del pending[key]
+    if len(pending) <= store.max_sessions:
         return
     # Backstop: more distinct sessions published inside one expiry window than the
     # cap allows. Evict whole buckets, least-recently-published first, so the
     # sessions most likely to still have a live turn are the ones retained.
     victims = sorted(
-        _pending,
-        key=lambda k: max((float(r.get("at", 0.0)) for r in _pending[k]), default=0.0),
+        pending,
+        key=lambda k: max((float(r.get("at", 0.0)) for r in pending[k]), default=0.0),
     )
-    for key in victims[: len(_pending) - MAX_SESSIONS]:
-        dropped = _pending.pop(key, [])
+    for key in victims[: len(pending) - store.max_sessions]:
+        dropped = pending.pop(key, [])
         logger.warning(
-            "session-directive store full: evicted %s unclaimed record(s) for %s "
+            "%s store full: evicted %s unclaimed record(s) for %s "
             "(cap %d sessions). Nothing claimed them — that surface holds no "
             "out-of-band consumer.",
+            store.label,
             len(dropped),
             key,
-            MAX_SESSIONS,
+            store.max_sessions,
         )
 
 
@@ -208,6 +253,7 @@ def claim(
     input_digest: str,
     *,
     not_before: float | None = None,
+    store: Store = DIRECTIVES,
 ) -> dict[str, Any] | None:
     """Remove and return the ONE record for *session_key* parked under *input_digest*.
 
@@ -234,15 +280,16 @@ def claim(
     """
     if not session_key or not input_digest:
         logger.warning(
-            "session-directive CLAIM REFUSED before lookup: session_key=%r "
+            "%s CLAIM REFUSED before lookup: session_key=%r "
             "input_digest=%s (empty session key or empty digest). Nothing was claimed.",
+            store.label,
             session_key,
             (input_digest or "")[:12] or "empty",
         )
         return None
     now = time.monotonic()
-    with _lock:
-        queue = _pending.get(session_key)
+    with store.lock:
+        queue = store.pending.get(session_key)
         if not queue:
             return None
         hit: dict[str, Any] | None = None
@@ -256,7 +303,8 @@ def claim(
                     "stale(kind=%r age=%.1fs > %.1fs)" % (record.get("kind"), age, MAX_AGE_SECS)
                 )
                 logger.info(
-                    "session-directive dropped as stale for %s: %s (age %.0fs > %.0fs)",
+                    "%s dropped as stale for %s: %s (age %.0fs > %.0fs)",
+                    store.label,
                     session_key,
                     record.get("kind"),
                     age,
@@ -296,10 +344,12 @@ def claim(
             keep.append(record)
         if hit is None:
             if misses:
-                logger.warning(
-                    "session-directive CLAIM MISS for session_key=%r input_digest=%s: %d "
+                logger.log(
+                    store.miss_log_level,
+                    "%s CLAIM MISS for session_key=%r input_digest=%s: %d "
                     "parked record(s) were examined and none matched -> %s. The "
                     "record stays parked; the directive is NOT applied.",
+                    store.label,
                     session_key,
                     input_digest[:12],
                     len(misses),
@@ -308,14 +358,14 @@ def claim(
             # Nothing matched. Keep what survived the staleness sweep so a
             # sibling frame in this same turn can still find its own record.
             if keep:
-                _pending[session_key] = keep
+                store.pending[session_key] = keep
             else:
-                _pending.pop(session_key, None)
+                store.pending.pop(session_key, None)
             return None
         if keep:
-            _pending[session_key] = keep
+            store.pending[session_key] = keep
         else:
-            _pending.pop(session_key, None)
+            store.pending.pop(session_key, None)
     return hit
 
 

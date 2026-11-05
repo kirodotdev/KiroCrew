@@ -386,7 +386,7 @@
         },
         "title": "write",
         "tool_call_id": "toolu_bdrk_01Qr8iDRYLnEekDKkeGfHauu",
-        "tool_input": "{\n  \"__tool_use_purpose\": \"Create created.txt containing x.\",\n  \"command\": \"create\",\n  \"path\": \"created.txt\",\n  \"content\": \"x\"\n}",
+        "tool_input": "--- created.txt\n+++ created.txt\n@@ -0,0 +1 @@\n+x",
         "tool_kind": "edit",
         "tool_purpose": "Create created.txt containing x.",
         "wire_title": "write"

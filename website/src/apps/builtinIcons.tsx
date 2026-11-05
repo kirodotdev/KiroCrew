@@ -77,3 +77,12 @@ export function registerBuiltinIcons(entries: Record<string, ReactElement>): voi
 export function getBuiltinIcon(name: string): ReactElement | undefined {
   return BUILTIN_ICON_REGISTRY[name]
 }
+
+/**
+ * Whether `name` is a registered nav glyph. An OWN key only: the name can come
+ * from data (an adopted app's legacy nav entry), and a prototype member such as
+ * `constructor` must not read as a glyph.
+ */
+export function hasBuiltinIcon(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(BUILTIN_ICON_REGISTRY, name)
+}

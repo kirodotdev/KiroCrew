@@ -7,6 +7,7 @@ import OnboardingChapterShell, {
   EMBEDDED_SECTION_CLASS,
   OnboardingShellHost,
   PANEL_CLASS,
+  SCRIM_CLASS,
   SECTION_CLASS,
 } from './OnboardingChapterShell'
 
@@ -61,6 +62,21 @@ describe('OnboardingChapterShell narrow-viewport footer', () => {
     for (const mascot of mascots) {
       expect(mascot.classList.contains('hidden')).toBe(true)
     }
+  })
+
+  it('keeps the panel clear of the top and side safe-area insets at every width', () => {
+    // Below sm the panel fills the full-viewport scrim, so it pads its own top
+    // and sides (the footer pads the bottom, pinned above). From sm up it is a
+    // card, and the scrim's gutter must widen past any inset rather than stay a
+    // flat 24px. safeArea.guard.test.ts allowlists SCRIM_CLASS on this claim.
+    const panel = PANEL_CLASS.split(/\s+/)
+    expect(panel).toContain('pt-safe')
+    expect(panel).toContain('px-safe')
+    expect(panel).toContain('sm:pt-0')
+    expect(panel).toContain('sm:px-0')
+    const scrim = SCRIM_CLASS.split(/\s+/)
+    expect(scrim).toContain('sm:p-safe-or-6')
+    expect(scrim).not.toContain('sm:p-6')
   })
 
   it('never sizes against the large viewport or clips with overflow-hidden', () => {

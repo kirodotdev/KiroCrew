@@ -31,6 +31,7 @@ from kiro_crew.apps.manager_records import (
     InstalledApp,
     _now_iso,
     _read_installed,
+    _update_in_progress,
     _write_installed,
     app_dir,
     apps_dir,
@@ -349,11 +350,11 @@ def _edition_builtin_apps() -> list[dict[str, Any]]:
 def _edition_bundled_app_names() -> list[str]:
     """Names the active edition declares it bundles (PlatformContext).
 
-    The Default ``AppsLoader`` returns the OSS builtins (``auto_research`` /
-    ``file_explorer``) which are already covered by the package's ``builtins/``
-    discovery, so this is a no-op for standalone.  The internal companion declares
-    its feature-app names; used by orphan detection so a declared app is never
-    mis-orphaned even if its manifest dir is momentarily unavailable.
+    The Default ``AppsLoader`` returns none: the OSS builtins are covered by the
+    package's ``builtins/`` discovery, so this is a no-op for standalone.  The
+    internal companion declares its feature-app names; used by orphan detection so
+    a declared app is never mis-orphaned even if its manifest dir is momentarily
+    unavailable.
     """
     # Fail-closed via safe_context_call (see _edition_builtin_apps above).
     _no_names: list[str] = []
@@ -484,6 +485,37 @@ def builtin_owns_installed(name: str) -> bool:
     """
     existing = _read_installed(name)
     return existing is not None and _builtin_owns_install(existing)
+
+
+def _wheel_copy_released(name: str) -> bool:
+    """``builtin_adoption.builtin_released``; False when it cannot answer (today's rule)."""
+    try:
+        from kiro_crew.apps.builtin_adoption import builtin_released
+
+        return builtin_released(name)
+    except Exception:  # noqa: BLE001 - an unanswerable question registers as before
+        logger.debug("builtin release check failed for %s", name, exc_info=True)
+        return False
+
+
+def _is_adopted_record(name: str, record: InstalledApp) -> bool:
+    """Whether *record* is *name* adopted onto its pinned or marked repository."""
+    try:
+        from kiro_crew.apps.builtin_adoption import is_adopted_record
+
+        return is_adopted_record(name, record)
+    except Exception:  # noqa: BLE001 - unknown reads as the shadowing case
+        return False
+
+
+def _adoption_pin_names() -> frozenset[str]:
+    """Names the wheel pins for adoption (``builtin_adoption_pins``); empty on failure."""
+    try:
+        from kiro_crew.apps.builtin_adoption_pins import adoption_pin_names
+
+        return adoption_pin_names()
+    except Exception:  # noqa: BLE001 - no table is no adoption
+        return frozenset()
 
 
 def _app_declares_backend(app_data: dict[str, Any]) -> bool:
@@ -734,6 +766,26 @@ def register_builtin_apps() -> int:
 
         hold_app_record_lock(name)
         existing = _read_installed(name)
+        if _wheel_copy_released(name) and (existing is None or _is_adopted_record(name, existing)):
+            # Adopted from its own repository, or uninstalled after that: no
+            # directory, record, snapshot or secret. A pinned name on a host that
+            # never had it is not released, so it registers here as today and adopts
+            # later. A user app shadowing the name is not released, and gets the
+            # stand-down warning below.
+            logger.debug("Built-in %r is released to its repository; not registering", name)
+            continue
+        if existing is None and name in _adoption_pin_names() and _update_in_progress(name):
+            # A hard-killed adoption swap that recovery could not settle: the record's
+            # tree, data and secret sit aside. A fresh record here would put a reset
+            # app over them, and a later adoption's stale-copy cleanup would delete
+            # the data, so nothing registers until the files are put back.
+            logger.warning(
+                "Not registering builtin %r: an interrupted switch to its repository "
+                "left its files beside %s; restore them before it can run again",
+                name,
+                app_dir(name),
+            )
+            continue
 
         dest = app_dir(name)
         ensure_directory(dest)  # apps/<name>/ is born 0700 in the data home
@@ -897,11 +949,19 @@ def detect_orphaned_builtins(*, force_refresh: bool = False) -> set[str]:
     if not root.is_dir():
         _orphaned_builtins_cache = orphaned
         return orphaned
+    # A pinned former built-in is never an orphan, even once its package is gone:
+    # its record is pending adoption, and teardown would delete what moves.
+    pinned = _adoption_pin_names()
     for entry in root.iterdir():
         if not entry.is_dir():
             continue
         meta = _read_installed(entry.name)
-        if meta and meta.origin == "builtin" and entry.name not in builtin_names:
+        if (
+            meta
+            and meta.origin == "builtin"
+            and entry.name not in builtin_names
+            and entry.name not in pinned
+        ):
             orphaned.add(entry.name)
     _orphaned_builtins_cache = orphaned
     return orphaned
@@ -927,7 +987,7 @@ def migrated_builtin_cleanup_applies(name: str) -> bool:
     """
     from kiro_crew.apps.builtins import _MIGRATED_BUILTINS
 
-    if not _check_path_safety(name):
+    if not _check_path_safety(name) or name in _adoption_pin_names():
         return False
     path = app_dir(name)
     if path.is_symlink() or is_link_or_junction(path):

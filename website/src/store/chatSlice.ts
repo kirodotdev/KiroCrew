@@ -33,6 +33,9 @@ import { filterMessages, isUnsafeKey, safeKey } from './chat/wire'
 import { ensureMsgId, finalizeTrailingStreaming, floorForGen, isRedeliveredMessage, mintMsgId, reconcileOptimisticEcho } from './chat/transcript'
 import { OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, claimOlderFetchAbort, isSupersededPagingRejection, releaseOlderFetchAbort } from './chat/paging'
 import { reinsertThinkingOrphans } from './chat/thinking'
+import { isPendingCoordinatorApproval } from './chat/coordinatorApprovals'
+import { pruneDeliveredAttempts } from './chat/sendAttempts'
+import { rowSendIds } from '../utils/rowSendIds'
 import {
   bumpRunEpoch,
   finalizeActiveTurn,
@@ -342,8 +345,9 @@ function applyNonActiveFrame(
       bumpRunEpoch(state, slot)
       if (run.state === 'idle') run.lastChunkSeq = undefined
       sa.toolLog = []
+      // A coordinator card is not this turn's: it waits on the registry.
       for (const m of msgs) {
-        if (m.role === 'permission' && !m.meta?.resolved) { if (m.meta) m.meta.resolved = 'rejected'; else m.meta = { resolved: 'rejected' } }
+        if (m.role === 'permission' && !m.meta?.resolved && !isPendingCoordinatorApproval(m)) { if (m.meta) m.meta.resolved = 'rejected'; else m.meta = { resolved: 'rejected' } }
       }
     }
     // Reconcile the optimistic user bubble (appendSlotMessage) rather than
@@ -351,6 +355,8 @@ function applyNonActiveFrame(
     // Uses shared helper that scans past non-matching pipelined sends (#3898).
     const echoSendId = meta?.sendId as string | undefined
     if (echoSendId && meta?.mid) {
+      // A correlated echo proves delivery (see `pruneDeliveredAttempts`).
+      pruneDeliveredAttempts(state, slot, rowSendIds(meta))
       if (reconcileOptimisticEcho(msgs, echoSendId, meta as Record<string, unknown>, ts)) return
     } else if (meta?.mid) {
       // Fallback: no sendId on the echo — use tail content match for paths
@@ -560,9 +566,10 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
       bumpRunEpoch(state, slot)
       if (state.slotState === 'idle') state.lastChunkSeq = undefined
       state.toolLog = []
-      // Auto-resolve any stale permissions from previous turn so they don't block the new turn
+      // Auto-resolve any stale permissions from previous turn so they don't block the new turn.
+      // A coordinator card is not this turn's: it waits on the registry.
       for (const m of state.messages) {
-        if (m.role === 'permission' && !m.meta?.resolved) {
+        if (m.role === 'permission' && !m.meta?.resolved && !isPendingCoordinatorApproval(m)) {
           if (m.meta) m.meta.resolved = 'rejected'
           else m.meta = { resolved: 'rejected' }
         }
@@ -573,6 +580,8 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
     // scans past non-matching pipelined sends (#3898).
     const echoSendId = meta?.sendId as string | undefined
     if (echoSendId && meta?.mid) {
+      // A correlated echo proves delivery (see `pruneDeliveredAttempts`).
+      pruneDeliveredAttempts(state, slot, rowSendIds(meta))
       if (reconcileOptimisticEcho(state.messages, echoSendId, meta as Record<string, unknown>, ts)) return
     } else if (meta?.mid) {
       // Fallback: no sendId on the echo — use tail content match for paths
@@ -923,7 +932,9 @@ const chatSlice = createSlice({
     ...workflowReducers,
     ...mcpAppReducers,
     ...historyNoticeReducers,
-    setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
+    setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload; state.pendingInputSend = false },
+    /** Stage text that ChatPage sends at once in the active session (see `pendingInputSend`). */
+    stagePendingSend(state, action: PayloadAction<string>) { state.pendingInput = action.payload; state.pendingInputSend = true },
     /** Stage Side Chat text for the main composer of a specific slot. The host
      *  showing that slot appends it to the live draft; passing null clears the
      *  field after it is consumed. */
@@ -1065,16 +1076,16 @@ const chatSlice = createSlice({
 
 export const {
   setCloseRefused,
-  setActiveSlot, dropActiveSlot, forkOpenStarted, forkOpenSettled, clearSlotState, setPendingInput, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, confirmOptimisticSend, markSendUnconfirmed, dropUnconfirmedRow, resolveOptimisticSteer, removeByApprovalId, retireSwappedRows, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  setActiveSlot, dropActiveSlot, forkOpenStarted, forkOpenSettled, clearSlotState, setPendingInput, stagePendingSend, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  removeThinking, confirmOptimisticSend, markSendUnconfirmed, dropUnconfirmedRow, recordSendAttempt, resolveOptimisticSteer, removeByApprovalId, retireSwappedRows, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoicePreparing, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, closeActivityPanel, setSidePanelAlwaysOpen, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
+  toggleActivity, openActivityToTab, openActivityPanel, closeActivityPanel, setSidePanelAlwaysOpen, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, subagentReplayDone, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setAutomations, sseAutomation, removeAutomation,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseMcpAppRender,
   sseWorkflowEvent, clearWorkflowRun, reconcileWorkflowRuns,
-  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideRestore, sideRestoreReading, sideResync, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback,
+  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideClosedElsewhere, sideRestore, sideRestoreReading, sideResync, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback,
 } = chatSlice.actions
 
 /** The `GET /api/spawn` read in flight, shared by every gone card that asks
@@ -1203,12 +1214,15 @@ export const awaitSideRestore = createAsyncThunk<'restored' | 'failed' | 'timeou
 const latestSideResyncRead = new Map<string, object>()
 
 /**
- * A side turn can end while this tab cannot hear it: before its socket first
- * connects, when the restore read was answered first, or while the socket is
- * down. Its final frame then reaches no socket of this tab, and a panel waiting
- * on the turn would wait until the next reload. So each time the socket opens,
- * every restored panel still waiting on a turn reads the gateway's copy again
- * (`sideResync`), once any restore read still in flight has landed. A 404 means
+ * Side Chat frames reach only the sockets connected when they are sent. While
+ * this tab cannot hear them -- before its socket first connects, when the
+ * restore read was answered first, or while the socket is down -- a side turn
+ * can end, another tab can ask and be answered, and queued questions can be
+ * added, run or cancelled. A panel waiting on a turn would wait until the next
+ * reload, and an idle one would show a conversation and a queue the gateway no
+ * longer holds. So each time the socket opens, every restored panel reads the
+ * gateway's copy again (`sideResync`), whether or not it waits on a turn, once
+ * any restore read still in flight has landed. A 404 means
  * the slot is gone, so nothing of it still runs. A conversation closed and
  * replaced while the read was out keeps to its own frames. Only the newest read
  * sent for a slot is applied: an older one can answer after it, and would undo
@@ -1222,7 +1236,7 @@ export const resyncWaitingSideConversations = createAsyncThunk<void, void, { sta
       await sideRestoreReads.get(slot)?.catch(() => undefined)
       const { slotSide, slotSideRestored } = getState().chat
       const side = slotSide[slot]
-      if (!slotSideRestored?.[slot] || !side || !(side.pending || side.streaming || side.awaitingFinalRunId)) return
+      if (!slotSideRestored?.[slot] || !side) return
       const thisRead = {}
       latestSideResyncRead.set(slot, thisRead)
       let snapshot: SideSnapshot | undefined
@@ -1239,7 +1253,7 @@ export const resyncWaitingSideConversations = createAsyncThunk<void, void, { sta
   },
 )
 
-export { clampToolOutput, TOOL_OUTPUT_MAX_CHARS, normalizeQueueEntries, queueEntryAttachments, queueEntryPastes, queueEntryQuote, type QueueEntryAttachments } from './chat/wire'
+export { clampToolOutput, TOOL_OUTPUT_MAX_CHARS, normalizeQueueEntries, queueEntryAttachments, queueEntryBanner, queueEntryPastes, queueEntryQuote, type QueueEntryAttachments } from './chat/wire'
 export { hydrateQueuedBubbles } from './chat/queue'
 export { floorForGen, hasUnidentifiedDurableRow, raiseChunkSeq, snapshotChunkGen, snapshotChunkSeq, transcriptTsMs } from './chat/transcript'
 export {
@@ -1256,14 +1270,14 @@ export {
 } from './chat/subagents'
 export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys } from './chat/workflows'
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
-export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
+export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
 export {
-  selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendConfirmed, selectSlotMessages,
+  selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
   selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
   selectSlotTurnFromWake, selectTurnInterrupted,
   QUIET_END_SERVER, QUIET_END_TOOL,
 } from './chat/selectors'
-export { clearSwitchSlotGone, switchSlot, switchSlotNoticeCopy, type SwitchSlotArg } from './chat/slotSwitch'
+export { clearSwitchSlotGone, setSwitchSlotGone, switchSlot, switchSlotNoticeCopy, type SwitchSlotArg } from './chat/slotSwitch'
 export { refreshSlot, warmSlotCache } from './chat/slotRefresh'
 export { wireTurnIdentity } from './chat/runState'
 export { WINDOW_WALK_MAX_PAGES } from './chat/windowWalk'

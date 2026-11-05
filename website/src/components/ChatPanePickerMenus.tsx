@@ -5,6 +5,7 @@ import { Btn } from './ui'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter, defaultWriteKind, isCrewmateChat } from './AgentDropdownList'
 import ModelDropdownList from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
+import EffortOffOnAutoNote from './EffortOffOnAutoNote'
 import { ManageModelsFooter, MORE_BELOW_MASK } from './ModelEffortDropdown'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 import { settingsPath } from './settingsPath'
@@ -82,7 +83,7 @@ export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate }: Omit<
 }
 
 export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate }: MenuProps) {
-  const { modelDD, modelBtnRect, hiddenModelsQ, selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, attachModelList, modelListEdges, shownModel, modelPickerConfigured, effortSupported, codexPairModels, defaultEffort, effortLevelsOverride } = models
+  const { modelDD, modelBtnRect, hiddenModelsQ, selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, attachModelList, modelListEdges, shownModel, modelPickerConfigured, effortSupported, codexPairModels, defaultEffort, effortLevelsOverride, effortAutoNote } = models
   const { modelDialogIme, onModelListKeyDown, switchModel } = actions
   return (
     <>
@@ -184,6 +185,7 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
               />
             </div>
           )}
+          {!effortSupported && effortAutoNote && <EffortOffOnAutoNote />}
          </div>
         </div>
       }</OverlayPortal>}

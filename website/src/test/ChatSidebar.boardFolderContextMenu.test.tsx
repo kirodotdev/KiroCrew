@@ -71,6 +71,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { stubAppConfirm } from './appConfirmStub'
 
 const REVIEW = '22222222-2222-2222-2222-222222222222'
 const ONCALL = '33333333-3333-3333-3333-333333333333'
@@ -233,16 +234,15 @@ describe('board view: folder right-click menu', () => {
   })
 
   it('deletes only through the same confirm as the ⋯ menu', async () => {
-    const confirmFn = vi.fn().mockReturnValue(false)
-    vi.stubGlobal('confirm', confirmFn)
+    const confirmFn = stubAppConfirm(false)
     const { container } = await renderSidebar()
 
     fireEvent.contextMenu(colFolderRow(container, COL_A), { clientX: 40, clientY: 20 })
     fireEvent.click(screen.getByTestId(ctxItem(COL_A, 'delete')))
-    expect(confirmFn).toHaveBeenCalledWith('Delete “CDF”? Sessions will be ungrouped.')
+    expect(confirmFn).toHaveBeenCalledWith(expect.objectContaining({ body: 'Delete “CDF”? Sessions will be ungrouped.' }))
     expect(mocks.deleteChatFolder).not.toHaveBeenCalled()
 
-    confirmFn.mockReturnValue(true)
+    confirmFn.mockImplementation(() => Promise.resolve(true))
     fireEvent.contextMenu(colFolderRow(container, COL_A), { clientX: 40, clientY: 20 })
     fireEvent.click(screen.getByTestId(ctxItem(COL_A, 'delete')))
     await waitFor(() => expect(mocks.deleteChatFolder).toHaveBeenCalledWith(FOLDER_ID))

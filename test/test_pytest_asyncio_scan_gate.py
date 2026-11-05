@@ -130,12 +130,14 @@ class TestTheGateIsInstalledInThisSession:
 
         before_gate = pa._preprocess_async_fixtures
         before_register = FixtureManager._register_fixture
-        monkeypatch.delattr(FixtureManager, "_register_fixture")
-        monkeypatch.setattr(pa, "_preprocess_async_fixtures", lambda config, holder: None)
-        with pytest.warns(RuntimeWarning, match="fixture-scan gate not installed"):
-            root_conftest._gate_pytest_asyncio_fixture_scan()
-        assert not isinstance(pa._preprocess_async_fixtures, root_conftest._AsyncFixtureScanGate)
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.delattr(FixtureManager, "_register_fixture")
+            mp.setattr(pa, "_preprocess_async_fixtures", lambda config, holder: None)
+            with pytest.warns(RuntimeWarning, match="fixture-scan gate not installed"):
+                root_conftest._gate_pytest_asyncio_fixture_scan()
+            assert not isinstance(
+                pa._preprocess_async_fixtures, root_conftest._AsyncFixtureScanGate
+            )
         assert pa._preprocess_async_fixtures is before_gate
         assert FixtureManager._register_fixture is before_register
 

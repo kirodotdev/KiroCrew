@@ -292,7 +292,7 @@ describe('SelectionToolbar — composer mode', () => {
     render(<Harness actions={actions} composer={composer} />)
     await openComposer()
     const copy = screen.getByRole('button', { name: 'Copy' })
-    copy.focus()
+    act(() => { copy.focus() })
     fireEvent.keyDown(copy, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('selection-composer')).toBeNull())
     expect(composer.onClose).toHaveBeenCalledTimes(1)
@@ -1180,7 +1180,7 @@ describe('SelectionToolbar — composer mode, drafts and hidden tabs', () => {
     fireEvent.change(input, { target: { value: 'kept' } })
     // Click-away with a draft keeps the box but moves focus out of it.
     fireEvent.mouseDown(document.body)
-    ;(document.activeElement as HTMLElement | null)?.blur()
+    act(() => { (document.activeElement as HTMLElement | null)?.blur() })
     fireEvent.keyUp(document.body, { key: 'Escape' })
     await waitFor(() => expect(confirmDiscard).toHaveBeenCalledTimes(1))
     await act(async () => { await new Promise(r => setTimeout(r, 20)) })

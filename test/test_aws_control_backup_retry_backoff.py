@@ -1,14 +1,9 @@
 """AWS Control backup: the nightly due check and its retry backoff.
 
-Covers ``due_for_nightly`` reading an unparseable run stamp as due, the
-``nightly_retry_delay_secs`` schedule and ceiling, and ``record_nightly_failure``:
-its per-kind count and ``since`` streak start, the clear a current or recovered
-run applies, the run-witness refusal when a run lands mid-attempt, and how the
-stored error is redacted, stripped of control characters and truncated.
-
-A corrupt or future-dated failure row reads as due, a corrupt count restarts at
-one, and an unwritable state file makes the recorder return ``None`` rather than
-raise. Both classes point ``_state_path`` into ``tmp_path``.
+Covers ``due_for_nightly``, the ``nightly_retry_delay_secs`` schedule,
+``record_nightly_failure`` (count, ``since``, clears, run-witness refusal, stored
+error) and the install-global "no working AWS key" skip record. Every class points
+``_state_path`` into ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -24,16 +19,13 @@ from aws_control_backup_helpers import (
 
 from kiro_crew.apps.builtins.aws_control.backend import backup
 
-# ---------------------------------------------------------------------------
 # due_for_nightly — the malformed-timestamp branch
-# ---------------------------------------------------------------------------
 
 
 class TestDueForNightlyBadStamp:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin moved verbatim; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         yield
 
     def test_unparseable_last_run_timestamp_reads_as_due(self):
@@ -54,20 +46,15 @@ class TestDueForNightlyBadStamp:
         assert backup.due_for_nightly(ACCOUNT) is True
 
 
-# ---------------------------------------------------------------------------
 # The retry backoff — a failed unattended attempt is recorded, so a
 # deterministic fault stops being re-attempted on every wake
-# ---------------------------------------------------------------------------
 
 
 def _fail(account: str, kind: str, error: str = "eio"):
     """Record a failed unattended attempt the way the nightly loop does.
 
-    The witness is read FIRST and passed in, because ``record_nightly_failure`` requires
-    it: a test that hand-rolled ``run_witness=None`` would be asserting against a
-    protocol the loop does not follow, and the required keyword is what makes that
-    impossible to do by accident. Returns the recorder's own answer -- a record, or
-    ``None`` when the run slot moved and the write was refused.
+    The witness is read first, as the loop does. Returns a record, or ``None`` when the
+    run slot moved and the write was refused.
     """
     return backup.record_nightly_failure(
         account, kind, error, run_witness=backup.nightly_run_witness(account, kind)
@@ -75,23 +62,15 @@ def _fail(account: str, kind: str, error: str = "eio"):
 
 
 class TestNightlyRetryBackoff:
-    """Before this, only COMPLETED runs were recorded.
+    """Failed runs are recorded, so "never ran" differs from "keeps breaking".
 
-    So a deterministic fault -- an unreadable file, a disconnected mount, a full
-    disk -- left the state file unable to tell "never ran" from "keeps breaking":
-    ``due_for_nightly`` took its never-ran branch on every half-hourly wake, each
-    attempt re-staged the whole data home into a fresh temporary directory, and the
-    same traceback repeated at that cadence for as long as the fault lasted.
-
-    Every test here asserts on the DUE-CHECK's answer rather than on the stored
-    row, because the answer is what the loop acts on; the stored row is checked
-    only where the point is what was written.
+    A deterministic fault would otherwise re-stage the whole data home every wake.
+    Tests assert on the due-check's answer, since that is what the loop acts on.
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin moved verbatim; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         yield
 
     @staticmethod
@@ -156,16 +135,15 @@ class TestNightlyRetryBackoff:
         assert max(backup.NIGHTLY_RETRY_BACKOFF_SECS) < backup.NIGHTLY_WINDOW_SECS
 
     def test_one_failure_still_retries_on_the_next_wake(self):
-        # A single failure is not yet evidence of a pattern, and the issue calls
-        # retrying a transient fault correct. So nothing about a one-off blip
-        # changes: the first recorded failure earns no wait at all.
+        # One failure is not a pattern and retrying a transient fault is correct, so
+        # the first recorded failure earns no wait.
         backup.set_nightly(ACCOUNT, True)
         record = _fail(ACCOUNT, backup.KIND_SNAPSHOT, "transient")
         assert record["consecutive"] == 1
         assert backup.nightly_retry_delay_secs(1) == 0
         assert backup.due_for_nightly(ACCOUNT, now=self._at(record)) is True
 
-    # -- the defect this change closes -------------------------------------
+    # repeated failures back off
 
     def test_a_repeated_failure_withholds_the_next_wake_and_then_releases_it(self):
         # THE regression. With no run record at all -- the reported case, a nightly
@@ -215,21 +193,9 @@ class TestNightlyRetryBackoff:
     def test_only_a_current_run_retires_the_backoff(self, superseded, backoff_set):
         """The four combinations of losing the slot and carrying a standing backoff.
 
-        A success clears the count, and a run whose own record is refused as stale is
-        not a success this document can act on: too stale to write a key is too stale
-        to retire a count a later failure accumulated. So the clear shares the run
-        write's condition, which is what :func:`_merge_pending` says at the other place
-        the two travel together.
-
-        Supersession is produced by raising the stored run's ``sequence``, because
-        ``superseded`` is the same-process half of ``_run_is_newer`` -- it compares the
-        stored record's ``process`` and ``sequence`` against the incoming run's, so a
-        raised sequence makes this process's next run the loser.
-        ``test_a_superseded_run_keeps_the_nightly_backoff`` is what shows two real runs
-        reach that state; this one is what enumerates every combination cheaply.
-
-        MUTATION: move the ``_clear_nightly_failure`` call in ``_record_run_locked`` out
-        of the ``if not superseded:`` branch and the superseded/backoff-set case reddens.
+        A run too stale to write its record is too stale to retire a later count, so the
+        clear shares the run write's condition. Raising the stored ``sequence`` makes
+        this process's next run the loser in ``_run_is_newer``.
         """
         backup._unpersisted_runs.clear()
         try:
@@ -276,16 +242,8 @@ class TestNightlyRetryBackoff:
     def test_a_failure_before_the_winning_run_commits_is_retired_by_that_run(self):
         """The ordering half: WHEN the failure is written decides who meets it.
 
-        A failure recorded before the winning run commits is retired by that run's own
-        mutate, so it is gone whichever condition the clear carries -- the two
-        placements agree here, and this is the ordering that a reader assumes is the
-        only one. The divergent ordering is a failure recorded AFTER the winner commits,
-        which ``test_a_superseded_run_keeps_the_nightly_backoff`` builds with two real
-        writers: there the only run left to meet the row is one whose record was
-        refused.
-
-        Kept separate from the matrix above because the matrix varies WHO the run is
-        while holding the order fixed; this varies the order.
+        Either clear placement retires it here. The diverging order, a failure after the
+        winner commits, is built by ``test_a_superseded_run_keeps_the_nightly_backoff``.
         """
         backup.set_nightly(ACCOUNT, True)
         for _ in range(3):
@@ -651,9 +609,9 @@ class TestNightlyRetryBackoff:
     # -- the row says WHEN the streak started, not only the last attempt ------
 
     def test_the_row_carries_the_streaks_start_as_well_as_the_last_attempt(self):
-        # The issue asks for this by name: an operator has to see that the nightly "has
-        # been failing since a particular day". `at` is the backoff's clock and must be
-        # the latest attempt, so one overwritten stamp cannot answer both questions.
+        # An operator must see that the nightly "has been failing since a particular
+        # day". `at` is the backoff's clock and must be the latest attempt, so one
+        # overwritten stamp cannot answer both questions.
         backup.set_nightly(ACCOUNT, True)
         first = _fail(ACCOUNT, backup.KIND_SNAPSHOT, "eio")
         assert first["since"] == first["at"]  # a streak of one starts where it is
@@ -868,3 +826,121 @@ class TestNightlyRetryBackoff:
         record = _fail(ACCOUNT, backup.KIND_SNAPSHOT, "e" * 5000)
         assert len(record["error"]) == 200
         assert len(backup.nightly_failures(ACCOUNT)[backup.KIND_SNAPSHOT]["error"]) == 200
+
+
+class TestNightlyNoWorkingKeySkip:
+    """The install-global record for "no working AWS key, every wake skipped".
+
+    ``hooks._run_once`` skips before any account resolves, so the record is
+    install-global; the accounts read then shows the nightly as skipped.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        yield
+
+    def test_enabled_any_account_reads_every_accounts_grant(self):
+        # Nothing configured -> nothing scheduled, so no skip should ever be recorded.
+        assert backup.nightly_enabled_any_account() is False
+        # Snapshot grant on one account is enough.
+        backup.set_nightly(ACCOUNT, True)
+        assert backup.nightly_enabled_any_account() is True
+        backup.set_nightly(ACCOUNT, False)
+        assert backup.nightly_enabled_any_account() is False
+        # The sessions grant counts too, on any account.
+        backup.set_nightly_sessions("999988887777", True)
+        assert backup.nightly_enabled_any_account() is True
+
+    def test_warns_once_per_streak_and_carries_since(self):
+        # First wake of the streak: the caller is told to warn, and a record lands.
+        assert backup.record_nightly_no_key_skip() is True
+        first = backup.nightly_no_key_skip()
+        assert first is not None
+        assert first["consecutive"] == 1
+        assert first["reason"] == "no_working_key"
+        assert first["since"] == first["at"]
+
+        # Every later wake of the SAME streak: no warning, streak grows, `since`
+        # stays the day the streak began while `at` advances.
+        assert backup.record_nightly_no_key_skip() is False
+        second = backup.nightly_no_key_skip()
+        assert second["consecutive"] == 2
+        assert second["since"] == first["since"]  # carried, not re-stamped
+        assert second["at"] >= first["at"]
+
+        assert backup.record_nightly_no_key_skip() is False
+        assert backup.nightly_no_key_skip()["consecutive"] == 3
+
+    def test_a_resolved_key_clears_the_record(self):
+        backup.record_nightly_no_key_skip()
+        assert backup.nightly_no_key_skip() is not None
+        backup.clear_nightly_no_key_skip()
+        assert backup.nightly_no_key_skip() is None
+        # And the next skip starts a fresh streak (warns again, consecutive back to 1).
+        assert backup.record_nightly_no_key_skip() is True
+        assert backup.nightly_no_key_skip()["consecutive"] == 1
+
+    def test_clear_is_a_no_op_when_there_is_no_record(self):
+        # Never raises, and leaves the reader answering None.
+        backup.clear_nightly_no_key_skip()
+        assert backup.nightly_no_key_skip() is None
+
+    def test_clear_with_no_record_leaves_the_state_file_alone(self, tmp_path):
+        # The healthy path clears on every wake, so the no-record case must not
+        # write: no file appears, and an existing one keeps its inode and mtime
+        # (the state writer replaces the file atomically, which changes both).
+        state_file = tmp_path / "backup.json"
+        backup.clear_nightly_no_key_skip()
+        assert not state_file.exists()
+
+        backup.set_nightly(ACCOUNT, True)
+        before = state_file.stat()
+        backup.clear_nightly_no_key_skip()
+        after = state_file.stat()
+        assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+    def test_a_corrupt_consecutive_restarts_the_streak_rather_than_reading_as_long(self):
+        # A corrupted document carrying a bool/str must not read as a previous wake;
+        # the streak restarts at 1 so corruption can only UNDER-report the skip.
+        def mutate(state):
+            state[backup.NIGHTLY_NO_KEY_STATE_KEY] = {
+                "consecutive": True,  # bool is an int subclass; must be rejected
+                "since": "not-a-timestamp",
+                "at": "also-bad",
+                "reason": "no_working_key",
+            }
+
+        backup._locked_state_update(mutate)
+        # Warns (streak treated as new) and rewrites a clean record.
+        assert backup.record_nightly_no_key_skip() is True
+        row = backup.nightly_no_key_skip()
+        assert row["consecutive"] == 1
+        assert row["since"] == row["at"]  # the bad `since` was not carried
+
+    def test_an_unusable_since_restamps_without_resetting_a_valid_count(self):
+        # The count identifies the standing streak independently of its timestamp.
+        def mutate(state):
+            state[backup.NIGHTLY_NO_KEY_STATE_KEY] = {
+                "consecutive": 7,
+                "since": "not-a-timestamp",
+                "at": "also-bad",
+                "reason": "no_working_key",
+            }
+
+        backup._locked_state_update(mutate)
+        before = dt.datetime.now(dt.timezone.utc)
+        assert backup.record_nightly_no_key_skip() is False
+        after = dt.datetime.now(dt.timezone.utc)
+
+        row = backup.nightly_no_key_skip()
+        assert row["consecutive"] == 8
+        assert row["since"] == row["at"]
+        assert before <= dt.datetime.fromisoformat(row["since"]) <= after
+
+    def test_reader_treats_a_non_dict_record_as_absent(self):
+        def mutate(state):
+            state[backup.NIGHTLY_NO_KEY_STATE_KEY] = "corrupt"
+
+        backup._locked_state_update(mutate)
+        assert backup.nightly_no_key_skip() is None

@@ -49,7 +49,7 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.hooks import safe_read_file_bytes
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, safe_read_prefix
 from kiro_crew.platform import boot_platform
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -160,6 +160,24 @@ SENSITIVE_DIRS = {
 # KiroCrew data-home subdirectories that are safe for the file explorer to
 # access. Everything else under the data home is blocked (keys, tokens, DB,
 # sessions).
+#
+# ``members`` holds one directory per crewmate, each carrying only that
+# crewmate's non-secret working files: its activity log, first-welcome marker,
+# the self-briefing it keeps for its future self, its Dynamic Dashboard page
+# state, and the notes and drafts it writes for the user. The chat file preview
+# already opens these (its read gate
+# is the sensitive-path list, which does not name anything under ``members/``),
+# so the file explorer refusing the same files was a gap: this set predates
+# member spaces and was never updated when they arrived. Listing ``members``
+# here lets the explorer read exactly what the preview already reads -- no
+# write-access change.
+#
+# The secret-holding member data is NOT under ``members/`` and stays refused on
+# both read paths by name: per-crewmate rules, goals and DM bindings live in the
+# sibling ``member-records/`` leaf, memory in ``memory_stores/``, and retained V1
+# bindings in ``member-memory-bindings/`` -- each denied by the shared
+# sensitive-path list and masked by the OS sandbox. Those are siblings of
+# ``members/``, not children of it, so admitting ``members`` does not reach them.
 _KIROCREW_SAFE_SUBDIRS = {
     "workspace",
     "uploads",
@@ -171,6 +189,7 @@ _KIROCREW_SAFE_SUBDIRS = {
     "pods",
     "logs",
     "crons",
+    "members",
 }
 
 _SENSITIVE_DIRS_CF = frozenset(d.casefold() for d in SENSITIVE_DIRS)
@@ -626,10 +645,10 @@ def _is_binary_file(p: Path) -> bool:
     p = _contain_in_allowed_roots(p, operation="file_read")
     # Sniff first 8KB for NUL bytes
     try:
-        chunk = safe_read_file_bytes(str(p))
+        chunk = safe_read_prefix(str(p), 8192)
         if chunk is None:
             return False
-        if b"\x00" in chunk[:8192]:
+        if b"\x00" in chunk:
             return True
     except OSError:
         return False
@@ -862,7 +881,9 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
         return _search_python(root, query, include, exclude)
     out: list[dict] = []
     for line in proc.stdout.splitlines():
-        if len(out) >= MAX_SEARCH_RESULTS:
+        # Keep one result past the cap so the caller can tell "exactly full"
+        # from "more were cut off".
+        if len(out) > MAX_SEARCH_RESULTS:
             break
         try:
             obj = json.loads(line)
@@ -938,7 +959,8 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
                 dirnames[:] = [d for d in dirnames if _is_safe_crew_subdir(d)]
             filenames[:] = []  # never surface crew-home root files
         for fn in filenames:
-            if len(out) >= MAX_SEARCH_RESULTS:
+            # One result past the cap, as in ``_search_rg``.
+            if len(out) > MAX_SEARCH_RESULTS:
                 return out
             fp = Path(dirpath) / fn
             if inc_pats and not _matches_globs(fp, inc_pats):
@@ -964,10 +986,10 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
                                 "preview": line.rstrip("\n")[:400],
                             }
                         )
-                        if len(out) >= MAX_SEARCH_RESULTS:
+                        if len(out) > MAX_SEARCH_RESULTS:
                             return out
                         break  # one match per file is enough for v1 list
-            except OSError:
+            except (OSError, FileTooLargeError):
                 continue
     return out
 
@@ -1161,7 +1183,9 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
             return self._json(200, body)
         # Text: utf-8 with replacement, optional truncation
         try:
-            raw_bytes = safe_read_file_bytes(str(p))
+            # Read one byte past the cap: enough to know whether to truncate,
+            # and never the whole file (which the 50 MB read cap refuses).
+            raw_bytes = safe_read_prefix(str(p), max_bytes + 1)
             if raw_bytes is None:
                 raise PathError("access denied", 403)
             truncated = len(raw_bytes) > max_bytes
@@ -1185,12 +1209,15 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
             return self._json(200, {"results": [], "engine": "rg" if _has_rg() else "python"})
         _sel_audit("file_search", f"{p} q={q}")
         results = _search(p, q, include=include, exclude=exclude)
+        # The collectors return at most one result past the cap; only that
+        # extra result proves matches were cut off.
+        truncated = len(results) > MAX_SEARCH_RESULTS
         return self._json(
             200,
             {
-                "results": results,
+                "results": results[:MAX_SEARCH_RESULTS],
                 "engine": "rg" if _has_rg() else "python",
-                "truncated": len(results) >= MAX_SEARCH_RESULTS,
+                "truncated": truncated,
             },
         )
 

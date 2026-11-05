@@ -12,10 +12,12 @@
 // (wave 2 builds the faithful drawing and the queue dashboard on top of these).
 //
 // FORWARD-TOLERANT, like the seam it reads. `crewFabric()` never throws on a repo
-// with no fabric: a 404 (issue-radar disabled / route absent), 500, 403 (repo not
+// with no fabric: a 404 (issue-radar disabled / route absent / repo not
 // connected), a non-JSON body, or a payload from a newer schema all collapse to
 // the same normalized empty result, and the view renders its designed empty
 // state. The EMPTY case is the COMMON one — most installs never ran a crew.
+// A FAILURE is not empty: a transport error or any other non-2xx throws, so the
+// view can say it could not ask instead of claiming the queue is idle.
 
 /** The issue-radar API base — the seam owner. */
 const ISSUE_RADAR_API = '/api/apps/issue-radar'
@@ -158,9 +160,11 @@ function setRepoIdentity(q: URLSearchParams, repo: RepoRef): void {
 export const autoTriagePipelineApi = {
   /**
    * Fetch the folded crew fabric for a repo. Never throws on "no data yet": a
-   * transport failure, any non-2xx, a non-JSON body, or a payload missing the
-   * fields the view reads all normalize to an empty result the view draws its
-   * designed empty state for.
+   * 404, a non-JSON body, or a payload missing the fields the view reads all
+   * normalize to an empty result the view draws its designed empty state for.
+   * A transport failure or any other non-2xx THROWS, carrying its status and the
+   * backend `code`: nothing was answered, and "no crews" would be a claim the
+   * client cannot make.
    */
   crewFabric: async (ref: RepoRef): Promise<CrewFabricResponse> => {
     const empty = (): CrewFabricResponse => ({
@@ -173,18 +177,30 @@ export const autoTriagePipelineApi = {
       phases: [...CREW_PHASES],
       items: [],
     })
-    let r: Response
-    try {
-      const q = new URLSearchParams(repoQuery(ref))
-      r = await fetch(`${ISSUE_RADAR_API}/crew/fabric?${q.toString()}`, {
-        credentials: 'same-origin',
-      })
-    } catch {
-      // Transport-level failure (offline / DNS): nothing was answered, so this is
-      // "no data yet" too, not a thrown error the caller must special-case.
-      return empty()
+    // A transport-level failure (offline / DNS) rejects here and reaches the
+    // query's `isError`, unlike the 4xx "no fabric" answers below.
+    const q = new URLSearchParams(repoQuery(ref))
+    const r = await fetch(`${ISSUE_RADAR_API}/crew/fabric?${q.toString()}`, {
+      credentials: 'same-origin',
+    })
+    // 404 is the one "no fabric" answer: the route is absent (Issue Radar off) or
+    // the repo is not connected (`repo_not_connected`). Every other non-2xx is a
+    // failure -- a 5xx outage, an expired sign-in's 403 -- and folding it into
+    // empty put a confident "no activity yet" in front of it.
+    if (r.status === 404) return empty()
+    if (!r.ok) {
+      let code = ''
+      try {
+        const o = (await r.json()) as { code?: unknown } | null
+        if (o && typeof o.code === 'string') code = o.code
+      } catch {
+        /* a body that will not parse simply has no code */
+      }
+      const err = new Error(`request failed with status ${r.status}`) as ApiError
+      err.status = r.status
+      if (code) err.code = code
+      throw err
     }
-    if (!r.ok) return empty()
     let body: unknown
     try {
       body = await r.json()

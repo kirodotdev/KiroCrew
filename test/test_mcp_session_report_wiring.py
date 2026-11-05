@@ -46,11 +46,8 @@ def _failed_frame(name: str, error: str) -> JsonRpcMessage:
 def drain_clock(monkeypatch):
     """The clock ``AcpClient._drain_notifications`` reads, moved only by its own readings.
 
-    The drain takes its deadline on entry and checks it before every read, so a host that
-    stalls for longer than a test's ``duration`` in between ends the drain before its
-    first read. On this clock each reading moves time 10 ms: the drain reaches its first
-    read about 20 ms into a deadline of 100 ms or more however slow the host is, and the
-    deadline still arrives after a bounded number of loop turns.
+    A stalled host could pass the drain's deadline before its first read. Here each
+    reading moves 10 ms, so the first read lands about 20 ms in however slow the host is.
     """
     ManualClock(monotonic_start=0.0, tick=0.01).install(monkeypatch, acp_client)
 
@@ -434,11 +431,8 @@ class TestLiveEventOwnershipIsWired:
 class TestBothTransportsAreReached:
     """The reach must work for BOTH providers.
 
-    The publish must not take the provider's inner ``.client``: ``AcpProvider``
-    (dedicated) exposes one, but ``AcpSessionProvider`` (shared runtime) does not, so
-    that reach evaluates to None there and the report never reaches the slot —
-    the panel then falls back to host-configured green dots on that whole transport,
-    which is the exact defect this feature exists to remove.
+    ``AcpSessionProvider`` has no inner ``.client``, unlike ``AcpProvider``, so reaching
+    through it would drop the report and the panel would show host-configured dots.
     """
 
     @staticmethod
@@ -480,12 +474,9 @@ class TestBothTransportsAreReached:
 class TestReportFrameFloor:
     """The raw notification buffer must not carry frames across attempts either.
 
-    ``begin_session`` clears the derived buckets, but a failed ``session/load``
-    leaves its notifications in the shared buffer and the fallback
-    ``session/new`` drains them afterwards — so the leak survived one layer down.
-    The buffer is NOT cleared: the OAuth and config captures read it too, and an
-    authorization request from the failed attempt is still one the user must
-    answer. Only the report's view of it is floored.
+    A failed ``session/load`` leaves notifications that the fallback ``session/new``
+    drains. The buffer itself is kept, since OAuth and config captures still need it;
+    only the report's view is floored.
     """
 
     @staticmethod
@@ -533,13 +524,9 @@ class TestReportFrameFloor:
 class TestSerializerDropsOrphanedReport:
     """The single enforcement point: a report must describe the CURRENT session.
 
-    Clearing at each teardown call site was the wrong shape — there are many (the
-    reset funnel, the reload and reset-conversation routes, the queued discard, a
-    channel handler, the cron reaper, the task runner, a project change) and a new
-    one silently skips it. A liveness check was not enough either: a reset
-    recreates a session under the same key, so the slot looks alive while the
-    report describes the session that went. The serializer both the REST and WS
-    snapshots share asks for IDENTITY, which no path can bypass.
+    Teardown paths are many and a new one would skip a clear, and a reset reuses the
+    key, so liveness is not enough. The serializer shared by REST and WS snapshots
+    checks session identity.
     """
 
     @staticmethod

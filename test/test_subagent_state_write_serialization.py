@@ -1,18 +1,8 @@
 """``update_state`` serializes its read/merge/rewrite for OFF-LOOP writers.
 
-``update_state`` is a read / merge / rewrite whose two halves are separated by a
-blocking ``_atomic_write`` (fsync + rename). A run writes ``state.json`` from
-BOTH the event loop (PID, session id, provider, retention ``keep``) and the
-thread pool (model provenance, CC-path model refinement, per-turn diagnostics --
-all via ``asyncio.to_thread``). Without serialization the second writer's read
-predates the first writer's write, so its rewrite restores a stale WHOLE-FILE
-snapshot and silently rolls back every field the first writer had just landed.
-
-The lock is taken by OFF-LOOP callers only: making an on-loop caller wait on a
-pool thread's fsync would be a blocking call on the event loop. So these tests
-pin two things -- that two pool writers do serialize, and that an on-loop caller
-does NOT wait on the lock (the on-loop interleave stays open, tracked separately
-as the loop-side offload).
+Unserialized, a second writer's stale whole-file rewrite rolls back the first writer's
+fields. Only off-loop callers take the lock: an on-loop caller waiting on a pool thread's
+fsync would block the event loop, so these tests also pin that it does not wait.
 """
 
 from __future__ import annotations
@@ -330,11 +320,8 @@ class TestLockRegistry:
     def test_entry_survives_while_a_writer_still_references_it(self, agent_root):
         """The property that makes explicit eviction unnecessary AND unsafe.
 
-        While any writer holds or is queued on the lock, the entry must stay --
-        otherwise the next caller mints a FRESH lock and enters state.json
-        alongside the writer still inside it. Dropping an entry explicitly (a
-        folder delete, the tombstone pruner) is exactly that bug, which is why
-        the registry holds its values weakly instead.
+        Dropping a held entry lets the next caller mint a fresh lock beside the writer still
+        inside, so the registry holds its values weakly instead of evicting on folder delete.
         """
         _new_agent("held1")
         holder = sp._lock_for_agent("held1")
@@ -436,15 +423,9 @@ def _mock_ctx_builder_for_run():
 class TestOnLoopKeepWriteAgainstACancelledRunsWorker:
     """The on-loop retention ``keep`` write must not be rolled back.
 
-    ``_promote_conversation`` / ``release_conversation`` write ``keep`` from the
-    event loop, where ``update_state`` deliberately takes no lock -- so a
-    concurrent pool writer's stale whole-file rewrite erases it. Both are reached
-    only through the ``_conversation_busy`` gate, which refuses while a run is in
-    flight, so the one writer that can still be concurrent is a DETACHED worker:
-    one whose ``to_thread`` await was cancelled while the write was in flight.
-    Draining every off-loop writer on cancellation removes that
-    population, which closes this interleave too -- a pool writer cannot
-    outlive the run it belongs to.
+    The on-loop ``keep`` write takes no lock, and ``_conversation_busy`` refuses while a run is
+    in flight, so only a detached (cancelled) worker could race it. Draining off-loop writers
+    on cancellation removes those.
     """
 
     @pytest.mark.asyncio

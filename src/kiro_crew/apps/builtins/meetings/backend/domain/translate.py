@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -49,6 +50,10 @@ logger = logging.getLogger("kirocrew.app.meetings")
 
 #: How a line is handed to a model. Injected so the queue is testable without one.
 Runner = Callable[[str], Awaitable[str]]
+
+#: A leading ``Translation:`` label a model puts before its answer, in any case,
+#: with the spaces or the line break that follow it.
+_TRANSLATION_LABEL = re.compile(r"\Atranslation[ \t]*:\s*", re.IGNORECASE)
 
 
 def language_label(code: str) -> str:
@@ -149,13 +154,19 @@ def clean_translation(raw: str) -> str:
     non-empty line is dropped: the prompt asks for one line, and a model that
     ignores that is more likely to be commentating than translating.
     """
-    text = raw.strip()
+    # The label is removed on both sides of a fence: before it, so a label above a
+    # fenced answer does not hide the fence, and after it, for a label inside one.
+    text = _TRANSLATION_LABEL.sub("", raw.strip(), count=1).strip()
     if text.startswith("```"):
         # Drop the fence and its optional language tag, and any closing fence.
         body = text.split("\n")[1:]
         while body and body[-1].strip().startswith("```"):
             body.pop()
         text = "\n".join(body).strip()
+    # A leading "Translation:" label, on the line of the text or on a line of its
+    # own above it, is scaffolding. Removed before the first-line pick, or a label
+    # on its own line would be the line shown and the translation dropped.
+    text = _TRANSLATION_LABEL.sub("", text, count=1).strip()
     for line in text.split("\n"):
         candidate = line.strip()
         if candidate:

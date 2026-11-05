@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import type { PullRequestSource, PullRequestStatus } from '../types'
 import {
   MAX_PULL_REQUEST_SOURCES,
@@ -966,6 +968,20 @@ describe('PullRequestPanel', () => {
       expect.stringContaining('Quoting a pull request comment by reviewer'))
   })
 
+  it('names each check-details link in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      renderPanel()
+      fireEvent.click(await screen.findByRole('tab', { name: /Alle Prüfungen erfolgreich/ }))
+      expect(screen.getByRole('link', { name: 'Details der Prüfung test öffnen' })).toHaveAttribute(
+        'href',
+        'https://github.com/acme/widgets/actions/1',
+      )
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
   it('drops the source strip when there is only one source to pick', async () => {
     // A single-source host (the Code Review Sage detail pane, whose left rail
     // already chose the pull request) would otherwise get a tab bar holding one
@@ -1765,5 +1781,56 @@ describe('PullRequestPanel with a review that has several revisions', () => {
     expect(mockApi.pullRequestSource).toHaveBeenCalledWith(REV_2, false)
     expect(mockApi.pullRequestSource).not.toHaveBeenCalledWith(REV_1, expect.anything())
     expect(onReconcile).toHaveBeenCalledWith(REV_2)
+  })
+})
+
+// Both rails follow the shared Tablist keyboard model: one Tab stop per rail
+// (the selected tab), and the arrow keys, Home and End move between tabs.
+describe('PullRequestPanel tab keyboard', () => {
+  const tabStops = (tabs: HTMLElement[]) => tabs.filter(t => t.getAttribute('tabindex') === '0')
+
+  it('keeps the section rail to one Tab stop and moves with the arrows', async () => {
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    const rail = screen.getByRole('tablist', { name: 'Pull request sections' })
+    const tabs = within(rail).getAllByRole('tab')
+    expect(tabs.length).toBeGreaterThan(2)
+    expect(tabStops(tabs)).toEqual([tabs[0]])
+
+    fireEvent.keyDown(tabs[0], { key: 'ArrowRight' })
+    expect(tabs[1]).toHaveFocus()
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
+    expect(tabStops(within(rail).getAllByRole('tab'))).toEqual([tabs[1]])
+
+    fireEvent.keyDown(tabs[1], { key: 'Home' })
+    expect(tabs[0]).toHaveFocus()
+    fireEvent.keyDown(tabs[0], { key: 'ArrowLeft' })
+    expect(tabs[tabs.length - 1]).toHaveFocus()
+  })
+
+  it('keeps the source strip to one Tab stop and selects with the arrows', async () => {
+    const onSelect = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={onSelect}
+          onAddToChat={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+    const strip = screen.getByRole('tablist', { name: 'Pull requests' })
+    const tabs = within(strip).getAllByRole('tab')
+    expect(tabStops(tabs)).toEqual([tabs[0]])
+
+    fireEvent.keyDown(tabs[0], { key: 'End' })
+    expect(onSelect).toHaveBeenCalledWith(gitlab.url)
+    expect(tabs[1]).toHaveFocus()
   })
 })

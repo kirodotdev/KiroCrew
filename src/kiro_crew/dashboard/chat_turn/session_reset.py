@@ -13,15 +13,23 @@ from kiro_crew.dashboard.chat_utils import _broadcast_expired_oauth_banners
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
+        STOP_REASON_CANCELLED,
+        STOP_REASON_END_TURN,
         DashboardState,
         _ChatSlot,
         _pending_reset_retries,
         effective_session_key,
         expire_slack_options,
+        idle_slot_admits_drain,
         logger,
+        notify_code_channel_turn_end,
         subagents_attached_async,
+        teardown_hold_active,
     )
     from kiro_crew.dashboard.chat_turn.directives import _report_unclaimed_directives
+    from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
+    from kiro_crew.dashboard.chat_turn.queue_cycle import _arm_synthesis_recheck
+    from kiro_crew.dashboard.chat_turn.queue_drain import _start_next_queued_turn
     from kiro_crew.dashboard.chat_turn.recipient import (
         _retire_mirror_thinking,
         cross_surface_withheld,
@@ -29,13 +37,17 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
 
-# Retry cadence for a deferred project-change reset whose consume DECLINED
-# (busy channel turn, attached children). A dashboard slot gets its retry for
+# Retry cadence for a deferred project-change reset or conversation discard
+# whose consume DECLINED (busy channel turn, attached children, a pending
+# question) or raised. A dashboard slot gets its retry for
 # free at the next turn boundary, but a channel-linked slot's turns do not
 # pass through those boundaries — without an owned retry, a decline against a
 # busy channel session would leave the flag armed forever while the live
-# session keeps serving the old CWD. The retry is deliberately COEXTENSIVE
-# with the flag's lifetime: it exits only when the flag clears or the slot is
+# session keeps serving the old CWD, and an idle slot holding its queue behind
+# a discard would hold it for good. The retry consumes with ``allow_discard``,
+# which is safe off a turn end for the atomic refusals ``_consume_pending_reset``
+# names. The retry of the project RESET is deliberately COEXTENSIVE
+# with that flag's lifetime: it exits only when the flag clears or the slot is
 # replaced, never on a clock — a channel turn can outlast any fixed budget,
 # and a timed-out retry would strand the old project permanently on a slot
 # with no other consume boundary. One sleep per tick per armed slot is the
@@ -44,6 +56,31 @@ _PENDING_RESET_RETRY_DELAY_SECS = 5.0
 
 
 _PENDING_RESET_RETRY_WARN_EVERY = 120  # one warning per ~10 minutes armed
+
+
+# The retry is unbounded, but the QUEUE HOLD a pending discard imposes is not: an
+# unlanded reset still answers, a held queue answers nothing. Only a REFUSAL (a
+# raise, or ``skip_if_busy`` declining) counts; children and cards end on their own.
+_TEARDOWN_HOLD_MAX_TICKS = 60  # ~5 minutes of refusals before the hold is given up
+
+
+_pending_reset_wakeups: dict[asyncio.Task, asyncio.Event] = {}
+
+
+def _a_foreign_turn_owns_the_slot(slot: "_ChatSlot", *, own_turn: bool) -> bool:
+    """Whether a turn OTHER than this caller holds or has reserved *slot*.
+
+    ``slot.task`` is the outer ``spawn_guarded_turn`` task and the turn runs two
+    tasks further in, so a turn-path caller must SAY it is the slot's own turn
+    (``own_turn``). A reservation defers either way: ``chat_send`` clears its own
+    before the turn body runs, so a turn never observes its own.
+    """
+    if slot._turn_admission_reserved:
+        return True
+    if own_turn:
+        return False
+    task = slot.task
+    return bool(task is not None and not task.done())
 
 
 def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None:
@@ -60,19 +97,144 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
     if entry is not None and entry[0] is slot and not entry[1].done():
         return
 
+    def _teardown_owed() -> bool:
+        return (
+            slot._pending_reset_history_key is not None
+            or slot._pending_discard_conversation_key is not None
+        )
+
+    async def _release_and_drain() -> None:
+        """Hand the floor back to whatever the hold was keeping from running.
+
+        Keyed on the DISCARD clearing: an unlandable reset would strand the queue.
+        No turn end is coming here, and the consume yields, so re-check the slot.
+        ``_start_next_queued_turn`` has no auth check (callers gate on
+        ``_last_turn_auth_required``), and a signed-out drain drops a person's
+        prompt from the post-login resume, so this caller gates too.
+        """
+        async with slot._lock:
+            if teardown_hold_active(state, slot) or not idle_slot_admits_drain(state, slot):
+                return
+            if slot._queue:
+                slot._turn_admission_reserved = True
+                try:
+                    started = await _start_next_queued_turn(state, slot)
+                finally:
+                    slot._turn_admission_reserved = False
+                if started:
+                    return
+            # The drain can start nothing on a non-empty queue, and the hold also
+            # withheld synthesis, whose only other trigger is a fresh send.
+            if slot._pending_synthesis and not slot._synthesis_inflight:
+                _arm_synthesis_recheck(state, slot)
+
+    async def _wait_is_structural() -> bool:
+        """Whether the discard waits on something that ends on its own (children, a card).
+
+        Re-derived per attempt so no stored copy of the reason can go stale.
+        """
+        key = slot._pending_discard_conversation_key
+        if key is None:
+            return False
+        if await subagents_attached_async(state, slot, key, "teardown_hold_budget"):
+            return True
+        if not getattr(slot, "_pending_discard_from_wake", False):
+            return False
+        # deferred: session_directive_apply loads autonudge and the monitor
+        # stack at import.
+        from kiro_crew.dashboard.session_directive_apply import _slot_has_pending_interaction
+
+        return _slot_has_pending_interaction(state, slot)
+
+    def _the_hold_is_withholding_something() -> bool:
+        """Whether giving the hold up would release anything; a busy linked session
+        refuses every attempt, and giving up then throws the reset away for nothing."""
+        if slot._queue:
+            return True
+        return bool(slot._pending_synthesis and not slot._synthesis_inflight)
+
+    def _give_up_the_hold(attempts: int) -> None:
+        """Stop holding *slot*'s queue behind a discard that will not land.
+
+        Clears the key, since every reader derives the hold from it; the row says
+        replies may now come from the conversation the person asked to drop.
+        """
+        if slot._pending_discard_conversation_key is None:
+            return
+        released_entries = bool(slot._queue)
+        slot._pending_discard_conversation_key = None
+        slot._pending_discard_from_wake = False
+        logger.warning(
+            "Giving up the queue hold on slot %s: the queued conversation discard "
+            "was refused or raised on %d attempts with nothing left to wait for",
+            slot.key,
+            attempts,
+        )
+        released = (
+            "your queued messages have been released and may be answered from it"
+            if released_entries
+            else "the reply it was holding back may come from it"
+        )
+        slot.append(
+            "system",
+            f"⚠️ Could not drop the previous conversation, so {released}. Start a "
+            "new chat if the replies look like they came from the wrong "
+            "conversation.",
+            "msg msg-info",
+        )
+
+    wake = asyncio.Event()
+
     async def _retry() -> None:
         ticks = 0
+        refusals = 0
+        counting_for: str | None = None
         try:
             while True:
-                await asyncio.sleep(_PENDING_RESET_RETRY_DELAY_SECS)
+                try:
+                    await asyncio.wait_for(wake.wait(), _PENDING_RESET_RETRY_DELAY_SECS)
+                except TimeoutError:
+                    pass
+                wake.clear()
                 if state.get_slot(slot.key) is not slot:
                     return  # slot deleted or replaced; nothing owed BY US
-                if not slot._pending_reset_history_key:
+                held = slot._pending_discard_conversation_key
+                if not _teardown_owed():
+                    await _release_and_drain()
                     return  # consumed by a turn boundary or eager consume
-                await _consume_pending_reset(state, slot)
-                if not slot._pending_reset_history_key:
+                if _a_foreign_turn_owns_the_slot(slot, own_turn=False):
+                    # `skip_if_busy` cannot see a reserved-but-unacquired turn, which
+                    # would then lose its context. Its own end is the boundary.
+                    ticks += 1
+                    continue
+                await _consume_pending_reset(state, slot, allow_discard=True)
+                if held is not None and slot._pending_discard_conversation_key is None:
+                    # The hold is over even if the reset is still owed. Respawn the
+                    # dropped session as the turn-path consume does for its own.
+                    schedule_eager_spawn(state, slot)
+                    await _release_and_drain()
+                if not _teardown_owed():
                     return
                 ticks += 1
+                # The budget belongs to ONE discard (reset when the key changes) and
+                # counts only while that discard is armed AND withholding something.
+                armed = slot._pending_discard_conversation_key
+                if armed != counting_for:
+                    counting_for = armed
+                    refusals = 0
+                if (
+                    armed is not None
+                    and _the_hold_is_withholding_something()
+                    and not await _wait_is_structural()
+                ):
+                    refusals += 1
+                    if refusals >= _TEARDOWN_HOLD_MAX_TICKS:
+                        _give_up_the_hold(refusals)
+                        counting_for = None
+                        refusals = 0
+                        await _release_and_drain()
+                        if not _teardown_owed():
+                            return
                 if ticks % _PENDING_RESET_RETRY_WARN_EVERY == 0:
                     logger.warning(
                         "Pending project-change reset for slot %s still armed "
@@ -86,15 +248,30 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
             # replacement slot may have overwritten it while this task was
             # winding down, and popping unconditionally would orphan the
             # successor's dedupe entry.
+            own = asyncio.current_task()
+            if own is not None:
+                _pending_reset_wakeups.pop(own, None)
             current = _pending_reset_retries.get(slot.key)
-            if current is not None and current[1] is asyncio.current_task():
+            if current is not None and current[1] is own:
                 _pending_reset_retries.pop(slot.key, None)
 
-    _pending_reset_retries[slot.key] = (slot, asyncio.create_task(_retry()))
+    task = asyncio.create_task(_retry())
+    _pending_reset_wakeups[task] = wake
+    _pending_reset_retries[slot.key] = (slot, task)
+
+
+def _wake_pending_reset_retry(slot: "_ChatSlot") -> None:
+    """Run *slot*'s armed retry now instead of at its next tick, with every guard it has."""
+    entry = _pending_reset_retries.get(slot.key)
+    if entry is None or entry[0] is not slot:
+        return
+    wake = _pending_reset_wakeups.get(entry[1])
+    if wake is not None:
+        wake.set()
 
 
 async def _consume_pending_reset(
-    state: DashboardState, slot: _ChatSlot, *, allow_discard: bool = False
+    state: DashboardState, slot: _ChatSlot, *, allow_discard: bool = False, own_turn: bool = False
 ) -> bool:
     """Apply a deferred session reset queued on *slot*, if any.
 
@@ -114,10 +291,13 @@ async def _consume_pending_reset(
     would hand the next turn a reconstruction of the conversation the caller
     discarded.
 
-    ``allow_discard`` IS THE BOUNDARY. Two callers set it: the end-of-turn one,
-    and a no-channel ``/clear`` (``_answer_slash_without_channel``), which runs
-    before any session work and relies on ``skip_if_busy`` to refuse under a
-    streaming channel turn.
+    ``allow_discard`` IS THE BOUNDARY. Three callers set it: the end-of-turn one,
+    a no-channel ``/clear`` (``_answer_slash_without_channel``), and the
+    armed-reset retry below. The retry runs whether or not a turn is in flight,
+    so what makes it safe is not a turn end but the two atomic
+    refusals described below: ``skip_if_busy`` under the session lock, and the
+    attached-children wait. A turn end is simply the boundary that comes for
+    free on a dashboard slot.
     The project reset is consumed at three points including the one just before
     ``get_or_create``, and that pre-acquire point is safe for it only in the
     narrow sense its own comment claims: no lock is held by THIS turn, so
@@ -125,8 +305,9 @@ async def _consume_pending_reset(
     session — a channel (Slack, Discord) turn runs on the linked session with no
     dashboard task at all, so a discard consumed there tears the provider down
     under a channel response that is still streaming and the reply is lost. The
-    discard therefore waits for the end of a turn, where the session is between
-    turns rather than about to start one.
+    discard therefore waits for a moment when no turn is running on this
+    session. A turn end is one such moment; the retry finds others, and checks
+    each atomically rather than assuming it.
 
     Even there the boundary is checked atomically, not assumed: the discard goes
     through ``discard_conversation(..., skip_if_busy=True)``, which refuses under
@@ -248,6 +429,7 @@ async def _consume_pending_reset(
                 "Deferring queued conversation discard for slot %s: sub-agents attached",
                 slot.key,
             )
+            _arm_pending_reset_retry(state, slot)
             return torn_down
         from kiro_crew.dashboard.session_directive_apply import _slot_has_pending_interaction
 
@@ -260,6 +442,16 @@ async def _consume_pending_reset(
                 "Deferring queued conversation discard for slot %s: question or approval pending",
                 slot.key,
             )
+            _arm_pending_reset_retry(state, slot)
+            return torn_down
+        if _a_foreign_turn_owns_the_slot(slot, own_turn=own_turn):
+            # Re-read AFTER the awaited probe: a turn can reserve admission during it,
+            # and `skip_if_busy` cannot see a reserved-but-unacquired turn.
+            logger.debug(
+                "Deferring queued conversation discard for slot %s: another turn admitted",
+                slot.key,
+            )
+            _arm_pending_reset_retry(state, slot)
             return torn_down
         try:
             # ``skip_if_busy`` rather than a busy-probe here: the check and the
@@ -269,18 +461,26 @@ async def _consume_pending_reset(
             # takes its provider away. False means it refused — leave the flag
             # armed and let a later boundary apply it.
             #
+            # ``refuse_if`` re-asks under that lock: acquiring it can wait behind
+            # another key's ``record_session_ended``, and a turn can reserve meanwhile.
+            #
             # ``replay=False`` is the only value this path ever wants: replaying
             # the transcript into the fresh conversation returns most of what the
             # reset reclaimed. The flag exists on the manager for the HTTP route,
             # which does let a caller choose.
             discarded = await state.sessions.discard_conversation(
-                discard_key, replay=False, skip_if_busy=True
+                discard_key,
+                replay=False,
+                skip_if_busy=True,
+                refuse_if=lambda: _a_foreign_turn_owns_the_slot(slot, own_turn=own_turn),
             )
             if not discarded:
                 logger.debug(
-                    "Deferring queued conversation discard for slot %s: turn in flight",
+                    "Deferring queued conversation discard for slot %s: a turn holds or"
+                    " has been admitted to the session",
                     slot.key,
                 )
+                _arm_pending_reset_retry(state, slot)
                 return torn_down
             torn_down = True
             # The discarded conversation is the one that advertised the model
@@ -305,6 +505,7 @@ async def _consume_pending_reset(
                 slot.key,
                 exc_info=True,
             )
+            _arm_pending_reset_retry(state, slot)
     return torn_down
 
 
@@ -336,6 +537,30 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
     # clears it. The nested try/finally makes the release unconditional
     # while preserving the reset-then-release ordering.
     try:
+        if turn._code_channel_turn:
+            # Exactly one end per start, on every exit path: the channel's
+            # status goes back to ready and subscribers settle the turn.
+            # First in this block and shielded, so a cancel landing in the
+            # cleanup below still lets it finish.
+            turn._code_channel_turn = False
+            try:
+                if turn._stop_reason == STOP_REASON_CANCELLED:
+                    outcome = "stopped"
+                elif turn._stop_reason == STOP_REASON_END_TURN:
+                    outcome = "ok"
+                else:
+                    outcome = "error"
+                await asyncio.shield(
+                    notify_code_channel_turn_end(
+                        _mirror_chan,
+                        _mirror_thread,
+                        session_key,
+                        source="slack" if slot._turn_channel_origin else "dashboard",
+                        outcome=outcome,
+                    )
+                )
+            except Exception:
+                logger.debug("code channel turn-end hooks failed", exc_info=True)
         if _deferred_options_expiry:
             _deferred_options_expiry = False
             turn._deferred_options_expiry = _deferred_options_expiry

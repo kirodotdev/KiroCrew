@@ -444,37 +444,6 @@ def _routes(slots: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def test_file_self_leaves_a_crew_mode_root_where_it_is():
-    out, dash = _call("chat_folder_file_self", {"folder": "Travel"}, _routes(_crew_slots()))
-    assert _writes(dash) == []
-    assert "folder ignored" in out
-
-
-def test_file_self_leaves_a_crew_mode_worker_where_it_is():
-    root = _crew_slots(key="chat-0-1")[0]
-    slots = [
-        root,
-        *_crew_slots(
-            **{
-                crew_mode.ROOT_FIELD: False,
-                crew_mode.STAMP_FIELD: "",
-                crew_mode.WORKER_FIELD: "chat-0-1",
-            }
-        ),
-    ]
-    out, dash = _call("chat_folder_file_self", {"folder": "Goal/agent"}, _routes(slots))
-    assert _writes(dash) == []
-    assert "folder ignored" in out
-
-
-def test_file_self_still_files_a_plain_session():
-    slots = _crew_slots(**{crew_mode.ROOT_FIELD: False})
-    _, dash = _call("chat_folder_file_self", {"folder": "Travel"}, _routes(slots))
-    assert [w.route for w in _writes(dash)] == [
-        "PATCH /api/chat/slots/{slot}/folder".replace("{slot}", "chat-1-100")
-    ]
-
-
 def test_session_create_from_a_crew_mode_root_files_nothing_and_says_so():
     out, dash = _call(
         "session_create", {"title": "haiku", "folder": "Goal/worker"}, _routes(_crew_slots())
@@ -837,6 +806,8 @@ def test_the_routes_are_registered_under_the_slot():
         "/api/chat/slots/{slot}/crew-workers/{worker}/steer": ["POST"],
         # The conductor's approval card (owner decision B).
         "/api/chat/slots/{slot}/crew-workers/{worker}/approve": ["POST"],
+        # A session's in-place recap on the crewmate Sessions tab.
+        "/api/chat/slots/{slot}/crew-workers/{worker}/recap": ["GET"],
     }
 
 

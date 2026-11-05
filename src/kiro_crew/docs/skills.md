@@ -60,7 +60,7 @@ warning naming the file. Re-save it as UTF-8 to load it.
 
 ### Via Dashboard
 
-Overview → Skills tab → "+ New" button → enter name and content.
+Customize → Skills → Create New Skill → enter name and content.
 
 ### Via Chat
 
@@ -88,8 +88,8 @@ The dashboard can grant trust only to the requesting chat's active project. Befo
 
 ## Importing Skills from a GitHub Repository
 
-Settings → Skills → Discover searches a public registry and, when what you type
-looks like a repository address, your own GitHub repositories:
+Customize → Skills → Add Skill searches a public registry and, when what you
+type looks like a repository address, your own GitHub repositories:
 
 ```
 acme/widgets                           every skill in the repo, default branch

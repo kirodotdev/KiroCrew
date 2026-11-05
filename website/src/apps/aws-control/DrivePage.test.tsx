@@ -882,7 +882,12 @@ describe('DrivePage sections: folder disclosure and downloads', () => {
 
     await renderDrive('drive')
 
-    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-download')
+    // The download handler is async: its rejected presign resumes after the
+    // click returns. Running the click inside act lets that resume finish
+    // inside the act scope, so its state update is not reported as late.
+    fireEvent.keyDown(await screen.findByTestId('drive-more'), { key: 'Enter' })
+    const downloadItem = await screen.findByTestId('drive-download')
+    await act(async () => { fireEvent.click(downloadItem) })
     await waitFor(() => expect(fakeTab.close).toHaveBeenCalled())
     // The tab was never navigated anywhere.
     expect((fakeTab as unknown as { location: { href: string } }).location.href).toBe('')

@@ -62,7 +62,9 @@ from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.history_consolidation_skills import _session_touched_sensitive
 from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_EMPTY,
+    _CONSOLIDATION_STALE,
     AttemptedSpan,
+    PrefsWindow,
     _LeaseLostMidRun,
     _no_pass_ran,
     _persistence_disabled,
@@ -91,6 +93,7 @@ from kiro_crew.skills_dedupe import (
 )
 from kiro_crew.skills_script_validator import validate_skill_script
 from kiro_crew.vector_memory_constants import (
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
@@ -113,6 +116,9 @@ _CONSOLIDATION_THRESHOLD = 30
 _CONSOLIDATION_MAX_ATTEMPTS = 5
 _CONSOLIDATION_BACKOFF_BASE_SECS = 900.0
 _CONSOLIDATION_BACKOFF_MAX_SECS = 86400.0
+# How long a preference-only window waits after a pass whose result the live
+# conversation outran (``_CONSOLIDATION_STALE``) before the next turn may start one.
+_CONSOLIDATION_STALE_RETRY_SECS = 300.0
 # Seeded sessions (restored from disk after a restart) examined per idle sweep:
 # a large backlog drains a few per heartbeat instead of all at once.
 _SEEDED_PER_SWEEP = 3
@@ -265,6 +271,10 @@ class HistoryConsolidator:
         self._idle_clean: dict[str, tuple[CacheIdentity, int]] = {}
         # Separate offset for prefs-only consolidation (doesn't advance main offset)
         self._prefs_offset: dict[str, int] = {}
+        # key -> the rotation_generation _prefs_offset was counted under. A
+        # rotation or rewrite replaces the rows it counts, so an offset from
+        # another generation is dropped rather than skipped past.
+        self._prefs_generation: dict[str, int] = {}
         # key -> (consecutive prefs passes with no usable answer, retry-at wall
         # time). In memory like _prefs_offset: the preference-only window has no
         # durable failure record, so this only spaces out re-sends of a prompt
@@ -719,15 +729,20 @@ class HistoryConsolidator:
     async def _threshold_pass(self, key: str, claim: _CountClaim) -> None:
         """Count *key*'s rows off the loop, then run a prefs pass at the threshold."""
         try:
-            counted = await self._count_off_loop(key, claim, floor=self._prefs_offset.get(key, 0))
+            counted = await self._count_off_loop(
+                key,
+                claim,
+                floor=self._prefs_offset.get(key, 0),
+                floor_generation=self._prefs_generation.get(key),
+            )
             if counted is None:
                 return
-            total = counted[0]
+            total, pending = counted
             # Re-checked after the await: an idle or session-end pass may have
             # claimed this transcript, or finished one, while the count ran.
             if self._busy(key):
                 return
-            if total - self._prefs_offset.get(key, 0) < _CONSOLIDATION_THRESHOLD:
+            if pending < _CONSOLIDATION_THRESHOLD:
                 return
             # Cheap pre-check mirroring the other automatic entry points. During
             # a backoff window every message past the threshold would otherwise
@@ -742,8 +757,9 @@ class HistoryConsolidator:
             self._running.add(key)
         finally:
             self._release_count(claim)
+        window = PrefsWindow(self._prefs_offset.get(key, 0), self._prefs_generation.get(key))
         try:
-            result = await self._consolidate(key, include_history=False)
+            result = await self._consolidate(key, include_history=False, prefs_window=window)
         except Exception:
             # _consolidate has already logged it and released its claim; a
             # failed pass leaves the offset alone so the window is retried.
@@ -772,8 +788,23 @@ class HistoryConsolidator:
                 delay,
             )
             return
+        if result is _CONSOLIDATION_STALE:
+            # The user spoke while the model read the window, so its answer was
+            # discarded. In a live chat that is every pass: without a wait, each
+            # later turn would start (and bill) another pass that ends the same way.
+            # Keep the window pending and the failure count as it is, and try again
+            # once the wait is over.
+            failures = self._prefs_retry.get(key, (0, 0.0))[0]
+            self._prefs_retry[key] = (failures, _time.time() + _CONSOLIDATION_STALE_RETRY_SECS)
+            return
         if not _no_pass_ran(result):
-            self._prefs_offset[key] = total
+            # To the count the pass prompted, which a tail over the prompt
+            # budget leaves short of ``total``: the next threshold pass starts
+            # there. ``end`` is unset only when nothing reported a span (a
+            # stand-in for ``_consolidate``); the scheduled count stands then.
+            self._prefs_offset[key] = total if window.end is None else window.end
+            if window.snapshot_generation is not None:
+                self._prefs_generation[key] = window.snapshot_generation
             self._prefs_retry.pop(key, None)
 
     def _claim_count(self, key: str) -> _CountClaim | None:
@@ -808,7 +839,12 @@ class HistoryConsolidator:
         del self._counting[claim.name]
 
     async def _count_off_loop(
-        self, key: str, claim: _CountClaim, *, floor: int | None
+        self,
+        key: str,
+        claim: _CountClaim,
+        *,
+        floor: int | None,
+        floor_generation: int | None = None,
     ) -> tuple[int, int] | None:
         """``(total, total - floor)`` for *key*, counted in a worker thread.
 
@@ -817,9 +853,13 @@ class HistoryConsolidator:
         to finish, and *claim* covers it until then. *floor* None means the
         transcript's consolidated offset. None means nothing was counted: the
         key is inside its retry deadline, or the read failed (logged as a
-        warning), so the check is skipped.
+        warning), so the check is skipped. *floor_generation* is the
+        ``rotation_generation`` *floor* was counted under; under another one
+        the transcript's consolidated offset is the floor instead.
         """
-        claim.reader = asyncio.ensure_future(asyncio.to_thread(self._count_rows, key, floor))
+        claim.reader = asyncio.ensure_future(
+            asyncio.to_thread(self._count_rows, key, floor, floor_generation)
+        )
         try:
             return await asyncio.shield(claim.reader)
         except Exception:
@@ -828,7 +868,9 @@ class HistoryConsolidator:
             )
             return None
 
-    def _count_rows(self, key: str, floor: int | None) -> tuple[int, int] | None:
+    def _count_rows(
+        self, key: str, floor: int | None, floor_generation: int | None = None
+    ) -> tuple[int, int] | None:
         """Worker thread: count *key*'s rows one line at a time.
 
         A key inside its retry deadline is refused by ``retry_eligible`` after
@@ -842,6 +884,9 @@ class HistoryConsolidator:
         """
         if self._inside_retry_deadline(key):
             return None
+        if floor is not None and floor_generation is not None:
+            if self._log.rotation_generation(key) != floor_generation:
+                floor = None  # counted rows a rotation or rewrite replaced
         if floor is None:
             floor = self._log.consolidated_offset(key)
         total = self._log._count_messages(key, hold_writer_lock=False)
@@ -1161,6 +1206,7 @@ _BOUND_FOR_IMPORTERS = (
     VERDICT_DUP,
     VERDICT_NEW,
     VERDICT_UPDATE,
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
@@ -1230,16 +1276,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PLACEHOLDER_BODIES,
         _SEMANTIC_OMISSION_NOTICE,
         _SEMANTIC_SNAPSHOT_PAGE,
+        _audit_oversized_semantic,
         _bounded_semantic_table,
         _BoundedTable,
         _EmbedBudget,
         _InheritGlobal,
         _is_plausible_memory_file,
         _LessonDeleteDecision,
+        _OversizedItem,
         _recency,
+        _refuse_oversized_semantic,
         _reroute_lesson_semantic_keys,
         _semantic_snapshot_in_pages,
         _session_facets,
+        _v1_consolidation_confidence,
+        _v1_consolidation_metadata,
         _withhold_unseen_deletes,
     )
     from kiro_crew.history_consolidation_pass import (  # noqa: F401

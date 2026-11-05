@@ -57,11 +57,8 @@ class TestEmptyResponseRetry:
     async def _cancel_background_tasks(state) -> None:
         """Cancel AND await every task this isolated state spawned.
 
-        `_run_chat` starts title/summary work that is irrelevant to these
-        recovery assertions. A bare `task.cancel()` leaves the coroutine pending
-        until the loop gets another tick, which surfaces as unawaited-coroutine
-        and destroyed-pending-task warnings under xdist. Await the cancellation
-        exactly; never sleep and never let one test's teardown spill into another.
+        A bare `task.cancel()` leaves `_run_chat`'s title/summary work pending, which
+        raises destroyed-pending-task warnings under xdist.
         """
         tasks = list(state._background_tasks)
         for task in tasks:
@@ -534,12 +531,8 @@ class TestEmptyResponseRetry:
     ) -> None:
         """The false-blocker arm snapshots the SESSION stop counter at enqueue.
 
-        A Stop issued on a linked channel surface moves only the session-scoped
-        count (the slot's own ``_stop_generation`` never ticks), and the
-        dispatch-point purge compares that count against its value AT ENQUEUE
-        (the continuation record in ``slot.replays``). Without the arm's snapshot
-        the comparison reads a count the arm never took, and the replay
-        dispatches over the user's Stop.
+        A Stop on a linked channel moves only the session count, not the slot's
+        ``_stop_generation``; without the snapshot the replay dispatches over that Stop.
         """
         from kiro_crew.acp.types import STOP_REASON_END_TURN
         from kiro_crew.dashboard.chat_runner import _start_next_queued_turn
@@ -650,21 +643,9 @@ class TestEmptyResponseRetry:
 class TestProductiveTurnNeverReplaysVerbatim:
     """A turn that DID work must never have the user's message replayed verbatim.
 
-    ``assistant_text`` is reset at every tool boundary, so a turn that streamed a
-    preamble and then called a tool arrives at the terminal chain with an empty
-    final segment and takes the empty-response branch. Rung 1 of that ladder
-    re-queues the ORIGINAL message, which re-runs every tool call that already
-    completed — a second ``send_message``, a second write, a second PR — and
-    re-derives an answer the user has already read.
-
-    The field incident these tests pin: two consecutive billed turns, each with an
-    assistant preamble and successful tool calls and each ending on a clean
-    ``end_turn``, were both classified empty; the first verbatim-replayed the
-    user's message.
-
-    Reuses ``TestEmptyResponseRetry``'s harness rather than a second one, so a
-    change to how a slot is built cannot leave these tests driving a different
-    runner than the ladder tests in ``TestEmptyResponseRetryLadder``.
+    ``assistant_text`` resets at each tool boundary, so such a turn looks empty, and a
+    verbatim replay would re-run every completed tool call. Reuses
+    ``TestEmptyResponseRetry``'s harness so both drive the same runner.
     """
 
     _make_state_and_slot = TestEmptyResponseRetry._make_state_and_slot
@@ -845,11 +826,8 @@ class TestProductiveTurnNeverReplaysVerbatim:
 class TestEmptyTurnDiagnostics:
     """The empty-response WARNING must name a CLOSED cause, and carry no content.
 
-    The incident it exists for had three attempts with three different causes and
-    one log line that could not tell them apart. These tests assert on the closed
-    vocabulary only — never on a prompt, a response, a tool argument, a path, an
-    identity, a token count or a cost, because asserting on those would pin
-    exactly the leak the diagnostics are designed to avoid.
+    Tests assert only on the closed vocabulary, never on prompts, paths, identities or
+    costs, which would pin the leak the diagnostics avoid.
     """
 
     _make_state_and_slot = TestEmptyResponseRetry._make_state_and_slot
@@ -945,11 +923,8 @@ class TestEmptyTurnDiagnostics:
     def test_normalize_stop_reason_never_returns_a_raw_backend_string(self) -> None:
         """Closed output set, and the ACP spellings it mirrors are pinned.
 
-        ``chat_utils`` may not import ``kiro_crew.acp.types`` (the agent-SDK
-        boundary gate baselines it at one edge and a baselined file may not grow),
-        so it spells the three stop reasons as literals. The test tree is outside
-        that gate, so the pin lives here — a change to the backend's vocabulary
-        reddens here instead of silently reclassifying every turn as ``other``.
+        The agent-SDK boundary gate stops ``chat_utils`` importing ``kiro_crew.acp.types``,
+        so it spells the stop reasons as literals and the pin lives here.
         """
         from kiro_crew.acp.types import (
             STOP_REASON_CANCELLED,

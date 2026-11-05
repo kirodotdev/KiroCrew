@@ -55,10 +55,12 @@ def test_allocate_is_idempotent_for_one_parent_and_distinct_between_parents(path
     assert again == first
     assert other.binding_id != first.binding_id
     assert other.workspace_name != first.workspace_name
-    assert first.workspace_name.startswith("crew-session-kyleseaman-")
+    # The exact shape proves the name is built only from prefix, owner and binding id,
+    # so the session key is not a component. A substring check would also match
+    # letters inside the random binding id.
+    assert re.fullmatch(r"[a-z2-7]{8}", first.binding_id)
+    assert first.workspace_name == f"crew-session-kyleseaman-{first.binding_id}"
     assert len(first.workspace_name) <= 32
-    assert "dashboard" not in first.workspace_name
-    assert "one" not in first.workspace_name
     assert _CODER_NAME_RE.fullmatch(first.workspace_name)
 
 
@@ -80,8 +82,12 @@ def test_owner_name_with_email_shape_is_not_exposed_in_workspace_name(path):
     registry = WorkspaceBindingRegistry(path)
     binding = _allocate(registry, owner_name="operator@example.com")
     assert binding.workspace_name.startswith("crew-session-user-")
-    assert "operator" not in binding.workspace_name
-    assert "example" not in binding.workspace_name
+    assert re.fullmatch(r"[a-z2-7]{8}", binding.binding_id)
+    assert binding.workspace_name.endswith(f"-{binding.binding_id}")
+    # Only the non-random part is checked: the random binding id can spell any word.
+    fixed_part = binding.workspace_name.removesuffix(binding.binding_id)
+    assert "operator" not in fixed_part
+    assert "example" not in fixed_part
 
 
 @pytest.mark.parametrize(

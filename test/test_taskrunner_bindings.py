@@ -40,6 +40,8 @@ from kiro_crew.taskrunner import TaskRunner
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_taskrunner_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_field_scan_counts_every_read_and_write_shape",)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now
 #: (``taskrunner`` for the class body itself).
@@ -84,6 +86,8 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_runs_path": ("function", False, "b08d8e6a45bd", "run_registry"),
     "_save_progress": ("function", False, "859f30be3e40", "run_registry"),
     "_serialize_runs": ("function", False, "bb418bb7ece8", "run_registry"),
+    "_settle_stopped_run": ("function", True, "859f30be3e40", "run_lifecycle"),
+    "_stopping": ("function", False, "a6632a57e602", "run_lifecycle"),
     "_taskq_admit_step": ("function", True, "26f0eeb8d4b4", "taskq_bridge"),
     "_taskq_begin_run": ("function", True, "859f30be3e40", "taskq_bridge"),
     "_taskq_end_run": ("function", True, "859f30be3e40", "taskq_bridge"),
@@ -100,6 +104,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "adopt_task_rows": ("function", True, "f540ddf6da0a", "taskq_bridge"),
     "attach_task_admission": ("function", False, "a1392cfcab90", "taskq_bridge"),
     "attach_workflow_service": ("function", False, "91113ebd1b19", "workflow_port"),
+    "begin_shutdown": ("function", False, "b60c5fea256e", "run_lifecycle"),
     "cancel": ("function", False, "241c3dd35dec", "run_lifecycle"),
     "cancel_plan": ("function", False, "b60c5fea256e", "plan_mode"),
     "current_run": ("property", False, "d9897e592c2e", "taskrunner"),
@@ -383,16 +388,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
     return written - set(_MEMBERS), read - written - set(_MEMBERS)
-
-
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
 
 
 def _listed(doc: str, label: str) -> set[str]:
