@@ -308,7 +308,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // until then the panel shows the ordinary iframe states.
   const native = useNativeBrowser(sessionKey || '', active)
   const nativeOpen = native.available && !!native.state?.open
-  const annotate = useWebPreviewPanelAnnotate(sessionKey, nativeOpen)
+  const annotate = useWebPreviewPanelAnnotate(sessionKey, nativeOpen, active)
   // The native address-bar input. The view-URL sync effect reads its focus so a
   // view-initiated navigation never overwrites the field while the user types.
   const nativeInputRef = useRef<HTMLInputElement>(null)
