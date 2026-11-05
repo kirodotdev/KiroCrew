@@ -163,8 +163,10 @@ async def test_a_claude_fork_request_forks_then_loads_the_fork(tmp_path) -> None
     assert "session/new" not in methods
     fork_params = dict(sent)["session/fork"]
     assert fork_params["sessionId"] == "source-sid"
+    # The fork point, beside the same claudeCode options the load after it sends.
     assert fork_params["_meta"] == {
-        "jetbrains": {"air": {"fork": {"version": 1, "messageId": "msg_1"}}}
+        "claudeCode": dict(sent)["session/load"]["_meta"]["claudeCode"],
+        "jetbrains": {"air": {"fork": {"version": 1, "messageId": "msg_1"}}},
     }
     assert dict(sent)["session/load"]["sessionId"] == "forked-sid"
     assert client._session_id == "forked-sid"
