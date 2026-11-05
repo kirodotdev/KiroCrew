@@ -32,9 +32,12 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from kiro_crew.agent import SharedAgentHomeRefused
+from kiro_crew.agent_files import AGENT_FILENAME, WORKER_AGENT_FILENAME
 from kiro_crew.agent_spec_format import (
+    JSON_SUFFIX,
     is_agent_spec_name,
     is_markdown_spec,
+    is_native_skill_alias_name,
     opens_frontmatter_fence,
     parse_agent_spec_text,
 )
@@ -43,7 +46,8 @@ from kiro_crew.platform import PlatformCompositionError
 logger = logging.getLogger(__name__)
 
 _MIRROR_PREFIX = "mirror:"
-_RENDERED_AGENT_FILE = "kirocrew.json"
+# The purge strips ``kirocrew.json`` and the rebuild re-derives the worker from it.
+_RENDERED_AGENT_FILES = frozenset({AGENT_FILENAME, WORKER_AGENT_FILENAME})
 
 # Never a sha256 hexdigest and never None, so the comparisons that read it cannot
 # confuse it with either real answer of :func:`_module_artifact_key`.
@@ -171,6 +175,21 @@ def _json_spec_names(spec_dir: Path) -> list[str] | None:
         return None
 
 
+def _agent_spec_label(name: str) -> str:
+    """``mirror:`` for a spec that reflects the purged scopes, ``agent:`` otherwise.
+
+    A skill-view alias copies the spec it projects, so it takes that spec's label;
+    one whose source is not recorded stays ``agent:`` and keeps the grant.
+    """
+    source = name
+    if is_native_skill_alias_name(name):
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        recorded = acp_driver.skill_view_source_agent(Path(name).stem)
+        source = f"{recorded}{JSON_SUFFIX}" if recorded else name
+    return f"{_MIRROR_PREFIX}{name}" if source in _RENDERED_AGENT_FILES else f"agent:{name}"
+
+
 def agent_spec_sources(project_dirs: tuple[Path, ...] = ()) -> list[tuple[str, Path]]:
     """Every agent spec file that can define an MCP server, each labelled.
 
@@ -214,18 +233,13 @@ def agent_spec_sources(project_dirs: tuple[Path, ...] = ()) -> list[tuple[str, P
         return [(f"agent:{agents_dir.name}/", agents_dir)]
     # MIRROR vs USER SPEC. ``_purge_server_config`` strips the entry from the
     # rendered ``kirocrew.json`` and from every ``scope.agent_mcp_file`` itself,
-    # so those entries are REFLECTIONS of the scopes this transaction is purging,
-    # not independent grant holders. A hand-written agent spec is the opposite:
-    # Kiro Crew never writes it, so its entry keeps its own grant and must be
-    # able to block a revoke. Labelling both ``agent:`` made an ordinary
+    # and the rebuild in the same lock re-derives ``kirocrew-worker.json`` from
+    # that file, so those entries are REFLECTIONS of the scopes this transaction
+    # is purging, not independent grant holders. A hand-written agent spec is the
+    # opposite: Kiro Crew never writes it, so its entry keeps its own grant and
+    # must be able to block a revoke. Labelling both ``agent:`` made an ordinary
     # Disconnect count its own reflection as a sharer and never revoke anything.
-    sources.extend(
-        (
-            f"{_MIRROR_PREFIX}{name}" if name == _RENDERED_AGENT_FILE else f"agent:{name}",
-            agents_dir / name,
-        )
-        for name in names
-    )
+    sources.extend((_agent_spec_label(name), agents_dir / name) for name in names)
     for scope in _extra_mcp_scopes():
         if scope.agent_mcp_file is not None:
             sources.append((f"{_MIRROR_PREFIX}{scope.id}", scope.agent_mcp_file))
@@ -530,7 +544,9 @@ async def remove_provider_entry(
             others.append(("probe", server.name, server.url))
 
         # The purge strips the entry named ``slug`` from every rendered mirror
-        # (``_remove_from_agent_file(<mirror>, slug)``) -- and ONLY that name. So
+        # (``_remove_from_agent_file(<mirror>, slug)``; the rebuild re-derives the
+        # worker from it, and a view is re-projected on the next spawn) -- and ONLY
+        # that name. So
         # the exclusion is per ENTRY, never per file: a mirrored ``slug`` entry is
         # not a holder once the purge runs, while a mirrored entry under any OTHER
         # name survives this transaction and must take the ordinary sharer test

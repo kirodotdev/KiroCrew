@@ -827,6 +827,11 @@ A hand-written agent spec is the opposite: Kiro Crew never writes it, so its ent
 keeps its own grant and must be able to block a revoke. The exclusion is scoped to
 the justification — with nothing owned the purge does not run, so a mirrored entry
 is a real holder again and blocks normally.
+`kirocrew-worker.json` is a mirror too: the rebuild in the same lock re-derives it
+from the purged `kirocrew.json`. A `kirocrew-skill-view-*` alias copies the spec it
+projects, so it takes that spec's label; one whose source is not recorded stays an
+`agent:` source. Crew's other generated specs are not mirrors: a conductor carries
+card-approved additions the purge never touches, so its entry is a real holder.
 The census-incomplete user copy says a source "could not be read";
 for an unprovable entry URL that is a slight imprecision (the file was readable,
 the entry could not be safely compared) accepted to avoid a 13-bundle string
