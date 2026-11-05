@@ -17453,7 +17453,7 @@
       },
       "chatPanel": {
         "advanced": "高级",
-        "agent_model_pin_overrides_default": "<agent/> 代理上的新聊天使用它自己已置顶的模型 <model/>，而不是此设置。之后你可以在聊天模型选择器中再次置顶一个模型。",
+        "agent_model_pin_overrides_default": "<agent/> 代理置顶了它自己的模型 <model/>。只有以该代理身份运行且没有自己模型选择的聊天才会使用这个置顶模型。“新建对话”按钮不会。之后你可以在聊天模型选择器中再次置顶一个模型。",
         "agent_template_pin_overrides_default": "<agent/> 代理上的新聊天使用 <model/>，它来自该代理的模板或后端默认值，而不是此设置。该代理自身没有置顶模型，因此这里没有可清除的内容。要选择模型，请打开聊天模型选择器并将一个模型置顶到该代理。",
         "discovery": "发现",
         "rail_label": "聊天设置",
