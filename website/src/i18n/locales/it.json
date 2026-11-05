@@ -22228,6 +22228,8 @@
     "switch_own_copy_body": "Questo Bot si basa su una propria copia personalizzata. Passare a un altro modello scarta quella copia: non potrà essere riselezionata.",
     "band_added": "Aggiunte a {{name}}",
     "band_added_empty": "Ancora nessuna aggiunta. Usa Aggiungi abilità per copiarne alcune.",
+    "band_added_empty_builtin": "{{name}} è un agente integrato, quindi qui non si può aggiungere nulla.",
+    "band_added_empty_fixed": "Qui non si può aggiungere nulla a {{name}}.",
     "band_added_note": "quelle rimosse si possono aggiungere di nuovo con Aggiungi abilità",
     "band_comes_with": "Incluse in {{name}}",
     "band_comes_with_note": "integrate, non rimovibili",

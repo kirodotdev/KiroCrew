@@ -10838,6 +10838,8 @@
     "band_added": "Added to {{name}}",
     "band_added_note": "removed ones can be added back with Add abilities",
     "band_added_empty": "Nothing added yet. Use Add abilities to copy some in.",
+    "band_added_empty_builtin": "{{name}} is a built-in agent, so nothing can be added to it here.",
+    "band_added_empty_fixed": "Nothing can be added to {{name}} here.",
     "band_none": "None",
     "band_remove": "Remove",
     "band_remove_confirm_title": "Remove “{{name}}”?",

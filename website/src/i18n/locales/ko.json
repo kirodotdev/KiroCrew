@@ -21250,6 +21250,8 @@
     "switch_own_copy_body": "이 Bot은 전용 맞춤 복사본으로 만들어졌습니다. 다른 템플릿으로 바꾸면 그 복사본은 폐기되어 다시 선택할 수 없습니다.",
     "band_added": "{{name}}에 추가됨",
     "band_added_empty": "아직 추가된 항목이 없습니다. 능력 추가로 복사해 오세요.",
+    "band_added_empty_builtin": "{{name}}은(는) 기본 제공 에이전트이므로 여기서는 아무것도 추가할 수 없습니다.",
+    "band_added_empty_fixed": "여기서는 {{name}}에 아무것도 추가할 수 없습니다.",
     "band_added_note": "제거한 항목은 능력 추가로 다시 추가할 수 있음",
     "band_comes_with": "{{name}} 기본 제공",
     "band_comes_with_note": "기본 제공, 제거할 수 없음",

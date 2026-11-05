@@ -22228,6 +22228,8 @@
     "switch_own_copy_body": "Este Bot se basa en su propia copia personalizada. Cambiar a otra plantilla descarta esa copia: no se puede volver a seleccionar.",
     "band_added": "Agregado a {{name}}",
     "band_added_empty": "Aún no se agregó nada. Usa Agregar habilidades para copiar algunas.",
+    "band_added_empty_builtin": "{{name}} es un agente integrado, así que aquí no se le puede agregar nada.",
+    "band_added_empty_fixed": "Aquí no se puede agregar nada a {{name}}.",
     "band_added_note": "lo que quites puedes volver a agregarlo con Agregar habilidades",
     "band_comes_with": "Incluido con {{name}}",
     "band_comes_with_note": "integradas, no se pueden quitar",

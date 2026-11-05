@@ -21250,6 +21250,8 @@
     "switch_own_copy_body": "この Bot は専用のカスタマイズ済みコピーから作られています。別のテンプレートに切り替えるとそのコピーは破棄され、再び選択できなくなります。",
     "band_added": "{{name}} に追加済み",
     "band_added_empty": "まだ何も追加されていません。「能力を追加」でコピーできます。",
+    "band_added_empty_builtin": "{{name}} は組み込みエージェントのため、ここでは何も追加できません。",
+    "band_added_empty_fixed": "ここでは {{name}} に何も追加できません。",
     "band_added_note": "削除したものは「能力を追加」で再び追加できます",
     "band_comes_with": "{{name}} に標準搭載",
     "band_comes_with_note": "組み込みのため削除できません",
