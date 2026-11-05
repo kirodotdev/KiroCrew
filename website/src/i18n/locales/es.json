@@ -7232,6 +7232,7 @@
       "copied": "Copiado",
       "copy": "Copiar",
       "copy_failed": "Error al copiar",
+      "osc52_copied": "Copiado desde la terminal",
       "copy_selection": "Copiar la selección",
       "disconnected_message": "Terminal desconectada",
       "displaced_enter_hint": "Pulsa Enter para usarla aquí",
