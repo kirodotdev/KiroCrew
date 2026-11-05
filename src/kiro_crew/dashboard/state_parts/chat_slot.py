@@ -318,6 +318,7 @@ class _ChatSlot:
         "_crew_dispatch_notice_turn_gen",
         "_steer_segment_cut",
         "_owed_segment_cut",
+        "_owed_turn_opener",
         "_native_subagent_tracker",
         "_native_subagent_output",
         "_steer_confirmed",
@@ -619,6 +620,7 @@ class _ChatSlot:
     _compaction_fail_cooldown_until: float
     _steer_segment_cut: Callable[[], None] | None
     _owed_segment_cut: Callable[[], None] | None
+    _owed_turn_opener: Callable[[dict | None], dict] | None
     _native_subagent_tracker: dict[str, dict[str, Any]]
     _native_subagent_output: dict[str, list[str]]
     _steer_confirmed: set[str]

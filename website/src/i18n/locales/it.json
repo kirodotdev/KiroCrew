@@ -13166,6 +13166,8 @@
         "archive_failed_turn_cancelled": "L’archiviazione di questa scheda non è riuscita dopo l’annullamento del turno in corso. La scheda è stata mantenuta, ma quel turno non è terminato — invia di nuovo il messaggio per continuare."
       },
       "turnBlock": {
+        "agent_started": "Avviato dall'agente",
+        "agent_started_tooltip": "L'agente ha risposto da solo, per esempio dopo la fine di un'attività in background che aveva avviato.",
         "earlier_step_many": "{{count}} passaggi precedenti",
         "earlier_step_one": "{{count}} passaggio precedente",
         "earlier_step_other": "{{count}} passaggi precedenti",

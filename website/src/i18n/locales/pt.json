@@ -13166,6 +13166,8 @@
         "archive_failed_turn_cancelled": "Não foi possível arquivar esta aba depois que o turno em andamento foi cancelado. A aba foi mantida, mas esse turno não terminou — envie sua mensagem de novo para continuar."
       },
       "turnBlock": {
+        "agent_started": "Iniciado pelo agente",
+        "agent_started_tooltip": "O agente respondeu por conta própria, por exemplo depois que terminou uma tarefa em segundo plano que ele iniciou.",
         "earlier_step_many": "{{count}} etapas anteriores",
         "earlier_step_one": "{{count}} etapa anterior",
         "earlier_step_other": "{{count}} etapas anteriores",

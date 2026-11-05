@@ -1,5 +1,5 @@
 import { memo, useState, useRef, useEffect, useMemo, useCallback, type CSSProperties, type ReactNode } from 'react'
-import { ChevronRight } from 'lucide-react'
+import { Bot, ChevronRight } from 'lucide-react'
 import { RowActivityContext, type RowActivityReporter } from './rowActivity'
 import type { DisplayItem, TurnItem } from './types'
 import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
@@ -637,6 +637,8 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // a moved one: moving a keyed sibling makes React re-insert the rows it
   // passes, and a re-inserted iframe reloads too.
   const out: ReactNode[] = []
+  // Heads the whole turn, above the fold toggle and every row of the turn.
+  if (turn.agentStarted) out.push(<AgentStartedLabel key="agent-started-label" />)
   items.forEach((it, i) => {
     const k = rowKey(i)
     if (i === fold.first) {
@@ -698,6 +700,18 @@ function CollapseToggle({ expanded, onToggle, label }: { expanded: boolean; onTo
         <ChevronRight size={12} aria-hidden="true" className={`transition-transform duration-150 motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} />
         {label}
       </button>
+    </div>
+  )
+}
+
+/** The mark on a turn the agent started on its own, with no prompt above it. */
+function AgentStartedLabel() {
+  return (
+    <div className="px-4 py-0 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+      <span className="inline-flex items-center gap-1 text-muted text-[11px] leading-4 font-medium px-1 py-1" data-testid="agent-started-label" title={i18nT('pages.chat.turnBlock.agent_started_tooltip')}>
+        <Bot size={12} aria-hidden="true" />
+        {i18nT('pages.chat.turnBlock.agent_started')}
+      </span>
     </div>
   )
 }

@@ -819,7 +819,11 @@ of its own on that chat (`_run_chat(_agent_started=True)`). The turn sends nothi
 and reads the pending turn with `AcpProvider.stream_unsolicited`, through the same
 event loop a user turn uses: its tool rows, permission cards, PreToolUse /
 PostToolUse hooks, SEL records, redaction and persistence are a user turn's own. It
-writes no user row, its assistant rows carry `meta.origin = {"kind": "agent"}`, it
+writes no user row, its assistant rows carry `meta.origin = {"kind": "agent"}`, and
+its first row, whatever its role, carries `{"kind": "agent", "turn_start": true}`
+(`agent_started.agent_turn_opener_meta`, owed to the slot when the turn opens its
+stream and paid by the next durable row `append` writes; a turn that wrote no row
+drops it). It
 records crew-log actor `agent`, and it ends through the normal end-of-turn path,
 so the unread badge and turn sound fire. A message sent while it runs queues
 behind it: the turn is responsive-protected, so a send never cancels it. It is
@@ -841,8 +845,12 @@ without spending that arm's retry budget. A caller that still asks
 `_queue_recovery` (a Stop hook's block) is declined and posts nothing. Its
 reply and tool stream reach a linked Slack thread like any reply; no prompt echo is
 posted, because none was typed. It does not count as an
-AutoNudge or monitor cycle. Regenerate refuses (`agent_started_reply`) while a
-reply it wrote sits after the newest user row: re-running that prompt would retire
+AutoNudge or monitor cycle. The transcript starts the turn's own group at that
+first row, in the chat page (`groupDisplayItems`) and the pane (`ChatMessageList`),
+and TurnBlock heads the group with a "Started by the agent" label above its tool
+rows and its reply; the chat page, which shows permission requests in the approval
+bar rather than as rows, opens the group at the next row it shows. Regenerate refuses
+(`agent_started_reply`) while a row it marked sits after the newest user row: re-running that prompt would retire
 the agent's reply, and any reply beside it, for a variant of only the newest one. A
 session no dashboard chat turn runs (a channel
 conversation on the messaging driver, a cron job's own session, a sub-agent)

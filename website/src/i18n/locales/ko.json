@@ -12578,6 +12578,8 @@
         "archive_failed_turn_cancelled": "실행 중인 턴을 취소한 뒤 이 탭을 보관하지 못했습니다. 탭은 유지되었지만 그 턴은 끝나지 않았습니다 — 계속하려면 메시지를 다시 보내세요."
       },
       "turnBlock": {
+        "agent_started": "에이전트가 시작함",
+        "agent_started_tooltip": "에이전트가 스스로 답했습니다. 예를 들어 시작한 백그라운드 작업이 끝난 뒤입니다.",
         "earlier_step_other": "이전 단계 {{count}}개",
         "hide_earlier_steps": "이전 단계 숨기기",
         "hide_tool_calls": "도구 호출 숨기기",

@@ -24,7 +24,7 @@ import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVer
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
-import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
+import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, itemOpensAgentTurn, opensAgentTurn, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { injectOpensTurn } from '../pages/chat/RecoveryCard'
 import {
@@ -250,6 +250,8 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       // sees it, the reader does not.
       if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
       if (GROUPED_ROLES.includes(messages[i].role)) {
+        // A group never spans the start of an agent-started turn.
+        if (group.length && opensAgentTurn(messages[i])) { raw.push({ kind: 'group', msgs: group, startIdx: groupStart }); group = [] }
         if (!group.length) groupStart = i
         group.push(messages[i])
       } else {
@@ -269,15 +271,21 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
         t.kind === 'group'
       )
 
+    // Set while the open batch is a turn the agent started on its own.
+    let agentTurnOpen = false
     const flushTurn = (complete: boolean) => {
       if (!turnItems.length) return
-      // A tool call wraps at any length, so a one-tool turn folds (#23017).
-      if (hasToolStep(turnItems) || (hasWorkingSteps(turnItems) && turnItems.length > 2)) {
+      // A tool call wraps at any length, so a one-tool turn folds (#23017). A
+      // turn the agent started wraps at any length too, so TurnBlock heads it.
+      if (agentTurnOpen) {
+        turns.push({ kind: 'turn', items: turnItems, complete, agentStarted: true })
+      } else if (hasToolStep(turnItems) || (hasWorkingSteps(turnItems) && turnItems.length > 2)) {
         turns.push({ kind: 'turn', items: turnItems, complete })
       } else {
         turns.push(...turnItems)
       }
       turnItems = []
+      agentTurnOpen = false
     }
 
     for (const item of raw) {
@@ -294,6 +302,11 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
         flushTurn(true)
         turns.push(item)
       } else {
+        // The first row of a turn the agent started opens it (groupDisplayItems).
+        if (itemOpensAgentTurn(item)) {
+          flushTurn(true)
+          agentTurnOpen = true
+        }
         turnItems.push(item)
       }
     }

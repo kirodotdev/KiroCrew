@@ -13166,6 +13166,8 @@
         "archive_failed_turn_cancelled": "L’archivage de cet onglet a échoué après l’annulation de son tour en cours. L’onglet a été conservé, mais ce tour ne s’est pas terminé — renvoie ton message pour continuer."
       },
       "turnBlock": {
+        "agent_started": "Lancé par l'agent",
+        "agent_started_tooltip": "L'agent a répondu de lui-même, par exemple après la fin d'une tâche en arrière-plan qu'il avait lancée.",
         "earlier_step_many": "{{count}} étapes précédentes",
         "earlier_step_one": "{{count}} étape précédente",
         "earlier_step_other": "{{count}} étapes précédentes",
