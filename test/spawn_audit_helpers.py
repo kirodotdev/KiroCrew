@@ -491,6 +491,13 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "acp/kas_bundle.py::_open_tar",
         "acp/kas_bundle.py::_probe_node",
         "acp/kas_bundle.py::_run_tool",
+        # The engine-bundle compile-cache prewarm. It runs in the gateway, outside the
+        # sandbox, because the cache it fills lives under the read-only ``engines``
+        # leaf. Its argv is ``build_kas_bundle_argv`` over ``installed_bundle()``'s
+        # sha256-pinned Node and ``acp-server.js``, both inside that sealed leaf; stdin
+        # is at EOF, the environment holds only PATH, a scratch HOME and the cache path.
+        # No agent input reaches the argv, the cwd or the environment.
+        "acp/node_compile_cache.py::prewarm_engine_bundle_cache",
         # The offline run of an authored dashboard page (``dashboard_verify``). The argv
         # is fixed: a system Python and a browser path, each from a fixed list of system
         # locations and each past the strict provider-executable check (root-owned, not a
