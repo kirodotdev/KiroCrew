@@ -76,6 +76,14 @@ describe('Context budget rows explain what each skill is', () => {
     expect(within(row).queryByText('Yours')).toBeNull()
   })
 
+  it('tags a skill from an installed Agent Plugin as Plugin, not Built-in', async () => {
+    mount([{ ...base, key: 'plugin-helper', name: 'plugin-helper', origin: 'plugin', description: 'From a plugin.' }])
+    const row = await rowOf(/Plugin Helper/)
+    expect(within(row).getByText('Plugin')).toBeTruthy()
+    expect(within(row).queryByText('Built-in')).toBeNull()
+    expect(within(row).queryByText('Yours')).toBeNull()
+  })
+
   it('renders no empty description line for a skill without one', async () => {
     mount([{ ...base, key: 'bare', name: 'bare', origin: 'user', description: '' }])
     const row = await rowOf(/^Bare$/)
