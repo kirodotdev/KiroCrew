@@ -120,3 +120,18 @@ describe('CommentsSidebar batch-submit markers', () => {
     expect(screen.queryByTestId('comment-pending-submit')).toBeNull()
   })
 })
+
+describe('CommentsSidebar resolved toggle', () => {
+  it('says whether resolved threads are showing and hides its icon from the name', () => {
+    const open = mk({ id: 'o', thread_id: 'o', body: 'still open' })
+    const done = mk({ id: 'd', thread_id: 'd', body: 'settled thread', status: 'resolved' })
+    render(<CommentsSidebar comments={[open, done]} {...base()} />)
+    const toggle = screen.getByRole('button', { name: 'Show 1 resolved' })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    for (const svg of toggle.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(toggle)
+    expect(screen.getByRole('button', { name: 'Hide 1 resolved' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('settled thread')).toBeInTheDocument()
+  })
+})
