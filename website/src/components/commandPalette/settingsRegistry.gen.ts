@@ -2836,7 +2836,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "privacy.send-anonymous-usage-heartbeat",
     "label": "Send anonymous usage heartbeat",
     "labelKey": "privacyDisclosure.toggleLabel",
-    "description": "Saved for future launches.",
+    "description": "Also controls the git traffic tag. Saved for future launches.",
     "tab": "privacy",
     "type": "toggle",
     "occurrence": 1,

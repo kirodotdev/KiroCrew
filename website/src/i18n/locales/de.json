@@ -8404,7 +8404,7 @@
     "privacyChapter": {
       "continue": "Weiter",
       "eyebrow": "Datenschutz",
-      "subtitle": "Die fünf anonymen Felder, die {{productName}} sendet, und wie du sie abschaltest.",
+      "subtitle": "Was {{productName}} sendet, wer es erhält und wie du es abschaltest.",
       "title": "Datenschutz"
     },
     "pierreEditorImpl": {
@@ -21118,6 +21118,9 @@
     "installReceiptBody": "Nach einer erfolgreichen Installation oder Aktualisierung aus dem offiziellen Kiro-Crew-Katalog wird ein anonymer Beleg gesendet. Externe Register, lokale Apps und selbst registrierte Apps werden nie gemeldet.",
     "installReceiptFields": "Offizieller App-Slug · anonymer Token pro App (nicht appübergreifend verknüpfbar) · Neuinstallation/Aktualisierung · Kiro-Crew-Version",
     "installReceiptTitle": "Installationsbelege für offizielle Apps",
+    "gitUserAgentTitle": "Git-Datenverkehr von Agenten",
+    "gitUserAgentBody": "Wenn ein Agent Git über HTTP oder HTTPS ausführt, nennt die Anfrage ihren Client Kiro Crew, damit der Git-Host zählen kann, wie viele seiner Nutzer über Kiro Crew arbeiten. Der Host weiß bereits, wer angemeldet ist; dies fügt nur hinzu, welches Werkzeug benutzt wurde. Über SSH wird nichts gesendet. Das Abschalten von „{{toggle}}“ beendet es für danach gestartete Agent-Sitzungen; eine bereits laufende Sitzung behält es bis zu ihrem Neustart.",
+    "gitUserAgentFields": "User-Agent-Header: git/2.0 KiroCrew/<version> · wird an den Git-Host gesendet, zu dem Sie pushen oder von dem Sie fetchen · keine Installations-ID, kein Hostname, keine Sitzung",
     "localDataBody": "Nutzungs- und Kontextdaten. Leistungsmetriken sind standardmäßig aus.",
     "localDataTitle": "Bleibt auf deinem Gerät",
     "notSendingAlreadySentToday": "Das Signal von heute wurde bereits gesendet.",
@@ -21134,7 +21137,7 @@
     "shellMacOSLinuxLabel": "macOS / Linux",
     "shellPowerShellLabel": "Windows PowerShell",
     "shellWindowsCmdLabel": "Windows-Eingabeaufforderung",
-    "toggleDescription": "Für künftige Starts gespeichert.",
+    "toggleDescription": "Steuert auch die Kennung im Git-Datenverkehr. Für künftige Starts gespeichert.",
     "toggleLabel": "Anonymes Nutzungssignal senden",
     "toggleSaveFailed": "Deine Telemetrie-Auswahl konnte nicht gespeichert werden. Versuche es erneut.",
     "envOverrideWithSettingRef": "Der Heartbeat ist deaktiviert, weil <settingRef/> in dieser Umgebung gesetzt ist. Entferne die Variable, um Telemetrie hier zu verwalten."

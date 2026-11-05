@@ -38,6 +38,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_KNOWN,
 )
+from kiro_crew.outbound_user_agent import git_http_user_agent, outbound_user_agent
 
 
 @pytest.mark.parametrize(
@@ -345,6 +346,7 @@ def test_the_fixed_parent_never_carries_a_variable_spawn_sets() -> None:
         "KIROCREW_SESSION_KEY",
         "KIROCREW_CHANNEL_ID",
         "KIROCREW_RUNTIME_PYTHON",
+        "GIT_HTTP_USER_AGENT",
         "PI_ACP_PI_COMMAND",
         "KIROCREW_PI_GATE_SESSION",
         "OPENCODE_CONFIG_CONTENT",
@@ -498,6 +500,7 @@ _KNOWN_IDS = (
 _TAIL_WRITTEN_ENV = (
     "KIROCREW_SPAWNED",
     "KIROCREW_RUNTIME_PYTHON",
+    "GIT_HTTP_USER_AGENT",
     "KIROCREW_SCRATCH",
     "PYTEST_XDIST_AUTO_NUM_WORKERS",
     "AGENT_BROWSER_SESSION",
@@ -594,6 +597,7 @@ def _launch_tools(
     delegate: bool = False,
     spawn_error: BaseException | None = None,
     retrying=None,
+    permit_git_user_agent: bool = True,
 ):
     from kiro_crew.acp.launch import LaunchTools
 
@@ -636,6 +640,12 @@ def _launch_tools(
         rec.calls.append("inject_xdist_auto_cap")
         env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "2"
 
+    def git_user_agent_permitted():
+        # Named as the production collaborator so the host's guarded-hop log, which
+        # records ``__name__``, reads the same for the fake.
+        rec.calls.append("git_user_agent_permitted")
+        return permit_git_user_agent
+
     async def _bind(work_dir):
         rec.calls.append("bind_voice_safe_agent_workspace_async")
         return str(work_dir), 7
@@ -665,6 +675,7 @@ def _launch_tools(
         bind_voice_safe_agent_workspace_async=_bind,
         create_subprocess_limited=_create,
         retrying_spawn_factory=retrying,
+        git_user_agent_permitted=git_user_agent_permitted,
     )
 
 
@@ -774,6 +785,10 @@ def test_the_child_environment_is_built_in_one_fixed_order(monkeypatch, tmp_path
     after_scrub = seen["after_scrub"]
     assert "SECRET_TOKEN" not in after_scrub and after_scrub["REPAIRED"] == "/opt/bin/host"
     assert after_scrub["KIROCREW_RUNTIME_PYTHON"] == sys.executable
+    # The git tag is set after the interpreter pin, so it too lands after extra_env
+    # and the scrub; the consent verdict is read through the guarded off-loop hop.
+    assert after_scrub["GIT_HTTP_USER_AGENT"] == git_http_user_agent()
+    assert "git_user_agent_permitted" in host.guarded
     assert "POD_REMAP" not in after_scrub and "KIROCREW_SPAWNED" not in after_scrub
     after_marker = seen["after_marker"]
     assert after_marker["POD_REMAP"] == "True" and after_marker["KIROCREW_SPAWNED"] == "1"
@@ -785,6 +800,43 @@ def test_the_child_environment_is_built_in_one_fixed_order(monkeypatch, tmp_path
     assert rec.calls.index("scrub_agent_subprocess_env") < rec.calls.index(
         "apply_pod_home_remap:True"
     )
+
+
+def test_an_opted_out_install_sends_no_git_user_agent_tag(monkeypatch, tmp_path) -> None:
+    """The tag is a usage signal: when the shared telemetry verdict refuses, the
+    child's environment carries nothing that names Kiro Crew, and whatever the
+    gateway shell exported stays as the operator set it."""
+    _launch_env(monkeypatch, GIT_HTTP_USER_AGENT="git/9.9.9 host-shell")
+    host = _FakeHost(tmp_path)
+    rec = _Recording()
+    _run_launch(
+        host,
+        _request(),
+        _launch_tools(rec, scratch=_Scratch(tmp_path / "scratch"), permit_git_user_agent=False),
+    )
+    child = rec.factory_kwargs["env"]
+    assert "git_user_agent_permitted" in rec.calls
+    assert child["GIT_HTTP_USER_AGENT"] == "git/9.9.9 host-shell"
+    assert not any(outbound_user_agent() in value for value in child.values())
+
+
+def test_a_refused_verdict_drops_a_token_the_gateway_itself_inherited(
+    monkeypatch, tmp_path
+) -> None:
+    """A gateway started from inside a tagged agent shell carries that shell's
+    Kiro Crew token in its own environment; a child spawned under a refusing
+    verdict must not re-send it."""
+    _launch_env(monkeypatch, GIT_HTTP_USER_AGENT=git_http_user_agent())
+    host = _FakeHost(tmp_path)
+    rec = _Recording()
+    _run_launch(
+        host,
+        _request(),
+        _launch_tools(rec, scratch=_Scratch(tmp_path / "scratch"), permit_git_user_agent=False),
+    )
+    child = rec.factory_kwargs["env"]
+    assert "GIT_HTTP_USER_AGENT" not in child
+    assert not any(outbound_user_agent() in value for value in child.values())
 
 
 def test_a_failed_spawn_releases_the_workspace_and_the_sandbox_launcher(

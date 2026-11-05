@@ -984,6 +984,7 @@ class SessionManager:
         # a provider reload discards falls out of the registry on its own.
         self._config_sub = live.subscribe(
             *self._CONFIG_SECTIONS,
+            *_config_apply._CONSENT_CONFIG_SECTIONS,
             callback=self._on_config_change,
             name="SessionManager",
         )

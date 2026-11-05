@@ -16,11 +16,14 @@ Instance fields read: ``_background_runtime``, ``_compaction``.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.cold_start_sizing import cached_cold_start_concurrency, configure_runtime_spawn_width
 from kiro_crew.config import live
 from kiro_crew.config.loader import published_autocompact_pct
+from kiro_crew.outbound_user_agent import TELEMETRY_CONSENT_CONFIG_PATHS, consent_withdrawn
 from kiro_crew.session_allocation import widen_cold_start_semaphore
 
 if TYPE_CHECKING:
@@ -28,6 +31,8 @@ if TYPE_CHECKING:
     from kiro_crew.config.live import ConfigChange
     from kiro_crew.session import SessionManager
 
+# The owners log under the facade's logger (test_session_bindings pins it).
+logger = logging.getLogger("kiro_crew.session")
 
 # Paths whose new value is only honoured by a rebuilt provider factory or a
 # re-derived warm pool. Anything else under ``session``/``agent`` is read
@@ -47,6 +52,14 @@ _CONFIG_SECTIONS: tuple[str, ...] = (
     # ``_cfg`` at each cold start (session._session_model).
     "apps",
 )
+# telemetry.beacon_enabled and dashboard.privacy_acked decide the git User-Agent
+# tag on every agent child; the shared background runtime keeps the environment
+# it was spawned with, so a withdrawal must retire it. Subscribed to beside
+# ``_CONFIG_SECTIONS`` but kept out of its fail-closed check: a degraded
+# ``dashboard`` section (a wide one, written by many handlers) would otherwise
+# hold every ``agent.*`` apply, which never depended on it. Only the consent
+# step defers on these.
+_CONSENT_CONFIG_SECTIONS: tuple[str, ...] = ("telemetry", "dashboard")
 _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
     "agent.model",
     "agent.reasoning_effort",
@@ -124,6 +137,52 @@ async def _on_config_change(self: SessionManager, change: ConfigChange) -> None:
         path.rsplit(".", 1)[-1].startswith("watchdog_") for path in change.under("agents")
     ):
         await self._rebind_live_watchdogs(change.new)
+    if change.touched(*TELEMETRY_CONSENT_CONFIG_PATHS):
+        # Last, so a skip here never holds the compaction and watchdog steps
+        # above, which never depended on these sections.
+        await _apply_consent_change(self, change)
+
+
+async def _apply_consent_change(manager: SessionManager, change: ConfigChange) -> None:
+    """Make a WITHDRAWN telemetry consent reach the agent processes it can.
+
+    The git User-Agent tag is fixed on each agent process's environment at
+    spawn, so a process that outlives the opt-out keeps sending it. Two
+    populations run no turn and can be replaced without cancelling anything:
+    the idle warm pool (``refresh_defaults`` discards it and refills from the
+    new verdict) and the shared background runtime, which every background
+    and cron session demuxes onto and which would otherwise keep the tag up to
+    its 6 h age ceiling (``retire_for_agent_env_change`` PARKS it at a turn
+    boundary, never kills it, like an ``agent.env`` change). Only the
+    withdrawal: a grant tags nothing a process was forbidden to send, and the
+    first-run acknowledgement is a grant. Foreground sessions keep the
+    environment they started with, the same rule ``agent.env`` has: retiring
+    them would cancel running turns (``drain_active_turns`` cancels to reach
+    its boundary) and the applier's 10 s cap could cut the retirement short.
+    They respawn untagged on their next cold start.
+
+    A degraded consent section skips the step: it holds DEFAULTS, and the
+    default ``dashboard.privacy_acked`` is false, so read as a withdrawal it
+    would drain the pool on a document the loader discarded. Not a
+    ``ConfigDeferred``: the watcher's retry replays ``old == new`` and sees no
+    transition either, and a degraded observation is sticky for the process
+    (``resolution._OBSERVED_DEGRADED_SECTIONS``), so a deferral here would
+    re-raise on every later change. The off-loop hop is for
+    ``consent_withdrawn``'s governance read.
+    """
+    if change.new.degraded_sections.intersection(_CONSENT_CONFIG_SECTIONS):
+        logger.warning(
+            "config: a telemetry consent change arrived with a degraded %s section; "
+            "running agent processes keep the environment they started with",
+            "/".join(sorted(change.new.degraded_sections.intersection(_CONSENT_CONFIG_SECTIONS))),
+        )
+        return
+    if not await asyncio.to_thread(consent_withdrawn, change.old, change.new):
+        return
+    await manager.refresh_defaults(cfg=change.new)
+    await manager._background_runtime.retire_for_agent_env_change(
+        reason="telemetry consent withdrawn"
+    )
 
 
 async def refresh_defaults(self: SessionManager, cfg: KiroCrewConfig | None = None) -> None:

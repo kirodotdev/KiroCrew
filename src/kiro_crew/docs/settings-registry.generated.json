@@ -1666,7 +1666,7 @@
       "label": "Send anonymous usage heartbeat",
       "tab": "privacy",
       "route": "/settings/privacy?highlight=key%3Atelemetry.beacon_enabled",
-      "description": "Saved for future launches.",
+      "description": "Also controls the git traffic tag. Saved for future launches.",
       "configKey": "telemetry.beacon_enabled"
     },
     {

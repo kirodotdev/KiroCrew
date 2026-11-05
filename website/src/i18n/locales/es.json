@@ -8607,7 +8607,7 @@
     "privacyChapter": {
       "continue": "Continuar",
       "eyebrow": "Privacidad",
-      "subtitle": "Los cinco campos anónimos que envía {{productName}} y cómo desactivarlos.",
+      "subtitle": "Qué envía {{productName}}, quién lo recibe y cómo desactivarlo.",
       "title": "Privacidad"
     },
     "pierreEditorImpl": {
@@ -21618,6 +21618,9 @@
     "installReceiptBody": "Tras una instalación o actualización correcta desde el catálogo oficial de Kiro Crew, se envía un recibo anónimo. Nunca se informan registros externos, apps locales ni apps autorregistradas.",
     "installReceiptFields": "slug de la app oficial · token anónimo por app (no vinculable entre apps) · instalación nueva/actualización · versión de Kiro Crew",
     "installReceiptTitle": "Recibos de instalación de apps oficiales",
+    "gitUserAgentTitle": "Tráfico Git de los agentes",
+    "gitUserAgentBody": "Cuando un agente ejecuta git por HTTP o HTTPS, la solicitud identifica su cliente como Kiro Crew, para que el host git pueda contar cuántos de sus usuarios trabajan a través de Kiro Crew. El host ya sabe quién inició sesión; esto solo añade qué herramienta usó. No se envía nada por SSH. Al desactivar «{{toggle}}» deja de enviarse en las sesiones de agente que se inicien después; una sesión ya en marcha lo conserva hasta que se reinicie.",
+    "gitUserAgentFields": "Cabecera User-Agent: git/2.0 KiroCrew/<version> · se envía al host git al que haces push o fetch · sin ID de instalación, nombre de host ni sesión",
     "localDataBody": "Registros de uso y contexto. Las métricas de rendimiento están desactivadas por defecto.",
     "localDataTitle": "Se queda en tu dispositivo",
     "notSendingAlreadySentToday": "La señal de hoy ya se envió.",
@@ -21634,7 +21637,7 @@
     "shellMacOSLinuxLabel": "macOS / Linux",
     "shellPowerShellLabel": "Windows PowerShell",
     "shellWindowsCmdLabel": "Símbolo del sistema de Windows",
-    "toggleDescription": "Se guarda para los próximos inicios.",
+    "toggleDescription": "También controla la etiqueta del tráfico Git. Se guarda para los próximos inicios.",
     "toggleLabel": "Enviar señal de uso anónima",
     "toggleSaveFailed": "No se pudo guardar tu elección de telemetría. Vuelve a intentarlo.",
     "envOverrideWithSettingRef": "El heartbeat está desactivado porque <settingRef/> está configurada en este entorno. Desactívala para gestionar la telemetría aquí."

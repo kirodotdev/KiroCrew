@@ -8201,7 +8201,7 @@
     "privacyChapter": {
       "continue": "続行",
       "eyebrow": "プライバシー",
-      "subtitle": "{{productName}}が送信する5つの匿名フィールドと、それをオフにする方法。",
+      "subtitle": "{{productName}}が送信する内容、その受信者、そしてオフにする方法。",
       "title": "プライバシー"
     },
     "pierreEditorImpl": {
@@ -20618,6 +20618,9 @@
     "installReceiptBody": "Kiro Crew の公式カタログから正常にインストールまたは更新された後、匿名レシートが1つ送信されます。外部レジストリ、ローカルアプリ、自己登録アプリは報告されません。",
     "installReceiptFields": "公式アプリスラッグ · アプリごとの匿名トークン (アプリ間でリンク不可) · 新規/更新フラグ · Kiro Crew バージョン",
     "installReceiptTitle": "公式アプリインストールレシート",
+    "gitUserAgentTitle": "エージェントからの Git 通信",
+    "gitUserAgentBody": "エージェントが HTTP または HTTPS で git を実行すると、リクエストはクライアントを Kiro Crew として名乗り、git ホストは Kiro Crew 経由で作業するユーザー数を数えられます。ホストは誰がサインインしたかをすでに知っています。これはどのツールを使ったかを加えるだけです。SSH では何も送信されません。「{{toggle}}」をオフにすると、その後に開始するエージェントセッションでは送信されなくなります。すでに実行中のセッションは再起動まで送信を続けます。",
+    "gitUserAgentFields": "User-Agent ヘッダー: git/2.0 KiroCrew/<version> · push または fetch 先の git ホストに送信 · インストール ID、ホスト名、セッションは含まない",
     "localDataBody": "使用状況とコンテキスト記録。パフォーマンスメトリクスはデフォルトではオフです。",
     "localDataTitle": "デバイスに保持",
     "notSendingAlreadySentToday": "今日のハートビートはすでに送信されました。",
@@ -20634,7 +20637,7 @@
     "shellMacOSLinuxLabel": "macOS / Linux",
     "shellPowerShellLabel": "Windows PowerShell",
     "shellWindowsCmdLabel": "Windows コマンドプロンプト",
-    "toggleDescription": "今後の起動のために保存されます。",
+    "toggleDescription": "Git 通信のタグも制御します。今後の起動のために保存されます。",
     "toggleLabel": "匿名の使用状況ハートビートを送信",
     "toggleSaveFailed": "テレメトリの選択を保存できませんでした。もう一度試してください。",
     "envOverrideWithSettingRef": "<settingRef/> がこの環境で設定されているため、ハートビートはオフです。ここでテレメトリを管理するには、設定を解除してください。"

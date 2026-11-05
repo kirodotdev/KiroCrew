@@ -114,6 +114,10 @@ class TestSubscription:
             "default_workspace",
             "aws",
             "apps",
+            # The consent sections of the git User-Agent tag, subscribed to beside
+            # the fail-closed set and deferred on by the consent step alone.
+            "telemetry",
+            "dashboard",
         )
         assert mgr._config_sub is subs[0]
 

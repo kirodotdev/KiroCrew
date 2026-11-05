@@ -5,6 +5,7 @@
       "/opt/lib/claude-agent-acp/index.js"
     ],
     "env_added": {
+      "GIT_HTTP_USER_AGENT": "<user-agent>",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
@@ -22,6 +23,7 @@
     "env_added": {
       "CODEX_SQLITE_HOME": "<scratch>",
       "DISABLE_MCP_CONFIG_FILTERING": "true",
+      "GIT_HTTP_USER_AGENT": "<user-agent>",
       "KIROCREW_RUNTIME_AGENT": "kirocrew",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SCRATCH": "<scratch>",
@@ -47,6 +49,7 @@
       "--disallow-temp-dir"
     ],
     "env_added": {
+      "GIT_HTTP_USER_AGENT": "<user-agent>",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
@@ -66,6 +69,7 @@
     ],
     "env_added": {
       "DSH_PERMISSION_MODE": "workspace-write",
+      "GIT_HTTP_USER_AGENT": "<user-agent>",
       "KIROCREW_DSH_GATE_SESSION": "<nonce>",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SCRATCH": "<scratch>",
@@ -89,6 +93,7 @@
       "developer"
     ],
     "env_added": {
+      "GIT_HTTP_USER_AGENT": "<user-agent>",
       "GOOSE_MODE": "approve",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
@@ -107,6 +112,7 @@
       "kirocrew-skill-view-golden"
     ],
     "env_added": {
+      "GIT_HTTP_USER_AGENT": "<user-agent>",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
@@ -124,6 +130,7 @@
       "kirocrew-skill-view-golden"
     ],
     "env_added": {
+      "GIT_HTTP_USER_AGENT": "<user-agent>",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
@@ -140,6 +147,7 @@
       "acp"
     ],
     "env_added": {
+      "GIT_HTTP_USER_AGENT": "<user-agent>",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
@@ -156,6 +164,7 @@
       "/opt/lib/pi-acp/index.js"
     ],
     "env_added": {
+      "GIT_HTTP_USER_AGENT": "<user-agent>",
       "KIROCREW_PI_GATE_SESSION": "<nonce>",
       "KIROCREW_PI_MCP_HANDOFF": "/opt/run/kirocrew_pi_gate_mcp_handoff.json",
       "KIROCREW_PI_MCP_KEY": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -179,6 +188,7 @@
       "/opt/run/strands/agent.py"
     ],
     "env_added": {
+      "GIT_HTTP_USER_AGENT": "<user-agent>",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SCRATCH": "<scratch>",
       "KIROCREW_SESSION_KEY": "golden-session",
