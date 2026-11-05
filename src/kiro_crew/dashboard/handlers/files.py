@@ -313,6 +313,7 @@ from kiro_crew.dashboard.file_api.workspaces import (  # noqa: F401
     api_workspaces_update,
 )
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS  # noqa: F401
+from kiro_crew.dashboard.file_index import _dot_dir_walk_plan  # noqa: F401
 from kiro_crew.dashboard.git_repo_touches import _GIT_ROOT_WALK_LIMIT  # noqa: F401
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _probe_persisted_session,
