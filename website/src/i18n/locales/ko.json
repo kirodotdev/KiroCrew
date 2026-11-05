@@ -18411,6 +18411,7 @@
         "and_cannot_be_changed_here": "여기에서는 변경할 수 없습니다.",
         "and_per_surface": "및 표면별로",
         "block_list_rules": "차단 목록 · {{rules}}",
+        "rule_count_other": "규칙 {{count}}개",
         "built_in_rules_enforced_note": "사용자의 해제 설정과 정책 고정을 반영해 현재 기본 규칙 {{total}}개 중 {{enabled}}개가 적용되고 있습니다.",
         "cancel": "취소",
         "click_any_control_to_see_exactly_what_it_covers": "각 항목을 클릭하면 어떤 범위를 다루는지 정확히 확인할 수 있습니다.",

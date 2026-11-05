@@ -18570,6 +18570,8 @@
         "all_allowed": "[Àĺĺ àĺĺøẁèð ··········]",
         "allow_list_rules": "[Àĺĺøẁ-ĺìşţ · {{rules}} ············]",
         "block_list_rules": "[Ɓĺøçķ-ĺìşţ · {{rules}} ············]",
+        "rule_count_one": "[{{count}} ŕùĺè ········]",
+        "rule_count_other": "[{{count}} ŕùĺèş ·········]",
         "collapse_category_rules": "[Çøĺĺàþşè {{category}} ŕùĺèş ··············]",
         "delete_pattern": "[Ðèĺèţè þàţţèŕñ {{name}} ··············]",
         "disable_all_built_in_denies_2": "[Ðìşàƀĺè àĺĺ ƀùìĺţ-ìñ ðèñìèş? ····················]",

@@ -18872,6 +18872,8 @@
         "and_cannot_be_changed_here": "और इसे यहाँ बदला नहीं जा सकता।",
         "and_per_surface": "और प्रति-सरफ़ेस",
         "block_list_rules": "ब्लॉक-सूची · {{rules}}",
+        "rule_count_one": "{{count}} नियम",
+        "rule_count_other": "{{count}} नियम",
         "built_in_rules_enforced_note": "तुम्हारे ऑप्ट-आउट और किसी भी नीति पिन के बाद, अभी {{total}} में से {{enabled}} अंतर्निहित नियम लागू हैं।",
         "cancel": "रद्द करें",
         "click_any_control_to_see_exactly_what_it_covers": "यह देखने के लिए कि कोई नियंत्रण ठीक क्या कवर करता है, उस पर क्लिक करें।",
