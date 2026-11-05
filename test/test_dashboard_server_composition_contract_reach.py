@@ -808,7 +808,7 @@ _DASHBOARD_BOOT = tuple("""
     init_hook_reconciler async_safe_context_call current_context register_pre_exec_stop
     _arm_listener_guard
     _kick_crewmate_prune _kick_pinned_order_load _kick_default_app_installs
-    _kick_builtin_adoption_staging _start_unix_site _resolved_bound_port
+    _kick_builtin_adoption_staging _resolved_bound_port _start_unix_site
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
     _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
@@ -872,7 +872,7 @@ _API_BOOT = tuple("""
     _register_browser_harness_lifecycle _register_connections_warm_lifecycle _register_workflow_lifecycle
     _register_unix_socket_cleanup build_hardened_runner register_pre_exec_stop bind_address_for _start_site
     _arm_listener_guard _kick_pinned_order_load _export_bound_port _resolved_bound_port
-    _start_unix_site _resolved_bound_port _resolved_bound_host _start_secondary_loopback_site
+    _resolved_bound_port _start_unix_site _resolved_bound_host _start_secondary_loopback_site
     subprocess_executor _resolved_bound_host _resolved_bound_host _note_listener_sidecar
     _resolved_bound_host _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
