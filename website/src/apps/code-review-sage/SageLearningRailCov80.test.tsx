@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { SageContextValue } from '../apps/code-review-sage/context'
+import type { SageContextValue } from './context'
 
 /**
  * The Learning rail: which namespaces exist, which ones reviews LOAD (the
@@ -12,7 +12,7 @@ import type { SageContextValue } from '../apps/code-review-sage/context'
  * gone for good, and the selection has to follow the delete or the detail pane
  * keeps fetching a path that no longer exists.
  */
-vi.mock('../apps/code-review-sage/api', () => ({
+vi.mock('./api', () => ({
   sageApi: {
     namespaces: vi.fn(),
     settings: vi.fn(),
@@ -24,13 +24,13 @@ vi.mock('../apps/code-review-sage/api', () => ({
 
 const sage: Record<string, unknown> = {}
 
-vi.mock('../apps/code-review-sage/context', async importOriginal => {
-  const actual = await importOriginal<typeof import('../apps/code-review-sage/context')>()
+vi.mock('./context', async importOriginal => {
+  const actual = await importOriginal<typeof import('./context')>()
   return { ...actual, useSage: () => sage as unknown as SageContextValue }
 })
 
-import { sageApi } from '../apps/code-review-sage/api'
-import LearningRail from '../apps/code-review-sage/components/LearningRail'
+import { sageApi } from './api'
+import LearningRail from './components/LearningRail'
 
 const api = sageApi as unknown as Record<string, ReturnType<typeof vi.fn>>
 

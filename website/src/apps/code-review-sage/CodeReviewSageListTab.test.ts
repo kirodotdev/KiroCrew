@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { coerceListTab } from '../apps/code-review-sage/lib/persist'
+import { coerceListTab } from './lib/persist'
 
 describe('coerceListTab', () => {
   it('keeps every tab the rail renders, so a reload lands where the user left', () => {

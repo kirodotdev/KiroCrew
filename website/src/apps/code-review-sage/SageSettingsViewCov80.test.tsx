@@ -7,15 +7,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
  * so what matters is that each control sends the RIGHT patch (and that clearing
  * the model sends null, i.e. "inherit the agent default", not an empty string).
  */
-vi.mock('../apps/code-review-sage/api', () => ({
+vi.mock('./api', () => ({
   sageApi: {
     settings: vi.fn(),
     putSettings: vi.fn(),
   },
 }))
 
-import { sageApi } from '../apps/code-review-sage/api'
-import SettingsView from '../apps/code-review-sage/views/SettingsView'
+import { sageApi } from './api'
+import SettingsView from './views/SettingsView'
 
 const api = sageApi as unknown as Record<string, ReturnType<typeof vi.fn>>
 

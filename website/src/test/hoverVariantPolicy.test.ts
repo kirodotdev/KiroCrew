@@ -221,8 +221,6 @@ describe('hidden-until-hover controls stay reachable on touch', () => {
     // The daily-usage tooltip is the only place a day's figures appear and the bar has no click to lose,
     // so it keeps an ungated :hover that a tap still triggers.
     ['pages/overview/TokenDailyChart.tsx', 'hidden [.group:hover_&]:block'],
-    // An always-visible overlay control keeps the room its hover state reserved, so it covers no content on touch.
-    ['apps/code-review-sage/components/RunCard.tsx', "(onDelete ? ' [@media(hover:none)]:pb-7' : '')"],
     // Every notification dismiss rests at the same weight on touch.
     ['components/notifications/NotificationFeed.tsx', 'group-hover:opacity-40 [@media(hover:none)]:opacity-60'],
     ['pages/chat-sidebar/HistoryPane.tsx', "${remoteInstanceId ? '' : '[@media(hover:none)]:pr-10 '}"],

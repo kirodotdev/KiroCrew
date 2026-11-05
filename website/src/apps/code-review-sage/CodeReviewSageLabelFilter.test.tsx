@@ -14,11 +14,11 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { SageProvider, useSage } from '../apps/code-review-sage/context'
-import PrPickList from '../apps/code-review-sage/components/PrPickList'
-import { sageApi } from '../apps/code-review-sage/api'
+import { SageProvider, useSage } from './context'
+import PrPickList from './components/PrPickList'
+import { sageApi } from './api'
 
-vi.mock('../apps/code-review-sage/api', () => ({
+vi.mock('./api', () => ({
   sageApi: {
     runs: vi.fn(),
     runReport: vi.fn(),

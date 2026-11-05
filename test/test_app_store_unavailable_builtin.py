@@ -60,9 +60,9 @@ def test_the_skip_is_keyed_by_the_installed_app_name() -> None:
     # A package spelled with ``_`` ships a manifest spelled with ``-``; the record
     # ``GET /api/apps`` carries uses the manifest name.
     app = _app()
-    record_unavailable_builtin(app, "code_review_sage", PermissionError(13, "Permission denied"))
+    record_unavailable_builtin(app, "sample_app", PermissionError(13, "Permission denied"))
     stamped = mark_unavailable(
-        {"name": "code-review-sage", "origin": "builtin"}, unavailable_builtins(app)
+        {"name": "sample-app", "origin": "builtin"}, unavailable_builtins(app)
     )
     assert stamped["unavailable"]["reason"].startswith("PermissionError")
 

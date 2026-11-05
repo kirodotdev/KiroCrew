@@ -2,8 +2,8 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { SageContextValue } from '../apps/code-review-sage/context'
-import type { MainView } from '../apps/code-review-sage/lib/types'
+import type { SageContextValue } from './context'
+import type { MainView } from './lib/types'
 
 /**
  * The rail header: the app's identity row and its ONLY navigation, rendered in
@@ -17,14 +17,14 @@ import type { MainView } from '../apps/code-review-sage/lib/types'
  */
 const sage: Record<string, unknown> = {}
 
-vi.mock('../apps/code-review-sage/context', async importOriginal => {
-  const actual = await importOriginal<typeof import('../apps/code-review-sage/context')>()
+vi.mock('./context', async importOriginal => {
+  const actual = await importOriginal<typeof import('./context')>()
   return { ...actual, useSage: () => sage as unknown as SageContextValue }
 })
 
 import RailHeader, {
   sectionHasList, sectionLabel,
-} from '../apps/code-review-sage/components/RailHeader'
+} from './components/RailHeader'
 
 function mount(props: Parameters<typeof RailHeader>[0] = {}) {
   return render(<RailHeader {...props} />)

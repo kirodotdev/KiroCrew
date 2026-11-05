@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
  * the add-repos dialog has to mount INSIDE the provider (it reads it) while the
  * workspace blurs behind it.
  */
-vi.mock('../apps/code-review-sage/api', () => ({
+vi.mock('./api', () => ({
   sageApi: {
     runs: vi.fn(async () => ({ runs: [], pool: null, reviewer: null })),
     run: vi.fn(),
@@ -44,8 +44,8 @@ vi.mock('../apps/code-review-sage/api', () => ({
 
 // The shell and the dialog have their own suites; here they are probes so the
 // page's own wiring (deep link in, dialog layer out) is what is asserted.
-vi.mock('../apps/code-review-sage/Workspace', async () => {
-  const { useSage } = await import('../apps/code-review-sage/context')
+vi.mock('./Workspace', async () => {
+  const { useSage } = await import('./context')
   function WorkspaceProbe() {
     const { selectedRunId, addingRepos, openAddRepos } = useSage()
     return (
@@ -59,7 +59,7 @@ vi.mock('../apps/code-review-sage/Workspace', async () => {
   return { default: WorkspaceProbe }
 })
 
-vi.mock('../apps/code-review-sage/components/AddReposModal', () => ({
+vi.mock('./components/AddReposModal', () => ({
   default: ({ onClose }: { onClose: () => void }) => (
     <div>
       <span data-testid="modal">zzz-modal</span>
@@ -68,7 +68,7 @@ vi.mock('../apps/code-review-sage/components/AddReposModal', () => ({
   ),
 }))
 
-import CodeReviewSagePage from '../apps/code-review-sage/CodeReviewSagePage'
+import CodeReviewSagePage from './CodeReviewSagePage'
 
 function mount(entry: string) {
   const qc = new QueryClient({

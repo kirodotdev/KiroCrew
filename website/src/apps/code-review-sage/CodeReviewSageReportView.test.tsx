@@ -1,17 +1,17 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 // `/all` for every catalog: `../i18n` registers English only.
-import { i18next } from '../i18n/all'
-import type { RunReport } from '../apps/code-review-sage/lib/types'
+import { i18next } from '../../i18n/all'
+import type { RunReport } from './lib/types'
 
 // Render markdown-bearing prose as a tagged span so the test can (a) read the
 // text and (b) prove a given string was routed THROUGH the markdown renderer —
 // which lets the snippet test assert the code block was NOT.
-vi.mock('../components/MarkdownRenderer', () => ({
+vi.mock('../../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <span data-testid="md">{content}</span>,
 }))
 
-const ReportView = (await import('../apps/code-review-sage/components/ReportView')).default
+const ReportView = (await import('./components/ReportView')).default
 
 function makeReport(overrides: Partial<RunReport> = {}): RunReport {
   return {

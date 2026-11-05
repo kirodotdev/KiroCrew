@@ -166,22 +166,6 @@ def test_token_revocation_bump_survives_a_contended_rename(
     assert _temps(tmp_path) == []
 
 
-def test_sage_by_name_publish_survives_a_contended_rename(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from kiro_crew.apps.builtins.code_review_sage.sage_lib import store
-
-    # The by-name branch is the one Windows takes: it has no directory pinning.
-    monkeypatch.setattr(store, "_CAN_PIN_DIR", False)
-    target = tmp_path / "record.json"
-    with replace_sharing_violation(match="record.json", times=2) as sim:
-        store.atomic_write_locked(target, b'{"ok": true}')
-
-    assert sim["n"] == 3
-    assert target.read_bytes() == b'{"ok": true}'
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["record.json"]
-
-
 def test_pinned_source_write_by_name_survives_a_contended_rename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

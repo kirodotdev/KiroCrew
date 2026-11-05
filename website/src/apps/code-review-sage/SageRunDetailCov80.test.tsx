@@ -1,12 +1,12 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 // `/all` for every catalog: `../i18n` registers English only.
-import { i18next } from '../i18n/all'
+import { i18next } from '../../i18n/all'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 
-import type { Run, RunReport } from '../apps/code-review-sage/lib/types'
-import type { SageContextValue } from '../apps/code-review-sage/context'
+import type { Run, RunReport } from './lib/types'
+import type { SageContextValue } from './context'
 
 /**
  * The detail pane's report AREA, which is a five-way switch (error, loading
@@ -20,12 +20,12 @@ import type { SageContextValue } from '../apps/code-review-sage/context'
  */
 const sage: Record<string, unknown> = {}
 
-vi.mock('../apps/code-review-sage/context', async importOriginal => {
-  const actual = await importOriginal<typeof import('../apps/code-review-sage/context')>()
+vi.mock('./context', async importOriginal => {
+  const actual = await importOriginal<typeof import('./context')>()
   return { ...actual, useSage: () => sage as unknown as SageContextValue }
 })
 
-vi.mock('../apps/code-review-sage/components/ReportView', () => ({
+vi.mock('./components/ReportView', () => ({
   default: ({ actions, isPosting, onPostFinding, onPostSelection, onArchive, archiveError }: {
     actions?: ReactNode
     isPosting?: (key: string) => boolean
@@ -47,7 +47,7 @@ vi.mock('../apps/code-review-sage/components/ReportView', () => ({
   ),
 }))
 
-vi.mock('../apps/code-review-sage/components/PostCommentsButton', () => ({
+vi.mock('./components/PostCommentsButton', () => ({
   default: ({ onPost, posting, error }: {
     onPost: () => void
     posting: boolean
@@ -61,7 +61,7 @@ vi.mock('../apps/code-review-sage/components/PostCommentsButton', () => ({
   ),
 }))
 
-import RunDetail from '../apps/code-review-sage/components/RunDetail'
+import RunDetail from './components/RunDetail'
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {

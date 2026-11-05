@@ -6,17 +6,17 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 // `/all` for every catalog: `../i18n` registers English only.
-import { i18next } from '../i18n/all'
+import { i18next } from '../../i18n/all'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import LearningRail from '../apps/code-review-sage/components/LearningRail'
-import LearningView, { ConsolidateControl } from '../apps/code-review-sage/views/LearningView'
-import { SageProvider } from '../apps/code-review-sage/context'
-import { sageApi } from '../apps/code-review-sage/api'
+import LearningRail from './components/LearningRail'
+import LearningView, { ConsolidateControl } from './views/LearningView'
+import { SageProvider } from './context'
+import { sageApi } from './api'
 
-vi.mock('../apps/code-review-sage/api', () => ({
+vi.mock('./api', () => ({
   sageApi: {
     namespaces: vi.fn(),
     learnings: vi.fn(),

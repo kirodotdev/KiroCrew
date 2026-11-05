@@ -11,15 +11,15 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import Workspace from '../apps/code-review-sage/Workspace'
-import { sageApi } from '../apps/code-review-sage/api'
-import { SageProvider } from '../apps/code-review-sage/context'
+import Workspace from './Workspace'
+import { sageApi } from './api'
+import { SageProvider } from './context'
 import type {
   Run, RunReport, RunsResponse,
-} from '../apps/code-review-sage/lib/types'
+} from './lib/types'
 
 // The api client is the single seam between the app and the backend.
-vi.mock('../api/client', () => ({
+vi.mock('../../api/client', () => ({
   api: {
     pullRequestSource: vi.fn(async () => ({
       provider: 'github', url: 'https://github.com/acme/widgets/pull/7', number: 7,
@@ -49,7 +49,7 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-vi.mock('../apps/code-review-sage/api', () => ({
+vi.mock('./api', () => ({
   sageApi: {
     runs: vi.fn(),
     run: vi.fn(),
@@ -489,7 +489,7 @@ describe('Code Review Sage shell', () => {
     // The pane's header and the embedded panel both need the payload. They share
     // one query key precisely so opening a PR costs one provider call, not two —
     // a private Sage key would silently double every open.
-    const core = (await import('../api/client')).api as unknown as
+    const core = (await import('../../api/client')).api as unknown as
       { pullRequestSource: ReturnType<typeof vi.fn> }
     mockApi.repoPrs.mockResolvedValue({
       repo: 'acme/widgets', count: 1, prs: [prFixture()],
@@ -530,7 +530,7 @@ describe('Code Review Sage shell', () => {
     // delivered no draft — and the PENDING review on the pull request is then the
     // PREVIOUS run's. Completion is not delivery: publishing here would submit
     // obsolete findings irreversibly.
-    const core = (await import('../api/client')).api as unknown as
+    const core = (await import('../../api/client')).api as unknown as
       { pullRequestPendingReview: ReturnType<typeof vi.fn> }
     core.pullRequestPendingReview.mockResolvedValue({
       reviewId: '4242', comments: [], body: '[code-review-sage] stale draft', commitId: 'abc',
@@ -552,7 +552,7 @@ describe('Code Review Sage shell', () => {
   })
 
   it('offers the verdicts once this run has posted for the change', async () => {
-    const core = (await import('../api/client')).api as unknown as
+    const core = (await import('../../api/client')).api as unknown as
       { pullRequestPendingReview: ReturnType<typeof vi.fn> }
     core.pullRequestPendingReview.mockResolvedValue({
       reviewId: '4242', comments: [], body: '[code-review-sage] fresh draft', commitId: 'abc',
