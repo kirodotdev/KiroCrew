@@ -45,7 +45,11 @@ from kiro_crew.acp.types import (
     effort_config_option_value,
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_EFFORT_AT_LAUNCH, launch_effort_supported
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
+    ACP_BACKENDS_EFFORT_AT_LAUNCH,
+    launch_effort_supported,
+)
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
 from kiro_crew.providers.acp_cli_overlay import _clear_cli_overlay_effort
 from kiro_crew.providers.base import LLMProvider
@@ -171,6 +175,10 @@ async def _bind_unbound_effort(self: AcpProvider) -> None:
         # applied, whatever model the CLI picked, so there is nothing to bind or drop.
         return
     model = self.served_model
+    if not model and _on_default_pseudo_model(self):
+        # A build that reports no id still serves its pseudo-model, and the live
+        # path keys a level on the client's sentinel there, so the start does too.
+        model = self._effort_model
     if model:
         stored = self._effort_per_model.get(model)
 
@@ -248,6 +256,22 @@ def accepts_effort_level(self: AcpProvider, level: str) -> bool:
     return effort_config_option_value(self._client.backend, level, advertised) in advertised
 
 
+def _on_default_pseudo_model(provider: AcpProvider) -> bool:
+    """True when a ``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL`` session serves no concrete id.
+
+    That is no id or the ``auto`` sentinel, or the head of the advertised list --
+    the entry the adapter reports when no model setting applies, by the same rule
+    ``AcpClient._reassert_adapter_resolved_model`` reads it.
+    """
+    if provider._client.backend not in ACP_BACKENDS_DEFAULT_PSEUDO_MODEL:
+        return False
+    model = provider._effort_model
+    if not model or model == DEFAULT_MODEL:
+        return True
+    advertised = advertised_model_ids(provider.available_models())
+    return bool(advertised) and model == advertised[0]
+
+
 def supports_effort(self: AcpProvider) -> bool:
     """True when this session accepts a reasoning-effort level.
 
@@ -267,6 +291,10 @@ def supports_effort(self: AcpProvider) -> bool:
     An advertised option offering ``off`` and nothing else answers False: the
     harness is saying the current model takes no level (goose does this per
     model), and every write there reads back as ``off``.
+
+    A session serving its pseudo-model (``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``)
+    has no id the registry can name, so the option the adapter built for the model
+    it serves answers there instead; a concrete id keeps the registry answer.
     """
     if self._client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH:
         # The CLI takes a level for every model and maps it onto what the model
@@ -277,6 +305,13 @@ def supports_effort(self: AcpProvider) -> bool:
             return False
         advertised = self._client.get_valid_effort_levels()
         return not advertised or any(level != "off" for level in advertised)
+    if _on_default_pseudo_model(self):
+        # The select the adapter built for the model it serves answers; its own
+        # ``default`` value is "no override", not a level, so an option offering
+        # only that -- or no option reported yet -- answers False.
+        if not self._client.supports_config_option(effort_config_option_id(self._client.backend)):
+            return False
+        return any(level != "default" for level in self._client.get_valid_effort_levels())
     # A pair-id harness takes a level only through its effort option, so a build
     # that advertises none drops every pick (change_effort skips it).
     if self._client.backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS and not (
@@ -305,11 +340,17 @@ def _resolve_effort(self: AcpProvider) -> str | None:
     # differently must be checked in that harness's spelling -- a filter that
     # ran first would drop the very level the live push applied.
     advertised = self._advertised_effort_levels()
+    levels = advertised
+    if advertised is None and _on_default_pseudo_model(self):
+        # The registry cannot name the pseudo-model, so ``supports_effort`` answers
+        # whether it takes a level, and Crew's own ladder which levels: the push
+        # steps a level the model lacks down onto one it offers.
+        levels = list(EFFORT_LEVELS) if self.supports_effort() else []
     return resolve_effort_for_model(
         self._effort_model,
         slot_overrides=self._effort_per_model,
         defaults=self._effort_defaults,
-        levels=advertised,
+        levels=levels,
         normalize=functools.partial(
             effort_config_option_value, self._client.backend, advertised=advertised
         ),

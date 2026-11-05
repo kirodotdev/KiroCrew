@@ -529,6 +529,10 @@ its own once the cache refreshes with a list that carries it.
   missing session answers `known: false`. Where the level rides the model
   (kiro-cli, claude), it resolves the slot's or crew's effective model so an
   inheriting crew thread still has its effort control before its first turn.
+  An `auto` or empty model on a harness whose unpinned session serves a
+  pseudo-model (`ACP_BACKENDS_DEFAULT_PSEUDO_MODEL`, claude) answers `null`
+  instead: the live session's own effort option decides once it reports
+  (see claude-code-provider.md, "Effort on the `default` pseudo-model").
   The cold answer refreshes every two seconds for its first five reads, then every
   30 seconds, and a model or agent switch invalidates it immediately. Where the
   harness carries a session option (goose, pi) or a model pair (codex), a live
