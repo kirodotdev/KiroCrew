@@ -66,12 +66,12 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 logger = logging.getLogger("kiro_crew.dashboard.port_reclaim")
 
 # Reclaim outcomes (returned by :func:`reclaim_stale_gateway_port`).
-NO_HOLDER = "no_holder"          # port already free (race) — nothing to do
-UNAVAILABLE = "unavailable"      # cannot determine/verify holder (lsof/ps missing)
+NO_HOLDER = "no_holder"  # port already free (race) — nothing to do
+UNAVAILABLE = "unavailable"  # cannot determine/verify holder (lsof/ps missing)
 FOREIGN_HOLDER = "foreign_holder"  # held by a non-KiroCrew process — never touched
-HEALTHY_PEER = "healthy_peer"    # held by a live, responsive gateway — never touched
-BOOTING_PEER = "booting_peer"    # held by a young gateway still in its boot pass — never touched
-RECLAIMED = "reclaimed"          # stale gateway terminated; port should now be free
+HEALTHY_PEER = "healthy_peer"  # held by a live, responsive gateway — never touched
+BOOTING_PEER = "booting_peer"  # held by a young gateway still in its boot pass — never touched
+RECLAIMED = "reclaimed"  # stale gateway terminated; port should now be free
 RECLAIM_FAILED = "reclaim_failed"  # holder identified as stale but could not be killed
 
 #: A silent holder younger than this is read as a gateway still in its boot
@@ -164,9 +164,7 @@ async def _probe_gateway_healthy(port: int, timeout: float) -> bool:
         # Probe loopback deliberately: whether the gateway bound 127.0.0.1
         # (local-only) or 0.0.0.0 (all interfaces), it is reachable here, and we
         # only ever want to check the *local* instance — never an external NIC.
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", port), timeout
-        )
+        reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), timeout)
     except (OSError, asyncio.TimeoutError):
         return False
     try:
@@ -221,7 +219,7 @@ async def _terminate_pids(
             # — a single-PID kill would orphan them and leak trees. Mirrors the
             # Windows branch of `kirocrew stop`.
             try:
-                platform_compat.kill_process_tree(pid, sig)
+                platform_compat.kill_gateway_pid_tree(pid, sig)
             except ProcessLookupError:
                 pass  # already gone — success for our purposes
             except PermissionError:
@@ -321,9 +319,7 @@ async def reclaim_stale_gateway_port(
         try:
             from kiro_crew.cli_server import _is_kirocrew_process
         except Exception:  # pragma: no cover - import shape is stable
-            log.warning(
-                "Cannot load gateway identity check — not reclaiming port %d.", port
-            )
+            log.warning("Cannot load gateway identity check — not reclaiming port %d.", port)
             return UNAVAILABLE
         checker = _is_kirocrew_process
 
@@ -341,9 +337,7 @@ async def reclaim_stale_gateway_port(
             timeout=identity_timeout,
         )
     except FileNotFoundError:
-        log.warning(
-            "Cannot verify holder of port %d (ps unavailable) — not reclaiming.", port
-        )
+        log.warning("Cannot verify holder of port %d (ps unavailable) — not reclaiming.", port)
         return UNAVAILABLE
     except asyncio.TimeoutError:
         log.warning(
@@ -383,8 +377,7 @@ async def reclaim_stale_gateway_port(
         )
     except (FileNotFoundError, asyncio.TimeoutError):
         log.warning(
-            "Pre-signal identity re-check for port %d could not complete — "
-            "not reclaiming.",
+            "Pre-signal identity re-check for port %d could not complete — " "not reclaiming.",
             port,
         )
         return UNAVAILABLE
@@ -396,16 +389,12 @@ async def reclaim_stale_gateway_port(
     # every holder when any of them is young: killing the rest would not free a
     # port the booting peer still holds.
     age_of = holder_age if holder_age is not None else _holder_age_secs
-    threads_of = (
-        thread_count if thread_count is not None else platform_compat.process_thread_count
-    )
+    threads_of = thread_count if thread_count is not None else platform_compat.process_thread_count
     try:
         booting = await asyncio.wait_for(
             asyncio.to_thread(
                 lambda: [
-                    pid
-                    for pid in kiro_pids
-                    if _holder_is_booting_peer(pid, age_of, threads_of)
+                    pid for pid in kiro_pids if _holder_is_booting_peer(pid, age_of, threads_of)
                 ]
             ),
             timeout=identity_timeout,
