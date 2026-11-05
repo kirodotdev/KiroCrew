@@ -403,7 +403,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             {
                 "error": (
                     "Installing a registry skill is a user action — do it from "
-                    "Settings → Skills → Discover. Use skill_fetch to read a "
+                    "Customize → Skills → Add Skill. Use skill_fetch to read a "
                     "skill without installing it."
                 ),
                 "code": "human_only",
