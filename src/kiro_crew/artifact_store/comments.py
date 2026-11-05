@@ -190,7 +190,11 @@ def rescan_anchors(
     """
     changed = False
     for c in comments:
-        if not c.anchor_quote or c.status == "resolved":
+        # comments.json is decoded verbatim, so a hand edit can leave a quote that
+        # is not a string; it matches nothing, and must not stop the other threads.
+        if not isinstance(c.anchor_quote, str) or not c.anchor_quote:
+            continue
+        if c.status == "resolved":
             continue
         orphaned = c.anchor_quote not in content
         if orphaned != c.anchor_orphaned:
