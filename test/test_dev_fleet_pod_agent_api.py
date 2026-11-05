@@ -607,6 +607,23 @@ def test_pod_up_tool_says_so_when_the_cli_withheld_the_token(
     assert not out.startswith("Error:")
 
 
+def test_pod_up_tool_prints_the_checkout_a_handle_copies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pod-e2e handle is built from this reply, so the clone it serves must be on it."""
+    monkeypatch.setattr(
+        apps_tools.mcp_core,
+        "_post",
+        lambda *_a, **_k: {
+            "ok": True,
+            "port": 7913,
+            "base_url": "http://127.0.0.1:7913",
+            "token": "tok-abc123",
+            "checkout": "/home/u/clone-a/kc-wt-1",
+        },
+    )
+    out = apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"})
+    assert "checkout: /home/u/clone-a/kc-wt-1" in out.splitlines()
+
+
 def test_a_route_refusal_reaches_the_model_as_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """``Error:`` is load-bearing: call_tool_with_logging derives the outcome from it."""
     monkeypatch.setattr(

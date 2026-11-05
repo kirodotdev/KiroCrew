@@ -291,6 +291,20 @@ class TestCli:
         assert (env["MEMORY"], env["CPU"]) == ("12G", "800%")
         handle = json.loads(capsys.readouterr().out)
         assert handle["home_kept"] is True and handle["cpu"] == "800%"
+        assert handle["checkout"] == str(tmp_path / "wts" / "demo")
+
+    def test_restart_handle_carries_the_expanded_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, host_16g_8cpu: None
+    ) -> None:
+        c = self._prep(tmp_path, monkeypatch, active=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        rt.write_env_file(c, "demo", {"CHECKOUT": "~/wts/demo"})
+        monkeypatch.setattr(rt, "restart_pod", lambda cfg, n: _cp())
+        pod_cli._restart(
+            c,
+            argparse.Namespace(name="demo", json=True, wait_secs=None, memory=None, cpu=None),
+        )
+        assert json.loads(capsys.readouterr().out)["checkout"] == str(tmp_path / "wts" / "demo")
 
     def test_restart_without_a_pinned_checkout_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
