@@ -22,6 +22,11 @@ authorized against the channel's ORIGIN conversation first (allowed user, origin
 still admits the bot), and every decision is SEL-audited. ``/wrap-up`` also
 arms the wrap-up fallback (:mod:`.wrapup`). Slack may deliver one invocation
 twice; a repeat (same ``trigger_id``) is dropped with no side effect.
+
+``/kirocrew agent [<name>]`` and ``/kirocrew approval [<normal|reads|trust>]`` -- the
+app's manifest command, typed in a code channel -- arrive here too and are
+answered by :mod:`.agent_picker` and :mod:`.approval_picker` after the same
+gates; they are never delivered to the session as a prompt.
 """
 
 from __future__ import annotations
@@ -47,6 +52,15 @@ logger = logging.getLogger(__name__)
 SUMMARIZE = "summarize"
 WRAP_UP = "wrap-up"
 CREATE_PR = "create-pr"
+#: ``/kirocrew agent [<name>]``: a sub-command of the app's manifest command,
+#: not a registered channel command (see :mod:`.agent_picker`).
+AGENT = "agent"
+#: ``/kirocrew approval [<normal|reads|trust>]`` (see :mod:`.approval_picker`).
+APPROVAL = "approval"
+#: The ``/kirocrew`` sub-commands a code channel answers itself.
+_APP_SUBCOMMANDS = frozenset({AGENT, APPROVAL})
+#: Each sub-command's denial reason on the ``slack.code_channel.command`` row.
+_REFUSED_REASON = {AGENT: "agent change refused", APPROVAL: "approval mode change refused"}
 
 _COMMANDS: dict[str, dict[str, str]] = {
     SUMMARIZE: {
@@ -306,13 +320,33 @@ def _prompt(
 async def handle_slash(
     orch: Any, payload: dict[str, Any], respond: Callable[[str], Awaitable[None]]
 ) -> bool:
-    """Handle a code-channel command; False when it is not one (normal routing runs)."""
+    """Handle a code-channel command; False when it is not one (normal routing runs).
+
+    Besides the channel's runtime commands, the app's own ``/kirocrew`` command
+    is answered here for its ``agent`` and ``trust`` sub-commands
+    (:mod:`.agent_picker`, :mod:`.approval_picker`); any other ``/kirocrew``
+    text is not ours.
+    """
     command = str(payload.get("command") or "").strip().lower().lstrip("/")
-    if command not in _COMMANDS or not code_channels_on(live_config(orch)):
+    text = str(payload.get("text") or "").strip()
+    if command == str(getattr(orch, "slack_command", "") or "kirocrew").lower():
+        # The same split ``events._handle_slash`` routes sub-commands by.
+        parts = text.split(maxsplit=1)
+        if not parts or parts[0].lower() not in _APP_SUBCOMMANDS:
+            return False
+        command, text = parts[0].lower(), (parts[1].strip() if len(parts) > 1 else "")
+    if (command not in _COMMANDS and command not in _APP_SUBCOMMANDS) or not code_channels_on(
+        live_config(orch)
+    ):
         return False
     channel = str(payload.get("channel_id") or "")
     user = str(payload.get("user_id") or "")
-    text = str(payload.get("text") or "").strip()
+    if command in _APP_SUBCOMMANDS and (
+        not channel or await asyncio.to_thread(store().get_binding, channel) is None
+    ):
+        # `/kirocrew agent` / `trust` anywhere but a code channel is the app's
+        # own command: left to it, before any gate or side effect here.
+        return False
     operation = "slack.code_channel.command"
     resources = f"channel={channel} command=/{command}"
     if not _first_delivery(payload):
@@ -342,6 +376,26 @@ async def handle_slash(
     if binding is None:
         surface.audit(user, operation, "denied", resources, "not a bound code channel")
         await respond(NOT_A_CODE_CHANNEL_TEXT)
+        return True
+    if command in _APP_SUBCOMMANDS:
+        # `/kirocrew agent` and `/kirocrew approval`: one owner gate, one handler
+        # shape (``authorize`` / ``handle_command``), each module's own audit.
+        from kiro_crew.slack.code_channels import agent_picker, approval_picker
+
+        picker = agent_picker if command == AGENT else approval_picker
+        refusal = await picker.authorize(
+            orch, binding, user, team, f"channel={channel} user={user} via=command"
+        )
+        if refusal is not None:
+            surface.audit(user, operation, "denied", resources, _REFUSED_REASON[command])
+            if refusal:
+                await respond(refusal)
+            return True
+        surface.audit(user, operation, "allowed", resources)
+        if command == AGENT:
+            await agent_picker.handle_command(orch, binding, user, text, respond, team=team)
+        else:
+            await approval_picker.handle_command(orch, binding, user, text, respond, team=team)
         return True
     from kiro_crew.slack.code_channels.routing import (
         Gate,
