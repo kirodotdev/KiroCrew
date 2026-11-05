@@ -17,12 +17,15 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.apps.registry_pipeline import _FACADE, _facade
 from kiro_crew.apps.registry_pipeline.caches import (
+    _clear_external_registry_failure,
     _credential_free_external_registry_entries,
     _external_registry_cache_identity,
     _read_external_registry_cache,
+    _read_external_registry_failure,
     _remove_legacy_credential_registry_cache,
     _remove_legacy_name_keyed_registry_cache,
     _write_external_registry_cache,
+    _write_external_registry_failure,
 )
 from kiro_crew.apps.registry_pipeline.checkout import (
     _CLONE_TIMEOUT,
@@ -490,6 +493,11 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
     stale cache. Because the cache is only overwritten on success, a transient
     forge/network failure leaves the prior (stale) cache intact ("stale >
     missing"): this is the fetch-then-swap contract the refresh path relies on.
+
+    Every call fetches, and its outcome sets or clears the registry's
+    failed-fetch marker (``_EXTERNAL_REGISTRY_FAILURE_TTL``). Only the listing's
+    ``_load_external_registries`` reads that marker, so a refresh is never held
+    back by it.
     """
     # An unnamed legacy registry used its raw URL as the old cache identity,
     # which exposed HTTP userinfo in the filename. Remove that exact artifact
@@ -501,8 +509,10 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
     _remove_legacy_name_keyed_registry_cache(reg)
     public_registry_repo = _strip_git_target_userinfo(reg.repo)
     name = _public_registry_name(reg)
+    cache_identity = _external_registry_cache_identity(reg)
     entries = await _fetch_external_registry_index(reg.repo, reg.branch)
     if entries is None:
+        await asyncio.to_thread(_write_external_registry_failure, cache_identity)
         return None
     # Defensively drop malformed (non-dict) index items before normalization:
     # a configured repo can return a valid JSON array containing a non-object
@@ -526,9 +536,8 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
         entry.setdefault("repo", public_registry_repo)
         entry["_registry"] = name
     _apply_configured_branch(entries, reg, warn=True)
-    await asyncio.to_thread(
-        _write_external_registry_cache, _external_registry_cache_identity(reg), entries
-    )
+    await asyncio.to_thread(_write_external_registry_cache, cache_identity, entries)
+    await asyncio.to_thread(_clear_external_registry_failure, cache_identity)
     return entries
 
 
@@ -569,11 +578,15 @@ async def _load_external_registries() -> list[dict[str, Any]]:
             _apply_configured_branch(cached, reg)
             return cached
 
-        # Fetch from repo (writes the cache on success).
-        entries = await _fetch_and_cache_external_registry(reg)
-        if entries is not None:
-            fresh.append((reg, entries))
-            return entries
+        # Fetch from repo (writes the cache on success), unless the last fetch
+        # failed within the failure window: then go straight to the stale copy
+        # instead of paying for a clone that is likely to fail the same way.
+        failed_recently = await asyncio.to_thread(_read_external_registry_failure, cache_name)
+        if not failed_recently:
+            entries = await _fetch_and_cache_external_registry(reg)
+            if entries is not None:
+                fresh.append((reg, entries))
+                return entries
 
         # Fall back to stale cache (stale > missing)
         stale = await asyncio.to_thread(
