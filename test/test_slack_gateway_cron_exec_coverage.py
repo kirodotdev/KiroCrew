@@ -1,41 +1,9 @@
 """Coverage for the Kiro Crew gateway's deterministic cron-execution paths.
 
-``test_slack_gateway_cron.py``, ``test_cron_gateway_integration.py`` and
-``test_cron_gateway_integration_llm.py`` drive the LLM (``message``) arm of
-``_cron_callback`` thoroughly, but the two
-deterministic arms — ``job.command`` (shell) and ``job.script`` (Python
-callable) — only had their happy paths exercised. Everything reached here was
-uncovered by the whole suite before this file:
-
-* the shared concurrent-execution guard (``_running_script_ids``);
-* command mode: fire-time governance denial, ``cancelled`` status, the
-  empty-output ok/non-ok split, non-ok-with-output, timeout and generic-error
-  arms, plus the best-effort SEL-audit ``except`` around each;
-* script mode: governance denial, ``cancelled`` / ``ok`` / ``skip`` / ``done``
-  / ``report`` / unknown-status dispositions, the auto-paused warning arms of
-  timeout and generic error, and their SEL-audit ``except`` twins;
-* the ``message``-arm fire-time denial audit ``except``;
-* ``_deliver_script_result``'s queued-slot, rehydrate-miss, no-session-key,
-  delivery-failure and ``CronStoreBusy`` deferred-removal branches;
-* the "cron reaper not started" arm of ``_init_cron``;
-* ``_channel_reply_link`` / ``_deliver_channel_reply`` resolution refusals;
-* ``_persist_turn_row``'s best-effort ``except`` and ``_is_read_only_tool``'s
-  no-token guard.
-
-Everything is driven through mocked collaborators: the sandbox runners, the
-governance gate, SEL and the cron service are all patched, so no subprocess, no
-socket and no write outside the per-test ``KIROCREW_HOME`` (pinned by
-``test/conftest.py``) happens. Style and patch seams mirror
-``test_slack_gateway_cron.py`` / ``test_cron_gateway_integration.py``.
-
-This file keeps the command and script arms, claim-time vetting (an abandoned vet and
-the vet's share of the subprocess budget included), ``_deliver_script_result`` and the
-module helper guards. The ``message`` arm's fire-time denial, the ``_init_cron`` wiring
-and agent-alias resolution are in ``test_slack_gateway_cron_exec_coverage_message_arm.py``.
-Where a cron's results and failure alerts go (the non-Slack channel reply ladder, channel
-and failure delivery, embedded images), and where a task-runner approval notice goes, is
-in ``test_slack_gateway_cron_exec_coverage_delivery.py``. The harness the three files
-share lives in ``slack_gateway_cron_exec_coverage_helpers.py``.
+The ``job.command`` and ``job.script`` arms of ``_cron_callback``, claim-time vetting,
+``_deliver_script_result`` and the module helper guards. Sandbox runners, the governance
+gate, SEL and the cron service are patched, so no subprocess or socket runs. The
+``message`` arm is in ``_message_arm`` and delivery in ``_delivery``.
 """
 
 from __future__ import annotations
@@ -341,19 +309,9 @@ class TestCronScriptMode:
 class TestVettingHoldsAtClaimTime:
     """The queue wait must not open a window between vetting and execution.
 
-    The fire-time gate authorises a run, then the execution is submitted to a
-    pool whose queue wait is deliberately NOT charged to the job's deadline. So
-    the authorisation and the use it authorises are separated by a wait bounded
-    only by ``_CRON_QUEUE_WAIT_SECS``. Two things change inside that window:
-
-    * a script's BODY, which ``run_script_sandboxed``'s launcher re-reads from
-      disk in the sandboxed child (``open`` + ``compile`` + ``exec``), so the
-      bytes that execute are whatever is on disk when the worker gets there —
-      not the bytes the gate scanned;
-    * the governance POLICY, which applies to command jobs too even though a
-      command's text is already captured in ``job.command``.
-
-    Both are refused only if the vet holds when the worker claims the call.
+    The pool queue wait (up to ``_CRON_QUEUE_WAIT_SECS``) sits between the fire-time
+    gate and execution. In it a script's BODY can change on disk (the sandboxed child
+    re-reads it) and so can the governance POLICY, so the vet runs again at claim time.
     """
 
     @staticmethod
@@ -443,11 +401,8 @@ class TestVettingHoldsAtClaimTime:
     async def test_a_claim_time_denial_does_not_feed_the_auto_pause_counter(self, tmp_path):
         """A denial is a policy state, so it must not count toward auto-pause.
 
-        Counting it would disable the job at ``_AUTO_PAUSE_THRESHOLD`` and a
-        paused job never fires again — breaking the resume-on-policy-loosening
-        semantic the fire-time deny path is careful to preserve. The generic
-        error arm DOES call ``record_failure``, so a claim-time denial that
-        fell through to it would be silently destructive.
+        A paused job never fires again, so the job could not resume when policy loosens.
+        The generic error arm DOES call ``record_failure``, so a denial must not reach it.
         """
         orch = _make_orchestrator()
         path = self._script_on_disk(tmp_path)
@@ -506,14 +461,9 @@ class TestVettingHoldsAtClaimTime:
     def test_the_message_arm_has_no_pool_queue_between_vet_and_dispatch(self):
         """Disposition for the third gate site, by measurement not assertion.
 
-        The gateway (``gateway.py`` and its owners) has exactly four fire-time
-        gate sites and exactly two
-        execution-pool dispatches. Both dispatches sit in the command/script
-        blocks, which return before the message gate is reached, and the goal
-        check-in gate returns into its hidden turn before either — so neither
-        LLM arm has a queue between its vet and its dispatch and the defect
-        class cannot apply to them. Pinned here so a future dispatch added
-        after the message gate fails this test rather than shipping unnoticed.
+        The gateway has four fire-time gate sites and two pool dispatches, both in the
+        command/script blocks, so neither LLM arm queues between vet and dispatch. A
+        dispatch added after the message gate fails this test.
         """
         slack_dir = Path(gw.__file__).resolve().parent
         runtime = slack_dir / "gateway_runtime"
@@ -542,21 +492,10 @@ class TestVettingHoldsAtClaimTime:
     def test_no_text_io_here_relies_on_the_platform_default_encoding(self):
         """Every text read/write in this module must name its encoding.
 
-        A bare ``read_text()`` takes the PLATFORM default, which is UTF-8 on the
-        Linux shards and ``cp1252`` on the Windows ones.  So a module that reads
-        a UTF-8 source file without saying so passes every Linux shard and fails
-        only on Windows -- the defect is invisible where it is cheap to catch.
-        ``gateway.py`` carries em dashes and box-drawing characters, and
-        ``cp1252`` has no mapping for the continuation bytes of those sequences.
-
-        Enforced statically rather than by driving a hostile locale: the runtime
-        failure cannot be provoked in-process (``TextIOWrapper`` resolves the
-        default at the C level, so patching ``locale.getpreferredencoding`` does
-        not steer it), and a subprocess that sets ``LC_ALL`` would reproduce it
-        only where the default is already UTF-8 -- while this check fails
-        identically on every platform.  Parsed with ``ast`` so a call written
-        inside a fixture's script BODY (this module has one) is not mistaken for
-        a real call site.
+        A bare ``read_text()`` is ``cp1252`` on Windows, which cannot decode the em dashes
+        in ``gateway.py``. Checked statically because ``TextIOWrapper`` resolves the
+        default in C, so patching the locale does not steer it. Parsed with ``ast`` so a
+        call inside a fixture's script BODY is not counted.
         """
         tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
         naive = [
@@ -581,21 +520,12 @@ class TestVettingHoldsAtClaimTime:
 class TestAnAbandonedVetDoesNotExecute:
     """A deadline that lands mid-vet must not leave a payload free to start.
 
-    ``run_in_cron_pool`` only reaches its execution phase once a worker has
-    CLAIMED the call, and a thread cannot be interrupted -- so when that phase
-    times out the submitted callable keeps running. Before the claim-time vet
-    existed the claimed thread was already inside the sandbox, whose own
-    ``timeout`` bounds it. Now the vet runs FIRST, so the deadline can land
-    while the payload has not started, and it would otherwise start after the
-    caller's ``finally`` released the overlap guard -- running alongside the
-    next fire. ``run_in_cron_pool``'s own docstring names that harm for the
-    queue phase; these pin it closed for a deadline landing mid-vet.
+    A thread cannot be interrupted, so a payload not yet started when the deadline
+    lands would start after the ``finally`` released the overlap guard, alongside the
+    next fire.
 
-    ``run_in_cron_pool`` is doubled here on purpose: its two-phase behaviour is
-    pinned in ``test_executors.py``, and what needs exercising is what the
-    GATEWAY does when the execution phase times out with the callable still in
-    flight. Everything under test -- the wrapper, the hand-off, the ``finally``
-    -- is the real thing.
+    ``run_in_cron_pool`` is doubled on purpose (``test_executors.py`` pins it); the
+    wrapper, hand-off and ``finally`` are real.
     """
 
     @staticmethod
@@ -706,11 +636,8 @@ class TestAnAbandonedVetDoesNotExecute:
     async def test_the_overlap_guard_is_still_released_so_the_job_fires_again(self):
         """The opposite direction, which is what the chosen remedy could break.
 
-        Refusing the abandoned payload is the fix; PINNING the guard set would
-        also stop the overlap, but a payload that never starts would then hold
-        the guard forever and the job would never fire again -- a permanent
-        silent stall, strictly worse than the harm. So the guard must still be
-        released, and the refusal is what makes releasing it safe.
+        Holding the guard would make a never-started payload stall the job forever; the
+        refusal is what makes releasing it safe.
         """
         orch = _make_orchestrator()
         started, release = threading.Event(), threading.Event()
@@ -754,23 +681,12 @@ class TestAnAbandonedVetDoesNotExecute:
 class TestTheVetIsAnAccountedBudgetTerm:
     """A vet spending part of the payload's margin must not orphan the payload.
 
-    ``timeout=cmd_timeout + 5`` is one budget covering, serially, the vet, the
-    subprocess, and the subprocess's teardown -- and ``cron.py``'s
-    ``_SUBPROC_CLEANUP_ALLOWANCE_SECS`` comment says what the 5s is for: "the
-    wake deadline cancels only the executor FUTURE (threads are not
-    interruptible), so a budget shorter than the subprocess bound leaves the
-    subprocess running while the guards clear and later wakes duplicate it."
+    ``timeout=cmd_timeout + 5`` covers the vet, the subprocess and its teardown in
+    series. A payload ALREADY running cannot be stopped, so the only cure is budget
+    accounting.
 
-    So when the deadline lands with the payload ALREADY started, nothing can
-    stop the thread; the guard releases while the subprocess runs on, and the
-    next fire duplicates its side effects.  Distinct from the abandoned-vet
-    case above, which is a payload that has NOT started and is curable by
-    refusing it -- here it is running, so the only cure is budget accounting.
-
-    Deliberately drives the REAL ``run_in_cron_pool``: the sibling class doubles
-    it and ignores ``timeout``, so nothing there evaluates the arithmetic this
-    turns on.  Durations are derived from the live budget functions rather than
-    hardcoded, so the test follows the constants if they move.
+    Drives the REAL ``run_in_cron_pool``, since the sibling class's double ignores
+    ``timeout``; durations come from the live budget functions.
     """
 
     @staticmethod
@@ -789,16 +705,9 @@ class TestTheVetIsAnAccountedBudgetTerm:
     async def test_the_guard_outlives_a_payload_started_after_a_slow_vet(self, kind, runner):
         """The guard must still be held when the payload finishes.
 
-        If it is not, the deadline fired mid-subprocess and the next fire is
-        free to run the same non-idempotent command concurrently.
-
-        Parametrised over BOTH call sites deliberately.  They share the shape,
-        and the script site is the worse of the two -- ``script_timeout =
-        job.timeout or 30`` against ``cmd_timeout = job.timeout or 300``, so the
-        same fixed teardown margin is proportionally far larger a share of it,
-        while the script vet does strictly MORE work (it adds a capped body read
-        from disk).  A fix pinned at one site only would let the other be
-        reverted silently.
+        Otherwise the next fire can run the same command concurrently. Both call sites
+        are covered; the script site's default timeout is 30s against 300s and its vet
+        also reads the body, so it is the tighter one.
         """
         orch = _make_orchestrator()
         job = _job(
@@ -857,16 +766,9 @@ class TestTheVetIsAnAccountedBudgetTerm:
     async def test_a_vet_that_outruns_its_allowance_refuses_the_payload(self):
         """An allowance is only a guarantee if the thing it covers cannot exceed it.
 
-        The widened backstop carries a term for the vet; a vet that spends MORE
-        than that term has eaten into the subprocess's own bound plus teardown,
-        so starting the payload would recreate exactly the harm above.  Refusing
-        before it starts trades a reported missed run for a silent duplicate.
-
-        The disposition matters as much as the refusal: nothing ran, so the run
-        is retention-shaped like starvation -- marked never-started, and
-        deliberately NOT counted toward auto-pause, because a slow governance
-        read is a fleet state rather than a job defect and
-        ``_AUTO_PAUSE_THRESHOLD`` consecutive counts would disable a healthy job.
+        A vet past its term eats the subprocess's bound, so the payload is refused: a
+        reported missed run, not a silent duplicate. It is marked never-started and NOT
+        counted toward auto-pause, since a slow governance read is not a job defect.
         """
         orch = _make_orchestrator()
         job = _job(command="curl example.com", timeout=1, timeout_secs=8, consecutive_failures=2)
@@ -933,19 +835,10 @@ class TestTheVetIsAnAccountedBudgetTerm:
     def test_every_term_spent_inside_the_run_budget_is_accounted_for(self):
         """Every deadline bounding a run must carry a term for each thing spent inside it.
 
-        The cron service's own accounting names three: the subprocess bound, the pool
-        queue wait, and the fire-time gate.  The claim-time vet is a fourth --
-        it runs inside the worker, inside the same deadline -- and asserting on
-        the helper alone would pass with the term missing from the deadline, so
-        this reads the DEADLINE EXPRESSIONS themselves.
-
-        Checks BOTH of them.  The execution guard and the reaper's
-        defence-in-depth sweep bound the same run, and the helpers' own
-        docstrings say why they are shared: "if only one of them accounts for
-        that wait, the other pre-empts it, and the two failures are opposite and
-        both silent".  A fourth term added to one and not the other reintroduces
-        exactly that drift.  Parsed with ``ast`` so the assertion survives the
-        expression being wrapped across lines.
+        The terms are the subprocess bound, the queue wait, the fire-time gate and the
+        claim-time vet. This reads the DEADLINE EXPRESSIONS, not the helper, in both the
+        execution guard and the reaper sweep: if only one counts a term, the other
+        pre-empts it.
         """
         import importlib
         import pkgutil
@@ -1084,11 +977,8 @@ class TestDeliverScriptResult:
     async def test_rehydration_reads_the_transcript_off_the_loop(self):
         """A slot-miss must not parse the transcript on the event loop.
 
-        The sync ``_rehydrate_slot_from_history`` used here reads and
-        JSON-parsed the whole transcript inline (100-300 ms on a large store),
-        stalling every other session's frames. The async form hoists that read
-        into a worker thread, where ``get_running_loop()`` raises -- which is
-        what this asserts, rather than trusting the call's name.
+        The parse takes 100-300 ms on a large store. The read must run in a worker
+        thread, where ``get_running_loop()`` raises, which is what this asserts.
         """
         orch = _make_orchestrator()
         orch.dashboard_state = _mock_dashboard_state()

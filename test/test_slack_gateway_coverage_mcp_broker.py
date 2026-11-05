@@ -68,18 +68,12 @@ class TestInitMcpGateway:
     async def test_turning_sharing_off_restarts_rather_than_stops_when_routed(self):
         """The live-apply path must not strand MCP Apps.
 
-        Two things have to happen when sharing goes off while apps stays on, and
-        only asserting both distinguishes the fix from either failure mode:
+        With sharing off and apps on, the broker must come back (a stop strands
+        app render paths) and must RESTART: the rewriter reads the sharing flag at
+        start, so only a restart re-emits stubs without ``--poolable``.
 
-        * the broker must come back — a plain stop would take away the render
-          and callback paths of servers the operator never unstubbed;
-        * it must be a RESTART, not a no-op — the rewriter reads the sharing flag
-          when the broker starts, so re-running it is what re-emits every stub
-          without ``--poolable`` and actually stops the sharing just turned off.
-
-        The set it re-emits is the one the broker is SERVING, so the fixture has
-        to say what that is; the configured list alone is not it, because a stub
-        change is recorded for the next gateway start rather than applied.
+        The fixture names the SERVED set: a stub change waits for the next gateway
+        start, so the configured list is not it.
         """
         orch = _make_orchestrator()
         orch._cfg.mcp_gateway.enabled = False
@@ -186,13 +180,10 @@ class TestInitMcpGateway:
     async def test_the_started_set_is_recorded_and_the_override_wins(self, tmp_path):
         """Two properties of the real start, both load-bearing for the sharing path.
 
-        The set handed to the rewriter is what the broker ends up serving, and an
-        explicit ``stub_servers`` must beat the configured list -- that argument
-        is how an unrelated restart avoids applying a stub change recorded for the
-        next gateway start. And the served set has to be REMEMBERED, because the
-        sharing path re-emits it rather than re-reading config; if it were not
-        recorded, that path would find nothing to serve and silently stop the
-        broker it was supposed to restart.
+        An explicit ``stub_servers`` beats the configured list, so an unrelated
+        restart does not apply a stub change meant for the next gateway start. The
+        served set is remembered because the sharing path re-emits it; unrecorded,
+        that path would find nothing to serve and stop the broker.
         """
         orch = _make_orchestrator()
         orch._cfg.mcp_gateway.enabled = True
@@ -254,11 +245,9 @@ class TestInitMcpGateway:
     async def test_a_failed_start_still_records_the_set_so_a_retry_can_bring_it_up(self, tmp_path):
         """A start that fails leaves the broker down, and the set has to survive.
 
-        Recording only on success would make a transient start failure permanent:
-        the broker is absent, and the next restart for an unrelated reason -- the
-        sharing toggle -- would find nothing to serve and skip the start instead
-        of retrying it. The set says what the attempt was made with, not that the
-        attempt worked; ``_mcp_gateway_manager`` is what says a broker is up.
+        Recording only on success would make a transient failure permanent: the
+        next restart (the sharing toggle) would find nothing to serve. Whether a
+        broker is up is ``_mcp_gateway_manager``'s answer, not the set's.
         """
         orch = _make_orchestrator()
         orch._cfg.mcp_gateway.enabled = True

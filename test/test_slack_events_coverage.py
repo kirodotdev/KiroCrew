@@ -69,9 +69,7 @@ def _audit_rows(log, operation: str) -> list[tuple[str, str, str, str]]:
     return [(r["caller_identity"], r["outcome"], r["resources"], r["error"]) for r in rows]
 
 
-# ---------------------------------------------------------------------------
 # SeenCache / background-task bookkeeping
-# ---------------------------------------------------------------------------
 
 
 class TestSeenCache:
@@ -185,9 +183,7 @@ class TestBuildHelpText:
             ev.SLASH_REGISTRY.pop("zzcovtmp", None)
 
 
-# ---------------------------------------------------------------------------
 # /kirocrew dashboard
-# ---------------------------------------------------------------------------
 
 
 class TestHandleDashboard:
@@ -246,9 +242,7 @@ class TestHandleDashboard:
         ]
 
 
-# ---------------------------------------------------------------------------
 # /kirocrew agent
-# ---------------------------------------------------------------------------
 
 
 class TestHandleAgent:
@@ -317,9 +311,7 @@ class TestHandleAgent:
         assert accessory["initial_option"]["value"] == "off"
 
 
-# ---------------------------------------------------------------------------
 # /kirocrew voice
-# ---------------------------------------------------------------------------
 
 
 class TestHandleVoice:
@@ -352,9 +344,7 @@ class TestHandleVoice:
         assert "Failed to open voice settings modal" in respond.call_args[0][0]
 
 
-# ---------------------------------------------------------------------------
 # /kirocrew yolo
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -457,9 +447,7 @@ class TestHandleYolo:
         assert "currently *OFF" in respond.call_args[0][0]
 
 
-# ---------------------------------------------------------------------------
 # /kirocrew config, users, channels
-# ---------------------------------------------------------------------------
 
 
 class TestHandleConfig:
@@ -594,9 +582,7 @@ class TestGetAgentNamesGuards:
         assert ev._get_agent_names() == ["listy"]
 
 
-# ---------------------------------------------------------------------------
 # init_socket_mode + the _on_event dispatcher
-# ---------------------------------------------------------------------------
 
 
 def _socket_orch() -> MagicMock:
@@ -740,14 +726,10 @@ class TestInitSocketMode:
 
     # ── Loop-requirement pins ──
     #
-    # WSSocketModeClient.__init__ ends in ``asyncio.ensure_future``, which
-    # raises ``RuntimeError: There is no current event loop`` in any thread
-    # without a running loop.  Offloading the WHOLE of init_socket_mode via
-    # ``asyncio.to_thread`` therefore crashes every Slack-enabled gateway at
-    # boot, and a test on this path that mocks either init_socket_mode itself
-    # or WSSocketModeClient hides it.  The tests below
-    # close that hole: the constructor runs REAL, and the call form the
-    # gateway uses is pinned at the source level.
+    # WSSocketModeClient.__init__ calls ``asyncio.ensure_future``, which raises in a
+    # thread with no running loop, so offloading all of init_socket_mode to a thread
+    # crashes the gateway at boot. Mocking either hides that: the constructor runs
+    # REAL here, and the gateway's call form is pinned at the source level.
 
     @pytest.mark.asyncio
     async def test_real_client_is_constructed_on_the_running_loop(self):
@@ -1233,9 +1215,7 @@ class TestOnEventDispatch:
         )
 
 
-# ---------------------------------------------------------------------------
 # _handle_slash dispatcher
-# ---------------------------------------------------------------------------
 
 
 class TestHandleSlash:
@@ -1381,9 +1361,7 @@ class TestHandleSlash:
         assert "*Available commands:*" in body["text"]
 
 
-# ---------------------------------------------------------------------------
 # Block Kit text recovery (pure helpers)
-# ---------------------------------------------------------------------------
 
 
 class TestRenderRichTextElement:

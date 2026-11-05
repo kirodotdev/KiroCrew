@@ -317,11 +317,8 @@ def test_approval_decider_follows_a_reroute(monkeypatch):
 def test_a_link_created_mid_turn_is_not_clobbered(monkeypatch):
     """A dashboard link landing during session acquisition must survive.
 
-    The routing lookup happens many awaits before the self-link -- inbound
-    governance, the hook path and ``get_or_create`` all yield. If the dashboard
-    claims this thread inside that window, self-linking on the stale "unclaimed"
-    reading would overwrite the newer binding and send every later reply to the
-    wrong session.
+    The routing lookup is many awaits before the self-link. Self-linking on that stale
+    "unclaimed" reading would overwrite a newer dashboard binding and misroute replies.
     """
     provider = ScriptedProvider([make_event("ok")])
     sessions = _RoutingSessions(provider, {})
@@ -347,11 +344,8 @@ def test_a_link_created_mid_turn_is_not_clobbered(monkeypatch):
 def _corrupted_map(session_map, first, second):
     """Two entries claiming one thread, written in the given order.
 
-    Writes the corruption directly into ``_data``: ``set_slack_link``
-    evicts a thread's prior owner, so it cannot itself produce the
-    two-owner state this healing path exists for. The state still occurs
-    in the wild in maps persisted without that eviction, which is
-    exactly what these tests simulate.
+    Written straight into ``_data``: ``set_slack_link`` evicts a prior owner, so it
+    cannot make this state, which persisted maps without that eviction still hold.
     """
     for key in (first, second):
         key = canonical_key(key)
