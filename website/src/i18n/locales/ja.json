@@ -12916,7 +12916,9 @@
         "give_up": "接続が不安定です — もう一度お試しください。",
         "throttle_retrying": "モデルプロバイダーがリクエストを制限しています — 再試行中…",
         "throttle_restored": "リクエスト制限が解除されました",
-        "throttle_interrupted": "モデルプロバイダーによる制限が続きました"
+        "throttle_interrupted": "モデルプロバイダーによる制限が続きました",
+        "throttle_give_up": "モデルプロバイダーがリクエストを制限しています — もう一度お試しください。",
+        "throttle_resuming": "モデルプロバイダーがリクエストを制限しています — この回答を仕上げています…"
       },
       "gatewayNotice": {
         "turn_limit_minutes_other": "{{count}}分",

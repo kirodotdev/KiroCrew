@@ -12916,7 +12916,9 @@
         "give_up": "连接不稳定，请重试。",
         "throttle_retrying": "模型提供方正在限流，正在重试…",
         "throttle_restored": "限流已解除",
-        "throttle_interrupted": "模型提供方持续限流"
+        "throttle_interrupted": "模型提供方持续限流",
+        "throttle_give_up": "模型提供方正在限流，请重试。",
+        "throttle_resuming": "模型提供方正在限流，正在完成此回答…"
       },
       "gatewayNotice": {
         "turn_limit_minutes_other": "{{count}} 分钟",
