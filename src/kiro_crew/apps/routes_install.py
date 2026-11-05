@@ -151,6 +151,10 @@ async def handle_update_app(request: web.Request) -> web.Response:
             still_enabled = await _app_may_run_after_install(name)
             if still_enabled:
                 reg_result = await _register_app_off_loop(name, prior_agents)
+                # Same promotion as the local-source branch: the re-install
+                # rewrote app-crons.json, and only this call carries a changed
+                # cron field into the RUNNING scheduler before the next start.
+                await _resync_app_crons_after_update(request, name)
                 backend = await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
                 )
@@ -249,10 +253,15 @@ async def handle_update_app(request: web.Request) -> web.Response:
 async def _resync_app_crons_after_update(request: web.Request, name: str) -> None:
     """Register the updated app's crons with the running scheduler, if there is one.
 
-    Split out of :func:`handle_update_app` so the no-service case (a test app
-    with no ``state.crons``, a gateway booting without a scheduler) and the
-    audit shape stay readable there. Mirrors ``hooks_integration.on_app_enable``:
-    the same bridge call, the same ``app_crons_register`` SEL rows.
+    Every path that replaces an installed, still-enabled app's files calls it
+    after re-registering: both branches of :func:`handle_update_app`, and a
+    registry install or install-stream over an app already installed
+    (``routes_registry``). A fresh install does not: it leaves the app disabled,
+    and enabling it registers the crons. Split out so the no-service case (a
+    test app with no ``state.crons``, a gateway booting without a scheduler) and
+    the audit shape stay readable at each caller. Mirrors
+    ``hooks_integration.on_app_enable``: the same bridge call, the same
+    ``app_crons_register`` SEL rows.
     """
     state = request.app.get("state")
     cron_service = getattr(state, "crons", None) if state else None
