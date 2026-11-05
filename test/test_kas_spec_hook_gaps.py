@@ -879,13 +879,14 @@ def test_a_kas_subagent_with_an_unreadable_spec_denies_the_request(monkeypatch):
 
 
 @pytest.mark.usefixtures("healthy_host_memory")
-def test_a_kiro_cli_subagent_is_not_gated_and_gets_no_spec_hooks(monkeypatch):
-    fire, _provider_ = _subagent_run(ACP_BACKEND_KIRO, monkeypatch)
+def test_a_kiro_cli_subagent_honours_a_hooks_page_deny_and_gets_no_spec_hooks(monkeypatch):
+    fire, provider = _subagent_run(ACP_BACKEND_KIRO, monkeypatch)
     gate, informational = _pre_calls(fire)
-    assert gate == []
-    assert len(informational) == 1
+    assert len(gate) == 1 and len(informational) == 1
     for call in fire.await_args_list:
         assert list(call.kwargs.get("extra_hooks", ())) == []
+    provider.reject_tool.assert_awaited_once_with("r-1")
+    provider.approve_tool.assert_not_awaited()
 
 
 def _task_step(
@@ -1155,9 +1156,10 @@ def test_a_task_step_audits_a_gated_tool_call_frame_as_not_approved(monkeypatch,
     assert frames and {kw["outcome"] for kw in frames} == {outcome}
 
 
-def test_a_kiro_cli_task_step_is_not_gated_and_gets_no_spec_hooks(monkeypatch):
+def test_a_kiro_cli_task_step_honours_a_hooks_page_deny_and_gets_no_spec_hooks(monkeypatch):
     rejected, gate, informational = _task_step(ACP_BACKEND_KIRO, monkeypatch)
-    assert gate == []
+    assert rejected == ["r-1"]
+    assert len(gate) == 1 and list(gate[0].kwargs["extra_hooks"]) == []
     assert informational and all("extra_hooks" not in kwargs for kwargs in informational)
 
 
