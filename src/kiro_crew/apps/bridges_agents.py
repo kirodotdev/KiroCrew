@@ -18,7 +18,7 @@ import os
 import re
 import stat
 from pathlib import Path
-from typing import Any, Container
+from typing import Any, Container, Mapping
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.apps.bridges_mcp_config import (
@@ -653,6 +653,36 @@ def _read_agent_config(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def snapshot_app_agent_configs(app_name: str) -> dict[str, dict[str, Any]]:
+    """Every materialized agent config of *app_name*, keyed by its file name.
+
+    Taken by a caller that deregisters an app and then registers it again (an update):
+    the deregister deletes these files, so the registration that follows has no prior
+    file to carry the user's edits from (see :func:`_preserve_user_agent_edits`) unless
+    it is handed this snapshot. Same name match as :func:`_deregister_agents`. A link
+    is skipped: it is a legacy pointer at the app's own template, not a user's edit.
+    An unreadable or non-object file is skipped, as the on-disk read skips it.
+    """
+    prefix = _safe_link_name(app_name + "/")
+    snapshot: dict[str, dict[str, Any]] = {}
+    try:
+        entries = list(_kiro_agents_dir().iterdir())
+    except OSError:
+        return snapshot
+    for entry in entries:
+        if not (entry.name.startswith(prefix) and entry.name.endswith(".json")):
+            continue
+        try:
+            if not stat.S_ISREG(os.lstat(entry).st_mode):
+                continue
+        except OSError:
+            continue
+        config = _read_agent_config(entry)
+        if config is not None:
+            snapshot[entry.name] = config
+    return snapshot
+
+
 def _preserve_user_agent_edits(
     name: str, prior: dict[str, Any] | None, fresh: dict[str, Any]
 ) -> dict[str, Any]:
@@ -851,6 +881,7 @@ def _register_agents(
     manifest: AppManifest,
     app_root: Path,
     io_failures: list[str] | None = None,
+    prior_configs: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Materialize app agent JSONs into ~/.kiro/agents/ with namespaced names.
 
@@ -860,6 +891,10 @@ def _register_agents(
     agent name, malformed JSON, an unresolved template placeholder — and retrying those
     never converges. Only the I/O class can succeed on a later attempt, so only it is
     worth reporting to a caller that retries.
+
+    ``prior_configs`` is a :func:`snapshot_app_agent_configs` taken before the caller
+    deleted these files. An agent with no file on disk takes its prior config from it,
+    so the user's edits survive a deregister-then-register.
 
     Written as a COPY, not a symlink, for two reasons:
 
@@ -962,6 +997,8 @@ def _register_agents(
             # Snapshot the user's own edits BEFORE the unlink below — after it there
             # is nothing left to read (see _preserve_user_agent_edits).
             prior_on_disk = _read_agent_config(link_path)
+            if prior_on_disk is None and prior_configs:
+                prior_on_disk = prior_configs.get(link_name)
 
             # Drop a legacy SYMLINK from an older Kiro Crew (which pointed at a file
             # inside the app) so the write below lands a real file at this path.

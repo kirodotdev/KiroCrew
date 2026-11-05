@@ -1138,8 +1138,24 @@ The prior file is snapshotted BEFORE the replace (the write path unlinks a legac
 symlink first, so reading afterwards would find nothing). An unreadable prior file
 means "nothing to preserve", never "abort the refresh".
 
+**An update carries the edits across its own deregister.** Both branches of
+`POST /api/apps/{name}/update` deregister the app before re-registering it, and
+deregistering deletes the agent files, so the re-registration would find no prior
+file. The route therefore snapshots the app's agent files first
+(`snapshot_app_agent_configs`, regular files only, keyed by file name) and hands
+the snapshot to `register_app(name, prior_agent_configs)`; an agent with no file
+on disk takes its prior config from it. The failed-update restore uses the same
+snapshot. This is what keeps a user's `model` or `description` across a registry
+update, a pin-follow of an adopted former built-in, or a local update. An agent
+the new version renames or drops gets nothing from the snapshot. Disable and
+re-enable still start from the template: a disabled app keeps no agent file and no
+snapshot, so the same is true when an update newly asks for `sessionApproval` and
+suspends the app.
+
 Writer: `apps/bridges_agents.py::_register_agents`, `_preserve_user_agent_edits`,
-`_read_agent_config`.
+`_read_agent_config`, `snapshot_app_agent_configs`; the update route
+`apps/routes_install.py::handle_update_app` with
+`apps/routes_lifecycle.py::_snapshot_agent_configs_off_loop`.
 
 ## 4. A generated prompt is pinned through the app's policy
 
