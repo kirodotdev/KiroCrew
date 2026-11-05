@@ -641,6 +641,77 @@ def _apply_message_patch(slot: Any, message: dict, content: str | None, meta: di
     return message
 
 
+class ScratchNoteHold(NamedTuple):
+    """The live hold as a scratch slot copied it, so a commit can adopt the result."""
+
+    live_notes: list[dict[str, Any]]
+    scratch_notes: list[dict[str, Any]]
+    context_before: list[dict[str, Any]]
+    dropped_before: frozenset[str]
+
+
+def sever_note_hold(live: Any, scratch: Any) -> ScratchNoteHold:
+    """Give *scratch* (a ``copy.copy`` of *live*) its own copy of the note hold.
+
+    A shallow copy shares ``_deferred_notes``, ``_pending_context`` and
+    ``_dropped_note_ids`` with the live slot, and the flush mutates all three --
+    and each held note dict, whose ``context`` it pops. Copying them lets the
+    scratch slot's user-row append deliver the hold ABOVE its own row, in the
+    order a send produces, while a refused edit leaves the live hold untouched.
+    ``adopt_note_hold`` carries the outcome back at commit.
+    """
+    live_notes = list(live._deferred_notes)
+    scratch_notes = [
+        (
+            {**note, "context": dict(ctx)}
+            if isinstance(ctx := note.get("context"), dict)
+            else dict(note)
+        )
+        for note in live_notes
+    ]
+    scratch._deferred_notes = list(scratch_notes)
+    scratch._pending_context = list(live._pending_context)
+    scratch._dropped_note_ids = set(live._dropped_note_ids)
+    return ScratchNoteHold(
+        live_notes=live_notes,
+        scratch_notes=scratch_notes,
+        context_before=list(scratch._pending_context),
+        dropped_before=frozenset(live._dropped_note_ids),
+    )
+
+
+def adopt_note_hold(
+    live: Any, scratch: Any, hold: ScratchNoteHold, *, logger: logging.Logger
+) -> int:
+    """Commit what the scratch slot's flush did to the hold onto *live*.
+
+    Retires exactly the live notes the scratch flush delivered or dropped (a
+    note that arrived on the live slot meanwhile stays held), seats the
+    context those deliveries promoted, and records the ids a rebind dropped.
+    Returns how many notes left the hold.
+    """
+    remaining = {id(note) for note in scratch._deferred_notes}
+    gone = {
+        id(live_note)
+        for live_note, scratch_note in zip(hold.live_notes, hold.scratch_notes)
+        if id(scratch_note) not in remaining
+    }
+    live._deferred_notes[:] = [note for note in live._deferred_notes if id(note) not in gone]
+    before = {id(entry) for entry in hold.context_before}
+    for entry in scratch._pending_context:
+        if id(entry) not in before and not live.append_pending_context(entry):
+            logger.warning(
+                "Slot %s delivered a held note without its context at commit: "
+                "the pending-context queue had no seat",
+                live.key,
+            )
+    dropped = set(scratch._dropped_note_ids) - hold.dropped_before
+    if dropped:
+        live._dropped_note_ids |= dropped
+        live._dirty = True
+    return len(gone)
+
+
 class SlotBufferCoordinator:
     """Operate on the current facade-owned slot containers without aliasing them."""
 

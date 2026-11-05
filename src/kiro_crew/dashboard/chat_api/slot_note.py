@@ -411,11 +411,14 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     if stale is not None:
         return stale
 
-    # A turn in flight owns the tail of the transcript: the replay path skips
-    # exactly one recall-eligible row to drop the current-turn user message, and
-    # an `inject` row appended now would take that slot and get skipped in its
-    # place, replaying the user's request twice. So the visible line is HELD and
-    # written at the turn's end, which is why `appended` is reported separately.
+    # A turn in flight owns the tail of the transcript. The session replay finds
+    # the current request by identity, but the turn's other history readers (the
+    # recent-session-context snippet and the skill selector's prior turns) still
+    # skip exactly one trailing raw row to drop the current-turn user message, so
+    # an `inject` row appended now would take that slot and be skipped in its
+    # place. So the visible line is HELD and written at the turn's end -- or above
+    # the next user row, whichever seam comes first -- which is why `appended`
+    # is reported separately.
     # This is decided BEFORE either write: a note rejected for a full hold must
     # not leave its context half behind to reach the next turn anyway.
     deferred = slot.running
@@ -567,6 +570,11 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         if err is not None:
             return err
     else:
+        # A hold can outlive the turn it waited on: a restart restores it onto a
+        # slot that is now idle. Deliver it first, so an older acknowledged note
+        # never lands below a newer one and its context reaches the next turn.
+        if slot._deferred_notes:
+            slot.flush_deferred_notes()
         slot.append(
             role="inject",
             content=visible_content,

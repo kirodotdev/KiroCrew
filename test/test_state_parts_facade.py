@@ -177,7 +177,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, role: 'str', content: 'str', cls: 'str' = '', ts: 'str' = '', *, "
         "broadcast: 'bool' = True, broadcast_user: 'bool' = False, meta: 'dict | None' = "
-        "None, mint_mid: 'bool' = True) -> 'dict[str, Any]'",
+        "None, mint_mid: 'bool' = True, flush_held_notes: 'bool' = True) -> 'dict[str, Any]'",
     ),
     "append_pending_context": (
         "function",

@@ -1672,6 +1672,79 @@ class TestRewindSlot:
         assert resp.status == 404
 
 
+class TestRewindHeldNote:
+    """A held ``/note`` on an idle slot is owed to the rewound prompt -- at commit only.
+
+    ``copy.copy`` leaves the hold (``_deferred_notes``, ``_pending_context``)
+    aliased to the live slot, so the prospective append must not flush it: a
+    refused rewind would otherwise empty the live hold and queue its context
+    while the note's row went only into the discarded scratch window.
+    """
+
+    @staticmethod
+    def _hold_one_note(slot) -> None:
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        slot._deferred_notes = [
+            {
+                "id": "a1b2c3d4e5f6",
+                "content": "held note",
+                "cls": "reconcile-note",
+                "context": {"content": "held context", "source": "board-sync", "ephemeral": True},
+                "source": "",
+                "session": effective_session_key(slot),
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_rewind_keeps_the_live_hold(self, tmp_path):
+        from kiro_crew.dashboard.chat_runner import drain_pending_context
+
+        state = _make_state(tmp_path)
+        slot = _populate_slot(state)
+        self._hold_one_note(slot)
+        state.sessions._session_map.get = MagicMock(return_value="")
+        state.sessions.discard_conversation = AsyncMock(return_value=False)
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/src/rewind",
+                json={"at_message_index": 0, "content": "edited first question"},
+            )
+            assert resp.status == 409
+
+        assert [n["content"] for n in slot._deferred_notes] == ["held note"]
+        assert "held context" not in drain_pending_context(slot)
+        assert all(m.get("role") != "inject" for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_a_committed_rewind_delivers_the_hold_to_its_turn(self, tmp_path):
+        from kiro_crew.dashboard.chat_runner import drain_pending_context
+
+        state = _make_state(tmp_path)
+        slot = _populate_slot(state)
+        self._hold_one_note(slot)
+        state.sessions._session_map.get = MagicMock(return_value="")
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/src/rewind",
+                json={"at_message_index": 0, "content": "edited first question"},
+            )
+            assert resp.status == 200
+
+        assert slot._deferred_notes == []
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("inject", "held note"),
+            ("user", "edited first question"),
+        ]
+        assert "held context" in drain_pending_context(slot)
+        if slot.task:
+            slot.task.cancel()
+
+
 class TestRewindCommitBoundaryIdentity:
     """POST /api/chat/slots/{slot}/rewind — what decides the truncating commit.
 

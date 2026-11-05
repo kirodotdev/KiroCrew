@@ -1795,6 +1795,17 @@ The owners, lowest layer first:
   and wait-tool fields the chat runner keeps on the slot.
 - `state_parts/slot_transcript.py` — `append`, `update_message`, the disk-window
   bookkeeping, the lazy window, and `to_dict` with its OPTIONS parsing.
+  `append` is also the seam that delivers a held `/note` on an idle slot: a live
+  `user` row on a slot no turn owns flushes the hold above itself, so a hold a
+  restart restored reaches the next turn whatever path starts it. A running slot
+  keeps its hold, and the queue drain passes `flush_held_notes=False` because its
+  own guarded flush has already decided whether the successor is owed the note.
+  Rewind and edit-resend build their user row on a shallow scratch copy that
+  would share the hold with the live slot, so they give the copy its own hold
+  first (`slot_buffers.sever_note_hold`): the scratch append delivers it above the
+  edited row, as a send does, and the commit retires exactly those notes and
+  seats their context (`adopt_note_hold`). A refused edit leaves the live hold
+  untouched; a note posted while the edit was pending stays held.
   `serialize_slots` runs `to_dict` for every open tab on the event loop, on each
   `GET /api/chat/slots` and each slots broadcast, so its per-tab text work is kept
   cheap without changing a byte of the payload (pinned by

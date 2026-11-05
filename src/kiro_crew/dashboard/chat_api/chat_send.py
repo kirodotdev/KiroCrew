@@ -1614,6 +1614,12 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _actor,
             prior_user_turns=sum(1 for m in slot.messages if m.get("role") == "user"),
         )
+        # Drain stale pending messages from previous turns that completed
+        # after their SSE reader disconnected. Must happen BEFORE _run_chat
+        # so we don't discard the new turn's output, and before the user row:
+        # its append delivers a held note above itself, and that note's frame
+        # belongs to this request's stream.
+        slot.drain()
         _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
         _send_race.commit_request(
             request, message_id=str(_user_row.get("meta", {}).get("mid") or _send_id_of(user_meta))
@@ -1647,10 +1653,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # ── AutoNudge: user input cancels any pending nudge timer (user wins). ──
         responsive_chat.notify_user_input(request, slot, person=_person_send)
 
-        # Drain stale pending messages from previous turns that completed
-        # after their SSE reader disconnected. Must happen BEFORE _run_chat
-        # so we don't discard the new turn's output.
-        slot.drain()
+        # The stream does not echo the sender's own row (its composer drew it);
+        # anything else queued since the stale drain above is this turn's.
+        slot._pending[:] = [m for m in slot._pending if m is not _user_row]
 
         # Kick off LLM titling now, from the first user message, so the title lands
         # *during* the first turn instead of waiting for the whole response to
