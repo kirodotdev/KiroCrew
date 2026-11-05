@@ -327,11 +327,14 @@ def test_a_source_grown_after_fstat_aborts_at_the_first_excess_byte(
             )
         return st
 
-    monkeypatch.setattr(os, "fstat", lying_fstat)
-    copied = pinned_fs.copy_file_pinned(
-        str(src), str(dst), max_bytes=16, on_skip=lambda r, p: reasons.append((r, p))
-    )
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "fstat", lying_fstat)
+        copied = pinned_fs.copy_file_pinned(
+            str(src),
+            str(dst),
+            max_bytes=16,
+            on_skip=lambda r, p: reasons.append((r, p)),
+        )
 
     assert copied is False
     assert reasons and reasons[0][0] == pinned_fs.SKIP_TOO_LARGE

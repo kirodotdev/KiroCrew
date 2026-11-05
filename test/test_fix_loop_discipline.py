@@ -1,10 +1,10 @@
 """The fix-loop discipline stays wired: pattern harvest in, untracked deferrals out.
 
 Two mechanisms exist because this repository measured its own fix loop: 75% of
-escaped defects were preventable, and the largest traceable class was findings a
-reviewer raised and a disposition deferred without follow-through. The pattern-
-harvest half turns each fix into a rule candidate; the deferral half makes every
-deferred finding a tracked promise (label + owner + due date).
+escaped defects were preventable, and the largest traceable class was review
+findings deferred without follow-through. The pattern-harvest half turns each
+fix into a rule candidate; the deferral half makes every deferred
+finding a tracked promise (label + owner + due date).
 
 Each half is spread across surfaces that cannot see each other — a PR template,
 a hygiene step, a semgrep rule, a review-prompt rule, two workflows, and a

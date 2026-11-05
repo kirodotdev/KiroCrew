@@ -94,6 +94,9 @@ export default function TreeNode({ node, depth, expanded, toggleExpand, selected
         onClick={() => isDir ? toggleExpand(node) : onSelect(node)}
         onContextMenu={(e) => { if (onContextMenu) onContextMenu(e, node) }}
         role="button"
+        // A folder row opens and closes, so a screen reader must hear which it is
+        // now. A file row only selects, so it carries no expanded state at all.
+        aria-expanded={isDir ? !!isOpen : undefined}
         tabIndex={0}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (isDir) toggleExpand(node); else onSelect(node) } }}
       >

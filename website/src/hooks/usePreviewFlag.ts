@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import {
-  PREVIEW_CREW_MODE, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, readPreviewFlag,
+  PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, readPreviewFlag,
 } from '../utils/previewFlags'
 import type { PreviewFlagChange } from '../utils/previewFlags'
 
@@ -53,6 +53,15 @@ export function useRemoteCrewChat(): boolean {
  */
 export function useCrewMode(): boolean {
   return usePreviewFlag(PREVIEW_CREW_MODE)
+}
+
+/**
+ * The Explore preview, reactively: every Explore surface (the top-bar pill and
+ * its phone twins, the sheet, the milestone notice, the Try today card and the
+ * Display switch) mounts only while this is on.
+ */
+export function useExplorePreview(): boolean {
+  return usePreviewFlag(PREVIEW_EXPLORE)
 }
 
 /**

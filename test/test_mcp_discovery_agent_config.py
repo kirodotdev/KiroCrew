@@ -95,14 +95,9 @@ class TestInstallAgentRemote:
 class TestFixStaleManagedCommand:
     """Tests for _fix_stale_managed_command.
 
-    The managed invocation is delegated to ``_kirocrew_mcp_invocation`` (the
-    single source of truth), which returns a runnable ``(command, args)`` —
-    either a standalone ``kirocrew`` binary (POSIX ``bin/kirocrew`` / Windows
-    ``Scripts\\kirocrew.exe``) or the ``<interpreter> -m kiro_crew <sub>``
-    fallback. ``_fix_stale_managed_command`` must rewrite BOTH command and args
-    onto the spec (rewriting only the command silently dropped the fallback's
-    args and spawned a bare ``kirocrew`` that isn't on PATH — the Windows
-    ``command not found: kirocrew`` regression)."""
+    ``_kirocrew_mcp_invocation`` returns ``(command, args)``: a ``kirocrew`` binary or
+    the ``<interpreter> -m kiro_crew <sub>`` fallback. Both must be rewritten; the
+    command alone drops the fallback's args and spawns a bare ``kirocrew`` not on PATH."""
 
     @pytest.fixture(autouse=True)
     def _reset_cache(self):
@@ -304,17 +299,11 @@ class TestSharedServerToolsRegistration:
     def test_non_boolean_disabled_shared_server_is_not_mounted(
         self, tmp_path, monkeypatch, caplog, value
     ) -> None:
-        """The mount-side read shares the launch predicate: a shared entry whose
-        ``disabled`` is not a boolean is read FAIL-CLOSED and stripped from
-        ``tools``/``allowedTools`` exactly as a literal ``true`` is, so the row
-        the dashboard shows as Disabled is a server no session mounts. Red for
-        ``null`` and ``0`` under the truthiness read this replaced, which
-        mounted -- and auto-approved -- them.
+        """A non-boolean shared ``disabled`` is read fail-closed and not mounted.
 
-        The rebuild also SAYS why, through the same bounded warn-once ledger the
-        listing uses: a headless install rebuilds without a dashboard read, and
-        would otherwise strip the mount silently. One line per (server, value
-        shape) whichever path reports first, so a second rebuild is quiet."""
+        It is stripped from ``tools``/``allowedTools`` like ``true``; a truthiness read
+        would mount and auto-approve ``null`` and ``0``. The rebuild warns once per
+        (server, value shape), since a headless install has no dashboard to show it."""
         from kiro_crew.agent import rebuild_agent_config
 
         agent_dir = tmp_path / "agents"
@@ -374,14 +363,11 @@ class TestSharedServerToolsRegistration:
     def test_a_higher_priority_false_never_argues_a_lower_scope_mute_away(
         self, tmp_path, monkeypatch
     ) -> None:
-        """Three sources: the shared file mutes ``my-srv`` with ``null`` (read
-        fail-closed), the store says ``disabled: false`` and wins the merge, and
-        the agent config keeps a selective ``@my-srv/tool`` ref. The rendered
-        entry must say ``disabled: true`` -- the multi-scope predicate: one mute
-        anywhere mutes, and priority never un-mutes -- or kiro-cli launches a
-        server every surface calls muted. Red under the non-boolean-only
-        coercion: the merged ``false`` passed the ``isinstance(..., bool)`` check
-        and was emitted as ``disabled: false``."""
+        """One mute in any scope mutes; a higher-priority ``false`` never un-mutes.
+
+        The shared file mutes ``my-srv`` with ``null`` (fail-closed) and the store's
+        ``disabled: false`` wins the merge, yet the entry must render ``disabled: true``.
+        """
         from kiro_crew.agent import rebuild_agent_config
 
         agent_dir = tmp_path / "agents"
@@ -544,13 +530,10 @@ class TestManagedToolsInProcessNamesOnly:
         assert len(got) == len(set(got))  # no duplicates
 
     def test_the_live_value_builders_are_not_invoked(self) -> None:
-        """The two descriptions that reach for a live value — the agents-directory
-        scan in ``spawn`` and the config read in ``control`` — must NOT run on the
-        names-only path, because that caller discards every description.
+        """The names-only path never runs the live-value description builders.
 
-        Spying the expensive step directly (per the issue's acceptance): the
-        directory scan (``spawn.mcp_core.list_agents``) and the config read
-        (``control.KiroCrewConfig.load``) are asserted to receive zero calls.
+        That caller discards every description, so ``spawn.mcp_core.list_agents`` and
+        ``control.KiroCrewConfig.load`` must receive zero calls.
         """
         import kiro_crew.mcp_tools.control as control
         import kiro_crew.mcp_tools.spawn as spawn

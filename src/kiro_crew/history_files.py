@@ -106,6 +106,8 @@ def _archive_lines(
     survives. The parent is synced on every call, not only when this call made
     the directory: a directory that exists was not necessarily synced into its
     parent (an earlier call may have created it and then failed that sync).
+    A write or sync that fails removes the file this call created before it
+    raises, so a lasting fault does not leave a copy behind on every retry.
     """
     if not lines:
         return None
@@ -135,15 +137,28 @@ def _archive_lines(
         suffix = f"-{n}" if n else ""
         candidate = adir / f"{safekey}{ARCHIVE_SEGMENT_DELIMITER}{stamp}{suffix}.jsonl"
         try:
-            with open(candidate, "x", encoding="utf-8", opener=owner_only_opener) as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            break
+            handle = open(candidate, "x", encoding="utf-8", opener=owner_only_opener)
         except FileExistsError:
             continue
-    fsync_dir(adir)
-    fsync_dir(adir.parent)
+        break
+    try:
+        with handle as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        fsync_dir(adir)
+        fsync_dir(adir.parent)
+    except BaseException:
+        # A failed archive is reported to the caller, which keeps the rows in the
+        # transcript and retries, so this file is not their only copy. Removing it
+        # keeps a fault that lasts many retries from leaving one copy per retry.
+        try:
+            os.unlink(candidate)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("Could not remove the unsynced archive %s", candidate, exc_info=True)
+        raise
     logger.info(
         "Archived %d lines from session %s to %s (reason=%s)",
         len(lines),

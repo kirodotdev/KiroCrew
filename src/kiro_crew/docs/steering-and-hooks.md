@@ -30,10 +30,18 @@ Two different mechanisms put them there. kiro-cli loads both roots itself: the
 global one for every session it starts, and the workspace one because the
 session subprocess runs with the chat slot's project directory as its working
 directory. On the Claude Code backend, which does not read an agent spec's
-`resources` array, the gateway loads the global root explicitly —
+`resources` array, the gateway loads them explicitly —
 `steering_target_admissible` and `_load_steering_resources` in
-`src/kiro_crew/context_assembly/agent_spec.py` glob the agent config's
-`file://.kiro/steering/**/*.md` resource against `$HOME`.
+`src/kiro_crew/context_assembly/agent_spec.py` anchor each `file://` entry the
+way kiro-cli does: a relative glob such as the shipped
+`file://.kiro/steering/**/*.md` at the chat's project (at `$HOME` when none is
+bound), `~/` at `$HOME`, and an absolute path at its own glob-free prefix. They
+add what kiro-cli inherits by default: the global root `~/.kiro/steering`
+always (the host tree, which is the one folder steering skips as delivered),
+and the project's steering root and `AGENTS.md` when a project is bound. A hit is
+admitted only when its resolved target stays under its entry's anchor, so a
+project steering link to a file outside the project is not read. An entry that
+cannot be globbed skips only itself.
 
 A workspace file therefore needs a project bound to the chat slot. With no
 resolvable project the Steering files tab offers only the global root, and
@@ -67,16 +75,21 @@ description: How this service names endpoints and shapes errors
 Endpoints are plural nouns. Errors carry a stable `code` field.
 ```
 
-**Kiro Crew reports and edits the declaration; it does not decide delivery from
-it.** What a mode causes is kiro-cli's behaviour, it differs from the Kiro IDE,
-and it has changed between releases — so this page does not restate a
-per-version measurement. The one row every measurement agrees on is `manual`:
+**On kiro-cli, Kiro Crew reports and edits the declaration; it does not decide
+delivery from it.** The two loads Kiro Crew runs itself, folder steering and the
+Claude Code backend's global-root load, apply one rule
+(`every_session_body` in `src/kiro_crew/folder_steering.py`): a document
+declaring `manual`, `auto` or `fileMatch` is withheld, and the front matter is
+stripped from every document they deliver. What a mode causes on kiro-cli is the
+harness's behaviour, it differs from the Kiro IDE, and it has changed between
+releases — so this page does not restate a per-version measurement. The one row every measurement agrees on is `manual`:
 there is no way to bring such a document into a turn over ACP. For the rest,
 read the harness's own steering documentation rather than trusting a mode name to
 mean what it sounds like.
 
 So "always on" is the default, not a guarantee: a mode can withhold a document,
-and the gateway's own CC-backend load reaches the global root only. Treat a
+and the gateway's own CC-backend load reaches the workspace root only for a
+chat bound to a project. Treat a
 steering file as reliably reaching a session when it declares `always` (or
 declares nothing) and lives in a root that session loads.
 
@@ -290,10 +303,11 @@ an event a spawned subagent fired. To tell a person's turn from a subagent's,
 check for `subagent_id`, not `parent_session_key`.
 
 An agent spec's own `hooks` that Kiro Crew runs for a KAS chat session also get
-the session's ACP id, as `KIRO_SESSION_ID` in the environment and
-`acp_session_id` on stdin, the same `KIRO_SESSION_ID` kiro-cli gives them. Before
-the session has an id, both are left out. Hooks-page hooks and subagent events do
-not get it.
+the session's ACP id, as `KIRO_SESSION_ID` in the environment and as
+`session_id` on stdin, the same names kiro-cli uses. The older stdin key
+`acp_session_id` carries the same value. Before the session has an id, all of
+them are left out. A subagent's Stop hooks get it too. Hooks-page hooks and
+other subagent events do not.
 
 **A hook does not inherit the gateway's environment.** The gateway process holds
 provider keys and tokens, so a hook subprocess gets an allowlisted slice instead

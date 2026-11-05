@@ -94,6 +94,8 @@ def test_entry_expires_without_refresh(registry, clock):
 
     clock.now += 1
     assert registry.entries("s1") == []
+    # The sweep removes it and reports the change, so a broadcast follows.
+    assert registry.sweep() == ("s1",)
     assert len(registry._conns) == 0
 
 
@@ -103,6 +105,16 @@ def test_sweep_reports_the_sessions_it_emptied(registry, clock):
     clock.now += PRESENCE_TTL_SECONDS
     assert registry.sweep() == ("s1", "s2")
     assert registry.sweep() == ()
+
+
+def test_reads_hide_an_expired_tab_but_leave_its_removal_to_the_sweep(registry, clock):
+    registry.report("c1", ALICE, "s1", Activity.VIEWING)
+    clock.now += PRESENCE_TTL_SECONDS
+    # Reads already leave the expired tab out ...
+    assert registry.entries("s1") == []
+    assert registry.live_by_principal() == {}
+    # ... and the sweep still reports the change, so a broadcast follows.
+    assert registry.sweep() == ("s1",)
 
 
 def test_rate_limit_is_per_connection(registry, clock):

@@ -419,6 +419,43 @@ def _inline_interpreter_bindings(text: str) -> str:
     return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
 
 
+#: SEL ``mechanism`` of a ``deny_exception`` a person's in-session override granted.
+SESSION_OVERRIDE_MECHANISM = "session_override"
+
+
+class _DenyWaiver:
+    """The refusal keys a person waived for one judgement of :func:`is_denied`.
+
+    A key is the text a refusal's first line names after ``DENY_REASON_PREFIX``:
+    the pattern, the git-publish tag or the floor rule id the return site passes to
+    its reason builder. Calling the waiver with the key of a site that is about to
+    refuse answers whether that site steps aside. It does only when the key was
+    waived AND the ``deny_exception`` audit for it was written; a failed write
+    keeps the refusal, the same fail-closed contract as every other exception.
+    The answer is kept per key, so a rule matched by several views of one command
+    is audited once. A self-guard key (``deny_waiver.deny_key_is_self_guard``) is
+    dropped whatever the caller passed, so that rule keeps its flat refusal.
+    """
+
+    __slots__ = ("_tool_name", "_keys", "_used")
+
+    def __init__(self, tool_name: str, keys: "frozenset[str]") -> None:
+        from .deny_waiver import deny_key_is_self_guard
+
+        self._tool_name = tool_name
+        self._keys = frozenset(k for k in keys if not deny_key_is_self_guard(k))
+        self._used: dict[str, bool] = {}
+
+    def __call__(self, key: str) -> bool:
+        if key not in self._keys:
+            return False
+        verdict = self._used.get(key)
+        if verdict is None:
+            verdict = _emit_deny_exception_event(self._tool_name, key, SESSION_OVERRIDE_MECHANISM)
+            self._used[key] = verdict
+        return verdict
+
+
 @sharing_views
 def is_denied(
     tool_name: str,
@@ -426,6 +463,7 @@ def is_denied(
     *,
     denied_regexes: list[str] | None = None,
     reason_notes: dict[str, str] | None = None,
+    waived: "frozenset[str]" = frozenset(),
 ) -> str | None:
     """Check tool name against the built-in/effective + extra deny patterns.
 
@@ -497,6 +535,13 @@ def is_denied(
             that matched has a note, the note is appended to the refusal on its
             OWN line.  Presentation only — it never affects whether something is
             denied.
+        waived: Refusal keys a person overrode for this session or this call
+            (``docs/request-for-change/rfc-deny-session-override.md``).  Each
+            return site whose key is in the set steps aside once its
+            ``deny_exception`` audit (mechanism ``session_override``) is written,
+            and evaluation continues, so any other rule the command meets still
+            refuses.  A failed audit keeps the refusal.  Empty by default: every
+            caller but the dashboard's override path passes nothing.
 
     Returns:
         Denial reason string (mentioning the matched pattern), or
@@ -511,6 +556,7 @@ def is_denied(
     _diag = _submodule("diagnostics")
 
     lower = tool_name.lower()
+    waive = _DenyWaiver(tool_name, frozenset(waived))
 
     def _reason(
         matched: str,
@@ -542,11 +588,13 @@ def is_denied(
 
     glob_patterns = list(extra_patterns or [])
     if denied_regexes is None:
-        regex_patterns = _rules.compute_effective_denied(
+        denied_regexes = _rules.compute_effective_denied(
             _rules.BUILTIN_DENIED_RULES, (), False, (), ()
         )
-    else:
-        regex_patterns = list(denied_regexes)
+    # Which entries are shipped-only, as the resolver recorded it. A list that
+    # did not come from ``compute_effective_denied`` carries none and narrows none.
+    shipped: frozenset[str] = getattr(denied_regexes, "shipped", frozenset())
+    regex_patterns = list(denied_regexes)
     # Capture which git-publish rules are still ENABLED *before* the strip below
     # removes their patterns from the regex tier. Computing this afterwards would
     # always yield the empty set and the floor would never fire — a silent, total
@@ -556,6 +604,13 @@ def is_denied(
     # under backtracking and are already enforced by the ``_is_git_publish`` floor
     # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
     regex_patterns = [p for p in regex_patterns if p not in _rules._GIT_PUBLISH_RULE_PATTERNS]
+    # The chmod/chown rows are matched on argv (``argv_rules``), not as regexes: run
+    # across a whole compound command, their text matched words of OTHER commands
+    # (``chmod +x a && ls /usr/lib`` read as a chmod on /usr). Same capture-then-strip
+    # as git-publish, so a disabled row stays disabled.
+    _argv_rules = _submodule("argv_rules")
+    argv_enabled = {p for p in regex_patterns if p in _argv_rules.ARGV_RULE_PATTERNS}
+    regex_patterns = [p for p in regex_patterns if p not in _argv_rules.ARGV_RULE_PATTERNS]
     # The two self-protection rules get an ADDITIONAL argv-structural floor
     # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
     # only a tokenized view can tell ``kirocrew "token"`` from
@@ -583,6 +638,7 @@ def is_denied(
             if interpreter_pattern not in _rules._INTERPRETER_RULE_PATTERNS:
                 continue
             try:
+                # Never waived: both interpreter rules are self-guard rules.
                 if re.search(interpreter_pattern, joined, re.IGNORECASE):
                     _emit_deny_event(tool_name, interpreter_pattern, lower)
                     return _reason(interpreter_pattern)
@@ -640,6 +696,7 @@ def is_denied(
         # target could not be verified at all, which is what keeps the gated
         # rules below non-bypassable. Report it under the brace-expansion rule,
         # whose coverage this branch is, so the refusal still names a catalog row.
+        # Never waived (a self-guard key): it hides which branch the push reaches.
         if _rules._GIT_PUBLISH_UNGATED in floor_tags:
             ungated_pattern = _rules._GIT_PUBLISH_FLOOR_BY_ID.get(
                 "git-publish-push-brace-expansion-refspec", _argv._GIT_PUBLISH_DENY_LABEL
@@ -653,6 +710,9 @@ def is_denied(
                 rule="git-publish-target-unverifiable",
                 component="git-publish-floor",
             )
+        # Set when a person waived a gated tag below: such a push records its
+        # deny_exception, not push_allowed.
+        publish_waived = False
         for tag in sorted(floor_tags):
             gated_pattern = _rules._GIT_PUBLISH_FLOOR_BY_ID.get(tag)
             if gated_pattern is None:
@@ -683,6 +743,9 @@ def is_denied(
                 )
             if gated_pattern not in git_publish_enabled:
                 continue
+            if waive(tag):
+                publish_waived = True
+                continue
             # SEL keeps the PATTERN (that is what maps an event to a catalog row),
             # while the human-facing refusal leads with the rule ID: the chip in
             # the dashboard's RecoveryCard is filled verbatim from this first line,
@@ -699,7 +762,7 @@ def is_denied(
                 rule=tag,
                 component="git-publish-floor",
             )
-        push_allow_pending = True
+        push_allow_pending = not publish_waived
 
     # ── Self-protection floor (argv-structural, not a glob) ──
     # Runs before the pattern passes and on the WHOLE string, for the same reason
@@ -724,7 +787,7 @@ def is_denied(
             if predicate is _argv._is_credential_mint
             else predicate(lower)
         )
-        if hit:
+        if hit:  # never waived: a self-guard rule (``_DenyWaiver``)
             # Report the rule's own pattern, exactly as the regex tier does, so
             # the denial reason and the SEL event still map back to the rule id —
             # plus a second line saying the match was STRUCTURAL, because a floor
@@ -761,7 +824,7 @@ def is_denied(
             )
 
     # ── Pattern passes (shared with the synthesized tier's ``segments=True``) ──
-    pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason)
+    pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason, shipped, waive)
     if pattern_denial is not None:
         return pattern_denial
     # ── Recursive-force rm floor (argv-structural, UNION with the regex) ──
@@ -786,9 +849,30 @@ def is_denied(
             note = _rm._RM_FLOOR_UNREAD_NOTE
         for kind in sorted(rm_targets & rm_enabled.keys()):
             rule_id, pattern = rm_enabled[kind]
+            if waive(pattern):
+                continue
             # The raw input, not ``lower``: see the audit note below.
             _emit_deny_event(tool_name, pattern, tool_name)
             return _reason(pattern, note, rule=rule_id, component="argv-floor")
+    # ── Argv rules (chmod/chown: mode 777, system dirs) ──
+    # Read from the raw input: paths and modes are case-sensitive.
+    # A waived row leaves the set and the rest are asked again, so a second row the
+    # command also breaks still refuses; each pass removes one row, so this ends.
+    while argv_enabled:
+        argv_rule_id = _argv_rules.argv_rule_hit(tool_name, argv_enabled)
+        if argv_rule_id is None:
+            break
+        pattern = _argv_rules.ARGV_RULE_BY_ID[argv_rule_id]
+        if waive(pattern):
+            argv_enabled = argv_enabled - {pattern}
+            continue
+        _emit_deny_event(tool_name, pattern, tool_name)
+        return _reason(
+            pattern,
+            _argv_rules.ARGV_RULE_NOTE,
+            rule=argv_rule_id,
+            component="argv-floor",
+        )
     # All windows cleared the deny passes — the input is allowed.  If it was a
     # feature-branch push, emit the deferred allow audit now (final outcome).
     #
@@ -813,17 +897,22 @@ def _deny_pattern_passes(
     lower: str,
     all_patterns: list[tuple[str, bool]],
     reason: "Callable[[str], str]",
+    shipped: frozenset[str] = frozenset(),
+    waive: "Callable[[str], bool] | None" = None,
 ) -> str | None:
     """Run :func:`is_denied`'s whole-string and per-segment passes over *all_patterns*.
 
-    Exceptions and the perm-verb narrowing apply as there; no floor runs here.
+    Exceptions and the s3 download narrowing apply as there; no floor runs here.
+    *shipped* gates the s3 download narrowing to shipped-only patterns. *waive* is
+    the caller's :class:`_DenyWaiver`: a pattern it answers True for is skipped
+    where it would refuse, and every other pattern is still judged.
     """
     _rules = _submodule("denied_rules")
     _shell = _submodule("shell_normalizer")
 
-    # Memoizes the argv-structural mention walk per view: the same view is asked
-    # about once per matching pattern, and every opted-in pattern can match.
-    mention_cache: dict[str, bool] = {}
+    # Memoizes the s3 download reading per command: the same command is asked
+    # about once per matching segment.
+    narrow_cache: dict[str, bool] = {}
 
     # ── Pass 1: whole-string deny ──
     # If any pattern matches the full input AND no exception matches the
@@ -840,18 +929,18 @@ def _deny_pattern_passes(
             whole_string_exception_match = _rules._exception_applies(
                 lower, _rules._DENY_EXCEPTIONS.get(pattern, [])
             )
-            if not whole_string_exception_match and _perm_verb_mention_narrows(
-                pattern, lower, mention_cache
+            if not whole_string_exception_match and _s3_download_narrows(
+                pattern, lower, narrow_cache, tool_name, shipped
             ):
                 # Same shape as the glob exception above: a whole-string carve-out
                 # only DEFERS to Pass 2, which re-judges each segment on its own,
                 # so an embedded real invocation is still denied there.  The audit
-                # is emitted here (and GATES the carve-out) because for a search
-                # whose verb and path land in different segments Pass 2 never
-                # matches, so this is the only place the decision is recorded.
-                if _emit_deny_exception_event(tool_name, pattern, _PERM_VERB_MENTION_MECHANISM):
+                # is emitted here and GATES the carve-out.
+                if _emit_deny_exception_event(tool_name, pattern, _S3_DOWNLOAD_MECHANISM):
                     whole_string_exception_match = True
             if not whole_string_exception_match:
+                if waive is not None and waive(pattern):
+                    continue
                 _emit_deny_event(tool_name, pattern, lower)
                 return reason(pattern)
 
@@ -910,28 +999,11 @@ def _deny_pattern_passes(
                 if _rules._deny_pattern_matches(pattern, view, is_regex):
                     if _rules._exception_applies(
                         view, _rules._DENY_EXCEPTIONS.get(pattern, [])
-                    ) or _perm_verb_mention_narrows(pattern, lower, mention_cache):
-                        # ``lower``, not ``view``: the mention reading is a
-                        # WHOLE-COMMAND judgement and a Pass 2 segment is not
-                        # always a command.  ``_split_segments`` is deliberately
-                        # quote-unaware, so a quoted alternation is severed
-                        # mid-literal and the tail arrives looking like an
-                        # invocation -- ``rg -n 'chmod|chown' /etc/profile.d``
-                        # yields the fragment ``chown' /etc/profile.d``, whose
-                        # first word IS the verb.  Judging that fragment refuses
-                        # a search that runs nothing.  Nothing is lost by asking
-                        # about the whole command instead: the predicate demands
-                        # that EVERY occurrence, in the command and in every
-                        # nested payload, sit at an argument position, and a
-                        # chained real invocation is exactly an occurrence in
-                        # program position -- ``_ends_argv`` cuts the argv at
-                        # ``;`` ``&&`` ``||`` ``|`` and at a subshell or brace
-                        # opener, so the embedded command's own verb leads its
-                        # own argv and refuses the whole exemption.  A newline
-                        # separator, which ``shlex`` would swallow as
-                        # whitespace, is refused outright by the predicate.
+                    ) or _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped):
+                        # ``lower``, not ``view``: the s3 reading judges the WHOLE
+                        # command, since a Pass 2 segment is not always a command.
                         if not _emit_deny_exception_event(
-                            tool_name, pattern, _perm_verb_mechanism_for(pattern)
+                            tool_name, pattern, _deny_exception_mechanism_for(pattern)
                         ):
                             _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
                             return reason(pattern)
@@ -939,6 +1011,8 @@ def _deny_pattern_passes(
                         # continue to evaluate any remaining patterns against
                         # the same segment (a different pattern without an
                         # exception must still cause a deny).
+                        continue
+                    if waive is not None and waive(pattern):
                         continue
                     _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
                     return reason(pattern)
@@ -952,6 +1026,7 @@ def is_denied_synthesized_target(
     extra_patterns: list[str] | None = None,
     reason_notes: dict[str, str] | None = None,
     segments: bool = False,
+    waived: "frozenset[str]" = frozenset(),
 ) -> str | None:
     """Evaluate a SYNTHESIZED target against the patterns that participate in one.
 
@@ -1010,6 +1085,7 @@ def is_denied_synthesized_target(
         extra_patterns: Glob-tier patterns that participate (``auto_deny_tools``).
         reason_notes: Optional ``{pattern: operator note}`` map, presentation only.
         segments: Also run the per-segment pass (see above).  Default ``False``.
+        waived: Refusal keys a person overrode, as on :func:`is_denied`.
 
     Returns:
         Denial reason string (mentioning the matched pattern), or ``None`` if allowed.
@@ -1022,15 +1098,19 @@ def is_denied_synthesized_target(
     all_patterns: list[tuple[str, bool]] = [(p, True) for p in list(patterns or [])] + [
         (p, False) for p in list(extra_patterns or [])
     ]
+    waive = _DenyWaiver(target, frozenset(waived))
     if segments:
         return _deny_pattern_passes(
             target,
             lower,
             all_patterns,
             lambda matched: _denied_rules._deny_reason(matched, reason_notes),
+            waive=waive,
         )
     for pattern, is_regex in all_patterns:
         if not _denied_rules._deny_pattern_matches(pattern, lower, is_regex):
+            continue
+        if waive(pattern):
             continue
         # No ``_DENY_EXCEPTIONS`` carve-out here.  That map ships EMPTY and its machinery
         # is retained in ``is_denied`` only for a future scoped exception, so replicating
@@ -1118,49 +1198,47 @@ def _emit_deny_event(
         )
 
 
-#: SEL ``mechanism`` value for the argv-structural inert-mention narrowing.
-#: Distinct from the glob carve-out map's ``_DENY_EXCEPTIONS`` so the audit trail
-#: can tell the two apart -- they share one emitter and nothing else.
-_PERM_VERB_MENTION_MECHANISM = "_PERM_VERB_MENTION"
+#: SEL ``mechanism`` value for the s3 download narrowing. Distinct from the glob
+#: carve-out map's ``_DENY_EXCEPTIONS`` so the audit trail can tell the two apart.
+_S3_DOWNLOAD_MECHANISM = "_S3_DOWNLOAD"
 
 
-def _perm_verb_mechanism_for(pattern: str) -> str:
+def _deny_exception_mechanism_for(pattern: str) -> str:
     """The SEL mechanism name for the exception about to be granted.
 
-    Pass 2 reaches the emitter from a condition that is an OR of the glob
-    carve-out and the mention reading, so the branch alone cannot say which one
-    fired.  The mention reading is the narrower of the two -- it applies only to
-    the opted-in patterns -- so membership in that set decides the label.
+    Pass 2 reaches the emitter from an OR of the glob carve-out and the s3
+    download reading, so the branch alone cannot say which one fired. The s3
+    reading applies only to its three rows, so membership decides the label.
     """
-    if pattern in _submodule("denied_rules")._PERM_VERB_MENTION_PATTERNS:
-        return _PERM_VERB_MENTION_MECHANISM
+    if pattern in _submodule("s3_direction")._S3_TRANSFER_PATTERNS:
+        return _S3_DOWNLOAD_MECHANISM
     return "_DENY_EXCEPTIONS"
 
 
-def _perm_verb_mention_narrows(
+def _s3_download_narrows(
     pattern: str,
     view: str,
     cache: dict[str, bool],
+    raw: str = "",
+    shipped: frozenset[str] = frozenset(),
 ) -> bool:
-    """Whether *pattern* is narrowed away on *view* by an inert-mention reading.
+    """Whether an ``aws s3 cp|mv|sync`` row is narrowed away on *view*.
 
-    A thin adapter over :func:`~.perm_verb_mention._perm_verb_mention_only`: it confines
-    the narrowing to the catalog patterns that opt into it, and memoizes the
-    argv walk per view.  The walk descends every nested payload, so it is the
-    expensive half of this check while the membership test is a set lookup --
-    and ``is_denied`` asks the same question once per matching pattern.
-
-    Returns False for every other pattern, which is what keeps this from
-    touching any rule outside the derived set.  The set's size is deliberately
-    not written down here: it is derived from the catalog, so a count in prose
-    goes stale the next time a row is added or renamed.
+    True only for one plain download command :func:`~.s3_direction._s3_download_only`
+    read in full, so a command it cannot read stays denied. It gets *raw*, the
+    command before case folding, to refuse any non-ASCII, and narrows only a
+    pattern in *shipped*, so an operator's own copy stays denied. Returns False
+    for every other pattern. The verdict is cached per command: every matching
+    segment would otherwise re-read the whole command.
     """
-    if pattern not in _submodule("denied_rules")._PERM_VERB_MENTION_PATTERNS:
+    s3 = _submodule("s3_direction")
+    if pattern not in s3._S3_TRANSFER_PATTERNS or pattern not in shipped:
         return False
-    verdict = cache.get(view)
+    key = f"{view}\0{raw}"
+    verdict = cache.get(key)
     if verdict is None:
-        verdict = _submodule("perm_verb_mention")._perm_verb_mention_only(view)
-        cache[view] = verdict
+        verdict = s3._s3_download_only(view, raw)
+        cache[key] = verdict
     return verdict
 
 

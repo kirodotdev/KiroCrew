@@ -372,6 +372,7 @@ class WorkflowScope:
         skill_trigger_text: str | None = None,
     ):
         await self.prepare(context, key)
+        from kiro_crew.context_assembly.budget import window_for_provider_client
         from kiro_crew.executors import run_in_embed_pool
 
         if context is None:
@@ -394,9 +395,12 @@ class WorkflowScope:
             text,
             is_new,
             key,
+            # Workflow workers run headless: no user reads their turns live.
+            interactive=False,
             agent=agent,
             project=cwd,
             memory_store=self.store,
+            model_window=window_for_provider_client(provider),
             execution_context=self.execution_context,
             runtime_source="workflow",
             blocks_reads=self.memory_mode == "temporary",
@@ -458,8 +462,8 @@ _GENERIC_MEMORY_REFUSAL = "Workflow memory is unavailable; no Global fallback wa
 _WORKFLOW_HEADLINE_REFUSAL = "Workflow memory is unavailable; Global was not used"
 _MEMBER_BINDING_REASONS = frozenset({MEMBER_ON_GLOBAL_REASON, MEMBER_WITHOUT_IDENTITY_REASON})
 _MEMBER_BINDING_REMEDY = (
-    "To run workflows here, start a chat with no mate picked, or pick a mate "
-    "that has its own memory (every new mate gets one)."
+    "To run workflows here, start a chat with no Bot picked, or pick a Bot "
+    "that has its own memory (every new Bot gets one)."
 )
 
 

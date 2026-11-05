@@ -19,9 +19,11 @@ import pytest
 from aiohttp import web
 from md_notebook_helpers import _seed_template  # noqa: F401 - fixture
 from md_notebook_helpers import fixtures_fixture  # noqa: F401 - fixture
-from md_notebook_helpers import _BARRIER_LOST_RUN_SEC, _clone, _git, _wait_for, signed_client
+from md_notebook_helpers import _clone, _git, _wait_for, signed_client
 
 from kiro_crew.apps.builtins.md_notebook import git_ops
+from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import await_until
 
 # ---------------------------------------------------------------------------
 # External change detection
@@ -612,12 +614,40 @@ async def test_starting_the_loop_twice_is_a_no_op(fixtures, loop_syncer) -> None
         assert loop_syncer._sync_task is first
 
 
-#: Loop time a "nothing synced" window spans at minimum, on top of its counted ticks:
-#: 40 of the compressed one-minute intervals ``loop_syncer`` configures.
-_QUIET_WINDOW_LOOP_SEC = 0.2
+class _ClockedLoop:
+    """The running loop as ``syncer`` sees it: the real loop, except that ``time()`` reads *clock*."""
+
+    def __init__(self, clock: ManualClock) -> None:
+        self._clock = clock
+
+    def time(self) -> float:
+        return self._clock.monotonic()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio.get_running_loop(), name)
 
 
-def _counted_ticks(server_mod, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+class _AsyncioWithClockedLoop:
+    """``syncer``'s ``asyncio``: the real module, except that its running loop reads a manual clock.
+
+    ``_sync_loop`` takes its deadline from ``asyncio.get_running_loop().time()``, so this name is
+    the one seam its schedule has. Installed onto ``syncer`` alone, never onto the stdlib module,
+    so the event loop, the ticks' ``asyncio.sleep`` and every other task keep real time.
+    """
+
+    def __init__(self, clock: ManualClock) -> None:
+        self._loop = _ClockedLoop(clock)
+
+    def get_running_loop(self) -> _ClockedLoop:
+        return self._loop
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio, name)
+
+
+def _counted_ticks(
+    server_mod, monkeypatch: pytest.MonkeyPatch, reads: Optional[list[dict[str, Any]]] = None
+) -> list[float]:
     """Record the loop clock at each tick of the running sync loop.
 
     ``_sync_loop`` re-reads ``server.read_settings()`` exactly once per tick, and it
@@ -625,12 +655,15 @@ def _counted_ticks(server_mod, monkeypatch: pytest.MonkeyPatch) -> list[float]:
     test observes N entries, N decisions are complete: "nothing ran" is asserted over
     ticks that really happened, not over a stretch of wall time the loop may have spent
     starved. The real reader still runs, so the per-tick re-read stays exercised.
+    When *reads* is given, each tick's settings are appended to it as well.
     """
     real = server_mod.read_settings
     ticks: list[float] = []
 
     async def counting() -> dict[str, Any]:
         settings = await real()
+        if reads is not None:
+            reads.append(settings)
         ticks.append(asyncio.get_running_loop().time())
         return settings
 
@@ -651,17 +684,16 @@ async def test_the_loop_does_nothing_while_auto_sync_is_off(
         cycles.append(1)
 
     monkeypatch.setattr(loop_syncer, "_sync_once", _count)
+    # A zero-length minute makes the schedule due at every tick, whatever the loop clock
+    # reads: a tick that ran no cycle was held back by the gate alone. The tick sleep still
+    # paces the loop, so nothing spins.
+    monkeypatch.setattr(loop_syncer, "SECONDS_PER_MINUTE", 0)
     ticks = _counted_ticks(server_mod, monkeypatch)
     _write_raw_settings(server_mod, json.dumps({"autoSync": False, "autoSyncMins": 1}))
-    started = asyncio.get_running_loop().time()
     async with running_syncer(loop_syncer):
-        # Many ticks spanning many (compressed) one-minute intervals: without the gate
-        # each of those intervals would have produced a push.
-        # flake-ok: pre-existing real loop-clock window the schedule itself reads, moved verbatim; tracked for a de-flake pass
+        # Ten ticks, each of them due: without the gate each would have produced a push.
         await _wait_for(
-            lambda: len(ticks) >= 10 and ticks[-1] - started >= _QUIET_WINDOW_LOOP_SEC,
-            "the loop never ticked through the quiet window with autoSync off",
-            _BARRIER_LOST_RUN_SEC,
+            lambda: len(ticks) >= 10, "the loop never completed ten ticks with autoSync off"
         )
         assert cycles == []
 
@@ -676,33 +708,47 @@ async def test_the_loop_picks_up_a_changed_interval_without_a_restart(
     """settings.json is re-read every cycle, so shortening the interval takes
     effect on the running loop instead of at the next gateway start."""
     server_mod, _remote, _seed = fixtures
+    # The schedule reads ``loop.time()``, so it runs on a clock the test moves: how long the
+    # ticks take on this host decides nothing below, and the day passes by advancing it.
+    clock = ManualClock()
+    monkeypatch.setattr(loop_syncer, "asyncio", _AsyncioWithClockedLoop(clock))
     cycles: list[float] = []
 
     async def _count(*_a: Any) -> None:
-        cycles.append(asyncio.get_running_loop().time())
+        cycles.append(clock.monotonic())
 
     monkeypatch.setattr(loop_syncer, "_sync_once", _count)
-    ticks = _counted_ticks(server_mod, monkeypatch)
+    reads: list[dict[str, Any]] = []
+    ticks = _counted_ticks(server_mod, monkeypatch, reads)
     # The longest selectable interval: nothing is due for a compressed day.
     _write_raw_settings(server_mod, json.dumps({"autoSync": True, "autoSyncMins": 1440}))
     interval = 1440 * loop_syncer.SECONDS_PER_MINUTE
-    started = asyncio.get_running_loop().time()
+    started = clock.monotonic()
     async with running_syncer(loop_syncer):
-        # flake-ok: pre-existing real loop-clock window the schedule itself reads, moved verbatim; tracked for a de-flake pass
-        await _wait_for(
-            lambda: len(ticks) >= 10 and ticks[-1] - started >= _QUIET_WINDOW_LOOP_SEC,
-            "the loop never ticked through the quiet window",
-            _BARRIER_LOST_RUN_SEC,
-        )
-        # Judged on the loop clock the schedule itself reads: on a starved runner the
-        # counted ticks can outlast the compressed interval, and a sync after it is due.
-        # flake-ok: pre-existing real loop-clock window the schedule itself reads, moved verbatim; tracked for a de-flake pass
-        early = [round(t - started, 3) for t in cycles if t - started < interval]
+        # The loop seeds its deadline before its first tick completes; only then does time pass.
+        await _wait_for(lambda: ticks, "the loop never ticked")
+        # All but a hundredth of the day goes by on the schedule's clock, and a tick that
+        # decides afterwards finds nothing due. A loop that ignored the stored interval
+        # would have synced at that tick.
+        clock.advance(interval * 0.99)
+        seen = len(ticks)
+        await _wait_for(lambda: len(ticks) > seen, "the loop never ticked after the day passed")
+        # The clock stands short of the interval, so every cycle recorded so far is an early one.
+        early = [round(t - started, 3) for t in cycles]
         assert early == [], f"synced {early}s into a {interval:.1f}s interval ({len(ticks)} ticks)"
 
         # Shortened while the loop runs — no restart of the loop or the gateway.
         before = len(cycles)
         _write_raw_settings(server_mod, json.dumps({"autoSync": True, "autoSyncMins": 1}))
+        # The write is not atomic: a tick that reads the file mid-write sees the defaults
+        # (auto-sync off) and re-seeds the deadline, and the schedule's clock does not move
+        # by itself. Once a tick has read the new interval, two such intervals on that clock
+        # make a cycle due -- still well short of the day the old interval needed.
+        await _wait_for(
+            lambda: any(r.get("autoSyncMins") == 1 for r in reads),
+            "the loop never read the shortened interval",
+        )
+        clock.advance(2 * loop_syncer.SECONDS_PER_MINUTE)
         await _wait_for(lambda: len(cycles) > before, "a shortened interval never took effect")
 
 
@@ -942,8 +988,7 @@ async def test_a_cycle_never_overlaps_the_previous_one(
     async def _slow_sync(local_path: str, **kwargs: Any) -> dict[str, Any]:
         calls.append(1)
         started.set()
-        # flake-ok: pre-existing unbounded Event wait inside the fake; the test sets the event itself, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        await await_until(release, what="the test releasing the first cycle")
         return _clean_result()
 
     monkeypatch.setattr(git_ops, "sync", _slow_sync)
@@ -951,15 +996,13 @@ async def test_a_cycle_never_overlaps_the_previous_one(
     monkeypatch.setattr(server_mod, "resolve_auth", _no_auth)
 
     first = asyncio.create_task(syncer_mod._sync_once())
-    # flake-ok: pre-existing unbounded Event wait; the cycle task this test started sets it, moved verbatim; tracked for a de-flake pass
-    await started.wait()
+    await await_until(started, what="the first cycle reaching its vault's sync")
     # A second entrant while the first cycle is mid-flight returns without
     # touching the vault.
     await syncer_mod._sync_once()
     assert calls == [1]
     release.set()
-    # flake-ok: pre-existing unbounded await of the cycle task released above, moved verbatim; tracked for a de-flake pass
-    await first
+    await await_until(first, what="the first cycle completing")
     assert calls == [1]
 
 

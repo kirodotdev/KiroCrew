@@ -41,9 +41,21 @@ from typing import TYPE_CHECKING, Any, Collection
 
 from kiro_crew import __version__, _facade_mirror, platform_compat
 from kiro_crew.agent_spec_format import iter_agent_spec_files
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.env import mcp_search_path, resolved_command_casing
 from kiro_crew.mcp_gateway.launch_approval import LaunchApprovals, filter_target_env
+from kiro_crew.mcp_gateway.mate_overlays import (
+    MATE_IDENTITY_PREFIX,
+    MATE_OVERLAY_SUBDIR,
+    MatePass,
+    MateSources,
+    drop_mate_overlays,
+    establish_mate_sources,
+    kept_identities,
+    mate_dir_refused,
+    mate_overlay_dir,
+    rewrite_mate_overlays,
+)
 from kiro_crew.mcp_gateway.read_limits import config_read_buffer_limit
 from kiro_crew.mcp_gateway.rewriter_env import (
     _collect_target_env,
@@ -82,43 +94,22 @@ logger = logging.getLogger(__name__)
 # overlay dir as ready.
 _FINGERPRINT_NAME = ".rewrite-fingerprint"
 
-# Bump when the rewrite's OUTPUT shape changes for identical inputs (new stub
-# flags, changed overlay layout, ...) so upgraded installs regenerate instead
-# of serving overlays produced by older logic. The package version is also in
-# the fingerprint, so a release bump invalidates regardless; this constant is
-# the explicit knob for in-development changes.
-# 5: the stub's flags ride inside one STUB_FLAGS_FLAG envelope, so a kept
-# plain-flag overlay would keep exposing its raw metadata to cmd.exe.
-# Deliberately NOT bumped for the retained legacy settings overlay: the
-# per-agent overlay bytes do not depend on it, the leftover overlay file is
-# retained and ignored (never consumed), and a stored ``settings_overlay``
-# output signature is not rejected — it keeps vouching for the leftover's ACL
-# relock — so an older fingerprint still validates correctly, and bumping would
-# gratuitously defeat the transient-keep gate (which compares stored vs current
-# inputs) on the first upgraded boot.
-# 6: target commands and recorded probes carry their on-disk Windows casing.
-# 7: the wrapped entry's command is normalised to a cmd.exe-safe spelling on
-# Windows (8.3 short form when the interpreter path carries a metacharacter),
-# and kept overlays must fingerprint that derived spelling to avoid launching
-# through cmd.exe with a quote-stripped interpreter path.
-# 8: a registry-governed or muted entry passes through unwrapped instead of
-# becoming a broker stub. The inputs are unchanged for such an entry, so a kept
-# overlay keeps a stub whose name ``session_servers.injection_server_names``
-# still collects -- launching, at session level, the very server the marker
-# hands to the administrator's catalog and the mute silences. The output shape
-# for identical inputs is what changed, which is exactly what this knob rejects.
-# 9: a reserved kirocrew-* entry launches the managed invocation, not the
-# spec's command (``_repair_control_plane_entry``). That invocation is an input
-# the spec files cannot see -- it moves on every upgrade and on a relocated
-# install -- so it is fingerprinted as ``managed_control_plane`` below, and the
-# bump regenerates every kept overlay whose stub still hashes the spec's command.
-# 10: an agent whose spec sets ``includeMcpJson: false`` gets no injected
-# settings stubs. Its inputs are unchanged, so a kept overlay would keep
-# mounting the excluded servers at ``session/new``.
-# 11: credential vendors joined ``UNPOOLABLE_SERVERS``. The denylist is not a
-# fingerprint input, so a kept overlay from before would keep the vendor's stub
-# and its backend would keep running outside every chat sandbox.
-_FINGERPRINT_SCHEMA = 11
+# Bump when the rewrite's OUTPUT shape changes for identical inputs, so a kept
+# overlay built by older logic is regenerated. The package version is in the
+# fingerprint too; this is the knob for in-development changes.
+# 5: stub flags ride in one STUB_FLAGS_FLAG envelope (raw metadata hidden from
+# cmd.exe). The retained legacy settings overlay needs no bump: per-agent bytes
+# do not depend on it, and a bump would defeat the transient-keep gate.
+# 6: target commands and probes carry their on-disk Windows casing.
+# 7: the wrapped command uses a cmd.exe-safe spelling (8.3 short form).
+# 8: a registry-governed or muted entry passes through unwrapped, not stubbed.
+# 9: a reserved kirocrew-* entry launches the managed invocation, which is
+# fingerprinted as ``managed_control_plane``.
+# 10: ``includeMcpJson: false`` gets no injected settings stubs.
+# 11: credential vendors joined ``UNPOOLABLE_SERVERS`` (not a fingerprint input).
+# 12: a reserved ``crewmate:`` agent gets no overlay; a keep that skips this
+# check is refused by name after the loop.
+_FINGERPRINT_SCHEMA = 12
 
 # The fingerprint inputs of the latest pass into each overlay directory, kept so
 # a caller can read the settings a pass was built from without a second scan.
@@ -148,6 +139,7 @@ def _rewrite_inputs_fingerprint(
     forward_env: bool,
     identity_keys: Collection[str],
     read_buffer_limit: int,
+    mate_sources: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a JSON-serializable snapshot of every input that can change
     :func:`rewrite_agents`'s output.
@@ -164,42 +156,33 @@ def _rewrite_inputs_fingerprint(
       :func:`platform_compat.isolated_python_argv`), so an interpreter move, a
       user-site policy change, or a change to the stub's own interpreter
       options regenerates the overlays.
-    * ``python_cmd_safe`` — the cmd.exe-safe spelling of ``sys.executable``
-      actually written as the overlay ``command`` on Windows. A volume's 8.3
-      name generation being toggled (or the alias stripped with ``fsutil
-      8dot3name strip``) changes this without touching ``python`` or any
-      other input, and a kept overlay would launch an interpreter path that
-      does not resolve — so the derived spelling is fingerprinted alongside
-      its source.
-    * ``path_env`` / ``pathext`` / ``path_augment`` — feed the
-      ``shutil.which`` resolution of bare command names (``path_augment`` is
-      :func:`kiro_crew.env.mcp_search_path` over an empty spec PATH — the
-      augmentation-and-dedup half of the search, which depends on ambient
-      state like ``MISE_DATA_DIR`` and on ``mcp.extra_path_dirs`` that
-      ``path_env`` cannot see, so editing that setting invalidates the
-      cache instead of reusing a stale resolution). The
-      other half of which()'s input — the CONTENTS of the searched
-      directories — is not stat-able here; it is covered by the stored
-      per-probe results, which the cache-hit path re-runs and compares (see
+    * ``python_cmd_safe`` — the cmd.exe-safe spelling written as ``command`` on
+      Windows. Toggling 8.3 name generation changes it without touching
+      ``python``, and a kept overlay would launch a path that does not resolve.
+    * ``path_env`` / ``pathext`` / ``path_augment`` — feed ``shutil.which`` for
+      bare command names. ``path_augment`` is
+      :func:`kiro_crew.env.mcp_search_path` over an empty spec PATH, which
+      reads ambient state (``MISE_DATA_DIR``, ``mcp.extra_path_dirs``) that
+      ``path_env`` cannot see. Directory CONTENTS are covered by the stored
+      per-probe results the cache-hit path re-runs (see
       :class:`_RewritePassNotes`).
     * ``forward_declared_env`` — decides whether an env-declaring server is
-      pooled at all (the withheld-env pre-classification), so flipping the
-      config flag must regenerate the overlays.
-    * ``pool_identity_env`` — decides which secret-prefixed keys are hashed into
-      the PoolKey and passed on stub argv, so editing the list must regenerate
-      the overlays. Without this, naming a key would take effect only once some
-      unrelated input changed, and until then the stub would keep hashing the old
-      set while gatewayd hashed the new one — the coherence gate would refuse to
-      forward, so the feature would silently not work.
-    * ``read_buffer_limit`` — the per-stream read ceiling stamped into every
-      stub's ``--read-limit``, for the same reason as ``pool_identity_env``:
-      a kept overlay would keep launching stubs with the old ceiling.
+      pooled at all.
+    * ``pool_identity_env`` — which secret-prefixed keys are hashed into the
+      PoolKey and stub argv. A stale overlay would hash the old set while
+      gatewayd hashes the new one, and the coherence gate would refuse.
+    * ``read_buffer_limit`` — stamped into every stub's ``--read-limit``.
     * ``schema`` / ``package`` — invalidate on rewriter logic changes.
+    * ``mate_sources`` — present only on a pass that also rewrites the crewmate
+      files (:mod:`kiro_crew.mcp_gateway.mate_overlays`): their folder, the
+      accepted files' signatures, and whether that set was fully established.
     """
     sources: dict[str, list[Any] | None] = {
         p.name: _source_sig(p) for p in iter_agent_spec_files(source_dir)
     }
+    extra: dict[str, Any] = {} if mate_sources is None else {"mate_sources": mate_sources}
     return {
+        **extra,
         "schema": _FINGERPRINT_SCHEMA,
         "package": __version__,
         "python": sys.executable,
@@ -256,7 +239,12 @@ def _load_fingerprint(path: Path) -> dict[str, Any] | None:
         return None
     overlays = outputs.get("overlays")
     sidecars = outputs.get("sidecars")
-    if not (isinstance(overlays, dict) and isinstance(sidecars, dict)):
+    mate_overlays = outputs.get("mate_overlays", {})
+    if not (
+        isinstance(overlays, dict)
+        and isinstance(sidecars, dict)
+        and isinstance(mate_overlays, dict)
+    ):
         return None
 
     def _valid_sig(sig: Any) -> bool:
@@ -268,7 +256,7 @@ def _load_fingerprint(path: Path) -> dict[str, Any] | None:
             and isinstance(sig[2], str)
         )
 
-    for name, sig in (*overlays.items(), *sidecars.items()):
+    for name, sig in (*overlays.items(), *sidecars.items(), *mate_overlays.items()):
         # Names are joined onto the overlay/sidecar dirs below; refuse
         # anything that could escape them, so a corrupted or tampered file
         # degrades to a full rewrite instead of probing arbitrary paths.
@@ -309,10 +297,20 @@ def _cached_rewrite_result(
     outputs = stored["outputs"]
     overlay_sigs: dict[str, Any] = outputs["overlays"]
     sidecar_sigs: dict[str, Any] = outputs["sidecars"]
+    # Crewmate overlays (``mate_overlays``): held to the same checks as the rest.
+    mate_sigs: dict[str, Any] = outputs.get("mate_overlays", {})
+    mate_dir = mate_overlay_dir(overlay_dir)
+    if mate_dir_refused(mate_dir):
+        # A linked ``mates/`` is neither stat'ed, served nor pruned through: the
+        # full pass refuses it the same way and stays uncached.
+        return None
     env_dir = env_sidecar_dir_for_stubs(stubs_dir)
     try:
         for name, sig in overlay_sigs.items():
             if _stat_sig(overlay_dir / name) != sig:
+                return None
+        for name, sig in mate_sigs.items():
+            if _stat_sig(mate_dir / name) != sig:
                 return None
         for name, sig in sidecar_sigs.items():
             if _stat_sig(env_dir / name) != sig:
@@ -352,6 +350,7 @@ def _cached_rewrite_result(
                 os.chmod(env_dir, 0o700)
         protected: list[Path] = [
             *(overlay_dir / n for n in overlay_sigs),
+            *(mate_dir / n for n in mate_sigs),
             *(env_dir / n for n in sidecar_sigs),
             overlay_dir / _FINGERPRINT_NAME,
         ]
@@ -373,6 +372,10 @@ def _cached_rewrite_result(
                 stale.unlink()
             except OSError:
                 pass
+    for stale in mate_dir.glob("*.json"):
+        if stale.name not in mate_sigs:
+            with contextlib.suppress(OSError):
+                stale.unlink()
     if env_dir.is_dir():
         for stale in env_dir.glob("*.json"):
             if stale.name not in sidecar_sigs:
@@ -392,9 +395,13 @@ def _cached_rewrite_result(
     # byte-identical to a fresh rewrite.
     results: dict[str, int] = {}
     target_env: dict[str, str] = {}
+    # The agents first, then the crewmates, the full pass's order.
+    served = [(n, overlay_dir / n) for n in sorted(overlay_sigs)] + [
+        (f"{MATE_OVERLAY_SUBDIR}/{n}", mate_dir / n) for n in sorted(mate_sigs)
+    ]
     try:
-        for name in sorted(overlay_sigs):
-            spec = json.loads((overlay_dir / name).read_text(encoding="utf-8"))
+        for name, overlay_path in served:
+            spec = json.loads(overlay_path.read_text(encoding="utf-8"))
             servers = spec.get("mcpServers", {}) if isinstance(spec, dict) else {}
             if not isinstance(servers, dict):
                 servers = {}
@@ -460,7 +467,7 @@ def _store_fingerprint(
             with os.fdopen(fd, "w") as fh:
                 fd_owned = False  # fdopen owns the descriptor now
                 fh.write(json.dumps(payload, sort_keys=True))
-            os.replace(tmp, path)
+            replace_with_retry(tmp, path)
             wrote = True
         finally:
             if fd_owned:
@@ -521,6 +528,16 @@ def _relock_legacy_settings_overlay(
         )
 
 
+def _kept_overlay_name(path: Path) -> str | None:
+    """The ``name`` of the overlay at *path*, or ``None`` when it cannot be read."""
+    try:
+        spec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    name = spec.get("name") if isinstance(spec, dict) else None
+    return name if isinstance(name, str) else None
+
+
 def _overlay_names_collide(overlay_dir: Path, first: str, second: str) -> bool:
     """Whether overlay names *first* and *second* are one file in *overlay_dir*.
 
@@ -548,14 +565,20 @@ def rewrite_agents(
     stub_servers: frozenset[str] | None = None,
     pooling_enabled: bool = True,
     approvals: LaunchApprovals | None = None,
+    mate_source_dir: Path | None = None,
 ) -> tuple[dict[str, int], dict[str, str]]:
     """Populate ``overlay_dir`` with rewritten copies of ``source_dir/*.json``.
 
-    Never modifies ``source_dir``. Idempotent — safe to call on every
-    Kiro Crew startup. When no input changed since the last completed run
-    (see :func:`_rewrite_inputs_fingerprint`) the rewrite loop is skipped and
-    the cached ``(results, target_env)`` is returned; the stale-file prune
-    still runs on that path.
+    With *mate_source_dir* (``~/.kiro/mates/agents``) the same pass also writes
+    one overlay per crewmate file to ``<overlay_dir>/mates/`` under the stub
+    identity ``crewmate:<id>`` (see :mod:`kiro_crew.mcp_gateway.mate_overlays`),
+    handled like agent overlays but with no settings injection. An exception in
+    that crewmate half drops its outputs and leaves the pass uncached with
+    ``live_incomplete`` set; the agent half still runs.
+
+    Never modifies ``source_dir``. Idempotent. When no input changed since the
+    last completed run (see :func:`_rewrite_inputs_fingerprint`) the cached
+    ``(results, target_env)`` is returned; the stale-file prune still runs.
 
     Args:
         source_dir: Usually ``~/.kiro/agents/``.
@@ -569,16 +592,11 @@ def rewrite_agents(
             so the stub's PoolKey matches KiroCrew's sandbox policy.
         approval_mode: Value from ``config.agent.approval_mode`` — same.
         stub_servers: Server names from ``config.mcp_gateway.stub_servers``.
-            A stdio server gets a stub when its name is in this set — that list is
-            the ONLY trigger. A per-agent-spec ``poolable: true`` is retired and
-            deliberately ignored here: both real gates (the broker start gate and
-            the session overlay) read the config list, so honouring the spec key
-            produced a stub nothing pointed at. It is still stripped before the
-            entry reaches kiro-cli, and still reported as ``entry_poolable`` for
-            information only. An unstubbed server is left untouched for the
-            session to launch itself, which is what keeps the default free of both
-            a daemon and a stub process. ``None`` is treated as an empty set,
-            meaning nothing is rewritten at all.
+            A stdio server gets a stub only when its name is in this set. A
+            per-spec ``poolable: true`` is ignored (both real gates read the
+            config list), stripped before kiro-cli, and reported as
+            ``entry_poolable`` for information only. ``None`` means nothing is
+            rewritten.
         pooling_enabled: ``config.mcp_gateway.enabled``. Sharing is global over
             the stub set: when ``False`` no stub is marked shareable, so each
             connection gets its own backend while the stubs stay in place — the
@@ -664,6 +682,13 @@ def rewrite_agents(
     # it out of the fingerprint would let a kept overlay keep launching stubs
     # with the previous one after the operator raised the key.
     read_buffer_limit = config_read_buffer_limit()
+    # ONE listing of the crewmate files per pass: the fingerprint signs exactly
+    # the set the loop below rewrites.
+    mate_sources, mate_fingerprint = (
+        (MateSources(), None)
+        if mate_source_dir is None
+        else establish_mate_sources(mate_source_dir)
+    )
     current_inputs = _rewrite_inputs_fingerprint(
         source_dir=source_dir,
         settings_path=kiro_settings_json,
@@ -677,6 +702,7 @@ def rewrite_agents(
         forward_env=forward_env,
         identity_keys=identity_keys,
         read_buffer_limit=read_buffer_limit,
+        mate_sources=mate_fingerprint,
     )
     if approvals is not None:
         current_inputs["launch_approvals"] = approvals.digest()
@@ -721,6 +747,9 @@ def rewrite_agents(
         approvals.full_pass = True
 
     written: set[str] = set()
+    # The ``name`` of every agent overlay this pass published: a crewmate whose
+    # stub identity equals one gets no overlay (``mate_overlays``).
+    agent_identities: set[str] = set()
     written_sidecars = _SidecarLedger()
     results: dict[str, int] = {}
     target_env: dict[str, str] = {}
@@ -809,44 +838,17 @@ def rewrite_agents(
     transient_keep: set[str] = set()
 
     # A settings read that FAILED is not a settings file that declared nothing.
-    # ``settings_poolable`` is empty on that path because the pass could not
-    # ASK, so an agent overlay written from it reflects a fact this pass never
-    # established: every globally-declared poolable server silently stops being
-    # pooled for the rest of this gateway's lifetime. Its tools do not vanish --
-    # the raw entry still merges from the real settings file -- but it runs
-    # per-session and unpooled, with none of the identity the stub carries. The
-    # pass is already uncacheable (``notes.source_read_failed`` was set at the
-    # read site), so a restart self-heals; the degraded window is a whole
-    # gateway lifetime.
+    # Rewriting from the empty ``settings_poolable`` would unpool every global
+    # poolable server for the whole gateway lifetime. So an agent with a
+    # previous overlay keeps it (it already carries the injected globals); an
+    # agent with none is still written, since refusing would unpool its OWN
+    # servers too.
     #
-    # Refuse to rewrite instead, exactly as the per-agent transient read
-    # failure below does -- but only where refusing PRESERVES something. An
-    # agent that has a previous overlay keeps it: that overlay carries both its
-    # own wrapped servers and the injected globals, so nothing is dropped. An
-    # agent with NO previous overlay is still written, because there the empty
-    # injection set is not the conflation this guards against -- no injected
-    # copy exists to drop, and refusing would leave that agent with no overlay
-    # at all, unpooling its OWN servers too. That is strictly worse than the
-    # fault warrants, and worse than what this pass does today.
-    #
-    # The trade on a kept overlay is staleness in the other direction, and it is
-    # bounded to the injection set alone: a keep is only honest when NOTHING
-    # ELSE the overlay encodes has changed. Keeping one otherwise defers the
-    # agent's own spec (an autoApprove entry removed, a server disabled) and the
-    # policy knobs _build_stub_entry bakes into every stub argv (--sandbox-mode,
-    # --approval-mode, --poolable, work dir, socket, identity keys) -- all
-    # deliberate instructions, unlike a transient fault. So the keep is gated on
-    # _overlay_inputs_unchanged: the stored fingerprint must show this pass's
-    # inputs matching the ones that overlay was built from, every input except
-    # the settings entry the failed read made unknowable. One comparison covers
-    # every dimension, so a future fingerprinted input is covered without being
-    # enumerated at this site.
-    #
-    # Gated on nothing else: with an empty stub set nothing is wrapped and
-    # ``_injectable_settings_servers`` returns nothing whatever the file says, so
-    # a keep and a rewrite produce identical bytes there. An extra
-    # ``bool(stub_set)`` term would be unobservable -- no test can distinguish
-    # it -- so the fingerprint comparison below carries the whole decision.
+    # A keep is honest only when nothing else the overlay encodes changed (the
+    # agent's spec, the stub argv knobs _build_stub_entry bakes in), so it is
+    # gated on _overlay_inputs_unchanged: every fingerprinted input except the
+    # unreadable settings entry must match. With an empty stub set a keep and a
+    # rewrite produce identical bytes, so no extra gate is needed.
     injection_unknown = settings_read_transient
     # A keep SERVES artifacts this pass did not write, so it must carry the same
     # guarantees the other serve-without-writing path does. Vouch for the shared
@@ -952,8 +954,6 @@ def rewrite_agents(
             continue
         if not isinstance(spec, dict):
             continue
-        # Parsed: this source owns the destination for the rest of the pass.
-        overlay_keys_claimed.setdefault(overlay_key, overlay_name)
         # Guarantee a non-empty agent identity. The rewriter reads
         # ``~/.kiro/agents/*.json`` directly, and a user- or tool-dropped file
         # may omit ``name``. Without a name, ``_rewrite_single_spec`` derives
@@ -964,6 +964,26 @@ def rewrite_agents(
         # stable non-empty identifier prevents the collapse.
         if not spec.get("name"):
             spec["name"] = path.stem
+        if str(spec["name"]).startswith(MATE_IDENTITY_PREFIX):
+            # ``crewmate:`` is the crewmate stubs' identity, and app-callback
+            # governance resolves it under the worker's profile
+            # (``mate_overlays.governance_agents``). An agent declaring it gets
+            # no overlay, so no stub of an ordinary session carries it; the
+            # session declares its servers itself. Deterministic: renaming the
+            # agent changes its source signature. The name still counts as taken,
+            # so the crewmate it names keeps getting no overlay either.
+            agent_identities.add(str(spec["name"]))
+            logger.warning(
+                "skipping agent %s: its name %r uses the reserved %r prefix",
+                path.name,
+                spec["name"],
+                MATE_IDENTITY_PREFIX,
+            )
+            continue
+        # Parsed and taken: this source owns the destination for the rest of
+        # the pass. A source skipped above claims nothing, like one skipped for
+        # bad content.
+        overlay_keys_claimed.setdefault(overlay_key, overlay_name)
         try:
             new_spec, wrapped = _rewrite_single_spec(
                 spec,
@@ -1028,13 +1048,131 @@ def rewrite_agents(
             # commit is a no-op.
             written_sidecars.discard()
         written.add(overlay_name)
+        agent_identities.add(str(spec["name"]))
         if wrapped:
             results[overlay_name] = wrapped
+
+    # A kept overlay is not re-read for its name, so one written before the
+    # ``crewmate:`` prefix was reserved could still carry it. Such a keep is
+    # refused: the overlay is pruned below and its session declares its
+    # servers itself. An unreadable kept overlay stays kept, as before. Whether
+    # any keep happened is read first: a refused keep's source was still not
+    # read this pass, so its launches are still missing from the live set.
+    any_keep = bool(transient_keep)
+    for name in sorted(transient_keep):
+        kept_name = _kept_overlay_name(overlay_dir / name)
+        if kept_name is not None and kept_name.startswith(MATE_IDENTITY_PREFIX):
+            agent_identities.add(kept_name)
+            transient_keep.discard(name)
+            logger.warning(
+                "dropping kept overlay %s: its name %r uses the reserved %r prefix",
+                name,
+                kept_name,
+                MATE_IDENTITY_PREFIX,
+            )
+
+    def _mate_half() -> MatePass:
+        # The crewmate half of the pass (``mate_overlays``), after the agent
+        # overlays and before their prune, sidecar prune and fingerprint. Run
+        # only under the guard below, which a fault in here never gets past.
+        kept_names = kept_identities(overlay_dir, transient_keep)
+
+        def _publish_mate(spec: dict[str, Any], target: Path) -> int | None:
+            # The agent loop's rewrite and publish, for one crewmate file. No
+            # settings injection and no keep: a failure leaves no overlay, and
+            # no sidecar of this crewmate either.
+            ledgered = set(written_sidecars.names)
+            try:
+                new_spec, wrapped = _rewrite_single_spec(
+                    spec,
+                    stubs_dir=stubs_dir,
+                    socket_path=socket_path,
+                    work_dir=work_dir,
+                    sandbox_mode=sandbox_mode,
+                    approval_mode=approval_mode,
+                    stub_servers=stub_set,
+                    pooling_enabled=pooling_enabled,
+                    forward_env=forward_env,
+                    identity_keys=identity_keys,
+                    read_buffer_limit=read_buffer_limit,
+                    inject_servers={},
+                    target_env=target_env,
+                    sidecars_written=written_sidecars,
+                    notes=notes,
+                    approvals=approvals,
+                )
+                try:
+                    atomic_write(
+                        target, json.dumps(new_spec, indent=2) + "\n", restrict_to_owner=True
+                    )
+                except OSError as exc:
+                    logger.warning("failed to write crewmate overlay %s: %s", target, exc)
+                    with contextlib.suppress(OSError):
+                        target.unlink()
+                    # No stub names this crewmate's sidecars any more, so none of
+                    # them may outlive the overlay: unledgered, so no later prune
+                    # keeps one, and removed now, since a pass that skips the
+                    # sidecar prune would otherwise leave the credentials behind.
+                    written_sidecars.discard()
+                    sidecar_dir = env_sidecar_dir_for_stubs(stubs_dir)
+                    for orphan in written_sidecars.names - ledgered:
+                        written_sidecars.names.discard(orphan)
+                        with contextlib.suppress(OSError):
+                            (sidecar_dir / orphan).unlink()
+                    return None
+                _collect_target_env(new_spec.get("mcpServers", {}), target_env)
+                if not written_sidecars.commit():
+                    notes.sidecar_write_failed = True
+                return wrapped
+            finally:
+                written_sidecars.discard()
+
+        return rewrite_mate_overlays(
+            mate_sources,
+            overlay_dir=overlay_dir,
+            taken_identities=None if kept_names is None else agent_identities | kept_names,
+            publish=_publish_mate,
+            agents_dir=source_dir,
+        )
+
+    mate_pass = MatePass()
+    # What the crewmate half may add to, so a fault inside it can take it all back.
+    mate_ledger_before = set(written_sidecars.names)
+    mate_target_env_before = dict(target_env)
+    try:
+        if mate_source_dir is not None:
+            mate_pass = _mate_half()
+    except Exception:  # noqa: BLE001 - a crewmate fault never costs the agents half
+        # Fail closed for the crewmates only: no crewmate overlay, sidecar or target
+        # survives, the pass stays uncached, and the agents half below runs on.
+        logger.warning(
+            "crewmate overlays failed this pass; no crewmate stubs until the next one",
+            exc_info=True,
+        )
+        written_sidecars.discard()
+        sidecar_dir = env_sidecar_dir_for_stubs(stubs_dir)
+        for orphan in written_sidecars.names - mate_ledger_before:
+            written_sidecars.names.discard(orphan)
+            with contextlib.suppress(OSError):
+                (sidecar_dir / orphan).unlink()
+        target_env.clear()
+        target_env.update(mate_target_env_before)
+        drop_mate_overlays(overlay_dir)
+        mate_pass = MatePass(incomplete=True)
+    if mate_source_dir is not None:
+        results.update(mate_pass.results)
+        if approvals is not None and mate_pass.incomplete:
+            # A crewmate this pass could not establish was never admitted, so the
+            # live set is missing its launches: none may be retired as unseen.
+            approvals.live_incomplete = True
+    else:
+        # Not covering crewmates this pass: none of an earlier pass's overlays stays.
+        drop_mate_overlays(overlay_dir)
 
     if approvals is not None and notes.sidecar_write_failed:
         approvals.rebind_incomplete = True
 
-    if approvals is not None and transient_keep:
+    if approvals is not None and any_keep:
         # A kept overlay's launches were never admitted this pass -- the keep
         # paths above skip the spec read, or abandon the agent after it -- so
         # the approval snapshot's live set is missing them. Say so, or a
@@ -1127,6 +1265,8 @@ def rewrite_agents(
         uncacheable = "env sidecar write failure(s)"
     elif overlay_write_failed:
         uncacheable = "overlay write failure(s)"
+    elif mate_pass.incomplete:
+        uncacheable = "crewmate overlay(s) not established"
     elif notes.env_placeholder_seen:
         # Not a fault: a declared env carried a ${VAR}/${env:VAR} reference, so
         # a sidecar's contents depend on the ENVIRONMENT as well as the spec
@@ -1182,6 +1322,10 @@ def rewrite_agents(
             "overlays": {n: _stat_sig(overlay_dir / n) for n in sorted(written)},
             "sidecars": {n: _stat_sig(env_dir / n) for n in sorted(written_sidecars.names)},
         }
+        if mate_source_dir is not None:
+            output_sigs["mate_overlays"] = {
+                n: _stat_sig(mate_overlay_dir(overlay_dir) / n) for n in sorted(mate_pass.written)
+            }
         if legacy_sig is not None:
             output_sigs["settings_overlay"] = legacy_sig
         # A None signature means an output vanished between write and stat —
@@ -1190,6 +1334,7 @@ def rewrite_agents(
         if (
             all(output_sigs["overlays"].values())
             and all(output_sigs["sidecars"].values())
+            and all(output_sigs.get("mate_overlays", {}).values())
         ):
             _store_fingerprint(
                 fingerprint_path,

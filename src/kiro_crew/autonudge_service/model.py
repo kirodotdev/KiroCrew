@@ -37,15 +37,11 @@ MONITOR_TERMINAL_REASON = "monitor_terminal"
 
 #: ``stopped_reason`` for a loop whose own kill switch fired: the stop file at
 #: ``stop_sentinel_path`` existed when the timer woke. The file is how the agent
-#: declares the goal reached on a goal whose text carries ``{{STOP_FILE}}`` (the
-#: apps' patrols, ``/goal``, a custom goal; the popover's default text has the
-#: agent call ``autonudge_stop`` instead, and that call's removal of the row is
-#: unchanged here), so the record is KEPT and deactivated under this reason rather
-#: than removed -- a removed row left the goal popover on its empty form with
-#: nothing saying the goal was met.
-#: The stop file itself is left where it was written. The next default-sentinel
-#: arm on the slot removes it inside its add transaction, after the new row is
-#: durable and before its timer is armed (``mutations._retire_stale_stop_sentinel``).
+#: declares a ``{{STOP_FILE}}`` goal reached, so the record is KEPT and deactivated
+#: rather than removed: a removed row would leave the goal popover on its empty form
+#: with nothing saying the goal was met.
+#: The stop file stays where it was written; the next default-sentinel arm on the
+#: slot removes it after its new row is durable (``mutations._retire_stale_stop_sentinel``).
 STOP_SENTINEL_REASON = "stop_sentinel"
 
 #: The two FINISHED stops -- the agent created its stop file, or the watched
@@ -79,14 +75,10 @@ APPROVAL_STALL_REASON = "approval_stalled"
 
 
 # Persisted reason for a loop that stood down because its cycles kept failing to
-# get a model session at all. A delivered cycle whose turn dies on
-# ``session/new timed out`` costs a full turn's dispatch and produces nothing, so
-# re-arming on the plain interval buys another identical failure: observed on an
-# operator host as 15 consecutive auto-nudge cycles all ending in
-# ``session/new timed out after 90s (0/10 MCP server(s) reported)``, stopped only
-# by ``max_cycles`` running out. System-imposed like the other bounds -- the
-# remedy (host pressure easing, a gate unstarving) is not something the loop can
-# arrange -- so it is re-armable.
+# get a model session at all (``session/new timed out``). Each such cycle costs a
+# full dispatch and produces nothing, so re-arming on the plain interval only repeats
+# the failure until ``max_cycles`` runs out. System-imposed (the loop cannot ease
+# host pressure itself), so it is re-armable.
 SESSION_START_FAILURE_REASON = "session_start_failures"
 
 
@@ -102,21 +94,11 @@ _START_FAILURE_STANDDOWN_AFTER = 5
 
 
 # Persisted reason for a loop stood down because its own delivered cycles kept
-# FAILING -- turns that reached a model session and dispatched but died (a
-# backend error after retries were spent, a persistent tool error, a prompt
-# timeout), the turn outcome ``error`` or ``timeout``. The three narrower bounds
-# each cover one deterministic sub-case: ``structural_terminal`` a malformed
-# payload the backend rejects by shape, ``approval_stalled`` an unanswered
-# approval, ``session_start_failures`` a cycle that never got a session at all.
-# A cycle that got a session, dispatched, and then errored is none of those, so
-# without this bound a loop firing every interval into a turn that always fails
-# spends its whole cycle cap producing nothing -- the exact waste
-# ``session_start_failures`` was built to end, for the broader class the three
-# narrow bounds leave uncovered. System-imposed like them (the remedy -- the
-# backend recovering, the tool being fixed -- is not something the loop can
-# arrange), so it is re-armable, and evidence-driven: only a DELIVERED cycle of
-# this loop's own that ended in a fault advances it, and a single landed turn on
-# the slot clears it, so a loop that recovers is never held back.
+# FAILING after dispatch (turn outcome ``error`` or ``timeout``). It covers what
+# ``structural_terminal``, ``approval_stalled`` and ``session_start_failures`` leave
+# out, so a loop whose turn always fails does not spend its whole cycle cap.
+# Re-armable like them. Only this loop's own DELIVERED faulted cycles advance it, and
+# a single landed turn on the slot clears it.
 CONSECUTIVE_FAILURE_REASON = "consecutive_failures"
 
 
@@ -141,16 +123,10 @@ STRUCTURAL_TERMINAL_REASON = "structural_terminal"
 
 
 # Persisted reason for a loop stopped because its LAST delivered cycle ended on a
-# model-side content refusal that nothing retried. A refusal is deterministic for
-# one model: the next cycle fires the same prompt into the same model and is
-# declined again, so an unattended loop would spend every remaining cycle on
-# refusal cards while the goal it drives waits for a person who is never told.
-# The refusal fallback (``agent.refusal_fallback_model``) is attended-only, so for
-# a loop's own cycle the refusal card is terminal. System-imposed like the
-# structural stop and re-armable for the same reason: the remedy (a person
-# rewording the goal, switching the model, or configuring a fallback) is not
-# something the loop can arrange, and any genuine new turn in the session clears
-# the slot's verdict so a corrected context is not stopped by a stale one.
+# model-side content refusal that nothing retried. A refusal repeats for the same
+# prompt and model, and ``agent.refusal_fallback_model`` is attended-only, so re-firing
+# would spend every remaining cycle on refusal cards. Re-armable like the structural
+# stop; any genuine new turn in the session clears the slot's verdict.
 MODEL_REFUSED_REASON = "model_refused"
 
 
@@ -281,9 +257,10 @@ MANUAL_STOP_REASON = "manual"
 #: Stops the SYSTEM imposed on a legacy loop, which a directive re-arm may
 #: therefore displace: a lapsed approval, a spent bound, a finished subject (a
 #: merged or closed watch, or the loop's own stop file), a dropped kill switch.
-#: Everything else — a manual pause (``"manual"``), a
-#: research tombstone (``AUTONUDGE_STOP_REASON``, consumed by the auto_research
-#: watchdog to tell deliberate completion from crash cleanup), and any reason
+#: Everything else — a manual pause (``"manual"``), an
+#: app's stop tombstone (``AUTONUDGE_STOP_REASON`` on a slot the
+#: ``stopped_loop_tombstone`` seam keeps, read by that app to tell
+#: deliberate completion from crash cleanup), and any reason
 #: this version does not know — is evidence some consumer may read, so it fails
 #: CLOSED to preserved.
 _REPLACEABLE_LOOP_STOP_REASONS = (
@@ -343,43 +320,18 @@ def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
 # so they run on a fixed interval instead of an idle timer: the timer re-arms
 # itself right after every delivered fire.
 #
-# This mirrors ``messaging.link.CHANNEL_SESSION_NAMESPACES``, spelled out here
-# rather than derived from it, for two independent reasons:
+# Mirrors ``messaging.link.CHANNEL_SESSION_NAMESPACES`` but is spelled out, because:
+# 1. importing ``kiro_crew.messaging.link`` pulls about 48 more modules into every
+#    MCP server process, for one tuple of literals;
+# 2. this is a key-shape question. A runtime ``supports_proactive_send`` lookup
+#    would read a loop whose transport is briefly absent as a dashboard slot, and
+#    nothing would ever re-arm it.
 #
-# 1. IMPORT WEIGHT. ``autonudge`` is imported at module scope by ``mcp_core``
-#    (i.e. by every MCP server process) and by the dashboard chat layer, and it
-#    depends only on config/security/platform_compat today. Naming
-#    ``kiro_crew.messaging.link`` runs ``messaging/__init__``, which pulls the
-#    driver/renderer/transport layer and, transitively, the ACP client, agent,
-#    hooks, artifacts, metrics and sqlite — measured at 48 additional
-#    ``kiro_crew`` modules to obtain one tuple of string literals.
-# 2. THIS IS A KEY-SHAPE QUESTION, NOT A LIVE-CAPABILITY ONE. ``is_channel_key``
-#    selects the RE-ARM STRATEGY and the expiry-notification metadata, so it has
-#    to answer identically whether or not the transport happens to be registered
-#    at this instant. Deriving it from a runtime ``supports_proactive_send``
-#    lookup fails toward the WRONG branch: a loop whose transport is momentarily
-#    absent would read as a dashboard slot, so ``_run_fire_cycle`` would stop
-#    self-re-arming it — and nothing else ever will, since
-#    ``notify_turn_complete`` never fires for a channel key — while the expiry
-#    notice would synthesize a ``dashboard:<namespace>:<id>`` jump link pointing
-#    at no slot.
-#
-# Membership therefore does NOT assert deliverability; it asserts "this key names
-# a conversation rather than a chat slot". Whether a nudge can actually be
-# delivered stays with the fail-closed ladder ``chat_runner._resolve_channel_target``
-# (defined in ``dashboard/chat_turn/recipient.py``: governance, then a REGISTERED
-# transport, then ``supports_proactive_send``), which logs its reason and degrades
-# to a no-op.
-# So a namespace is listed even when nothing can currently be delivered to it,
-# and the two clearest cases are both here: ``whatsapp`` has no transport package
-# in this fork at all, and ``feishu`` ships one that declares
-# ``supports_proactive_send=False`` (its renderer only replies to an inbound
-# message id, so a nudge cycle has nowhere to put the answer). Both still classify
-# as channel keys, because the alternative is worse than a refusal: an unlisted key
-# is read as a dashboard slot and silently stops being re-armed, whereas a listed
-# one reaches the ladder and is refused with a logged reason. Being listed is
-# likewise not an arming permission — that is ``binding_key_for``, which is
-# narrower still and gated on an ownership check and a fire route.
+# Membership does NOT assert deliverability: ``chat_runner._resolve_channel_target``
+# decides that and refuses with a logged reason. So ``whatsapp`` (no transport) and
+# ``feishu`` (``supports_proactive_send=False``) are still listed, since an unlisted
+# key would silently stop being re-armed. Nor is it an arming permission; that is
+# ``binding_key_for``.
 _CHANNEL_KEY_PREFIXES = (
     "slack:",
     "discord:",
@@ -444,36 +396,19 @@ class NudgeLoop:
     # RANDOM: a digest served beside its own redaction is an oracle for the masked span.
     # NOT PERSISTED -- re-minted on every load, so a pre-restart value cannot authorise.
     goal_token: str = ""
-    # Runtime budget in seconds, measured from ``created_ts`` (0 = unlimited).
-    # A cycle cap alone cannot bound COST: a loop whose turns are slow or whose
-    # idle gap is long can run for days within its cycle budget. Anchoring on
-    # the persisted ``created_ts`` (not arm time) makes the budget restart-proof
-    # — a gateway restart re-arms the loop but never resets its clock, and the
-    # clock keeps running through a pause. The user's RESUME of a loop whose
-    # TIME budget is spent does: a revival flagged ``fresh_run`` on a row that
-    # stopped on ``runtime_budget``, or whose budget has elapsed by the press,
-    # re-anchors ``created_ts`` (``_update_unserialized``); a spent CAP zeroes
-    # ``cycle_count`` on its own, each bound resetting only its own counter. A
-    # resume with that allowance left, a reconciler re-arm or a ``monitor_update``
-    # bound raise keeps both.
+    # Runtime budget in seconds, measured from ``created_ts`` (0 = unlimited); a
+    # cycle cap alone cannot bound cost when turns are slow. Anchored on the persisted
+    # ``created_ts`` so a restart never resets the clock, and it keeps running through
+    # a pause. Only a ``fresh_run`` resume of a time-spent loop re-anchors it
+    # (``_update_unserialized``); a spent cap zeroes ``cycle_count`` on its own.
     max_runtime_secs: int = 0
     #: Whether this loop may be observation-gated. Defaults to FALSE, which is what
-    #: a record stored before this field existed decodes to.
+    #: an absent key decodes to.
     #:
-    #: THE PRINCIPLE, stated once because it is easy to get backwards: gating is
-    #: the state that can silently stop work -- a gated loop whose subject is merged
-    #: or closed DEACTIVATES -- so every uncertainty resolves to UNGATED, and only an
-    #: explicit boolean true gates. An absent key is a loop nobody chose to gate,
-    #: usually a generic goal loop that predates the feature; a corrupt value is not
-    #: a decision either. Being wrong in this direction costs a turn per interval,
-    #: which is what today already costs. Being wrong the other way stops a
-    #: recurring task because its instruction happened to mention a pull request.
-    #:
-    #: Persisted because the opt-out has to SURVIVE. The instruction is the target,
-    #: so editing it re-infers the subject; without a remembered decision an
-    #: explicitly ungated loop would be silently re-gated by the next wording
-    #: change -- exactly the harm the opt-out exists to prevent, arriving through
-    #: the documented way to revise a loop.
+    #: Gating can silently stop work (a gated loop DEACTIVATES when its subject merges
+    #: or closes), so every uncertainty resolves to UNGATED and only an explicit
+    #: boolean true gates. Persisted so an opt-out survives: editing the instruction
+    #: re-infers the subject, and would otherwise re-gate the loop.
     gate: bool = False
     #: The owner's judge brief: ``targets``, ``wake_when``, ``quiet_when``. Empty
     #: means the owner named no criteria of their own, NOT that no judge applies: a
@@ -483,33 +418,23 @@ class NudgeLoop:
     #: :data:`~kiro_crew.validation.JUDGE_OFF_KEY` marker stored here, and an ungated
     #: loop is never screened at all.
     #:
-    #: The default is never written back, so this field records what the OWNER asked
-    #: for: granting them a criterion later stays an empty-to-set change rather than an
-    #: edit of shipped text, and the mid-tick replacement guard compares a re-read
-    #: against what was stored rather than against the merged form a tick ran under.
-    #:
-    #: Stored even while the consent scope is off, deliberately: an armed loop has
-    #: to survive the switch being turned on later, and re-arming every watch after
-    #: a consent change would be a worse answer than storing a brief nobody reads
-    #: yet. Nothing is COLLECTED or sent until ``nudge_evidence`` is granted.
+    #: The default is never written back, so this records only what the OWNER asked
+    #: for, and the mid-tick replacement guard compares a re-read against it.
+    #: Stored even while the consent scope is off, so an armed loop survives the switch
+    #: being turned on; nothing is COLLECTED or sent until ``nudge_evidence`` is granted.
     judge: dict = field(default_factory=dict)
     #: Per-target read cursor, ``target -> next_since``, so each tick reads only the
     #: rows that arrived since the last one. Advanced only on a successful read, so
     #: a refused or failing target does not silently skip its own rows.
     judge_cursors: dict = field(default_factory=dict)
     #: What the pull-request reading looked like the last time this loop reached a
-    #: verdict: ``{"digest": str, "remarks": [id, ...]}``, and nothing larger, because
-    #: those are the two things a later tick asks of it -- whether the subject moved,
+    #: verdict: ``{"digest": str, "remarks": [id, ...]}`` -- whether the subject moved,
     #: and which remarks it had already been shown.
     #:
-    #: Its OWN field rather than ``MonitorState.last_observation``, and advanced with
-    #: the verdict rather than with the reading, for the reason ``judge_cursors`` is:
-    #: the reading has to be published BEFORE the judge is asked, because that record
-    #: is the channel the judge reads it through, and the ask is an await that ordinary
-    #: user input cancels. A baseline advanced there would mark a new comment seen on a
-    #: tick that reached no verdict, and the next tick would read it as old -- with the
-    #: digest matching too, so both the delta and the unchanged check would suppress a
-    #: wake nobody ever judged. A tick that did not reach a verdict consumes nothing.
+    #: Not ``MonitorState.last_observation``: the reading is published BEFORE the judge
+    #: is asked, and user input can cancel the ask. Advancing the baseline there would
+    #: mark a new comment seen with no verdict, suppressing a wake nobody judged. A tick
+    #: that did not reach a verdict consumes nothing.
     judge_pr_seen: dict = field(default_factory=dict)
     #: Consecutive judge QUIET verdicts, and the counter the judge's streak floor is
     #: measured against. Its OWN field rather than ``MonitorState.quiet_streak``:
@@ -520,30 +445,19 @@ class NudgeLoop:
     #: A judge verdict decided this loop should FIRE and that delivery is not yet
     #: confirmed. Set with the verdict's durable write and cleared only once the fire
     #: is settled, so the owed turn survives a process that stops in between.
-    #:
-    #: On the LOOP rather than on ``MonitorState``, which is where the probe path keeps
-    #: the same doubt as ``poll_in_flight``: a judge-only loop -- a conductor watching
-    #: sibling sessions -- has no monitor record at all, so every mechanism guarded by
-    #: ``monitor is not None`` misses exactly the loops the judge exists for. That is
-    #: also why a REFUSED fire is covered here and not by ``followup_ticks``.
-    #:
-    #: A lost clear costs one extra fire, which is the safe direction: the judge
-    #: advanced durable read cursors before deciding, so without this the next tick
-    #: reads nothing new, answers quiet, and the turn is gone until the streak floor.
+    #: On the LOOP, not ``MonitorState``, because a judge-only loop has no monitor
+    #: record; that is also why a REFUSED fire is covered here, not by
+    #: ``followup_ticks``. A lost clear costs one extra fire, the safe direction: the
+    #: judge already advanced its read cursors, so the next tick would see nothing new.
     judge_wake_pending: bool = False
     #: The previous verdict, summarised and text-free, carried into the next tick's
     #: state so a judge can see it already passed on comparable evidence once.
     judge_last_verdict: dict = field(default_factory=dict)
-    #: The last few verdicts with the label their delivery earned, oldest first. This
-    #: is the judge's own hit rate ON THIS LOOP, which is the one calibration reading
-    #: no global curve can give it: a conductor patrolling workers and a loop watching
-    #: one pull request have different subjects, so what counts as a wake worth
-    #: spending differs per loop and only the loop's own history measures it.
-    #:
-    #: Bounded to :data:`~kiro_crew.autonudge_judge.MAX_STORED_VERDICTS`, which is
-    #: sized from the QUIET-STREAK FLOOR rather than from the window the judge reads:
-    #: the retroactive pass needs the delivery that closes a full streak still in the
-    #: store when it labels the suppressions that opened it.
+    #: The last few verdicts with the label their delivery earned, oldest first: the
+    #: judge's hit rate ON THIS LOOP, since a worthwhile wake differs per subject.
+    #: Bounded to :data:`~kiro_crew.autonudge_judge.MAX_STORED_VERDICTS`, sized from the
+    #: QUIET-STREAK FLOOR so the delivery closing a full streak is still stored when
+    #: the retroactive pass labels the suppressions that opened it.
     judge_recent_verdicts: list = field(default_factory=list)
     # WHY the loop was last deactivated: "" (active / never stopped),
     # "manual" (user pause / any caller that didn't say otherwise),
@@ -551,26 +465,16 @@ class NudgeLoop:
     # "runtime_budget", or "approval_stalled" (set by _timer's terminal
     # bounds), "stop_sentinel" (the stop file existed when _timer woke) or
     # "monitor_terminal" (the watched subject merged or closed). "approval_stalled"
-    # is from before approval stalls became a hold; it is still read on old rows.
-    # Persisted so revival logic can distinguish a manual pause from a bound
-    # expiry — the elapsed runtime keeps growing after a manual pause, so
-    # WITHOUT this record a paused loop whose budget has since elapsed is
-    # indistinguishable from a budget-stopped one, and a budget raise would
-    # resume unattended execution against the user's explicit pause.
+    # is still read on old rows written before approval stalls became a hold.
+    # Persisted so revival can tell a manual pause from a bound expiry: runtime keeps
+    # growing after a pause, and a budget raise must not resume a loop the user paused.
     stopped_reason: str = ""
     # Evidence that a cycle in this loop's session asked for tool approval and
     # nobody answered within the window. Set by ``notify_approval_stalled`` and
-    # read by ``_timer`` as a HOLD on every later wake: the loop stays active but
-    # fires no cycle, so it spends neither its cycle cap nor (see
-    # ``approval_stalled_at``) its runtime budget while nobody is there to answer.
-    # It holds on proof that it could not act, never on a prediction that it
-    # might not be able to. A loop whose turns only touch auto-approved tools
-    # never reaches an interactive wait, so it can never be flagged here.
-    # Cleared by ``release_approval_hold`` once a person is back (an approval
-    # answered in the slot, a message typed into it, a manual fire), which
-    # resumes the loop with no re-arm by the user, and on every revival.
-    # Persisted, because the condition that produced it usually outlives a
-    # restart.
+    # read by ``_timer`` as a HOLD: the loop stays active but fires no cycle, spending
+    # neither its cycle cap nor its runtime budget. Set only on proof, never on
+    # prediction. Cleared by ``release_approval_hold`` once a person is back, and on
+    # every revival. Persisted, because the cause usually outlives a restart.
     approval_stalled: bool = False
     # When the current hold began (0 = not held, or a legacy row). On release the
     # held time is added to ``created_ts``, so a hold does not spend the runtime
@@ -590,39 +494,24 @@ class NudgeLoop:
     # nor the backstop, the same credit ``approval_stalled_at`` gives.
     waiting_on_person_at: float = 0.0
     # How many of this loop's cycles in a row ended without ever getting a model
-    # session (``session/new`` timed out or otherwise failed). Raised by
-    # ``notify_cycle_start_failed`` and zeroed by ``notify_cycle_landed``, both
-    # driven by evidence from the slot's own turns rather than by a prediction.
-    # Consumed by ``_timer``: past ``_START_FAILURE_BACKOFF_AFTER`` the wake is
-    # deferred, past ``_START_FAILURE_STANDDOWN_AFTER`` the loop stops with
-    # ``SESSION_START_FAILURE_REASON``. Persisted, because the host condition
-    # that produces it routinely outlives a restart, and cleared on every revival
-    # so a recovered loop is not stood down by stale evidence.
+    # session. Raised by ``notify_cycle_start_failed``, zeroed by
+    # ``notify_cycle_landed``. Past ``_START_FAILURE_BACKOFF_AFTER`` ``_timer`` defers
+    # the wake; past ``_START_FAILURE_STANDDOWN_AFTER`` the loop stops with
+    # ``SESSION_START_FAILURE_REASON``. Persisted, and cleared on every revival.
     consecutive_start_failures: int = 0
     # How many of this loop's OWN delivered cycles in a row ended in a fault --
-    # a turn that reached a model session and dispatched but died (turn outcome
-    # ``error`` or ``timeout``). Raised by ``notify_cycle_failed`` and zeroed by
-    # ``notify_cycle_landed`` (any landed turn on the slot proves progress is
-    # possible), both driven by evidence from the slot's own turns. Consumed by
-    # ``_timer``: past ``_CONSECUTIVE_FAILURE_STANDDOWN_AFTER`` the loop stops
-    # with ``CONSECUTIVE_FAILURE_REASON``. Distinct from
-    # ``consecutive_start_failures`` because the two measure different failures
-    # with different remedies -- a cycle that never got a session versus one that
-    # ran and errored -- and a loop can hit either. Persisted, because the
-    # condition that produces it (a wedged backend, a broken tool) routinely
-    # outlives a restart, and cleared on every revival so a recovered loop is not
-    # stood down by stale evidence.
+    # a turn that dispatched but died (outcome ``error`` or ``timeout``). Raised by
+    # ``notify_cycle_failed``, zeroed by ``notify_cycle_landed`` (any landed turn on
+    # the slot). Past ``_CONSECUTIVE_FAILURE_STANDDOWN_AFTER`` the loop stops with
+    # ``CONSECUTIVE_FAILURE_REASON``. Separate from ``consecutive_start_failures``
+    # because the remedies differ. Persisted, and cleared on every revival.
     consecutive_failed_cycles: int = 0
     # Absolute wall-clock deadline for the next fire (0 = unset: the next arm
-    # starts a fresh full countdown). This is what makes the countdown
-    # deadline-preserving — user turns cancel the pending timer TASK but never
-    # touch this field, so the schedule survives an active conversation.
-    # Cleared on every delivered fire (the next cycle is measured from the
-    # nudge turn's END, whose timestamp is only known at notify_turn_complete).
-    # Every assignment is persisted: add/update/fire bookkeeping write it
-    # inline, and turn-lifecycle arms schedule a supervised background write,
-    # so a restart resumes the countdown. A lost background write degrades to
-    # a fresh full countdown after restart, never a lost or premature fire.
+    # starts a fresh full countdown). User turns cancel the timer TASK but never touch
+    # this, so the schedule survives an active conversation. Cleared on every delivered
+    # fire: the next cycle counts from the nudge turn's END (notify_turn_complete).
+    # Persisted on every assignment; a lost background write degrades to a fresh full
+    # countdown after restart, never a lost or premature fire.
     next_due_ts: float = 0.0
     # Optional observation/controller state. ``gate=True`` records belong to the
     # prompt path; controller-owned records carry state with ``gate=False``.
@@ -634,27 +523,10 @@ class NudgeLoop:
     terminal_notification_outcome: str = ""
     terminal_notification_stopped_at: float = 0.0
     # Optional SHORT stand-in for ``message`` in the VISIBLE dashboard
-    # transcript row. Empty (the default) means the row is byte-identical to
-    # what it has always been, so no existing loop changes behaviour.
-    #
-    # ``message`` serves two consumers with opposite needs. The model needs the
-    # whole instruction re-delivered every cycle — that is the guarantee the
-    # nudge exists to provide. A person reading the transcript needs only "a
-    # nudge happened", yet gets the same multi-KB payload appended per cycle:
-    # measured on one long-running loop, 44 nudge rows of ~7.9KB were 51.8% of
-    # the entire 671,900-char session file.
-    #
-    # The PROMPT is never affected by this field (see
-    # ``GatewayOrchestrator._fire_dashboard_nudge``): shortening the model's
-    # copy would delete real instruction, which is the opposite of the point.
-    # Scoped to the dashboard transcript row — channel-bound loops
-    # (``slack:``/``discord:``/``webex:``) deliver the nudge as the turn's own
-    # input and have no separate display surface to shorten.
-    #
-    # Appended LAST rather than placed beside ``message`` so a persisted store
-    # written by this version still loads on a build that predates the field:
-    # ``_load`` filters unknown keys, so a downgrade degrades to the verbose
-    # display instead of raising.
+    # transcript row (empty = show ``message``). A person needs only "a nudge
+    # happened", but a multi-KB message repeated every cycle bloats the session file.
+    # The PROMPT always gets the full ``message`` (``GatewayOrchestrator._fire_dashboard_nudge``).
+    # Channel-bound loops have no separate display row, so this does not apply to them.
     banner: str = ""
     # WHO armed this loop, reduced to the one distinction the authorizer needs:
     # True when the arming request came from a turn OF THE BOUND SESSION ITSELF
@@ -662,31 +534,18 @@ class NudgeLoop:
     # the turn loop to the exact session that produced it), False for every
     # external arm (REST, workflow ``ctx.nudge``, an app handler).
     #
-    # Exists because crew- and member-mode slots refuse automation turns armed
-    # from OUTSIDE the session -- nothing may inject work into a member's own
-    # thread -- yet a member is by definition a self-directed resident agent,
-    # and refusing its own ``monitor_start`` left the conductor member thread
-    # never waking again (the very loop it exists to run). The authorizer
-    # admits the self-arm and records it here so the FIRE-time re-check in
-    # ``GatewayOrchestrator._fire_dashboard_nudge`` can tell "this slot was a
-    # member when its own turn armed the loop" from "this slot switched into
-    # crew mode after an outsider armed it", which is the case that guard
-    # exists to stop. Persisted for the same reason ``gate`` is: a restart
-    # re-arms every loop, and a self-armed member loop that lost this bit
-    # would be refused at its first post-restart wake. Absent in a store
-    # written before the field existed decodes to False -- every such loop
-    # was armed under the old rule, which admitted no self-arm.
+    # Crew- and member-mode slots refuse automation armed from OUTSIDE the session,
+    # but must admit their own ``monitor_start``. The FIRE-time re-check in
+    # ``GatewayOrchestrator._fire_dashboard_nudge`` reads this to tell a self-armed
+    # member loop from a slot that switched into crew mode after an outsider armed it.
+    # Persisted so a restart does not refuse a self-armed loop; absent decodes to False.
     self_armed: bool = False
     # Monotonic per-loop CONFIG generation. Advanced by ``_update_unserialized``
     # ONLY on a real configuration change (a changed ``message``) or a revival
-    # (inactive -> active), never by internal timer/cycle bookkeeping. Captured
-    # at fire time and compared atomically (under the service ``_lock``) before a
-    # structural-terminal stop is applied, so a stale completion of an OLD
-    # instruction cannot deactivate a loop whose instruction was re-committed
-    # since (the A->B->A race that value-identity on ``message`` alone cannot
-    # tell apart). Reuses the module's generation/fence pattern rather than a new
-    # concurrency framework. Absent in a store written before this field ->
-    # decodes to 0, and a first fire simply captures 0.
+    # (inactive -> active), never by timer/cycle bookkeeping. Captured at fire time
+    # and compared under ``_lock`` before a structural-terminal stop, so a stale
+    # completion of an OLD instruction cannot stop a loop re-committed since (the
+    # A->B->A case ``message`` equality cannot tell apart). Absent decodes to 0.
     config_generation: int = 0
     # The gateway's default conductor patrol (``conductor_patrol.ensure_patrol``,
     # armed when a conductor binds a worker and holds no active loop). The one thing it
@@ -999,15 +858,10 @@ def nudge_cycle_header(loop: "NudgeLoop", now: float | None = None) -> str:
         [patrol budget: cycle 229/240, 7560s/86400s runtime left; 10% or less left]
 
     ``10% or less left`` appears once either budget is at or under
-    ``NUDGE_RENEW_DUE_SHARE`` of its cap. It is a fact, not an instruction:
-    every capped loop gets it, and only an agent whose own instructions say so
-    acts on it (goal-conductor renews on those cycles).
-
-    The first line is unchanged, so every reader of the tag still matches. An
-    uncapped loop gets the first line alone, byte-identical to before.
-    ``N`` is the cycle being delivered (``cycle_count + 1``); the runtime figure
-    is floored at 0 and omitted when there is no ``created_ts`` to measure from,
-    the same rule ``runtime_budget_exceeded`` applies.
+    ``NUDGE_RENEW_DUE_SHARE`` of its cap; it is a fact, not an instruction.
+    An uncapped loop gets the first line alone. ``N`` is ``cycle_count + 1``; the
+    runtime figure is floored at 0 and omitted without a ``created_ts``, as in
+    ``runtime_budget_exceeded``.
     """
     cycle = loop.cycle_count + 1
     tag = f"[auto-nudge cycle {cycle}]"

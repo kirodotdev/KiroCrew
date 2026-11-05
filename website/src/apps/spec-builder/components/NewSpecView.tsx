@@ -12,6 +12,7 @@ import Clickable from '../../../components/Clickable'
 import ProjectPicker from './ProjectPicker'
 
 import { i18nT } from '../../../i18n/t'
+import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
 const SPEC_TYPES = [
   {
     id: 'feature', Icon: Sparkles,
@@ -153,14 +154,15 @@ export default function NewSpecView({ onCancel, onCreated, setErr, onSettings }:
         )}
 
         <div className="text-[14px] font-semibold mb-2.5" id="sb-kind-label">{i18nT('apps.specBuilder.components.newSpecView.what_kind_of_work_is_it')}</div>
-        <div className="flex gap-3 mb-6 flex-wrap" role="group" aria-labelledby="sb-kind-label">
+        <RadioChipGroup className="flex gap-3 mb-6 flex-wrap" ariaLabelledBy="sb-kind-label">
           {SPEC_TYPES.map(({ id, Icon, titleKey, blurbKey }) => (
-            <Clickable
+            <button
+              type="button"
               key={id}
               onClick={() => setType(id)}
-              aria-pressed={type === id}
+              {...radioChip(type === id)}
               aria-label={i18nT(titleKey) + ' — ' + i18nT(blurbKey)}
-              className="px-4 py-3.5 rounded-lg cursor-pointer focus-ring"
+              className="px-4 py-3.5 rounded-lg cursor-pointer focus-ring text-left"
               style={{ flex: '1 1 180px', border: '1px solid ' + (type === id ? ACCENT : 'var(--border)'), background: type === id ? SEL_BG : 'var(--card)' }}
             >
               <div className="text-[14px] font-semibold mb-1 text-text flex items-center gap-[7px]">
@@ -168,9 +170,9 @@ export default function NewSpecView({ onCancel, onCreated, setErr, onSettings }:
                 {i18nT(titleKey)}
               </div>
               <div className="text-[12px] leading-relaxed text-muted">{i18nT(blurbKey)}</div>
-            </Clickable>
+            </button>
           ))}
-        </div>
+        </RadioChipGroup>
 
         <div className="flex gap-3 items-center">
           <Btn label={busy ? i18nT('apps.specBuilder.components.newSpecView.starting') : i18nT('apps.specBuilder.components.newSpecView.start_the_conversation')} primary big disabled={busy || !ready} onClick={create} />

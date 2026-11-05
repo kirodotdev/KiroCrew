@@ -197,7 +197,7 @@ describe('SttSettings provider-aware install surface', () => {
     fireEvent.click(screen.getByTestId('stt-restart-gateway'))
     await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(screen.getByTestId('stt-restart-gateway')).toBeDisabled())
-    finish()
+    await act(async () => { finish() })
   })
 
   it('offers the restart for the local provider too, which also needs the extra', async () => {

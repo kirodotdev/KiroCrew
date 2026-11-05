@@ -108,7 +108,7 @@ def _run_entrypoint(
         ["/bin/sh", str(ENTRYPOINT), "doctor", *args],
         env=env,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         timeout=60,
         check=False,
     )

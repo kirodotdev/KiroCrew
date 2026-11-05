@@ -78,6 +78,7 @@ class Llama:
         vocab_only: bool = False,
         use_mmap: bool = True,
         use_mlock: bool = False,
+        use_extra_bufts: Optional[bool] = None,
         kv_overrides: Optional[Dict[str, Union[bool, int, float, str]]] = None,
         # Context Params
         seed: int = llama_cpp.LLAMA_DEFAULT_SEED,
@@ -164,6 +165,7 @@ class Llama:
             vocab_only: Only load the vocabulary no weights.
             use_mmap: Use mmap if possible.
             use_mlock: Force the system to keep the model in RAM.
+            use_extra_bufts: Use llama.cpp's extra buffer types (CPU weight repacking). None keeps llama.cpp's default.
             kv_overrides: Key-value overrides for the model.
             seed: RNG seed, -1 for random
             n_ctx: Text context, 0 = from model
@@ -255,6 +257,13 @@ class Llama:
         self.model_params.vocab_only = vocab_only
         self.model_params.use_mmap = use_mmap if lora_path is None else False
         self.model_params.use_mlock = use_mlock
+        # kiro_crew DIVERGENCE FROM UPSTREAM llama-cpp-python: expose the model
+        # param that turns off CPU weight repacking (`use_extra_bufts`). Repacking
+        # keeps a second, anonymous copy of the weights beside the mmap'd file
+        # (446 MiB for kiro_crew's embedding model). None, the default, leaves
+        # llama.cpp's own default in place, so an unset call is upstream's.
+        if use_extra_bufts is not None:
+            self.model_params.use_extra_bufts = use_extra_bufts
 
         # kv_overrides is the original python dict
         self.kv_overrides = kv_overrides
@@ -2235,6 +2244,9 @@ class Llama:
             vocab_only=self.model_params.vocab_only,
             use_mmap=self.model_params.use_mmap,
             use_mlock=self.model_params.use_mlock,
+            # kiro_crew DIVERGENCE FROM UPSTREAM llama-cpp-python: round-trip the
+            # repack opt-out, so a restored Llama keeps the operator's choice.
+            use_extra_bufts=self.model_params.use_extra_bufts,
             kv_overrides=self.kv_overrides,
             # Context Params
             seed=self._seed,

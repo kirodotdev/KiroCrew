@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from aiohttp import web
+from crew_log_drain import assert_drained
 from guide_route_helpers import CREWMATE, FakeState, agent, run_guide_app
 
 from kiro_crew import guide_catalog, mcp_guide
@@ -937,9 +938,9 @@ def test_shim_module_holds_no_per_caller_state():
 
 
 def test_shim_schema_rejects_an_injected_guide_id():
-    from kiro_crew.validation import MCP_GUIDE_SCHEMAS, validate_tool_args
+    from kiro_crew.validation import MCP_GUIDE_SCHEMAS, ValidationError, validate_tool_args
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         validate_tool_args({"guide_id": "../x"}, MCP_GUIDE_SCHEMAS["guide_cancel"])
 
 
@@ -1032,7 +1033,7 @@ def guide_log(tmp_path, monkeypatch):
     CrewLog.create(KIND_SESSION, GUIDE_SID, owner="owner", agent="kirocrew", slot="chat-1")
 
     def entries(prefix: str) -> list:
-        assert crew_log_emit.flush()
+        assert_drained()
         handle = CrewLog.open(KIND_SESSION, GUIDE_SID)
         try:
             return [e for e in handle.iter_from(1) if e.type.startswith(prefix)]

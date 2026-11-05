@@ -471,6 +471,9 @@ Resources:
       #   --allowerasing lets NodeSource's nodejs replace an AppStream node 18.
       # "kiro-cli": AL2023 ships glibc 2.34; the standard kiro-cli build needs
       #   glibc 2.39+, so the musl build is REQUIRED (validated on AL2023).
+      #   It is the packaging/kiro-cli-version release, SHA-256-checked before
+      #   it is unzipped, from a host outside every *.amazonaws.com service
+      #   namespace, so no VPC endpoint zone can shadow it (see cloud.md).
       #   The install step tolerates a nonzero exit (two installer invocations
       #   + `|| true`), so the script VERIFIES the binary actually landed --
       #   otherwise the gateway would serve HTTP but every chat would error
@@ -664,11 +667,15 @@ Resources:
           echo "npm:  $(command -v npm) $(npm --version 2>/dev/null || echo missing)"
 
           echo "--- installing kiro-cli ---"
-          # AL2023 glibc 2.34 is too old for the standard build: musl required.
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then KIRO_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux-musl.zip"; else KIRO_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-x86_64-linux-musl.zip"; fi
+          if [ "$(uname -m)" = aarch64 ]; then
+            KIRO_ARCH=aarch64 KIRO_SHA=937ff1ae3df373717b66cc09aec79c3b7f0b8e53968d746e3a4545722e1e4587
+          else
+            KIRO_ARCH=x86_64 KIRO_SHA=7c7a9f5e3284c82cc6f0fb1a301597368538adb83d916927e664c957a9f953ef
+          fi
+          KIRO_URL="https://prod.download.cli.kiro.dev/stable/2.27.1/kirocli-$KIRO_ARCH-linux-musl.zip"
           sudo -u $RUN_USER bash -lc "cd \$HOME; curl --proto '=https' --tlsv1.2 -sSf '$KIRO_URL' -o kirocli.zip" \
             || fail "could not DOWNLOAD kiro-cli from $KIRO_URL (host unresolvable/unreachable here)"
+          echo "$KIRO_SHA  $RUN_HOME/kirocli.zip" | sha256sum -c - || fail "kiro-cli zip checksum mismatch"
           sudo -u $RUN_USER bash -lc "
             set -e
             cd \$HOME

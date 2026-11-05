@@ -37,7 +37,6 @@ _DASHBOARD_TOOL_CALLS = {
     "chat_folder_update": {"folder": "Travel", "name": "Trips"},
     "chat_folder_move_session": {"session": "chat-3", "folder": "Travel"},
     "chat_folder_delete": {"folder": "Travel"},
-    "chat_folder_file_self": {"folder": "Travel"},
     "chat_tag_list": {},
     "chat_tag_create": {"name": "urgent"},
     "chat_tag_update": {"tag": "todo", "name": "later"},
@@ -78,16 +77,9 @@ _DASHBOARD_TOOL_CALLS = {
 def test_every_session_control_refusal_is_audited_as_failed(monkeypatch, refusal):
     """A refused tool call must not be recorded as a completed one.
 
-    `call_tool_with_logging` classifies by prefix -- `outcome="failed"` only when
-    the result starts with "Error:". A refusal without it lands in the audit as a
-    successful invocation, which inverts the record for exactly the calls a
-    reviewer would go looking for. Swept over every `kirocrew-dashboard` tool, the
-    session-control verbs included, for both ways one is refused: every route
-    answers a refusal, or the caller cannot be verified. The tool list is checked
-    against the server's rows, so a new tool must be added here to pass.
-
-    Mutation guard: a refusal reply opening with a cross mark instead of "Error:"
-    is recorded `completed` and fails here.
+    `call_tool_with_logging` records `outcome="failed"` only for a result starting
+    "Error:". Swept over every `kirocrew-dashboard` tool for both refusal routes; the
+    list is checked against the server's rows, so a new tool must be added here.
     """
     from kiro_crew import mcp_shared
     from kiro_crew.mcp_dashboard import SESSION_CONTROL_TOOLS, TABLE
@@ -137,15 +129,8 @@ def test_no_dashboard_refusal_opens_with_a_cross_mark():
 def test_the_audit_write_does_not_run_on_the_event_loop(tmp_path, monkeypatch):
     """Constructing the SEL must not happen on the loop.
 
-    `log_tool_invocation` only enqueues, but the FIRST `sel()` of a process
-    constructs the log -- trust-dir creation, key validation, and on Windows a
-    DACL write that can block on a network volume round-trip. This can genuinely
-    be that first call, because
-    `sel_audit_middleware` logs AFTER `await handler(...)`: on a fresh gateway the
-    first authenticated request constructs the log inside whatever handler runs
-    first.
-
-    Mutation guard: calling `sel()` inline runs it on the calling thread.
+    The first `sel()` of a process constructs the log, which on Windows can block on a
+    DACL write. `sel_audit_middleware` logs after the handler, so this can be that call.
     """
     import threading
 
@@ -179,8 +164,6 @@ def test_the_denial_audit_does_not_run_on_the_event_loop(tmp_path, monkeypatch):
     A fresh gateway refuses before it ever allows -- a disabled feature, an
     unidentified caller -- so the denial audit is the more probable site of the
     first-ever `sel()` construction, not the rarer one.
-
-    Mutation guard: calling `sel()` inline in `deny` runs it on the loop thread.
     """
     import threading
 
@@ -215,17 +198,9 @@ def test_the_denial_audit_does_not_run_on_the_event_loop(tmp_path, monkeypatch):
 def test_the_denial_audit_does_not_persist_caller_supplied_credentials(tmp_path, monkeypatch):
     """A credential passed as `target` must not survive into the audit sink.
 
-    `target` is raw MCP input. The audit is durable AND served back: the SEL
-    writer does not redact on-disk records (`sel.py` says so outright) and
-    `/api/sel/events` returns `recent()` rows verbatim to the dashboard, so an
-    unredacted write is readable long after the refusal.
-
-    Both fields are asserted because both carry caller text: `resources`
-    interpolates `target` directly, and the `target_not_found` refusal
-    interpolates it into `reason`, which becomes `error`. A fix that redacted
-    only one of them would leave the other serving the secret.
-
-    Mutation guard: dropping either `redact` call in `deny` fails this.
+    The SEL writer does not redact on-disk records and `/api/sel/events` serves them
+    verbatim. Both `resources` and `error` (via the `target_not_found` reason) carry
+    `target`, so both are asserted.
     """
 
     # Assembled rather than written literally: a real-looking token in source

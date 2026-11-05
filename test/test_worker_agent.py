@@ -41,6 +41,7 @@ from kiro_crew.agent_files import (
     SECURITY_CONDUCTOR_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
 )
+from kiro_crew.agent_materialization.worker_agent import worker_prompt
 from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
 
 _INHERITED_PERMISSIONS = {"rules": [{"capability": "web_fetch", "effect": "deny"}]}
@@ -744,7 +745,7 @@ def test_a_refresh_restores_the_worker_prompt_and_description(
         json.dumps(_stale_worker_spec()), encoding="utf-8"
     )
     healed = worker_from_installed_default()
-    assert healed["prompt"] == agent._WORKER_SYSTEM_PROMPT
+    assert healed["prompt"] == worker_prompt()
     assert "reports status against that item" in healed["description"]
     assert healed["name"] == "kirocrew-worker"
 
@@ -1678,3 +1679,16 @@ def test_a_withheld_pattern_says_which_verbs_it_reached(tmp_path, monkeypatch):
     assert hits, f"no record names the withheld pattern: {records}"
     assert "reaches" in str(hits[0]["resources"])
     assert "cron_add" in str(hits[0]["resources"])
+
+
+def test_both_workers_carry_the_same_coding_rules() -> None:
+    """kirocrew-worker and a crewmate's worker read one text, so they cannot drift."""
+    from kiro_crew import crewmate_prompts
+    from kiro_crew.mate_worker import MATE_WORKER_PROMPT
+
+    rules = crewmate_prompts.text("worker.coding_rules")
+    assert "smallest complete change" in rules
+    assert "`shortcut: <the limit>, <when to upgrade>`" in rules
+    assert worker_prompt().startswith(agent._WORKER_SYSTEM_PROMPT.rstrip())
+    assert worker_prompt().rstrip().endswith(rules)
+    assert MATE_WORKER_PROMPT.endswith(rules)

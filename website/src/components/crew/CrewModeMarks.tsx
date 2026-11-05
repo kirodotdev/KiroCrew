@@ -2,9 +2,11 @@
  *  gradient "CREW MODE" eyebrow, a worker's state dot and a stack of tiny worker
  *  ghosts coloured by state. Colours are theme tokens (`styles/crew-mode.css`,
  *  `lib/crewWorkers.ts`), so light and dark themes follow without a branch here. */
-import type { ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { KiroGhostMark } from '../KiroGhostMark'
+import { Zap } from 'lucide-react'
+import { useReducedMotion as useLiveReducedMotion } from '../../hooks/useReducedMotion'
 import { i18nT } from '../../i18n/t'
 import { CREW_GROUP_LABEL_KEY, CREW_GROUP_TONE, type CrewWorkerGroup } from '../../lib/crewWorkers'
 
@@ -19,12 +21,33 @@ export function CrewGhostBadge({ size = 28 }: { size?: number }) {
 
 /** "CREW MODE" in the crew gradient, the root row's first line. Tracked a whole
  *  pixel: an em fraction at this size lands letters on fractional pixels, which
- *  renders one gap wider than the rest. */
-export function CrewEyebrow() {
+ *  renders one gap wider than the rest.
+ *  `active` (the crew is working) slides the gradient one tile per
+ *  `ULTRA_FLOW_SECONDS`; it stops the moment the work ends, and never moves
+ *  under reduced motion, so the flow is a live-state signal rather than an
+ *  always-on loop. The pace is quick enough to tell a working row from an idle
+ *  one at a glance (at 5s the drift read as still). */
+export const ULTRA_FLOW_SECONDS = 2
+
+export function CrewEyebrow({ active = false }: { active?: boolean } = {}) {
+  const reduceMotion = useLiveReducedMotion()
+  // The row list mounts under `AnimatePresence initial={false}`, which lands a
+  // mount-time `animate` on its last keyframe without playing it. Starting the
+  // flow one commit after mount makes it a change, which does play.
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+  const flowing = active && !reduceMotion && mounted
   return (
-    <span data-testid="crew-eyebrow" className="crew-eyebrow-text font-bold uppercase tracking-[1px] truncate">
+    <motion.span
+      data-testid="crew-eyebrow"
+      data-flowing={flowing ? 'true' : 'false'}
+      className="crew-eyebrow-text font-bold uppercase tracking-[1px] truncate"
+      initial={{ backgroundPositionX: '0%' }}
+      animate={{ backgroundPositionX: flowing ? ['0%', '-200%'] : '0%' }}
+      transition={flowing ? { duration: ULTRA_FLOW_SECONDS, ease: 'linear', repeat: Infinity } : { duration: 0 }}
+    >
       {i18nT('components.crewMode.eyebrow')}
-    </span>
+    </motion.span>
   )
 }
 
@@ -57,20 +80,9 @@ export function CrewWorkerStack({ groups, max = 6 }: { groups: CrewWorkerGroup[]
   )
 }
 
-/** The layout id the pressed Crew Mode chip and the composer mark share, so the
- *  chip is seen to move into the mark. */
-export const CREW_MODE_MARK_LAYOUT_ID = 'crew-mode-mark'
-
-/** The pressed chip's half of the move: wraps the chip with the shared layout id.
- *  Under reduced motion it carries none, and the mark only fades in. */
-export function CrewModeMarkSource({ children }: { children: ReactNode }) {
-  const reduceMotion = useReducedMotion()
-  return <motion.span layoutId={reduceMotion ? undefined : CREW_MODE_MARK_LAYOUT_ID} className="inline-flex">{children}</motion.span>
-}
-
-/** The composer's Crew Mode mark on a conductor chat. Gradient text and the ghost
- *  keep it easy to see. With `onTurnOff` (no message sent yet) it is a pressed
- *  toggle: pressing it turns Crew Mode off and it moves back into the chip.
+/** The composer's Crew Mode mark on a conductor chat: the lightning bolt and the
+ *  name. With `onTurnOff` (no message sent yet) it is a pressed toggle: pressing
+ *  it turns Crew Mode off. It renders in place, with no layout move.
  *  Without it, a read-only status: no pill, no hover or pressed state, not focusable. */
 export function CrewModeComposerChip({ onTurnOff }: { onTurnOff?: () => void } = {}) {
   const reduceMotion = useReducedMotion()
@@ -83,13 +95,12 @@ export function CrewModeComposerChip({ onTurnOff }: { onTurnOff?: () => void } =
         aria-pressed={true}
         title={i18nT('components.crewMode.chip_hint_on')}
         onClick={onTurnOff}
-        layoutId={reduceMotion ? undefined : CREW_MODE_MARK_LAYOUT_ID}
         initial={reduceMotion ? { opacity: 0 } : false}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.2 }}
         className="inline-flex items-center gap-1.5 h-7 px-1.5 -mx-1.5 rounded-md text-[12px] font-semibold shrink-0 cursor-pointer hover:bg-bg-hover"
       >
-        <KiroGhostMark size={13} className="inline-block shrink-0 ultra-accent" />
+        <Zap size={13} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />
         <span className="crew-grad-text">{i18nT('components.crewMode.chip_off')}</span>
       </motion.button>
     )
@@ -99,13 +110,12 @@ export function CrewModeComposerChip({ onTurnOff }: { onTurnOff?: () => void } =
       data-testid="crew-mode-composer-chip"
       role="img"
       aria-label={i18nT('components.crewMode.composer_chip_label')}
-      layoutId={reduceMotion ? undefined : CREW_MODE_MARK_LAYOUT_ID}
       initial={reduceMotion ? { opacity: 0 } : false}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.2 }}
       className="inline-flex items-center gap-1.5 h-7 text-[12px] font-semibold shrink-0 cursor-default select-none"
     >
-      <KiroGhostMark size={13} className="inline-block shrink-0 ultra-accent" />
+      <Zap size={13} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />
       <span className="crew-grad-text">{i18nT('components.crewMode.chip_off')}</span>
     </motion.span>
   )

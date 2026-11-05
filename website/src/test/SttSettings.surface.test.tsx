@@ -13,14 +13,16 @@
  * diff review waves through.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 
 import { store } from '../store'
 import { initI18n } from '../i18n'
 import { MemoryRouter } from 'react-router-dom'
-import { SettingsSection, SettingsToggle, setSettingsDeepLinkTarget } from '../components/settings'
+import {
+  SettingsSection, SettingsToggle, setSettingsDeepLinkTarget as publishDeepLink, useSettingsDeepLinkTarget,
+} from '../components/settings'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
 import SttSettings from '../pages/settings/SttSettings'
 import { api } from '../api/client'
@@ -38,6 +40,14 @@ const mockApi = api as unknown as {
   sttConfig: ReturnType<typeof vi.fn>
   saveSttConfig: ReturnType<typeof vi.fn>
   sttStatus: ReturnType<typeof vi.fn>
+}
+
+/** Publishes the deep-link signal the way the probe does, but in act(): every mounted group re-renders on it. */
+const setSettingsDeepLinkTarget = (sel: string | null) => { act(() => { publishDeepLink(sel) }) }
+
+/** The selector the probe is still looking for, empty once it has withdrawn it: lets a test wait for the probe to finish. */
+function PendingLink() {
+  return <span data-testid="pending-link">{useSettingsDeepLinkTarget() ?? ''}</span>
 }
 
 function mountPanel(over: Record<string, unknown> = {}) {
@@ -112,13 +122,18 @@ async function mountPanelAt(entry: string, over: Record<string, unknown> = {}) {
     useSettingHighlight()
     return <SttSettings />
   }
-  return render(
+  const tree = (
     <Provider store={store}>
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={[entry]}><Probe /></MemoryRouter>
+        <MemoryRouter initialEntries={[entry]}><Probe /><PendingLink /></MemoryRouter>
       </QueryClientProvider>
-    </Provider>,
+    </Provider>
   )
+  // A group that opened to be searched and does not hold the target closes again in a microtask queued from this render,
+  // which runs when the caller first awaits. Render in act() so that update lands inside it.
+  let mounted!: ReturnType<typeof render>
+  await act(async () => { mounted = render(tree) })
+  return mounted
 }
 
 describe('SettingsSection disclosure', () => {
@@ -189,14 +204,15 @@ describe('SettingsSection disclosure', () => {
       <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
         <Probe>
           <SettingsSection title="Owner" collapsible><TargetRow /></SettingsSection>
+          <PendingLink />
         </Probe>
       </MemoryRouter>,
     )
     await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
 
-    // Past the probe's 100 ms tick. The first tree stays MOUNTED on purpose, so its
+    // Past the probe's 100 ms tick: wait for it to withdraw the signal. The first tree stays MOUNTED on purpose, so its
     // unmount cleanup cannot be what clears the signal: only the withdrawal can.
-    await new Promise(r => setTimeout(r, 250))
+    await waitFor(() => expect(screen.getByTestId('pending-link')).toBeEmptyDOMElement())
     render(<SettingsSection title="Later" collapsible><p>later</p></SettingsSection>)
 
     expect(screen.queryByText('later')).toBeNull()
@@ -407,6 +423,8 @@ describe('a settings deep link reveals the group that OWNS its target', () => {
     })
   })
   afterEach(() => cleanup())
+  // After-hooks run last-defined first: let the probe strip its parameter and withdraw the signal before cleanup.
+  afterEach(() => waitFor(() => expect(screen.getByTestId('pending-link')).toBeEmptyDOMElement()))
 
   it('opens Fine-tuning for Streaming and leaves Push-to-talk closed', async () => {
     // The real Voice tab, reached the way the command palette reaches it. `Streaming`

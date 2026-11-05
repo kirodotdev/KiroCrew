@@ -6,6 +6,19 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.sel import sel
+
+
+def _intercept_audit() -> list[tuple[str, str, str]]:
+    """(outcome, user, slot or reason) of each linked-thread row in the real SEL, oldest first."""
+    rows = [e for e in sel().recent() if e["operation"] == "linked_thread_intercept"]
+    out = []
+    for e in reversed(rows):
+        meta = e["metadata"]
+        out.append((e["outcome"], meta["user_id"], meta.get("slot") or meta.get("reason", "")))
+    return out
+
 
 def _make_slack():
     """Create a fully async-mocked Slack client."""
@@ -195,7 +208,7 @@ class TestLinkedThreadIntercept:
             handler.sel = orig_sel
 
     @pytest.mark.asyncio
-    async def test_authorized_routes_to_slot_not_running(self):
+    async def test_authorized_routes_to_slot_not_running(self, sel_private_root):
         from kiro_crew.slack import handler
 
         slack = _make_slack()
@@ -227,6 +240,7 @@ class TestLinkedThreadIntercept:
             mock_run_chat.assert_called_once()
             ds.broadcast_ws.assert_called_once()
             ds.push_slots_update.assert_called_once()
+        assert _intercept_audit() == [("allowed", "U1", "slot1")]
 
     @pytest.mark.asyncio
     async def test_redact_for_ui_original_for_llm(self):
@@ -234,10 +248,7 @@ class TestLinkedThreadIntercept:
         from kiro_crew.slack import handler
 
         slack = _make_slack()
-        slot = MagicMock()
-        type(slot).running = PropertyMock(return_value=False)
-        slot.key = "slot1"
-        slot._queue = []
+        slot = _ChatSlot("slot1")
         ds = MagicMock()
         ds.get_linked_slot = MagicMock(return_value=slot)
         ds._background_tasks = set()
@@ -248,6 +259,7 @@ class TestLinkedThreadIntercept:
             patch.object(handler, "_dashboard_state", ds),
             patch.object(handler, "is_allowed_user", return_value=True),
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
+            patch.object(_ChatSlot, "append", autospec=True, side_effect=_ChatSlot.append) as spy,
             patch.object(
                 handler, "redact_exfiltration_urls", return_value=("[REDACTED-URL]", True)
             ),
@@ -266,11 +278,12 @@ class TestLinkedThreadIntercept:
             # broadcast_user=True so the channel-typed row (never rendered
             # optimistically here) still reaches open dashboard windows through
             # append's own mid-carrying delivery.
-            slot.append.assert_called_once_with(
-                "user", "[REDACTED]", "msg msg-u", broadcast_user=True, meta=None
+            spy.assert_called_once_with(
+                slot, "user", "[REDACTED]", "msg msg-u", broadcast_user=True, meta=None
             )
             # LLM gets original text
             assert mock_run_chat.call_args[0][2] == "hello http://evil.com"
+        assert [(m["role"], m["content"]) for m in slot.messages] == [("user", "[REDACTED]")]
 
     @pytest.mark.asyncio
     async def test_authorized_queues_when_running(self):
@@ -375,7 +388,7 @@ class TestTransportLinkedThreadIntercept:
     breaks under default-ON."""
 
     @pytest.mark.asyncio
-    async def test_transport_authorized_routes_to_slot(self):
+    async def test_transport_authorized_routes_to_slot(self, sel_private_root):
         from kiro_crew.slack import handler, transport_dispatch
 
         slack = _make_slack()
@@ -391,6 +404,8 @@ class TestTransportLinkedThreadIntercept:
         # Booby-trap: the transport must NOT acquire a session for a linked thread.
         sessions = MagicMock()
         sessions.get_or_create = AsyncMock(side_effect=AssertionError("session acquired"))
+        # The thread belongs to another Slack session, so the turn is rerouted to it.
+        sessions.get_session_for_thread = MagicMock(return_value="slack:9.0")
 
         with (
             patch.object(handler, "_dashboard_state", ds),
@@ -410,9 +425,16 @@ class TestTransportLinkedThreadIntercept:
             mock_run_chat.assert_called_once()
             ds.push_slots_update.assert_called_once()
             sessions.get_or_create.assert_not_called()
+        assert _intercept_audit() == [("allowed", "U1", "slot1")]
+        callers = [
+            e["caller_identity"]
+            for e in sel().recent()
+            if e["operation"] == "linked_thread_intercept"
+        ]
+        assert callers == ["slack:9.0"]
 
     @pytest.mark.asyncio
-    async def test_transport_unauthorized_denied(self):
+    async def test_transport_unauthorized_denied(self, sel_private_root):
         from kiro_crew.slack import handler, transport_dispatch
 
         slack = _make_slack()
@@ -420,11 +442,13 @@ class TestTransportLinkedThreadIntercept:
         type(_slot).running = PropertyMock(return_value=False)
         ds = MagicMock()
         ds.get_linked_slot = MagicMock(return_value=_slot)
-        mock_sel_inst = MagicMock()
+        mock_sel_inst = MagicMock(wraps=sel())
         orig_sel = handler.sel
         handler.sel = lambda: mock_sel_inst
         sessions = MagicMock()
         sessions.get_or_create = AsyncMock(side_effect=AssertionError("session acquired"))
+        # The thread belongs to another Slack session, so the turn is rerouted to it.
+        sessions.get_session_for_thread = MagicMock(return_value="slack:9.0")
         try:
             with (
                 patch.object(handler, "_dashboard_state", ds),
@@ -448,6 +472,7 @@ class TestTransportLinkedThreadIntercept:
                 sessions.get_or_create.assert_not_called()
         finally:
             handler.sel = orig_sel
+        assert _intercept_audit() == [("denied", "UBAD", "not_allowed_user")]
 
 
 # ── Bare `sessions` keyword fall-through in a linked thread ──

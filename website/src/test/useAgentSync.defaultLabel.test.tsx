@@ -110,6 +110,10 @@ describe('useAgentSync legacy empty-agent slot label (#6495)', () => {
     const { api } = await import('../api/client')
     // Never resolves: the pre-load frame is the state under test.
     vi.mocked(api).defaultAgent.mockReturnValue(new Promise(() => {}))
+    // The cron and spawn polls resolve on their own; left pending, they cannot update the
+    // label after the synchronous assertion below. A pending first call also stops the poll loop.
+    vi.mocked(api).crons.mockReturnValueOnce(new Promise(() => {}))
+    vi.mocked(api).spawnList.mockReturnValueOnce(new Promise(() => {}))
 
     const store = storeWithSlots([mkSlot()])
     const { result } = renderHookWithProviders(() => useAgentSync(), { store })

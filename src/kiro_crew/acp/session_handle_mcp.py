@@ -9,8 +9,8 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_config_options``, ``_mcp_launches``,
 ``_mcp_reattempt_counts``, ``_mcp_reattempt_waiting``, ``_mcp_sign_in_completed``,
-``_mcp_sign_in_dropped``, ``_mcp_sign_in_last_offered``, ``_mcp_sign_in_needed``,
-``_oauth_emitted_servers``, ``_pending_oauth_requests``.
+``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``, ``_mcp_sign_in_dropped``, ``_mcp_sign_in_needed``,
+``_mcp_sign_in_wanted``, ``_oauth_emitted_servers``, ``_pending_oauth_requests``.
 
 Instance fields read: ``_mcp_report``, ``_queue``, ``_runtime``, ``_session_id``,
 ``_watchdog``.
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -35,11 +36,13 @@ from kiro_crew.acp.mcp_session_report import (
     McpSessionReport,
     sanitize_sink_text,
 )
+from kiro_crew.acp.oauth_offline import with_google_offline_access
 from kiro_crew.acp.session_handle_runtime_contract import (
     AcpRequestTimeout,
     AcpRuntimeDead,
     AcpRuntimeError,
 )
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
@@ -194,6 +197,18 @@ def _remote_flat_launches(self: AcpSessionHandle) -> dict[str, tuple[tuple[str, 
     return self._mcp_launches
 
 
+def _mcp_attribution_launches(
+    self: AcpSessionHandle,
+) -> dict[str, tuple[tuple[str, ...], ...]]:
+    """The launch roster the oracle reads to sample only the in-flight tool's
+    own MCP server, with no ``remote_flat`` gate.
+
+    Read per call, like :func:`_remote_flat_launches`, so a resumed session's
+    re-declared servers govern the next probe.
+    """
+    return self._mcp_launches
+
+
 def record_mcp_launches(self: AcpSessionHandle, spec: Any, wire_servers: Any) -> None:
     """Record how this session launched its stdio MCP servers.
 
@@ -255,7 +270,7 @@ def _accept_oauth_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> dict[s
     """Validate and deduplicate one MCP OAuth notification."""
     params = msg.params if isinstance(msg.params, dict) else {}
     server_name = str(params.get("serverName") or params.get("name") or "")
-    oauth_url = str(params.get("oauthUrl") or params.get("url") or "")
+    oauth_url = with_google_offline_access(str(params.get("oauthUrl") or params.get("url") or ""))
     if not _is_safe_oauth_url(oauth_url):
         if oauth_url:
             logger.warning(
@@ -315,6 +330,12 @@ async def wait_mcp_ready(
     other guard is unchanged: a failed, disabled, auth-failed or provenance-less
     server still raises, a foreign same-named entry or a server still connecting
     still times out at the deadline, and runtime death still raises.
+
+    A server the host's own snapshot lists as dropped by its MCP registry
+    (:attr:`KasMcpReadiness.registry_filtered`) is decided at once, with no
+    wait: governed, the session starts as soon as every pending server is such a
+    drop; undeclared, the start fails at once naming the servers and the
+    setting, instead of spending *timeout* on servers that cannot come.
     """
     readiness = KasMcpReadiness(self._session_id, required, tool_policy, injected)
     self._mcp_report.include_configured(required)
@@ -352,6 +373,7 @@ async def wait_mcp_ready(
         if msg is None:
             self._queue.put_nowait(None)
             raise AcpRuntimeDead("Runtime exited while waiting for managed MCP readiness")
+        dropped_compaction = consume_stale_compaction_status(self, msg)
         try:
             # Config/OAuth side effects also belong to external servers and
             # pre-mode frames. They must not become readiness requirements.
@@ -361,10 +383,20 @@ async def wait_mcp_ready(
         if stale:
             stale -= 1
             continue
+        if dropped_compaction:
+            continue
         self._mcp_report.record_frame(msg, owned=self._owns_mcp_frame(msg))
         readiness.record(msg)
         if readiness.failure:
             raise AcpRuntimeError(f"KAS managed MCP initialization failed: {readiness.failure}")
+        if readiness.registry_filtered:
+            # The host said its registry dropped these: no wait makes them start.
+            if governed:
+                if readiness.all_pending_filtered:
+                    _record_drops(self._mcp_report, readiness, readiness.pending_names)
+                    return
+            else:
+                raise AcpRuntimeError(_registry_filtered_message(readiness))
     for name in required:
         self._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
 
@@ -377,12 +409,36 @@ def _record_dropped(report: McpSessionReport, readiness: KasMcpReadiness, govern
     absent = readiness.never_reported if governed else ()
     if not absent:
         return False
+    _record_drops(report, readiness, absent)
+    return True
+
+
+def _record_drops(
+    report: McpSessionReport, readiness: KasMcpReadiness, absent: tuple[str, ...]
+) -> None:
+    """Record *absent* failed with :data:`GOVERNED_DROP_REASON`, the rest initialized."""
     for name in readiness.required:
         if name in absent:
             report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, name, GOVERNED_DROP_REASON)
         else:
             report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
-    return True
+
+
+def _registry_filtered_message(readiness: KasMcpReadiness) -> str:
+    """The start failure for servers the host's MCP registry dropped, undeclared.
+
+    The host named them itself, so this is a decided failure, not a timeout:
+    the session is not started without them (registry mode is not declared),
+    and the start budget is not spent waiting for servers that cannot come.
+    """
+    return (
+        "KAS managed MCP initialization failed: "
+        f"{readiness.filtered_detail}: filtered by this account's MCP registry. "
+        "The KAS backend cannot carry the registry marker for Crew's servers, so "
+        "the host drops them (see the enterprise MCP governance guide). To start "
+        "KAS sessions without Crew's servers, declare registry mode: "
+        "`kirocrew config set agent.mcp_registry_mode true`."
+    )
 
 
 def _readiness_timeout(readiness: KasMcpReadiness, timeout: float) -> AcpRequestTimeout:
@@ -432,6 +488,8 @@ async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple
             # Runtime died: re-poison so the turn that follows sees it.
             await self._queue.put(None)
             break
+        if consume_stale_compaction_status(self, msg):
+            continue
         try:
             report.record_frame(msg, owned=self._owns_mcp_frame(msg))
             self._apply_init_notification(msg, classify_notification(msg))
@@ -508,6 +566,7 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
         ):
             self._mcp_reattempt_waiting.add(name)
     self._mcp_sign_in_needed &= present
+    self._mcp_sign_in_wanted &= self._mcp_sign_in_needed
     self._mcp_reattempt_waiting &= present
     self._sync_mcp_reattempting()
     if dropped != self._mcp_sign_in_dropped:
@@ -526,15 +585,160 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
                 BUCKET_CAP,
             )
     if offer:
+        # A server this turn's ask named may only now be tracked.
+        self._match_mcp_sign_in_ask()
         self._offer_mcp_sign_in()
 
 
-def _offer_mcp_sign_in(self: AcpSessionHandle) -> None:
-    """Ask the runtime to start one pending sign-in, if it can take one.
+#: Separators an MCP server name may use between words.
+_NAME_SEPARATORS = re.compile(r"[\s_.:/@-]+")
+#: Trailing words that say "this is an MCP server" rather than naming it.
+_GENERIC_NAME_SUFFIXES = ("mcp", "server", "mcp server")
+#: An alias shorter than this is too likely to occur in unrelated prose.
+_MIN_ALIAS_CHARS = 3
 
-    Called at turn start, after the pre-turn drain, and from the dispatch
-    loop on a status snapshot: both points have a reader for the link the
-    engine sends back. Never called during a session-start drain.
+
+def mcp_server_aliases(name: str) -> tuple[str, ...]:
+    """The lowercase word sequences a user may write to name server *name*.
+
+    The configured name itself, its words split at separators
+    (``power-figma-figma`` -> ``power figma figma``), the part after a
+    ``namespace:`` prefix (one word only when it repeats the namespace), the
+    name with a Kiro Power's ``power-`` prefix removed (``figma``; never a
+    multi-word name's last word alone), and each of those without a trailing ``mcp``
+    or ``server`` word. Words repeated back to back collapse (``figma
+    figma`` -> ``figma``). The configured name itself (its words joined by
+    single spaces) is always an alias, however short or generic, so a server
+    named ``gh`` or ``mcp`` can still be named. A derived alias under
+    ``_MIN_ALIAS_CHARS`` characters, or one that is only a generic word, is
+    dropped. Pure.
+    """
+    words = [w for w in _NAME_SEPARATORS.split(name.lower()) if w]
+    if not words:
+        return ()
+    # The full configured name, kept unfiltered.
+    aliases: list[str] = [" ".join(words)]
+    # Each form with the one word it may be reduced to, if any: a namespace
+    # tail is a one-word alias only when that word is the namespace itself
+    # (``beehive:beehive-mcp`` gives ``beehive``, while ``acme:api`` and
+    # ``acme:api-server`` never give ``api``, which is everyday prose).
+    forms: list[tuple[list[str], str | None]] = [(words, None)]
+    if ":" in name:
+        head, _, rest = name.lower().partition(":")
+        tail = [w for w in _NAME_SEPARATORS.split(rest) if w]
+        forms.append((tail, " ".join(w for w in _NAME_SEPARATORS.split(head) if w)))
+    if words[0] == "power" and len(words) >= 3:
+        # ``power-<power>-<server>`` without its prefix. Its repeated words
+        # collapse below, so ``power-figma-figma`` gives ``figma``, while
+        # ``power-aws-docs-search`` keeps ``aws docs search``, never ``search``.
+        forms.append((words[1:], None))
+    for form, one_word in forms:
+        collapsed = [w for i, w in enumerate(form) if i == 0 or w != form[i - 1]]
+        phrase = " ".join(collapsed)
+        candidates = [phrase]
+        for suffix in _GENERIC_NAME_SUFFIXES:
+            if phrase.endswith(" " + suffix):
+                candidates.append(phrase[: -len(suffix) - 1])
+        for alias in candidates:
+            if one_word is not None and " " not in alias and alias != one_word:
+                continue
+            if len(alias) >= _MIN_ALIAS_CHARS and alias not in _GENERIC_NAME_SUFFIXES:
+                aliases.append(alias)
+    return tuple(dict.fromkeys(aliases))
+
+
+def text_names_mcp_server(text: str, name: str) -> bool:
+    """Whether *text* names server *name* as a whole word, case-insensitive.
+
+    Each alias from :func:`mcp_server_aliases` matches with any run of
+    separators between its words, and only between word boundaries, so
+    ``notion`` matches "sign in to Notion" and not "notional". Pure.
+    """
+    if not text or not name:
+        return False
+    for alias in mcp_server_aliases(name):
+        pattern = r"[\s_.:/@-]+".join(re.escape(word) for word in alias.split(" "))
+        if re.search(rf"(?<![A-Za-z0-9]){pattern}(?![A-Za-z0-9])", text, re.IGNORECASE):
+            return True
+    return False
+
+
+def want_mcp_sign_in_named(self: AcpSessionHandle, text: str) -> None:
+    """Ask for a sign-in to each unsigned server the user's message names.
+
+    The one automatic trigger. A server that needs authorization exposes
+    no tools on KAS (exposure needs a connected catalog), so the model can
+    never call it, and being needed alone never offers it. The user naming
+    it in their own message is the ask. *text* is the user's message as
+    typed, never a composed prompt: injected context could name every
+    server.
+
+    A server whose sign-in this session already holds in the runtime is
+    not asked for again, so a message naming it while its card is live
+    starts no second one. Once that attempt ends (signed in, timed out, or
+    left by the user), only a later message naming it offers it again.
+    The offer is made at the next offer point (turn start), where a turn
+    reads the link. At most ``BUCKET_CAP`` names are held.
+
+    Called from ``_run_turn`` after the pre-turn drain with that turn's ask.
+    The text is held for that turn (``_mcp_sign_in_ask``) and matched again
+    by ``_match_mcp_sign_in_ask`` because a named server's
+    ``failedAuthorization`` status may arrive mid-turn. ``_run_turn`` clears
+    it when that turn ends.
+    """
+    self._mcp_sign_in_ask = text or ""
+    self._mcp_sign_in_asked = set()
+    self._match_mcp_sign_in_ask()
+
+
+def _match_mcp_sign_in_ask(self: AcpSessionHandle) -> None:
+    """Mark each tracked server the held ask names as wanted, once per ask.
+
+    A server this ask already marked is not marked again, so a sign-in that
+    ends during the turn is not restarted by a later status snapshot.
+    """
+    text = self._mcp_sign_in_ask
+    if not text or not self._session_id or not self._mcp_sign_in_needed:
+        return
+    holds = getattr(self._runtime, "mcp_sign_in_holds", None)
+    for name in sorted(self._mcp_sign_in_needed):
+        if (
+            name in self._mcp_sign_in_wanted
+            or name in self._mcp_sign_in_asked
+            or not text_names_mcp_server(text, name)
+        ):
+            continue
+        if holds is not None and holds(self._session_id, name):
+            # Its live card is this ask's answer: a later snapshot in the
+            # same turn does not start a second one once that card ends.
+            if len(self._mcp_sign_in_asked) < BUCKET_CAP:
+                self._mcp_sign_in_asked.add(name)
+            continue
+        if len(self._mcp_sign_in_wanted) >= BUCKET_CAP:
+            logger.info(
+                "MCP sign-in for %s not asked for on %s: %d sign-ins already wait",
+                sanitize_sink_text(name, NAME_CAP),
+                self._session_id,
+                BUCKET_CAP,
+            )
+            continue
+        self._mcp_sign_in_wanted.add(name)
+        self._mcp_sign_in_asked.add(name)
+
+
+def _offer_mcp_sign_in(self: AcpSessionHandle) -> None:
+    """Ask the runtime to start one wanted sign-in, if it can take one.
+
+    Only servers a user message asked for (``want_mcp_sign_in_named``) and
+    that still need authorization are candidates. An accepted start removes
+    the server from the wanted set and marks it asked for this turn, including
+    a request carried over from a busy slot, so a later status snapshot cannot
+    restart it for the same ask. A start the runtime refuses (its one slot is
+    busy) leaves the server wanted, and the next offer point tries again.
+
+    Called at turn start after the pre-turn drain, and from the dispatch
+    loop on a status snapshot: both have a reader for the link the engine
+    sends back. Never called during a session-start drain.
 
     The server's banner dedupe is cleared first: its earlier link is dead
     once a new sign-in starts, and the new link must not be dropped as a
@@ -543,14 +747,11 @@ def _offer_mcp_sign_in(self: AcpSessionHandle) -> None:
     begin = getattr(self._runtime, "begin_mcp_sign_in", None)
     if begin is None or not self._session_id:
         return
-    names = sorted(self._mcp_sign_in_needed)
-    start = next(
-        (i for i, name in enumerate(names) if name > self._mcp_sign_in_last_offered),
-        0,
-    )
-    for name in names[start:] + names[:start]:
+    for name in sorted(self._mcp_sign_in_wanted & self._mcp_sign_in_needed):
         if begin(self._session_id, name):
-            self._mcp_sign_in_last_offered = name
+            self._mcp_sign_in_wanted.discard(name)
+            if len(self._mcp_sign_in_asked) < BUCKET_CAP:
+                self._mcp_sign_in_asked.add(name)
             self._oauth_emitted_servers.discard(name)
             return
 
@@ -736,6 +937,8 @@ async def drain_init(
         stale_backlog = stale_frames > 0
         if stale_backlog:
             stale_frames -= 1
+        if consume_stale_compaction_status(self, msg):
+            continue
         try:
             action = classify_notification(msg)
             if not stale_backlog:

@@ -790,7 +790,8 @@ class TestChatSlotReasoningEffortLiveProvider:
     @pytest.mark.asyncio
     async def test_live_clear_applied_live_skips_reset(self):
         # clear_effort returns True only when a default was applied LIVE
-        # (kiro with a workspace default) → no session reset needed.
+        # (kiro with a workspace default, or claude's ``default`` value) → no
+        # session reset needed.
         from kiro_crew.providers.acp import AcpProvider
 
         provider = MagicMock(spec=AcpProvider)
@@ -815,7 +816,7 @@ class TestChatSlotReasoningEffortLiveProvider:
 
     @pytest.mark.asyncio
     async def test_live_clear_not_applied_live_falls_back_to_reset(self):
-        # clear_effort returns False (claude, or kiro with no workspace default)
+        # clear_effort returns False (no live clear value, or kiro with no workspace default)
         # → the running session can't be reset to default live, so the handler
         # MUST reset the session so a cold start re-resolves the true default.
         from kiro_crew.providers.acp import AcpProvider
@@ -876,6 +877,30 @@ class TestChatSlotReasoningEffortLiveProvider:
             assert resp.status == 200
             state.sessions.reset.assert_awaited_once()
             state.sessions.record_effort_override.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_relaunch_refusal_keeps_the_old_level_and_does_not_reset(self):
+        """A relaunching harness put the prior level back; saving the refused one would
+        cold-start on it and fail the same way on every later message."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.supports_effort = MagicMock(return_value=True)
+        provider.has_active_turn = MagicMock(return_value=False)
+        provider.switches_by_relaunch = True
+        provider.change_effort = AsyncMock(side_effect=RuntimeError("cannot run that effort"))
+        slot = _ChatSlot("test")
+        slot.reasoning_effort = "low"
+        state = _mock_state(slot, provider=provider)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "high"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "effort_refused"
+        assert slot.reasoning_effort == "low"
+        state.sessions.reset.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_active_turn_defers_live_push(self):

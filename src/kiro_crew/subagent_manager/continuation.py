@@ -336,9 +336,10 @@ class ContinuationCoordinator(ManagerComponent):
         """The typed ``native_child_not_resumable`` reason when *conversation_id*
         is a harness-native child of a LIVE session, else None.
 
-        Asks every live ``AcpSessionHandle`` (the provider's ``client`` on the
-        runtime path); a handle that is not one, or a session manager without
-        a registry, answers nothing. Read-only: no session is created.
+        Asks every live session's provider ``client``: an ``AcpSessionHandle`` on
+        the runtime path, the ``AcpClient`` itself on the claude backend. A client
+        without the method, or a session manager without a registry, answers
+        nothing. Read-only: no session is created.
         """
         sessions = getattr(self._manager._sessions, "_sessions", None)
         if not isinstance(sessions, dict):
@@ -800,10 +801,26 @@ class ContinuationCoordinator(ManagerComponent):
         returns "" too: omitting the override selects that exact directory without
         requesting an override-policy exception. A changed pool keeps the recorded
         path explicit, so current directory policy still applies.
+
+        The one missing path that returns "" is the run's OWN per-run scratch
+        directory (``workspace_root()/<its session key>``), which only a run
+        spawned without a cwd records and which is reclaimed when the run ends. It
+        was never a project, so omitting it puts the follow-up exactly where a
+        spawn without a cwd goes, which is where the run itself went.
         """
         import os
 
-        recorded = str((read_state(conv_id) or {}).get("cwd") or "")
+        state = read_state(conv_id) or {}
+        recorded = str(state.get("cwd") or "")
+        if recorded and not os.path.isdir(recorded):
+            from kiro_crew.config.loader_locations import workspace_root
+            from kiro_crew.config.paths import _safe_dir_name
+
+            keys = {f"subagent:{conv_id}", str(state.get("conversation_key") or "")}
+            root = workspace_root(create=False)
+            own = {os.path.realpath(root / _safe_dir_name(k)) for k in keys if k}
+            if os.path.realpath(recorded) in own:
+                return ""
         pool_cwd = getattr(self._manager._sessions, "_pool_cwd", "")
         if recorded and isinstance(pool_cwd, str) and pool_cwd:
             if os.path.realpath(recorded) == os.path.realpath(pool_cwd):
@@ -1283,9 +1300,9 @@ class ContinuationCoordinator(ManagerComponent):
         """The disk half of a release: demote ``keep``, then delete session files.
 
         Returns whether the session files were disposed (``True`` when there
-        was no sid to dispose). A backend that owns its own session store has
-        no delete route here, so its release answers ``False`` and the caller
-        reports ``not_disposed`` instead of ``released``.
+        was no sid to dispose). A backend whose store has no delete route here,
+        or a Claude session with no trusted recorded cwd, answers ``False`` and
+        the caller reports ``not_disposed`` instead of ``released``.
 
         Demoting the persisted source of truth matters: with the disk fallback in
         place, a stale ``keep=True`` would re-warm the continuable cache after
@@ -1296,6 +1313,7 @@ class ContinuationCoordinator(ManagerComponent):
         """
         # Not an ``_impl``, so it keeps this module's globals: import at call
         # time, which also keeps ``patch.object(subagent, ...)`` effective.
+        from ..agent_sdk.claude_transcripts import is_claude_provider_label
         from ..subagent import _cleanup_session_files_sync, logger, update_state
 
         try:
@@ -1305,6 +1323,14 @@ class ContinuationCoordinator(ManagerComponent):
         if not sid:
             return True
         try:
+            if is_claude_provider_label(provider_label):
+                # Claude Code files a transcript under its working directory, so
+                # its delete needs the cwd the gateway recorded for this session.
+                from ..subagent_persistence import trusted_cleanup_identity_record
+
+                record = trusted_cleanup_identity_record(conv_id, sid, f"subagent:{conv_id}")
+                cwd = str((record or {}).get("cwd") or "")
+                return bool(_cleanup_session_files_sync(sid, provider_label, cwd=cwd))
             return bool(_cleanup_session_files_sync(sid, provider_label))
         except Exception:
             logger.debug("release_conversation: file cleanup failed", exc_info=True)

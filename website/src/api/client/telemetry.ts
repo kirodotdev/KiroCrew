@@ -67,8 +67,23 @@ export type UsageSeriesPayload = {
   complete_from: string | null
 }
 
+/** The agent-rendered controls a click can be reported for. Mirrors
+ *  `UI_CONTROL_VALUES` in `src/kiro_crew/metrics/feature_usage.py`; the server
+ *  counts any other value as `other`. */
+export type UiControl =
+  | 'option_chip'
+  | 'question_card_answer'
+  | 'question_card_freetext'
+  | 'followup_start_worktree'
+  | 'followup_start_chat'
+  | 'followup_add_session'
+  | 'followup_skip'
+
 export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: ClientTransport) {
   const usageReadouts = {
+    /** Count one click on an agent-rendered control (POST
+     *  /api/telemetry/ui-control, 204). Only the control's kind is sent. */
+    reportUiControlClick: (control: UiControl) => post('/api/telemetry/ui-control', { control }),
     /** The five session folds of a crew log, keyed by name, in ONE request.
      *
      *  The batch route is what makes the answer coherent: it resolves the session

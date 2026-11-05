@@ -205,6 +205,30 @@ def _server_source(server: dict[str, Any]) -> dict[str, Any] | None:
     return source if isinstance(source, dict) else None
 
 
+#: ``_kiro/mcp/status`` fields in which a registry-governed host names the
+#: servers it dropped instead of starting. Captured on KAS 0.66.62 under an
+#: enterprise MCP registry: ``servers`` stays empty and the dropped managed
+#: server is listed in ``accessModeFilteredServers``. ``unresolvedRegistryServers``
+#: is deliberately not read: no capture shows whether a server listed there is
+#: final or still resolving, and treating a pending one as final would refuse a
+#: start that succeeds today.
+REGISTRY_FILTER_FIELDS = ("accessModeFilteredServers",)
+
+
+def _registry_filtered(params: dict[str, Any], required: tuple[str, ...]) -> dict[str, str]:
+    """Required names a status snapshot lists as dropped by the host's registry."""
+    found: dict[str, str] = {}
+    for key in REGISTRY_FILTER_FIELDS:
+        listed = params.get(key)
+        if not isinstance(listed, list):
+            continue
+        for item in listed:
+            name = item.get("name") if isinstance(item, dict) else item
+            if isinstance(name, str) and name in required:
+                found.setdefault(name, key)
+    return found
+
+
 @dataclass
 class KasMcpReadiness:
     """One activation's required servers; global and other-session state cannot satisfy it.
@@ -249,6 +273,13 @@ class KasMcpReadiness:
     #: under that name here, which is what :attr:`never_reported` reads; a
     #: foreign same-named server counts as mentioned, so it never reads as absent.
     seen: set[str] = field(default_factory=set)
+    #: Required names the latest status snapshot lists in
+    #: :data:`REGISTRY_FILTER_FIELDS`, mapped to the field that listed them: the
+    #: host's own positive statement that its MCP registry dropped the server.
+    #: Replaced by every snapshot. A name the same snapshot also has a status
+    #: entry for (any state or origin) is left out, so only a server the host
+    #: did not start under that name counts.
+    filtered: dict[str, str] = field(default_factory=dict)
 
     @property
     def advertised(self) -> set[str]:
@@ -306,6 +337,7 @@ class KasMcpReadiness:
             self.states.clear()
             self.errors.clear()
             self.intentionally_hidden.clear()
+            self.filtered = _registry_filtered(params, self.required)
             entries = [server for server in servers if isinstance(server, dict)]
             # Servers whose connected entry carries its catalog: fresh exposure
             # evidence from this very snapshot (see the class docstring).
@@ -321,6 +353,10 @@ class KasMcpReadiness:
                 if not isinstance(name, str) or name not in self.required:
                     continue
                 self.seen.add(name)
+                # Any entry under this name, a foreign same-named one included,
+                # means the host is running something under it: the list does not
+                # decide that name, the usual states and timeout do.
+                self.filtered.pop(name, None)
                 source = _server_source(server)
                 if provenance and (source is None or source.get("origin") != "client"):
                     # A same-named inherited global server is not the private
@@ -412,10 +448,33 @@ class KasMcpReadiness:
             + (
                 "tools not advertised"
                 if self.states.get(name) == "connected"
-                else self.states.get(name, "unreported")
+                else self.states.get(
+                    name, "filtered by the MCP registry" if name in self.filtered else "unreported"
+                )
             )
             for name in self.pending_names
         )
+
+    @property
+    def registry_filtered(self) -> tuple[str, ...]:
+        """Pending servers the host's latest snapshot says its registry dropped.
+
+        In required order. Unlike :attr:`never_reported` this is not read off
+        silence: the host listed each one in :data:`REGISTRY_FILTER_FIELDS`, so
+        waiting longer cannot make it start.
+        """
+        return tuple(name for name in self.pending_names if name in self.filtered)
+
+    @property
+    def all_pending_filtered(self) -> bool:
+        """Whether every pending server is one the host's registry dropped."""
+        pending = self.pending_names
+        return bool(pending) and all(name in self.filtered for name in pending)
+
+    @property
+    def filtered_detail(self) -> str:
+        """``name (field)`` for each :attr:`registry_filtered` server."""
+        return ", ".join(f"{name} ({self.filtered[name]})" for name in self.registry_filtered)
 
     @property
     def never_reported(self) -> tuple[str, ...]:

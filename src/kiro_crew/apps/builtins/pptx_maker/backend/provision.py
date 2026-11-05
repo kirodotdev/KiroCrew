@@ -603,8 +603,8 @@ def provision() -> ProvisionOutcome:
     #
     # The enable path and the boot reconcile both call `bridges.register_app`, and
     # `bridges._placeholder_values` computes this app's `{UV_BIN}` / `{ENGINE_ROOT}` /
-    # `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` in the GATEWAY from the data home and the
-    # installed package — the same values this provisioner resolves. So the agents and
+    # `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` (through this app's `agent_placeholders.py`)
+    # in the GATEWAY from the data home and the installed package — the same values this provisioner resolves. So the agents and
     # skill land without provisioning registering anything, and this call was redundant.
     #
     # It was also a race we could only narrow, never close. Provisioning is a detached

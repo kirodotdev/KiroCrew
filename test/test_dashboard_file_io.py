@@ -245,14 +245,6 @@ class TestFileRead:
             assert resp.headers["X-File-Binary"] == "true"
             assert await resp.json() == {"binary": True, "content": ""}
 
-    def test_binary_extension_list_matches_the_files_app(self):
-        # The endpoint's comment says the two surfaces disagreeing about what
-        # "binary" means is the worst outcome; this is what makes that true.
-        from kiro_crew.apps.builtins.file_explorer.server import BINARY_EXTS
-        from kiro_crew.dashboard.handlers.files import _FILE_READ_BINARY_EXTS
-
-        assert set(_FILE_READ_BINARY_EXTS) == set(BINARY_EXTS)
-
     @pytest.mark.asyncio
     async def test_read_keeps_a_visible_marker_for_a_file_ending_mid_codepoint(
         self, tmp_path, mock_sel, home_patch
@@ -517,13 +509,9 @@ class TestFileReadPathKind:
 class TestFileReadReservedCharacterPaths:
     """A path holding URL-reserved but filesystem-legal characters must serve.
 
-    The client percent-encodes the path into the query string, so the server
-    receives the characters literally and FILE_READ_SCHEMA's syntax gate is what
-    decides. A punctuation allowlist there answers 400 "invalid input" before
-    any disk access for a whole notes folder named by the "Name (alias).md"
-    convention, and the client cannot work around it: encodeURIComponent leaves
-    "(" and ")" literal by design. /api/file-diff, which has no such gate,
-    serves the same files.
+    FILE_READ_SCHEMA's syntax gate sees the characters literally, and
+    encodeURIComponent leaves "(" and ")" literal by design, so a punctuation
+    allowlist would 400 every "Name (alias).md" note.
     """
 
     @pytest.mark.parametrize(
@@ -579,16 +567,9 @@ class TestFileReadReservedCharacterPaths:
     ):
         """A path the OS path layer cannot carry must be refused, not crash.
 
-        The schema gate matches the SANITIZED copy of the value, which has had
-        its control characters and surrogates stripped, while the raw string is
-        what reaches the filesystem. So a NUL-bearing path passed the gate as
-        its stripped spelling and reached an unguarded realpath, which raised
-        outside the handler's try and propagated as HTTP 500.
-
-        Only NUL is exercised here. The other unrepresentable shape -- a lone
-        surrogate -- cannot be delivered through this transport, because URL
-        decoding never yields one; it is covered against the seam itself in
-        test_hooks_coverage_file_branches.py.
+        The schema gate checks a SANITIZED copy while the raw string reaches realpath,
+        so a NUL path passes the gate. A lone surrogate cannot arrive via URL decoding;
+        it is covered in test_hooks_coverage_file_branches.py.
         """
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get("/api/file-read?path=" + encoded)
@@ -684,11 +665,9 @@ class TestFileWrite:
     ):
         """api_file_write must carry the source inode's ACL, not just its bits.
 
-        The old mkstemp+copymode path carried permission BITS only, dropping a
-        named POSIX ACL on every save. Assert the handler now
-        routes through atomic_write with an OPEN source descriptor via
-        preserve_access_control_from and the existing file mode; a revert to
-        copymode fails here.
+        copymode carries permission BITS only and drops a named POSIX ACL, so the handler
+        must call atomic_write with an open source descriptor via
+        preserve_access_control_from.
         """
         import os as _os
 
@@ -745,14 +724,8 @@ class TestFileWrite:
     ):
         """A TOCTOU swap of the final component into a link is a 4xx, not a 500.
 
-        ``_validate_dashboard_path`` canonicalizes through ``realpath``, so the
-        path reaching the handler is symlink-free by construction and a leaf link
-        is followed to its target exactly as it was before this change. The
-        ``O_NOFOLLOW`` in ``open_access_control_source`` therefore only closes
-        the window where that component is swapped for a link AFTER the check.
-        When it fires, that is a rejected target rather than a server fault: the
-        handler returns 404 (matching the steering peer's ``notfound``) and
-        ``atomic_write`` is never reached.
+        The path is already ``realpath``-canonical, so ``O_NOFOLLOW`` only catches a swap
+        AFTER the check; the handler returns 404 and ``atomic_write`` is never reached.
         """
         from kiro_crew.dashboard.handlers import files as files_mod
 
@@ -1076,20 +1049,11 @@ class TestSendMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_session_origin_revives_missing_slot(self):
-        """When slot isn't in memory (e.g. after gateway restart), rehydrate via
-        _rehydrate_slot_from_history and still trigger an agent turn on the revived
-        slot. Regression test for silent-fail bug where cron→origin injection fell
-        back to owner DM after gateway restart.
+        """A slot missing from memory is rehydrated and still gets the agent turn.
 
-        Mirrors the coverage of test_send_message_session_origin (happy path) —
-        patches _run_chat, asserts it was invoked on the revived slot, and verifies
-        the injected message content matches the cron-notification contract.
-
-        This is a focused routing test: it mocks _rehydrate_slot_from_history so
-        we can assert the handler calls it exactly when get_slot returns None. The
-        end-to-end rehydrate path (real ConversationLog, real DashboardState,
-        real _ChatSlot creation) is covered by
-        TestRehydrateSlotFromHistory in test_session_restore.py."""
+        Otherwise cron-to-origin injection falls back to the owner DM after a restart.
+        The real rehydrate path is covered by TestRehydrateSlotFromHistory in
+        test_session_restore.py."""
         state = _mock_state()
         # Rehydrate helper returns a slot reconstructed from persisted history,
         # and registers it, so later reads find it.

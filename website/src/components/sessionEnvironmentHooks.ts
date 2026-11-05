@@ -26,11 +26,23 @@ function stageText(t: (key: string) => string, stage: SessionEnvironmentStartSta
 
 export const slotEnvironmentQueryKey = (slot: string) => ['slot-environment', slot] as const
 
-/** Every reader of the shared query retries alike: whichever mounts first sets
- *  the fetch's options, and one failed read must not replace a local chat's Files. */
-export const SLOT_ENVIRONMENT_RETRY = { retry: 2, retryDelay: 250 } as const
+/** The read's plain non-owner refusal (a Shared Crew guest): the same answer on
+ *  every attempt, and read as "this chat runs here". */
+export function isOwnerOnlyRefusal(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403 && apiErrorCode(error) === 'owner_only'
+}
 
-type RemoteEnvironment = { profile: string; name: string; workdir: string }
+const SLOT_ENVIRONMENT_RETRIES = 2
+
+/** Every reader of the shared query retries alike: whichever mounts first sets
+ *  the fetch's options, and one failed read must not replace a local chat's Files.
+ *  The `owner_only` refusal is final, so it is never retried. */
+export const SLOT_ENVIRONMENT_RETRY = {
+  retry: (failureCount: number, error: Error) => failureCount < SLOT_ENVIRONMENT_RETRIES && !isOwnerOnlyRefusal(error),
+  retryDelay: 250,
+} as const
+
+type RemoteEnvironment = { profile: string; name: string; workdir: string; provider?: string }
 
 /** Only an explicit successful local placement (or the read's `owner_only`
  *  refusal: a caller that cannot bind chats) permits gateway file/shell access.
@@ -50,7 +62,7 @@ export function useSlotEnvironmentPlacement(slot: string | null | undefined) {
   const match = id ? data?.profiles?.find((p) => p.id === id) : undefined
   // A caller the read refuses as not the owner cannot bind chats, so for it every
   // chat runs here, as on main; a retry would meet the same refusal.
-  const ownerOnly = error instanceof ApiError && error.status === 403 && apiErrorCode(error) === 'owner_only'
+  const ownerOnly = isOwnerOnlyRefusal(error)
   const remote = useMemo<RemoteEnvironment | null | undefined>(() => {
     // No chat (the active one was just closed): nothing can be remote.
     if (!slot) return null
@@ -58,8 +70,8 @@ export function useSlotEnvironmentPlacement(slot: string | null | undefined) {
     if (!isSuccess) return undefined
     if (id === null) return null
     if (typeof id !== 'string' || !id) return undefined
-    return { profile: id, name: match?.name ?? id, workdir: match?.workdir ?? '' }
-  }, [slot, ownerOnly, isSuccess, id, match?.name, match?.workdir])
+    return { profile: id, name: match?.name ?? id, workdir: match?.workdir ?? '', provider: data?.provider ?? match?.provider }
+  }, [slot, ownerOnly, isSuccess, id, match?.name, match?.workdir, data?.provider, match?.provider])
   return { remote, error: ownerOnly ? null : error }
 }
 
@@ -73,6 +85,18 @@ export function useSlotRunsHere(slot: string | null | undefined): boolean | unde
   if (remote === null) return true
   if (remote) return false
   return undefined
+}
+
+/** The project folder relative paths in ``slot``'s transcript are joined to, or
+ *  null. Only for a chat confirmed to run on this machine: a remote chat's
+ *  project names a folder on another machine, and an unread placement is not
+ *  yet known to be local. Null keeps the backend's own resolution. */
+export function useChatProjectDir(
+  slot: { key: string; project?: string; executor?: string } | null | undefined,
+): string | null {
+  const local = !!slot && slot.executor !== 'remote'
+  const runsHere = useSlotRunsHere(local ? slot.key : null)
+  return local && runsHere === true && slot.project ? slot.project : null
 }
 
 /** Display-only remote label. Actions must use the placement hook to distinguish

@@ -1,7 +1,8 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import ChatInput from '../components/ChatInput'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { api } from '../api/client'
@@ -45,11 +46,16 @@ function PasteHarness({
 
 /** Resolve after one animation frame — the handlers schedule their caret
  *  restore there. Frame-driven, not a timed sleep, so it cannot flake. */
-const nextFrame = () => new Promise<void>(resolve => { requestAnimationFrame(() => resolve()) })
+const nextFrame = () => act(async () => {
+  await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()) })
+})
 
 const mountTokens = (initial: string, blocks: PasteBlock[] = [block], onBlocks?: (b: PasteBlock[]) => void) => {
   renderWithProviders(<PasteHarness initial={initial} initialBlocks={blocks} onBlocks={onBlocks} />)
-  return screen.getByLabelText('Message input') as HTMLTextAreaElement
+  const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+  // fireEvent.select and the paste tests focus the box; the focus handler sets state.
+  act(() => { ta.focus() })
+  return ta
 }
 
 beforeEach(() => {
@@ -880,7 +886,7 @@ describe('ChatInput context-usage popover', () => {
     const post = vi.spyOn(api, 'setChatSlotAutocompact')
     post.mockClear()
     post.mockReturnValueOnce(firstPost).mockResolvedValue({ ok: true, pct: 71, global_pct: 70 })
-    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    const { queryClient } = renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
     fireEvent.click(screen.getByLabelText('Context usage'))
     expect(await screen.findByText('85%')).toBeInTheDocument()
     // First write: reset to global. Its POST stays in flight (deferred).
@@ -891,7 +897,8 @@ describe('ChatInput context-usage popover', () => {
     fireEvent.keyDown(screen.getByRole('slider'), { key: 'ArrowRight' })
     // Let the 400ms debounce elapse — WITHOUT serialization the second POST
     // fires here while the first is unresolved (post count hits 2).
-    await new Promise(r => setTimeout(r, 600))
+    // The debounced second write is issued (two mutations in flight) yet queued behind the first.
+    await waitFor(() => expect(queryClient.isMutating()).toBe(2), namedCeiling('AUTOCOMPACT_SECOND_WRITE_QUEUED', 1500))
     expect(post).toHaveBeenCalledTimes(1)
     // Settle the first write; only then may the second be issued.
     resolveFirst({ ok: true, pct: null, global_pct: 70 })

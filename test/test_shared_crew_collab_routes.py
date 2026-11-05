@@ -41,14 +41,18 @@ async def test_presence_and_decisions_reads():
         presence = await (await client.get("/api/shared-crew/presence?session_key=s1")).json()
         decisions = await (await client.get("/api/shared-crew/decisions?session_key=s1")).json()
         missing = await client.get("/api/shared-crew/presence")
+        missing_body = await missing.json()
     assert presence["type"] == "shared_crew.presence"
     assert [e["principal"]["id"] for e in presence["entries"]] == [someone.id]
     assert [d["decision_id"] for d in decisions["items"]] == ["d1"]
     assert missing.status == 400
+    assert missing_body == {"error": "session_key is required", "code": "invalid_session_key"}
 
 
 @pytest.mark.asyncio
 async def test_app_tokens_are_refused():
     async with TestClient(TestServer(_app(_State(), dashboard_user=False))) as client:
         resp = await client.get("/api/shared-crew/presence?session_key=s1")
+        body = await resp.json()
     assert resp.status == 403
+    assert body == {"error": "dashboard users only", "code": "forbidden"}

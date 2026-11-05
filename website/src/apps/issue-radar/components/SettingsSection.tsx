@@ -19,8 +19,8 @@ export default function SettingsSection({ onNavigate }: { onNavigate?: () => voi
   const inSettings = mainView === 'settings'
 
   const generalItems: { key: GeneralAnchor; label: string; icon: LucideIcon }[] = [
-    { key: 'account', label: 'Account', icon: User },
-    { key: 'repos', label: 'Repositories', icon: Library },
+    { key: 'account', label: i18nT('apps.issueRadar.components.settingsSection.account'), icon: User },
+    { key: 'repos', label: i18nT('apps.issueRadar.components.settingsSection.repositories'), icon: Library },
     { key: 'gitlabGroups', label: i18nT('apps.issueRadar.components.settingsSection.gitlab_groups'), icon: FolderTree },
   ]
 

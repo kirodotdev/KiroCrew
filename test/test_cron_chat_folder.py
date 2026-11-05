@@ -1,35 +1,12 @@
 """``chat_folder_id``: filing a scheduled job's RUNS into a chat folder.
 
-A recurring job's output lands loose — in dashboard notifications, in a Slack
-DM, or appended onto one long-lived tab nobody can find. ``chat_folder_id``
-names a folder in the chat sidebar's own tree and a PERSISTENT job's single
-``cron-{id}`` tab is filed there; its run stamps and markers already make that
-tab the job's timeline. A stateless job has no job-wide tab to file, so the
-store refuses the pair at save time.
+A persistent job's single ``cron-{id}`` tab is filed into the named sidebar folder; a
+stateless job has none, so the store refuses the pair. ``folder_id`` (the Schedule-page
+row group) is a different field. Filing adds to delivery and never replaces it; a
+deleted folder only costs the placement; a rename needs nothing since the id is stored.
 
-What these tests hold, and why each one can fail:
-
-* **The field is its own field.** ``folder_id`` already exists on ``CronJob`` and
-  means something else entirely (it groups the job's ROW on the Schedule page).
-  The two must never be read off each other, so the persistence and REST tests
-  assert one moves without the other.
-* **Filing SUPPLEMENTS delivery.** The feature must not become a fourth delivery
-  mode that replaces notification/Slack/origin delivery, so the delivery-shape
-  tests assert the result row is written and the caller's return value is
-  unchanged whether or not a folder is configured.
-* **A deleted folder costs the placement and nothing else.** A folder can be
-  deleted while a job still names it. The run must still deliver, its session
-  must land unfiled, and the skip must be recorded once.
-* **A rename is a no-op.** The job stores the folder's id, so there is nothing to
-  do — pinned so a future "resolve by name" shortcut cannot be added silently.
-* **Back-compat.** A job with no ``chat_folder_id`` behaves exactly as it did:
-  the mock state's ``_folders`` is empty in those tests, which would surface any
-  accidental unconditional folder lookup as an exception rather than a pass.
-
-The state fake mirrors ``test_cron_first_run_tab.py``'s, including the reason its
-``get_slot``/``has_slot`` are REAL functions over one dict: on a bare
-``MagicMock`` both auto-return truthy mocks, which would satisfy every
-short-circuit under test and make the assertions unable to fail.
+``get_slot``/``has_slot`` on the state fake are real functions: on a bare ``MagicMock``
+they return truthy mocks and the assertions could not fail.
 """
 
 from __future__ import annotations
@@ -135,14 +112,10 @@ def _deliver(state, job, text, **kw):
 
 
 def _inject(state, job, text, **kw):
-    """Run the injection ON A LOOP, as every production caller does, and let the
-    folder placement land.
+    """Run the injection on a loop, as production does, and let the placement land.
 
-    The folder is decided at the mint, inside ``_bind_cron_slot``, and the
-    placement -- assignment, write and broadcast -- is scheduled as a task, so a
-    bare call with no running loop is not a shape production ever takes. The write
-    itself is answered ``True`` here; the tests about the write's own verdict patch
-    it themselves.
+    ``_bind_cron_slot`` schedules the placement as a task. The write answers ``True``;
+    tests about its verdict patch it themselves.
     """
     import kiro_crew.dashboard.chat_persistence as persistence
 
@@ -164,9 +137,7 @@ def _inject(state, job, text, **kw):
     return asyncio.run(_go())
 
 
-# ---------------------------------------------------------------------------
 # 1. Persistence: the field survives a save/load round trip on its own
-# ---------------------------------------------------------------------------
 
 
 class TestPersistence:
@@ -382,9 +353,7 @@ class TestPersistence:
             svc.add_job("brief", "Write it.", every_secs=3600, chat_folder_id="x" * 5000)
 
 
-# ---------------------------------------------------------------------------
 # 2. Folder existence
-# ---------------------------------------------------------------------------
 
 
 class TestFolderExistence:
@@ -398,19 +367,14 @@ class TestFolderExistence:
         assert chat_folder_exists(_make_state(), "") is False
 
 
-# ---------------------------------------------------------------------------
 # 3. Filing: the job-wide tab at its mint, and the deleted folder
-# ---------------------------------------------------------------------------
 
 
 class TestFilingAtTheMint:
     """A tab is filed by the call that MINTS it, and by nothing later.
 
-    "Unfiled" is deliberately not the test. A reader who drags the job-wide tab
-    out to the root leaves ``slot.folder_id == ""`` -- indistinguishable from a
-    tab that was never filed -- so a rule that filed unfiled tabs would drag
-    theirs back on every delivery. A freshly minted tab has no placement history,
-    so filing it cannot undo anyone's.
+    A tab dragged to the root also reads ``slot.folder_id == ""``, so filing every
+    unfiled tab would drag it back on each delivery.
     """
 
     def test_the_job_wide_tab_is_filed_when_it_is_minted(self) -> None:
@@ -546,9 +510,7 @@ class TestDeletedFolder:
         assert any("the brief" in m["content"] for m in slot.messages)
 
 
-# ---------------------------------------------------------------------------
 # 4. Supplements, never replaces
-# ---------------------------------------------------------------------------
 
 
 class TestTheFilingIsSynchronous:
@@ -651,26 +613,6 @@ class TestTheFilingIsSynchronous:
         assert saved == ["cron-job42"]
         # The done callback discards it, so the set does not grow per run.
         assert state._background_tasks == set()
-
-    @pytest.mark.asyncio
-    async def test_the_placement_is_broadcast_only_after_it_is_on_disk(self, monkeypatch) -> None:
-        """Telling an open sidebar the tab is filed before the metadata line lands
-        advertises a placement a failed write would erase, with nothing saying so."""
-        import kiro_crew.dashboard.chat_persistence as persistence
-
-        release = asyncio.Event()
-
-        async def _save(state, slot, *a, **kw):
-            await release.wait()
-            return True
-
-        monkeypatch.setattr(persistence, "save_slot_off_loop", _save)
-        state = _make_state()
-        inject_cron_result_to_dashboard(state, _job(chat_folder_id=FOLDER), "the brief", history=[])
-        assert state.push_slots_update.call_count == 1  # the injection's own push
-        release.set()
-        await asyncio.gather(*list(state._background_tasks))
-        assert state.push_slots_update.call_count == 2
 
     @pytest.mark.asyncio
     async def test_a_failed_write_retracts_the_placement(self, monkeypatch) -> None:
@@ -1105,9 +1047,7 @@ class TestMovingTheTabAtTheSave:
         assert slot.folder_id == OTHER_FOLDER
 
 
-# ---------------------------------------------------------------------------
 # 5. The REST surface
-# ---------------------------------------------------------------------------
 
 
 def _app(handler, route: str, *, folders=(FOLDER,), **store) -> web.Application:

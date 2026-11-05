@@ -109,6 +109,9 @@ def test_provider_executable_not_found_gives_install_guidance(monkeypatch) -> No
     monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setenv("PATH", "")
+    # The brew line is the POSIX arm; pin the platform so the Windows CI job
+    # (which now gets the winget arm) still exercises this assertion.
+    monkeypatch.setattr(source.sys, "platform", "linux")
     monkeypatch.setattr(
         github_runner,
         "PROVIDER_EXECUTABLE_CANDIDATES",
@@ -128,6 +131,41 @@ def test_provider_executable_not_found_gives_install_guidance(monkeypatch) -> No
     assert "sudo cp" not in message
     assert "KIROCREW_GH_BIN" in message
     assert "{executable}" not in message
+
+
+def test_provider_executable_not_found_gives_winget_guidance_on_windows(monkeypatch) -> None:
+    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
+    monkeypatch.delenv("KIROCREW_GLAB_BIN", raising=False)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(source.sys, "platform", "win32")
+    monkeypatch.setattr(
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
+        {"gh": ("/nonexistent-kirocrew/gh",), "glab": ("/nonexistent-kirocrew/glab",)},
+    )
+    monkeypatch.setattr(github_runner, "_wellknown_windows_dirs", lambda _executable: ())
+
+    for exe, winget in (("gh", "GitHub.cli"), ("glab", "GLab.GLab")):
+        with pytest.raises(source.SourceProviderError) as excinfo:
+            source._resolve_provider_executable(exe)
+        message = str(excinfo.value)
+        assert f"winget install --id {winget}" in message
+        assert f"{exe} auth login" in message
+        # None of the POSIX-only commands a Windows shell can't run.
+        for posix in ("brew install", "sudo ", "$(command -v", "/usr/local/libexec"):
+            assert posix not in message
+
+
+def test_provider_executable_strict_winget_guidance_on_windows(monkeypatch) -> None:
+    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
+    monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
+    monkeypatch.setattr(source.sys, "platform", "win32")
+
+    message = source._provider_setup_message("gh", "KIROCREW_GH_BIN", "")
+    assert "winget install --id GitHub.cli --scope machine" in message
+    assert "Program Files" in message
+    assert "sudo" not in message
 
 
 @pytest.mark.asyncio

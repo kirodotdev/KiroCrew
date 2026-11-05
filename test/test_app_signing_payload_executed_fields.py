@@ -1,31 +1,18 @@
-"""The signed bytes must cover the manifest fields the install chain EXECUTES.
+"""The signed bytes must cover the manifest fields the install chain EXECUTES or CALLS.
 
-``AppManifest.signing_payload`` is the canonical blob an admission signature
-covers. Three of its keys name things that RUN:
+Left out of ``AppManifest.signing_payload``, each of these could be rewritten with the
+signature still verifying:
 
-* ``setup.on*`` is shell text ``lifecycle_scripts.run_lifecycle_script`` hands to
-  ``/bin/bash -c``,
-* each ``mcpServers`` entry's ``command``/``args``/``env`` is written by
-  ``bridges._register_mcp_servers`` into the agent config kiro-cli SPAWNS,
-* ``backend.hooks.*`` names a ``module:callable`` that
-  ``module_loader.load_app_module`` imports into the gateway process, and
-  ``backend.entryPoint`` + ``backend.type`` pick the file and interpreter
-  ``backend._start_app_backend_body`` spawns.
+* ``setup.on*``, shell text ``lifecycle_scripts.run_lifecycle_script`` runs,
+* ``mcpServers`` ``command``/``args``/``env``, which kiro-cli SPAWNS,
+* ``backend.hooks.*`` (imported by ``module_loader.load_app_module``) and
+  ``backend.entryPoint`` + ``backend.type`` (spawned by
+  ``backend._start_app_backend_body``),
+* ``publishProvider.endpoint``, the route the artifact page POSTs the reader's artifact to.
 
-Left out of the payload, each is a part of a signed app an attacker could
-rewrite with the publisher's signature still verifying.
-
-Every key is added under a NON-EMPTY guard, the same shape ``notifications``,
-``crons`` and ``contributes`` already use. That is the whole compatibility
-story, and ``test_a_manifest_without_them_produces_the_pre_change_payload``
-plus ``test_no_shipped_builtin_carries_a_signature`` are what pin it: a
-manifest that declares none of the three hashes exactly as it did, and nothing
-shipped in-tree carries a signature for the change to invalidate.
-
-The tests assert on production symbols only -- ``signing_payload``,
-``admission.app_admission_denied``, ``admission.verified_signer``,
-``manager.install_app``, ``manager.enable_app`` -- and nothing here
-re-implements the HMAC the gate computes.
+Each key is added under a NON-EMPTY guard, so a manifest declaring none of them hashes
+as before (``test_a_manifest_without_them_produces_the_pre_change_payload``). The tests
+use production symbols only and never re-implement the gate's HMAC.
 """
 
 from __future__ import annotations
@@ -44,7 +31,7 @@ SIGNER = "acme"
 SECRET = "publisher-trust-key"
 APP = "signed-demo"
 
-#: A published manifest that declares all three newly covered field groups.
+#: A published manifest that declares every newly covered field group.
 PUBLISHED: dict = {
     "name": APP,
     "version": "1.0.0",
@@ -59,9 +46,14 @@ PUBLISHED: dict = {
         "type": "python",
         "hooks": {"on_startup": "backend.boot:start"},
     },
+    "publishProvider": {
+        "id": "signed-demo-publish",
+        "label": "Publish to Signed Demo",
+        "endpoint": "/api/apps/signed-demo/publish",
+    },
 }
 
-#: The same publisher, declaring NONE of the three -- the compatibility case.
+#: The same publisher, declaring NONE of them -- the compatibility case.
 PUBLISHED_PLAIN: dict = {
     "name": APP,
     "version": "1.0.0",
@@ -121,23 +113,22 @@ def enforcing_fleet(tmp_path, monkeypatch):
     return cfg
 
 
-# ---------------------------------------------------------------------------
 # Control 1 -- a signature issued under the pre-change payload still verifies
-# ---------------------------------------------------------------------------
 
 
 def test_a_manifest_without_them_produces_the_pre_change_payload():
-    """The three keys are ABSENT unless declared, so old signatures still hash.
+    """The keys are ABSENT unless declared, so old signatures still hash.
 
     This is the compatibility guarantee in its smallest form: the bytes for a
-    manifest that declares no ``setup``, no ``mcpServers`` and no ``backend``
-    carry none of the three keys, so a signature issued before they were
-    covered verifies unchanged.
+    manifest that declares no ``setup``, ``mcpServers``, ``backend`` or
+    ``publishProvider`` carry none of those keys, so a signature issued before they
+    were covered verifies unchanged.
     """
     payload = AppManifest.from_dict(PUBLISHED_PLAIN).signing_payload()
     assert b'"setup"' not in payload
     assert b'"mcpServers"' not in payload
     assert b'"backend"' not in payload
+    assert b'"publishProvider"' not in payload
 
 
 def test_a_signature_issued_under_the_pre_change_payload_still_verifies(enforcing_fleet):
@@ -157,9 +148,7 @@ def test_precondition_a_declaring_manifest_is_admitted_when_untampered(enforcing
     assert verified_signer(manifest) == SIGNER
 
 
-# ---------------------------------------------------------------------------
 # Control 4 -- tampering a NEWLY covered field is denied
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -175,6 +164,11 @@ def test_precondition_a_declaring_manifest_is_admitted_when_untampered(enforcing
         ("backend.hooks.on_startup", _tampered(backend__hooks__on_startup="backend.evil:go")),
         ("backend.entryPoint", _tampered(backend__entryPoint="backend/evil.py")),
         ("backend.type", _tampered(backend__type="exec")),
+        # publishProvider: where the artifact page sends the reader's artifact.
+        (
+            "publishProvider.endpoint",
+            _tampered(publishProvider__endpoint="/api/apps/signed-demo/other"),
+        ),
     ],
 )
 def test_tampering_a_newly_covered_field_is_denied(enforcing_fleet, label, tampered):
@@ -186,9 +180,7 @@ def test_tampering_a_newly_covered_field_is_denied(enforcing_fleet, label, tampe
     assert verified_signer(manifest) == ""
 
 
-# ---------------------------------------------------------------------------
 # Control 5 -- tampering an ALREADY covered field is still denied
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -206,9 +198,7 @@ def test_tampering_an_already_covered_field_is_still_denied(enforcing_fleet, lab
     ), f"a rewritten {label} must still invalidate the signature"
 
 
-# ---------------------------------------------------------------------------
 # Control 2 -- no shipped builtin is newly refused
-# ---------------------------------------------------------------------------
 
 
 def _shipped_builtin_manifests() -> list[Path]:
@@ -224,12 +214,9 @@ def test_the_builtin_census_is_not_empty():
 def test_no_shipped_builtin_carries_a_signature(manifest_path, enforcing_fleet):
     """Moving the signed bytes cannot change a verdict for an UNSIGNED manifest.
 
-    Every builtin ships unsigned, so ``_signature_valid`` refuses it on the
-    empty signature before it ever computes a payload -- which is why 17
-    builtins whose payload bytes DO move are still admitted exactly as before.
-    They reach installation through ``register_builtin_apps``, which never
-    consults the admission gate, and ``enable_app`` exempts ``origin ==
-    "builtin"``; the test below pins that second door.
+    ``_signature_valid`` refuses an empty signature before computing a payload. Builtins
+    install through ``register_builtin_apps``, which skips the admission gate, and
+    ``enable_app`` exempts ``origin == "builtin"``; the test below pins that second door.
     """
     manifest = AppManifest.from_json_file(manifest_path)
     assert manifest.signature == ""
@@ -271,13 +258,11 @@ def test_a_builtin_is_not_refused_by_admission_under_require_signature(tmp_path,
     assert "blocked by admission policy" not in (result.error or ""), result.error
 
 
-# ---------------------------------------------------------------------------
 # Control 3 -- an unsigned app on a non-enforcing install is unaffected
-# ---------------------------------------------------------------------------
 
 
 def test_an_unsigned_declaring_app_installs_on_a_non_enforcing_fleet(tmp_path, monkeypatch):
-    """No policy configured: an app declaring all three fields still installs.
+    """No policy configured: an app declaring every covered field still installs.
 
     The widened payload adds no refusal. ``app_admission_denied`` returns on
     the open fast path before any signature work, so an unsigned app is

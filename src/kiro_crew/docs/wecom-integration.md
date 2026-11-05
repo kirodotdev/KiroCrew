@@ -120,7 +120,7 @@ one switch with one answer beats a per-channel copy.
 
 Send commands in your direct chat with the bot. A leading `@mention` is tolerated
 and stripped before the command is matched, so `@Kiro /new` also works — but see
-"Who can reach it": messages sent in a WeCom group are refused, so commands only
+[Access control](#access-control): messages sent in a WeCom group are refused, so commands only
 take effect in a direct chat.
 
 ## Settings reference

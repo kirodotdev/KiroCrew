@@ -17,7 +17,9 @@ import subprocess
 import time
 from pathlib import Path
 
-from kiro_crew.pod import launchd, runtime, runtime_home
+from kiro_crew.pod import launchd
+from kiro_crew.pod import limits as pod_limits
+from kiro_crew.pod import runtime, runtime_home
 from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import PodConfig
@@ -96,8 +98,9 @@ def loaded_teardown_hook(cfg: PodConfig, name: str) -> bool | None:
 
 
 def _install_pod_dropin(cfg: PodConfig, name: str) -> subprocess.CompletedProcess | None:
-    """Pin pod *name* to its checkout binary, or return a start-blocking failure."""
-    checkout = runtime.read_env_file(cfg, name).get("CHECKOUT", "")
+    """Pin pod *name* to its checkout binary and its ceilings, or return a failure."""
+    env_data = runtime.read_env_file(cfg, name)
+    checkout = env_data.get("CHECKOUT", "")
     if not checkout:
         return subprocess.CompletedProcess(
             args=[],
@@ -110,7 +113,19 @@ def _install_pod_dropin(cfg: PodConfig, name: str) -> subprocess.CompletedProces
             ),
         )
     try:
-        unit_mod.install_dropin(cfg, name, Path(checkout).expanduser())
+        limits = pod_limits.from_env(env_data)
+    except pod_limits.LimitError as exc:
+        # Refused rather than defaulted: a hand-edited ceiling the operator meant
+        # must not silently become 4G, and systemd would reject a malformed one
+        # with a parse error that names neither the file nor the key.
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=f"pod {name!r} has an invalid ceiling in {cfg.env_file(name)}: {exc}",
+        )
+    try:
+        unit_mod.install_dropin(cfg, name, Path(checkout).expanduser(), limits)
     except (OSError, ValueError) as exc:
         return subprocess.CompletedProcess(
             args=[],
@@ -251,6 +266,58 @@ def halt_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
             if refused is not None:
                 return refused
         return runtime.systemctl("stop", runtime.pod_unit(cfg, name))
+
+
+def restart_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
+    """Stop pod *name*, KEEP its HOME, and start it again from its env file.
+
+    :func:`halt_pod` followed by :func:`start_pod` under one hold of the name
+    mutex, so a concurrent ``down`` cannot reclaim the home in the gap. The start
+    re-renders the per-pod drop-in (Linux), plist (macOS) or wrapper (Windows)
+    from the env file, which is how a changed ``MEMORY=`` / ``CPU=`` takes effect
+    without reclaiming sessions, config, installed apps or downloaded models.
+
+    A pod that is not running is simply started, so ``restart`` also revives a pod
+    that crashed and left its home behind. A failed halt is returned unchanged and
+    nothing is started: the old gateway may still be serving.
+
+    Refused on Windows before anything is stopped. The Windows stop keeps the run
+    receipt and the home, and the Windows start refuses to boot over either, so a
+    halt-then-start there would stop the gateway and leave it down.
+    """
+    if runtime.IS_WINDOWS:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "pod restart is not supported on Windows: a Windows pod cannot start "
+                "again over the home and run record its stop keeps. Nothing was "
+                f"stopped. `kirocrew pod down {name}` then `kirocrew pod up {name}` "
+                "restarts it with a fresh home."
+            ),
+        )
+    with runtime.pod_name_mutex(cfg, name):
+        # Checked before the halt: the Linux start re-validates these and refuses a
+        # bad one, so a hand-edited or now over-cap value found only then would
+        # leave a healthy pod stopped. Other platforms are checked too, so a value
+        # every platform records is never left unvalidated.
+        try:
+            pod_limits.from_env(runtime.read_env_file(cfg, name))
+        except pod_limits.LimitError as exc:
+            return subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout="",
+                stderr=(
+                    f"pod {name!r} has an invalid ceiling in {cfg.env_file(name)}: {exc}. "
+                    "Nothing was stopped."
+                ),
+            )
+        halted = halt_pod(cfg, name)
+        if halted.returncode != 0:
+            return halted
+        return start_pod(cfg, name)
 
 
 def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:

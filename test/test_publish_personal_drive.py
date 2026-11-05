@@ -690,26 +690,14 @@ def test_serving_notice_returns_no_code_when_the_link_will_resolve(monkeypatch):
     assert code == ""
 
 
-def _notice_code(res) -> str:
-    """The notice_code carried on a PublishResult.
-
-    The field is added to PublishResult by the seam half of this change (contract);
-    reading it defensively lets Section A's own gate run whether or not that half has
-    landed yet, while still asserting the value once it exists.
-    """
-    return getattr(res, "notice_code", "__ABSENT__")
-
-
 def test_a_rolling_out_publish_carries_the_rolling_out_code(monkeypatch, payload):
     """A2 -- the code must ride back on the result the module returns, not just the text,
     so the frontend can select its per-case string."""
     _stub_profiles(monkeypatch, ["alpha"])
     _EngineSpy(status="InProgress").install(monkeypatch)
     res = _publish(pd.PersonalDriveProvider(), payload)
-    code = _notice_code(res)
-    if code != "__ABSENT__":
-        assert code == "rolling_out"
-    # Regardless of the seam field's landing order, the human text still reflects it.
+    assert res.notice_code == "rolling_out"
+    # The human text names the state too, not only the code.
     assert "rolling out" in res.notice.lower()
 
 
@@ -719,9 +707,7 @@ def test_a_disabled_publish_carries_the_disabled_code(monkeypatch, payload):
     _stub_profiles(monkeypatch, ["alpha"])
     _EngineSpy(enabled=False).install(monkeypatch)
     res = _publish(pd.PersonalDriveProvider(), payload)
-    code = _notice_code(res)
-    if code != "__ABSENT__":
-        assert code == "distribution_disabled"
+    assert res.notice_code == "distribution_disabled"
     assert "DISABLED" in res.notice
 
 
@@ -742,9 +728,7 @@ def test_an_unreadable_rollout_state_carries_the_unknown_code(monkeypatch, paylo
     monkeypatch.setattr(pd.engine, "distribution_status", _status)
     res = _publish(pd.PersonalDriveProvider(), payload)
     assert res.external_id, "the handle for the uploaded object must come back"
-    code = _notice_code(res)
-    if code != "__ABSENT__":
-        assert code == "unknown"
+    assert res.notice_code == "unknown"
     assert "did not report" in res.notice
 
 
@@ -755,9 +739,7 @@ def test_a_healthy_publish_carries_no_notice_code(monkeypatch, payload):
     _EngineSpy(status="Deployed", enabled=True).install(monkeypatch)
     res = _publish(pd.PersonalDriveProvider(), payload)
     assert res.notice == ""
-    code = _notice_code(res)
-    if code != "__ABSENT__":
-        assert code == ""
+    assert res.notice_code == ""
 
 
 def test_an_unreadable_rollout_state_still_returns_the_handle(monkeypatch, payload):

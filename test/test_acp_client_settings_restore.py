@@ -23,26 +23,22 @@ from kiro_crew.testing.clock import ManualClock
 class TestMovedAsideRestore:
     """Putting a moved-aside settings entry back is a no-clobber rename of ANY entry.
 
-    Teardown and re-seed capture whatever sits at ``settings.local.json`` with an
-    atomic move-aside, verify the moved bytes, and put a mismatch back. That
-    put-back is a same-directory no-clobber rename: a symlink or an oversized file
-    the user placed at the path is restored exactly as it is, with no copy and no
-    size cap, and whatever raced into the vacated pathname is never overwritten.
+    A symlink or oversized file comes back as is, with no copy or size cap, and
+    whatever raced into the vacated name is never overwritten.
     """
 
     _SERVED = ["global.anthropic.claude-opus-5[1m]"]
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _isolated_provenance(self, monkeypatch):
+    def _isolated_provenance(self, _floor_monkeypatch):
         """Per-test provenance registries and a warm advertised-model cache."""
         from kiro_crew import model_registry
         from kiro_crew.acp import seed_provenance
 
-        monkeypatch.setattr(seed_provenance, "_RECORDS", {})
-        monkeypatch.setattr(seed_provenance, "_LIVE", {})
-        monkeypatch.setattr(seed_provenance, "_SHARERS", {})
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(seed_provenance, "_RECORDS", {})
+        _floor_monkeypatch.setattr(seed_provenance, "_LIVE", {})
+        _floor_monkeypatch.setattr(seed_provenance, "_SHARERS", {})
+        _floor_monkeypatch.setattr(
             model_registry, "_ADVERTISED_MODELS", {"claude_code": list(self._SERVED)}
         )
 
@@ -400,39 +396,28 @@ class TestWindowsRestorePin:
 class TestCreateRaceLoserPoll:
     """The ``O_EXCL`` loser polls for the WINNER's record, not for any record.
 
-    Two sessions pass the not-exists probe together; one wins the create and
-    records its seed a moment later. The loser's poll bridges that persist
-    window so a byte-identical sibling shares the surface instead of running
-    toolless. The sidecar can also carry a STALE entry -- a killed session's
-    record for a file since gone, with a different digest -- and that entry
-    proves nothing about the winner: only a record naming the loser's own
-    bytes may end the poll early.
+    A stale sidecar entry proves nothing, so only the loser's own bytes end the poll.
 
-    The poll is driven through a :class:`ManualClock` installed on
-    ``acp_client`` ALONE (testing-conventions rule D2), never by rebinding the
-    stdlib ``time.sleep``: ``acp_client.time`` IS the stdlib module, and the
-    seed-provenance sidecar lock (``platform_lock_compat``) backs off through
-    ``time.sleep`` whenever another holder has it. Under a stdlib patch that
-    backoff counts as a poll and runs the "winner records now" hook BEFORE the
-    loser's ``O_EXCL`` open, so the loser sees a live sibling owner and declines
-    without ever reaching the create -- a red that depends on who else holds the
-    lock, which on a loaded shard is anyone's persist.
+    The :class:`ManualClock` is on ``acp_client`` alone (testing-conventions D2): the
+    sidecar lock backs off via stdlib ``time.sleep``, so patching that would run the
+    winner hook before the ``O_EXCL`` open on a loaded shard.
     """
 
     _SERVED = ["global.anthropic.claude-opus-5[1m]"]
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _isolated_provenance(self, tmp_path, monkeypatch):
+    def _isolated_provenance(self, tmp_path, _floor_monkeypatch):
         """Per-test provenance registries, sidecar and a warm advertised-model cache."""
         from kiro_crew import model_registry
         from kiro_crew.acp import seed_provenance
 
-        monkeypatch.setattr(seed_provenance, "_RECORDS", {})
-        monkeypatch.setattr(seed_provenance, "_LIVE", {})
-        monkeypatch.setattr(seed_provenance, "_SHARERS", {})
-        monkeypatch.setattr(seed_provenance, "_sidecar_path", lambda: tmp_path / "seeds.json")
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(seed_provenance, "_RECORDS", {})
+        _floor_monkeypatch.setattr(seed_provenance, "_LIVE", {})
+        _floor_monkeypatch.setattr(seed_provenance, "_SHARERS", {})
+        _floor_monkeypatch.setattr(
+            seed_provenance, "_sidecar_path", lambda: tmp_path / "seeds.json"
+        )
+        _floor_monkeypatch.setattr(
             model_registry, "_ADVERTISED_MODELS", {"claude_code": list(self._SERVED)}
         )
 
@@ -490,11 +475,8 @@ class TestCreateRaceLoserPoll:
     class _PollClock(ManualClock):
         """The loser's poll clock: ``on_poll(n)`` runs after the n-th poll sleep.
 
-        That is the winner's move between two probes. ``poll_cost`` is how far
-        the clock moves per poll on top of the sleep itself, so a bounded
-        deadline is reached in a handful of iterations. Installed on
-        ``acp_client`` alone, so the sidecar lock's backoff still sleeps on the
-        real clock and runs no hook.
+        ``poll_cost`` is extra clock movement per poll, so a deadline comes in a few
+        iterations. The sidecar lock's backoff stays on the real clock.
         """
 
         def __init__(self, on_poll, *, poll_cost: float = 0.0) -> None:
@@ -549,12 +531,8 @@ class TestCreateRaceLoserPoll:
     ):
         """A stale durable entry does not end the poll; the winner's matching one does.
 
-        The winner has created the file but its ``record()`` persist is still in
-        flight when the loser starts polling. The sidecar already holds a stale
-        record with a different digest for a file that is gone. A poll that
-        treated ANY durable record as "the winner's bytes are settled" would
-        decline on its first iteration and run this session toolless; the poll
-        must keep waiting until a record naming its own bytes appears, then share.
+        The winner's ``record()`` is in flight and a stale record sits in the sidecar.
+        Ending on any record would decline at once and run toolless.
         """
         from kiro_crew.acp import seed_provenance
 
@@ -633,16 +611,8 @@ class TestCreateRaceLoserPoll:
     ):
         """The sidecar lock's backoff is real time, not the loser's poll.
 
-        Another holder has the seed-provenance lock when the loser's pre-create
-        ``held_by_another`` probe takes it -- what a sibling's persist on a
-        loaded shard looks like. The loser waits that out on the REAL clock,
-        then runs the same race as the deadline control above: the winner's
-        record lands on the first poll, four polls reach the deadline, one
-        decline. The lock backoff adds no entry to the poll schedule and runs no
-        poll hook, so the winner cannot be recorded before the create. With the
-        stdlib ``time.sleep`` patched instead, the backoff runs the hook, the
-        record lands first, and the loser declines under a live sibling owner
-        without ever opening the file.
+        Another holder has the lock at the ``held_by_another`` probe. The backoff adds no
+        poll entry and runs no hook, so the race matches the deadline control above.
         """
         from kiro_crew.acp import seed_provenance
 

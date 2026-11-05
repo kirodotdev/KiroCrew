@@ -12,7 +12,7 @@
  * is away (see nativeNotificationAwayGate.test.ts for the gate itself).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -92,7 +92,7 @@ describe('native notification toasts are silent (WebAudio is the only sound)', (
     expect(NOTIF_OPTIONS[0]?.silent).toBe(true)
   })
 
-  it('an approval frame yields one toast, and it is silent', () => {
+  it('an approval frame yields one toast, and it is silent', async () => {
     const store = createTestStore()
     function wrapper({ children }: { children: React.ReactNode }) {
       return createElement(Provider, { store },
@@ -111,6 +111,8 @@ describe('native notification toasts are silent (WebAudio is the only sound)', (
         data: { id: 'ap-silent-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
       })
     })
+
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0))
 
     expect(NOTIF_OPTIONS).toHaveLength(1)
     expect(NOTIF_OPTIONS[0]?.silent).toBe(true)

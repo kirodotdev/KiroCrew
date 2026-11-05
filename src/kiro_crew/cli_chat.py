@@ -437,7 +437,7 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
     The sandbox launcher raises ``SandboxCeilingUnsealable`` from its ceiling
     materialisers when a governance ceiling cannot be made sealable — a symlink or a second hard link on the live-target pointer
     is the shape an ordinary snapshot tool produces — and that refusal is deliberately
-    NOT in the ``AcpError`` hierarchy, so ``_stream_and_print``'s handler never sees it
+    NOT in the ``AcpError`` hierarchy, so ``_send_and_print``'s handler never sees it
     and it escaped here as an unhandled exception. The remedy was technically on screen,
     buried under a stack trace that reads as a Kiro Crew crash, which is the wrong thing
     to tell an operator whose actual problem is one extra file link.
@@ -1079,6 +1079,12 @@ async def _answer_permission(
             mcp_tool_name=event.tool_name,
             mcp_identity_trusted=event.mcp_identity_trusted,
             spawn_target=event.spawn_target,
+            # The KAS spec's own deny-all-but restrictions. Only refusals, so
+            # they travel here although the spec's grants do not: dropping them
+            # would let an answered prompt run what the spec refuses.
+            spec_shell_allowlist=getattr(event, "spec_shell_allowlist", None),
+            spec_write_allowlist=getattr(event, "spec_write_allowlist", None),
+            spec_write_cwd=getattr(event, "spec_write_cwd", "") or "",
         )
     except Exception:
         logger.warning("CLI permission gate failed; refusing the request", exc_info=True)

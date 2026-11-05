@@ -78,6 +78,14 @@ export default [
       // path (no JSX, no DOM writes), and its consumer `McpAppFrame.tsx` — which
       // does carry copy — stays fully covered.
       'src/lib/mcpAppTheme.ts',
+      // The tool detail rail colour: a `color-mix()` template over theme
+      // variables, returned as a CSS value. Same named-boundary idiom and the
+      // same color-mix category as `folderColorPaint.ts` above. Stated as a
+      // false-negative class: copy added here would not be reported. Verified
+      // copy-free -- the module has no imports and no render path, and both
+      // consumers (`ToolCallLine.tsx`, `app-sdk/messageRenderers.tsx`) stay
+      // fully covered; `toolRailColor.test.ts` pins that it imports nothing.
+      'src/utils/toolRailColor.ts',
       // Pierre's shared render configuration: injected stylesheet text
       // (`unsafeCSS` templates of selectors, lengths and `var(--…)` references),
       // theme ids the library matches on, and an extension→grammar map. None of

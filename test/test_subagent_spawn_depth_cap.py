@@ -47,6 +47,47 @@ async def test_child_of_root_session_is_depth_one() -> None:
 
 
 @pytest.mark.asyncio
+async def test_child_of_a_sub_agent_with_no_live_record_is_depth_two() -> None:
+    """A ``subagent:`` parent key proves one sub-agent level on its own, so with
+    no live parent record and no carried depth the child records depth 2."""
+    manager = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder_auto_spawn())
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = manager.spawn("child of a gone parent", parent_session_key="subagent:gone01")
+        assert info is not None
+        await manager._tasks[info.id]
+
+    assert info.error == ""
+    assert info.depth == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("depths", [(1, 2), (2, 1)], ids=["continuation-deeper", "original-deeper"])
+async def test_the_deepest_live_parent_record_sets_the_childs_depth(
+    depths: tuple[int, int],
+) -> None:
+    """The original run and a running continuation of it both answer to the
+    parent key; the child counts from the deeper of the two records, whether it
+    was registered first or second."""
+    manager = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder_auto_spawn())
+    for run_id, depth in zip(("orig01", "cont02"), depths):
+        manager._agents[run_id] = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id=run_id,
+            task="turn",
+            parent_session_key="dashboard:root",
+            conversation_key="subagent:orig01",
+            depth=depth,
+        )
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = manager.spawn("child of the continued run", parent_session_key="subagent:orig01")
+        assert info is not None
+        await manager._tasks[info.id]
+
+    assert info.error == ""
+    assert info.depth == 3
+
+
+@pytest.mark.asyncio
 async def test_child_at_the_cap_is_admitted_one_deeper_than_its_parent() -> None:
     manager, parent_key = _manager_with_parent(_MAX_SPAWN_DEPTH - 1)
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):

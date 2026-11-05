@@ -416,3 +416,62 @@ def select_darwin_backend(proc_root: str) -> DarwinProcessBackend | None:
     if sys.platform == "darwin" and not os.path.exists(proc_root):
         return LibprocBackend()
     return None
+
+
+# ── Windows process backend (Toolhelp, shell-tool checks only) ──
+
+# Evidence label for the Windows movement probe: CPU time across the processes
+# started since the dispatch, from ``GetProcessTimes``; no byte counter is read.
+_WINDOWS_CPU_LABEL = "windows cpu-only"
+# Seconds between the Windows FILETIME epoch (1601-01-01) and the Unix epoch.
+_FILETIME_UNIX_OFFSET_SECS = 11_644_473_600
+
+
+class WinProcessBackend:
+    """The Windows backend for the oracle's SHELL-tool check, which only proves life.
+
+    The MCP and model-wait probes keep their no-tree readings. Every read is
+    query-only (a Toolhelp snapshot, ``GetProcessTimes`` and
+    ``GetExitCodeProcess`` through query-limited handles): nothing is opened
+    with terminate rights and nothing is signalled.
+    """
+
+    def descendants_created(self, root_pid: int) -> dict[int, float] | None:
+        """*root_pid*'s live descendants -> creation time in Unix seconds.
+
+        The walk is :func:`platform_compat.attributed_descendants`, so a child
+        created before the parent it is listed under (a recycled pid's stray) is
+        left out with its subtree. A descendant that has exited, or whose
+        creation time cannot be read, is left out too: leaving a process out
+        can only keep the verdict UNKNOWN. None when the root's own creation
+        time cannot be read or the root has exited. A failed snapshot reads as
+        no descendants.
+        """
+        root_token = platform_compat.process_start_time(root_pid)
+        if not root_token or not platform_compat.pid_exists(root_pid):
+            return None
+        out: dict[int, float] = {}
+        for pid in platform_compat.attributed_descendants(root_pid, root_token):
+            try:
+                # FILETIME: 100 ns ticks since 1601-01-01.
+                created = int(platform_compat.process_start_time(pid) or "") / 10_000_000
+            except ValueError:
+                continue
+            if platform_compat.pid_exists(pid):
+                out[pid] = created - _FILETIME_UNIX_OFFSET_SECS
+        return out
+
+    def cpu_nanos(self, pid: int) -> int | None:
+        return platform_compat.proc_cpu_nanos_for_pid(pid)
+
+
+def select_windows_backend(proc_root: str) -> WinProcessBackend | None:
+    """The Windows backend for *proc_root*, or None.
+
+    Selected on the platform AND on ``proc_root`` being absent, as
+    :func:`select_darwin_backend` is, so a fake ``/proc`` tree handed to the
+    oracle under test keeps the ``/proc`` walk on any host.
+    """
+    if platform_compat.IS_WINDOWS and not os.path.exists(proc_root):
+        return WinProcessBackend()
+    return None

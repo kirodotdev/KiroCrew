@@ -102,6 +102,7 @@ __all__ = [
     "InstalledKasBundle",
     "KasBundleError",
     "KasBundleManifest",
+    "KasHostUnsupported",
     "fetch_manifest",
     "host_node_key",
     "host_platform_key",
@@ -162,6 +163,13 @@ class KasBundleError(Exception):
     """A manifest, transfer, extraction or layout problem. ``str(exc)`` is the remedy."""
 
 
+class KasHostUnsupported(KasBundleError):
+    """This host cannot run the engine at all (OS, architecture, glibc, no build).
+
+    Retrying the download cannot help, so callers must not suggest it.
+    """
+
+
 @dataclass(frozen=True)
 class ArtifactRef:
     """One pinned object beside the manifest."""
@@ -185,7 +193,7 @@ class KasBundleManifest:
         try:
             return self.platforms[platform_key]
         except KeyError:
-            raise KasBundleError(
+            raise KasHostUnsupported(
                 f"KAS {self.version} publishes no engine build for {platform_key} "
                 f"(has: {', '.join(sorted(self.platforms)) or 'none'})"
             ) from None
@@ -194,7 +202,7 @@ class KasBundleManifest:
         try:
             return self.node_builds[node_key]
         except KeyError:
-            raise KasBundleError(
+            raise KasHostUnsupported(
                 f"KAS {self.version} publishes no Node runtime for {node_key} "
                 f"(has: {', '.join(sorted(self.node_builds)) or 'none'})"
             ) from None
@@ -225,7 +233,7 @@ def _host_os(system: str) -> str:
         return "darwin"
     if system == "windows":
         return "win32"
-    raise KasBundleError(f"KAS bundles are not published for this operating system ({system})")
+    raise KasHostUnsupported(f"KAS bundles are not published for this operating system ({system})")
 
 
 def _host_arch(machine: str) -> str:
@@ -234,7 +242,7 @@ def _host_arch(machine: str) -> str:
         return "x64"
     if machine in ("arm64", "aarch64"):
         return "arm64"
-    raise KasBundleError(f"KAS bundles are not published for this architecture ({machine})")
+    raise KasHostUnsupported(f"KAS bundles are not published for this architecture ({machine})")
 
 
 def host_node_key(system: str | None = None, machine: str | None = None) -> str:
@@ -267,7 +275,7 @@ def _require_loadable_glibc(system: str | None, machine: str | None) -> None:
     floor = constants._OFFICIAL_NODE_GLIBC_FLOOR
     if glibc is None or glibc >= floor:
         return
-    raise KasBundleError(
+    raise KasHostUnsupported(
         f"this host's glibc ({glibc[0]}.{glibc[1]}) is older than KAS requires "
         f"(glibc {floor[0]}.{floor[1]}+): the bundled Node build needs glibc "
         f"{floor[0]}.{floor[1]}, and Amazon Linux 2-era hosts (glibc below 2.27) "
@@ -734,7 +742,17 @@ def install_bundle(
         if force and final.exists():
             retired = Path(tempfile.mkdtemp(prefix=f"{_STAGING_PREFIX}retired-", dir=root))
             retired.rmdir()
-            os.rename(final, retired)
+            try:
+                os.rename(final, retired)
+            except OSError as exc:
+                # Windows refuses to rename a directory while a process holds a file
+                # in it open, as a running session's node.exe does; the installed
+                # engine stays where it is.
+                raise KasBundleError(
+                    f"KAS {manifest.version} at {final} could not be replaced "
+                    f"({exc.strerror or exc}); if a KAS session is running it, "
+                    "stop that session and retry"
+                ) from exc
         try:
             platform_compat.publish_dir_noreplace(staging, final)
         except FileExistsError as exc:

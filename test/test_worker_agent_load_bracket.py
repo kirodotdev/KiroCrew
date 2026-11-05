@@ -736,6 +736,8 @@ class _FakeHandle:
         self.kwargs = kwargs
         self.drained = False
         self.native_context_documents = {}
+        # Set by ``AcpSessionHandle.__init__``; ``_finish_create_session`` extends it.
+        self.kas_launch_snapshots: list[str] = []
 
     def store_session_config(self, resp):
         return None
@@ -820,6 +822,8 @@ def _runtime_for_create_session(monkeypatch, tmp_path, sent, terminated):
 
     async def _terminate(session_id):
         terminated.append(session_id)
+        # As the real one does in its ``finally``: drop the id from the unclaimed set.
+        rt._unclaimed_new_sessions.discard(session_id)
 
     rt._send_and_await = _send_and_await  # type: ignore[method-assign]
     rt._kas_custom_agents = _kas_custom_agents  # type: ignore[method-assign]

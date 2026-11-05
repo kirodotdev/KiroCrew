@@ -504,6 +504,225 @@ test("a service-owned stale bundle adds conditional service recovery guidance", 
   assert.match(state.dialogs[0].detail, /stop or update the service that restarts it/);
 });
 
+// A managed install keeps each version in its own folder. After an update the
+// previous version's gateway, left running when the old app quit, runs from the
+// sibling folder and has been reparented to launchd (PPID 1) without being a
+// launchd job.
+const MANAGED_RESOURCES = "/X/0.11.0.3/KiroCrew.app/Contents/Resources";
+const PREVIOUS_MANAGED_GATEWAY =
+  "/X/0.10.0.3/KiroCrew.app/Contents/Resources/backend-dist/kirocrew-backend-arm64/bin/python3.12 -s -P -m kiro_crew gateway --no-open --port 5476";
+
+function managedStaleHarness({
+  response = 0,
+  command = PREVIOUS_MANAGED_GATEWAY,
+  gatewayVersion = "0.10.0.3",
+  launchdJobs = [310],
+  launchdFails = false,
+  store,
+  appVersion = "0.11.0.3",
+  resourcesPath = MANAGED_RESOURCES,
+} = {}) {
+  const dialogs = [];
+  const launchctl = [];
+  const instance = harness({
+    app: { isPackaged: true, getVersion: () => appVersion },
+    store,
+    processRef: {
+      platform: "darwin", arch: "arm64", env: {}, resourcesPath,
+      getuid: () => 501,
+      kill() { throw new Error("the stale warning must not signal the gateway"); },
+    },
+    httpMod: {
+      get(url, _options, callback) {
+        const req = new EventEmitter();
+        req.destroy = () => {};
+        queueMicrotask(() => {
+          const res = new EventEmitter();
+          res.statusCode = 200;
+          res.resume = () => {};
+          callback(res);
+          res.emit("data", JSON.stringify(String(url).endsWith("/api/ready")
+            ? { ready: true }
+            : { app: "kirocrew", version: gatewayVersion }));
+          res.emit("end");
+        });
+        return req;
+      },
+    },
+    execFileFn(file, args, _options, callback) {
+      if (file.endsWith("lsof")) callback(null, "123", "");
+      else if (file === "/bin/launchctl") {
+        launchctl.push(args[1]);
+        if (launchdFails) callback(new Error("launchctl failed"), "", "");
+        else callback(null, `\tservices = {\n${launchdJobs.map((pid) => `\t\t ${pid} - \tjob.${pid}\n`).join("")}\t}\n`, "");
+      } else if (args.includes("ppid=")) callback(null, "1", "");
+      else callback(null, command, "");
+    },
+    dialog: { async showMessageBox(options) { dialogs.push(options); return { response }; } },
+  });
+  return { ...instance, dialogs, launchctl };
+}
+
+test("a managed update's previous-version orphan gateway is no service and gets the stale warning", async () => {
+  const state = managedStaleHarness();
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.spawnCalls.length, 0, "Continue reuses it; nothing is spawned over it");
+  assert.equal(state.dialogs.length, 1);
+  assert.equal(state.dialogs[0].message, "The gateway is still running an older version.");
+  assert.match(state.dialogs[0].detail, /app is version 0\.11\.0\.3/);
+  assert.match(state.dialogs[0].detail, /gateway is still running version 0\.10\.0\.3/);
+  assert.match(state.dialogs[0].detail, /kirocrew stop --port 5476/);
+  assert.doesNotMatch(state.dialogs[0].detail, /If the gateway starts again automatically/,
+    "an orphan has no service restarting it");
+  assert.ok(state.logs.some((line) => line.includes("pid 123 on :5476 has launchd as its parent but is no launchd job")));
+  assert.deepStrictEqual(state.launchctl, ["gui/501", "user/501", "system"]);
+});
+
+test("Quit on a managed update's previous-version gateway warning aborts the launch", async () => {
+  const state = managedStaleHarness({ response: 1 });
+  assert.equal(await state.supervisor.start(), false);
+  assert.equal(state.spawnCalls.length, 0);
+  assert.equal(state.dialogs.length, 1);
+});
+
+test("a previous-version gateway launchd runs as a job keeps the service guidance", async () => {
+  const state = managedStaleHarness({ launchdJobs: [310, 123] });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.dialogs.length, 1);
+  assert.match(state.dialogs[0].detail, /If the gateway starts again automatically/);
+});
+
+test("an unreadable launchd job list keeps the service note (fail closed)", async () => {
+  const state = managedStaleHarness({ launchdFails: true });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.dialogs.length, 1);
+  assert.match(state.dialogs[0].detail, /If the gateway starts again automatically/);
+});
+
+test("an orphaned gateway of the other release family is still reused, never offered a takeover", async () => {
+  // Quitting the other family's app cannot stop a gateway whose app already
+  // exited, so the launchd check must not turn an orphan into a takeover target.
+  const state = managedStaleHarness({ gatewayVersion: "0.1.2-nightly.20260729t073648" });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.spawnCalls.length, 0);
+  assert.equal(state.dialogs.length, 0, "no stale dialog and no takeover prompt");
+  assert.deepStrictEqual(state.launchctl, [], "launchd is read only for the stale dialog");
+});
+
+test("no stale warning when the gateway's version does not name the sibling folder it runs from", async () => {
+  for (const command of [
+    "/X/0.9.0.1/KiroCrew.app/Contents/Resources/backend-dist/bin/python3.12 -m kiro_crew gateway --port 5476",
+    "/Y/0.10.0.3/KiroCrew.app/Contents/Resources/backend-dist/bin/python3.12 -m kiro_crew gateway --port 5476",
+    "/usr/local/bin/python3 -m kiro_crew gateway --port 5476",
+  ]) {
+    const state = managedStaleHarness({ command });
+    assert.equal(await state.supervisor.start(), true);
+    assert.equal(state.dialogs.length, 0, command);
+  }
+});
+
+test("no stale warning for a newer gateway in a sibling folder", async () => {
+  const state = managedStaleHarness({
+    gatewayVersion: "0.12.0.1",
+    command: "/X/0.12.0.1/KiroCrew.app/Contents/Resources/backend-dist/bin/python3.12 -m kiro_crew gateway --port 5476",
+  });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.dialogs.length, 0);
+});
+
+// A packager can name each version folder by its own build number, with a
+// fourth part, while the app reports a release version that every build of a
+// release shares. The gateway reports the build number of the folder it runs
+// from.
+function buildNumberedGateway(folder) {
+  return `/T/kirocrew/${folder}/payload/KiroCrew.app/Contents/Resources/backend-dist/kirocrew-backend-arm64/bin/python3.12 -s -P -m kiro_crew gateway --no-open --port 5476`;
+}
+const buildNumberedResources = (folder) => `/T/kirocrew/${folder}/payload/KiroCrew.app/Contents/Resources`;
+
+test("a previous build that differs only in the fourth part gets the stale warning", async () => {
+  const state = managedStaleHarness({
+    appVersion: "0.12.0.4",
+    resourcesPath: buildNumberedResources("0.12.0.4"),
+    gatewayVersion: "0.12.0.3",
+    command: buildNumberedGateway("0.12.0.3"),
+  });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.dialogs.length, 1);
+  assert.match(state.dialogs[0].detail, /app is version 0\.12\.0\.4\. The gateway is still running version 0\.12\.0\.3\./);
+  assert.doesNotMatch(state.dialogs[0].detail, /If the gateway starts again automatically/);
+});
+
+test("a previous build is found when the app reports a release version, not its folder name", async () => {
+  for (const appVersion of ["0.12.0-rc.5", "0.12.0", "0.12.0-insider.3"]) {
+    const state = managedStaleHarness({
+      appVersion,
+      resourcesPath: buildNumberedResources("0.12.0.4"),
+      gatewayVersion: "0.12.0.3",
+      command: buildNumberedGateway("0.12.0.3"),
+    });
+    assert.equal(await state.supervisor.start(), true, appVersion);
+    assert.equal(state.dialogs.length, 1, appVersion);
+    assert.match(state.dialogs[0].detail, /app is version 0\.12\.0\.4\. The gateway is still running version 0\.12\.0\.3\./,
+      "the dialog names the folder version the user installed");
+    assert.ok(state.logs.includes("bundled gateway 0.12.0.3 predates app 0.12.0.4 — warning before reuse"), appVersion);
+  }
+});
+
+test("version-named folders with release suffixes compare as versions", async () => {
+  const nightly = "0.13.0-nightly.20261104t010101";
+  const cases = [
+    ["0.12.0-rc.6", "0.12.0-rc.6", "0.12.0-rc.5", 1],
+    [nightly, nightly, "0.13.0-nightly.20261103t060710", 1],
+    ["0.12.0-rc.5", "0.12.0.10", "0.12.0.9", 1],
+    ["0.12.0-rc.5", "0.12.1", "0.12.0.9", 1],
+    ["0.12.0-rc.5", "0.12.0-rc.5", "0.12.0-rc.6", 0],
+    ["0.12.0-rc.5", "0.12.0.3", "0.12.0.4", 0],
+  ];
+  for (const [appVersion, own, old, dialogs] of cases) {
+    const state = managedStaleHarness({
+      appVersion,
+      resourcesPath: buildNumberedResources(own),
+      gatewayVersion: old,
+      command: buildNumberedGateway(old),
+    });
+    assert.equal(await state.supervisor.start(), true);
+    assert.equal(state.dialogs.length, dialogs, `${own} over ${old}`);
+  }
+});
+
+test("a gateway from this build reporting its build number is not stale", async () => {
+  // The current bundle's own gateway reports the folder's build number, which
+  // never equals the release version the app reports.
+  const state = managedStaleHarness({
+    appVersion: "0.12.0-rc.5",
+    resourcesPath: buildNumberedResources("0.12.0.4"),
+    gatewayVersion: "0.12.0.4",
+    command: buildNumberedGateway("0.12.0.4"),
+  });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.dialogs.length, 0);
+});
+
+test("a swap at a folder that is not named like a version never matches", async () => {
+  for (const [resourcesPath, gatewayVersion, command] of [
+    ["/T/kirocrew/current/payload/KiroCrew.app/Contents/Resources", "0.12.0.3", buildNumberedGateway("0.12.0.3")],
+    [buildNumberedResources("0.12.0.4"), "Contents", "/T/kirocrew/0.12.0.4/payload/KiroCrew.app/Contents/Resources/backend-dist/bin/python3.12 -m kiro_crew gateway"],
+    [buildNumberedResources("0.12.0.4"), "../0.12.0.3", "/T/kirocrew/../0.12.0.3/payload/KiroCrew.app/Contents/Resources/backend-dist/bin/python3.12 -m kiro_crew gateway"],
+  ]) {
+    const state = managedStaleHarness({ appVersion: "0.12.0-rc.5", resourcesPath, gatewayVersion, command });
+    assert.equal(await state.supervisor.start(), true);
+    assert.equal(state.dialogs.length, 0, `${resourcesPath} / ${gatewayVersion}`);
+  }
+});
+
+test("no stale warning when the port belongs to a configured remote crew", async () => {
+  const state = managedStaleHarness({
+    store: fakeStore({ remoteHosts: { 5476: { host: "devbox", binPath: "", remotePort: "", remotePath: "" } } }),
+  });
+  await state.supervisor.start();
+  assert.equal(state.dialogs.filter((d) => d.message === "The gateway is still running an older version.").length, 0);
+});
+
 // A gateway this app found already serving and adopted, as it is when a desktop
 // update relaunches over a gateway it did not spawn. `command` is what ps reports
 // for the listener; under /virtual/resources/backend-dist it runs from this

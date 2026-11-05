@@ -77,8 +77,10 @@ test.describe('Artifacts Page — /artifacts', () => {
     const search = page.getByPlaceholder('Filter by name, slug, description…')
     await search.fill(slug)
     await expect(page.getByText(name)).toBeVisible({ timeout: 10000 })
-    // Click the artifact entry — it links to /artifacts/:slug
-    await page.getByText(name).first().click()
+    // Click the artifact entry — it links to /artifacts/:slug. The card's open
+    // control is a button laid over the whole card and named after the artifact,
+    // so it (not the title text beneath it) is what takes the click.
+    await page.getByRole('button', { name, exact: true }).first().click()
     await expect(page).toHaveURL(new RegExp(`/artifacts/${slug}`), { timeout: 5000 })
   })
 })

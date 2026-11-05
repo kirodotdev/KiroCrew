@@ -16,7 +16,7 @@ from acp_runtime_helpers import _make_runtime, _register
 
 from kiro_crew.acp.runtime import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import METHOD_SESSION_NEW, METHOD_SESSION_TERMINATE
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ── store_session_config: resolved-model capture ──
 
@@ -398,9 +398,15 @@ async def test_a_probe_is_stamped_when_its_answer_arrives_not_after_teardown(mon
     stamped_during_teardown: list[float] = []
 
     async def slow_terminate(session_id: str) -> None:
-        # flake-ok: pre-existing 50 ms delay in the stubbed terminate that spaces two monotonic stamps, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed terminate's own delay, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.05)
+        # The probe stamps its answer before it terminates, so the stamp taken
+        # below must land strictly after this entry instant. Wait until the
+        # monotonic clock has moved past it, instead of guessing a delay.
+        entered = time.monotonic()
+        await async_wait_until(
+            lambda: time.monotonic() > entered,
+            timeout=30.0,
+            describe=lambda: f"monotonic clock past {entered}",
+        )
         # A concurrent real session captures its snapshot mid-teardown.
         stamped_during_teardown.append(time.monotonic())
 
@@ -482,12 +488,9 @@ async def test_the_handle_that_filled_the_cache_gets_the_replay_on_a_repeat_pick
     handle = AcpSessionHandle("sA", q["sA"], rt)
     handle.store_session_config({"models": {"availableModels": [{"modelId": "auto"}]}})
 
-    async def slow_terminate(session_id: str) -> None:
-        # flake-ok: pre-existing 20 ms delay in the stubbed terminate before the probe answers, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed terminate's own delay, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.02)
-
-    monkeypatch.setattr(rt, "terminate_session", slow_terminate)
+    # The teardown has no latency to model here: the test asserts the snapshot's
+    # date equals the probe's own stamp, which holds at any teardown speed.
+    monkeypatch.setattr(rt, "terminate_session", AsyncMock())
     rt._send_and_await = AsyncMock(side_effect=[_PROBE_RESP])  # type: ignore[method-assign]
 
     first = await handle.refresh_available_models(force=True)

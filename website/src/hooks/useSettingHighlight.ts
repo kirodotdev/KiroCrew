@@ -34,7 +34,10 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // the derived id with it.
   'chat.pin-the-latest-prompt': 'chat.pin-the-latest-turn',
   // The reply-threads switch sits under the same page title and moved with it.
-  'developer.reply-threads-on-crewmate-chat-messages': 'developer.reply-threads-on-mate-chat-messages',
+  'developer.reply-threads-on-crewmate-chat-messages': 'developer.reply-threads-on-bot-chat-messages',
+  // "Mate" was renamed "Bot", shifting both derived ids again.
+  'developer.reply-threads-on-mate-chat-messages': 'developer.reply-threads-on-bot-chat-messages',
+  'developer.agent-harness-per-mate': 'developer.agent-harness-per-bot',
   // The peer-session card ("Remote instance sessions", then "Remote crew
   // sessions") folded into "Chat on a crew": one switch now holds both halves.
   'developer.remote-instance-sessions': 'developer.chat-on-a-crew',
@@ -177,7 +180,7 @@ const LATE_MOUNT_ANCHORS: ReadonlySet<string> = new Set([
  * is fed to `querySelector`/`matches`, never rendered — so this is where the
  * selector literals live, exempted by callee in `eslint.i18n.config.js`.
  */
-function settingAnchorSelector(
+export function settingAnchorSelector(
   attr: 'data-setting-id' | 'data-setting-key' | 'data-setting-label',
   value: string,
 ): string {

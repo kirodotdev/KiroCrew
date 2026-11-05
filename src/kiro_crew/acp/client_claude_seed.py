@@ -13,7 +13,7 @@ Instance fields written: ``_claude_inline_settings``,
 ``_claude_settings_written``, ``_permission_surface_share_validated``.
 
 Instance fields read: ``_agent``, ``_model``, ``_permission_mode``, ``_seed_owner``,
-``_work_dir``.
+``_session_key``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ from kiro_crew.acp import seed_provenance
 from kiro_crew.acp.claude_settings_sources import other_sources_define_available_models
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.session_mcp import session_mcp_deny_rules
+from kiro_crew.acp.spec_tools_allowlists import claude_ask_rules, session_allowlist_spec
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.security import is_sensitive_path
 
@@ -274,10 +276,27 @@ def _render_claude_settings_payload(self: AcpClient) -> str:
     if self._permission_mode:
         perms["defaultMode"] = self._permission_mode
     # Same resolution as the wire array: a project-only agent's disabledTools
-    # are a restriction, and resolving only the user level would drop them.
-    deny_rules = session_mcp_deny_rules(self._agent, work_dir=self._work_dir)
+    # are a restriction, and resolving only the user level would drop them. A
+    # crewmate's worker reads its own per-session spec, keyed by the session.
+    from kiro_crew.acp.session_mcp_crewmate import crewmate_worker_deny_rules
+
+    deny_rules = crewmate_worker_deny_rules(
+        self._agent,
+        work_dir=self._work_dir,
+        session_key=self._session_key or "",
+        backend=self.backend,
+    )
+    if deny_rules is None:
+        deny_rules = session_mcp_deny_rules(self._agent, work_dir=self._work_dir)
     if deny_rules:
         perms["deny"] = list(deny_rules)
+    # The spec's `toolsSettings` shell and write allowlists are refused at Crew's
+    # gate, which sees only a call claude asks about; these rules make the shell and
+    # the file-write tools ask while either is set (`spec_tools_allowlists`).
+    if self.backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS and self._agent:
+        ask_rules = claude_ask_rules(session_allowlist_spec(self._agent, self._work_dir))
+        if ask_rules:
+            perms["ask"] = ask_rules
     if perms:
         data["permissions"] = perms
     # Namespace-keyed (claude_code here), the registry index this backend's ids

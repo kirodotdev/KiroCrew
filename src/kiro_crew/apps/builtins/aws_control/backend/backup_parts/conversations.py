@@ -396,11 +396,13 @@ def _conversation_scratch_parent() -> Path:
     scratch = base / "conversations"
     if is_link_or_junction(scratch):
         raise ValueError("conversation scratch directory is not a real directory")
-    # `mode=` at creation rather than a chmod afterwards: it leaves no instant in which
-    # the directory exists group- or world-readable. umask can only clear bits, so the
-    # result is never wider than 0700. Ignored on Windows, where the masked parent and
-    # its own ACL are what restrict this.
-    scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Owner-only at creation rather than a chmod afterwards: it leaves no instant in
+    # which the directory, or any parent this call creates, exists group- or
+    # world-readable. No mode on Windows, where the masked parent and its own ACL are
+    # what restrict this.
+    from kiro_crew.owner_only_files import mkdirs_owner_only
+
+    mkdirs_owner_only(scratch)
     if scratch.resolve() != (base.resolve() / "conversations"):
         raise ValueError("conversation scratch directory resolves outside app storage")
     if not scratch.is_dir():

@@ -217,10 +217,11 @@ async def _run_device_login(
     # ``cryptography`` wheel behind the vault) must not be the price of `--help`.
     import aiohttp
 
-    from kiro_crew.auth.login.builder_id import BuilderIdAuthError
+    from kiro_crew.auth.login.builder_id import BuilderIdAuthError, StartUrlRejectedError
     from kiro_crew.auth.login.device import DeviceAuthError
     from kiro_crew.auth.service import (
         InvalidRegionError,
+        InvalidStartUrlError,
         KasLoginService,
         MissingStartUrlError,
         SignedOutDuringLoginError,
@@ -239,7 +240,7 @@ async def _run_device_login(
         except MissingStartUrlError:
             print("❌ --provider idc requires --start-url", file=sys.stderr)
             return 2
-        except InvalidRegionError as exc:
+        except (InvalidRegionError, InvalidStartUrlError, StartUrlRejectedError) as exc:
             print(f"❌ {exc}", file=sys.stderr)
             return 2
         except (BuilderIdAuthError, DeviceAuthError) as exc:

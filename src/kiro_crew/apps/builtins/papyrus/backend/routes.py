@@ -91,6 +91,7 @@ from aiohttp import web
 
 from kiro_crew.apps.builtins.papyrus.backend import doc_title, gitops, latex, store, tectonic
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.metrics.feature_usage import record_app_task
 from kiro_crew.slugs import refused_slug_char
 
 try:
@@ -840,6 +841,8 @@ async def _handle_compile(request: web.Request) -> web.StreamResponse:
     if main_file is None:
         raise web.HTTPNotFound(reason="no .tex file found in project")
     result = await latex.compile_project(project, main_file)
+    # One compile is this app's unit of work; counted once it has finished.
+    record_app_task("papyrus", "ok" if result.ok and not result.sandbox_error else "error")
     if result.sandbox_error:
         # The compiler never ran: this host could not build an OS-level sandbox and
         # `strict` mode is not optional for a spawn that reads an untrusted `.tex`.

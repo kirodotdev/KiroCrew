@@ -1,26 +1,16 @@
 """Managed-MCP registration for ``kirocrew-dashboard``, and why it is its own server.
 
-The dashboard-control tools are deliberately NOT in ``kirocrew-core``. Core is the
-surface every session carries and kiro-cli reads ``tools/list`` once per session,
-so a capability the user grants occasionally would otherwise spend context in
-every request of every session. Three properties encode that decision and must
-not regress:
+The tools are NOT in ``kirocrew-core``, which every session carries, so an occasional
+grant does not spend context in every request. Pinned here:
 
-* **The default agent's spec does not carry the server**, in ``mcpServers`` or as
-  an ``@kirocrew-dashboard`` ref in ``tools``. kiro-cli loads a server only when
-  something references it, so an unreferenced set costs a default session
-  literally zero context — the only shape that does.
-* **A refresh never re-grants it.** An existing spec that names the server keeps
-  its command current; one that does not is left alone, so the grant cannot come
-  back on a gateway restart behind the user's back.
-* **The managed spec carries NO ``autoApprove`` key.** An autoApproved MCP tool is
-  approved inside kiro-cli and never reaches ``hooks.on_tool_call``, so the deny
-  floor and governance ceiling would be bypassed for tools that rewrite the
-  user's session layout.
+* **The default agent's spec does not carry the server** (no ``mcpServers`` entry, no
+  ``@kirocrew-dashboard`` ref); an unreferenced server costs zero context.
+* **A refresh never re-grants it**, so a gateway restart cannot bring it back.
+* **The managed spec carries NO ``autoApprove`` key**: an autoApproved tool never
+  reaches ``hooks.on_tool_call``, bypassing the deny floor and governance ceiling.
 
-The registry assertions mirror ``test_computer_use_registration.py``: a managed
-server has to be named in several places, and a half-registered server is the
-failure mode that test was written to prevent.
+The registry assertions mirror ``test_computer_use_registration.py``: a
+half-registered server is the failure mode.
 """
 
 from __future__ import annotations
@@ -221,11 +211,8 @@ class TestAHandWrittenGrantIsUserInput:
     def test_a_malformed_ALWAYS_ON_entry_still_triggers_recovery(self) -> None:
         """Preservation is for hand-written entries only.
 
-        Nobody hand-writes an always-on server, so a malformed one is corruption,
-        not intent. It must keep raising: the caller catches that and rebuilds
-        from defaults. Swallowing it would leave the entry malformed, so
-        validation drops the server while its ``@ref`` stays in ``tools`` —
-        every tool on it silently gone.
+        A malformed always-on server is corruption, so it raises and the caller
+        rebuilds from defaults; swallowing it would silently drop every tool on it.
         """
         always_on = mcp_cleanup.ALWAYS_ON_BIN_MCP_SERVERS[0]
         config: dict[str, Any] = {"mcpServers": {always_on: "broken"}}
@@ -271,13 +258,8 @@ class TestAHandWrittenGrantIsUserInput:
 class TestTheNameAloneIsNotOwnership:
     """A global entry under an opt-in name is never Kiro Crew's to delete.
 
-    ``clean_stale_managed_mcp`` reclaims entries an OLDER INSTALL METHOD wrote
-    to the user's global ``mcp.json``. No version of Kiro Crew ever writes an
-    opt-in server there — hand-editing is the only way it is granted — so no
-    legitimate residue can exist under that name, and anything found there is
-    the user's own. Not purged, and not purged "if it looks like ours" either:
-    an entry spelled exactly the way we would spell it is precisely what a
-    correct hand-written grant looks like.
+    Kiro Crew never writes an opt-in server to the global ``mcp.json``, so an entry
+    there is the user's hand-written grant, even one spelled exactly as we would.
     """
 
     def test_an_opt_in_name_is_not_in_the_purge_set(self) -> None:
@@ -326,16 +308,9 @@ class TestTheNameAloneIsNotOwnership:
 class TestWhatThisSetGrants:
     """Assignment is per SERVER, so the set is the unit of authorization.
 
-    A spec that references this server gets every tool in it — there is no
-    per-tool granularity in the mount. That is sound for the current tools: they
-    grant no read the agent lacks (``list_sessions`` in core already returns every
-    session's title and key) and delete nothing that holds anything (the one
-    delete verb, ``chat_folder_delete``, accepts only an empty folder). It stops being sound the moment a
-    capability with real blast radius is added to this same set, because granting
-    the folder tools would silently grant that too.
-
-    This ratchet pins the set, so such a capability fails here until the author
-    puts it in a server of its own with the gate it actually needs.
+    A spec referencing this server gets every tool in it. The current tools grant no
+    new read and delete only empty folders (``chat_folder_delete``); a tool with real
+    blast radius belongs in its own server with its own gate.
     """
 
     FOLDER_TOOLS = {
@@ -346,7 +321,6 @@ class TestWhatThisSetGrants:
         # session in the folder are refused by name (see test_mcp_dashboard_folder_update).
         "chat_folder_update",
         "chat_folder_move_session",
-        "chat_folder_file_self",
         # Empty-only and creator-only: the endpoint's ``if_empty`` mode refuses
         # a folder holding a subfolder or a live or archived session instead of
         # unfiling it, refuses a folder the calling session did not create or
@@ -434,17 +408,9 @@ class TestWhatThisSetGrants:
     def test_session_driving_tools_ship_with_the_folder_tools(self) -> None:
         """This set deliberately bundles two capability classes.
 
-        The earlier ratchet here asserted the OPPOSITE — that nothing which
-        messages or stops another session may join the folder set. That guard
-        existed for the window before session control landed, to stop such a tool
-        arriving as an unnoticed side effect of a folder change. Bundling them is
-        now the decided design: one assignable set, granted as a whole, so an
-        agent told to organize sessions can also hand work between them.
-
-        The ratchet is inverted rather than deleted, because the property worth
-        protecting did not go away: what the set contains must be a decision, not
-        an accident. If either class disappears from the server, this fails and
-        whoever changed it has to say which half they meant to drop.
+        One assignable set, so an agent told to organize sessions can also hand work
+        between them. If either class leaves the server, this fails, so dropping one
+        stays a decision.
         """
         from kiro_crew import mcp_dashboard
 

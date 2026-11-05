@@ -1,42 +1,28 @@
 /**
  * Settings → Slack → Slack Code: the registered Slack Code switches (Agent
- * sessions; see `slackCodeSwitches`) and the "Update your Slack app" panel.
+ * sessions and Code channels; see `slackCodeSwitches`), the code-channel defaults (folder /
+ * agent / model / effort), and the "Update your Slack app" panel.
  *
  * The draft lives in `SlackPanel` (one Save for the whole page); this module
  * owns the shape of the Slack Code slice of it, how it is read from the GET and
  * written to the PUT, and how it renders.
  */
+import { Suspense, lazy } from 'react'
 import { CheckCircle2, Info } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
-import { type SlackCapability, type SlackCodeSwitchKey, type SlackConfigData, type SlackConfigSave } from '../../api/client'
+import { Badge } from '../../components/ui'
+import type { SlackCapability, SlackConfigData } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { SlackManifestUpdate, useInstallRecheckFailed, useSlackManifestStatus } from './SlackManifestUpdate'
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
+import type { SlackCodeDraft } from './slackCodeDraft'
+
+export { slackCodeDraftFrom, slackCodePayload, type SlackCodeDraft } from './slackCodeDraft'
+
+const SlackCodeChannelDefaults = lazy(() => import('./SlackCodeChannelDefaults'))
 
 /** Install readings that leave no update steps to do. */
 const NO_UPDATE_STEPS = new Set(['up_to_date', 'feature_disabled'])
-
-/** The Slack Code slice of the Slack settings draft. */
-export interface SlackCodeDraft {
-  /** Every registered switch, as the draft has it. */
-  switches: Record<SlackCodeSwitchKey, boolean>
-}
-
-export function slackCodeDraftFrom(c: SlackConfigData): SlackCodeDraft {
-  return {
-    switches: Object.fromEntries(SLACK_CODE_SWITCHES.map(k => [k, !!c[k]])) as Record<SlackCodeSwitchKey, boolean>,
-  }
-}
-
-/** The PUT fields for the Slack Code slice: only the switches that differ from
- *  *saved*, so a save of an unrelated Slack field writes none of them. */
-export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft): Partial<SlackConfigSave> {
-  const out: Partial<SlackConfigSave> = {}
-  for (const k of SLACK_CODE_SWITCHES) {
-    if (d.switches[k] !== saved.switches[k]) out[k] = d.switches[k]
-  }
-  return out
-}
 
 /** Whether a SAVED toggle can run: it also needs the installed app to hold the
  *  feature's scope, and Slack not to have refused it. Only what the "Update
@@ -44,9 +30,11 @@ export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft): Part
  *  A missing scope, a workspace without the feature, a rejected or refused
  *  token and an unread install are the panel's status, with its detail and
  *  steps, so they are not repeated here. */
-function CapabilityLine({ capability }: { capability?: SlackCapability }) {
+function CapabilityLine({ capability, updatePending }: { capability?: SlackCapability; updatePending: boolean }) {
   if (!capability) return null
-  if (capability.available) {
+  // The app can hold the scope while its manifest still lacks the feature: the
+  // update panel then says it needs an update, so "prepared" would contradict it.
+  if (capability.available && !updatePending) {
     return (
       <div className="flex items-center gap-1.5 text-[12px] text-ok mt-1" data-testid="slack-capability" data-available="true">
         <CheckCircle2 size={12} className="flex-none" /> {i18nT('pages.settings.slackPanel.slackCode.cap_active')}
@@ -89,6 +77,8 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
   const readingCurrent = !!reading && !statusQ.isError && !recheckFailed
     && SLACK_CODE_SWITCHES.filter(f => reading.features?.includes(f)).join(',') === savedKey
   const installRead = readingCurrent ? reading.install ?? undefined : undefined
+  // The update panel below lists steps for this reading.
+  const updatePending = !!installRead && !NO_UPDATE_STEPS.has(installRead.status)
   const agentSessionsInSlack = data.agent_sessions && (
     !!data.agent_sessions_capability?.available
     || (!!installRead && NO_UPDATE_STEPS.has(installRead.status)))
@@ -101,13 +91,14 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
         <div className="rounded-lg border border-border p-4" data-testid="slack-code-section">
           <p className="text-[12px] text-muted m-0 mb-2">{i18nT('pages.settings.slackPanel.slackCode.intro')}</p>
 
-          {/* ── Switches, one row each, in registry order. ── */}
+          {/* ── Switches, one row each, in registry order. The Agent sessions
+              row (#21422) is the first, above Code channels. ── */}
           <div className="flex flex-col gap-4" data-testid="slack-code-switches">
             {/* ── Agent sessions ── */}
             <div>
               <SettingsToggle
                 label={i18nT('pages.settings.slackPanel.slackCode.agent_sessions')}
-                description={i18nT('pages.settings.slackPanel.slackCode.agent_sessions_desc')}
+                hint={i18nT('pages.settings.slackPanel.slackCode.agent_sessions_desc')}
                 checked={draft.switches.agent_sessions}
                 onChange={setAgentSessions}
                 disabled={readOnly}
@@ -122,9 +113,34 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                   <span>{i18nT('pages.settings.slackPanel.slackCode.agent_sessions_note')}</span>
                 </div>
               )}
-              {data.agent_sessions && <CapabilityLine capability={data.agent_sessions_capability} />}
+              {data.agent_sessions && <CapabilityLine capability={data.agent_sessions_capability} updatePending={updatePending} />}
+            </div>
+            {/* ── Code channels ── */}
+            <div>
+              <SettingsToggle
+                label={i18nT('pages.settings.slackPanel.slackCode.code_channels')}
+                description={i18nT('pages.settings.slackPanel.slackCode.code_channels_desc')}
+                checked={draft.switches.code_channels}
+                onChange={v => onChange({ switches: { ...draft.switches, code_channels: v } })}
+                disabled={readOnly}
+                configKey="slack.code_channels"
+              />
+              {/* A preview tag on a normal Slack setting. The description says
+                  what on and off do, so the tag stands alone here. */}
+              <div className="flex items-start gap-2 mt-1" data-testid="slack-code-preview-note">
+                <Badge variant="aim" className="text-[11px] font-sans px-1.5 py-0 flex-none">{i18nT('pages.settings.slackPanel.slackCode.stage_tag')}</Badge>
+              </div>
+              {data.code_channels && <CapabilityLine capability={data.code_channels_capability} updatePending={updatePending} />}
             </div>
           </div>
+
+          {draft.switches.code_channels && (
+            // Its own chunk: loaded only once the switch is on, so the Settings
+            // page does not carry the defaults card for every visitor.
+            <Suspense fallback={null}>
+              <SlackCodeChannelDefaults data={data} draft={draft} onChange={onChange} readOnly={readOnly} />
+            </Suspense>
+          )}
 
           <SlackManifestUpdate data={data} draft={draft} manifestText={manifestText} onSave={readOnly ? undefined : onSave} saving={saving} />
         </div>

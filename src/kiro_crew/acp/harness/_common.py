@@ -51,6 +51,7 @@ __all__ = [
     "MANDATORY_MCPS_ENV",
     "MembershipHarness",
     "apply_client_application_env",
+    "defer_mandatory_mcps_env",
     "pin_mandatory_mcps_env",
 ]
 
@@ -82,9 +83,7 @@ def pin_mandatory_mcps_env(env: dict[str, str], *, spawned_binary: str | None = 
     unknown versions keep every Crew-owned server resident to avoid the
     thinking-signature "tools list differs" rejection that bricks a session.
     """
-    ambient = os.environ.get(MANDATORY_MCPS_ENV)
-    if ambient is not None:
-        env[MANDATORY_MCPS_ENV] = ambient
+    if _apply_operator_mandatory_mcps(env):
         return
 
     if kiro_cli.mandatory_mcps_drop_allowed(spawned_binary):
@@ -97,6 +96,29 @@ def pin_mandatory_mcps_env(env: dict[str, str], *, spawned_binary: str | None = 
         env[MANDATORY_MCPS_ENV] = ",".join(sorted(servers))
     else:
         env.pop(MANDATORY_MCPS_ENV, None)
+
+
+def defer_mandatory_mcps_env(env: dict[str, str]) -> None:
+    """Crew's KAS engine bundle: the operator's value verbatim, or no list at all.
+
+    That engine never rewrites the request's ``tools`` array when a deferred
+    tool loads: ``tool_load`` returns the schema as a tool result and the call
+    runs through its fixed ``tool_call`` meta-tool. A signed thinking block from
+    an earlier turn therefore still matches the array, so the "tools list
+    differs" rejection :func:`pin_mandatory_mcps_env` guards against has no
+    mechanism there, and Crew's servers defer like any other.
+    """
+    if not _apply_operator_mandatory_mcps(env):
+        env.pop(MANDATORY_MCPS_ENV, None)
+
+
+def _apply_operator_mandatory_mcps(env: dict[str, str]) -> bool:
+    """Copy an ambient value (even an empty one) into *env*; True when one was set."""
+    ambient = os.environ.get(MANDATORY_MCPS_ENV)
+    if ambient is None:
+        return False
+    env[MANDATORY_MCPS_ENV] = ambient
+    return True
 
 
 #: The notification spellings kiro-cli and the KAS relay share.

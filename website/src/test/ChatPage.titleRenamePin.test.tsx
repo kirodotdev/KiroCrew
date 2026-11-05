@@ -179,7 +179,7 @@ describe('ChatPage – header rename is pinned to the session it opened on', () 
     renderChatPage()
     const input = await openRename()
     act(() => { fireEvent.change(input, { target: { value: 'Renamed alpha' } }) })
-    act(() => { fireEvent.blur(input) })
+    await act(async () => { fireEvent.blur(input) })
     expect(apiMocks.renameSlot).toHaveBeenCalledWith('chat-a', 'Renamed alpha')
   })
 

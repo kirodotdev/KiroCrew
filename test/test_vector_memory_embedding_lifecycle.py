@@ -1046,21 +1046,26 @@ class TestSemanticWriteTimeEmbedding:
         assert store.get_semantic_context(query_text="tokyo") == expected
         assert scoring_scans == 0, "unchanged semantic context must reuse its resident scoring rows"
 
-    def test_semantic_scoring_cache_invalidates_for_local_write_and_delete(
-        self, tmp_path: Path
-    ) -> None:
+    def test_semantic_scoring_cache_follows_a_local_write_and_delete(self, tmp_path: Path) -> None:
         store = VectorMemoryStore(db_path=tmp_path / "mem.db")
         store.init()
         assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
         assert "pref.city: Paris" in store.get_semantic_context(query_text="paris")
         assert store._semantic_scoring is not None
+        generation = store._semantic_scoring_generation
 
+        # The write patches the resident set under a new generation rather than dropping it.
         assert store.set_semantic("pref.city", "Tokyo", 1.0, "user_explicit") is None
-        assert store._semantic_scoring is None
-        assert "pref.city: Tokyo" in store.get_semantic_context(query_text="tokyo")
+        assert store._semantic_scoring_generation > generation
+        assert store._semantic_scoring is not None
+        assert store._semantic_scoring.generation == store._semantic_scoring_generation
+        context = store.get_semantic_context(query_text="tokyo")
+        assert "pref.city: Tokyo" in context
+        assert "Paris" not in context
 
         assert store.delete_semantic("pref.city", "user_explicit") is True
-        assert store._semantic_scoring is None
+        assert store._semantic_scoring is not None
+        assert store._semantic_scoring.rows == ()
         assert store.get_semantic_context(query_text="tokyo") == ""
 
     @pytest.mark.parametrize("writer", ["upsert", "insert_if_absent", "delete"])
@@ -1103,9 +1108,9 @@ class TestSemanticWriteTimeEmbedding:
         monkeypatch.setattr(store, "_db_lock", checked_lock)
         original_invalidate = store._invalidate_semantic_scoring
 
-        def invalidate_under_writer_lock() -> None:
+        def invalidate_under_writer_lock(*args: object) -> None:
             assert checked_lock.held_by_current_thread()
-            original_invalidate()
+            original_invalidate(*args)
 
         monkeypatch.setattr(store, "_invalidate_semantic_scoring", invalidate_under_writer_lock)
 

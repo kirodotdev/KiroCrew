@@ -430,11 +430,8 @@ class TestStdioLoopCallerIdentity:
     def test_tool_sees_the_tenant_nonce_WITHOUT_an_identity(self, monkeypatch):
         """The separator arrives even when the identity does not.
 
-        This is the frame an unnamed co-tenant of a pooled backend receives. The
-        nonce must reach the tool (it is what per-tenant state is keyed on when
-        there is nothing else), the caller must stay None (a connection name is not
-        an identity), and both must be cleared afterwards so the next dispatch on
-        this thread cannot inherit them.
+        An unnamed co-tenant gets the nonce (per-tenant state keys on it) and no caller
+        (a connection name is not an identity); both clear after the dispatch.
         """
         from kiro_crew import mcp_caller
 
@@ -524,9 +521,7 @@ class TestStdioLoopCallerIdentity:
             assert kw["outcome"] == "rejected_policy_unresolved"
             assert kw["session_key"] == "dashboard:chat-7"
             assert kw["error"] == "managedToolPolicy.unresolved:policy_unreadable"
-            # Regression pin: with no reason from the gateway the text is the
-            # historical wording, so a client on an older gateway reads exactly
-            # what it read before.
+            # With no reason from the gateway the text is the fixed default wording.
             assert "fix or remove the unreadable spec in the agents directory" in body
             assert "Gateway reason:" not in body
         finally:
@@ -535,12 +530,8 @@ class TestStdioLoopCallerIdentity:
     def test_the_unreadable_policy_refusal_rules_out_a_connection_problem(self, monkeypatch):
         """``policy_unreadable`` is an answer from the gateway, so its text says so.
 
-        It shares its symptom -- every call refused -- with an unreachable
-        gateway, and an operator who reads it as an outage restarts healthy
-        processes while the spec stays broken. The text therefore rules out
-        reachability, and names every condition the endpoint answers this code
-        for (an unreadable or unparseable spec, a duplicate name, a wrong-shape
-        ``managedToolPolicy``) rather than only the parse.
+        It looks like an outage (every call refused), so the text rules out reachability
+        and names every condition the endpoint answers this code for.
         """
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
         monkeypatch.setattr(
@@ -564,14 +555,9 @@ class TestStdioLoopCallerIdentity:
     def test_unresolved_policy_refusal_names_the_file_the_gateway_named(self, monkeypatch):
         """The gateway's ``reason`` reaches the caller, defanged and redacted.
 
-        The 409 body names the unreadable file and what to do; that is the one
-        piece of information the operator needs, and a refusal without it
-        sends them to validate every file by hand. The reason interpolates a
-        FILENAME from a user-writable
-        directory, so it goes through the same two scrubbers the
-        ``identity_unattested`` arm applies to its denial text -- the directive
-        defang and the credential redaction -- and is bounded, because this
-        early refusal does not pass through the tool path's scrubbers.
+        The 409 body names the unreadable file, which the operator needs. That filename
+        comes from a user-writable directory, so the reason is defanged, redacted and
+        bounded here; this early refusal skips the tool path's scrubbers.
         """
         ran = []
         harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
@@ -623,10 +609,8 @@ class TestStdioLoopCallerIdentity:
     def test_a_secret_straddling_the_detail_cap_leaves_no_fragment(self, monkeypatch):
         """Redaction runs over the WHOLE reason; the cap trims what it returns.
 
-        Cut first and a token that straddles the cap loses its tail, the
-        fragment fails to match the redactor's pattern, and the head of the
-        secret is echoed. So the cap is applied to the redacted text, and the
-        prefix of a token that would have been cut is never in the response.
+        Cut first, a token straddling the cap would lose its tail, miss the redactor's
+        pattern, and echo its head.
         """
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
         cap = mcp_shared._POLICY_DETAIL_MAX_CHARS
@@ -650,12 +634,8 @@ class TestStdioLoopCallerIdentity:
     def test_no_usable_answer_refuses_the_call(self, monkeypatch):
         """``resolution_failed`` refuses, because the exclusion set is unknown.
 
-        Nothing came back, or a ``5xx`` said the gateway is broken, or the resolve
-        raised. Every ``4xx`` returns before that arm, so this reason means the
-        policy could not be READ -- an operator exclusion may exist while the
-        process holding it cannot answer for it. Serving the empty set as a
-        permission is what would let an excluded tool run, so the call is refused
-        and the refusal names the same condition the audit trail does.
+        No answer, a ``5xx`` or a raise (every ``4xx`` returns earlier): an operator
+        exclusion may exist, so serving the empty set as a permission could run it.
         """
         ran = []
         harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
@@ -699,12 +679,8 @@ class TestStdioLoopCallerIdentity:
     def test_the_unreachable_gateway_refusal_names_a_retry_not_a_spec_edit(self, monkeypatch):
         """The refusal has to diagnose the condition it actually hit.
 
-        ``policy_unreadable`` means the gateway read a spec and could not use it,
-        so its text sends the caller to the agents directory. ``resolution_failed``
-        means the gateway was never reached: no spec is implicated, and that same
-        text would have the caller edit healthy files to fix an outage, leaving the
-        edit as the real defect. The condition clears on its own, so the remedy is
-        a retry.
+        ``resolution_failed`` means the gateway was never reached, so no spec is
+        implicated and the remedy is a retry, not an edit in the agents directory.
         """
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
         monkeypatch.setattr(
@@ -724,13 +700,10 @@ class TestStdioLoopCallerIdentity:
             harness.close()
 
     def test_an_excluded_tool_stays_excluded_when_the_gateway_cannot_answer(self, monkeypatch):
-        """The defect this guards: a real exclusion going unenforced.
+        """A real exclusion stays enforced when the gateway cannot say so.
 
-        The named tool is genuinely excluded for this session, and the resolver
-        cannot reach the gateway to say so. The exclusion set therefore arrives
-        empty with ``resolution_failed``, which is indistinguishable by value
-        alone from an operator who excluded nothing. The reason is what keeps them
-        apart, so the excluded tool must not execute.
+        The set arrives empty, like an operator who excluded nothing; only the
+        ``resolution_failed`` reason tells them apart.
         """
         ran = []
         harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
@@ -749,11 +722,8 @@ class TestStdioLoopCallerIdentity:
     def test_a_gateway_that_declines_this_caller_does_not_refuse(self, monkeypatch):
         """``policy_forbidden`` is a boundary the gateway HOLDS, not one it lost.
 
-        The 403 is ``member_session_unverified``: a session claiming a member
-        store without a scope the gateway can verify. That is the steady
-        state for a whole class of callers rather than a window that closes, so
-        refusing would deny them tools permanently. The call proceeds and the
-        window is audited.
+        The 403 (``member_session_unverified``) is the steady state for a class of
+        callers, so refusing would deny them tools permanently. The call runs, audited.
         """
         ran = []
         harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")

@@ -24,6 +24,8 @@ from kiro_crew.apps.bridges import (
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 from kiro_crew.apps.manifest import AppManifest
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 def _run(coro):
     """Drive an async bridge helper from a synchronous test.
@@ -644,11 +646,11 @@ class TestCronServiceBridge:
         assert result == ["test-app/nightly-run"]
         assert mock_sdk.add_job_if_absent_async.call_args.kwargs["enabled"] is False
 
-    def test_legacy_defs_without_enabled_default_active(self, tmp_path, app_env, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_legacy_defs_without_enabled_default_active(self, tmp_path, app_env, monkeypatch):
         """Pre-existing app-crons.json without the enabled key registers active."""
-        from unittest.mock import MagicMock, patch
-
         from kiro_crew.apps.bridges import register_app_crons_with_service
+        from kiro_crew.cron import CronService
 
         cron_defs = [
             {
@@ -661,15 +663,16 @@ class TestCronServiceBridge:
         ]
         self._write_app_crons(tmp_path, "test-app", cron_defs)
 
-        mock_cron_service = MagicMock()
-        mock_sdk = MagicMock()
-        mock_sdk.list_jobs.return_value = []
-        mock_sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="abc123"))
+        svc = CronService(base_dir=app_env["home"] / "crons")
+        await svc.start()
+        try:
+            registered = await register_app_crons_with_service("test-app", svc)
+            jobs = {job.name: job for job in svc.list_jobs()}
+        finally:
+            await svc.stop()
 
-        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
-            _run(register_app_crons_with_service("test-app", mock_cron_service))
-
-        assert mock_sdk.add_job_if_absent_async.call_args.kwargs["enabled"] is True
+        assert registered == ["test-app/legacy"]
+        assert jobs["test-app/legacy"].enabled is True
 
     def test_startup_skips_existing_disabled_job(self, tmp_path, app_env, monkeypatch):
         """Gateway-startup re-registration must not re-add (and thus re-pause)

@@ -20,6 +20,7 @@ patch helpers in ``issue_radar_routes_coverage_helpers.py``.
 import unittest
 from unittest import mock
 
+import issue_radar_route_checks
 from issue_radar_routes_coverage_helpers import (
     _body,
     _connected,
@@ -118,16 +119,14 @@ class TestCreateLabel(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self._call(self._base())).status, 502)
 
 
-class TestAddSettingsLabel(unittest.IsolatedAsyncioTestCase):
+class TestAddSettingsLabel(
+    issue_radar_route_checks.AMalformedOrNonObjectPayloadIs400, unittest.IsolatedAsyncioTestCase
+):
     """The append endpoint that exists because the settings PUT replaces the
     WHOLE document, so a read-then-write can only serialize itself."""
 
     async def _call(self, body: object):
         return await routes._handle_add_settings_label(_json_request("POST", "settings/role", body))
-
-    async def test_a_malformed_or_non_object_payload_is_400(self):
-        self.assertEqual((await self._call(None)).status, 400)
-        self.assertEqual((await self._call([1])).status, 400)
 
     async def test_a_missing_repo_role_or_label_is_400(self):
         self.assertEqual((await self._call({"role": "triage", "label": "bug"})).status, 400)

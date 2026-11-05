@@ -296,12 +296,8 @@ class TestProbeCache:
     def test_identity_changes_for_a_non_scrubbed_env_value(self) -> None:
         """A non-prefixed value IS identity-relevant, and that is deliberate.
 
-        Consequence worth stating: rotating a credential held in a key outside
-        ``ENV_SCRUB_PREFIXES`` (``API_TOKEN``, say) discards a good tool list.
-        That is the same trade ``PoolKey.effective_env_hash`` already makes, and
-        agreeing with the pool is the point -- a cache that considered two
-        configurations identical while the pool ran them as separate backends
-        would serve one backend's tools as the other's.
+        Rotating e.g. ``API_TOKEN`` discards a good tool list, matching
+        ``PoolKey.effective_env_hash``; disagreeing with the pool would cross tool lists.
         """
         a = McpServerInfo(name="srv", command="bin", env={"API_TOKEN": "aaa"})
         b = McpServerInfo(name="srv", command="bin", env={"API_TOKEN": "bbb"})
@@ -338,12 +334,8 @@ class TestProbeCache:
 class TestProbeIdentityWiring:
     """The identity check as reached THROUGH ``list_servers``.
 
-    ``TestProbeCache`` covers ``_probe_identity`` and ``_get_cached`` directly,
-    which leaves the wiring untested: with every one of those assertions green,
-    dropping the ``_probe_identity`` argument at the ``_get_cached`` call site
-    restores the original bug and nothing fails. These tests hold that call
-    site, the ``probe_metadata`` read beside it, and the input coercion that
-    running on real on-disk specs requires.
+    Pins the ``_get_cached`` call site, the ``probe_metadata`` read beside it, and the
+    input coercion real on-disk specs need; ``TestProbeCache`` tests the parts alone.
     """
 
     def setup_method(self) -> None:
@@ -495,11 +487,8 @@ class TestProbeIdentityWiring:
 class TestQuarantinedServersAreNotSpawned:
     """A server that wedges on every probe stops being spawned.
 
-    ``PROBE_MAX_CONCURRENCY`` bounds how many probes run at once, never how many
-    times a hopeless one is retried, so the thing under test is REPETITION. The
-    consecutive-failure count is not kept here: ``mcp_quarantine`` already holds
-    it, and these tests drive it exactly as the dashboard does — ``probe_all``,
-    then ``record_verdicts`` with that round's outcome.
+    The failure count lives in ``mcp_quarantine``, driven as the dashboard does:
+    ``probe_all``, then ``record_verdicts`` with that round's outcome.
     """
 
     LIMIT = 3
@@ -739,11 +728,9 @@ class TestQuarantinedServersAreNotSpawned:
     ) -> None:
         """Any stored value must be inert on the probe path.
 
-        The store is unfenced and its contents are attacker-influenced, and this
-        read happens inside ``probe_all``: an exception here would take out the
-        whole fleet's discovery, not one row. ``_as_time`` bounds NaN, infinities
-        and negatives but passes a large finite value through, so nothing on this
-        path may hand a stored number to an API with a platform range.
+        The store is attacker-influenced and an exception in ``probe_all`` stops all
+        discovery. ``_as_time`` passes large finite values, so none may reach a
+        platform-range API.
         """
         from kiro_crew import mcp_quarantine
 

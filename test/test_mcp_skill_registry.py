@@ -1,6 +1,6 @@
 """Tests for the registry-skill MCP tools: ``skill_discover`` / ``skill_fetch``.
 
-These are the agent-facing twins of the dashboard's Skills → Discover panel
+These are the agent-facing twins of the dashboard's Add Skill dialog
 (``/api/skills/-/discover`` + ``/discover/preview``). Both are READ-only: the
 agent reads a published skill's instructions straight into the conversation and
 uses them, with no install step — installing stays a human action (see
@@ -77,8 +77,9 @@ class TestToolSurface:
         human action in the dashboard. Adding an install tool must be a
         deliberate decision that also re-reviews the auth admission in
         ``server._MIXED_INTERNAL_API_PATHS``."""
-        names = [t["name"] for t in mcp_core._list_tools()]
-        assert not [n for n in names if "install" in n]
+        tools = {t["name"]: t["description"] for t in mcp_core._list_tools()}
+        assert not [n for n in tools if "install" in n]
+        assert "Customize → Skills → Add Skill" in tools["skill_fetch"]
 
 
 class TestSkillDiscover:
@@ -352,6 +353,7 @@ class TestSkillFetch:
         assert "BUNDLE of 76 files" in out
         assert "scripts/run.mjs" in out
         assert "cannot be read or executed" in out
+        assert "Customize → Skills → Add Skill" in out
 
     def test_content_is_flagged_as_untrusted(self, fake_get):
         """Registry content is third-party text reaching the model verbatim —

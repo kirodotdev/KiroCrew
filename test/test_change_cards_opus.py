@@ -279,7 +279,7 @@ class _SettleState:
     # ``get_slot`` here exists only for ``chat_cards.record_change_status`` on
     # the broadcast of a card that DID retire; it returns None like the real one
     # for a slot already gone. The guard that retirement ignores it is
-    # ``_get_slot_banned`` below, used by the dedicated regression test.
+    # ``_GetSlotBanned`` below, used by the dedicated regression test.
     def get_slot(self, name: str):
         return None
 

@@ -1,5 +1,5 @@
 import { i18nT } from '../i18n/t'
-import { downloadBlob, downloadUrl } from './download'
+import { downloadBlob, downloadUrl, isAndroidWebView } from './download'
 import { pathBasename } from './pathBasename'
 
 /** Largest download held in page memory: the gateway's own in-memory cap for
@@ -89,7 +89,9 @@ export async function downloadFileToDisk(
   try {
     const res = await fetch(url, { signal: controller.signal })
     const length = Number(res.headers?.get('content-length') ?? 0)
-    if (res.ok && length > IN_MEMORY_DOWNLOAD_MAX_BYTES) {
+    // An Android in-app browser drops a blob: download, so there the browser
+    // downloads this same attachment URL itself, whatever the size.
+    if (res.ok && (length > IN_MEMORY_DOWNLOAD_MAX_BYTES || isAndroidWebView())) {
       controller.abort()
       downloadUrl(url, downloadFileName(filePath))
       return

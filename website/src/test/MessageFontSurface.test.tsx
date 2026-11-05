@@ -106,11 +106,12 @@ describe('message font size scales the conversation surface', () => {
       const table = scopedRules().find((r) => r.selector.replace(/\s+/g, ' ') === '.mc-message-font-scope.msg-content table')
       expect(table?.body).toMatch(/font-size:\s*inherit/)
       // `text-sm` also fixes line-height at 1.25rem; the table re-derives it
-      // from the setting (20/14) and td, whose own `text-sm` sets it again,
-      // hands it back to the table so rows do not tighten as text grows.
+      // from the setting (20/14) for th, and td, whose own `text-sm` sets it
+      // again, takes the body text's unitless 1.5, which scales with the
+      // cell's (now inherited) size, so rows do not tighten as text grows.
       expect(table?.body).toMatch(/line-height:\s*calc\(var\(--mc-message-font-size, 14px\) \* 1\.4286\)/)
       const td = scopedRules().find((r) => r.selector.replace(/\s+/g, ' ') === '.mc-message-font-scope.msg-content td')
-      expect(td?.body).toMatch(/line-height:\s*inherit/)
+      expect(td?.body).toMatch(/line-height:\s*1\.5;/)
     })
 
     it('hands Pierre both the size and the line-height, so the stand-in swap stays height-neutral', () => {
@@ -154,11 +155,11 @@ describe('message font size scales the conversation surface', () => {
     })
 
     it('the Lexical editor and its placeholder overlay both carry the composer typography hook', () => {
-      // index.css applies the coarse-pointer 16px floor by `[data-composer-typo]`.
-      // ChatInput's textarea and the paste-highlight mirror carry it; the
-      // Lexical path has to as well or a touch device gets WebKit focus-zoom
-      // back below 16px. The placeholder is an overlay <div>, not a real
-      // `::placeholder`, so it needs the same hook to stay metric-identical.
+      // `[data-composer-typo]` is the composer's typography hook (cli-mode.css
+      // reads it too). ChatInput's textarea and the paste-highlight mirror carry
+      // it, and so does the Lexical path. The placeholder is an overlay <div>,
+      // not a real `::placeholder`, so it carries the same hook to stay
+      // metric-identical to the editor.
       render(
         <LexicalComposerInput
           value=""

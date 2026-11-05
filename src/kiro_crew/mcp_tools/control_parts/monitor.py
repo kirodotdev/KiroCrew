@@ -252,7 +252,8 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
                 if max_runtime_secs
                 else ""
             )
-            + ". End your turn now. Arming happens when this turn's result is "
+            + ". Reply with one line saying the watch was requested, then end your "
+            "turn. Arming happens when this turn's result is "
             "processed, so this ack cannot confirm it; the outcome is reported "
             'as a transcript notice on this session — "Automation loop armed: '
             'loop <id> … next wake …" or "Automation loop NOT armed: <reason> '
@@ -452,7 +453,8 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
         # processed, so no text produced here can confirm it. It must therefore name
         # the NOT-armed notice, or a refused arm reads as monitoring started.
         "Structured monitor requested for this session; application is still pending. "
-        "End your turn now. Arming happens when this turn's result is processed, so "
+        "Reply with one line saying the watch was requested, then end your turn. "
+        "Arming happens when this turn's result is processed, so "
         "this ack cannot confirm it; the outcome is reported as a transcript notice "
         'on this session — "Automation loop armed: …" or "Automation loop NOT armed: '
         '<reason> [status N]". If the notice says NOT armed, read the reason before '

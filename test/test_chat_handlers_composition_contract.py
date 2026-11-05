@@ -1,16 +1,8 @@
 """The chat HTTP handlers keep their surface and contracts while their owners move.
 
-``kiro_crew.dashboard.chat_handlers`` is the dashboard chat API's import path and its
-patch surface. Part of what it defined now lives in the modules of
-``kiro_crew.dashboard.chat_api``, one responsibility each, and ``_facade_compose.compose``
-runs every function they define on the facade's globals. These tests pin:
-
-* the surface: every name the facade bound before the split still resolves on it, the
-  route table still dispatches to the facade's objects, and the six runner seams it
-  imports are still the runner's objects;
-* contracts of the moved endpoint families that no other test pins: the bare 404 a
-  delete answers, the resume refusal without a conversation log, the off-loop restore
-  prefetch, the close path's conductor wake, and the resume record shapes.
+``kiro_crew.dashboard.chat_handlers`` is the import path and patch surface; the code lives
+in ``kiro_crew.dashboard.chat_api`` modules that ``_facade_compose.compose`` runs on the
+facade's globals. These pin that surface and the endpoint contracts no other test pins.
 """
 
 from __future__ import annotations
@@ -455,15 +447,12 @@ async def test_the_handover_exit_reports_the_close_on_a_committed_drain_only(
 ) -> None:
     """A close that yields its archive to a recreated slot drains the tail OPEN.
 
-    A committed drain returns success and no archival save runs; a drain whose rows
-    were lost raises, because that frame was their last chance at durability and
-    nothing retries it. The exit reaches no further step either way -- it pushed a
-    conductor wake while a close was a wake trigger, and the whole close path now
-    carries none.
+    A committed drain returns with no archival save; a drain that lost rows raises,
+    because nothing retries that frame. The close path pushes no conductor wake.
     """
     events: list[str] = []
 
-    async def _drain(_state, name, _slot):
+    async def _drain(_state, name, _slot, takeover_basis=None):
         events.append(f"drain:{name}")
         return ch._HandoverDrainResult(rows_committed=committed, prompts_lost=0)
 
@@ -503,13 +492,10 @@ def _handler_files() -> list[Path]:
 
 
 def test_no_handler_module_reaches_the_conductor_wake() -> None:
-    """A worker's session closing is not a statement by the worker, so a close wakes
-    nobody and no handler module needs the wake at all.
+    """A session closing wakes nobody, so no handler module imports the conductor wake.
 
-    Read at module scope AND inside every function body, because the close path's
-    helper held its import in its own body to keep an import cycle open-ended:
-    ``conductor_wake`` imports the dashboard back. A module-scope test alone would
-    pass while a function-local import kept the push alive.
+    Function bodies are read too: ``conductor_wake`` imports the dashboard back, so an
+    import would sit inside a function to dodge the cycle.
     """
     for path in _handler_files():
         source = path.read_text(encoding="utf-8")
@@ -559,6 +545,7 @@ _OWNER_MODULES = frozenset(
         "slot_lifecycle",
         "slot_model",
         "slot_note",
+        "slot_repair",
         "slot_settings",
         "slot_summary",
         "source_links",
@@ -687,6 +674,13 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
         ),
     ),
+    "slot_repair": (
+        (
+            "api_chat_slot_reset_conversation",
+            "async function",
+            "(request: 'web.Request') -> 'web.Response'",
+        ),
+    ),
     "slot_lifecycle": (
         (
             "_slot_still_ours",
@@ -699,11 +693,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "_restore_slot_nudge_loop",
             "async function",
             "(loop: \"'NudgeLoop | None'\", admission_check: 'Callable[[], bool]') -> 'None'",
-        ),
-        (
-            "api_chat_slot_reset_conversation",
-            "async function",
-            "(request: 'web.Request') -> 'web.Response'",
         ),
         (
             "_release_closed_execution",
@@ -821,7 +810,7 @@ slot_settings | api_chat_slot_color | async function | (request: 'web.Request') 
 chat_send | _sweep_stale_permissions | function | (slot: "'_ChatSlot'") -> 'None'
 chat_send | _send_binds_agent | function | (agent: 'str', slot: 'Any') -> 'bool'
 chat_send | _send_writes_persona | function | (body: 'dict') -> 'bool'
-chat_send | _send_harness_command | async function | (message: 'str') -> 'str'
+chat_send | _send_harness_command | async function | (message: 'str', state: 'DashboardState', slot: '_ChatSlot') -> 'str'
 chat_send | steer_is_auto | function | (value: 'object') -> 'bool'
 chat_send | decided_message_handling | async function | (slot: 'Any', message: 'str') -> 'tuple[bool, dict | None]'
 chat_send | api_chat | async function | (request: 'web.Request') -> 'web.StreamResponse'
@@ -851,7 +840,7 @@ turn_stop | api_chat_slot_stop | async function | (request: 'web.Request') -> 'w
 turn_stop | api_chat_slot_interrupt | async function | (request: 'web.Request') -> 'web.Response'
 continue_turn | api_chat_slot_continue | async function | (request: 'web.Request') -> 'web.Response'
 continue_turn | SlotContinueRefusal | class
-continue_turn | continue_slot_turn | async function | (state: 'DashboardState', slot: '_ChatSlot', *, directive_user_origin: 'bool', via: 'str' = '', require_interrupted: 'bool' = False, before_dispatch: 'Callable[[], None] | None' = None, extra_meta: 'dict[str, Any] | None' = None, replaced: 'Callable[[], bool] | None' = None) -> 'str'
+continue_turn | continue_slot_turn | async function | (state: 'DashboardState', slot: '_ChatSlot', *, directive_user_origin: 'bool', via: 'str' = '', require_interrupted: 'bool' = False, allow_restored_queue: 'bool' = False, before_dispatch: 'Callable[[], None] | None' = None, extra_meta: 'dict[str, Any] | None' = None, replaced: 'Callable[[], bool] | None' = None) -> 'str'
 continue_turn | session_start_failure_streak | function | (messages: 'list[dict]') -> 'int'
 continue_turn | _is_stop_event | function | (m: 'dict') -> 'bool'
 continue_turn | _is_interrupted | function | (slot: '_ChatSlot') -> 'bool'
@@ -865,7 +854,8 @@ slot_create | api_chat_slot_create | async function | (request: 'web.Request') -
 handover_drain | _HandoverDrainResult | class
 handover_drain | _owed_prompts_lost_on_line | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', history_key: 'str') -> 'int'
 handover_drain | _report_lost_queued_prompts | function | (state: 'DashboardState', name: 'str', count: 'int', history_key: 'str') -> 'None'
-handover_drain | _persist_handover_tail | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot') -> '_HandoverDrainResult'
+handover_drain | _teardown_drain_basis | function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', basis: 'TakeoverBasis | None') -> 'TakeoverBasis | None'
+handover_drain | _persist_handover_tail | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', takeover_basis: 'TakeoverBasis | None' = None) -> '_HandoverDrainResult'
 slot_summary | api_chat_slot_summary | async function | (request: 'web.Request') -> 'web.Response'
 slot_summary | _generate_state | function | (cfg: 'KiroCrewConfig', slot: 'Any') -> 'str'
 slot_summary | api_chat_slot_summary_generate | async function | (request: 'web.Request') -> 'web.Response'
@@ -1582,20 +1572,9 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_facade() -> None:
 
 # ── the path-keyed guards keep their reach ────────────────────────────────────
 
-#: Constructs repository guards read by path or through module source, each mapped
-#: to the files that hold it -- the facade (``chat_handlers``) or an owner -- which
-#: are the files those guards read: the agent-SDK boundary's three baselined
-#: imports, the stop chokepoints and the synthesis boundary the frontend mirrors in
-#: the facade; the app-actor turn kwargs and the hold-branch persist in
-#: ``chat_api/chat_send.py``; the queue-clear the session-control doc counts in
-#: ``chat_api/turn_stop.py``; the hand-over drain's fence opt-out in
-#: ``chat_api/handover_drain.py``; the approval-mode writers
-#: ``test_approval_modes_enforcement``'s ``WRITERS`` keys to
-#: ``chat_api/slot_approval.py``; and the permission-resolution sites with their
-#: dirty flags and the approval-resolved broadcasts, whose guards read
-#: ``chat_api/turn_stop.py`` and ``chat_api/slot_approval.py``. A holder that grew
-#: one, or lost one, would move it out of such a guard's sight, so each set is
-#: exact.
+#: Constructs that repository guards read by path, mapped to the files that hold them
+#: (the facade ``chat_handlers`` or a ``chat_api`` owner). Each set is exact: a construct
+#: that moved files would leave its guard's sight.
 _GUARDED_CONSTRUCT_HOMES: dict[str, frozenset[str]] = {
     r"(?m)^from kiro_crew\.acp\.client import AcpModelUnavailable$": frozenset({"chat_handlers"}),
     r"(?m)^from kiro_crew\.providers\.acp import AcpProvider$": frozenset({"chat_handlers"}),

@@ -242,6 +242,19 @@ async def test_bad_bodies_are_400(state):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", [[], ["accept"], {}, {"a": 1}])
+async def test_an_unhashable_action_is_a_400_not_a_500(state, action):
+    _slot, fut, row = _slot_with_pending(state, "rid-9")
+    async with TestClient(TestServer(_app(state, _dashboard_user))) as client:
+        resp = await client.post(
+            "/api/chat/slots/selected/elicitation", json={**_target(row), "action": action}
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "invalid_action"
+    assert not fut.done()
+
+
+@pytest.mark.asyncio
 async def test_a_stale_card_cannot_answer_a_later_ask_that_reused_its_id(state):
     """ACP request ids are connection-scoped and a backend may reuse one once the
     earlier ask expired. A delayed POST from the OLD card names the old row, so
@@ -724,3 +737,91 @@ async def test_a_failed_audit_or_fallback_write_still_settles_the_card(state, mo
         c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "elicitation_resolved"
     ]
     assert [f["action"] for f in frames] == ["decline"]
+
+
+# ── KAS user input: the model's question rides this card, and no exit says yes ──
+
+
+async def _ask_user_input_through_the_card(state, settle, *, option: str = "SQLite"):
+    """Raise a ``_kiro/userInput`` on a real session handle, draw it on the card,
+    settle the card with *settle*, and return what went on the wire."""
+    import time
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.acp.session_handle import AcpSessionHandle
+    from kiro_crew.acp.types import METHOD_KAS_USER_INPUT, JsonRpcMessage
+    from kiro_crew.dashboard.chat_turn.elicitation_prompt import _on_elicitation_request
+
+    runtime = MagicMock()
+    runtime.send_response = AsyncMock()
+    runtime._last_activity = time.monotonic()
+    handle = AcpSessionHandle("sess-ui", asyncio.Queue(), runtime)
+    handle.accepts_elicitation = True
+    msg = JsonRpcMessage(
+        id=31,
+        method=METHOD_KAS_USER_INPUT,
+        params={
+            "sessionId": "sess-ui",
+            "toolCallId": "tool-1",
+            "question": "Which database?",
+            "options": [{"title": "Postgres"}, {"title": option}],
+        },
+    )
+    event = await handle._handle_elicitation_request(msg)
+    assert event is not None
+    slot = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    task = asyncio.ensure_future(
+        _on_elicitation_request(_runner_turn(state, slot, handle.answer_elicitation), event)
+    )
+    await async_wait_until(lambda: "31" in slot._approval_futures or task.done())
+    if "31" in slot._approval_futures:
+        row = next(m for m in slot.messages if m.get("role") == "elicitation")
+        settle(slot, slot._approval_futures["31"], row)
+    await await_until(task)
+    runtime.send_response.assert_awaited_once()
+    rid, body = runtime.send_response.await_args.args
+    assert rid == 31
+    return body
+
+
+def _accept_choice(slot, fut, row) -> None:
+    meta = json.loads(row["cls"])
+    meta["answer"] = {"choice": "SQLite"}
+    row["cls"] = json.dumps(meta)
+    fut.set_result("accept")
+
+
+def _stop(slot, fut, row) -> None:
+    slot._approval_stopped.add("31")
+    fut.set_result("rejected")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("settle", "expected"),
+    [
+        (_accept_choice, "SQLite"),
+        (lambda slot, fut, row: fut.set_result("decline"), "declined"),
+        (lambda slot, fut, row: fut.set_result("rejected"), "declined"),
+        (lambda slot, fut, row: fut.set_result("approved"), "No person"),
+        (lambda slot, fut, row: fut.set_result("approved_trust_reads"), "No person"),
+        (_stop, "No person"),
+    ],
+    ids=["choice", "deny", "reject", "trust-sweep", "trust-reads-sweep", "stop"],
+)
+async def test_every_card_exit_answers_a_user_input_with_text(state, audited, settle, expected):
+    """KAS reads anything but ``answered`` with text as "move on", which its tool
+    tells the model to take as yes. A Deny, a trust sweep and a Stop each say so."""
+    body = await _ask_user_input_through_the_card(state, settle)
+    assert body["action"] == "answered"
+    assert expected in body["answer"]
+
+
+@pytest.mark.asyncio
+async def test_a_tainted_user_input_option_is_answered_with_text(state, audited):
+    """An option value display redaction would change is refused unshown; the
+    model hears that nobody could answer, not that the person declined."""
+    body = await _ask_user_input_through_the_card(
+        state, lambda *a: None, option="AKIAIOSFODNN7EXAMPLE1234"
+    )
+    assert body["action"] == "answered" and "No person" in body["answer"]

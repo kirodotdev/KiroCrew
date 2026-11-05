@@ -150,6 +150,7 @@ vi.mock('../components/CrewAvatarBuilder', () => ({
 import CrewEditorModal from '../components/crew/CrewEditorModal'
 import { useCrewEditor } from '../components/crew/useCrewEditor'
 import type { KiroCrewAgent } from '../api/types'
+import { acpBackendName } from '../api/acpBackend'
 
 const DEFAULT_CREW = { name: 'kirocrew', kiro_agent: 'kirocrew', workspace: 'core-ws', memory_store: 'core-mem' }
 const OTHER_CREW = { name: 'oncall', kiro_agent: 'oncall-agent', workspace: 'oncall', memory_store: 'oncall-mem' }
@@ -282,7 +283,7 @@ describe('CrewEditorModal — single editing experience', () => {
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     // No classic dialog, and the retired Classic/New toggle is gone. The one
     // dialog is the New editor, named for the crewmate it edits.
-    expect(screen.getAllByRole('dialog', { name: /Edit mate/ })).toEqual([next])
+    expect(screen.getAllByRole('dialog', { name: /Edit Bot/ })).toEqual([next])
     expect(within(next).queryByTestId('crew-editor-experience-toggle')).toBeNull()
     expect(within(next).queryByTestId('crew-editor-exp-classic')).toBeNull()
     expect(within(next).queryByTestId('crew-editor-exp-next')).toBeNull()
@@ -343,7 +344,7 @@ describe('CrewEditorNextDialog — section rail', () => {
     // The switcher would repoint the binding away from the crewmate's own file.
     expect(within(dialog).queryByRole('combobox', { name: /built from/i })).toBeNull()
     // A generic mate label, never the file's id and never a template provenance.
-    expect(owned).toHaveTextContent('Mate')
+    expect(owned).toHaveTextContent('Bot')
     expect(owned).not.toHaveTextContent('c0ffee12')
     fireEvent.click(within(dialog).getByTestId('next-open-advanced'))
     expect(await within(dialog).findByTestId('next-pane-builtFrom')).toBeInTheDocument()
@@ -362,7 +363,7 @@ describe('CrewEditorNextDialog — section rail', () => {
     expect(name).not.toHaveTextContent('c0ffee12')
     const added = within(dialog).getByTestId('next-band-added')
     expect(added).toHaveTextContent('Added to On-Call Pager')
-    expect(added).not.toHaveTextContent('Added to Mate')
+    expect(added).not.toHaveTextContent('Added to Bot')
   })
 
   it("splits what the owned config's worker carries into Comes-with and Added bands", async () => {
@@ -512,7 +513,7 @@ describe('CrewEditorNextDialog — section rail', () => {
     mockCaps.get.mockResolvedValue({ ...view, revision: 'r2' })
     fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
     expect(await within(dialog).findByTestId('next-builtfrom-remove-error')).toHaveTextContent(
-      "This mate's abilities changed since you opened this. Nothing was removed; check the list and press Remove again.",
+      "This Bot's abilities changed since you opened this. Nothing was removed; check the list and press Remove again.",
     )
     expect(mockCaps.save).not.toHaveBeenCalled()
     expect(mockCaps.get.mock.calls.length).toBeGreaterThan(getsBefore)
@@ -541,7 +542,7 @@ describe('CrewEditorNextDialog — section rail', () => {
     const getsBefore = mockCaps.get.mock.calls.length
     fireEvent.click(within(added).getByTestId('next-band-remove-mcpServers-github'))
     const ask = await screen.findByRole('dialog', { name: 'Remove “github”?' })
-    expect(ask).toHaveTextContent('It stops being available to this mate. You can add it back with Add abilities.')
+    expect(ask).toHaveTextContent('It stops being available to this Bot. You can add it back with Add abilities.')
     fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove “github”?' })).toBeNull())
     expect(mockCaps.preview).not.toHaveBeenCalled()
@@ -671,6 +672,41 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
     fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
     const added = await within(dialog).findByTestId('next-band-added')
     expect(within(added).getByTestId('next-band-added-empty')).toBeInTheDocument()
+  })
+
+  it('points a mate that owns its file at the Add abilities button it shows', async () => {
+    mockCaps.get.mockResolvedValue({ ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, scope: 'mate' } })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(added).toHaveTextContent('removed ones can be added back with Add abilities')
+    expect(within(added).getByTestId('next-band-added-empty')).toHaveTextContent('Nothing added yet. Use Add abilities to copy some in.')
+    expect(await within(dialog).findByTestId('next-pane-advanced')).toBeInTheDocument()
+  })
+
+  it('tells a built-in agent its abilities are fixed, never naming the hidden Add abilities button', async () => {
+    mockCaps.get.mockResolvedValue({ ...CAPS_VIEW, mode: 'shared' })
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(within(added).getByTestId('next-band-added-empty')).toHaveTextContent('oncall is a built-in agent, so nothing can be added to it here.')
+    expect(added).not.toHaveTextContent('Add abilities')
+    expect(within(dialog).queryByTestId('next-pane-advanced')).toBeNull()
+  })
+
+  it.each([
+    ['a shared custom agent', { mode: 'shared' as const, source: 'custom' as const }],
+    ['a forked copy of a built-in agent', { mode: 'inherited' as const, source: 'builtin' as const }],
+    ['a legacy forked copy', { mode: 'legacy_snapshot' as const, source: 'unknown' as const }],
+  ])('tells a crewmate on %s that nothing can be added here, never naming the hidden button', async (_label, { mode, source }) => {
+    mockCaps.get.mockResolvedValue({ ...CAPS_VIEW, mode, template: { ...CAPS_VIEW.template, source } })
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(within(added).getByTestId('next-band-added-empty')).toHaveTextContent('Nothing can be added to oncall here.')
+    expect(added).not.toHaveTextContent('built-in')
+    expect(added).not.toHaveTextContent('Add abilities')
   })
 })
 
@@ -886,10 +922,33 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
       models_backend: 'codex', pin_served_as: '',
     })
     const dialog = await openNew()
-    const readout = await within(dialog).findByText(/Using openai\.gpt-5\.6-terra/)
+    const readout = await within(dialog).findByTestId('next-model-runs-instead')
     expect(within(dialog).queryByTestId('next-model-pin-unserved')).toBeNull()
-    expect(readout.parentElement).toHaveTextContent('taken from the custom agent it is built from.')
-    expect(readout.parentElement).not.toHaveTextContent('chosen for this mate.')
+    // It says why the pick is not the model in use: which harness lacks it.
+    expect(readout).toHaveTextContent(
+      `${acpBackendName({ id: 'codex' })} doesn't offer claude-fable-5, so this Bot runs on openai.gpt-5.6-terra.`,
+    )
+    expect(within(dialog).queryByTestId('next-model-uses-line')).toBeNull()
+  })
+
+  it('says the pick is not offered when a foreign pin resolves to nothing', async () => {
+    // The mate's saved model is in another harness's namespace, every lower
+    // tier defers, and no session has advertised a list yet: the resolver
+    // answers pinned with an empty model and no pin_served_as. The picker
+    // still shows the saved model, so the readout names it as not offered
+    // rather than reading as if the pick were honoured.
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [DEFAULT_CREW, { ...OTHER_CREW, model: 'claude-fable-5' }], default_agent: 'kirocrew',
+    })
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: '', pinned: true, kiro_agent: 'oncall-agent', reasoning_effort: '', effort_pinned: false,
+      models_backend: 'codex',
+    })
+    const dialog = await openNew()
+    const line = await within(dialog).findByTestId('next-model-auto-instead')
+    expect(line).toHaveTextContent("Codex doesn't offer claude-fable-5, so a model is picked automatically.")
+    expect(within(dialog).queryByTestId('next-model-uses-line')).toBeNull()
+    expect(within(dialog).queryByTestId('next-model-runs-instead')).toBeNull()
   })
 
   it('does not claim a stored pin is in use when its harness serves it under no id', async () => {
@@ -903,8 +962,8 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     const dialog = await openNew()
     const readout = await within(dialog).findByTestId('next-model-pin-unserved')
     // The session leaves the pin unsent and stays on the harness's default model.
-    expect(readout.textContent).toMatch(/doesn't offer claude-opus-5\.5, so this mate's sessions run on .+'s default model instead/)
-    expect(within(dialog).queryByText(/Using claude-opus-5\.5/)).toBeNull()
+    expect(readout.textContent).toMatch(/doesn't offer claude-opus-5\.5, so this Bot's sessions run on .+'s default model instead/)
+    expect(within(dialog).queryByTestId('next-model-runs-instead')).toBeNull()
   })
 })
 
@@ -994,7 +1053,7 @@ describe('CrewEditorNextDialog — Memory', () => {
   it('names a private V2 store in the status line', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-memory'))
-    expect(await within(dialog).findByTestId('next-memory-status')).toHaveTextContent('This mate has its own memory (V2).')
+    expect(await within(dialog).findByTestId('next-memory-status')).toHaveTextContent('This Bot has its own memory (V2).')
   })
 
   it('shows only the diagnostic for a store another member owns', async () => {

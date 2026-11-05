@@ -154,15 +154,147 @@ test("TEMPORAL: once the installer HAS taken over, the failsafe still guarantees
   // discard it.
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
-    const { deps, calls, emit, fireNative } = makeDeps();
+    const { deps, calls, emit, fireNative, fireAppOnce } = makeDeps();
     const u = initAutoUpdate(deps);
     emit("update-downloaded", { version: "1.1.0" });
     await u.install();
 
     fireNative("before-quit-for-update");
+    // darwin: Squirrel's own quit (before-quit) is the handoff to ShipIt.
+    fireAppOnce("before-quit");
     assert.strictEqual(calls.exit, 0, "must not exit instantly -- give the quit a chance to complete");
     mock.timers.tick(5_000);
     assert.strictEqual(calls.exit, 1, "a process still alive after the handoff must be forced out");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+// #29449. On darwin Electron emits before-quit-for-update BEFORE it closes the
+// windows, and calls Squirrel (which launches ShipIt and then quits the app)
+// only once the last window has closed. Exiting between the two is what
+// SIGTERMed ShipIt mid-swap.
+function fakeWindow() {
+  const w = { destroyed: false, isDestroyed: () => w.destroyed, destroy: () => { w.destroyed = true; } };
+  return w;
+}
+
+test("TEMPORAL #29449: darwin does not force-exit before Squirrel hands the swap to ShipIt", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, fireNative } = makeDeps();
+    deps.getAllWindows = () => [];
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await u.install();
+
+    fireNative("before-quit-for-update");
+    mock.timers.tick(59_999);
+    assert.strictEqual(calls.exit, 0, "exiting before Squirrel's own quit kills ShipIt before it has the request");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("TEMPORAL #29449: a darwin handoff that never quits the app still ends in an exit", async () => {
+  // Otherwise a stalled handoff leaves a running app with no windows.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, fireNative } = makeDeps();
+    deps.getAllWindows = () => [];
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await u.install();
+
+    fireNative("before-quit-for-update");
+    mock.timers.tick(60_000);
+    assert.strictEqual(calls.exit, 1);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("TEMPORAL #29449: an install failure during the darwin handoff is not followed by an exit", async () => {
+  // The failure path owns recovery: it brings the gateway back and keeps the app.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, fireNative } = makeDeps();
+    deps.getAllWindows = () => [];
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await u.install();
+
+    fireNative("before-quit-for-update");
+    emit("error", new Error("Code signature at URL did not pass validation"));
+    mock.timers.tick(60_000);
+    assert.strictEqual(calls.exit, 0);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("TEMPORAL #29449: a window that will not close is destroyed so the handoff can run", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, fireNative, fireAppOnce } = makeDeps();
+    const stuck = fakeWindow();
+    const closed = fakeWindow();
+    closed.destroyed = true;
+    let destroyCalls = 0;
+    const realDestroy = closed.destroy;
+    closed.destroy = () => { destroyCalls += 1; realDestroy(); };
+    deps.getAllWindows = () => [stuck, closed];
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await u.install();
+
+    fireNative("before-quit-for-update");
+    mock.timers.tick(4_999);
+    assert.strictEqual(stuck.isDestroyed(), false, "a window gets the normal close first");
+    mock.timers.tick(1);
+    assert.strictEqual(stuck.isDestroyed(), true, "destroy skips the close a window can veto");
+    assert.strictEqual(destroyCalls, 0, "an already-destroyed window is left alone");
+    assert.strictEqual(calls.exit, 0, "closing the windows is not an exit");
+
+    fireAppOnce("before-quit");
+    mock.timers.tick(5_000);
+    assert.strictEqual(calls.exit, 1, "after the handoff the exit failsafe is armed as before");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("TEMPORAL #29449: once the handoff quit arrives, open windows are not destroyed", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, emit, fireNative, fireAppOnce } = makeDeps();
+    const win = fakeWindow();
+    deps.getAllWindows = () => [win];
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await u.install();
+
+    fireNative("before-quit-for-update");
+    fireAppOnce("before-quit");
+    mock.timers.tick(5_000);
+    assert.strictEqual(win.isDestroyed(), false);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("off darwin the failsafe still arms on before-quit-for-update", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, fireNative } = makeDeps();
+    deps.osPlatform = "win32";
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await u.install();
+
+    fireNative("before-quit-for-update");
+    mock.timers.tick(5_000);
+    assert.strictEqual(calls.exit, 1);
   } finally {
     mock.timers.reset();
   }

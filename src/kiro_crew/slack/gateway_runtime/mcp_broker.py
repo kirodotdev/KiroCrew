@@ -181,6 +181,7 @@ async def _init_mcp_gateway(
         except asyncio.CancelledError:
             raise
         except Exception:
+            # PlatformCompositionError too: boot enforces composition; the withhold stays.
             logger.warning(
                 "mcp-gateway: could not lift the secret:// withhold for newly routed servers",
                 exc_info=True,
@@ -197,7 +198,7 @@ async def _init_mcp_gateway(
     if approvals.refused:
         logger.warning(
             "mcp launch approvals: %d server launch(es) refused; review them in "
-            "Settings > MCP Management",
+            "Customize > Connections > MCP Servers > MCP Management",
             len(approvals.refused),
         )
     if approvals.captured or approvals.refused:

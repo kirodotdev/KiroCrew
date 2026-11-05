@@ -25,7 +25,7 @@
  * end.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
@@ -85,6 +85,8 @@ const THREE_TITLES = ['Notes', 'Work log', 'Dashboard'] as const
 let ctl: ReturnType<typeof usePanelTabs> | null = null
 /** What the strip reported it SHOWS (the `onActiveTabChange` contract). */
 let shown: string | null | undefined
+/** The client of the last `renderPanel`, so a case can wait on a read the strip makes on mount. */
+let queryClient: QueryClient | null = null
 
 interface HarnessProps {
   closable: boolean
@@ -129,7 +131,7 @@ const leadingBody = () => screen.getByTestId(`leading-body-${LEADING_ID}`)
 const queryLeadingBody = () => screen.queryByTestId(`leading-body-${LEADING_ID}`)
 
 function renderPanel(props: HarnessProps) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <Provider store={createTestStore()}>
@@ -137,6 +139,14 @@ function renderPanel(props: HarnessProps) {
       </Provider>
     </QueryClientProvider>,
   )
+}
+
+/** `renderPanel`, then wait for the `['apps']` list the strip reads on mount. `AppPanelTabsErrorNotice`
+ *  observes it, so a case that goes on to wait in real time would see that answer land mid-wait, outside act(). */
+async function renderPanelSettled(props: HarnessProps) {
+  const view = renderPanel(props)
+  await waitFor(() => expect(['success', 'error']).toContain(queryClient?.getQueryState(['apps'])?.status))
+  return view
 }
 
 const chips = () => screen.getAllByRole('tab')
@@ -316,7 +326,7 @@ describe('SidePanel leading tab', () => {
   })
 
   it('a focus on the leading tab survives persistence: reload restores it, not the last stored tab', async () => {
-    renderPanel({ closable: false })
+    await renderPanelSettled({ closable: false })
     act(() => { ctl!.openView('workflows') })
     act(() => { ctl!.setActive(LEADING_ID) })
     expect(ctl?.activeId).toBe(LEADING_ID)
@@ -334,7 +344,7 @@ describe('SidePanel leading tab', () => {
     // that first opened the strip: changing the default later would reach only
     // strips nobody had opened. The default is resolved on READ instead, so the
     // strip renders the leading tab while the bucket stays unfocused.
-    renderPanel({ closable: false })
+    await renderPanelSettled({ closable: false })
     // Rendered focus IS the leading tab; the BUCKET is what must stay unwritten.
     expect(ctl?.activeId).toBe(LEADING_ID)
     await new Promise(r => setTimeout(r, 400))

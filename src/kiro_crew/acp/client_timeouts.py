@@ -116,12 +116,22 @@ def resolve_prompt_timeout() -> float:
     """
     turn_limit = current_turn_limit_secs() or 0.0
     try:
+        from kiro_crew.config import load_memo
         from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS
 
-        agent = KiroCrewConfig.load().agent
-        subagent = float(agent.subagent_timeout_secs) or float(SUBAGENT_TIMEOUT_SECS)
-        configured = max(float(agent.chat_turn_timeout_secs), subagent, turn_limit)
+        def _read(cfg: KiroCrewConfig) -> tuple[float, float]:
+            agent = cfg.agent
+            return float(agent.chat_turn_timeout_secs), float(agent.subagent_timeout_secs)
+
+        # Read at every prompt dispatch, on the event loop too: the config rebuild
+        # is skipped while the config files are unchanged (``config.load_memo``).
+        # The turn's own limit above is live, never part of the memo.
+        turn_ceiling, subagent_setting = load_memo.memoized(
+            "acp.prompt_timeout_inputs", KiroCrewConfig.load, _read
+        )
+        subagent = subagent_setting or float(SUBAGENT_TIMEOUT_SECS)
+        configured = max(turn_ceiling, subagent, turn_limit)
     except Exception:
         logger.debug("turn-ceiling config unavailable; transport keeps default", exc_info=True)
         return prompt_timeout_for_ceiling(turn_limit)
@@ -156,7 +166,7 @@ async def _effective_prompt_timeout_async(timeout: float | None) -> float:
     → ``KiroCrewConfig.load()``: stat, read, validate), so resolving it inline
     in an ``async def`` would block the event loop for every session sharing
     it. Offload to a thread, matching this module's convention for filesystem
-    work (see ``_resolve_kiro_bin_async``).
+    work (see ``_resolve_kiro_bin_for_spawn``).
     """
     if timeout is not None:
         return float(timeout)

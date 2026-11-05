@@ -2,7 +2,8 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { STORAGE_KEY } from './constants'
 import { fmtBytes, fmtDateTimeNumeric } from '../../i18n/format'
 import { hasCommandModifier } from '../../utils/commandModifier'
-import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
+import { backslashIsSeparator, pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
+import { parentDir } from './deepLink'
 
 export const extOf = (p: string) => {
   const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
@@ -14,7 +15,23 @@ export const extOf = (p: string) => {
 
 export const basename = (p: string) => pathBasename(stripTrailingSeparators(p))
 
+/** A UNC share root (`\\host\share`), the top of its own tree. */
+const UNC_SHARE_ROOT_RE = /^\\\\[^\\/]+[\\/][^\\/]+[\\/]*$/
+
+/** The folder that contains `p`, used to re-root a folder tab.
+ *
+ *  A Windows gateway prints paths with backslashes (`str(Path)` in the Files
+ *  backend), so a Windows-shaped path (drive-rooted or backslash UNC, the
+ *  `backslashIsSeparator` test) takes `parentDir`'s separator-aware cut. At a
+ *  drive root (`C:\`) or a UNC share root (`\\host\share`) there is no parent,
+ *  so the path itself comes back and re-rooting to it is a no-op. Every other
+ *  path keeps the POSIX rule: only `/` separates, because on POSIX a backslash
+ *  is a legal file-name character (`/tmp/we\ird` is one name). */
 export const dirname = (p: string) => {
+  if (backslashIsSeparator(p)) {
+    if (UNC_SHARE_ROOT_RE.test(p)) return p
+    return parentDir(p) ?? p
+  }
   const s = p.replace(/\/+$/, '')
   const i = s.lastIndexOf('/')
   if (i <= 0) return '/'

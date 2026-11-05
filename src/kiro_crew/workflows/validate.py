@@ -407,9 +407,14 @@ def check_ctx_surface(source: str, available: "frozenset[str] | set[str]") -> li
         ),
         None,
     )
-    if entry is None or not entry.args.args:
+    if entry is None:
         return []
-    ctx_name = entry.args.args[0].arg
+    # ``def workflow(ctx, /)`` keeps the context in ``posonlyargs``, which
+    # ``_check_entrypoint`` already accepts, so the port check reads it there too.
+    entry_params = entry.args.posonlyargs + entry.args.args
+    if not entry_params:
+        return []
+    ctx_name = entry_params[0].arg
     errors: list[str] = []
     seen: set[tuple[str, int]] = set()
 
@@ -786,6 +791,23 @@ def _check_entrypoint(tree: ast.Module, errors: list[str]) -> None:
             args = node.args.posonlyargs + node.args.args
             if not args or args[0].arg != "ctx":
                 errors.append(f"'{ENTRYPOINT}' must take 'ctx' as its first parameter")
+                return
+            # The runner calls ``workflow(ctx)`` and nothing else, so any further
+            # parameter without a default raises TypeError the moment the run
+            # starts, after the script was accepted.
+            positional_defaults = len(node.args.defaults)
+            required = [a.arg for a in args[1 : len(args) - positional_defaults]]
+            required += [
+                a.arg
+                for a, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
+                if default is None
+            ]
+            if required:
+                names = ", ".join(f"'{name}'" for name in required)
+                errors.append(
+                    f"'{ENTRYPOINT}' is called with 'ctx' only; give {names} a default "
+                    "or remove it"
+                )
             return
         if isinstance(node, ast.FunctionDef) and node.name == ENTRYPOINT:
             errors.append(f"'{ENTRYPOINT}' must be 'async def', not 'def'")

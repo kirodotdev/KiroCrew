@@ -19,6 +19,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import drain, notes, open_feed, real_dashboard_state
 from slack_gateway_helpers import _mock_context_builder  # noqa: F401
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
@@ -32,6 +34,7 @@ from slack_gateway_helpers import (
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.monitoring.models import (
     MonitorActionCompletion,
     MonitorActionDisposition,
@@ -523,11 +526,8 @@ class TestInteractiveApproval:
     async def test_all_slots_trusted_does_not_auto_approve(self):
         """All slots trusted, no resolver → still PROMPTS (no implicit trust).
 
-        Session trust speaks for a chat session, not for an unattended job, and
-        with one trusted chat open the `all()` test is trivially satisfied.
-        Asserting the return value alone would pass vacuously, because the
-        mocked `request_approval` also returns True -- so assert the prompt was
-        actually raised.
+        Session trust speaks for a chat session, not an unattended job. The mocked
+        `request_approval` also returns True, so the test asserts the prompt was raised.
         """
         orch = _make_orchestrator(slack_enabled=False)
         ds = _mock_dashboard_state()
@@ -600,30 +600,33 @@ class TestDeliverResult:
     async def test_dashboard_new_slot(self):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
-        slot = MagicMock()
-        slot.append = MagicMock()
+        slot = _ChatSlot("new-slot")
         ds.get_or_create_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
         await orch._deliver_result("Title", "task", "result", "dashboard")
-        slot.append.assert_called_once_with("assistant", "Title\n\nresult", "msg msg-a")
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("assistant", "Title\n\nresult")
+        ]
+        # The heartbeat seeds the slot's title from the task summary.
+        assert slot.title == "💓 task"
         ds.notify.assert_called_once_with(
-            "heartbeat", "Title", "task\n\nresult", meta={"slot": slot.key}
+            "heartbeat", "Title", "task\n\nresult", meta={"slot": "new-slot"}
         )
 
     @pytest.mark.asyncio
     async def test_dashboard_specific_slot(self):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
-        slot = MagicMock()
-        slot.append = MagicMock()
-        slot.key = "my-slot"
+        slot = _ChatSlot("my-slot")
         ds.resolve_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
         with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             await orch._deliver_result("Title", "task", "result", "dashboard:my-slot")
         ds.resolve_slot.assert_called_with("my-slot")
-        slot.append.assert_called_once_with("assistant", "Title\n\nresult", "msg msg-a")
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("assistant", "Title\n\nresult")
+        ]
         ds.notify.assert_called_once_with(
             "heartbeat", "Title", "task\n\nresult", meta={"slot": "my-slot"}
         )
@@ -642,15 +645,14 @@ class TestDeliverResult:
             ),
         ],
     )
-    async def test_dashboard_target_slot_not_found(self, deliver, operation):
+    async def test_dashboard_target_slot_not_found(self, deliver, operation, tmp_path):
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        ds.resolve_slot = MagicMock(return_value=None)
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         orch.dashboard_state = ds
         with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             await orch._deliver_result("Title", "task", "result", deliver)
-        ds.resolve_slot.assert_called_once_with("gone")
         mock_sel.return_value.log_api_access.assert_called_once_with(
             caller="heartbeat",
             operation=operation,
@@ -658,8 +660,9 @@ class TestDeliverResult:
             source="gateway",
             resources="requested=gone",
         )
-        ds.notify.assert_not_called()
-        ds.push_slots_update.assert_not_called()
+        assert notes(ds) == []
+        assert drain(feed) == []
+        assert list(ds._slots) == []
 
     @pytest.mark.asyncio
     async def test_slack_dm_delivery(self):
@@ -725,9 +728,10 @@ class TestDeliverResult:
         )
 
     @pytest.mark.asyncio
-    async def test_prompt_dashboard_queued(self):
+    async def test_prompt_dashboard_queued(self, tmp_path):
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         slot = MagicMock()
         slot.key = "s1"
         slot.enqueue_or_run_prompt = MagicMock(return_value=False)
@@ -738,8 +742,8 @@ class TestDeliverResult:
             mock_sel.return_value.log_api_access = MagicMock()
             await orch._deliver_result("Title", "task", "result", "prompt:dashboard:s1")
         assert slot.enqueue_or_run_prompt.call_args.args[0] == "Title\n\nresult"
-        ds.notify.assert_not_called()
-        ds.push_slots_update.assert_not_called()
+        assert notes(ds) == []
+        assert drain(feed) == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -753,11 +757,8 @@ class TestShutdown:
     def test_autonudge_service_has_a_declared_default(self):
         """`_init_autonudge` returns before assigning when the flag is off.
 
-        `KIROCREW_AUTONUDGE=0` makes `_init_autonudge` return at its feature-flag
-        guard, before its only `self.autonudge_svc = ...`. Without a declaration
-        the attribute does not exist, and the seven `if self.autonudge_svc:`
-        sites in the loop-CRUD handlers raise AttributeError instead of reading
-        a default -- unlike `cron_svc` and `heartbeat_svc`, which are declared.
+        With `KIROCREW_AUTONUDGE=0` and no declared default, every
+        `if self.autonudge_svc:` in the loop-CRUD handlers raises AttributeError.
         """
         orch = _make_orchestrator()
         assert orch.autonudge_svc is None
@@ -1008,6 +1009,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
 
         shutdown = asyncio.create_task(orch._shutdown())
         await _within_lost_run(started.wait(), "the cancellable AutoNudge drain start")
@@ -1021,6 +1023,7 @@ class TestShutdown:
         assert drained.is_set()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_wedged_autonudge_drain_is_cut_so_the_teardown_still_runs(self, monkeypatch):
@@ -1049,6 +1052,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
         orch.sessions = _mock_sessions()
 
         # Under the graceful bound ``_shutdown_and_exit`` applies. It returns
@@ -1061,6 +1065,7 @@ class TestShutdown:
         assert drain_cut.is_set()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
         orch.sessions.close_all.assert_awaited_once()
 
     @staticmethod
@@ -1152,6 +1157,12 @@ class TestShutdown:
         orch, service, add_task, release, finished = await self._cut_drain_over_a_slow_write(
             tmp_path, monkeypatch, graceful_secs=0.3
         )
+        # Replace teardown with a no-op so ``settle_admitted_writes`` is always
+        # reached before the graceful deadline, regardless of shard load.  Once
+        # reached, the warning fires unconditionally (via deadline or via the
+        # CancelledError path in settle_admitted_writes), making the assertion
+        # deterministic.  The real teardown is not under test here.
+        orch._stop_services_and_sessions = AsyncMock(return_value=None)
         caplog.set_level("WARNING", logger="kiro_crew.autonudge")
         try:
             shutdown = orch._shutdown()
@@ -1265,6 +1276,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
         orch.secretary_svc = None
         orch.subagent_mgr = MagicMock()
         orch.subagent_mgr.cancel_all = AsyncMock()
@@ -1275,17 +1287,15 @@ class TestShutdown:
         await orch._shutdown()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_releases_the_subagent_task_store(self):
         """Shutdown closes the manager's durable store, and only after cancel_all.
 
-        ``SubagentManager.__init__`` opens a SQLite connection plus a writer thread
-        for the durable task queue; ``cancel_all`` stops the runs but leaves that
-        store open, so a gateway that never calls ``close`` holds the descriptors
-        and the executor for the life of the process. The ORDER is the other half
-        of the contract: ``cancel_all`` is what stops the runs still writing to the
-        store, so closing first would pull the connection out from under them.
+        ``cancel_all`` leaves the SQLite store and its writer thread open, and it is
+        what stops runs still writing to it, so closing first would pull the
+        connection out from under them.
         """
         order: list[str] = []
         orch = _make_orchestrator()

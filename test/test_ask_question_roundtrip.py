@@ -609,7 +609,8 @@ async def test_non_object_body_is_400_not_500() -> None:
 # ── cancel_questions_for_slot is actually wired (Arbiter BLOCK item 1) ──
 
 
-def test_unblock_pending_waits_releases_both_waits() -> None:
+@pytest.mark.asyncio
+async def test_unblock_pending_waits_releases_both_waits() -> None:
     """The shared chokepoint must release approvals AND questions.
 
     `cancel_questions_for_slot` needs a production caller, since
@@ -620,16 +621,23 @@ def test_unblock_pending_waits_releases_both_waits() -> None:
 
     from kiro_crew.dashboard.chat_handlers import _unblock_pending_waits
 
-    state = MagicMock()
-    state.cancel_questions_for_slot.return_value = 2
+    st = _state()
+    task = asyncio.ensure_future(st.request_question("ask-u", "chat-1", _questions(), timeout=30))
+    for _ in range(50):
+        if st._question_futures:
+            break
+        await asyncio.sleep(0)
     slot = MagicMock()
     slot.key = "chat-1"
 
     with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals") as rejected:
-        _unblock_pending_waits(state, slot)
+        _unblock_pending_waits(st, slot)
 
+    # Withdrawn synchronously, before the waiting task gets a loop turn.
+    resolutions = getattr(st, "_recent_question_resolutions", {})
+    assert {k: v[0] for k, v in resolutions.items()} == {"ask-u": "withdrawn"}
+    assert await task is None
     rejected.assert_called_once_with(slot)
-    state.cancel_questions_for_slot.assert_called_once_with("chat-1")
 
 
 def _chat_handler_source() -> str:

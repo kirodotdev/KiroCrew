@@ -190,6 +190,8 @@ export interface CrewEditorController {
   // Derived model/effort readout.
   resolved: {
     model?: string; pinned?: boolean; reasoning_effort?: string; effort_pinned?: boolean
+    /** The model a crew with a `member_id` starts its DM on; absent otherwise, so `model` applies. */
+    harness_model?: string
     /** The pair-id harness build's effort verdict; null until known, absent elsewhere. */
     effort_supported?: boolean | null
     /** Present when the pin's list is another harness's than the configured backend's. */
@@ -375,11 +377,15 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     enabled: open,
   })
 
-  const { data: resolved, error: resolvedError } = useQuery({
+  const { data: served, error: resolvedError } = useQuery({
     queryKey: ['agent-resolved-model', editing],
     queryFn: () => api.agentResolvedModel(editing),
     enabled: !!editing,
   })
+  // `model` is resolved on the configured backend; this crew's own sessions run the
+  // harness `harness_model` was resolved on, which can be another harness's member
+  // route. Every reader below names and judges that one.
+  const resolved = served?.harness_model === undefined ? served : { ...served, model: served.harness_model }
 
   // The model list surfaces a transport failure as `isDegraded` (the adapter
   // resolves with an auto-only/cached list rather than rejecting). A genuine

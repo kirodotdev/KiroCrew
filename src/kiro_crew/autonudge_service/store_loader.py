@@ -109,23 +109,12 @@ def _bounded_judge_spec(raw: object, loop_id: object = None) -> dict:
 def scrubbed_judge_spec(spec: dict) -> dict:
     """A judge brief with every operator-authored string scrubbed, then clipped.
 
-    The brief is free text somebody writes at arm time, and it reaches two places a
-    credential must not: the loop store on disk, and the loop serialization the
-    dashboard reads. Bounding a SHAPE is not scrubbing a VALUE -- an allowlist of keys
-    with a length limit keeps a criterion naming a bearer token verbatim, merely
-    shorter -- so the scrub is its own step and this is where it lives.
+    The brief is free text that reaches the store on disk and the dashboard, and a
+    length bound alone would keep a token verbatim. Called at EVERY entrance, because a
+    brief from a tool call reaches the dashboard without passing the decode path.
 
-    Called at EVERY entrance, not once at the store boundary, because the entrances are
-    independent: a brief that arrives on a tool call is serialized to the dashboard
-    without passing the decode path, so a scrub applied only on decode covers the one
-    entrance that already survived a round trip.
-
-    Scrub BEFORE clip, in that order: a redaction marker can be longer than the secret
-    it replaces, so clipping first lets a scrubbed value land over the bound.
-
-    ``targets`` are scrubbed on the same rule. A clean forge URL passes
-    ``redact_via_context`` unchanged, so no watch can be broken by this, and a target
-    this alters is one carrying the credential the scrub exists for.
+    Scrub BEFORE clip: a redaction marker can be longer than the secret it replaces.
+    ``targets`` get the same scrub; a clean forge URL passes it unchanged.
     """
     out: dict = dict(spec)
     for key in ("wake_when", "quiet_when"):
@@ -160,15 +149,9 @@ def _bounded_judge_cursors(raw: object) -> dict:
 def _bounded_judge_pr_seen(raw: object) -> dict:
     """The stored pull-request baseline, reduced to a fixed-width digest and capped ids.
 
-    The write path clips this value, but a clip on the way out constrains only what THIS
-    build wrote: the store is writable by an auto-approved agent shell, so the bound that
-    matters is the one the loader applies to whatever the file actually holds. Unknown
-    keys are dropped rather than carried, so a row that grew a field is not retained and
-    re-serialized for the life of the loop.
-
-    A rejected or over-long id list costs at most a repeat delivery -- an id absent from
-    the baseline reads as new again, which fires -- so every uncertain case here
-    resolves by keeping less.
+    The store is agent-writable, so the loader bounds whatever the file holds; unknown
+    keys are dropped. Keeping less costs at most a repeat delivery: an id missing from
+    the baseline reads as new and fires.
     """
     if not isinstance(raw, dict):
         return {}
@@ -203,10 +186,8 @@ def _bounded_judge_verdict(raw: object) -> dict:
             # Local to keep the decisions graph off the gateway boot path.
             from kiro_crew.decisions.points import nudge_wake as point_nudge_wake
 
-            # Bounded at BOTH ends: the ceiling keeps the state inside its character
-            # budget, and the floor matters just as much, because this store is
-            # agent-writable and a 4,000-digit negative is as long on the wire as a
-            # positive one. A count below zero is not a count, so it reads as none.
+            # Bounded at BOTH ends: the store is agent-writable, and a 4,000-digit
+            # negative is as long on the wire as a positive one. Below zero reads as none.
             if isinstance(value, int):
                 out[key] = max(0, min(value, point_nudge_wake.MAX_EVIDENCE_ITEMS))
             elif math.isfinite(value):
@@ -224,24 +205,14 @@ def _bounded_judge_verdict(raw: object) -> dict:
 def _bounded_judge_recent(raw: object) -> list:
     """The stored labelled verdict history, each row rebuilt from allowlisted keys.
 
-    Rebuilt rather than filtered, so a row an operator hand-edited into the store
-    cannot carry text into the next request: the point screens what it sends, and this
-    is the matching refusal on the way IN. A row naming no outcome is dropped -- it
-    labels nothing and would only dilute the hit rate the judge reads.
+    Rebuilt rather than filtered, so a hand-edited row cannot carry text into the next
+    request. A row with no outcome is dropped: it would only dilute the hit rate. The
+    newest rows are kept when the list is longer than the window.
 
-    The newest rows are kept when the stored list is longer than the window, because a
-    file written by a build with a wider window must not push this one's window into
-    the past.
-
-    An UNLABELLED delivered row is marked ``forfeited`` here, which is the one field
-    this function adds rather than carrying across. Such a row belongs to a turn this
-    process never saw: the fire went out, then the gateway stopped before the turn
-    completed, so no ``owner_acted`` can ever be read for it, and the next turn on that
-    slot -- quite possibly the owner's own -- would be labelled in its place. The flag
-    refuses the label while KEEPING ``delivered``, so the row still closes its own label
-    cycle and the suppressions behind it are not credited to a later delivery. A
-    re-owed delivery gets a newer undecided row; the fire path stamps that row while
-    this boundary remains unchanged.
+    An UNLABELLED delivered row is marked ``forfeited``: the gateway stopped before its
+    turn completed, so no ``owner_acted`` can be read, and the next turn on the slot
+    would be labelled in its place. ``delivered`` is kept, so the row still closes its
+    own label cycle and its suppressions are not credited to a later delivery.
     """
     from kiro_crew import autonudge as seams  # read at call time: the facade imports us
 
@@ -299,9 +270,8 @@ ADDRESSING_FIELDS = frozenset({"id", "slot_key"})
 def _addressing_value_unsafe_why(got: object) -> str:
     """Why the load guard holds a row aside for THIS addressing value, or ``""``.
 
-    ONE definition, shared by the guard that refuses a row and the matcher that decides a
-    repair superseded it. Two copies could disagree, and a matcher with a laxer notion of
-    unsafe would retire a held row against a loop the guard never accepted.
+    Shared by the load guard and the repair matcher: a laxer copy in the matcher would
+    retire a held row against a loop the guard never accepted.
     """
     if not isinstance(got, str):
         return "is not a string"
@@ -332,13 +302,9 @@ def scrub_loop_text(value: Any) -> Any:
 def redact_store_value(value: object) -> str:
     """Render a store-sourced value safe for a log line in this module.
 
-    ``repr`` supplies the ESCAPE: a store value can carry a newline or an ANSI
-    sequence, and a raw ``%r``/``%s`` would let it forge a second log record.
-
-    The SCRUB is delegated to ``redact_log_via_context``, which already owns exactly
-    this contract -- context-aware redaction for a log line that must not raise. That
-    matters because several callers sit inside ``except`` arms whose documented job is
-    to never raise.
+    ``repr`` escapes newlines and ANSI sequences that could forge a second log record.
+    ``redact_log_via_context`` scrubs without raising, which matters because several
+    callers sit inside ``except`` arms that must never raise.
     """
     return redact_log_via_context(repr(value))
 
@@ -346,22 +312,15 @@ def redact_store_value(value: object) -> str:
 def _is_torn_deactivation(loop: NudgeLoop) -> bool:
     """Whether a persisted row is inactive without any stop having been recorded.
 
-    Every deactivation this service performs leaves one of two marks: a
-    non-empty ``stopped_reason`` on the loop (``update`` defaults to
-    ``"manual"``; the timer bounds, the terminal settlement and the
-    sentinel-drop repair write theirs) or a terminal ``outcome`` on a monitor
-    record — and all of them clear ``next_due_ts``. A row that is inactive with
-    NEITHER mark and a deadline still set was therefore not stopped by this
-    service; ``_load`` resumes it. A monitor whose wake is in flight is left to
-    the claim-recovery branches, which own that state.
+    Every stop this service performs leaves a ``stopped_reason`` or a terminal monitor
+    ``outcome`` and clears ``next_due_ts``. A row inactive with neither mark and a live
+    deadline is a torn write, which ``_load`` resumes. A monitor with a wake in flight is
+    left to the claim-recovery branches.
 
-    The row must still carry its kill-switch path. A sentinel-drop repair that
-    predates ``SENTINEL_DROPPED_REASON`` persisted this very shape MINUS the
-    sentinel (it blanked the path and recorded nothing), and that stop was a
-    fail-closed refusal to run without a kill switch -- so an empty sentinel is
-    the one persisted discriminator between a torn write and that refusal, and
-    the ambiguous shape stays inactive. A loop armed without a sentinel in the
-    first place therefore is not resumed here either; the dashboard revives it.
+    The row must still carry its kill-switch path: a sentinel-drop repair without
+    ``SENTINEL_DROPPED_REASON`` stored this shape with an empty sentinel, and that stop
+    was a fail-closed refusal, so an empty sentinel stays inactive (the dashboard
+    revives it).
     """
     if loop.active or loop.stopped_reason or loop.next_due_ts <= 0:
         return False
@@ -499,20 +458,9 @@ def _load(self: AutoNudgeService) -> None:
                 for key in raw
                 if key in NudgeLoop.__dataclass_fields__ and key != "monitor"
             }
-            # ``gate`` decides whether a loop may be observation-gated, and a
-            # stored value that is not a bool is not a decision: the STRING
-            # "false" is truthy, so passing it through would gate a loop that
-            # asked not to be. Normalise it here, at the boundary, rather than
-            # hardening each read site.
-            # PRESENT-AND-NOT-A-BOOL, which includes ``null``, normalised to
-            # FALSE. Normalising it to True instead -- on the grounds that reading
-            # corrupt data as an opt-out would ungate loops nobody chose to
-            # ungate -- has the asymmetry backwards: gating is the state that
-            # can silently STOP a loop, so an unreadable value must resolve to
-            # ungated -- costing a turn per interval, which is today's cost --
-            # rather than to gated, which can deactivate a recurring task whose
-            # instruction merely mentioned a pull request. Only an explicit
-            # boolean true gates.
+            # A non-bool ``gate`` (the STRING "false" is truthy; ``null``) normalises
+            # to FALSE: gating can silently STOP a loop, while ungated only costs a
+            # turn per interval. Only an explicit boolean true gates.
             if "gate" in loop_values and not isinstance(loop_values["gate"], bool):
                 logger.warning(
                     "AutoNudge: loop %s stored a non-boolean gate (%r); leaving it ungated",
@@ -520,19 +468,10 @@ def _load(self: AutoNudgeService) -> None:
                     loop_values["gate"],
                 )
                 loop_values["gate"] = False
-            # The judge fields come out of the same agent-writable store, so they
-            # are normalised HERE rather than at each read site, for the reason
-            # ``gate`` is: a stored ``"judge": "yes"`` would otherwise reach a
-            # collector as a string, and a non-numeric streak would defeat the
-            # floor that bounds how long a judge may keep a loop quiet. Every
-            # unreadable value resolves to the shape that behaves as today.
-            #
-            # Bounded, not merely type-checked. A row in this store can be written
-            # by an auto-approved agent shell, so an oversized nested map would be
-            # RETAINED and re-serialized on every persist -- unbounded memory and
-            # write work for the life of the loop. Each map is rebuilt from
-            # allowlisted keys with clipped values, so what the loader keeps is
-            # bounded by this code rather than by whatever the file holds.
+            # Judge fields come from the same agent-writable store: a non-numeric
+            # streak would defeat the floor on how long a judge keeps a loop quiet,
+            # and an oversized map would be re-serialized on every persist. Each map
+            # is rebuilt from allowlisted keys with clipped values.
             if "judge" in loop_values:
                 loop_values["judge"] = _bounded_judge_spec(loop_values["judge"], raw.get("id"))
             if "judge_cursors" in loop_values:
@@ -571,12 +510,8 @@ def _load(self: AutoNudgeService) -> None:
                     loop_values["judge_quiet_streak"] = 0
                 else:
                     loop_values["judge_quiet_streak"] = min(_streak, _MAX_QUIET_STREAK)
-            # ``self_armed`` is the ONE bit that relaxes the crew/member
-            # fire-time guard, and this store is agent-writable. A persisted
-            # non-boolean (the string "false" is truthy) must therefore
-            # normalise to the REFUSING value, exactly as ``gate`` above
-            # normalises to its safe value: only an explicit boolean True
-            # admits, and the fire-time check compares ``is True`` besides.
+            # ``self_armed`` relaxes the crew/member fire-time guard and the store is
+            # agent-writable, so a non-boolean normalises to the REFUSING value.
             if "self_armed" in loop_values and not isinstance(loop_values["self_armed"], bool):
                 logger.warning(
                     "AutoNudge: loop %s stored a non-boolean self_armed (%s); "
@@ -591,14 +526,9 @@ def _load(self: AutoNudgeService) -> None:
                 loop_values["default_patrol"], bool
             ):
                 loop_values["default_patrol"] = False
-            # ``config_generation`` is agent-writable persisted data and is
-            # used in arithmetic (``+= 1``) and an equality fence. A stored
-            # ``null``, string or negative would raise mid-mutation (a partial
-            # update + HTTP 500) or corrupt the fence, so normalise it at the
-            # boundary to a non-negative int, exactly like ``gate`` above.
-            # Absent -> the dataclass default 0. An unreadable value resets to
-            # 0, which only makes a captured pre-existing verdict's generation
-            # not match (a missed stop, the safe direction), never a wrong stop.
+            # ``config_generation`` feeds ``+= 1`` and an equality fence; a ``null``,
+            # string or negative would raise mid-mutation. Reset to 0, which can only
+            # miss a stop (the safe direction), never cause a wrong one.
             if "config_generation" in loop_values:
                 _cg = loop_values["config_generation"]
                 if not isinstance(_cg, int) or isinstance(_cg, bool) or _cg < 0:
@@ -700,23 +630,16 @@ def _load(self: AutoNudgeService) -> None:
                     and loop.monitor.version == MONITOR_STATE_VERSION
                     and not monitor_quarantined
                 ):
-                    # Records from the pre-gate prompt path can carry inferred
-                    # observation state without an explicit decision to gate.
-                    # Migrate them to a plain ungated loop so later saves and
-                    # restarts cannot mistake the inert payload for a typed
-                    # controller record.
+                    # A record with inferred observation state but no ``gate`` is a
+                    # plain ungated loop, not a typed controller record.
                     loop.monitor = None
                     self._store_dirty = True
                 if loop.monitor is None:
                     pass
                 elif loop.monitor.version != MONITOR_STATE_VERSION:
-                    # An older controller cannot safely interpret a newer
-                    # policy. The stored ``active`` intent is deliberately
-                    # left alone -- it belongs to the gateway that wrote it
-                    # and must survive a downgrade so an upgrade resumes the
-                    # legacy watch. A structured controller record, however,
-                    # is exposed through control surfaces that must agree it
-                    # cannot be scheduled, so retire only that record shape.
+                    # A newer policy version is not interpreted. ``active`` is kept so
+                    # an upgrade resumes the legacy watch; only a structured
+                    # controller record is retired as unschedulable.
                     loop.monitor.outcome = MonitorOutcome.BLOCKED
                     loop.monitor.stopped_reason = MONITOR_STOP_UNSUPPORTED_VERSION
                     if is_structured_monitor_loop(loop):
@@ -738,20 +661,16 @@ def _load(self: AutoNudgeService) -> None:
                         loop.monitor.wake_delivery is None
                         and loop.monitor.completion_evidence_deadline > 0
                     ):
-                        # A legacy snapshot can carry the accepted evidence
-                        # deadline without the later typed delivery marker.
-                        # Recover it as dispatched so the finite expiry path
-                        # owns the claim instead of leaving it immortal.
+                        # An evidence deadline with no delivery marker is recovered
+                        # as dispatched, so the expiry path owns the claim.
                         loop.monitor.wake_delivery = MonitorDispatchResult.DISPATCHED
                         self._store_dirty = True
                     if (
                         loop.monitor.wake_delivery is MonitorDispatchResult.BUSY
                         and loop.next_due_ts > 0
                     ):
-                        # BUSY proves no action turn started. Resume the
-                        # already-claimed wake at its persisted retry instead
-                        # of treating the intentionally empty evidence
-                        # deadline as an ambiguous accepted dispatch.
+                        # BUSY proves no action turn started: resume the claimed wake
+                        # at its persisted retry.
                         if loop.monitor.next_probe_at != loop.next_due_ts:
                             loop.monitor.next_probe_at = loop.next_due_ts
                             self._store_dirty = True
@@ -776,40 +695,23 @@ def _load(self: AutoNudgeService) -> None:
                     and self._on_monitor_tick is None
                     and self._on_fire is not None
                 ):
-                    # Structured monitor delivery belongs to the controller,
-                    # which is intentionally not wired in this substrate.
-                    # Deactivate rather than allowing the legacy timer to
-                    # inject the prompt before a typed decision is made.
+                    # No controller is wired here, so deactivate rather than let the
+                    # legacy timer inject the prompt without a typed decision.
                     loop.active = False
                     loop.monitor.outcome = MonitorOutcome.BLOCKED
                     loop.monitor.stopped_reason = MONITOR_STOP_SESSION_UNAVAILABLE
                     loop.monitor.stopped_at = time.time()
                     loop.next_due_ts = 0.0
                     self._store_dirty = True
-                # A current, un-claimed, unsettled monitor keeps its active
-                # intent and re-arms like any other loop. It would have to be
-                # deactivated here if delivery had no gate, because the
-                # legacy timer would have injected a prompt without a
-                # decision; the gate in _monitor_tick_is_quiet now makes that
-                # decision on every tick, so surviving a restart is correct
-                # rather than a hazard. Deactivating instead would end every
-                # watch at the next gateway restart -- silently, since a
-                # stopped watch and a quiet one look identical from outside.
-            # Re-home / re-validate the persisted kill-switch path. A loop
-            # armed before the data-home move would otherwise be re-armed
-            # with a sentinel path nothing can ever create (see
-            # repair_sentinel_path). INSIDE the per-entry try: a malformed
-            # store entry must be skipped, never abort start() and take the
-            # gateway offline.
+                # A current, un-claimed, unsettled monitor re-arms like any other
+                # loop: the gate in _monitor_tick_is_quiet decides every tick, and
+                # deactivating would silently end every watch at a restart.
+            # Re-validate the kill-switch path (see repair_sentinel_path). INSIDE
+            # the per-entry try: a malformed entry is skipped, never aborts start().
             repaired = seams.repair_sentinel_path(loop.stop_sentinel_path)
-            # Same fail-open posture for the numeric timer fields: they
-            # drive arithmetic at arm time (``start()`` →
-            # ``_arm_from_deadline``) and are emitted as JSON by the
-            # REST/WS surface, so both must be finite and in range. A
-            # hand-edited or foreign-written store degrades per-field —
-            # never a startup abort (TypeError on a string interval) and
-            # never non-standard JSON output (a 1e309 deadline parses to
-            # ``inf``, which json.dump emits as invalid ``Infinity``).
+            # Numeric timer fields drive arm-time arithmetic and are emitted as JSON,
+            # so each is repaired per field to finite and in range (a 1e309 deadline
+            # parses to ``inf``, which json.dump emits as invalid ``Infinity``).
             loop.next_due_ts, due_repaired = _repair_number(loop.next_due_ts, lo=0.0, fallback=0.0)
             idle_num, idle_repaired = _repair_number(
                 loop.idle_secs,
@@ -818,55 +720,33 @@ def _load(self: AutoNudgeService) -> None:
                 fallback=float(_MIN_IDLE_SECS),
             )
             loop.idle_secs = int(idle_num)
-            # ``consecutive_start_failures`` is compared with ``>=`` on every
-            # wake, and this store is agent-writable, so a persisted string or
-            # ``null`` would raise ``TypeError`` inside ``_timer`` and the
-            # active automation would silently never fire again -- and the
-            # malformed value survives every reload. Normalised at the
-            # boundary for the same reason ``gate``, ``self_armed`` and
-            # ``config_generation`` are, rather than by hardening the one
-            # comparison.
+            # ``consecutive_start_failures`` meets ``>=`` on every wake; a string or
+            # ``null`` would raise inside ``_timer`` and the loop would never fire again.
             streak_num, streak_repaired = _repair_number(
                 loop.consecutive_start_failures, lo=0.0, fallback=0.0
             )
             loop.consecutive_start_failures = int(streak_num)
             if streak_repaired:
                 self._store_dirty = True
-            # The two counters the timer reads on every wake, for the same
-            # reason: ``cycle_count`` meets ``>=`` against the cap and
-            # ``created_ts`` is subtracted from the clock, so a persisted
-            # string or ``null`` in either raises inside ``_timer`` and
-            # dead-ends the loop the same way. Repaired to 0 -- a count of
-            # nothing run, and the anchor every budget reader already treats
-            # as "nothing to measure from" -- rather than a guess that could
-            # stop a healthy loop. The user's resume preserves the
-            # breakpoint, so this boundary is the one place they are
-            # repaired. The bounds follow their own rule, below.
+            # Same for ``cycle_count`` (vs the cap) and ``created_ts`` (vs the clock).
+            # Repaired to 0, which every budget reader treats as "nothing to measure
+            # from", rather than a guess that could stop a healthy loop.
             count_num, count_repaired = _repair_number(loop.cycle_count, lo=0.0, fallback=0.0)
             loop.cycle_count = int(count_num)
             loop.created_ts, created_repaired = _repair_number(
                 loop.created_ts, lo=0.0, fallback=0.0
             )
-            # ``consecutive_failed_cycles`` is compared with ``>=`` on every
-            # wake too, for the same agent-writable-store reason, so it is
-            # normalised at the boundary alongside its siblings above.
             failed_num, failed_repaired = _repair_number(
                 loop.consecutive_failed_cycles, lo=0.0, fallback=0.0
             )
             loop.consecutive_failed_cycles = int(failed_num)
             if count_repaired or created_repaired or failed_repaired:
                 self._store_dirty = True
-            # The BOUNDS are limits the user typed, so they are never repaired
-            # to a number nobody chose: 0 would quietly remove a cost limit,
-            # and persist that. A bound stored in a lossless integer form
-            # (``"24"``, ``24.0``) is the same limit and is kept as that int,
-            # so ``_timer``, ``cap_reached`` and ``budget_elapsed`` compare
-            # the same number. Any other value cannot be read as a limit, so
-            # the loop cannot honour it and must not run: an active row is
-            # deactivated here under ``structural_terminal`` (a deterministic
-            # malformed state that only a fresh configuration clears), the
-            # value is left as stored for inspection, and ``update`` declines
-            # a revival until a fresh bound replaces it.
+            # The BOUNDS are limits the user typed, never repaired to a number nobody
+            # chose (0 would remove a cost limit). A lossless integer form (``"24"``,
+            # ``24.0``) is kept as that int. Any other value cannot be honoured: an
+            # active row stops under ``structural_terminal``, the value is kept for
+            # inspection, and ``update`` declines a revival until a fresh bound.
             unreadable_bound = False
             for bound_field in LOOP_BOUND_FIELDS:
                 stored = getattr(loop, bound_field)
@@ -932,15 +812,9 @@ def _load(self: AutoNudgeService) -> None:
                 loop.terminal_notification_outcome = loop.monitor.outcome.value
                 loop.terminal_notification_stopped_at = loop.monitor.stopped_at
                 self._store_dirty = True
-            # ``banner`` is display-only, but it is ``.strip()``ed on the
-            # fire path, so a non-string value there raises AttributeError
-            # and the loop rearms forever without ever delivering. Normalize
-            # it here for the same reason ``repair_sentinel_path`` opens with
-            # an isinstance check: both are persisted STRING fields read
-            # straight out of parsed JSON, where the dataclass annotation is
-            # not enforced. Repaired-and-persisted rather than merely
-            # tolerated, so a hand-edited store is corrected once instead of
-            # silently suppressing the banner on every boot.
+            # ``banner`` is ``.strip()``ed on the fire path, so a non-string raises
+            # and the loop rearms forever without delivering. Repaired and persisted
+            # so a hand-edited store is corrected once.
             if not isinstance(loop.banner, str):
                 logger.warning(
                     "AutoNudge: loop %s had a non-string banner (type %s) — treating it "
@@ -951,24 +825,11 @@ def _load(self: AutoNudgeService) -> None:
                 loop.banner = ""
                 self._store_dirty = True
             elif loop.banner:
-                # SCRUB a persisted string banner, redacting the FULL value
-                # BEFORE any cap slice. A banner reaches the store through
-                # producers that skip the authorized write paths — a
-                # hand-edited ``autonudge.json``, a direct agent ``svc.add``,
-                # or a banner persisted before this scrub existed — and the
-                # loop is served RAW by ``GET /api/autonudge`` (``_serialize``
-                # is ``asdict``), broadcast to every dashboard client, and
-                # replayed by the fire path, so an unscrubbed credential here
-                # reaches the browser after a restart. Same two passes the
-                # write path uses, redaction FIRST so a secret straddling the
-                # cap is masked WHOLE — slicing first would leave a raw prefix
-                # the scanner cannot match. An over-cap banner — measured
-                # BEFORE redaction OR after (redaction can shrink an
-                # exfiltration URL below the cap, or grow a credential above
-                # it) — is then BLANKED (absent), matching the promise the cap
-                # makes elsewhere: a value the authorized write path would have
-                # rejected is not invented back by keeping a shrunk remnant,
-                # and the row falls back to the full message.
+                # SCRUB the banner: the store is writable out of band (a hand-edited
+                # ``autonudge.json``, a direct ``svc.add``) and the loop is served RAW
+                # by ``GET /api/autonudge``. Redact BEFORE any slice, so a secret
+                # straddling the cap is masked whole. A banner over the cap before OR
+                # after redaction is BLANKED, as the write path would have rejected it.
                 scrubbed, _ = redact_exfiltration_urls(loop.banner)
                 scrubbed, _ = redact_credentials(scrubbed)
                 if len(loop.banner) > MAX_BANNER_CHARS or len(scrubbed) > MAX_BANNER_CHARS:
@@ -976,16 +837,8 @@ def _load(self: AutoNudgeService) -> None:
                 if scrubbed != loop.banner:
                     loop.banner = scrubbed
                     self._store_dirty = True
-            # SCRUB the persisted ``message`` on load — same rationale as the
-            # banner above and the same two redaction passes. The store is
-            # writable out-of-band (a hand-edited ``autonudge.json`` or a
-            # direct ``svc.add``) and served RAW by ``GET /api/autonudge``,
-            # so a credential that reached the store bypassing the authorized
-            # write path — which already scrubs ``message`` — would otherwise
-            # be broadcast to every dashboard client after a restart. Unlike
-            # the banner this is redaction ONLY, never blank-on-length:
-            # ``message`` is the payload the model receives and has no
-            # fallback row, and its 8000-char limit is a write-path concern.
+            # SCRUB ``message`` the same way, but redaction ONLY, never
+            # blank-on-length: it is the model's payload and has no fallback row.
             if isinstance(loop.message, str) and loop.message:
                 scrubbed_msg, _ = redact_exfiltration_urls(loop.message)
                 scrubbed_msg, _ = redact_credentials(scrubbed_msg)
@@ -993,18 +846,10 @@ def _load(self: AutoNudgeService) -> None:
                     loop.message = scrubbed_msg
                     self._store_dirty = True
             if _is_torn_deactivation(loop):
-                # INACTIVE, NO stop reason, deadline still LIVE. No stop path
-                # of this service produces that shape: ``update`` clears the
-                # deadline and records a reason on every deactivation, the
-                # timer bounds and the terminal paths record theirs, and the
-                # repairs above zero the deadline when they retire a record.
-                # The row was flipped by a write outside the stop paths (a
-                # store migrated between hosts or edited by hand) and, left
-                # alone, it is a loop that nobody stopped yet nothing will
-                # ever arm again — every babysit silently dead after one
-                # restart, with the re-arm refused on top. Resume it: the
-                # schedule the user set is still on the row, and so is its
-                # kill switch (the predicate requires the sentinel path).
+                # INACTIVE, NO stop reason, deadline still LIVE: no stop path makes
+                # this shape, so a write outside them flipped it. Left alone, nothing
+                # would ever arm it again. Resume it; its schedule and kill switch are
+                # still on the row.
                 logger.warning(
                     "AutoNudge: loop %s was inactive with no stop reason and a live "
                     "deadline — resuming it; a paused loop records a reason",
@@ -1013,7 +858,11 @@ def _load(self: AutoNudgeService) -> None:
                 loop.active = True
                 self._store_dirty = True
         except Exception:
-            logger.warning("AutoNudge: skipping malformed loop entry: %r", raw, exc_info=True)
+            logger.warning(
+                "AutoNudge: skipping malformed loop entry: %s",
+                redact_store_value(raw),
+                exc_info=True,
+            )
             # Without this, a sibling flagging the store dirty makes the rewrite delete
             # this row permanently -- the warning above is then its only other trace.
             self._store.unparsed_rows.append(raw)

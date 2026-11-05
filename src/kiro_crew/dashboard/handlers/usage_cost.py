@@ -129,7 +129,7 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
                 for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue

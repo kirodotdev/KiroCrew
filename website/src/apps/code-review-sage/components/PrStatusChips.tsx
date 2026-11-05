@@ -71,7 +71,7 @@ function ChecksChip({ src }: { src: PullRequestSource }) {
     return (
       <span className={`${CHIP} border-danger text-danger`} title={i18nT('apps.codeReviewSage.components.prStatusChips.checks_failing', { failed, count: checks.length })}>
         <XCircle size={10} aria-hidden="true" />
-        <span className="tabular-nums">{failed} {i18nT('apps.codeReviewSage.components.prStatusChips.failing')}</span>
+        <span className="tabular-nums">{i18nT('apps.codeReviewSage.components.prStatusChips.failing_count', { count: failed })}</span>
       </span>
     )
   }
@@ -79,14 +79,14 @@ function ChecksChip({ src }: { src: PullRequestSource }) {
     return (
       <span className={`${CHIP} border-border text-muted`} title={i18nT('apps.codeReviewSage.components.prStatusChips.checks_running', { pending, count: checks.length })}>
         <Clock size={10} aria-hidden="true" />
-        <span className="tabular-nums">{pending} {i18nT('apps.codeReviewSage.components.prStatusChips.running')}</span>
+        <span className="tabular-nums">{i18nT('apps.codeReviewSage.components.prStatusChips.running_count', { count: pending })}</span>
       </span>
     )
   }
   return (
     <span className={`${CHIP} border-ok text-ok`} title={i18nT('apps.codeReviewSage.components.prStatusChips.all_checks_passed', { count: checks.length })}>
       <CheckCircle2 size={10} aria-hidden="true" />
-      <span className="tabular-nums">{checks.length} {i18nT('apps.codeReviewSage.components.prStatusChips.passed')}</span>
+      <span className="tabular-nums">{i18nT('apps.codeReviewSage.components.prStatusChips.passed_count', { count: checks.length })}</span>
     </span>
   )
 }

@@ -646,7 +646,14 @@ class LessonStore:
         Holds the lock. An unlocked read-modify-write here would lose a concurrent
         ``save`` outright -- and without that lock the atomicity
         :meth:`save_or_enrich` claims would not actually hold.
+
+        A blank (empty or whitespace-only) *rule_substring* is refused with
+        :class:`ValueError` on the plain substring path: every rule contains the
+        empty string, so it would remove every lesson. *exact* and *keep_one*
+        cannot remove every lesson and stay open.
         """
+        if not exact and not keep_one and not rule_substring.strip():
+            raise ValueError("rule substring is blank: it would match every lesson")
         if repo_scope is not None and scope_selector_is_inadmissible(repo_scope):
             raise ValueError(f"repo_scope does not name a usable scope: {repo_scope!r}")
         with self._lock:
@@ -771,7 +778,9 @@ class LessonStore:
                         written_by=_written_by_of(data.get("written_by")),
                     )
                 )
-            except (json.JSONDecodeError, KeyError):
+            except (json.JSONDecodeError, KeyError, RecursionError):
+                # RecursionError: a line nested past the interpreter's limit is
+                # not a JSONDecodeError, and would otherwise fail the whole read.
                 unreadable.append((lineno, line))
                 continue
         if unreadable:

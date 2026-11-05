@@ -57,15 +57,16 @@ from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 
 from . import (
     argv_floor,
+    argv_rules,
     denied_rules,
     diagnostics,
     exfil,
     helpers,
     inline_payload,
     paths,
-    perm_verb_mention,
     redaction,
     rm_floor,
+    s3_direction,
     shell_normalizer,
     stream_aws_anchor,
     vocabulary,
@@ -234,7 +235,6 @@ _EXPORTS: dict[str, str] = {
     "_LEGACY_RULE_ID_BY_PATTERN": "denied_rules",
     "_LINEARIZED_AWS_FLAG_RUN": "denied_rules",
     "_LITERAL_CONCAT_RE": "denied_rules",
-    "_PERM_VERB_MENTION_PATTERNS": "denied_rules",
     "_PRINTENV_AWS_SECRET_PATTERN": "denied_rules",
     "_RULES_BY_ID": "denied_rules",
     "_RULE_ID_BY_PATTERN": "denied_rules",
@@ -272,7 +272,6 @@ _EXPORTS: dict[str, str] = {
     "_INTERP_BINDING_RE": "deny_gate",
     "_INTERP_IDENT_RE": "deny_gate",
     "_PERCENT_FORMAT_RE": "deny_gate",
-    "_PERM_VERB_MENTION_MECHANISM": "deny_gate",
     "_QUOTED_FRAGMENT_RE": "deny_gate",
     "_collapse_percent_format": "deny_gate",
     "_deny_pattern_passes": "deny_gate",
@@ -281,8 +280,6 @@ _EXPORTS: dict[str, str] = {
     "_emit_deny_exception_event": "deny_gate",
     "_emit_push_allow_event": "deny_gate",
     "_inline_interpreter_bindings": "deny_gate",
-    "_perm_verb_mechanism_for": "deny_gate",
-    "_perm_verb_mention_narrows": "deny_gate",
     "_schedule_push_allow_audit": "deny_gate",
     "_split_segments": "deny_gate",
     "audit_injection_dropped": "deny_gate",
@@ -474,8 +471,6 @@ _EXPORTS: dict[str, str] = {
     "sensitive_path_refusal": "paths",
     "sensitive_write_path_refusal": "paths",
     "write_protected_home_paths": "paths",
-    # perm_verb_mention
-    "_perm_verb_mention_only": "perm_verb_mention",
     # redaction
     "CREDENTIAL_REDACTION_TAGS": "redaction",
     "REDACTED_CREDENTIAL_TAG": "redaction",
@@ -890,7 +885,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _LEGACY_RULE_ID_BY_PATTERN,
         _LINEARIZED_AWS_FLAG_RUN,
         _LITERAL_CONCAT_RE,
-        _PERM_VERB_MENTION_PATTERNS,
         _PRINTENV_AWS_SECRET_PATTERN,
         _RULE_ID_BY_PATTERN,
         _RULES_BY_ID,
@@ -935,7 +929,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _INTERP_BINDING_RE,
         _INTERP_IDENT_RE,
         _PERCENT_FORMAT_RE,
-        _PERM_VERB_MENTION_MECHANISM,
         _QUOTED_FRAGMENT_RE,
         SecurityEventLog,
         _collapse_percent_format,
@@ -945,8 +938,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _emit_deny_exception_event,
         _emit_push_allow_event,
         _inline_interpreter_bindings,
-        _perm_verb_mechanism_for,
-        _perm_verb_mention_narrows,
         _schedule_push_allow_audit,
         _split_segments,
         audit_injection_dropped,
@@ -1145,9 +1136,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         sensitive_path_refusal,
         sensitive_write_path_refusal,
         write_protected_home_paths,
-    )
-    from kiro_crew.security.perm_verb_mention import (  # noqa: F401
-        _perm_verb_mention_only,
     )
     from kiro_crew.security.redaction import (  # noqa: F401
         _B64_CHUNK_RE,

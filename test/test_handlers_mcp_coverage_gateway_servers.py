@@ -460,6 +460,71 @@ class TestGatewayServers:
         assert rows["declares-env"]["pooling_blocked_by_env"] is False
 
     @pytest.mark.asyncio
+    async def test_env_block_when_shared_is_reported_while_sharing_is_off(
+        self, agents_dir: Path, routed_allowlist
+    ) -> None:
+        """The confirm for turning sharing ON needs the answer before the switch.
+
+        ``pooling_blocked_by_env`` reads false while sharing is off, so the row
+        also says whether the server would stay unshared once sharing is on.
+        """
+        (agents_dir / "a.json").write_text(
+            json.dumps(
+                {
+                    "name": "alpha",
+                    "mcpServers": {
+                        "declares-env": {"command": "run", "env": {"HOME_DIR": "/x"}},
+                        "no-env": {"command": "run"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        for enabled in (False, True):
+            routed_allowlist([], enabled=enabled)
+            rows = {
+                r["name"]: r
+                for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+            }
+            assert rows["declares-env"]["pooling_blocked_by_env_when_shared"] is True
+            assert rows["no-env"]["pooling_blocked_by_env_when_shared"] is False
+            assert rows["declares-env"]["pooling_blocked_by_env"] is enabled
+
+        routed_allowlist([], enabled=False, forward_declared_env=True)
+        rows = {
+            r["name"]: r
+            for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+        assert rows["declares-env"]["pooling_blocked_by_env_when_shared"] is False
+
+    @pytest.mark.asyncio
+    async def test_one_poolable_declaration_keeps_the_row_shareable_when_shared(
+        self, agents_dir: Path, routed_allowlist
+    ) -> None:
+        """A name declared once with env and once without still shares the env-less one."""
+        (agents_dir / "a.json").write_text(
+            json.dumps(
+                {
+                    "name": "alpha",
+                    "mcpServers": {"mixed": {"command": "run", "env": {"HOME_DIR": "/x"}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (agents_dir / "b.json").write_text(
+            json.dumps({"name": "beta", "mcpServers": {"mixed": {"command": "run"}}}),
+            encoding="utf-8",
+        )
+
+        routed_allowlist([], enabled=False)
+        rows = {
+            r["name"]: r
+            for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+        assert rows["mixed"]["pooling_blocked_by_env_when_shared"] is False
+
+    @pytest.mark.asyncio
     async def test_a_vault_reference_gets_a_private_backend_not_direct_env(
         self, agents_dir: Path, routed_allowlist
     ) -> None:

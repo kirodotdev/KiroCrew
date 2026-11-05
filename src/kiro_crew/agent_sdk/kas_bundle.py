@@ -37,7 +37,29 @@ from kiro_crew.acp import kas_pin as _pin
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from kiro_crew.acp.kas_bundle import InstalledKasBundle
+    # The lazy names below, typed for the checker only. Without them mypy reads
+    # each one through ``__getattr__``, and in an import cycle it can do that
+    # before the hook's own ``-> Any`` is analysed: the call then fails as
+    # ``Any? not callable``, but only for runs that reach this module in that
+    # order. Nothing here runs, so the lazy import stays lazy. Keep this list
+    # equal to ``_OWNED`` (``test_kas_bundle_facade_types_every_owned_name``).
+    from kiro_crew.acp.kas_bundle import (  # noqa: F401 - typed re-exports
+        KAS_BUNDLE_INSTALL_RECORD_NAME,
+        KAS_BUNDLE_MANIFEST_NAME,
+        InstalledKasBundle,
+        KasBundleError,
+        KasBundleManifest,
+        KasHostUnsupported,
+        fetch_manifest,
+        host_node_key,
+        host_platform_key,
+        install_bundle,
+        install_pinned,
+        installed_bundle,
+        installed_versions,
+        kas_engines_root,
+        parse_manifest,
+    )
 
 KAS_PIN_VERSION = _pin.KAS_PIN_VERSION
 KAS_PIN_MANIFEST_SHA256 = _pin.KAS_PIN_MANIFEST_SHA256
@@ -56,6 +78,7 @@ _OWNED: dict[str, str] = {
         "InstalledKasBundle",
         "KasBundleError",
         "KasBundleManifest",
+        "KasHostUnsupported",
         "parse_manifest",
         "fetch_manifest",
         "host_node_key",
@@ -75,9 +98,13 @@ __all__ = [
     "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
     "KAS_VERSION_OVERRIDE_ENV",
     "bundle_spawn_argv",
+    "engine_install_snapshot",
     "engine_spec_permissions_supported",
+    "install_pinned_engine",
     "installed_engine_label",
     "kas_bundle_route",
+    "kas_route",
+    "last_kas_route",
     "pinned_version",
     "sha256_bytes",
     "sha256_file",
@@ -166,7 +193,10 @@ def kas_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
 
 
 def kas_bundle_route() -> bool:
-    """Whether the next agent spawn runs Crew's own engine: KAS selected AND the bundle on.
+    """Whether the next agent spawn runs Crew's own engine: KAS selected AND the bundle route.
+
+    The bundle route is ``agent.kas_bundle`` on, or the automatic switch when
+    kiro-cli's relay cannot run here (:func:`kas_route`, ``acp/kas_route.py``).
 
     The one predicate the kiro-cli-facing diagnostics share -- ``kirocrew doctor``,
     the diagnostics bundle's version line, the gateway self-update's ``kiro-cli
@@ -185,9 +215,47 @@ def kas_bundle_route() -> bool:
 
     try:
         agent = KiroCrewConfig.load().agent
-        return agent.acp_backend == ACP_BACKEND_KAS and bool(agent.kas_bundle)
+        return agent.acp_backend == ACP_BACKEND_KAS and (
+            bool(agent.kas_bundle) or bool(kas_route().bundle)
+        )
     except Exception:
         return False
+
+
+def kas_route() -> Any:
+    """The route the next KAS spawn takes, computed fresh (``acp.kas_route.KasRoute``).
+
+    The bundle route is taken when ``agent.kas_bundle`` is on, or automatically
+    when kiro-cli's relay cannot run on this host. Blocking (reads config, resolves
+    kiro-cli, reads the sign-in stores); never raises.
+    """
+    from kiro_crew.acp.kas_route import resolve_kas_route
+
+    return resolve_kas_route()
+
+
+def last_kas_route() -> dict[str, Any] | None:
+    """The route the last KAS spawn in this process took, as plain data, or ``None``."""
+    from kiro_crew.acp.kas_route import last_spawn_route
+
+    route = last_spawn_route()
+    return None if route is None else route.as_dict()
+
+
+def engine_install_snapshot() -> dict[str, Any]:
+    """The gateway's engine install state: ``running``, ``done``, ``total``, ``error``."""
+    from kiro_crew.acp.kas_engine_install import install_snapshot
+
+    return install_snapshot()
+
+
+def install_pinned_engine(
+    base_url: str, *, caller: str, on_progress: ProgressCallback | None = None
+) -> InstalledKasBundle:
+    """Install the pinned engine through the gateway's one-at-a-time installer."""
+    from kiro_crew.acp.kas_engine_install import install_pinned_engine as _install
+
+    return _install(base_url, caller=caller, on_progress=on_progress)
 
 
 def installed_engine_label() -> str | None:

@@ -47,6 +47,12 @@ from kiro_crew.acp.runtime import AcpRuntime
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_runtime_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_field_scan_counts_every_read_and_write_shape",
+    "the_signature_digest_ignores_an_object_address_in_either_spelling",
+    "the_bound_function_scans_include_every_static_method",
+)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
@@ -61,8 +67,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_RC_NO_PROCESS": ("data", False, "", "runtime_class"),
     "_REVIVE_ANSWER_DRAIN_TIMEOUT": ("data", False, "", "runtime_class"),
     "_ROOT_UNREACHED_REASON_BY_VERDICT": ("data", False, "", "runtime_class"),
-    # Takes ``launch_agent``: the app launch copy kiro-cli is asked for (``apps.agent_launch``).
-    "__init__": ("function", False, "933ec8f4a25b", "runtime_class"),
+    # Takes ``launch_agent``: the app launch copy kiro-cli is asked for (``apps.agent_launch``),
+    # and ``native_skill_projection``: off for the warm mint process, whose specs sit in ``run/``.
+    "__init__": ("function", False, "7da71c4f7900", "runtime_class"),
     "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime_mode_activation"),
     "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime_mode_activation"),
     "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime_mode_activation"),
@@ -81,7 +88,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_audit_denied_off_loop": ("function", False, "bc403500636d", "runtime_host_requests"),
     # Both take ``request_identity``: the vault identity the ``session/new`` went out
     # under, for the KAS catalog recorder (``kas_model_catalog``).
-    "_collect_late_start": ("function", False, "7319b7831048", "runtime_session_create"),
+    "_collect_late_start": ("function", False, "1c91d322411d", "runtime_session_create"),
     "_compose_death_summary": ("function", False, "d296f1f5d821", "runtime_liveness"),
     "_confirm_member_projection": ("function", True, "c694d7c95d1b", "runtime_session_setup"),
     "_copy_native_launch_sources": ("function", False, "b4bc0bbb71ed", "runtime_session_setup"),
@@ -92,7 +99,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_exit_reason": ("function", False, "5ea8f751c789", "runtime_liveness"),
     "_exit_watch_loop": ("function", True, "b60c5fea256e", "runtime_liveness"),
     "_failed_start_cleanup": ("function", True, "b60c5fea256e", "runtime_spawn_launch"),
-    "_finish_create_session": ("function", True, "50a24da61557", "runtime_session_create"),
+    "_finish_create_session": ("function", True, "417fe88faef2", "runtime_session_create"),
     "_finish_session_init": ("function", False, "eb69f6ac3aa6", "runtime_session_registry"),
     "_flush_dropped_frames": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
     "_flush_roster_overflow": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
@@ -107,7 +114,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "fa6cfecd5574",
         "runtime_mode_activation",
     ),
-    "_kas_custom_agents": ("function", True, "997f5903aa65", "runtime_session_setup"),
+    "_kas_custom_agents": ("function", True, "1cacd0d91137", "runtime_session_setup"),
     "_kill_failed_start_escapees": ("function", True, "ccaec8d76f05", "runtime_spawn_launch"),
     "_kill_inner": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
     "_mark_dead": ("function", False, "e8c36427bffd", "runtime_liveness"),
@@ -189,6 +196,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "fa6cfecd5574",
         "runtime_mode_activation",
     ),
+    "_unclaimed_new_sessions": ("property", False, "67a56d539800", "runtime_class"),
     "_unpooled_control_planes": ("function", True, "5255b093c0d2", "runtime_session_setup"),
     "_verify_spawn_agent_active": ("function", True, "3d143e45e940", "runtime_mode_activation"),
     "_wait_for_answer_capacity": ("function", True, "609119a8d63a", "runtime_host_requests"),
@@ -206,7 +214,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "forget_request": ("function", False, "a0b46301fd2c", "runtime_wire"),
     "has_active_or_initializing_sessions": ("function", False, "a6632a57e602", "runtime_liveness"),
     "has_active_sessions": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "hold_cloud_resume": ("function", False, "1106e4b55d16", "runtime_remote_workspace"),
     "is_alive": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "is_cloud_sandbox": ("property", False, "a6632a57e602", "runtime_class"),
     "keep_record_on_teardown": ("function", False, "4f730038263e", "runtime_session_registry"),
     "kill": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
     "load_session": ("function", True, "e76bae1fa2fd", "runtime_session_load"),
@@ -229,6 +239,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "send_request": ("function", True, "60d06c03f35b", "runtime_wire"),
     "send_request_for_answer": ("function", True, "f3fe127a3feb", "runtime_wire"),
     "send_response": ("function", True, "74f287d889d6", "runtime_wire"),
+    "session_activity_at": ("function", False, "8912ecd7f5d6", "runtime_session_registry"),
+    "set_cloud_sandbox": ("function", False, "4ae712c0a572", "runtime_remote_workspace"),
     "settle_stderr": ("function", True, "8fe4e298f96b", "runtime_liveness"),
     "spawn": ("function", True, "dbecd2a33a23", "runtime_spawn_entry"),
     "spawn_monotonic": ("property", False, "c2eec8a41739", "runtime_class"),
@@ -237,7 +249,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "stdin_stall_death": ("property", False, "a6632a57e602", "runtime_class"),
     "supports_image_prompt": ("property", False, "a6632a57e602", "runtime_class"),
     "take_switched_model": ("function", False, "99d948c35ed6", "runtime_mode_activation"),
-    "terminate_session": ("function", True, "c284282f8a1d", "runtime_session_registry"),
+    "terminate_session": ("function", True, "e811c64539dd", "runtime_session_registry"),
     "turn_active_at_stall": ("function", False, "762cb291397b", "runtime_liveness"),
     "unregister_session": ("function", False, "c284282f8a1d", "runtime_session_registry"),
     "uses_kiro_identity_store": ("property", False, "a6632a57e602", "runtime_class"),
@@ -315,7 +327,7 @@ _BASE_IMPORTS = frozenset("""
     apply_pod_bundle_spawn assert_voice_runtime_outside_agent_workspace asyncio
     attach_kas_custom_agents attach_stub_session_token augmented_path authorize_runtime_kill
     backends_retired_by_host_logout bind_voice_safe_agent_workspace_async
-    browser_session_env browser_socket_env build_session_new_params cgroup_scope_argv
+    build_session_new_params cgroup_scope_argv
     create_subprocess_limited data_home deque emit_counter encode_frame
     ensure_agent_materialized ensure_directory finish_suspended_spawn functools
     group_vouching_available harness_for has_mirror hoist_servers_for_session importlib
@@ -356,15 +368,6 @@ def _signature_digest(fn: Any) -> str:
         params[0] = params[0].replace(annotation=inspect.Parameter.empty)
     text = _ADDRESS.sub(" at 0x", str(sig.replace(parameters=params)))
     return hashlib.sha256(text.encode()).hexdigest()[:12]
-
-
-def test_the_signature_digest_ignores_an_object_address_in_either_spelling() -> None:
-    def f(x: object = None) -> None: ...
-
-    lower = _ADDRESS.sub(" at 0x", "(x=<object object at 0x7f1a2b3c4d5e>)")
-    upper = _ADDRESS.sub(" at 0x", "(x=<object object at 0x000001A9BFA701B0>)")
-    assert lower == upper == "(x=<object object at 0x>)"
-    assert len(_signature_digest(f)) == 12
 
 
 def _member_function(name: str) -> Any:
@@ -666,16 +669,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
     return written - members, read - written - members
 
 
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
-
-
 def _listed(doc: str, label: str) -> set[str]:
     match = re.search(rf"{label}: (.*?)\.(?:\n\n|\n?$)", doc, re.S)
     return set(re.findall(r"``(\w+)``", match.group(1))) if match else set()
@@ -695,21 +688,6 @@ def test_owners_log_under_the_runtime_logger(owner: str) -> None:
     logger = vars(sys.modules[owner]).get("logger", runtime.logger)
     assert logger is runtime.logger
     assert runtime.logger.name == "kiro_crew.acp.runtime"
-
-
-def test_the_bound_function_scans_include_every_static_method() -> None:
-    statics = {
-        name: f"{_PACKAGE}.{home}"
-        for name, (kind, _, _, home) in _MEMBERS.items()
-        if kind == "staticmethod" and home != _CLASS_HOME
-    }
-    assert statics
-    scanned = {
-        fn.name
-        for owner in set(statics.values())
-        for fn in _self_functions(_tree(sys.modules[owner]), owner)
-    }
-    assert set(statics) <= scanned
 
 
 def _owner_imports(tree: ast.Module) -> set[str]:
@@ -1026,6 +1004,7 @@ _INIT_HINTS = {
     "member_context": "<class 'bool'>",
     "memory_mode": "<class 'str'>",
     "model": "str | None",
+    "native_skill_projection": "<class 'bool'>",
     "sandbox_mode": "<class 'str'>",
     "shared_scratch": "pathlib.Path | None",
     "launch_agent": "<class 'str'>",

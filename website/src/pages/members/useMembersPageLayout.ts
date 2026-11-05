@@ -33,6 +33,16 @@ const PANEL_OPEN_KEY = 'mc-members-panel-open'
  *  moving the choice every other crewmate reads from `PANEL_OPEN_KEY`. */
 const ASSISTANT_PANEL_OPEN_KEY = 'mc-members-assistant-panel-open'
 
+/** Whether the OVERLAID side panel is up, on a desktop window too narrow to
+ *  dock it (issue #27334). Its own key, apart from `PANEL_OPEN_KEY`: dismissing
+ *  the narrow overlay must not hide the docked column the next time the window
+ *  widens. A visit wide enough to dock clears it, so an old overlay cannot lie
+ *  in wait and pop over the thread later. The Assistant keeps its own, as it
+ *  does for the docked column. A phone never reads or writes either: there the
+ *  overlay fills the viewport, so it stays a per-visit choice. */
+const OVERLAY_OPEN_KEY = 'mc-members-overlay-open'
+const ASSISTANT_OVERLAY_OPEN_KEY = 'mc-members-assistant-overlay-open'
+
 /** Whether "Show the full roster" pinned the roster beside the thread. Per tab
  *  (sessionStorage), so it survives leaving the page and coming back, not a
  *  new window. */
@@ -145,11 +155,26 @@ export function useMembersPageLayout({ rosterRead, teamsRead, activeName }: Memb
   // the phone, where the panel keeps its own resizable width in both
   // placements — the docked/overlay split is panelSitsBeside's, not this.
   const panelFillWidth = isMobile ? Math.max(SIDE_PANEL_MIN_W, winW) : undefined
-  const [overlayOpen, setOverlayOpen] = useState(false)
-  // `overlayOpen` is overlay-mode state only. Reset it whenever the panel docks
-  // (a widening window, a narrower roster), so an open overlay does not lie in
-  // wait and pop back over the thread the moment the window narrows again.
-  useEffect(() => { if (beside) setOverlayOpen(false) }, [beside])
+  const onAssistant = useMemo(() => {
+    const open = members.find((m) => m.name === activeName)
+    return !!open && isAssistantMember(open)
+  }, [members, activeName])
+  // `overlayOpen` is overlay-mode state only. On a desktop window it is
+  // remembered (OVERLAY_OPEN_KEY); on a phone it is per visit.
+  const [memberOverlaySaved, setMemberOverlaySaved] = usePersistedBool(OVERLAY_OPEN_KEY, false)
+  const [assistantOverlaySaved, setAssistantOverlaySaved] = usePersistedBool(ASSISTANT_OVERLAY_OPEN_KEY, false)
+  const [phoneOverlayOpen, setPhoneOverlayOpen] = useState(false)
+  const overlayOpen = isMobile ? phoneOverlayOpen : onAssistant ? assistantOverlaySaved : memberOverlaySaved
+  const setOverlayOpen = isMobile ? setPhoneOverlayOpen : onAssistant ? setAssistantOverlaySaved : setMemberOverlaySaved
+  // Reset it whenever the panel docks (a widening window, a narrower roster),
+  // so an open overlay does not lie in wait and pop back over the thread the
+  // moment the window narrows again -- this visit or a later one.
+  useEffect(() => {
+    if (!beside) return
+    setPhoneOverlayOpen(false)
+    setMemberOverlaySaved(false)
+    setAssistantOverlaySaved(false)
+  }, [beside, setMemberOverlaySaved, setAssistantOverlaySaved])
   // Docked visibility, persisted and cross-window synced, shown by default so
   // the page opens the way it always has. Kept SEPARATE from `overlayOpen`
   // because the two placements answer different questions — whether the
@@ -158,10 +183,6 @@ export function useMembersPageLayout({ rosterRead, teamsRead, activeName }: Memb
   // window widens.
   const [memberDockedOpen, setMemberDockedOpen] = usePersistedBool(PANEL_OPEN_KEY, true)
   const [assistantDockedOpen, setAssistantDockedOpen] = usePersistedBool(ASSISTANT_PANEL_OPEN_KEY, false)
-  const onAssistant = useMemo(() => {
-    const open = members.find((m) => m.name === activeName)
-    return !!open && isAssistantMember(open)
-  }, [members, activeName])
   const dockedOpen = onAssistant ? assistantDockedOpen : memberDockedOpen
   const setDockedOpen = onAssistant ? setAssistantDockedOpen : setMemberDockedOpen
   const { panelVisible, showOpener } = panelChrome({ beside, dockedOpen, overlayOpen })

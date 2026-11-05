@@ -62,6 +62,7 @@ from kiro_crew.cron import (
     compute_next_run_ts,
     format_schedule,
     get_local_tz,
+    job_zone_name,
 )
 from kiro_crew.messaging.queue_drain import entries_queued_by
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
@@ -912,7 +913,7 @@ def _cron_list(cron_service: "CronService | Any") -> str:
     lines = ["*Your cron jobs:*"]
     for job in jobs:
         status = "✅" if job.enabled else "⏸️"
-        schedule = _redact(format_schedule(job.schedule, tz_name=job.timezone or tz_name))
+        schedule = _redact(format_schedule(job.schedule, tz_name=job_zone_name(job) or tz_name))
         last = ""
         if job.last_status == "ok":
             last = " ✓"

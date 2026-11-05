@@ -17,7 +17,10 @@ from enum import Enum
 from typing import Any, Protocol
 
 from kiro_crew.monitoring.limits import MAX_RUNTIME_CEILING_SECS
-from kiro_crew.monitoring.registry import PULL_REQUEST_MONITOR_KINDS
+from kiro_crew.monitoring.registry import (
+    all_pull_request_monitor_kinds,
+    is_pull_request_monitor_kind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -334,7 +337,14 @@ class MonitorCreationSurface(str, Enum):
 
 
 def monitor_frontend_contract() -> dict[str, object]:
-    """Return the checked data contract consumed by the dashboard bundle."""
+    """Return the monitor data contract the dashboard consumes.
+
+    The bundle ships a checked-in snapshot of this (``website/src/monitoring/
+    contract.json``); the gateway also serves it at runtime (``GET
+    /api/monitor-contract``) so ``pullRequestMonitorKinds`` can name a kind an
+    edition contributed at boot, which the snapshot cannot. With no
+    contributed kinds the two agree -- the snapshot parity test pins it.
+    """
     return {
         "monitorStateVersion": MONITOR_STATE_VERSION,
         "limits": {
@@ -367,7 +377,11 @@ def monitor_frontend_contract() -> dict[str, object]:
             },
             "wakeInstructions": {"maximumLength": MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS},
         },
-        "pullRequestMonitorKinds": sorted(PULL_REQUEST_MONITOR_KINDS),
+        # The LIVE pull-request kinds -- built-ins plus any an edition contributed
+        # at boot, so the runtime contract the gateway serves names a
+        # contributed kind. The bundled snapshot still lists only the built-ins;
+        # with no plugins registered the two agree, which the parity test pins.
+        "pullRequestMonitorKinds": sorted(all_pull_request_monitor_kinds()),
         "enums": {
             "wakeDelivery": [item.value for item in MonitorDispatchResult],
             "lastCompletionDisposition": [item.value for item in MonitorActionDisposition],
@@ -775,6 +789,25 @@ class MonitorProbe(Protocol):
         subjects: Sequence[str],
         *,
         previous_observations: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> Mapping[str, MonitorProbeResult]: ...
+
+
+class MonitorProbeProvider(MonitorProbe, Protocol):
+    """The probe contract the controller calls, one provider per monitored kind.
+
+    :class:`MonitorProbe` plus ``use_owner_credentials``: the controller passes
+    False when the monitor's owner did not authorize probing with their
+    credentials. The persistence-only path (``shadow.run_shadow_probe``) takes the
+    narrower :class:`MonitorProbe` because it never applies that gate. Every
+    built-in provider and every contributed kind's provider satisfies both.
+    """
+
+    def probe(
+        self,
+        subjects: Sequence[str],
+        *,
+        previous_observations: Mapping[str, Mapping[str, object]] | None = None,
+        use_owner_credentials: bool = True,
     ) -> Mapping[str, MonitorProbeResult]: ...
 
 
@@ -1471,7 +1504,7 @@ def _public_pull_request_observation(
     pull_request_state = projected.get("state")
     if (
         projected.get("kind") != expected_kind
-        or expected_kind not in PULL_REQUEST_MONITOR_KINDS
+        or not is_pull_request_monitor_kind(expected_kind)
         or not isinstance(projected.get("target"), str)
         or not projected.get("target")
         or not isinstance(projected.get("head_revision"), str)

@@ -26,7 +26,9 @@ is imported very early) can depend on it without a cycle.
 from __future__ import annotations
 
 import enum
+import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional
 
@@ -42,6 +44,36 @@ AUTH_SQLITE_DB = "data.sqlite3"
 # fences the store by NAME needs all four spellings; one that fences the store's
 # whole DIRECTORY covers them without this list.
 AUTH_SQLITE_SIDECAR_SUFFIXES: tuple[str, ...] = ("-wal", "-shm", "-journal")
+
+# The ``auth_kv`` keys a kiro-cli / amazon-q store keeps a sign-in's token blob under.
+# One tuple for every reader of those rows (the usage reader and the shared sign-in
+# resolver), so their key sets cannot drift apart.
+AUTH_TOKEN_KEYS: tuple[str, ...] = (
+    "kirocli:odic:token",
+    "codewhisperer:odic:token",
+    "kirocli:social:token",
+    "kirocli:external-idp:token",
+)
+# The key above whose token is an External IdP token (sent with ``TokenType: EXTERNAL_IDP``).
+AUTH_EXTERNAL_IDP_TOKEN_KEY = "kirocli:external-idp:token"
+# The ``state`` row kiro-cli keeps its selected CodeWhisperer profile in.
+AUTH_PROFILE_STATE_KEY = "api.codewhisperer.profile"
+
+
+def parse_token_expiry(ts: object) -> Optional[datetime]:
+    """A token blob's expiry as an aware datetime, or ``None`` when it cannot be read.
+
+    The one parser for the ``expires_at`` of every reader of these token rows.
+    Handles a trailing ``Z``; kiro-cli writes nanoseconds and ``fromisoformat``
+    takes at most microseconds (Python 3.10), so the fraction is cut to six
+    digits first. A naive stamp reads as UTC. Callers treat ``None`` as expired.
+    """
+    try:
+        text = re.sub(r"(\.\d{6})\d+", r"\1", str(ts).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
 
 
 class Platform(enum.Enum):

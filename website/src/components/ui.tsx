@@ -219,10 +219,12 @@ export function StatCard({ label, value, accent, colorClass, delay, onClick, act
   return (
     // role/tabIndex/onKeyDown are all applied together with onClick, so the card
     // is fully keyboard-accessible whenever it is interactive; eslint can't see
-    // the conditional role, hence the scoped disables.
+    // the conditional role, hence the scoped disables. The hover lift and pointer
+    // ride on onClick too: a summary card that lit up under the cursor read as a
+    // target with nothing behind it.
     /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
     <div
-      className={twMerge(`stat-accent relative overflow-hidden bg-card rounded-md px-4 py-3.5 border shadow-[inset_0_1px_0_var(--card-hl)] animate-rise hover:border-border-strong hover:shadow-md transition-all ${active ? 'border-accent ring-1 ring-accent/40' : 'border-border'} ${onClick ? 'cursor-pointer' : ''}`, className)}
+      className={twMerge(`stat-accent relative overflow-hidden bg-card rounded-md px-4 py-3.5 border shadow-[inset_0_1px_0_var(--card-hl)] animate-rise transition-all ${active ? 'border-accent ring-1 ring-accent/40' : 'border-border'} ${onClick ? 'cursor-pointer hover:border-border-strong hover:shadow-md' : ''}`, className)}
       style={delay ? { animationDelay: `${delay}ms` } : undefined}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
@@ -334,7 +336,7 @@ export function EmptyState({ icon, title, subtitle, action, testId = 'empty-stat
     <div className="flex flex-col items-center justify-center py-12 gap-2 animate-rise" data-testid={testId}>
       <div className="text-[40px] opacity-[.12] select-none">{icon}</div>
       <div className="text-muted text-sm font-medium" data-testid={`${testId}-title`}>{title}</div>
-      {subtitle && <div className="text-muted/60 text-[13px] text-center max-w-[320px]" data-testid={`${testId}-subtitle`}>{subtitle}</div>}
+      {subtitle && <div className="text-muted text-[13px] text-center max-w-[320px]" data-testid={`${testId}-subtitle`}>{subtitle}</div>}
       {action && <div className="mt-2" data-testid={`${testId}-action`}>{action}</div>}
     </div>
   )
@@ -394,7 +396,8 @@ export function FilteredEmpty({ query, onClear, noun, testId = 'filtered-empty' 
  */
 export function PanelSectionHeader({ label, count, trailing, className }: {
   label: string
-  count?: number
+  /** A number, or a translated count string such as a capped `14+`. */
+  count?: number | string
   trailing?: React.ReactNode
   className?: string
 }) {

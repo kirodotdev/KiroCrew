@@ -280,6 +280,7 @@ async def test_install_refuses_the_internal_secret_caller(
     response = await h.api_skills_discover_install(request)
     assert response.status == 403
     assert _body(response)["code"] == "human_only"
+    assert "Customize → Skills → Add Skill" in _body(response)["error"]
     assert sel_mock.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
 
 
@@ -287,7 +288,7 @@ async def test_install_refuses_the_internal_secret_caller(
 async def test_install_400_on_undecodable_body(state: MagicMock) -> None:
     response = await h.api_skills_discover_install(_mk("POST", "/i", state=state, body=None))
     assert response.status == 400
-    assert _body(response) == {"error": "Invalid JSON body"}
+    assert _body(response) == {"error": "Invalid JSON body", "code": "invalid_json"}
 
 
 @pytest.mark.asyncio
@@ -549,7 +550,10 @@ async def test_install_502_scrubs_the_provider_error(
     request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
     response = await h.api_skills_discover_install(request)
     assert response.status == 502
-    assert _body(response) == {"error": "Failed to fetch skill from provider"}
+    assert _body(response) == {
+        "error": "Failed to fetch skill from provider",
+        "code": "fetch_failed",
+    }
     logged = sel_mock.log_tool_invocation.call_args.kwargs["error"]
     assert "AKIAIOSFODNN7EXAMPLE" not in logged
     assert "REDACTED" in logged

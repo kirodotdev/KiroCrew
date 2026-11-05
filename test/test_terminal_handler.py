@@ -1047,7 +1047,7 @@ class TestApiTerminalCreate:
         ), patch.object(terminal, "_sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_create(req)
-        assert resp.status == 429
+        assert resp.status == 409
 
     @pytest.mark.asyncio
     async def test_respects_custom_max_sessions(self):
@@ -1058,7 +1058,7 @@ class TestApiTerminalCreate:
         ), patch.object(terminal, "_sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_create(req)
-        assert resp.status == 429
+        assert resp.status == 409
 
     @pytest.mark.asyncio
     async def test_uses_configured_shell(self, monkeypatch):

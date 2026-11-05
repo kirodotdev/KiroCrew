@@ -154,7 +154,7 @@ describe('SettingsField label association', () => {
 
     expect(screen.getByText('Retries').tagName).toBe('SPAN')
     expect(screen.getByText('Density').tagName).toBe('SPAN')
-    // The group keeps its own naming channel (role=group + aria-label).
-    expect(screen.getByRole('group', { name: 'Density' })).toBeInTheDocument()
+    // The group keeps its own naming channel (role=radiogroup + aria-label).
+    expect(screen.getByRole('radiogroup', { name: 'Density' })).toBeInTheDocument()
   })
 })

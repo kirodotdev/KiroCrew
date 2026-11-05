@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import posixpath
 import re
 from collections.abc import Iterable
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from kiro_crew.acp._dispatch_parts.surfaced_text import (
     _dumps_degraded,
@@ -47,9 +48,11 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
 from kiro_crew.platform.guest_paths import GuestPathParams
+from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL
 from kiro_crew.session_environment import WORKSPACE_DENY_ALIASES, WORKSPACE_TOOL_KINDS
 
 # Logs under the facade's name, which operators and tests filter on.
@@ -261,13 +264,128 @@ def gate_envelope(tool_call: dict[str, Any], nonce: str | None) -> dict[str, Any
         return None
     kind = body.get("kind")
     tool_call_id = body.get("toolCallId")
+    owner = body.get("owner")
     return {
         "toolCallId": tool_call_id if isinstance(tool_call_id, str) and tool_call_id else "",
         "title": tool,
         "kind": kind if isinstance(kind, str) else "other",
         "input": body.get("input"),
         "truncated": body.get("truncated") is True,
+        # Read only on the Strands harness (:func:`strands_envelope_identity`);
+        # pi's extension writes none.
+        "owner": owner if isinstance(owner, str) else "",
     }
+
+
+#: Strands built-in tool -> the ACP kind Crew judges it by. Keyed by the
+#: built-in's own name, and read ONLY for a call the gate module proved is that
+#: built-in (``owner: "builtin"``: the tool object ``strands_harness`` built for
+#: that slot). Every Strands built-in has a row, so a built-in this table does not
+#: know is a harness change, refused until it is classified here. ``web_search``
+#: and ``web_fetch`` are ``fetch`` (they leave the host), never the ``search`` or
+#: ``read`` kinds the read-only tiers take. ``programmatic_tool_caller`` runs
+#: model-written code that calls other tools and ``subagent`` starts a child
+#: agent: both ``other``, so no read-only tier proves them.
+STRANDS_BUILTIN_TOOL_KINDS: dict[str, str] = {
+    "shell": "execute",
+    "read": "read",
+    "write": "edit",
+    "edit": "edit",
+    "web_fetch": "fetch",
+    "web_search": "fetch",
+    "programmatic_tool_caller": "other",
+    "subagent": "other",
+}
+
+
+class StrandsCallIdentity(NamedTuple):
+    """What a Strands gate envelope proves about the call it asks for."""
+
+    kind: str
+    is_shell: bool
+    #: The MCP server behind the call; "" for a built-in or a project's own tool.
+    mcp_server_name: str
+    #: The tool's name as Crew's rules bind it: the built-in's own name, the MCP
+    #: server's tool, or "" for a project's own tool (its name proves nothing,
+    #: so it gains no built-in alias and no read-only proof).
+    tool_name: str
+    #: ``strands#<builtin>`` / ``strands#@<server>/<tool>``, "" for a custom tool.
+    harness_tool_id: str
+
+
+def strands_envelope_identity(envelope: dict[str, Any]) -> StrandsCallIdentity | None:
+    """Classify a Strands call from its envelope's ``owner`` and ``tool``, or ``None``.
+
+    The owner is the gate module's reading of the tool OBJECT Strands resolved
+    (``builtin``, ``custom`` or ``mcp:<server>``), never of the name the model
+    chose, and it is the only thing the kind comes from. The CLI's own ``tool_call``
+    card states a kind guessed from substrings of the name (``read`` in any name
+    reads as a read), which Crew never reads for this harness.
+
+    ``None`` -- an owner that is missing, unknown, an MCP owner with no readable
+    server, a title that does not name that server's tool, a built-in this build
+    has not classified -- means the call cannot be classified, and the caller
+    refuses it. Nothing is guessed toward a looser kind.
+    """
+    owner = envelope.get("owner")
+    title = envelope.get("title")
+    if not isinstance(owner, str) or not isinstance(title, str) or not title:
+        return None
+    if owner == "builtin":
+        kind = STRANDS_BUILTIN_TOOL_KINDS.get(title)
+        if kind is None:
+            return None
+        return StrandsCallIdentity(
+            kind, title == "shell", "", title, f"{ACP_BACKEND_STRANDS}#{title}"
+        )
+    if owner == "custom":
+        return StrandsCallIdentity("other", False, "", "", "")
+    if owner.startswith("mcp:"):
+        server = mcp_identity_name(owner[len("mcp:") :])
+        prefix = f"mcp__{server}__"
+        if not server or not title.startswith(prefix):
+            return None
+        tool = mcp_identity_name(title[len(prefix) :])
+        if not tool:
+            return None
+        return StrandsCallIdentity(
+            "other", False, server, tool, f"{ACP_BACKEND_STRANDS}#@{server}/{tool}"
+        )
+    return None
+
+
+#: Why a Strands Side Chat call that is not the proven built-in read is refused.
+STRANDS_SIDE_READ_ONLY_REFUSAL = (
+    "this side chat is read-only, and on Strands only the harness's own file read "
+    "of an absolute path runs here"
+)
+
+
+def is_strands_side_read(
+    identity: StrandsCallIdentity | None,
+    envelope: dict[str, Any] | None,
+    gated_params: object,
+) -> bool:
+    """Whether a Strands Side Chat call is the harness's own file read of an absolute path.
+
+    True only when the gate module proved the call is the ``read`` built-in
+    (``owner: "builtin"``: the tool object ``strands_harness`` built), its envelope
+    arrived whole, and the path it names is absolute on this host and is the same
+    path the deny tiers judge (*gated_params*, what the permission event carries).
+    The built-in refuses a relative path and any ``..`` itself; the sensitive-path
+    checks resolve a relative path against the gateway's own directory, so one is
+    not accepted here either. Every other call -- the shell, a write, a fetch, a
+    sub-agent, a project's own tool, an MCP tool -- is False.
+    """
+    if identity is None or envelope is None or envelope.get("truncated"):
+        return False
+    if identity.harness_tool_id != f"{ACP_BACKEND_STRANDS}#read" or identity.mcp_server_name:
+        return False
+    stated = envelope.get("input")
+    path = stated.get("path") if isinstance(stated, dict) else None
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return False
+    return isinstance(gated_params, dict) and gated_params.get("path") == path
 
 
 #: The server-name characters pi keeps in an MCP tool name; any other is ``_``.
@@ -370,6 +488,40 @@ _KAS_NON_COMMAND_TOOLS: dict[str, tuple[str, str]] = {
 }
 
 
+#: The server name KAS's remote tool wrapper stamps on ``mcpTool.identity`` for
+#: the built-ins it serves remotely, and the prefix it puts on their tool ids.
+#: KAS serves ``web_search`` this way: the tool_call frame names no server (a
+#: built-in), while the permission request carries
+#: ``{serverName: "remote", toolName: "web_search"}`` with toolId
+#: ``remote_web_search``.
+_KAS_REMOTE_WRAPPER_SERVER = "remote"
+_KAS_REMOTE_WRAPPER_ID_PREFIX = "remote_"
+
+
+def _is_kas_remote_builtin(
+    id_server: str, id_tool: str, tool_id: object, cached_server: str
+) -> bool:
+    """Whether a permission frame's identity is KAS's remote wrapper naming a built-in.
+
+    Only the exact shape KAS emits for a built-in it serves remotely: the
+    preceding tool_call named no server, the identity server is the wrapper's,
+    the toolId is the wrapper prefix plus the identity's tool name, and that
+    toolId is a built-in Crew already maps to a kiro-cli name
+    (:data:`KIRO_CLI_NAME_BY_KAS_TOOL`). Such a frame is not two frames
+    disagreeing about which MCP server served the call: no MCP server did, and
+    the call is judged as the built-in its toolId names. The wrapper server is
+    never adopted, so no server-keyed grant can fire for it.
+    """
+    return (
+        not cached_server
+        and id_server == _KAS_REMOTE_WRAPPER_SERVER
+        and bool(id_tool)
+        and isinstance(tool_id, str)
+        and tool_id == f"{_KAS_REMOTE_WRAPPER_ID_PREFIX}{id_tool}"
+        and tool_id in KIRO_CLI_NAME_BY_KAS_TOOL
+    )
+
+
 def kas_consent_tool(params: object) -> tuple[str, str]:
     """The Crew tool and target a KAS permission request's own ``_meta.kiro`` names.
 
@@ -407,6 +559,58 @@ def kas_consent_tool(params: object) -> tuple[str, str]:
     if not isinstance(target, str) or not target.strip():
         return "", ""
     return crew_name, target.strip()
+
+
+#: The ``mcpServer.source`` claude-agent-acp stamps on a server the client handed it
+#: on the ``session/new`` array. A user, project or plugin server of the harness's own
+#: config carries another source, so a name Crew placed cannot be claimed by one.
+CLAUDE_CREW_PLACED_MCP_SOURCE = "dynamic"
+
+
+def claude_mcp_identity(
+    tool_call: object, stated_tool_name: str, placed_servers: Iterable[str]
+) -> tuple[str, str]:
+    """The ``(server, tool)`` claude-agent-acp names for an MCP call Crew placed.
+
+    claude-agent-acp writes ``_meta.claudeCode`` on the permission request's
+    ``toolCall``: ``toolName`` (``mcp__<server>__<tool>``) and ``mcpServer``
+    ``{name, source}``. Both are the adapter's, not the model's, the trust class of
+    ``_meta.kiro``. A pair is returned only when every check holds, and ``("", "")``
+    otherwise, so the call keeps the empty identity it had before:
+
+    * ``source`` is :data:`CLAUDE_CREW_PLACED_MCP_SOURCE`, so the server came off the
+      array Crew built and not the user's ``~/.claude`` config;
+    * the server is one of *placed_servers*, the names Crew put on that array;
+    * ``toolName`` is exactly ``mcp__<server>__<tool>`` for that server, and equals
+      *stated_tool_name*, the name the preceding ``tool_call`` frame stamped;
+    * both halves pass :func:`mcp_identity_name`, the bound Crew's MCP surface admits.
+
+    The title is never read: it is the model-influenced half of the frame.
+    """
+    meta = tool_call.get("_meta") if isinstance(tool_call, dict) else None
+    claude = meta.get("claudeCode") if isinstance(meta, dict) else None
+    if not isinstance(claude, dict):
+        return "", ""
+    server_block = claude.get("mcpServer")
+    if not isinstance(server_block, dict):
+        return "", ""
+    if server_block.get("source") != CLAUDE_CREW_PLACED_MCP_SOURCE:
+        return "", ""
+    server = mcp_identity_name(server_block.get("name"))
+    if not server or server not in set(placed_servers):
+        return "", ""
+    tool_name = claude.get("toolName")
+    prefix = f"mcp__{server}__"
+    if (
+        not isinstance(tool_name, str)
+        or tool_name != stated_tool_name
+        or not tool_name.startswith(prefix)
+    ):
+        return "", ""
+    tool = mcp_identity_name(tool_name[len(prefix) :])
+    if not tool:
+        return "", ""
+    return server, tool
 
 
 def build_permission_event(
@@ -456,7 +660,8 @@ def build_permission_event(
     :data:`~kiro_crew.acp.harness_tool_names.GOOSE_READ_ONLY_BUILTINS`). Every
     other session's event is built exactly as before.
     ``harness_mcp_servers`` are the server names
-    Crew placed on the session, so an opencode MCP tool's fused name is split.
+    Crew placed on the session, so an opencode MCP tool's fused name is split and a
+    claude MCP call names its server (:func:`claude_mcp_identity`).
 
     Single source of truth shared by ``AcpClient`` and ``AcpSessionHandle`` so
     the two transports cannot drift on the kiro/claude permission payload shape:
@@ -493,6 +698,14 @@ def build_permission_event(
     # envelope's id is the harness's own toolCallId for the call, so the caches
     # below are consulted under the same key the preceding ``tool_call`` frame wrote.
     envelope = gate_envelope(tool_call, gate_envelope_nonce)
+    # On Strands every tool call asks through Kiro Crew's gate module, so every
+    # permission frame of that harness must be its envelope, and the call is
+    # classified from the envelope's owner and tool alone. A frame that is not the
+    # envelope (no session nonce, another hook's interrupt, a malformed body) or
+    # whose owner cannot be read is refused below as an unreadable identity.
+    strands_identity: StrandsCallIdentity | None = None
+    if harness_backend == ACP_BACKEND_STRANDS and envelope is not None:
+        strands_identity = strands_envelope_identity(envelope)
     if envelope is not None:
         # pi spells a Crew server's tools in its own alphabet; the title is put back
         # in the server's spelling so title-derived rules (governance, deny) bind.
@@ -501,7 +714,7 @@ def build_permission_event(
         tool_call = {
             "toolCallId": envelope["toolCallId"] or tool_call.get("toolCallId", ""),
             "title": envelope["title"],
-            "kind": envelope["kind"],
+            "kind": strands_identity.kind if strands_identity is not None else envelope["kind"],
             "input": envelope["input"],
         }
     raw_title = tool_call.get("title", "unknown")
@@ -655,7 +868,13 @@ def build_permission_event(
     # .pop()): a later tool_call_update refinement reads this same cache, so
     # popping here would make it wrongly report is_shell=False.
     cached_shell = shell_cache.get(_ck) if (shell_cache is not None and tool_call_id) else None
-    if cached_shell is None and envelope is not None:
+    if harness_backend == ACP_BACKEND_STRANDS:
+        # The Strands CLI's ``tool_call`` card states a kind guessed from the tool
+        # name's substrings, so the shell verdict cached from it is not read. The
+        # envelope's owner decides: only the harness's own ``shell`` built-in is a
+        # command. An unclassified call resolves nothing (and is refused).
+        cached_shell = strands_identity.is_shell if strands_identity is not None else None
+    elif cached_shell is None and envelope is not None:
         # The envelope's kind is the gate extension's own rendering of the
         # harness's tool name -- Kiro Crew's code reading the harness's event, the
         # same provenance the cached ``tool_call`` kind has. It is NOT the frame's
@@ -808,9 +1027,17 @@ def build_permission_event(
                 or mcp_identity_unreadable(_identity.get("toolName"))
             ):
                 _mcp_identity_unreadable = True
-            if _id_server and _id_server != _mcp_server_name:
+            if (
+                _id_server
+                and _id_server != _mcp_server_name
+                and not _is_kas_remote_builtin(
+                    _id_server, _id_tool, _frame_kiro.get("toolId"), _mcp_server_name
+                )
+            ):
                 # Never adopted (see the design note above): refused on the
-                # harness handed the store, ignored elsewhere.
+                # harness handed the store, ignored elsewhere. KAS's remote
+                # wrapper naming a built-in is exempt: it is not a second MCP
+                # server, and the call is judged by its toolId below.
                 if identity_unreadable_cache is not None:
                     _mcp_identity_unreadable = True
             if _id_server and _id_server == _mcp_server_name and not _tool_name and _id_tool:
@@ -826,6 +1053,34 @@ def build_permission_event(
     # payload would leave this False and fail closed in
     # AcpEvent.child_mcp_identity_trusted.
     _mcp_identity_trusted = _cached_server is not None and _cached_tool is not None
+    # claude-agent-acp's tool_call frame names an MCP tool only in its fused
+    # ``toolName``, so the cache above holds empty names for it; the permission
+    # request adds the server. The pair is adopted only on top of that cache hit,
+    # and only for a server Crew placed (``claude_mcp_identity``).
+    if (
+        harness_backend == ACP_BACKEND_CLAUDE
+        and envelope is None
+        and _mcp_identity_trusted
+        and not _mcp_server_name
+        and not _tool_name
+        and harness_tool_name_cache is not None
+    ):
+        _mcp_server_name, _tool_name = claude_mcp_identity(
+            tool_call, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers
+        )
+    if harness_backend == ACP_BACKEND_STRANDS:
+        # The Strands card carries no identity channel, so the caches above hold
+        # empty names. The envelope is the identity: Kiro Crew's gate module read
+        # it off the tool object Strands resolved, under this session's nonce, the
+        # same trust class as a harness's own ``_meta``. It is set whether or not
+        # the card arrived first, so a per-tool deny binds either way.
+        if strands_identity is not None:
+            _mcp_server_name = strands_identity.mcp_server_name
+            _tool_name = strands_identity.tool_name
+            _mcp_identity_trusted = True
+        else:
+            _mcp_server_name, _tool_name, _mcp_identity_trusted = "", "", False
+            _mcp_identity_unreadable = True
 
     # The path the preceding tool_call's diff CONTENT BLOCK named, cached by the
     # same scoped toolCallId as the params. An edit backend may stream trusted
@@ -843,15 +1098,19 @@ def build_permission_event(
     # ``_meta.kiro.toolId``). Not read under a gate envelope: the frame's _meta
     # then describes the dialog, not the call the envelope names.
     _harness_tool_id = _permission_tool_id(params) if envelope is None else ""
+    if harness_backend == ACP_BACKEND_STRANDS:
+        # Only from the envelope's owner: a project's own tool named ``shell``
+        # must not meet an ``execute_bash`` matcher as the built-in shell.
+        _harness_tool_id = strands_identity.harness_tool_id if strands_identity else ""
     # goose and opencode state no such id; the tool name their tool_call frame
     # stated stands in for it, qualified so it is read through that backend's table.
-    if not _harness_tool_id and harness_tool_name_cache is not None and tool_call_id:
+    elif not _harness_tool_id and harness_tool_name_cache is not None and tool_call_id:
         _harness_tool_id = qualified_harness_tool_id(
             harness_backend, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers
         )
-    # claude-agent-acp states no tool name on the permission request itself, so
-    # the kiro-cli built-in a claude read tool stands for comes only from the name
-    # its preceding tool_call frame stamped. Only a Side Chat session gets it: the
+    # The kiro-cli built-in a claude read tool stands for comes only from the name
+    # its preceding tool_call frame stamped (an MCP call's server and tool are read
+    # above, by ``claude_mcp_identity``). Only a Side Chat session gets it: the
     # name is what the READ_ONLY gate accepts as a read, and in any other session
     # it would also bind kiro-cli-named deny and governance rules to claude calls.
     _harness_builtin_tool = ""
@@ -951,6 +1210,19 @@ def build_permission_event(
         # always matched as this gateway's paths.
         _resolved_raw_params = dict(_resolved_raw_params)
 
+    # Strands asks about every call through Crew's gate module, and the envelope's
+    # owner is the proof of which tool runs. On a Side Chat session the harness's
+    # own file read of an absolute path is named as kiro-cli's ``fs_read``, which
+    # the READ_ONLY gate takes as a read; every other call carries the refusal, so
+    # the shell, writes, fetches, sub-agents and a project's own tools never run
+    # there, a read-only shell command included. Side Chat only.
+    _side_read_only_refusal = ""
+    if side_read_only and harness_backend == ACP_BACKEND_STRANDS:
+        if is_strands_side_read(strands_identity, envelope, _resolved_raw_params):
+            _harness_builtin_tool = "fs_read"
+        else:
+            _side_read_only_refusal = STRANDS_SIDE_READ_ONLY_REFUSAL
+
     # dsh's permission frame names only the toolCallId, so which dsh tool a
     # request is for comes only from the name its preceding tool_call frame
     # stated. The gate reads it on a READ_ONLY turn alone, and only once the
@@ -1002,6 +1274,7 @@ def build_permission_event(
         harness_builtin_tool=_harness_builtin_tool,
         deepseek_tool_name=_deepseek_tool_name,
         deepseek_read_only_issue=_deepseek_read_only_issue,
+        side_read_only_refusal=_side_read_only_refusal,
         tool_purpose=_purpose,
     )
     return event, recorded

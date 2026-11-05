@@ -240,6 +240,7 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("mcp.webflow.com", "/oauth/authorize"),
         ("mcp.zapier.com", "/oauth/authorize"),
         ("netlify-mcp.netlify.app", "/oauth-server/auth"),
+        ("ticktick.com", "/oauth/authorize"),
         ("todoist.com", "/oauth/authorize"),
         ("www.dropbox.com", "/oauth2/authorize"),
         # Two issuers advertise a consent page on a different host than the
@@ -287,6 +288,41 @@ _OAUTH_QUERY_PARAMS = frozenset(
     }
 )
 
+# Salesforce Connected App consumer keys: a fixed public prefix followed by 70
+# to 100 letters, digits, dots or underscores. The set has no `%`, so a value
+# that matches decodes to itself and every decoded form has the same shape.
+_OAUTH_SALESFORCE_CLIENT_ID_RE = re.compile(r"3MVG9[A-Za-z0-9._]{70,100}\Z")
+
+
+def _salesforce_client_id_shaped(value: str) -> bool:
+    """Return whether *value* has the Salesforce consumer-key shape."""
+    return bool(_OAUTH_SALESFORCE_CLIENT_ID_RE.fullmatch(value))
+
+
+def _operator_listed_salesforce_query(host: str, path: str, query: str) -> bool:
+    """Check operator trust only for a non-builtin Salesforce client_id query.
+
+    Endpoint approval is checked by the caller. Builtins and queries without
+    this client_id shape need no additional operator-file lookup.
+    """
+    key = (host.lower(), path)
+    if key in _OAUTH_AUTHORIZATION_ENDPOINTS or not any(
+        name == "client_id" and bool(separator) and _salesforce_client_id_shaped(value)
+        for name, separator, value in (segment.partition("=") for segment in query.split("&"))
+    ):
+        return False
+    return _operator_listed_oauth_endpoint(*key)
+
+
+def _operator_listed_oauth_endpoint(host: str, path: str) -> bool:
+    """Return whether the operator listed this endpoint, auditing each matched entry once."""
+    key = (host.lower(), path)
+    if key in _load_operator_oauth_endpoints():
+        _emit_oauth_extension_used_event(*key)
+        return True
+    return False
+
+
 # ── Operator-owned OAuth endpoint extension (keystone oauth_endpoints.json) ──
 # ``_OAUTH_AUTHORIZATION_ENDPOINTS`` above is deliberately code-owned and
 # exact-match, but that leaves no remedy short of a code release when a user's
@@ -322,6 +358,7 @@ _ENDPOINT_EXTENSION_CAP = 50
 # rejects wildcards, schemes, ports, userinfo, percent-escapes, whitespace,
 # backslashes, and bracketed IPv6. Empty labels reject leading/trailing dots.
 # The lookahead bounds total length to the DNS maximum.
+# ``redaction_allow`` validates allowed link hosts with this same regex.
 _OAUTH_EXTENSION_HOST_RE = re.compile(
     r"\A(?=.{1,253}\Z)"
     r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
@@ -458,35 +495,54 @@ def _emit_oauth_extension_used_event(host: str, path: str) -> None:
     if (host, path) in _OAUTH_EXTENSION_AUDITED:
         return
     _OAUTH_EXTENSION_AUDITED.add((host, path))
-    try:
+
+    def metadata() -> dict:
         # Function-local for the same loader-cycle reason as
         # _load_operator_oauth_endpoints.
         from kiro_crew.config import loader as config_loader
 
+        return {
+            "host": host,
+            "path": path,
+            "file": str(config_loader.oauth_endpoints_path()),
+            "mechanism": "OAUTH_ENDPOINT_EXTENSION",
+        }
+
+    _log_operator_list_use(
+        "oauth_endpoint_extension_used", "oauth_banner_check", f"{host}{path}", metadata
+    )
+
+
+def _log_operator_list_use(
+    event_type: str,
+    operation: str,
+    resources: str,
+    metadata: Callable[[], dict],
+    outcome: str = "allowed",
+) -> None:
+    """Write one best-effort SEL event for an operator-list use or change.
+
+    Shared by the OAuth endpoint extension and the allowed link hosts (their
+    use, and entries dropped on load). A failed write, ``metadata()`` included,
+    is logged at debug and never raised, so the audit never changes the outcome.
+    """
+    try:
         SecurityEventLog().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="oauth_endpoint_extension_used",
+                event_type=event_type,
                 caller_identity="",
                 agent="kirocrew",
                 source="security",
-                operation="oauth_banner_check",
-                outcome="allowed",
-                resources=f"{host}{path}",
-                metadata={
-                    "host": host,
-                    "path": path,
-                    "file": str(config_loader.oauth_endpoints_path()),
-                    "mechanism": "OAUTH_ENDPOINT_EXTENSION",
-                },
+                operation=operation,
+                outcome=outcome,
+                resources=resources,
+                metadata=metadata(),
             )
         )
     except Exception:
-        logger.debug(
-            "SEL audit failed for oauth_endpoint_extension_used (allow stands)",
-            exc_info=True,
-        )
+        logger.debug("SEL audit failed for %s (allow stands)", event_type, exc_info=True)
 
 
 def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:

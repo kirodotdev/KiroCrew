@@ -38,20 +38,30 @@ def _recording_which(probed: list[str]):
     return fake_which
 
 
+_HELPERS = ("_pathcheck", "_toolpath")
+
+
 @pytest.fixture
-def narrate_mod():
-    """Load narrate.py, undoing its module-level ``sys.path`` insert and the
-    ``_pathcheck`` registration so neither leaks into later tests."""
+def restore_script_imports():
+    """Undo a script's module-level ``sys.path`` insert and the helper modules it
+    imports by name (``_pathcheck``, ``_toolpath``) so neither leaks into later tests."""
     path_before = list(sys.path)
-    had_pathcheck = "_pathcheck" in sys.modules
+    absent = [name for name in _HELPERS if name not in sys.modules]
     try:
-        yield load_skill_script("kc_video_narrate_aws_probe", _REFS / "narrate.py")
+        yield
     finally:
         sys.path[:] = path_before
-        if not had_pathcheck:
-            sys.modules.pop("_pathcheck", None)
+        for name in absent:
+            sys.modules.pop(name, None)
 
 
+@pytest.fixture
+def narrate_mod(restore_script_imports):
+    """Load narrate.py with its imports undone at teardown."""
+    return load_skill_script("kc_video_narrate_aws_probe", _REFS / "narrate.py")
+
+
+@pytest.mark.usefixtures("restore_script_imports")
 class TestDepsSpeechProbe:
     def test_check_speech_probes_resolved_binary(self, monkeypatch):
         deps = load_skill_script("kc_video_deps_aws_probe", _REFS / "deps.py")

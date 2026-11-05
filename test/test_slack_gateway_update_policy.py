@@ -547,12 +547,9 @@ class TestMandatoryUpdateOnWheelInstall:
     async def test_mandatory_git_no_newer_build_notifies(self, monkeypatch):
         """A git checkout below the floor but with NO newer build must NOT reset.
 
-        `_auto_apply_update` resets hard onto the upstream tip, and
-        `update_available` is true for a checkout on commit distance alone. A
-        floor-mandated apply that reset on that would drag the checkout to every
-        intermediate commit on every cycle and at every boot without the running
-        `__version__` ever advancing. The git branch reads `version_newer`, the
-        same signal the voluntary branch does, so no newer build means notify.
+        `update_available` is true on commit distance alone, so resetting on it would drag
+        the checkout to every intermediate commit without `__version__` advancing. The git
+        branch reads `version_newer`, so no newer build means notify.
         """
         import kiro_crew.dashboard.handlers as handlers
         import kiro_crew.platform.update_governance as gov
@@ -595,13 +592,9 @@ class TestMandatoryUpdateOnWheelInstall:
     async def test_mandatory_git_diverged_checkout_notifies_not_resets(self, monkeypatch):
         """A diverged below-floor checkout must notify, not hard-reset.
 
-        A checkout that pulled a version bump and then committed on top reads
-        `version_newer` true (upstream `__version__` outranks the imported one)
-        but `update_available` false (`can_fast_forward or restart_pending` is
-        false when the checkout is both ahead and behind). Resetting it would
-        discard the local commits. Requiring `update_available` as well as
-        `version_newer` keeps a diverged host on the notify path rather than
-        entering `_auto_apply_update` and relying on its late ahead-count refusal.
+        A diverged checkout reads `version_newer` true but `update_available` false, and
+        a reset would discard its local commits. Requiring both keeps it on the notify
+        path instead of relying on the late ahead-count refusal.
         """
         import kiro_crew.dashboard.handlers as handlers
         import kiro_crew.platform.update_governance as gov
@@ -645,11 +638,8 @@ class TestMandatoryUpdateOnWheelInstall:
     ):
         """A failed check and a no-newer-build verdict stay distinguishable.
 
-        Both decline to reset, but a non-answer (the check could not run) must
-        not read as a compliance decision, and neither path may clobber the
-        shared cache with a fabricated `update_available=True`. The two produce
-        distinct log lines and both leave the cache verdict the check wrote
-        intact.
+        Both decline to reset with distinct log lines, and neither overwrites the cached
+        verdict with a fabricated `update_available=True`.
         """
         import logging
 

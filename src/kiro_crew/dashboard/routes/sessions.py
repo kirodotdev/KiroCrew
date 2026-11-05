@@ -103,6 +103,8 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/project-scaffold/scan", chat.api_chat_folders_scan)
     app.router.add_post("/api/project-scaffold/create", chat.api_chat_folders_scaffold)
     app.router.add_patch("/api/chat/folders/{id}", chat.api_chat_folder_update)
+    # Auto-generate in the folder modal: returns an emoji, saves nothing.
+    app.router.add_post("/api/chat/folders/{id}/icon-preview", chat.api_chat_folder_icon_preview)
     # Atomic multi-folder reorder -- one transaction for a whole sidebar drag or
     # tool renumber, so a partial failure cannot leave a mix of old and new
     # order numbers. Registered BEFORE the "{id}" delete so its literal path is

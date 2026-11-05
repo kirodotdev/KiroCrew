@@ -34,7 +34,11 @@ from kiro_crew.lesson_validation import (
     extracted_lesson_applies,
     utf8_encodable,
 )
-from kiro_crew.memory_kind_routing import KindRouting, record_kind_routing_in_transaction
+from kiro_crew.memory_kind_routing import (
+    KindRouting,
+    capture_prior_in_transaction,
+    record_kind_routing_in_transaction,
+)
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.project_scope import canonical_scope, scope_is_admissible
 from kiro_crew.validation import normalize_lesson_category
@@ -43,6 +47,7 @@ from kiro_crew.vector_memory_constants import (
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
 )
+from kiro_crew.vector_memory_runtime import bulk_ingest as _bulk_ingest
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -422,16 +427,22 @@ def consolidation_receipt(self: VectorMemoryStore, source_id: str) -> dict | Non
 def _member_consolidation_confidence(item: dict) -> float | None:
     """The confidence :func:`apply_consolidation` validates *item* at, or ``None`` if it skips.
 
-    It skips a confidence ``float()`` cannot read or that is not finite; one outside
-    ``0..1`` is left to ``validate_semantic``. An integer too large for a float raises
-    ``OverflowError``, which the writer does not catch. The consolidation size screen
+    It skips a confidence ``float()`` cannot read or that is not finite. A number
+    outside ``0..1``, an integer too large for a float included, is clamped into range
+    with a warning by the memory import bound (``bulk_ingest._import_confidence``), so
+    the fact is kept and the pass never raises. The consolidation size screen
     (``history_consolidation_memory._refuse_oversized_semantic``) reads the same answer.
     """
+    raw = item.get("confidence", 0.5)
     try:
-        confidence = float(item.get("confidence", 0.5))
+        if not math.isfinite(float(raw)):
+            return None
+    except OverflowError:
+        pass  # an integer too large for a float: the bound clamps it to 1.0
     except (TypeError, ValueError):
         return None
-    return confidence if math.isfinite(confidence) else None
+    # Every value left is a number or numeric text, so the replacement is never used.
+    return _bulk_ingest._import_confidence(raw, 0.5, writer="member consolidation")
 
 
 def _member_consolidation_metadata(item: dict) -> tuple[dict, list[str]]:
@@ -463,7 +474,7 @@ def apply_consolidation(
     Embeddings remain NULL until the writer's maintenance sweep. No provider,
     transcript or filesystem operation takes place inside this transaction.
 
-    *kind_routing* is the consolidator's ``_route_by_kind`` answer for this
+    *kind_routing* is the ``route_consolidation_by_kind`` answer for this
     *result*; its bounded log is written inside the same transaction, so a
     replayed span (which returns the stored receipt) logs nothing twice.
     """
@@ -501,6 +512,9 @@ def apply_consolidation(
                     raise ValueError("Consolidation source identity changed")
                 self.db.rollback()
                 return json.loads(previous[3])
+            if kind_routing is not None:
+                # What the store held before this span writes, read for the log only.
+                kind_routing = capture_prior_in_transaction(self.db, kind_routing)
             semantic = result.get("semantic")
             for item in (semantic if isinstance(semantic, list) else [])[
                 :_MAX_SEMANTIC_PER_CONSOLIDATION

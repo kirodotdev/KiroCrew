@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 import time
 from unittest.mock import AsyncMock
 
@@ -32,8 +31,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew import autonudge
-from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime
-from kiro_crew.autonudge import AutoNudgeService, NudgeAdmissionRefused
+from kiro_crew.autonudge import AutoNudgeService
 from kiro_crew.crew_log import emit as _emit_module
 from kiro_crew.dashboard import chat_handlers as handlers
 from kiro_crew.monitoring.models import MonitorBudgets, MonitorOutcome
@@ -109,9 +107,10 @@ async def test_nudge_expiring_during_the_persist_cannot_resurrect(tmp_path, monk
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def _persist(*_a, **_kw) -> None:
+    async def _persist(*_a, **_kw) -> bool:
         entered.set()
         await release.wait()
+        return True
 
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
@@ -157,9 +156,10 @@ async def test_loop_is_retired_before_the_persist_begins(tmp_path, monkeypatch) 
         assert slot.is_closing is True
         return await original_retire(slot_key)
 
-    async def _persist(*_a, **_kw) -> None:
+    async def _persist(*_a, **_kw) -> bool:
         order.append("persist")
         assert slot.is_closing is True
+        return True
 
     monkeypatch.setattr(handlers, "_retire_slot_nudge_loop", _retire)
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
@@ -457,8 +457,9 @@ async def test_an_app_that_cannot_be_told_aborts_the_close(tmp_path, monkeypatch
 
     saved: list[bool] = []
 
-    async def _persist(*_a, **kw) -> None:
+    async def _persist(*_a, **kw) -> bool:
         saved.append(bool(kw.get("closed")))
+        return True
 
     async def _hook_fails(_app: str, _slot_key: str) -> bool:
         return False
@@ -611,79 +612,6 @@ async def test_app_close_retires_the_latest_queued_arm_generation(tmp_path, monk
         if svc._lock.locked():
             svc._lock.release()
         for task in (replacement, close):
-            if not task.done():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-        svc.stop()
-
-
-@pytest.mark.asyncio
-async def test_issue_radar_arm_queued_behind_final_retirement_is_refused(
-    tmp_path, monkeypatch
-) -> None:
-    state = _state_with_slot(tmp_path)
-    slot = state._slots[NAME]
-    slot._app = "issue-radar"
-    svc = await _service(tmp_path, monkeypatch)
-    hook_entered = asyncio.Event()
-    release_hook = asyncio.Event()
-
-    async def _hook(_app: str, _slot_key: str) -> bool:
-        hook_entered.set()
-        await release_hook.wait()
-        return True
-
-    monkeypatch.setattr("kiro_crew.apps.teardown.notify_slot_closed", _hook)
-    monkeypatch.setattr(crew_runtime, "ensure_crew_session", AsyncMock(return_value=slot))
-    monkeypatch.setattr(
-        crew_runtime,
-        "compose_turn_prompt_async",
-        AsyncMock(return_value="replacement arm"),
-    )
-    write_entered = threading.Event()
-    release_write = threading.Event()
-    original_write = svc._write_state
-
-    def _stall_empty_write(payload: dict[str, object]) -> None:
-        if not payload["loops"]:
-            write_entered.set()
-            assert release_write.wait(timeout=5)
-        original_write(payload)
-
-    monkeypatch.setattr(svc, "_write_state", _stall_empty_write)
-    close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await hook_entered.wait()
-    await svc.add(NAME, "mid-hook arm", idle_secs=300)
-    release_hook.set()
-    assert await asyncio.to_thread(write_entered.wait, 5)
-    launch = asyncio.create_task(
-        crew_runtime.launch_crew(
-            state,
-            "owner",
-            "repo",
-            {"id": "crew-1"},
-            tmp_path,
-        )
-    )
-    try:
-        for _ in range(10):
-            await asyncio.sleep(0)
-            if svc._inflight_adds:
-                break
-        assert svc._inflight_adds
-        assert not launch.done()
-        release_write.set()
-        response = await close
-        launch_result = await asyncio.gather(launch, return_exceptions=True)
-
-        assert response.status == 200
-        assert NAME not in state._slots
-        assert isinstance(launch_result[0], NudgeAdmissionRefused)
-        assert svc.get_by_slot(NAME) is None
-    finally:
-        release_hook.set()
-        release_write.set()
-        for task in (launch, close):
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)

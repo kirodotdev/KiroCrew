@@ -229,26 +229,41 @@ def test_real_collected_nodes_are_the_disjoint_fleet_and_hosted_union(tmp_path):
 def test_workflow_routes_every_scope_without_changing_local_defaults(jobs):
     config = configparser.ConfigParser()
     config.read(ROOT / "setup.cfg", encoding="utf-8")
-    assert "ipv6_required:" in config["tool:pytest"]["markers"]
+    markers = config["tool:pytest"]["markers"]
+    assert "ipv6_required:" in markers
+    assert "real_venv:" in markers
     assert "ipv6_required" not in config["tool:pytest"]["addopts"]
+    assert "real_venv" not in config["tool:pytest"]["addopts"]
     assert config["tool:pytest"]["testpaths"] == "test src/kiro_crew/apps/builtins"
     for name, expected_count in (("backend-test", 4), ("backend-test-windows", 1)):
         body = _step(jobs, name, "Run tests")["run"].replace("\\\n", " ")
         commands = re.findall(r"^\s*(?:python -m )?pytest .+$", body, re.MULTILINE)
         assert len(commands) == expected_count
-        assert all('-m "not ipv6_required"' in command for command in commands)
+        # Every backend shard must deselect both ipv6_required and real_venv
+        # tests; real_venv tests run only in the dedicated wheel-engine-real-venv
+        # CI job.
+        for command in commands:
+            m = re.search(r'-m\s+"([^"]+)"', command)
+            assert m is not None, f"no -m expression found in: {command}"
+            expr = m.group(1)
+            assert "not ipv6_required" in expr, f"ipv6_required not excluded in: {command}"
+            assert "not real_venv" in expr, f"real_venv not excluded in: {command}"
         assert jobs[name]["strategy"]["matrix"]["group"] == list(range(1, 9))
     hosted = jobs["backend-test-ipv6"]
     assert hosted["needs"] == ["changes", "await-fast-gate", "lint-gate"]
-    # Per leg, not `${{ matrix.os }}`: the Linux leg takes the organization's
-    # own larger-runner group in this repository and the standard image in a
-    # fork, which cannot reach that group, while the Windows leg keeps the
-    # runner matrix.os names. Pinning the whole expression is what catches a
-    # leg silently re-routed or a fork branch dropped.
+    # Per leg, not `${{ matrix.os }}`: each leg takes its OWN platform's
+    # larger-runner group in this repository and the standard image in a fork,
+    # which cannot reach that group. Both arms are pinned together because the
+    # trailing `|| matrix.os` makes a dropped arm silent -- the leg still runs,
+    # just back on the shared pool -- and a dropped fork branch strands every
+    # consumer in every fork. Each arm names a LABEL rather than a `group:`,
+    # which is what keeps a Windows leg off a Linux runner and vice versa.
     assert hosted["runs-on"] == (
         "${{ matrix.os == 'ubuntu-latest' && "
         "(github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
-        "|| 'ubuntu-latest') || matrix.os }}"
+        "|| 'ubuntu-latest') || matrix.os == 'windows-latest' && "
+        "(github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' "
+        "|| 'windows-latest') || matrix.os }}"
     )
     assert hosted["strategy"] == {
         "max-parallel": 4,

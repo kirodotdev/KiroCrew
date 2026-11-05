@@ -95,6 +95,10 @@ _KNOWN: dict[str, str] = {
     "kiro_crew/autonudge_selfarm.py::record_self_arm": _UNAUDITED,
     "kiro_crew/aws_consent.py::record_grant": _PRESERVES,
     "kiro_crew/aws_consent.py::revoke": _PRESERVES,
+    "kiro_crew/aws_consent.py::revoke_if_matches": (
+        "an unreadable store reads as {}, so the compare finds no grant and nothing is written"
+    ),
+    "kiro_crew/aws_consent.py::record_source_attestation": _PRESERVES,
     "kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard_record.py::"
     "record_built": _UNAUDITED,
     "kiro_crew/connections/mint.py::_forget_mint_spec": _UNAUDITED,
@@ -103,7 +107,6 @@ _KNOWN: dict[str, str] = {
     "kiro_crew/dashboard/handlers/mcp_config_entries.py::_replace_kirocrew_spec": _UNAUDITED,
     "kiro_crew/dashboard/handlers/mcp_config_entries.py::_rmw_remove_entry": _UNAUDITED,
     "kiro_crew/dashboard/handlers/mcp_config_entries.py::_set_kirocrew_entry": _UNAUDITED,
-    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_set_scope_entry": _UNAUDITED,
     "kiro_crew/dashboard/handlers/mcp_config_entries.py::_set_tool_overrides": _UNAUDITED,
     "kiro_crew/irq.py::run.persist": "load_state documents a lost state as one duplicate wake",
     "kiro_crew/ledger_wake.py::forget_items": "_read_rate documents a lost map as one extra wake",

@@ -12,7 +12,7 @@ TIMING_LOGGER_NAME = "kiro_crew.coder.startup_timing"
 
 
 def startup_logger(fallback: logging.Logger) -> logging.Logger:
-    """Use the gateway's content-free file producer when it is installed."""
+    """Return the dedicated timing logger once a handler is attached to it, else ``fallback``."""
     timing_logger = logging.getLogger(TIMING_LOGGER_NAME)
     return timing_logger if timing_logger.handlers else fallback
 
@@ -30,8 +30,7 @@ def startup_timing(logger: logging.Logger, step: str, *, workspace: str = "") ->
         outcome = "cancelled"
         raise
     finally:
-        # The gateway adds an INFO producer on its file queue; standalone callers
-        # keep their own logging.
+        # Logged from `finally` so a failed or cancelled step still reports its elapsed time.
         startup_logger(logger).info(
             "Coder startup step=%s workspace=%s outcome=%s elapsed_ms=%.0f",
             step,

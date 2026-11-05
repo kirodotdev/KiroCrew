@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import weakref
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -132,3 +133,97 @@ async def test_the_probe_teardown_task_outlives_a_collection(
     await await_until(asyncio.ensure_future(tunnel._probe_loop()), what="the probe loop to exit")
 
     await park.survives_collection_and_finishes(ssh_tunnel_manager_child, "_BACKGROUND_TASKS")
+
+
+@pytest.mark.asyncio
+async def test_the_shared_crew_child_cancel_task_outlives_a_collection() -> None:
+    from kiro_crew.shared_crew import admission_entry
+
+    park = _Park()
+    manager = SimpleNamespace(
+        cancel_queued=park,
+        cancel=object(),
+        _agents={},
+        _admission=SimpleNamespace(starting_claim_of=lambda _id: None),
+    )
+    work = SimpleNamespace(extra={"execution_id": "child"}, session_key="dashboard:parent")
+
+    admission_entry.subagent_cancel(manager, asyncio.get_running_loop())(work)
+
+    await park.survives_collection_and_finishes(admission_entry, "_BACKGROUND_TASKS")
+
+
+@pytest.mark.asyncio
+async def test_the_shared_crew_run_cancel_task_outlives_a_collection() -> None:
+    from kiro_crew.shared_crew import admission_entry
+
+    park = _Park()
+    admission_entry._cancel_hook(park)(SimpleNamespace(extra={"execution_id": "run-1"}))
+
+    await park.survives_collection_and_finishes(admission_entry, "_BACKGROUND_TASKS")
+
+
+@pytest.mark.asyncio
+async def test_a_sprites_terminal_send_outlives_a_collection() -> None:
+    from kiro_crew.sprites_session import terminal
+
+    park = _Park()
+    terminal._send_in_background(park())
+
+    await park.survives_collection_and_finishes(terminal, "_BACKGROUND_TASKS")
+
+
+@pytest.mark.asyncio
+async def test_the_remote_worker_sigterm_retire_outlives_a_collection() -> None:
+    from kiro_crew.remote_session import worker as worker_mod
+
+    worker = worker_mod.Worker("sid-1", b"s" * 32, ["true"])
+    park = _Park()
+    worker._on_term = park  # type: ignore[method-assign]
+
+    worker._on_sigterm()
+
+    await park.survives_collection_and_finishes(worker, "_term_tasks")
+
+
+@pytest.mark.asyncio
+async def test_an_artifact_knowledge_sync_task_outlives_a_collection() -> None:
+    from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
+
+    sync = ArtifactKnowledgeSync(MagicMock(), MagicMock(), set(), asyncio.get_running_loop())
+    park = _Park()
+    sync._handle = park  # type: ignore[method-assign]
+
+    sync._schedule("save", "an-artifact")
+
+    await park.survives_collection_and_finishes(sync, "_tasks")
+
+
+@pytest.mark.asyncio
+async def test_a_crew_log_flush_outlives_a_collection() -> None:
+    from kiro_crew.dashboard.handlers.crew_log import CrewLogPublisher
+
+    publisher = CrewLogPublisher(MagicMock())
+    publisher._loop = asyncio.get_running_loop()
+    park = _Park()
+    publisher._flush = park  # type: ignore[method-assign]
+
+    publisher._run()
+
+    await park.survives_collection_and_finishes(publisher, "_tasks")
+    assert publisher._flushing is False, "the finished flush did not let the next one start"
+
+
+@pytest.mark.asyncio
+async def test_a_crew_log_session_send_outlives_a_collection() -> None:
+    from kiro_crew.dashboard.handlers.crew_log import CrewLogPublisher
+
+    publisher = CrewLogPublisher(MagicMock())
+    publisher._loop = asyncio.get_running_loop()
+    publisher._pending = {("sid", "status"): (1, 1, {})}
+    park = _Park()
+    publisher._send_pending = park  # type: ignore[method-assign]
+
+    publisher._drain_sessions()
+
+    await park.survives_collection_and_finishes(publisher, "_tasks")

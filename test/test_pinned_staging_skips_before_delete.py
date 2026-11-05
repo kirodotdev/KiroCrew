@@ -745,7 +745,7 @@ def test_a_skipped_by_name_replacement_fails_loudly_instead_of_losing_the_file(
     backup = mc / "backup"
     backup.mkdir()
 
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(pinned_fs.PinnedPathRefusal) as caught:
         snapshot._backup_and_copy(mc, backup, snap, "crons", **UNPINNED_OK)
 
     assert "restore of" in str(

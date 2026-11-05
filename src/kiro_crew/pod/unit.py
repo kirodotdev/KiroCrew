@@ -28,6 +28,7 @@ import shutil
 from pathlib import Path
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.pod import limits as pod_limits
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod.config import TERMINAL_BOOT_EXIT_CODES, PodConfig, environment_vars
 from kiro_crew.service.common import systemd_quote
@@ -64,9 +65,11 @@ RestartSec=5
 # line visible. Values come from kiro_crew.pod.config.TERMINAL_BOOT_EXIT_CODES.
 RestartPreventExitStatus={terminal_exit_codes}
 
-# Resource isolation: cap so a runaway pod can't starve the live plane.
-MemoryMax=4G
-CPUQuota=200%
+# Resource isolation: cap so a runaway pod can't starve the live plane. These
+# are the defaults; `kirocrew pod up <wt> --memory 16G --cpu 800%` overrides them
+# for one pod through its drop-in.
+MemoryMax={default_memory}
+CPUQuota={default_cpu}
 
 # journalctl --user -u {unit_prefix}@<name>
 StandardOutput=journal
@@ -116,6 +119,8 @@ def render_unit(cfg: PodConfig) -> str:
         unit_prefix=cfg.unit_prefix,
         environment=_environment_block(cfg),
         terminal_exit_codes=" ".join(str(code) for code in TERMINAL_BOOT_EXIT_CODES),
+        default_memory=pod_limits.DEFAULT_MEMORY,
+        default_cpu=pod_limits.DEFAULT_CPU,
     )
 
 
@@ -171,9 +176,26 @@ def dropin_path(cfg: PodConfig, name: str) -> Path:
     return dropin_dir(cfg, name) / _DROPIN_FILENAME
 
 
-def render_dropin(checkout: Path) -> str:
-    """The drop-in pinning a pod's boot to *checkout*'s own ``kirocrew``."""
-    return _DROPIN_TEMPLATE.format(kirocrew_bin=systemd_quote(str(prov.venv_bin(checkout))))
+def render_dropin(checkout: Path, limits: pod_limits.PodLimits | None = None) -> str:
+    """The drop-in pinning a pod's boot to *checkout*'s own ``kirocrew``.
+
+    A ceiling the pod set with ``--memory`` / ``--cpu`` is appended here, so it
+    applies to this instance alone. A ceiling left at its default is not written,
+    which keeps the template as the one place the defaults live. The file is
+    ``50-``, so an operator's own later drop-in (``60-*.conf``, ``override.conf``)
+    still wins.
+    """
+    text = _DROPIN_TEMPLATE.format(kirocrew_bin=systemd_quote(str(prov.venv_bin(checkout))))
+    if limits is None:
+        return text
+    lines = []
+    if not limits.memory_default:
+        lines.append(f"MemoryMax={limits.memory}\n")
+    if not limits.cpu_default:
+        lines.append(f"CPUQuota={limits.cpu}\n")
+    if lines:
+        text += "# Per-pod ceilings from the pod env file (MEMORY= / CPU=).\n" + "".join(lines)
+    return text
 
 
 def _write_unit_file_atomic_nofollow(dst: Path, content: str, *, what: str) -> None:
@@ -188,7 +210,12 @@ def _write_unit_file_atomic_nofollow(dst: Path, content: str, *, what: str) -> N
     pinned_fs.write_file_pinned(dst, content, what=what, mode=0o600, refusal=OSError)
 
 
-def install_dropin(cfg: PodConfig, name: str, checkout: Path) -> Path:
+def install_dropin(
+    cfg: PodConfig,
+    name: str,
+    checkout: Path,
+    limits: pod_limits.PodLimits | None = None,
+) -> Path:
     """Write pod *name*'s drop-in and return its path. Caller runs daemon-reload.
 
     Rewritten on every start rather than created once, so a pod re-``up``ped from
@@ -199,7 +226,7 @@ def install_dropin(cfg: PodConfig, name: str, checkout: Path) -> Path:
     dst = dropin_path(cfg, name)
     _write_unit_file_atomic_nofollow(
         dst,
-        render_dropin(checkout),
+        render_dropin(checkout, limits),
         what="pod boot override",
     )
     return dst

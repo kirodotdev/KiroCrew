@@ -97,8 +97,8 @@ class TestWritersPreserveAWrongShape:
         raw = _BOM + json.dumps({"mcpServers": [{"command": "x"}], "keep": 1}).encode("utf-8")
         path.write_bytes(raw)
         server = mcp_discovery.McpServerInfo(name="n", command="c", args=[])
-        with pytest.raises((AttributeError, TypeError)):
-            mcp_discovery.register_servers_for_cc([server], mcp_json_path=path)
+        # Refused with a warning, not crashed on: the writer skips the sidecar.
+        assert mcp_discovery.register_servers_for_cc([server], mcp_json_path=path) is False
         assert path.read_bytes() == raw
 
 
@@ -233,3 +233,190 @@ class TestChatStartLoading:
 
         merged = mcp_discovery._load_mcp_json()
         assert merged == {"d": {"command": "d"}}
+
+
+# ── Keystone deny rules and script hooks (``denied_commands.json``, ``hooks.json``) ──
+#
+# Windows PowerShell 5.1 ``Set-Content -Encoding UTF8`` writes the mark and a CRLF.
+
+_PS51_DENIED = _BOM + b'{"user_added":[{"id":"u1","pattern":"git push --force"}]}\r\n'
+
+
+@pytest.fixture
+def denied_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from kiro_crew.config import loader
+    from kiro_crew.dashboard.handlers import security as security_handlers
+
+    path = tmp_path / "denied_commands.json"
+    monkeypatch.setattr(loader, "denied_commands_path", lambda: path)
+    monkeypatch.setattr(security_handlers, "denied_commands_path", lambda: path)
+    return path
+
+
+class TestDeniedCommandsKeystone:
+    @pytest.mark.parametrize(
+        "raw",
+        [_PS51_DENIED, _PS51_DENIED[len(_BOM) :]],
+        ids=["utf8_bom_crlf", "plain_utf8_control"],
+    )
+    def test_the_user_added_rule_reaches_the_gate(self, denied_file: Path, raw: bytes) -> None:
+        from kiro_crew.hooks import hooks_config_from_config_dict
+
+        denied_file.write_bytes(raw)
+        config = hooks_config_from_config_dict({})
+        assert [p.id for p in config.denied_commands_user_added] == ["u1"]
+
+    @pytest.mark.parametrize(
+        "raw",
+        [b"{not json", "{}".encode("utf-16"), b"[1, 2]"],
+        ids=["corrupt_json", "utf16", "non_object_root"],
+    )
+    def test_an_unusable_file_keeps_built_ins_and_says_so(
+        self, denied_file: Path, raw: bytes, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from kiro_crew.hooks import load_denied_commands_state
+
+        denied_file.write_bytes(raw)
+        with caplog.at_level(logging.WARNING):
+            assert load_denied_commands_state() == {}
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("denied_commands.json" in r.getMessage() for r in warnings)
+
+    def test_a_missing_file_is_no_opt_out_without_a_warning(
+        self, denied_file: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from kiro_crew.hooks import load_denied_commands_state
+
+        with caplog.at_level(logging.WARNING):
+            assert load_denied_commands_state() == {}
+        assert not [r for r in caplog.records if "denied_commands.json" in r.getMessage()]
+
+    def test_the_settings_page_reads_and_edits_a_bom_file(self, denied_file: Path) -> None:
+        from kiro_crew.dashboard.handlers import security as security_handlers
+
+        denied_file.write_bytes(_PS51_DENIED)
+        expected = {"user_added": [{"id": "u1", "pattern": "git push --force"}]}
+        assert security_handlers._read_denied_data() == expected
+        assert security_handlers._read_denied_strict() == expected
+
+    def test_a_corrupt_file_still_refuses_an_edit(self, denied_file: Path) -> None:
+        from kiro_crew.dashboard.handlers import security as security_handlers
+        from kiro_crew.dashboard.handlers.security_audit import ConfigCorruptError
+
+        denied_file.write_bytes(_BOM + b"{not json")
+        with pytest.raises(ConfigCorruptError):
+            security_handlers._read_denied_strict()
+
+
+@pytest.fixture
+def saved_hooks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A ``hooks.json`` holding one PreToolUse hook, re-saved with a leading mark."""
+    import kiro_crew.hooks as hooks_mod
+    from kiro_crew.config import loader
+    from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ScriptHook, ScriptHookStore
+
+    monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(hooks_mod, "_global_script_hook_store", None)
+    monkeypatch.setattr(hooks_mod, "get_global_hook_store", lambda: None)
+    store = ScriptHookStore(config_dir=tmp_path)
+    store._hooks = {
+        "h1": ScriptHook(id="h1", event=HOOK_EVENT_PRE_TOOL_USE, matcher="web_fetch", command="s")
+    }
+    store._save()
+    path = tmp_path / "hooks.json"
+    path.write_bytes(_BOM + path.read_bytes())
+    return path
+
+
+class TestScriptHooksFile:
+    def test_the_gateway_store_loads_a_bom_file(self, saved_hooks: Path) -> None:
+        from kiro_crew.hooks import ScriptHookStore
+
+        store = ScriptHookStore(config_dir=saved_hooks.parent)
+        assert [h.id for h in store.list_all()] == ["h1"]
+
+    def test_a_hook_edit_saves_over_a_bom_file(self, saved_hooks: Path) -> None:
+        from kiro_crew.hooks import ScriptHookStore
+
+        store = ScriptHookStore(config_dir=saved_hooks.parent)
+        assert store.toggle("h1") is not None
+        reread = ScriptHookStore(config_dir=saved_hooks.parent)
+        assert [h.enabled for h in reread.list_all()] == [False]
+        assert not saved_hooks.read_bytes().startswith(_BOM)
+
+    def test_the_standalone_gate_store_reads_a_bom_file(self, saved_hooks: Path) -> None:
+        import kiro_crew.hooks as hooks_mod
+
+        store = hooks_mod.persisted_hook_store()
+        assert [h.id for h in store.list_all()] == ["h1"]
+
+    def test_the_webhook_registration_count_reads_a_bom_file(self, tmp_path: Path) -> None:
+        from kiro_crew import webhooks
+
+        path = tmp_path / "hooks.json"
+        path.write_bytes(_BOM + b'{"r1": {"context_summary": "a"}, "hooks": []}')
+        assert webhooks.registered_context_count(path) == (1, True)
+        path.write_bytes(_BOM + b"{not json")
+        assert webhooks.registered_context_count(path) == (0, False)
+
+    def test_the_webhook_intake_reads_a_bom_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard.handlers import hooks as hooks_handlers
+
+        path = tmp_path / "hooks.json"
+        path.write_bytes(_BOM + b'{"r1": {"context_summary": "a"}, "hooks": []}')
+        monkeypatch.setattr(hooks_handlers, "_hook_store_path", lambda: path)
+        assert list(hooks_handlers._read_hook_registrations()) == ["r1"]
+        path.write_bytes(_BOM + b"{not json")
+        assert hooks_handlers._read_json_file(path) is None
+
+    def test_an_imported_bom_file_has_its_command_hooks_switched_off(
+        self, saved_hooks: Path
+    ) -> None:
+        # The import sanitizer must read the file the way the store does: a BOM
+        # file the store now loads must not slip past it with its hooks still on.
+        from kiro_crew.hooks import ScriptHookStore
+        from kiro_crew.portability_vetting import _disable_imported_script_hooks
+
+        assert saved_hooks.read_bytes().startswith(_BOM)
+        assert len(_disable_imported_script_hooks(saved_hooks)) == 1
+        store = ScriptHookStore(config_dir=saved_hooks.parent)
+        assert [h.enabled for h in store.list_all()] == [False]
+
+    def test_a_corrupt_bom_file_still_fails_the_standalone_gate_closed(
+        self, saved_hooks: Path
+    ) -> None:
+        import kiro_crew.hooks as hooks_mod
+
+        saved_hooks.write_bytes(_BOM + b"{not json")
+        with pytest.raises(ValueError):
+            hooks_mod.persisted_hook_store()
+
+
+# ── Governance policy files (``security_policy.json``) ──
+
+
+class TestGovernancePolicyReader:
+    _DOC = b'{"version": 1, "boot": {"allow_terminal": false}}'
+
+    @pytest.mark.parametrize("raw", [_BOM + _DOC, _DOC], ids=["utf8_bom", "plain_utf8_control"])
+    def test_the_policy_parses(self, tmp_path: Path, raw: bytes) -> None:
+        from kiro_crew.platform.governance import _read_json_file
+
+        path = tmp_path / "security_policy.json"
+        path.write_bytes(raw)
+        assert _read_json_file(path) == {"version": 1, "boot": {"allow_terminal": False}}
+
+    @pytest.mark.parametrize(
+        "raw",
+        [_DOC.decode().encode("utf-16"), _BOM + b"{not json", _BOM + _BOM + _DOC],
+        ids=["utf16", "bom_corrupt_json", "two_marks"],
+    )
+    def test_anything_else_still_raises(self, tmp_path: Path, raw: bytes) -> None:
+        from kiro_crew.platform.governance import _read_json_file
+
+        path = tmp_path / "security_policy.json"
+        path.write_bytes(raw)
+        with pytest.raises(ValueError):
+            _read_json_file(path)

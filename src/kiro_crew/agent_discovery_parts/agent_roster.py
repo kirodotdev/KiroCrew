@@ -34,6 +34,7 @@ from kiro_crew.agent_discovery_parts.spec_reads import (
     _kiro_agents_dir,
     _read_agent_spec,
     _warn_on_systematic_scan_failure,
+    declared_spec_claim,
 )
 from kiro_crew.agent_discovery_parts.spec_snapshot import (
     _LIST_AGENTS_CACHE,
@@ -129,7 +130,10 @@ def agent_welcome_message(
     duplicate name, and last-seen winning among duplicate project specs. Reading
     the winner instead of reproducing the rules is what keeps the two from
     drifting; a second copy of the precedence, however well tested, is a copy
-    that can disagree.
+    that can disagree. The one exception is a user-level row: several files may
+    declare that name, and the session runs the one ``agent.spec_pins`` chose, so
+    the user-level greeting comes from :func:`declared_spec_claim`, the resolver
+    the session starts from.
 
     Only the winning file is then parsed, through the same hardened reader under
     this function's own *operation* label, so a denial is attributed to the hint
@@ -159,10 +163,19 @@ def agent_welcome_message(
         if not project_dir:
             return ""
         directory = project_agents_dir(project_dir)
-    elif agents_dir is not None:
-        directory = agents_dir
     else:
-        directory = _kiro_agents_dir()
+        directory = agents_dir if agents_dir is not None else _kiro_agents_dir()
+        # Several user-level files may declare the name: the session runs the one
+        # ``agent.spec_pins`` chose, so the greeting is read from that file through
+        # the same resolver. A refusal (no pin, broken pin) starts no session.
+        try:
+            claim = declared_spec_claim(
+                directory, agent, operation="agent_welcome_message", source="unknown"
+            )
+        except Exception:  # noqa: BLE001 - decoration must never fail a turn
+            return ""
+        if claim is not None:
+            return spec_welcome_message(claim.spec)
     data = _read_agent_spec(
         directory / winner.filename,
         operation="agent_welcome_message",

@@ -1131,6 +1131,38 @@ async def test_a_probe_that_proves_the_relaunch_clears_an_earlier_stay_up(manage
 
 
 @pytest.mark.asyncio
+async def test_a_probe_does_not_clear_a_failed_frontend_build_stay_up(managed):
+    """An import probe says nothing about the bundle a failed build left behind."""
+    from kiro_crew import update_ownership
+
+    shutdown = asyncio.Event()
+    update_ownership.refuse_restart(
+        "the frontend build after the dashboard update did not complete",
+        import_probe_clears=False,
+    )
+    enough = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    asks = {"n": 0}
+
+    def _check():
+        # A second ask means the first probed answer was applied and the refusal
+        # still held the exit: the positive signal that ends the run.
+        asks["n"] += 1
+        if asks["n"] >= 2:
+            loop.call_soon_threadsafe(enough.set)
+        return _verdict("REENTERABLE", probed=True)
+
+    with _gap():
+        fired = await _run_until(shutdown, enough, reentry_check=_check)
+
+    assert asks["n"] >= 2
+    assert fired is False
+    assert update_ownership.restart_refusal() == (
+        "the frontend build after the dashboard update did not complete"
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_reentry_with_nothing_probed_does_not_clear_a_stay_up(managed):
     from kiro_crew import update_ownership
 

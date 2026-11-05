@@ -1,0 +1,156 @@
+{
+  "_comment": "Featured rows shown in the Add Skill / Add Server dialogs before the user types a search. Each id must be installable through its provider's normal install path; the rows are rendered exactly like search results. Edit by hand; test_discovery_featured.py checks the shape.",
+  "skills": [
+    {
+      "provider": "skillsh",
+      "id": "vercel-labs/skills/find-skills",
+      "name": "find-skills",
+      "repo_url": "https://github.com/vercel-labs/skills",
+      "author": "vercel-labs"
+    },
+    {
+      "provider": "skillsh",
+      "id": "anthropics/skills/frontend-design",
+      "name": "frontend-design",
+      "repo_url": "https://github.com/anthropics/skills",
+      "author": "anthropics"
+    },
+    {
+      "provider": "skillsh",
+      "id": "vercel-labs/agent-browser/agent-browser",
+      "name": "agent-browser",
+      "repo_url": "https://github.com/vercel-labs/agent-browser",
+      "author": "vercel-labs"
+    },
+    {
+      "provider": "skillsh",
+      "id": "anthropics/skills/skill-creator",
+      "name": "skill-creator",
+      "repo_url": "https://github.com/anthropics/skills",
+      "author": "anthropics"
+    },
+    {
+      "provider": "skillsh",
+      "id": "vercel-labs/agent-skills/vercel-react-best-practices",
+      "name": "vercel-react-best-practices",
+      "repo_url": "https://github.com/vercel-labs/agent-skills",
+      "author": "vercel-labs"
+    },
+    {
+      "provider": "skillsh",
+      "id": "vercel-labs/agent-skills/web-design-guidelines",
+      "name": "web-design-guidelines",
+      "repo_url": "https://github.com/vercel-labs/agent-skills",
+      "author": "vercel-labs"
+    },
+    {
+      "provider": "skillsh",
+      "id": "anthropics/skills/webapp-testing",
+      "name": "webapp-testing",
+      "repo_url": "https://github.com/anthropics/skills",
+      "author": "anthropics"
+    },
+    {
+      "provider": "skillsh",
+      "id": "anthropics/skills/pdf",
+      "name": "pdf",
+      "repo_url": "https://github.com/anthropics/skills",
+      "author": "anthropics"
+    }
+  ],
+  "mcp_servers": [
+    {
+      "provider": "official",
+      "id": "io.github.github/github-mcp-server",
+      "name": "github-mcp-server",
+      "title": "GitHub",
+      "description": "Connect AI assistants to GitHub - manage repos, issues, PRs, and workflows through natural language.",
+      "repo_url": "https://github.com/github/github-mcp-server",
+      "methods": [
+        "docker",
+        "url"
+      ]
+    },
+    {
+      "provider": "official",
+      "id": "io.github.microsoft/playwright-mcp",
+      "name": "playwright-mcp",
+      "title": "",
+      "description": "Playwright Tools for MCP",
+      "repo_url": "https://github.com/microsoft/playwright-mcp",
+      "methods": [
+        "npx"
+      ]
+    },
+    {
+      "provider": "official",
+      "id": "io.github.ChromeDevTools/chrome-devtools-mcp",
+      "name": "chrome-devtools-mcp",
+      "title": "Chrome DevTools MCP",
+      "description": "MCP server for Chrome DevTools",
+      "repo_url": "https://github.com/ChromeDevTools/chrome-devtools-mcp",
+      "methods": [
+        "npx"
+      ]
+    },
+    {
+      "provider": "official",
+      "id": "io.github.upstash/context7",
+      "name": "context7",
+      "title": "Context7",
+      "description": "Up-to-date docs for AI agents",
+      "repo_url": "https://github.com/upstash/context7",
+      "methods": [
+        "npx",
+        "url"
+      ]
+    },
+    {
+      "provider": "official",
+      "id": "io.github.getsentry/sentry-mcp",
+      "name": "sentry-mcp",
+      "title": "",
+      "description": "MCP server for Sentry - error monitoring, issue tracking, and debugging for AI assistants",
+      "repo_url": "https://github.com/getsentry/sentry-mcp",
+      "methods": [
+        "npx",
+        "url"
+      ]
+    },
+    {
+      "provider": "official",
+      "id": "io.github.brave/brave-search-mcp-server",
+      "name": "brave-search-mcp-server",
+      "title": "",
+      "description": "Brave Search MCP Server: web results, images, videos, rich results, AI summaries, and more.",
+      "repo_url": "https://github.com/brave/brave-search-mcp-server",
+      "methods": [
+        "npx"
+      ]
+    },
+    {
+      "provider": "official",
+      "id": "io.github.firecrawl/firecrawl-mcp-server",
+      "name": "firecrawl-mcp-server",
+      "title": "Firecrawl MCP Server",
+      "description": "Firecrawl, the context API for AI agents: search, scrape, interact with the web, plus paper search.",
+      "repo_url": "https://github.com/firecrawl/firecrawl-mcp-server.git",
+      "methods": [
+        "npx",
+        "url"
+      ]
+    },
+    {
+      "provider": "official",
+      "id": "io.github.mongodb-js/mongodb-mcp-server",
+      "name": "mongodb-mcp-server",
+      "title": "",
+      "description": "MongoDB Model Context Protocol Server",
+      "repo_url": "https://github.com/mongodb-js/mongodb-mcp-server",
+      "methods": [
+        "npx",
+        "docker"
+      ]
+    }
+  ]
+}

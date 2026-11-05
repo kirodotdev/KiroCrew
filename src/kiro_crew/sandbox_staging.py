@@ -1,10 +1,10 @@
 """Materialise the mask targets the launcher binds over crew-home leaves.
 
-The plain masked directories, the live-target pointer, the md-notebook state and the
-auth-store staging links: each target is created before the launcher binds over it, its
-legacy temp files are swept, and an unfit live-target pointer is reported. A new mask
-target goes here. One of the owners ``kiro_crew.sandbox`` is carved into: every name
-here stays readable and patchable as ``kiro_crew.sandbox.<name>``.
+The plain masked directories, the live-target pointer, an empty ``.env``, the md-notebook
+state and the auth-store staging links: each target is created before the launcher binds
+over it, its legacy temp files are swept, and an unfit live-target pointer is reported. A
+new mask target goes here. One of the owners ``kiro_crew.sandbox`` is carved into: every
+name here stays readable and patchable as ``kiro_crew.sandbox.<name>``.
 """
 
 from __future__ import annotations
@@ -207,6 +207,39 @@ def _materialize_live_target_mask_target(
         "Launching anyway would leave the pointer maskless in every agent namespace, "
         "where writing it selects the code the gateway starts next."
     )
+
+
+def _materialize_env_mask_target(established: list[str] | None = None) -> str | None:
+    """Create an empty ``.env`` when there is none, so its mask can mount.
+
+    The live-target pointer's gap on the channel-credential file: the ``sensitive_files``
+    loop skips an absent name and the data-home root is writable in-sandbox, so a home
+    with no ``.env`` lets a sandboxed process create the file the gateway reads
+    credentials from. An empty ``.env`` is that file's absent-equivalent: every reader
+    parses it to no keys, as a definitive read, exactly as a missing file, and every
+    writer treats it as it treats a missing file. With no bytes to write there is nothing
+    to stage, so it is created in place with ``O_EXCL``, which never clobbers a name.
+
+    A regular file at the name, this stub or the operator's own, is recorded as
+    established, so the launcher requires it at every spawn; anything else, such as the
+    symlink the alias pass reports, is left as before. A failed create warns, and the
+    spawn goes ahead as before.
+    """
+    target = os.path.join(str(config_dir()), ".env")
+    try:
+        os.close(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        created = True
+    except FileExistsError:
+        created = False
+    except OSError as exc:
+        logger.warning("could not create an empty %s (%s); its mask is skipped", target, exc)
+        return None
+    try:
+        if stat.S_ISREG(os.lstat(target).st_mode):
+            _note_established(established, target)
+    except OSError:
+        return None
+    return target if created else None
 
 
 def _refuse_if_live_target_symlink(target: str) -> None:
@@ -749,6 +782,20 @@ def _sweep_legacy_auth_store_temps() -> list[str]:
     :func:`_refuse_multilinked_credential_leaves` gives at length: the live home exists and
     is therefore masked, so nothing inside it was planted from a sandbox, while an unused
     home is neither.
+
+    A clean pass over the LIVE home is remembered for the rest of the process, keyed by
+    that directory's identity, so later spawns skip listing it: the live root holds every
+    ``session_token_*.sig`` mapping, which makes a listing cost grow with the number of
+    sessions. It rests on two facts. The live home is masked, so nothing inside it is
+    planted from a sandbox (the reasoning :func:`_refuse_multilinked_credential_leaves`
+    gives), and this build's publisher stages in the masked :data:`_AUTH_STORE_STAGING_LEAF`,
+    never at a root-level name, so no legacy-shaped name appears there after a clean pass
+    unless a pre-upgrade ``kirocrew`` (an older CLI, or a second older gateway on the same
+    home) runs against it concurrently -- a temp that writes is swept from the next process
+    start. A pass that saw a match is never remembered, so a kept orphan is reported on
+    every spawn. Every other root is listed on every pass: those homes hold nothing the
+    gateway writes, so the listing is cheap, and a sandbox can write into them while they
+    are unmasked, which a memo would hide.
     """
     removed: list[str] = []
     try:
@@ -761,9 +808,20 @@ def _sweep_legacy_auth_store_temps() -> list[str]:
         if dir_fd is None:
             continue
         try:
+            identity: tuple[int, int] | None = None
+            if root == live_home:
+                try:
+                    info = os.fstat(dir_fd)
+                    identity = (info.st_dev, info.st_ino)
+                except OSError:
+                    identity = None
+                if identity is not None and _LEGACY_AUTH_SWEEP_CLEAN.get(root) == identity:
+                    continue
+            matched = False
             for name in os.listdir(dir_fd):
                 if not name.startswith(_AUTH_STORE_LEGACY_TEMP_PREFIX) or not name.endswith(".tmp"):
                     continue
+                matched = True
                 candidate = os.path.join(root, name)
                 try:
                     info = os.lstat(name, dir_fd=dir_fd)
@@ -846,9 +904,23 @@ def _sweep_legacy_auth_store_temps() -> list[str]:
                     safe_terminal_line(candidate),
                 )
                 removed.append(candidate)
+            if identity is not None:
+                if matched:
+                    # Never remembered: a kept orphan is reported again on the next spawn,
+                    # and a removed one is confirmed gone by a fresh listing.
+                    _LEGACY_AUTH_SWEEP_CLEAN.pop(root, None)
+                else:
+                    _LEGACY_AUTH_SWEEP_CLEAN[root] = identity
         finally:
             os.close(dir_fd)
     return removed
+
+
+#: Live data-home roots a :func:`_sweep_legacy_auth_store_temps` pass listed and found no
+#: legacy temp in, mapped to the directory identity ``(st_dev, st_ino)`` taken before that
+#: listing; a later pass over the same directory skips the ``os.listdir``. Per process, so
+#: every gateway start lists the live root at least once.
+_LEGACY_AUTH_SWEEP_CLEAN: dict[str, tuple[int, int]] = {}
 
 
 def _sweep_one_md_notebook_state_dir(root: str) -> list[str]:

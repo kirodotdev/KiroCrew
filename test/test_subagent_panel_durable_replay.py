@@ -1,18 +1,13 @@
 """The subagent panel's durable rebuild source.
 
-The panel's live source is gateway memory, so a replacement gateway process has
-nothing to replay for the runs it never tracked. These tests pin the persisted
-fallback that answers for them, and -- just as importantly -- pin what it must
-refuse to invent: a slot-tracked native card, a run whose memory mode is not
-persistent, a second copy of a run the live manager still holds, and a failure
-for a run the tombstone records as a user stop.
+A replacement gateway has nothing in memory for runs it never tracked, so these tests pin the
+persisted fallback and what it must refuse to invent: a slot-tracked native card, a
+non-persistent run, a second copy of a live run, and a failure for a recorded user stop.
 
-This module and its two siblings share that work. This one pins the frame the replay sends
-and the panel's dismissals: the durable record that keeps a dismissed card from coming back
-on either reader, the registrations that protect its store, the grant the replay records,
-and both arms of the dismiss route. What one run folder rebuilds into, the four refusals
-above among it, is pinned in ``test_subagent_panel_durable_replay_records.py`` and who may
-read it in ``test_subagent_panel_durable_replay_access.py``; the shared helpers live in
+This module pins the replay frame and the dismissals (durable record, store registrations,
+recorded grant, both arms of the dismiss route). Folder rebuilds are pinned in
+``test_subagent_panel_durable_replay_records.py``, access in
+``test_subagent_panel_durable_replay_access.py``; helpers live in
 ``subagent_panel_durable_replay_helpers.py``.
 """
 
@@ -25,6 +20,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from crew_log_drain import assert_drained
 from subagent_panel_durable_replay_helpers import (  # noqa: F401 -- the fixture is requested by name
     DAY,
     agent_root_fixture,
@@ -152,12 +148,9 @@ class TestReplayFrame:
 class TestADismissalOutlivesTheManager:
     """A dismissed card must not come back when the panel reads folders.
 
-    The live half of a dismissal is ``settle_before_delete`` popping the run out
-    of the manager, and before this it was the WHOLE dismissal: the durable half
-    excludes only the ids the live manager still holds, so the next rebuild read
-    the folder the delete left behind and put the card back. The dismissal is
-    recorded durably instead, and the folder stays where it is -- ``spawn_continue``
-    reseeds its session map from that folder's ``state.json``.
+    Popping the run from the manager is only the live half: the durable reader excludes
+    only live ids, so the dismissal is recorded durably. The folder stays, because
+    ``spawn_continue`` reseeds its session map from that folder's ``state.json``.
     """
 
     def test_a_dismissed_run_stays_out_of_the_panel(self, agent_root):
@@ -281,16 +274,9 @@ class TestADismissalOutlivesTheManager:
 class TestAFailedDismissalWriteIsNotPublished:
     """The pop is the publish, so it must not happen before the record is stored.
 
-    With the write second and its result discarded, an unwritable store still
-    popped the run and still answered ``"delivered"`` -- which the DELETE route
-    reports as success -- and the card came back on the next reconnect with
-    nothing to explain it. The user is told the dismissal worked and watches it
-    undo itself.
-
-    The two falsy cases are NOT interchangeable. A run with no folder has nothing
-    durable to bring its card back, so its dismissal stands and the pop proceeds;
-    only a FAILED write holds it. Collapsing them would make every folderless run
-    permanently undismissable, which is the over-correction this pins against.
+    Otherwise an unwritable store still answers ``"delivered"`` and the card returns on
+    the next reconnect. A run with no folder is different: nothing durable can bring it
+    back, so its dismissal stands; only a failed write holds the pop.
     """
 
     def manager(self):
@@ -359,13 +345,10 @@ class TestAFailedDismissalWriteIsNotPublished:
 
 
 class TestTheDismissalCheckRetainsNothing:
-    """The reader's working set is bounded, so the dismissal check must be too.
+    """The dismissal check is per candidate, so the reader's working set stays bounded.
 
-    ``read_panel_records`` caps its candidate heap on purpose. Answering "is this
-    dismissed" by enumerating every record into a set put one entry per dismissal
-    back inside that bound, so a registry with many retained dismissals set the
-    memory the cap exists to fix. The question is per candidate, and so is the
-    answer now.
+    ``read_panel_records`` caps its candidate heap; a set of every dismissal would put one
+    entry per dismissal back inside that bound.
     """
 
     def test_many_dismissals_do_not_change_what_the_reader_returns(self, agent_root):
@@ -418,20 +401,9 @@ def _messaging_handler_files(root: pathlib.Path, *holders: str) -> list[pathlib.
 class TestADismissalHoldsOnBothReaders:
     """A dismissal has to hold on every durable reader, not just one.
 
-    There were two folder readers and they were reported separately: the WS
-    reconnect replay and the REST listing. Each excluded only the ids the LIVE
-    manager held, so a delete that left the folder behind came back on the next
-    reconnect. The filter's position -- inside the shared helper rather than at
-    either call site -- is what let one store answer for both, and that position
-    is pinned structurally below.
-
-    One of those two readers is gone: the replay folds the crew log, where a
-    dismissal is an ENTRY rather than a record in a store beside it. That is not a
-    softening of this class's rule but the same rule applied one level up -- the
-    folder store could only be keyed on the folder, so a dismissal in it did not
-    outlive the thing it was suppressing. What remains here is the listing, which
-    reads folders because it serves the run's own output text, and the ratchet that
-    keeps the replay from quietly becoming a second folder reader again.
+    The REST listing reads folders (it serves the run's output text) and filters inside the
+    shared helper, pinned structurally below. The WS replay folds the crew log, where a
+    dismissal is an entry; the ratchet below keeps it from becoming a second folder reader.
     """
 
     def request(self, state, caller: str, app: str = "", *, internal: bool = True):
@@ -465,13 +437,10 @@ class TestADismissalHoldsOnBothReaders:
         return [entry["id"] for entry in body["agents"]]
 
     def replay_records(self, seen: set[str] | None = None):
-        """The LISTING's query with a durable rebuild's own bounds.
+        """The listing's query with a durable rebuild's own bounds.
 
-        The WS replay asks a different source entirely: it folds the crew log,
-        where a dismissal is an entry rather than a record in a store beside it.
-        These bounds are kept because the listing applies them too, and because
-        the keep/age pair is what makes the question a durable rebuild's rather
-        than a generic read.
+        The WS replay folds the crew log instead; the keep/age pair stays because the
+        listing applies it too.
         """
         return read_panel_records(
             keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
@@ -559,18 +528,11 @@ class TestADismissalHoldsOnBothReaders:
     def test_each_durable_source_is_reached_through_the_reader_that_filters_it(self):
         """Neither reader may assemble records itself and skip the dismissal filter.
 
-        Matched on a word boundary, because ``_panel_record`` is a SUBSTRING of
-        ``read_panel_records`` -- a plain ``in`` test reports a correct reader as an
-        offender, and the failure reads exactly like a real bypass.
+        Matched on a word boundary, because ``_panel_record`` is a substring of
+        ``read_panel_records`` and a plain ``in`` test would flag a correct reader.
 
-        Both files read folders, and both must do it through the shared helper that
-        consults the dismissal registry. The WS replay reads them on ONE path only,
-        the one taken when the crew log is switched off -- where there is no fold,
-        so the registry is the only dismissal record there is. With the log on it
-        folds instead, and the dismissal is an entry in that same log; the gate
-        between those two is pinned below, because a folder read reached with the
-        log ON would honour a registry entry while ignoring the log entry that
-        supersedes it.
+        The WS replay reads folders only when the crew log is off; with the log on, a folder
+        read would honour a registry entry while ignoring the log entry that supersedes it.
         """
         import re
 
@@ -603,15 +565,9 @@ class TestADismissalHoldsOnBothReaders:
     def test_the_replay_folds_the_log_when_it_is_on_and_reads_folders_when_it_is_not(self):
         """The gate that keeps one dismissal record authoritative at a time.
 
-        Asserted on the source because the alternative is a live socket: the branch
-        sits inside the reconnect handler, which needs a real aiohttp WebSocket, and
-        the two readers it chooses between are each pinned on their own elsewhere.
-
-        What is pinned is which reader each branch REACHES, not how it is called.
-        A reader handed to :func:`asyncio.to_thread` is NAMED rather than called,
-        and the log-on branch names its own worker there, so a pattern expecting
-        the reader as the thread's first argument describes one spelling of the
-        call rather than the gate.
+        Pinned on the source because the branch needs a real aiohttp WebSocket. It pins
+        which reader each branch reaches: a reader handed to :func:`asyncio.to_thread` is
+        named, not called.
         """
         import ast
 
@@ -762,13 +718,9 @@ class TestADismissalHoldsOnBothReaders:
 class TestTheDismissalStoreIsRegisteredEverywhereItMustBe:
     """The store's protection is four registrations, and a rename breaks them silently.
 
-    ``record_panel_dismissal`` writes an OWNER decision about what the panel hides,
-    so no sandboxed process may forge or unlink one. ``trust/`` cannot host such a
-    record: it is a declared sandbox READ-WRITE exception, so a record under it
-    stays writable by a command that builds the path at runtime, which command
-    matching cannot catch. The leaf therefore lives at the data-home root and is
-    registered in four places. Nothing in the code fails when one is missing -- it
-    just leaves the store unprotected -- so each is pinned by name here.
+    ``record_panel_dismissal`` writes an owner decision, so no sandboxed process may forge
+    or unlink one. ``trust/`` is a sandbox read-write exception, so the leaf lives at the
+    data-home root. A missing registration fails nothing, so each is pinned by name.
     """
 
     def test_the_leaf_is_not_under_trust(self):
@@ -815,29 +767,19 @@ class TestTheDismissalStoreIsRegisteredEverywhereItMustBe:
 class TestThePersistedGrantIsRecordedNotJustTheRefusals:
     """The ownership decision leaves a record whichever way it goes.
 
-    This replay writes to the socket directly, so ``ws_event_allowed`` never sees
-    the frame, and a dashboard user short-circuits ``_ws_client_allowed``
-    unconditionally -- the two places a grant would otherwise be recorded. With
-    only the deny sites audited, the SEL stream cannot distinguish a rebuild that
-    delivered a run from one that never considered it.
-
-    Structural rather than behavioural: the decision sits inside the
-    ``subscribe_subagents`` handler, and what can regress is the audit call being
-    deleted, which reading the source catches exactly.
+    The replay writes to the socket directly and a dashboard user short-circuits
+    ``_ws_client_allowed``, so neither usual site records the grant. Pinned on the source:
+    what can regress is the audit call inside ``subscribe_subagents`` being deleted.
     """
 
     ROOT = pathlib.Path(__file__).resolve().parents[1]
     REL = "src/kiro_crew/dashboard/ws.py"
 
     def block(self) -> list:
-        """The INNERMOST statement block enclosing the persisted-frame append.
+        """The innermost statement block enclosing the persisted-frame append.
 
-        Innermost matters and is the whole reason this helper is not two lines:
-        ``ws.py`` already calls ``_audit_grant_quietly`` at three unrelated sites,
-        so any outer block -- the handler body, the module -- contains one of those
-        and would satisfy this pin no matter what the append site does. The
-        mutation matrix caught exactly that, so the block is chosen as the one
-        whose own enclosing statement spans the fewest lines.
+        ``ws.py`` calls ``_audit_grant_quietly`` at three unrelated sites, so any outer block
+        would satisfy the pin whatever the append site does.
         """
         import ast
 
@@ -1265,15 +1207,11 @@ class TestTheRouteRecordsTheDismissalInTheOwningSessionsLog:
 
 
 class TestTheLiveManagerPathRecordsTheDismissalToo:
-    """The dismiss route has TWO arms, and both have to reach the same records.
+    """The dismiss route has two arms, and both have to reach the same records.
 
-    A finished child the manager still holds goes through
-    ``settle_before_delete``; one the manager has already dropped goes through the
-    route's own durable arm. The panel folds the crew log for both, so an arm that
-    writes only the folder registry clears the card from live state and leaves the
-    fold still
-    offering it -- the card returns on the very next reconnect, inside the same
-    process, with the user having been told the dismissal worked.
+    A held child goes through ``settle_before_delete``, a dropped one through the route's
+    durable arm. The panel folds the crew log for both, so an arm that writes only the
+    folder registry lets the card return on the next reconnect.
     """
 
     @pytest.fixture(autouse=True)
@@ -1312,14 +1250,10 @@ class TestTheLiveManagerPathRecordsTheDismissalToo:
         return asyncio.run(subagent_module.SubagentManager.settle_before_delete(manager, "live1"))
 
     def _session_with_child(self, unit_id: str, agent_id: str, slot: str = "chat-1"):
-        """A dispatched child, closed through the REAL terminal report.
+        """A dispatched child, closed through the real terminal report.
 
-        The terminal report is what releases the emitter's spawn pin, in a
-        ``finally`` that always runs -- so by the time a finished child reaches
-        ``settle_before_delete`` there is no pin, and a test that closed the child
-        by calling ``on_subagent_completed`` directly leaves one standing and
-        proves nothing about production. Driving the real reporter is what makes
-        this the live arm's own case.
+        The terminal report releases the emitter's spawn pin in a ``finally``; calling
+        ``on_subagent_completed`` directly would leave the pin standing, unlike production.
         """
         from kiro_crew import crew_log as lg
         from kiro_crew.crew_log import CrewLog, emit
@@ -1338,17 +1272,16 @@ class TestTheLiveManagerPathRecordsTheDismissalToo:
             credits=0.0,
         )
         TerminalCoordinator._record_crew_log_terminal(SimpleNamespace(), info)
-        assert emit.flush()
+        assert_drained()
         assert emit.child_origin(agent_id) == ("", 0), (
             "the terminal report left the spawn pin standing, so this test is not the "
             "state a finished child is actually in"
         )
 
     def _drawn(self, unit_id: str) -> list[str]:
-        from kiro_crew.crew_log import emit
         from kiro_crew.crew_log import projection as crew_log
 
-        assert emit.flush()
+        assert_drained()
         value = crew_log.fold_session(unit_id, names=("subagents",)).projection("subagents").value
         return sorted(value["by_id"])
 
@@ -1400,11 +1333,8 @@ class TestTheLiveManagerPathRecordsTheDismissalToo:
     def test_an_append_that_never_commits_holds_the_pop(self, agent_root, monkeypatch):
         """The pop is the publish, on this arm as much as on the route's.
 
-        The writer can refuse the entry at its memory ceiling, and the queue has
-        already returned by then. A pop on that reports a dismissal to the route as
-        200 and leaves the fold still offering the card, so it comes back on the
-        very next reconnect -- which is the same published-too-early failure the
-        folder write above this is deliberately ordered to avoid.
+        The writer can refuse the entry at its memory ceiling after the queue returned; a pop
+        then answers 200 and the card returns on the next reconnect.
         """
         self._session_with_child("acp-live-drop", "live1")
         write_record(agent_root, "live1")

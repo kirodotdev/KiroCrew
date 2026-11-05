@@ -37,13 +37,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
+from kiro_crew.sqlite_quarantine import reserve_quarantine_name
 from kiro_crew.teams.client import connector_host_allowed
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,16 @@ class ServiceUrlStore:
         self._loaded = False
         self._lock = asyncio.Lock()
         self._dirty = False
+        # The file exists but its read failed (a sharing violation, EACCES):
+        # memory lacks its rows, so flush reads it again before any write and
+        # writes nothing while the read keeps failing.
+        self._read_failed = False
+        # The file was read but did not parse: the next write first renames it
+        # to ``<name>.corrupt-<UTC stamp>`` so its bytes survive.
+        self._unparseable = False
+        # Conversations forgotten while ``_read_failed`` held: the re-read in
+        # flush must not bring their disk rows back.
+        self._forgotten: set[str] = set()
 
     def path(self) -> Path:
         """Resolve the store path lazily.
@@ -129,28 +142,40 @@ class ServiceUrlStore:
             if self._loaded:
                 return
             try:
-                rows, identities = await asyncio.to_thread(self._read)
+                rows, identities, read_failed, unparseable = await asyncio.to_thread(
+                    self._read_rows
+                )
             except Exception:
-                logger.debug("Teams: serviceUrl store read failed", exc_info=True)
+                logger.warning("Teams: serviceUrl store could not be loaded", exc_info=True)
+                # A read that returned and then failed to load fails the same way
+                # every time, so keep the file aside before the next write rather
+                # than writing this process's few routes over it.
+                self._unparseable = True
                 self._loaded = True
                 return
+            self._read_failed = read_failed
+            self._unparseable = unparseable
             # Flagged only AFTER the read returns. Setting it first would let a
             # concurrent inbound message take the fast path, see an empty map,
             # report the serviceUrl as newly learned and write a partial file --
             # and fail a proactive send with the "missing service_url" this module
             # exists to prevent. The lock serializes; the flag must not run ahead.
             self._loaded = True
-            # Disk rows never overwrite something this process already learned:
-            # a live inbound activity is fresher than any persisted value.
-            for conversation_id, (url, seen_at) in rows.items():
-                self._urls.setdefault(conversation_id, url)
-                self._seen.setdefault(conversation_id, seen_at)
-            for identity, conversation_id in identities.items():
-                # Only adopt an identity whose conversation actually survived, so
-                # a truncated or hand-edited file cannot advertise a target with
-                # no route to it.
-                if conversation_id in self._urls:
-                    self._by_identity.setdefault(identity, conversation_id)
+            self._adopt(rows, identities)
+
+    def _adopt(self, rows: dict[str, tuple[str, float]], identities: dict[str, str]) -> None:
+        """Merge rows read from disk into memory, without overwriting memory."""
+        # Disk rows never overwrite something this process already learned:
+        # a live inbound activity is fresher than any persisted value.
+        for conversation_id, (url, seen_at) in rows.items():
+            self._urls.setdefault(conversation_id, url)
+            self._seen.setdefault(conversation_id, seen_at)
+        for identity, conversation_id in identities.items():
+            # Only adopt an identity whose conversation actually survived, so
+            # a truncated or hand-edited file cannot advertise a target with
+            # no route to it.
+            if conversation_id in self._urls:
+                self._by_identity.setdefault(identity, conversation_id)
 
     # -- writes -------------------------------------------------------------
     def remember(self, conversation_id: str, service_url: str, *, identity: str = "") -> bool:
@@ -181,7 +206,9 @@ class ServiceUrlStore:
         if changed:
             self._evict()
             self._dirty = True
-        return changed
+        # While the file is unreadable a pending merge waits on the next flush,
+        # and a stable route never changes again: keep asking for that flush.
+        return changed or (self._dirty and self._read_failed)
 
     def forget(self, conversation_id: str) -> bool:
         """Drop a conversation the Connector says is gone. Returns True if changed.
@@ -197,6 +224,9 @@ class ServiceUrlStore:
         """
         changed = self._urls.pop(conversation_id, None) is not None
         self._seen.pop(conversation_id, None)
+        if self._read_failed:
+            self._forgotten.add(conversation_id)
+            changed = True
         for identity, mapped in list(self._by_identity.items()):
             if mapped == conversation_id:
                 self._by_identity.pop(identity, None)
@@ -232,6 +262,27 @@ class ServiceUrlStore:
         async with self._lock:
             if not self._dirty:
                 return
+            if self._read_failed:
+                # Memory lacks the file's rows, so writing it now would replace
+                # every other conversation with this process's few. Read again.
+                try:
+                    rows, identities, read_failed, unparseable = await asyncio.to_thread(
+                        self._read_rows
+                    )
+                except Exception:
+                    logger.debug("Teams: serviceUrl store re-read failed", exc_info=True)
+                    return
+                if read_failed:
+                    return  # Still unreadable: keep _dirty, a later flush retries.
+                # Back on the loop, with no await between here and the merge, so a
+                # forget() racing the re-read has already recorded its tombstone.
+                for conversation_id in self._forgotten:
+                    rows.pop(conversation_id, None)
+                self._forgotten.clear()
+                self._read_failed = False
+                self._unparseable = unparseable
+                self._adopt(rows, identities)
+                self._evict()
             payload = {
                 "conversations": {
                     conversation_id: {
@@ -263,30 +314,53 @@ class ServiceUrlStore:
                 logger.debug("Teams: serviceUrl store write failed", exc_info=True)
 
     # -- filesystem (worker-thread only) ------------------------------------
-    def _read(self) -> tuple[dict[str, tuple[str, float]], dict[str, str]]:
+    def _read_rows(
+        self,
+    ) -> tuple[dict[str, tuple[str, float]], dict[str, str], bool, bool]:
+        """``(rows, identities, read_failed, unparseable)`` from the store file.
+
+        Runs in a worker thread and touches no instance state: the caller applies
+        both flags back on the event loop, so ``forget`` sees ``_read_failed`` set
+        until a re-read's rows are merged.
+        """
         path = self.path()
-        empty: tuple[dict[str, tuple[str, float]], dict[str, str]] = ({}, {})
+        empty: tuple[dict[str, tuple[str, float]], dict[str, str], bool, bool] = (
+            {},
+            {},
+            False,
+            False,
+        )
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = read_bytes_with_retry(path)
         except FileNotFoundError:
             return empty
-        except (OSError, UnicodeDecodeError):
-            logger.debug("Teams: serviceUrl store unreadable at %s", path)
-            return empty
+        except OSError as exc:
+            logger.warning(
+                "Teams: serviceUrl store at %s could not be read (%s); it is not "
+                "rewritten until a read succeeds",
+                path,
+                type(exc).__name__,
+            )
+            return {}, {}, True, False
         try:
-            data = json.loads(raw)
+            data = loads_user_json(raw.decode("utf-8"))
         except ValueError:
+            # ValueError covers UnicodeDecodeError too.
             logger.warning("Teams: serviceUrl store is not valid JSON; ignoring it")
-            return empty
-        conversations = data.get("conversations") if isinstance(data, dict) else None
+            return {}, {}, False, True
+        if not isinstance(data, dict):
+            logger.warning("Teams: serviceUrl store is not a JSON object; ignoring it")
+            return {}, {}, False, True
+        conversations = data.get("conversations")
         if not isinstance(conversations, dict):
             return empty
-        # ``data`` is a dict by here: any other payload leaves ``conversations``
-        # None and returns above.
         identities = data.get("identities")
+        if not isinstance(identities, dict):
+            # Unusable, like a non-string row below: drop it and keep the routes.
+            identities = {}
         by_identity = {
             key.lower(): value
-            for key, value in (identities or {}).items()
+            for key, value in identities.items()
             if isinstance(key, str) and isinstance(value, str)
         }
         out: dict[str, tuple[str, float]] = {}
@@ -306,7 +380,11 @@ class ServiceUrlStore:
             if not isinstance(url, str) or not connector_host_allowed(url):
                 continue
             seen = row.get("seen_at")
-            out[conversation_id] = (url, float(seen) if isinstance(seen, (int, float)) else 0.0)
+            try:
+                seen_at = float(seen) if isinstance(seen, (int, float)) else 0.0
+            except OverflowError:  # an integer too large for a float
+                seen_at = 0.0
+            out[conversation_id] = (url, seen_at)
         if len(out) > _MAX_ENTRIES:
             # Adopt only the newest rows. A file that arrived oversize would
             # otherwise be loaded whole and then evicted down on the event loop.
@@ -318,11 +396,14 @@ class ServiceUrlStore:
                 for identity, conversation_id in by_identity.items()
                 if conversation_id in keep
             }
-        return out, by_identity
+        return out, by_identity, False, False
 
     def _write(self, payload: dict[str, Any]) -> None:
         path = self.path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        if self._unparseable:
+            self._keep_unparseable_aside(path)
+            self._unparseable = False
         # Owner-only: the file maps allow-listed operator UPNs to conversations.
         # restrict_on_error="warn" keeps the honest degradation of this module --
         # a filesystem that cannot express the mode (some Windows volumes) must
@@ -333,3 +414,24 @@ class ServiceUrlStore:
             restrict_to_owner=True,
             restrict_on_error="warn",
         )
+
+    @staticmethod
+    def _keep_unparseable_aside(path: Path) -> None:
+        """Move *path* to a reserved ``<name>.corrupt-<UTC stamp>`` before a write replaces it.
+
+        The copy stays in the fenced ``routing/`` directory with the bytes it had.
+        A move that fails raises ``OSError``, which :meth:`flush` handles as a
+        failed write: nothing is written and the next flush retries.
+        """
+        if not path.exists():
+            return
+        target = reserve_quarantine_name(path)
+        try:
+            os.replace(path, target)
+        except FileNotFoundError:
+            target.unlink(missing_ok=True)
+            return
+        except OSError:
+            target.unlink(missing_ok=True)
+            raise
+        logger.warning("Teams: kept the unparseable serviceUrl store at %s", target.name)

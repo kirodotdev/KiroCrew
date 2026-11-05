@@ -1,4 +1,4 @@
-import { useId, useState, type ComponentType, type ReactNode } from 'react'
+import { useId, useState, type AriaAttributes, type ComponentType, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronDown, ChevronRight, Settings, Timer } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -6,6 +6,9 @@ import { api } from '../api/client'
 import type { SlotTurnTimeout } from '../api/client/chatSlotSettings'
 import { fmtDuration } from '../i18n/format'
 import ErrorNotice, { ErrorNoticeMenuItem, type ErrorNoticeMenuItemComponent } from './ErrorNotice'
+import { OfflineReasonRow } from './OfflineMenuReason'
+import { useConnected } from '../hooks/useConnected'
+import { offlineProps } from '../utils/offline'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -50,6 +53,10 @@ type RadioItemComponent = ComponentType<{
   disabled?: boolean
   onSelect?: (event: Event) => void
   children?: ReactNode
+  className?: string
+  title?: string
+  'aria-disabled'?: AriaAttributes['aria-disabled']
+  'aria-label'?: string
 }>
 
 /**
@@ -64,11 +71,16 @@ type RadioItemComponent = ComponentType<{
  * the agent hand-off is a sibling `ErrorNoticeMenuItem` (the menu's roving
  * focus skips a button nested in a notice), described by the notice's id.
  */
-function TurnLimitChoices({ slotKey, RadioGroup, RadioItem, Item }: {
+function TurnLimitChoices({ slotKey, RadioGroup, RadioItem, Item, offline = false }: {
   slotKey: string
   RadioGroup: RadioGroupComponent
   RadioItem: RadioItemComponent
   Item: ErrorNoticeMenuItemComponent
+  /**
+   * Set by the caller, not a `useConnected()` read here: the same picker renders
+   * in the timeout settings card, which this change never declared as gated.
+   */
+  offline?: boolean
 }) {
   const { t: i18nT } = useTranslation()
   const queryClient = useQueryClient()
@@ -123,9 +135,14 @@ function TurnLimitChoices({ slotKey, RadioGroup, RadioItem, Item }: {
   const value = data.secs == null ? FOLLOW_GLOBAL : String(data.secs)
   const keepOpen = (event: Event) => { event.preventDefault() }
   const choose = (next: string) => {
-    if (next === value || mutation.isPending) return
+    if (offline || next === value || mutation.isPending) return
     mutation.mutate(next === FOLLOW_GLOBAL ? null : Number(next))
   }
+  // Online this would spread `aria-disabled: false` over Radix's own value and
+  // announce a row disabled by an in-flight pick as enabled.
+  const rowOffline = offline
+    ? { ...offlineProps(false, i18nT('utils.offline.change_turn_limits')), className: 'opacity-40 text-muted' }
+    : {}
   const mark = (checked: boolean) => (checked
     ? <Check size={13} className="ml-auto shrink-0 text-accent" aria-hidden="true" />
     : null)
@@ -133,14 +150,14 @@ function TurnLimitChoices({ slotKey, RadioGroup, RadioItem, Item }: {
     <>
       {loadErrorNotice}
       <RadioGroup value={value} onValueChange={choose}>
-        <RadioItem value={FOLLOW_GLOBAL} disabled={mutation.isPending} onSelect={keepOpen}>
+        <RadioItem value={FOLLOW_GLOBAL} disabled={mutation.isPending} onSelect={keepOpen} {...rowOffline}>
           <span className="truncate">
             {i18nT('components.sessionTurnLimit.follow_global', { limit: fmtTurnLimit(data.global_secs) })}
           </span>
           {mark(value === FOLLOW_GLOBAL)}
         </RadioItem>
         {turnLimitOptions(data).map(secs => (
-          <RadioItem key={secs} value={String(secs)} disabled={mutation.isPending} onSelect={keepOpen}>
+          <RadioItem key={secs} value={String(secs)} disabled={mutation.isPending} onSelect={keepOpen} {...rowOffline}>
             <span className="truncate">{fmtTurnLimit(secs)}</span>
             {mark(value === String(secs))}
           </RadioItem>
@@ -172,13 +189,19 @@ export function SessionTurnLimitSubmenu({ slotKey, variant }: {
   variant: 'dropdown' | 'context'
 }) {
   const { t: i18nT } = useTranslation()
+  const connected = useConnected()
   const Sub = variant === 'context' ? ContextMenuSub : DropdownMenuSub
   const SubTrigger = variant === 'context' ? ContextMenuSubTrigger : DropdownMenuSubTrigger
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Label = variant === 'context' ? ContextMenuLabel : DropdownMenuLabel
   return (
     <Sub>
-      <SubTrigger title={i18nT('components.sessionTurnLimit.hint')} data-testid="session-turn-limit-submenu">
+      <SubTrigger
+        title={i18nT('components.sessionTurnLimit.hint')}
+        data-testid="session-turn-limit-submenu"
+        {...offlineProps(connected, i18nT('utils.offline.change_turn_limits'))}
+        className={connected ? undefined : 'opacity-40 text-muted'}
+      >
         <Timer size={13} className="shrink-0 text-muted" />
         <span className="flex-1">{i18nT('components.sessionTurnLimit.label')}</span>
         <ChevronRight size={12} className="text-muted" />
@@ -191,7 +214,9 @@ export function SessionTurnLimitSubmenu({ slotKey, variant }: {
           RadioGroup={variant === 'context' ? ContextMenuRadioGroup : DropdownMenuRadioGroup}
           RadioItem={variant === 'context' ? ContextMenuRadioItem : DropdownMenuRadioItem}
           Item={variant === 'context' ? ContextMenuItem : DropdownMenuItem}
+          offline={!connected}
         />
+        {!connected && <OfflineReasonRow testId="turn-limit-offline-reason" className="px-2 py-1" message={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.change_turn_limits') })} />}
       </SubContent>
     </Sub>
   )

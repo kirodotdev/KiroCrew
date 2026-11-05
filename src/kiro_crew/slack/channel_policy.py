@@ -103,6 +103,22 @@ def channel_refusal(
     return reason
 
 
+#: Stands in for a channel id Slack has not assigned yet. Matching ignores case,
+#: so the character after ``C`` is one no real id holds in any case: only a
+#: pattern that admits ANY id after the ``C`` (``*``, ``C*``) admits it.
+_UNKNOWN_CHANNEL = "C#unassigned"
+
+
+def new_channel_refusal() -> str:
+    """Why the policy refuses a channel Crew is about to create; ``""`` when it admits it.
+
+    The new channel's id is not known until Slack creates it, so a policy that lists
+    explicit ids cannot admit it: creating it anyway would make a channel every
+    later read and write refuses. No audit: the caller records its own decision.
+    """
+    return _verdict(_UNKNOWN_CHANNEL)
+
+
 def require_channel(channel: str) -> None:
     """Raise :class:`SlackChannelRefused` when the policy refuses *channel*."""
     reason = channel_refusal(channel, operation="slack.write", caller="slack_client")

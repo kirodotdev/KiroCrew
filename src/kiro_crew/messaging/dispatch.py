@@ -117,6 +117,7 @@ from kiro_crew.messaging.renderer import (
     Renderer,
     SilentRenderer,
 )
+from kiro_crew.messaging.script_hooks import ScriptHookTurn
 from kiro_crew.messaging.session_resume import persisted_session_agent
 from kiro_crew.messaging.turn_bracket import consume_reinjection  # noqa: F401 (re-exported)
 from kiro_crew.messaging.turn_bracket import driver_turn_landed  # noqa: F401 (re-exported)
@@ -125,6 +126,7 @@ from kiro_crew.messaging.turn_bracket import rollback_skill_bodies  # noqa: F401
 from kiro_crew.messaging.turn_bracket import stop_reason_landed  # noqa: F401 (re-exported)
 from kiro_crew.messaging.turn_bracket import TurnBracket
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.parent_turns import settle_turn
 from kiro_crew.security import (
     redact,
     redact_credentials,
@@ -162,6 +164,7 @@ def build_directive_consumer(
     session_key: str,
     sessions: Any,
     dispatcher: Any = None,
+    wake_loop_id: str = "",
 ) -> DirectiveConsumer:
     """Session-directive consumer for one channel turn (``TurnDriver`` injection).
 
@@ -179,6 +182,13 @@ def build_directive_consumer(
     still sees it. Slack's function-style dispatch has no dispatcher object;
     the minimal *sessions*-backed stand-in covers the Slack routability check,
     and everything it cannot answer fails CLOSED in the authorizer.
+
+    *wake_loop_id* is set only by a caller that fires a loop's own delivered
+    wake (the Slack thread's ``nudge_channel_fire``): the turn is then that
+    loop's self-wake, exactly as ``_fire_dashboard_nudge`` marks a dashboard
+    wake, so ``nothing_to_do`` may end it quietly and a stop or revision is
+    checked against the loop that woke it. Empty (every inbound message)
+    keeps the turn person-opened.
     """
 
     async def _consume(kind: str, args: dict[str, Any]) -> bool:
@@ -191,6 +201,11 @@ def build_directive_consumer(
         state: Any = getattr(dispatcher, "dashboard_state", None)
         if state is None:
             state = _ChannelDirectiveState(sessions=sessions)
+        wake: dict[str, Any] = (
+            {"producer_is_self_wake": True, "producer_wake_loop_id": wake_loop_id}
+            if wake_loop_id
+            else {}
+        )
         outcome = await apply_session_directive_outcome(
             state,
             None,
@@ -198,6 +213,7 @@ def build_directive_consumer(
             kind,
             args,
             producer_is_channel=True,
+            **wake,
         )
         result = outcome.text
         # The channel surface never renders tool results, so the applier's
@@ -853,6 +869,20 @@ class ChannelTurns:
             # title, dashboard surfacing -- over an existing conversation.
             turn_is_new: bool | None = None
             replaying = False
+            # One per inbound message, so a replay below does not run
+            # UserPromptSubmit again. The operator's hooks run for the operator's
+            # own conversation only: a guest or a room others read gets none, as it
+            # gets none of the operator's private context.
+            hook_turn = (
+                None
+                if deny_all_tools or minimal_context
+                else ScriptHookTurn(
+                    session_key,
+                    text,
+                    cancelled=lambda: session_stop_generation(sessions, session_key)
+                    != stop_gen_at_entry,
+                )
+            )
             while True:
                 if not claimed:
                     if deny_all_tools:
@@ -895,9 +925,11 @@ class ChannelTurns:
                         provider,
                         authored_before_spawn=toolless_before_spawn,
                     )
+                # Keep the first acquisition's snapshot across replays: a Stop
+                # during a reset or a hook must not become a new attempt's baseline.
+                if stop_gen_at_entry is None:
+                    stop_gen_at_entry = session_stop_generation(sessions, session_key)
                 if recovery:
-                    if stop_gen_at_entry is None:
-                        stop_gen_at_entry = session_stop_generation(sessions, session_key)
                     if conv_gen_at_entry is None:
                         conv_gen_at_entry = session_conversation_generation(sessions, session_key)
                 if turn_is_new is None:
@@ -1011,7 +1043,14 @@ class ChannelTurns:
                     user_display_name=asker.display_name,
                     skill_trigger_text=skill_trigger_text,
                 )
-                tool_gate = build_tool_gate(ctx_builder, session_key=session_key, agent=agent)
+                # A monitor wake runs with nobody watching: a governance check
+                # that cannot be evaluated refuses the call.
+                tool_gate = build_tool_gate(
+                    ctx_builder,
+                    session_key=session_key,
+                    agent=agent,
+                    unattended=monitor is not None,
+                )
                 if Drift.GENERIC_DENY_REASON in drift:
                     tool_gate = _without_deny_reason(tool_gate)
                 if monitor is not None:
@@ -1046,6 +1085,7 @@ class ChannelTurns:
                     audit_agent=agent or "kirocrew",
                     closing_gate=closing_gate,
                     undelivered_watch_key=session_key,
+                    script_hooks=hook_turn,
                     **driver_extra,
                 )
                 if replaying and retry_guard is not None:
@@ -1110,6 +1150,9 @@ class ChannelTurns:
                     # the successor's semaphore, which the next retry's reset would
                     # pop from under it.
                     _set_replay_gap(sessions, session_key, opened=True)
+                # The abandoned turn did not land: end its attempt now, so what it
+                # received inline is revoked and a replay runs as a new attempt.
+                settle_turn(sessions, session_key)
                 reset_ok = True
                 try:
                     await sessions.reset(session_key)
@@ -1533,6 +1576,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         TOOL_DENY,
         event_is_spawn_run,
         hook_gate_kwargs,
+        unattended_turn,
     )
     from kiro_crew.messaging.identity import (  # noqa: F401
         channel_inbound_permitted,

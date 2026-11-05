@@ -15,7 +15,7 @@ import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import type { ChatInputProps } from './props'
 import type { MemorySource } from '../../lib/agentMemorySource'
 import { withMemorySource } from '../../utils/agentLabel'
-import type { useAutoCompactThreshold } from './autoCompact'
+import { harnessManagedNoteBackend, type useAutoCompactThreshold } from './autoCompact'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuidePredicate } from '../../guide/guidePredicates'
 
@@ -230,6 +230,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   autoCompactThreshold: ReturnType<typeof useAutoCompactThreshold>
 }) {
   const { autoCompactQuery, autoCompact, autoCompactError, setAutoCompactError, pushAutoCompact } = autoCompactThreshold
+  const harnessManagedNote = harnessManagedNoteBackend(autoCompact)
   // The agent default's labels name the crew in mono so it reads as a name, and
   // their tooltip says where that number is set (config only, no UI edits it).
   const agentName = <span className="font-mono">{autoCompact?.agent ?? ''}</span>
@@ -316,6 +317,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                       variant="inline"
                       testId="auto-compact-write-error"
                       message={autoCompactError}
+                      announce={false}
                       onDismiss={() => setAutoCompactError('')}
                     />
                   </div>
@@ -352,9 +354,9 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                           : i18nT('components.chatInput.following_global', { pct: Math.round(autoCompact.global_pct) })}
                       </div>
                     )}
-                    {autoCompact.harness_managed && (
+                    {harnessManagedNote && (
                       <div className="mt-1 text-[10px] text-muted" data-testid="autocompact-harness-managed-note">
-                        {i18nT('components.chatInput.harness_managed_note', { backend: autoCompact.harness_managed.toUpperCase() })}
+                        {i18nT('components.chatInput.harness_managed_note', { backend: harnessManagedNote.toUpperCase() })}
                       </div>
                     )}
                   </div>

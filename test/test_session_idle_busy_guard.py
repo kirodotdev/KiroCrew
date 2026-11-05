@@ -99,20 +99,26 @@ class TestIdleSweepBusyGuard:
     async def test_reset_is_asked_to_skip_busy_sessions(self, cfg) -> None:
         """Closes the collect→reset race: a turn may start after the lock drops.
 
-        Pinned as a call-shape assertion so a later refactor cannot silently
-        drop the flag while the behavioural tests still pass.
+        The race is staged for real: a turn takes the permit after the sweep
+        collected the session and before its reset runs.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.get_or_create("thread1")
         mgr.release("thread1")
         async with mgr._lock:
             mgr._sessions["thread1"].last_used = time.monotonic() - 10
-        mgr.reset = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        real_reset = mgr.reset
+
+        async def _a_turn_starts_first(key, **kwargs):
+            await mgr._sessions[key].semaphore.acquire()
+            return await real_reset(key, **kwargs)
+
+        mgr.reset = _a_turn_starts_first  # type: ignore[method-assign]
 
         await mgr._expire_idle(timeout_secs=1)
 
-        mgr.reset.assert_awaited_once()
-        assert mgr.reset.await_args.kwargs["skip_if_busy"] is True
+        assert "thread1" in mgr._sessions, "a turn that started after collect was reaped"
+        mgr.release("thread1")
         await mgr.close_all()
 
 

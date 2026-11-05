@@ -1,0 +1,4 @@
+{"_meta": {"backend": "strands", "recorded": "live", "date": "2026-10-31", "agent_version": "0.0.1", "agent_name": "@strands-agents/cli", "note": "Strands CLI 0.2.3 project mode: session/cancel sent about 6 s into a long tool-free answer; the prompt ends with stopReason cancelled."}}
+{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true, "promptCapabilities": {"image": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": true}}, "agentInfo": {"name": "@strands-agents/cli", "title": "Strands harness", "version": "0.0.1"}}}
+{"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "strands-synthetic-a"}}
+{"jsonrpc": "2.0", "id": 3, "result": {"stopReason": "cancelled"}}

@@ -320,7 +320,7 @@ describe('TagManagerList — manage mode', () => {
     renderList({ mode: 'manage' })
     // t1 is #ff0000 (not in the palette) — nothing pressed.
     fireEvent.click(await screen.findByTestId('tag-color-t1'))
-    const pressed = screen.getByTestId('tag-palette-t1').querySelectorAll('[aria-pressed="true"]')
+    const pressed = screen.getByTestId('tag-palette-t1').querySelectorAll('[aria-checked="true"]')
     expect(pressed.length).toBe(0)
   })
 

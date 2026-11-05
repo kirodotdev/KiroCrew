@@ -18,7 +18,8 @@ three layers that do not depend on each other:
 3. **What already exists.** :func:`tighten_data_home` runs once per gateway
    start, on a worker thread after the dashboard listener is serving, and drops
    group/other bits from the stores an earlier version left behind. It touches
-   only a fixed list of Kiro Crew's own stores (:data:`STARTUP_SWEEP_STORES`)
+   only a fixed list of Kiro Crew's own stores (:data:`STARTUP_SWEEP_STORES`,
+   plus the roots in :data:`STARTUP_SWEEP_ROOTS`, which it does not enter)
    and never walks the rest of the data home, so the user's own work there
    keeps its modes without the sweep having to recognise it.
 
@@ -769,17 +770,20 @@ def tighten_stores_to_owner(
     max_entries: int,
     clock: Callable[[], float] = time.monotonic,
     should_stop: Callable[[], bool] | None = None,
+    roots: Iterable[str] = (),
 ) -> TightenReport:
     """Remove group/other permission bits from the named *stores* below *home*. Best effort.
 
     Each store is a path relative to *home*, written with ``/``. Its last
     component may be an ``fnmatch`` pattern (``gateway.log*``); the others are
     literal names. A store that is a file is tightened; one that is a directory
-    is narrowed and everything below it is tightened. Nothing else below *home*
-    is touched -- not the directories the stores sit in (``workspace/`` itself),
-    and not any name the list does not select -- so whatever else a user or an
-    agent keeps in the data home keeps the modes its own tools gave it. A store
-    that does not exist is not an error.
+    is narrowed and everything below it is tightened. Each of *roots*, a
+    directory directly below *home*, is narrowed but never entered, so what it
+    holds keeps its modes. Nothing else below *home* is touched -- not the
+    directories the stores sit in (``workspace/`` itself), and not any name the
+    list does not select -- so whatever else a user or an agent keeps in the
+    data home keeps the modes its own tools gave it. A store that does not
+    exist is not an error.
 
     *home* itself is opened by name and may be a symlink (a relocated data home
     is a supported setup); its own mode is not changed here. Below it nothing is
@@ -828,6 +832,8 @@ def tighten_stores_to_owner(
         should_stop=should_stop,
     )
     try:
+        for name in roots:
+            sweep.entry(home_fd, name, MAX_SWEEP_DEPTH)  # at the depth bound: never entered
         for parent, leaves in groups:
             parent_fd = sweep.open_parent(home_fd, parent)
             if parent_fd is None:
@@ -869,7 +875,8 @@ STARTUP_SWEEP_MAX_ENTRIES = 1_000_000
 #: the meetings store are simply not on it. ``skills/`` is not on it either: the
 #: builtin-skill sync (``kiro_crew.skills``) fingerprints each installed entry's
 #: permission bits to tell an untouched install from a user edit, so narrowing
-#: them needs the fingerprint changed first.
+#: them needs the fingerprint changed first. Its root is narrowed instead
+#: (:data:`STARTUP_SWEEP_ROOTS`), which closes the tree without changing an entry.
 #:
 #: The writers converted alongside this list create their files owner-only, so
 #: it only has to cover what they wrote before, and it leaves out the low-value
@@ -917,11 +924,16 @@ STARTUP_SWEEP_STORES: tuple[str, ...] = (
     "config.local.json",
 )
 
+#: Directories directly below the data home whose own mode the startup sweep
+#: narrows without entering them: the installed skill trees (above) and the app
+#: checkouts, which keep the modes git gave them, like any project.
+STARTUP_SWEEP_ROOTS: tuple[str, ...] = ("skills", "app-sources")
+
 
 def tighten_data_home(
     home: str | os.PathLike[str], *, should_stop: Callable[[], bool] | None = None
 ) -> TightenReport:
-    """Run the once-per-start sweep of :data:`STARTUP_SWEEP_STORES` and log what it did.
+    """Run the once-per-start sweep of :data:`STARTUP_SWEEP_STORES` and its roots; log it.
 
     Never raises. The gateway runs this on a worker thread after its dashboard
     listener is serving (``dashboard.server_runtime.maintenance._kick_owner_only_sweep``),
@@ -943,6 +955,7 @@ def tighten_data_home(
             max_seconds=STARTUP_SWEEP_MAX_SECONDS,
             max_entries=STARTUP_SWEEP_MAX_ENTRIES,
             should_stop=should_stop,
+            roots=STARTUP_SWEEP_ROOTS,
         )
     except Exception:  # never let a permission sweep take the gateway down
         logger.warning("owner-only sweep of the data home failed", exc_info=True)

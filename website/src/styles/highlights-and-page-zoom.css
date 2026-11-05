@@ -136,47 +136,25 @@
   .mobile-sessions-overlay .sidebar-resize-handle { display: none !important; }
 }
 
-/* Composer text must reach WebKit's 16px standard focus size on touch devices.
-   When a field takes focus WebKit scales the viewport by
-   clampTo(16 / fontSize, minimumScale, maximumScale), so anything computing
-   below 16px zooms. The 16 is the hardcoded webViewStandardFontSize:
-   https://github.com/WebKit/WebKit/blob/f010ba868212b2113ca0727ce46f06273cb5fd0a/Source/WebKit/UIProcess/API/ios/WKWebViewIOS.mm#L1752
-   The textarea and paste mirror share this hook to keep their font metrics
-   aligned; pointer: coarse leaves desktop typography unchanged.
+/* ── No touch font floor, for the composer or any field ──
+   WebKit zooms the viewport when a field below 16px takes focus, by
+   clampTo(16 / fontSize, minimumScale, maximumScale). The `maximum-scale=1` in
+   index.html clamps that scale to 1, so a 14px field does not zoom on an iPhone
+   (the Settings search is 14px and stays put on a device). Fields therefore keep
+   their authored size on touch, and the composer uses the message font setting
+   (`--mc-message-font-size`, 14px where unset) on every device.
 
-   The placeholder stays at the desktop size because the zoom scale is computed
-   from the FIELD's font-size, not this pseudo-element's — so holding the hint
-   at the desktop size costs no zoom protection and keeps it on one line. At 16px
-   the hint wraps, and an empty composer cannot grow to show the second line: a
-   placeholder contributes nothing to scrollHeight, so applyHeight pins the box
-   at INPUT_MIN_H and the wrapped line is clipped.
+   That is also what keeps an empty composer one line tall. Its auto-size measures
+   the PLACEHOLDER at the field's font size (chat-input/sizing.ts), so the hint and
+   the typed text must share one size: a field held at 16px over a 14px hint
+   measures the hint a line too tall on a narrow phone.
 
-   The desktop size is the message font setting (`--mc-message-font-size`, set
-   on the chat pane root; 14px where unset). The field rule is a FLOOR over it,
-   `max(16px, setting)`, not a replacement: a user who chose 20px keeps 20px on
-   touch, and only a setting below WebKit's threshold is raised.
-
-   The field selector repeats the attribute to reach specificity (0,2,0). The
-   `.mc-message-font-text` class on the same element is (0,1,0), so a single
-   `[data-composer-typo]` would only TIE and win on source order — leaving the
-   fix inert on device, with no test able to see it, if the class rule is ever
-   emitted after index.css. The repeat is used instead of qualifying by element
-   because the hook is on the composer's <textarea> and on the paste mirror's
-   <div>, and the mirror's font metrics must track the field's. */
-@media (pointer: coarse) {
-  [data-composer-typo][data-composer-typo] { font-size: max(16px, var(--mc-message-font-size, 14px)); }
-  [data-composer-typo]::placeholder { font-size: var(--mc-message-font-size, 14px); }
-}
-
-/* ── Why there is deliberately NO app-wide 16px field rule here ──
-   The composer rule above is scoped to one hook on purpose. A generalised version was
-   written and withdrawn: CSS can only SET a size, never floor one, so a rule broad
-   enough to reach every field SHRINKS the ones deliberately larger (measured: the
-   artifact rename field's `text-2xl`), while any narrower selector list misses the next
-   field written with an arbitrary value, an `!important` modifier or an inline style.
-   Do not re-add one — `noPageZoom.test.ts` fails if a blanket element rule reappears.
-   Full reasoning, and what a correct fix would need instead, live in the page-zoom
-   section of website/docs/narrow-viewport.md. */
+   An app-wide 16px rule would not be safe to add either: CSS can only SET a size,
+   never floor one, so a rule broad enough to reach every field SHRINKS the ones
+   deliberately larger (measured: the artifact rename field's `text-2xl`).
+   `noPageZoom.test.ts` pins the viewport keys and fails if a blanket element rule
+   reappears; the page-zoom section of website/docs/narrow-viewport.md has the full
+   reasoning. */
 
 /* ── The shell is not a zoomable document ──
    `pan-x pan-y` allows exactly the two behaviours the app needs from the browser

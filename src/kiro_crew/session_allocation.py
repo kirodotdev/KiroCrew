@@ -218,6 +218,12 @@ class SessionRegistryState:
     #: ``spawn_in_flight``; a token leaves at registration (published, or a
     #: won race) or with its reservation.
     spawning_reservations: set[object] = field(default_factory=set)
+    #: Per key, the event a speculative (eager) allocation sets when it returns,
+    #: registered or not, and that allocation's start priority. A real claim of
+    #: no higher priority that finds no live session but finds this waits for it
+    #: and claims what it registered, instead of cold-starting a second process
+    #: for the same key. Removed by the call that added it.
+    speculative_starts: dict[str, tuple[asyncio.Event, StartPriority]] = field(default_factory=dict)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration
@@ -898,6 +904,14 @@ class SessionAllocationService:
         except BaseException:
             self._remove_reservation_now(key, token)
             raise
+        # A run's planner, step and review sessions end as soon as their work is
+        # done. Where the host can keep the record, it waits this long before Crew
+        # deletes it, so a finished step can still be read. The later delete is a
+        # cleanup-loop hook, and this path is not the allocation that starts the
+        # loop, so a delay starts it here.
+        handle.delete_delay_secs = float(owner._cfg.session.kas_delete_delay_secs)
+        if handle.delete_delay_secs > 0:
+            owner._ensure_cleanup_task()
         try:
             provider = self._deps.session_provider_type()(handle, runtime)
             setattr(
@@ -1428,8 +1442,13 @@ class SessionAllocationService:
             directory_mtime = 0.0
         now = time.monotonic()
         cache = self._deps.agent_model_cache()
+        from kiro_crew import agent_spec_pins
 
-        entry = cache.get(agent)
+        # Keyed with the pin folded in: a pin change picks another file, and the
+        # agents directory's mtime does not move for it.
+        pins = agent_spec_pins.spec_pins()
+        cache_key = agent_spec_pins.pinned_memo_key(agent, pins)
+        entry = cache.get(cache_key)
         if entry is not None:
             cached_model, cached_mtime, cached_at = entry
             if (
@@ -1440,20 +1459,24 @@ class SessionAllocationService:
 
         model = "auto"
         try:
-            for agent_file in iter_agent_spec_files(agents_dir, ordered=False):
-                data = self._deps.read_agent_spec(
+            # First match, with ``agent.spec_pins`` applied (``pick_spec_row``).
+            rows = (
+                (
+                    self._deps.read_agent_spec(
+                        agent_file,
+                        operation="resolve_agent_model",
+                        source="unknown",
+                    ),
                     agent_file,
-                    operation="resolve_agent_model",
-                    source="unknown",
                 )
-                if data is None:
-                    continue
-                if data.get("name") == agent or agent_file.stem == agent:
-                    model = self._deps.spec_model(data)
-                    break
+                for agent_file in iter_agent_spec_files(agents_dir, ordered=False)
+            )
+            picked = agent_spec_pins.pick_spec_row(rows, agent, pins)
+            if picked is not None:
+                model = self._deps.spec_model(picked)
         except Exception:
             pass
-        cache[agent] = (model, directory_mtime, now)
+        cache[cache_key] = (model, directory_mtime, now)
         return model
 
 

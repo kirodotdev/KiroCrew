@@ -27,6 +27,24 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
     "xfce4-terminal",
 )
 
+# The dashboard's feature-preview switches (Settings > Developer > Feature
+# previews) stored under ``dashboard.feature_previews``, by name. Each name is a
+# ``mc-preview-<name>`` key in ``website/src/utils/previewFlags.ts`` with its
+# hyphens written as underscores (config paths are snake_case); that file keeps
+# the browser's copy as a cache of this section, and
+# test_feature_previews_config.py pins the two lists equal.
+FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
+    "artifact_deploy",
+    "crew_mode",
+    "crewmate_harness",
+    "explore",
+    "folder_conductor",
+    "layout_harness",
+    "remote_crew_chat",
+    "session_environments",
+    "webhooks",
+)
+
 
 @dataclass
 class JiraAuthEntry:
@@ -171,8 +189,9 @@ class DashboardConfig:
         default_factory=SharedCrewConfig,
         metadata=_meta(
             "Shared Crew",
-            "Fair admission and per-person limits for a shared Crew. Not active in "
-            "this build yet: nothing reads these settings, so changing one does nothing.",
+            "Fair admission, per-person limits and the direct tailnet link for a "
+            "shared Crew. Read only while Shared Crew is turned on in Feature "
+            "Previews; otherwise every value reads as its default.",
             restart=True,
         ),
     )
@@ -196,8 +215,8 @@ class DashboardConfig:
     crewmate_threads: bool = field(
         default=False,
         metadata=_meta(
-            "Reply threads on mate chat messages",
-            "Let any message in a mate's chat carry its own reply thread, "
+            "Reply threads on Bot chat messages",
+            "Let any message in a Bot's chat carry its own reply thread, "
             "opened in the side panel while the main chat stays visible. Off by "
             "default: the thread routes answer not-found, no thread frame is sent, "
             "and the dashboard draws no Reply in thread control. Takes effect on "
@@ -207,14 +226,36 @@ class DashboardConfig:
     crewmates_in_agent_picker: bool = field(
         default=False,
         metadata=_meta(
-            "Mates in the chat agent picker",
-            "List mates in the chat composer's agent picker, beside the agent "
-            "templates, so a chat can be switched onto a mate (and its own "
+            "Bots in the chat agent picker",
+            "List Bots in the chat composer's agent picker, beside the agent "
+            "templates, so a chat can be switched onto a Bot (and its own "
             "workspace and memory) without opening it from the Crew page. Off by "
-            "default: the picker lists templates plus any mate no listed "
+            "default: the picker lists templates plus any Bot no listed "
             "template already covers; the default agent stays even when covered, "
             "unless a template shares its name. Takes effect when the dashboard is "
             "reloaded; no gateway restart.",
+        ),
+    )
+    feature_previews: dict = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Feature previews",
+            "Which unreleased dashboard features are turned on under Settings > "
+            "Developer > Feature previews, by name, each true or false. Kept here "
+            "so a switch stays as set on every browser, device and dashboard "
+            "address of this gateway. A name that is absent reads as off. Takes "
+            "effect on the next dashboard read; no restart.",
+            properties={
+                name: {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": f"Feature preview: {name}",
+                        "help": f"Turn on the '{name}' feature preview.",
+                    },
+                }
+                for name in FEATURE_PREVIEW_FLAGS
+            },
         ),
     )
     qr_session_until_restart: bool = field(
@@ -439,41 +480,22 @@ class DashboardConfig:
             enum=["more", "less"],
         ),
     )
-    use_builtin_browser: bool = field(
-        default=True,
-        metadata=_meta(
-            "Use Built-in Browser",
-            "When on, the browser tool opens pages in Kiro Crew's built-in panel "
-            "(desktop app only). When off, the agent browses via playwright-cli.",
-        ),
-    )
     browser_local_origins: list[str] = field(
         default_factory=list,
         metadata=_meta(
-            "Built-in Browser Local Origins",
-            "Loopback origins the browser tool may open in the built-in panel, "
+            "Local Preview Origins",
+            "Loopback origins the browser tool and the side panel's Preview tab may open, "
             "each written host:port with host localhost, 127.0.0.1 or [::1] "
-            "(e.g. localhost:5173 for a Vite dev server). Empty (the default) "
-            "keeps every loopback, private and link-local address refused. The "
-            "port is required and matched exactly, so one entry opens one dev "
+            "(e.g. localhost:5173 for a Vite dev server). The tab is for previewing "
+            "your own dev server; the agent never drives it, and an outside address "
+            "is answered with 'Open this in your Chrome, or ask Kiro'. Empty (the "
+            "default) keeps every loopback, private and link-local address refused. "
+            "The port is required and matched exactly, so one entry opens one dev "
             "server and never the rest of the machine; the gateway's own port is "
-            "refused even when listed. Entries in any other shape are dropped. "
-            "The agent cannot set this while its sandbox is on: config.json is "
-            "read-only inside the sandbox.",
-        ),
-    )
-    browser_view_port: int = field(
-        default=0,
-        metadata=_meta(
-            "Browser Live-View Port",
-            "Pin the browser live-view server (playwright-cli show) to this "
-            "loopback port. 0 (the default) picks a fresh OS-assigned ephemeral "
-            "port on every start. Set a fixed port when the dashboard is viewed "
-            "remotely through an SSH tunnel that forwards a fixed set of ports, "
-            "so the Browser panel can always reach the view. The server binds "
-            "loopback-only either way. A value outside 1-65535 is treated as "
-            "unset. A changed pin applies the next time the view server "
-            "(re)starts; an already-running server keeps its current port.",
+            "refused even when listed. Entries in any other shape are dropped; at "
+            "most 32 are kept. Edited on Settings -> Browser -> Local preview, or by "
+            "the Preview tab's own Allow button. The agent cannot set this while its "
+            "sandbox is on: config.json is read-only inside the sandbox.",
         ),
     )
     verbosity: str = field(
@@ -965,11 +987,11 @@ class DashboardConfig:
     crewmates_onboarded: bool = field(
         default=False,
         metadata=_meta(
-            "Mates Onboarded",
-            "Whether the user has finished or dismissed the first-run Meet Mates "
-            "flow (the four-step introduction that creates the first mate). "
+            "Bots Onboarded",
+            "Whether the user has finished or dismissed the first-run Meet Bots "
+            "flow (the four-step introduction that creates the first Bot). "
             "Server-backed like the other first-run flags so a second machine does "
-            "not replay it. Also set when the flow is re-run from the Mates page.",
+            "not replay it. Also set when the flow is re-run from the Bots page.",
         ),
     )
     user_role: str = field(
@@ -1024,6 +1046,15 @@ class DashboardConfig:
             "Feature Videos Cache Size (MB)",
             "Disk budget for downloaded clips. Whole release folders are evicted "
             "oldest-first to fit; the running release is never evicted. 0 = no cap.",
+        ),
+    )
+    milestones_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Milestones Enabled",
+            "Show the milestones indicator, panel, new-chat feature cards and quiet "
+            "notices. Off hides them; counting continues, so turning it back on shows "
+            "true progress.",
         ),
     )
     folder_suggestions_enabled: bool = field(

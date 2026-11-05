@@ -11,7 +11,7 @@ on an instance reaches every caller.
 
 Instance fields written: ``_adopted_autocompact_pct``, ``_cfg``.
 
-Instance fields read: ``_background_runtime``.
+Instance fields read: ``_background_runtime``, ``_compaction``.
 """
 
 from __future__ import annotations
@@ -64,6 +64,9 @@ _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
     # The warm pool's agent is `session.pool_agent or agent.default_agent`, and
     # WarmPoolState.agent is captured once, so the default is a factory input.
     "agent.default_agent",
+    # A pin picks which file a pooled provider of a contested name runs, so a
+    # warm provider started under the previous pin is retired, not claimed.
+    "agent.spec_pins",
     "session.pool_size",
     "session.pool_agent",
     "session.pool_ttl_secs",
@@ -111,6 +114,12 @@ async def _on_config_change(self: SessionManager, change: ConfigChange) -> None:
     else:
         async with self._lock:
             self._cfg = change.new
+    if not getattr(getattr(change.new, "session", None), "idle_compaction", False):
+        # Turning the setting off ends every pending idle stretch now, rather
+        # than leaving each timer to decline when it fires.
+        compaction = self.__dict__.get("_compaction")
+        if compaction is not None:
+            compaction.idle.cancel_all()
     if change.touched("watchdog", "agent.chat_turn_timeout_secs") or any(
         path.rsplit(".", 1)[-1].startswith("watchdog_") for path in change.under("agents")
     ):

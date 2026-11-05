@@ -59,7 +59,7 @@ export function SpawnApprovalCard({ pendingSpawnApprovals, hasApproval, spawnApp
                *  appearing from nowhere. */}
               <AnimatePresence mode="wait" initial={false}>
               {spawnApprovalsResolving ? (
-                <motion.span key="resolving" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="inline-flex items-center gap-1 text-[12px] text-muted/60 shrink-0">
+                <motion.span key="resolving" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="inline-flex items-center gap-1 text-[12px] text-muted shrink-0">
                   <Loader2 size={12} className="animate-spin shrink-0" />{i18nT('components.chatInput.resolving')}
                 </motion.span>
               ) : hasApproval ? (
@@ -117,7 +117,7 @@ export function SpawnApprovalCard({ pendingSpawnApprovals, hasApproval, spawnApp
                       {a.task || a.agent || a.id}
                     </code>
                     {a.approving ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] text-muted/60 shrink-0">
+                      <span className="inline-flex items-center gap-1 text-[11px] text-muted shrink-0">
                         <Loader2 size={11} className="animate-spin shrink-0" />{i18nT('components.chatInput.resolving')}
                       </span>
                     ) : (

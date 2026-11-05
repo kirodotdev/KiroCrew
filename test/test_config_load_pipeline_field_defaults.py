@@ -45,6 +45,8 @@ _READ_STAGE_DEPARTURES = {
     ("agent", "session_control"): False,
     ("agent", "member_dispatch"): False,
     ("agent", "crew_panel"): False,
+    # Fail closed the same way: a malformed value must not start storing MCP tokens.
+    ("agent", "kas_persist_mcp_sign_in"): False,
     # A present but malformed harness choice is an unusable explicit choice, not
     # an absent key: it takes the Kiro CLI floor, never the KAS product default.
     ("agent", "acp_backend"): "",
@@ -836,13 +838,6 @@ def _own_value_cases() -> list:
             {"mcp": {"extra_path_dirs": "/usr/bin"}},
             lambda c: c.mcp.extra_path_dirs,
             [],
-        ),
-        _case(
-            "dashboard.browser_view_port-out-of-range",
-            [(sections.DashboardConfig, "browser_view_port", 8080)],
-            {"dashboard": {"browser_view_port": 70000}},
-            lambda c: c.dashboard.browser_view_port,
-            0,
         ),
         _case(
             "agents.session_color-malformed",

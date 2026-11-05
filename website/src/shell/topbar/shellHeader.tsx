@@ -2,6 +2,7 @@ import { useEffect, useState, lazy, Suspense, type ReactNode } from 'react'
 import { TOPBAR_FOCUS_Z, TOPBAR_Z } from '../../lib/themeDecorLayer'
 import { kiroUsageSegment } from './kiroUsageReadout'
 import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
+import { ResourcePostureChip } from './resourcePostureChip'
 import { Bell, Fullscreen, Menu, Plug, Unplug } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { isWinElectron } from '../../lib/electron'
@@ -24,6 +25,10 @@ import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import type { AppShell } from '../appShell'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { setAgentSwitchNotice } from '../../store/chatSlice'
+import MilestonesIndicator, { MilestonesPill } from '../../components/milestones/MilestonesIndicator'
+import MilestonesSheet from '../../components/milestones/MilestonesSheet'
+import { useExplorePreviewSwitch } from '../../components/milestones/useMilestones'
+import { useExplorePreview } from '../../hooks/usePreviewFlag'
 
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
@@ -91,7 +96,7 @@ function NotificationsBellButton() {
   const { items, open, containerRef, bellRef } = sheet
   // Badge counts attention-worthy rows only (RFC Phase 3): passive and
   // muted-channel (silenced) rows are excluded, mirroring the backend's
-  // _unread_count semantics.
+  // unread_count semantics.
   const unacked = items.filter(n => !n.acked && n.priority !== 'passive' && !n.silenced)
 
   // RFC Phase 4: mirror the unread count onto the desktop dock/taskbar badge.
@@ -151,8 +156,15 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
     requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen,
   } = shell
+  // Every Explore surface below mounts only while its Feature Preview is on.
+  // Turning it off closes an open sheet; turning it on reads milestones once.
+  const explore = useExplorePreview()
+  useExplorePreviewSwitch(explore)
   return (
     <>
+      {/* The one Milestones panel; the top-bar indicator, the phone menu row
+          and the milestone notice all open it. */}
+      {explore && <MilestonesSheet />}
       {/* Topbar */}
       {/* stable theming hook — see website/docs/theming-contract.md */}
       <header
@@ -524,17 +536,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             // Resource pressure indicator — always visible when tight/critical
             if (sysMetrics?.posture && sysMetrics.posture !== 'ample' && sysMetrics.posture !== 'unknown') {
               segments.push(
-                <span
+                <ResourcePostureChip
                   key="resource-health"
-                  className={`${seg} flex items-center gap-1 text-[11px] ${sysMetrics.posture === 'critical' ? 'text-danger' : 'text-warn'}`}
-                  title={sysMetrics.posture === 'critical'
-                    ? i18nT('app.resource_posture_tooltip_critical', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })
-                    : i18nT('app.resource_posture_tooltip_tight', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })}
-                >
-                  <span aria-hidden="true" className={`inline-block w-2 h-2 rounded-full ${sysMetrics.posture === 'critical' ? 'bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none' : 'bg-warn'}`} />
-                  {!isMobile && <span className="font-medium">{sysMetrics.posture === 'critical' ? i18nT('app.resource_critical') : i18nT('app.resource_tight')}</span>}
-                  {!isMobile && sysMetrics.subagentCap != null && <span className="text-muted text-[10px]">· {i18nT('app.subagent_cap', { cap: String(sysMetrics.subagentCap) })}</span>}
-                </span>
+                  posture={sysMetrics.posture}
+                  availableGb={sysMetrics.availableGb}
+                  subagentCap={sysMetrics.subagentCap}
+                  seg={seg}
+                />
               )
             }
             if (!capsuleCollapsed) {
@@ -589,6 +597,12 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             )
           })()}
           {!isMobile && <MetricsErrorNotice metrics={metrics} />}
+          {/* Explore (RFC "Milestones for New-User Feature Discovery" 4.6): its
+              own pill next to the readout capsule (after the capsule's own
+              metrics notice), not a capsule segment, so the capsule's row of
+              buttons does not grow. Renders nothing until the milestones read
+              says it is on. */}
+          {explore && !isMobile && <MilestonesPill />}
           {/* Extension slot: downstream-registered top-bar widgets (e.g. a
               credential-TTL capsule or spend pill). Empty in the stock build.
               Each widget is isolated in its own ErrorBoundary (fallback=null) so
@@ -624,7 +638,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           {/* Notifications bell — borderless icon button, rightmost control.
               (The activity-panel open toggle now lives in the session header,
               beside the pop-out control — see ChatPage — so opening the panel
-              no longer narrows this full-width header.) */}
+              no longer narrows this full-width header.) On a phone, which has
+              no readout capsule, the Explore ring sits just before it; with the
+              update pill up the group would hold three controls, so it stands
+              down (the chat page's ⋯ menu carries an Explore row). */}
+          {explore && isMobile && !updateAvailable && <MilestonesIndicator compact />}
           <NotificationsBellButton />
           </div>
         </div>

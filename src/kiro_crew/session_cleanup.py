@@ -30,6 +30,8 @@ from kiro_crew.process_identity import (
 )
 from kiro_crew.runtime_ownership import authorize_runtime_kill
 from kiro_crew.runtime_reconcile import build_reconciler
+from kiro_crew.session_background_hold import background_hold_secs, hold_expired_reason
+from kiro_crew.session_idle_clock import last_activity as _last_activity
 from kiro_crew.watchdog import SessionWatchdog
 
 if TYPE_CHECKING:
@@ -38,16 +40,6 @@ if TYPE_CHECKING:
 
 #: Caller name on this module's kill-decision audit rows.
 _SWEEP = "session_cleanup sweep"
-
-#: How long after a session's harness launched work that outlives the prompt
-#: the RSS recycle and the idle sweep still treat that session as busy. Claude
-#: Code runs a backgrounded command or a Workflow in the session's own process
-#: tree after the prompt returns, and reports the launch on the launching tool
-#: call; it reports nothing a client can read while that work runs, nor when it
-#: ends. So the hold is bounded by time: long enough for an ordinary workflow,
-#: short enough that a launch cannot exempt a runaway tree from the memory
-#: ceiling for the rest of the session's life.
-HARNESS_BACKGROUND_WORK_HOLD_SECS = 3600.0
 
 #: Hard ceiling multiplier on ``rss_max_mb`` that the hold cannot override.
 #: The hold's clock restarts on every launch, so an agent that keeps launching
@@ -896,9 +888,10 @@ class SessionCleanup:
                 # check off forever while its tree grows without limit.
                 # Synchronous, so the no-suspend window to ``reset`` holds.
                 launch = self._harness_background_launch(session)
+                hold = background_hold_secs(self._owner._cfg)
                 if (
                     launch is not None
-                    and launch[0] <= HARNESS_BACKGROUND_WORK_HOLD_SECS
+                    and launch[0] <= hold
                     and rss <= self.state.rss_max_mb * HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR
                 ):
                     self._deps.logger.info(
@@ -942,7 +935,7 @@ class SessionCleanup:
                 # cleared while the process lives, so warning "may have been
                 # stopped" about a launch from hours ago would be permanent
                 # noise on every later recycle.
-                if launch is not None and launch[0] <= HARNESS_BACKGROUND_WORK_HOLD_SECS:
+                if launch is not None and launch[0] <= hold:
                     reason += (
                         "; background work its agent started earlier may have been "
                         f"stopped: {launch[1]}"
@@ -1716,7 +1709,10 @@ class SessionCleanup:
                 total_checked += 1
                 if session.semaphore.locked():
                     continue
-                idle = key not in idle_exempt_keys and now - session.last_used > timeout_secs
+                idle = (
+                    key not in idle_exempt_keys
+                    and now - _last_activity(session, timeout_secs) > timeout_secs
+                )
                 orphaned = self._owner_is_gone(key)
                 if idle or orphaned:
                     expired.append((key, orphaned, session))
@@ -1826,7 +1822,8 @@ class SessionCleanup:
             # what makes it look idle to ``last_used`` and abandoned to the
             # orphan axis. Synchronous, like every read from here to ``reset``.
             launch = self._harness_background_launch(scanned)
-            if launch is not None and launch[0] <= HARNESS_BACKGROUND_WORK_HOLD_SECS:
+            hold = background_hold_secs(self._owner._cfg)
+            if launch is not None and launch[0] <= hold:
                 self._deps.logger.info(
                     "Idle sweep: %s looks %s but its harness launched background "
                     "work %.0fs ago (%s) - left running",
@@ -1840,9 +1837,12 @@ class SessionCleanup:
             # finished inside the await released the semaphore again but bumped
             # ``last_used`` on its way in, so the session is not idle now.
             # The orphan axis ignores the clock and re-asks the live set below.
-            if not is_orphan and self._deps.monotonic() - scanned.last_used <= timeout_secs:
+            if (
+                not is_orphan
+                and self._deps.monotonic() - _last_activity(scanned, timeout_secs) <= timeout_secs
+            ):
                 self._deps.logger.info(
-                    "Idle sweep: %s took a turn mid-sweep - left running",
+                    "Idle sweep: %s became active mid-sweep - left running",
                     key,
                 )
                 continue
@@ -1870,6 +1870,13 @@ class SessionCleanup:
                 )
             else:
                 self._deps.logger.warning("Expiring idle session: %s", key)
+            # Past the hold (inside it the session was kept above), so the
+            # launched work may still be running and this expiry may stop it.
+            hold_reason = (
+                None if launch is None else hold_expired_reason(launch, hold, orphaned=is_orphan)
+            )
+            if hold_reason is not None:
+                self._deps.logger.warning("Idle sweep: %s %s", key, hold_reason)
 
             # Preserve the historical attempt counter: it increments before the
             # race-safe reset, while the hang-resilience counter below is gated
@@ -1983,3 +1990,7 @@ class SessionCleanup:
                     self._deps.get_session_idle_expired_event(),
                     {"turn_active": turn_active, "orphaned": bool(is_orphan)},
                 )
+                # Tell the chat, which otherwise resets with no explanation.
+                # After ``reset``, so nothing here reopens a pre-reset window.
+                if hold_reason is not None:
+                    await self._owner._fire_recycle_callback(key, reason=hold_reason)

@@ -204,9 +204,9 @@ def _doctor_credentials(issues: list[str]) -> None:
     """Report the AWS / credential posture the agent will actually see.
 
     Exists because "my agent cannot reach AWS" had no self-service answer: the
-    agent is allowed to run AWS CLI calls but not to read credential files, so a
-    refused read looks identical to having no credentials at all, and nothing on
-    either side of that told the operator which one they had.
+    credential-file rule lets the agent run AWS CLI calls but not read the files,
+    so a refused read looks identical to having no credentials at all, and nothing
+    on either side of that told the operator which one they had.
 
     Advisory only, like the pod-session-bus and memory-pressure probes: ``issues``
     is doctor's exit-code channel, and an unconfigured AWS profile is not a Kiro
@@ -225,9 +225,9 @@ def _doctor_credentials(issues: list[str]) -> None:
     has_config = (aws_dir / "config").is_file()
     has_creds = (aws_dir / "credentials").is_file()
     if not has_config and not has_creds:
-        print("  aws:         ⏹ no ~/.aws config — agents can still run AWS CLI calls")
+        print("  aws:         ⏹ no ~/.aws config")
         render._print_wrapped(
-            "once you configure one: the SDK resolves credentials itself, so the agent "
+            "Once you configure one, the SDK resolves credentials itself, so the agent "
             "never needs to read the files. If you use AWS, run `aws configure sso` or "
             "`aws configure` in your own terminal."
         )
@@ -317,7 +317,9 @@ def _doctor_credentials(issues: list[str]) -> None:
     if vendor:
         print("  vending MCP: ✅ available")
         render._print_wrapped(vendor)
-    print("  note:        ℹ️  agents cannot READ credential files; AWS CLI calls are allowed")
+    print(
+        "  note:        ℹ️  agents cannot READ credential files; that rule does not block AWS CLI calls"
+    )
     if has_config or has_creds:
         # Only true once something IS configured. On a host with nothing set up the
         # missing setup is the real answer, and steering the operator away from it

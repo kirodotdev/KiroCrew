@@ -190,22 +190,16 @@ async def process_weixin_attachments(
     turn -- exactly as for Telegram and Discord.
     """
     server_transcripts: list[str] = []
-    transcribed_idx: set[int] = set()
-    for idx, item in enumerate(items):
+    pairs: list[tuple[Attachment, str]] = []
+    for item in items:
         transcript = _voice_transcript(item)
         if transcript is not None:
+            # Skip the audio download only for the items the server transcribed.
             server_transcripts.append(transcript)
-            transcribed_idx.add(idx)
-
-    pairs: list[tuple[Attachment, str]] = []
-    for idx, item in enumerate(items):
-        # Skip the audio download only for the items the server transcribed.
-        if idx in transcribed_idx:
             continue
         mapped = _to_attachment(item)
-        if mapped is None:
-            continue
-        pairs.append(mapped)
+        if mapped is not None:
+            pairs.append(mapped)
 
     if not pairs:
         result = IngestResult()

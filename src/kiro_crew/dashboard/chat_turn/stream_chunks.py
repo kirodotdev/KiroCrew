@@ -153,10 +153,10 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
     if event.message_id:
         slot.segment_message_id = event.message_id
     _accumulate_segment_raw(slot, event.text, safe_chunk, _removed)
-    if not turn.assistant_text:
+    if not turn.has_assistant_text:
         _compaction_text_offset = 0
         turn._compaction_text_offset = _compaction_text_offset
-    turn.assistant_text += safe_chunk
+    turn.append_assistant_text(safe_chunk)
     if event.control_notice:
         # A backend control notice that arrived as assistant text
         # (the claude adapter's "Compacting..."). It accumulates,

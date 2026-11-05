@@ -12,15 +12,45 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_runner_coverage_helpers import _slot, _state
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
+from kiro_crew import widget_artifacts
+from kiro_crew.artifacts import ArtifactStore
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.metrics import turns as turns_mod
+from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.security import oauth_url_contains_credential
+from kiro_crew.testing.wait import async_wait_until
+
+#: The logger every ``dashboard/chat_turn`` owner writes through.
+_RUNNER_LOGGER = chat_runner.__name__
+
+
+def _runner_messages(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == _RUNNER_LOGGER]
+
+
+def _histogram_sums(reader: InMemoryMetricReader, name: str) -> list[float]:
+    """The sum of each data point the real SDK collected for histogram *name*."""
+    data = reader.get_metrics_data()
+    if data is None:
+        return []
+    return [
+        point.sum
+        for rm in data.resource_metrics
+        for sm in rm.scope_metrics
+        for metric in sm.metrics
+        if metric.name == name
+        for point in metric.data.data_points
+    ]
+
 
 # ── turn metric ───────────────────────────────────────────────────────────
 
@@ -70,25 +100,35 @@ class TestTurnMetric:
         _, kwargs = recorder.histogram.call_args
         assert "session_source" not in kwargs["attrs"]
 
-    def test_recorder_failure_is_swallowed(self):
+    def test_recorder_failure_is_swallowed(self, caplog):
         # The emit reads ``get_recorder`` from ``metrics/turns.py``, so that is
         # the binding the failure has to come from.
-        with patch.object(
-            turns_mod, "get_recorder", side_effect=RuntimeError("no recorder")
-        ) as get_recorder:
+        with (
+            patch.object(
+                turns_mod, "get_recorder", side_effect=RuntimeError("no recorder")
+            ) as get_recorder,
+            caplog.at_level(logging.DEBUG, logger=turns_mod.__name__),
+        ):
             chat_runner._emit_turn_metric(50, "end_turn", "dashboard:x")
 
         get_recorder.assert_called_once_with()
+        messages = [r.getMessage() for r in caplog.records if r.name == turns_mod.__name__]
+        assert "turn metric emit failed" in messages
 
     def test_zero_duration_skips_the_emit(self):
-        recorder = MagicMock()
-        with patch.object(turns_mod, "get_recorder", return_value=recorder):
-            chat_runner._emit_turn_metric(0, "end_turn", "dashboard:x", elapsed_ms=0)
-            recorder.histogram.assert_not_called()
-            # The same patch does reach the emit once there is a duration.
-            chat_runner._emit_turn_metric(0, "end_turn", "dashboard:x", elapsed_ms=12)
+        reader = InMemoryMetricReader()
+        provider = MeterProvider(metric_readers=[reader])
+        recorder = MetricsRecorder(provider.get_meter("test"))
+        try:
+            with patch.object(turns_mod, "get_recorder", return_value=recorder):
+                chat_runner._emit_turn_metric(0, "end_turn", "dashboard:x", elapsed_ms=0)
+                assert _histogram_sums(reader, turns_mod.TURN_METRIC) == []
+                # The same patch does reach the emit once there is a duration.
+                chat_runner._emit_turn_metric(0, "end_turn", "dashboard:x", elapsed_ms=12)
 
-        assert recorder.histogram.call_args.args[1] == 12
+            assert _histogram_sums(reader, turns_mod.TURN_METRIC) == [12]
+        finally:
+            provider.shutdown()
 
 
 # ── snapshot helpers ──────────────────────────────────────────────────────
@@ -512,13 +552,15 @@ class TestMarkKiroSignedOut:
         assert chat_runner._mark_kiro_signed_out(state) is None
         assert state.kiro_prerequisite_service is None
 
-    def test_latch_failure_never_raises(self):
+    def test_latch_failure_never_raises(self, caplog):
         state = MagicMock()
         state.kiro_prerequisite_service.mark_signed_out.side_effect = RuntimeError("io")
 
-        chat_runner._mark_kiro_signed_out(state)
+        with caplog.at_level(logging.DEBUG, logger=_RUNNER_LOGGER):
+            chat_runner._mark_kiro_signed_out(state)
 
         state.kiro_prerequisite_service.mark_signed_out.assert_called_once_with()
+        assert "Could not latch Kiro signed-out state" in _runner_messages(caplog)
 
 
 class TestDeliverLinkedSlackMessage:
@@ -558,7 +600,7 @@ class TestDeliverLinkedSlackMessage:
         state.slack_client.post_message.assert_awaited_once_with("C123", "signed out", "111.222")
 
     @pytest.mark.asyncio
-    async def test_post_failure_is_swallowed(self, tmp_path):
+    async def test_post_failure_is_swallowed(self, tmp_path, caplog):
         state = _state(tmp_path)
         state.slack_client = AsyncMock()
         state.slack_client.post_message.side_effect = RuntimeError("slack down")
@@ -566,12 +608,14 @@ class TestDeliverLinkedSlackMessage:
         slot._slack_thread_ts = "1.2"
         slot._slack_channel = "C1"
 
-        await chat_runner._deliver_linked_slack_message(
-            state, slot, state.sessions, "dashboard:x", "signed out"
-        )
+        with caplog.at_level(logging.DEBUG, logger=_RUNNER_LOGGER):
+            await chat_runner._deliver_linked_slack_message(
+                state, slot, state.sessions, "dashboard:x", "signed out"
+            )
 
         state.slack_client.post_message.assert_awaited_once_with("C1", "signed out", "1.2")
         state.sessions.get_slack_link.assert_not_called()
+        assert "Failed to deliver a message to the linked Slack thread" in _runner_messages(caplog)
 
 
 class TestCrossSurfaceReply:
@@ -602,7 +646,7 @@ class TestCrossSurfaceReply:
         assert transport.send_message.await_count > 1
 
     @pytest.mark.asyncio
-    async def test_transport_failure_never_disrupts_the_turn(self, tmp_path):
+    async def test_transport_failure_never_disrupts_the_turn(self, tmp_path, caplog):
         state = _state(tmp_path)
         transport = AsyncMock()
         transport.capabilities.max_message_chars = 4096
@@ -610,10 +654,14 @@ class TestCrossSurfaceReply:
         transport.send_message.side_effect = RuntimeError("offline")
         link = MagicMock(channel_id="123", thread_id=None, channel_type="telegram")
 
-        with patch.object(chat_runner, "_resolve_channel_target", return_value=(link, transport)):
+        with (
+            patch.object(chat_runner, "_resolve_channel_target", return_value=(link, transport)),
+            caplog.at_level(logging.DEBUG, logger=_RUNNER_LOGGER),
+        ):
             await chat_runner._deliver_cross_surface_reply(state, "dashboard:x", "hello")
 
         transport.send_message.assert_awaited_once_with("123", "hello", thread_id=None)
+        assert "Failed to mirror reply to telegram" in _runner_messages(caplog)
 
 
 class TestPrepareMirrorMsg:
@@ -841,31 +889,43 @@ class TestScheduleWidgetRegistration:
         create.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_widget_and_image_each_schedule_one_task(self, tmp_path):
+    async def test_widget_and_image_each_schedule_one_task(self, tmp_path, monkeypatch):
         state, slot = _state(tmp_path), _slot()
+        # The widget pass runs for real against a tmp-rooted store, so the
+        # artifact it leaves behind is the evidence the task ran.
+        store = ArtifactStore(root=tmp_path / "artifacts")
+        monkeypatch.setattr(widget_artifacts, "get_default_store", lambda: store)
 
-        with (
-            patch.object(chat_runner, "register_widgets_off_loop", new=AsyncMock()) as widgets,
-            patch.object(chat_runner, "register_images_off_loop", new=AsyncMock()) as images,
-        ):
+        with patch.object(chat_runner, "register_images_off_loop", new=AsyncMock()) as images:
             chat_runner._schedule_widget_registration(
                 state, slot, "<mcwidget>x</mcwidget> ![a](/tmp/a.png)", "1"
             )
-            # flake-ok: pre-existing zero-length yield that lets a task the call scheduled run, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+            # Wait on the two registrations the call scheduled, not on a loop turn.
+            await async_wait_until(
+                lambda: not state._background_tasks and images.await_count == 1,
+                describe=lambda: (
+                    f"pending={len(state._background_tasks)} images={images.await_count}"
+                ),
+            )
 
-            assert widgets.await_count == 1
             assert images.await_count == 1
+        widgets = [a for a in store.list() if a.kind == "widget"]
+        assert [a.session_key for a in widgets] == [slot.key]
+        assert store.get(widgets[0].slug).content == "x"
 
 
 class TestTtftMetric:
-    def test_emission_failure_is_swallowed(self):
-        with patch(
-            "kiro_crew.metrics.provider.get_recorder", side_effect=RuntimeError("down")
-        ) as get_recorder:
+    def test_emission_failure_is_swallowed(self, caplog):
+        with (
+            patch(
+                "kiro_crew.metrics.provider.get_recorder", side_effect=RuntimeError("down")
+            ) as get_recorder,
+            caplog.at_level(logging.DEBUG, logger=_RUNNER_LOGGER),
+        ):
             chat_runner._emit_ttft_metric(0.0, "dashboard:x", is_new=True, resumed=False)
 
         get_recorder.assert_called_once_with()
+        assert "TTFT metric emission failed" in _runner_messages(caplog)
 
     def test_attributes_split_cold_and_resumed_populations(self):
         recorder = MagicMock()

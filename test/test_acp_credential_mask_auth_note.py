@@ -88,7 +88,7 @@ async def _start_error(runtime: MagicMock, backend: str = ACP_BACKEND_CODEX) -> 
         patch("kiro_crew.providers.acp.AcpRuntime", return_value=runtime),
         patch("kiro_crew.metrics.provider.get_recorder", return_value=MagicMock()),
     ):
-        with pytest.raises(BaseException) as caught:
+        with pytest.raises((AcpRuntimeError, AcpAuthRequired)) as caught:
             await provider._start_kiro_runtime()
     return caught.value
 

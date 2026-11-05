@@ -25,6 +25,7 @@ import {
   stateLabelKey,
   sharedWithoutSupport,
 } from './mcpManagementModel'
+import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 
 /** One reason line: a translated sentence, and the server's own verbatim detail.
  *
@@ -155,6 +156,8 @@ function AssessmentRow({
  * not.
  */
 function MeasureControl({ unmeasuredCount }: { unmeasuredCount: number }) {
+  const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
+  const handoffHint = useMcpHandoffHint()
   const qc = useQueryClient()
   const [asked, setAsked] = useState(false)
 
@@ -257,7 +260,8 @@ function MeasureControl({ unmeasuredCount }: { unmeasuredCount: number }) {
       <ErrorNotice
         variant="inline"
         message={failed || start.isError ? i18nT('pages.mcpManagement.assessment.measure_failed') : null}
-        askAgent
+        askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
       />
       {/* A failed progress read is not a failed pass: the pass may be running
           fine behind an endpoint this tab cannot reach. Left silent, the readout
@@ -265,7 +269,8 @@ function MeasureControl({ unmeasuredCount }: { unmeasuredCount: number }) {
       <ErrorNotice
         variant="inline"
         message={progress.isError ? i18nT('pages.mcpManagement.assessment.measure_progress_failed') : null}
-        askAgent
+        askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
       />
     </div>
   )

@@ -59,10 +59,13 @@ def _is_denied(path, name: str, home) -> bool:
 
     A BARE name is how the pinned walks ask -- through a directory descriptor -- so it has
     to be denied for the refusal to be visible to them. An absolute path is denied only
-    inside the data home: the staged copy in the bundle has the same base name, and
-    refusing that would fake a failure the product never produces (a staged path that is
-    not there raises ENOENT) and would refuse reads of the staging tree these tests do not
-    target.
+    inside the data home, AND NOT under the ``staging`` leaf: the staged copy in the
+    bundle has the same base name, and since snapshot build now stages under
+    ``<data home>/staging`` (``kiro_crew.staging``, off the system temp dir so a tmpfs
+    /tmp does not hold the data home in RAM) that copy is itself inside the data home.
+    Refusing it would fake a failure the product never produces (a staged path that is not
+    there raises ENOENT) and would refuse reads of the staging tree these tests do not
+    target -- the exact two things this predicate's home scope exists to avoid.
     """
     if isinstance(path, int):
         return False
@@ -74,6 +77,12 @@ def _is_denied(path, name: str, home) -> bool:
         return False
     if not os.path.dirname(text):
         return True
+    from kiro_crew.staging import STAGING_DIRNAME
+
+    for root in {str(home), os.path.realpath(home)}:
+        staging_root = os.path.join(root, STAGING_DIRNAME)
+        if text == staging_root or text.startswith(staging_root + os.sep):
+            return False
     return text.startswith(str(home)) or text.startswith(os.path.realpath(home))
 
 
@@ -562,18 +571,27 @@ class TestTheRestagePassFailsClosedOnAnUnreadableDestination(object):
                     text = os.fsdecode(path)
                 except (TypeError, ValueError):
                     text = ""
-                # The STAGED copy only: under the bundle, not under the data home. Fired
-                # ONCE, so a swallowed error lets the run finish rather than resurfacing at
-                # the next pass that stats the same file -- which is what makes this able
-                # to tell the narrow catch from the broad one.
+                # The STAGED copy only: under the bundle, not the live tree. Snapshot
+                # build now stages under ``<data home>/staging`` (``kiro_crew.staging``,
+                # off the system temp dir), so the staged copy IS inside the data home --
+                # it is told from the live file by living under the ``staging`` leaf, not
+                # by being outside the home. Fired ONCE, so a swallowed error lets the run
+                # finish rather than resurfacing at the next pass that stats the same file
+                # -- which is what makes this able to tell the narrow catch from the broad
+                # one.
+                from kiro_crew.staging import STAGING_DIRNAME
+
+                staging_roots = {
+                    os.path.join(str(home), STAGING_DIRNAME),
+                    os.path.join(os.path.realpath(home), STAGING_DIRNAME),
+                }
                 staged = (
                     os.path.basename(text) == staged_name
                     # A real directory component: the walks ask through a descriptor with
                     # a BARE name, and matching that fired on the live tree's own
                     # classification instead of on the staged copy.
                     and os.path.dirname(text)
-                    and not text.startswith(str(home))
-                    and not text.startswith(os.path.realpath(home))
+                    and any(text.startswith(root + os.sep) for root in staging_roots)
                 )
                 if staged:
                     fired["n"] += 1

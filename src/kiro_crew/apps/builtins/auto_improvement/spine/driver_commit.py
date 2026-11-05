@@ -49,6 +49,21 @@ def _apply_argv(clone: Path, extra: list[str]) -> list[str]:
     return ["git", "-C", str(clone), *GIT_SAFE_CONFIG, *hook_off_args(clone), "apply", *extra]
 
 
+def _git_apply(clone: Path, extra: list[str], diff: str) -> tuple[int, str]:
+    """Run the pinned ``git apply`` on *diff*; return its exit code and stderr text.
+
+    Binary stdin: text-mode stdin writes each ``\\n`` as ``os.linesep``, so on Windows git
+    would read CRLF patch lines that no LF working tree matches. surrogateescape restores
+    the exact bytes git produced.
+    """
+    done = subprocess.run(
+        _apply_argv(clone, extra),
+        input=diff.encode("utf-8", errors="surrogateescape"),
+        capture_output=True,
+    )
+    return done.returncode, (done.stderr or b"").decode("utf-8", errors="replace")
+
+
 def _publishing_is_halted(self: Driver) -> bool:
     """Whether a failed provisional rollback has made this clone unsafe to publish from.
 
@@ -145,13 +160,13 @@ def _stage_winner(self: Driver, winner: Proposal) -> bool:
     """Apply the winner's diff to the working branch and stage it. Returns False when
     the diff does not apply (the caller records an error and does not draft).
 
-    SPLIT OUT of :meth:`_commit_winner` so the winner is in the shared clone's tree
-    BEFORE the PR pipeline drafts. ``pr_recipe._push_fix_branch`` pushes the clone's
-    ``HEAD``, so drafting first meant pushing a branch that did not contain the fix —
-    or contained a PREVIOUS cycle's commit. Raised by review of this branch; traced
-    through: the queue copy carries ``winner.diff`` (correct), ``gated_commit_sha``
-    feeds the reproduce MEASUREMENT rather than the draft, and ``gate_res.commit_sha``
-    is the throwaway WORKTREE's head — none of them put the fix in the shared clone.
+    SPLIT OUT of :meth:`_commit_winner_provisional` so the winner is in the shared
+    clone's tree BEFORE the PR pipeline drafts. ``pr_recipe._push_fix_branch`` pushes
+    the clone's ``HEAD``, so drafting first would push a branch that does not contain
+    the fix — or contains a PREVIOUS cycle's commit. Traced through: the queue copy
+    carries ``winner.diff`` (correct), ``gated_commit_sha`` feeds the reproduce
+    MEASUREMENT rather than the draft, and ``gate_res.commit_sha`` is the throwaway
+    WORKTREE's head — none of them put the fix in the shared clone.
 
     Committing earlier instead would have been wrong: the commit MESSAGE needs
     ``outcome.reproduce``, which only the pipeline produces, and reordering that way
@@ -161,20 +176,9 @@ def _stage_winner(self: Driver, winner: Proposal) -> bool:
     _git(["checkout", normalize_branch(self.branch)], self.clone)
     if not winner.diff.strip():
         return True
-    ap = subprocess.run(
-        _apply_argv(self.clone, []),
-        input=winner.diff,
-        capture_output=True,
-        # surrogateescape re-encodes the captured payload back to the exact
-        # bytes git produced.
-        text=True,
-        encoding="utf-8",
-        errors="surrogateescape",
-    )
-    if ap.returncode != 0:
-        self.log.error(
-            "winner diff did not apply: %s", redact_log_via_context(ap.stderr or "")[:200]
-        )
+    rc, err = _git_apply(self.clone, [], winner.diff)
+    if rc != 0:
+        self.log.error("winner diff did not apply: %s", redact_log_via_context(err)[:200])
         return False
     _git(["add", "-A"], self.clone)
     return True
@@ -429,28 +433,17 @@ def _stage_bug_winner(self: Driver, winner: Proposal) -> bool:
     # absorbs an already-present file instead of aborting. We retry plain-apply first
     # (cheapest, no index churn) and only fall back to 3-way so behavior is unchanged
     # when the base matches.
-    def _apply(extra: list[str]):
-        return subprocess.run(
-            _apply_argv(self.clone, extra),
-            input=winner.diff,
-            capture_output=True,
-            # Same byte-exact payload round-trip as the plain apply above.
-            text=True,
-            encoding="utf-8",
-            errors="surrogateescape",
-        )
-
-    ap = _apply([])
-    if ap.returncode != 0:
+    rc, err = _git_apply(self.clone, [], winner.diff)
+    if rc != 0:
         self.log.info(
             "bug fix plain-apply failed (%s) — retrying with --3way",
-            redact_log_via_context((ap.stderr or "").strip())[:120],
+            redact_log_via_context(err.strip())[:120],
         )
-        ap = _apply(["--3way"])
-    if ap.returncode != 0:
+        rc, err = _git_apply(self.clone, ["--3way"], winner.diff)
+    if rc != 0:
         self.log.error(
             "bug fix diff did not apply (even --3way): %s",
-            redact_log_via_context(ap.stderr or "")[:200],
+            redact_log_via_context(err)[:200],
         )
         return False
     _git(["add", "-A"], self.clone)

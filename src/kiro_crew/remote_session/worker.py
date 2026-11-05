@@ -137,6 +137,9 @@ class Worker:
         self._room_ev: Optional[asyncio.Event] = None
         self.ep.last_inbound = time.monotonic()
         self._stopping_ev: Optional[asyncio.Event] = None
+        #: The SIGTERM retire, held until it finishes: the loop keeps only a weak
+        #: reference to a task.
+        self._term_tasks: "set[asyncio.Future]" = set()
         self.exit_code = 0
 
     # Create Events on-loop: Python 3.9 otherwise binds them to a different loop.
@@ -259,7 +262,7 @@ class Worker:
         loop = asyncio.get_running_loop()
         log(f"pid {os.getpid()} {_group_ids()} ppid {os.getppid()}")
         try:
-            loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.ensure_future(self._on_term()))
+            loop.add_signal_handler(signal.SIGTERM, self._on_sigterm)
             stop_signal = getattr(signal, "SIGUSR1", None)
             if stop_signal is not None:
                 loop.add_signal_handler(stop_signal, lambda: self.stop("stopped"))
@@ -310,6 +313,11 @@ class Worker:
             self._writer.close()
         log(f"child exited {code}; worker exiting")
         return self.exit_code or (code if code and code > 0 else 0)
+
+    def _on_sigterm(self) -> None:
+        task = asyncio.ensure_future(self._on_term())
+        self._term_tasks.add(task)
+        task.add_done_callback(self._term_tasks.discard)
 
     async def _on_term(self) -> None:
         log("SIGTERM: retiring")

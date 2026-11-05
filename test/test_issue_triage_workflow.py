@@ -155,6 +155,7 @@ class Runner:
             cwd=self.work,
             env={**self.env, **extra},
             text=True,
+            encoding="utf-8",
             capture_output=True,
         )
 
@@ -307,7 +308,7 @@ def runner(tmp_path: Path, scripts: dict[str, str]) -> Runner:
 def test_step_scripts_are_valid_shell(scripts: dict[str, str]) -> None:
     for name, script in scripts.items():
         check = subprocess.run(  # noqa: S603
-            ["bash", "-n"], input=script, text=True, capture_output=True
+            ["bash", "-n"], input=script, text=True, encoding="utf-8", capture_output=True
         )
         assert check.returncode == 0, f"{name}: {check.stderr}"
 
@@ -323,9 +324,7 @@ def test_step_scripts_are_valid_shell(scripts: dict[str, str]) -> None:
         ("Stable", "channel: stable"),
     ],
 )
-def test_channel_dropdown_answer_becomes_a_label(
-    runner: Runner, answer: str, label: str
-) -> None:
+def test_channel_dropdown_answer_becomes_a_label(runner: Runner, answer: str, label: str) -> None:
     assert runner.channel(body=_form_body(answer)) == label
 
 

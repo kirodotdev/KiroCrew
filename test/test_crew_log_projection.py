@@ -1,17 +1,11 @@
 """Crew-log projections -- one test per property the folds promise.
 
-The load-bearing one is :func:`test_incremental_matches_from_scratch_at_every_split`:
-a projection resumed from a checkpoint must equal the same projection folded from
-the start of the file, at EVERY split point. That is what makes a checkpoint safe
-to store and a push safe to send incrementally, and it is the property a second
-batch implementation would be free to break.
+The key one is :func:`test_incremental_matches_from_scratch_at_every_split`: a fold
+resumed from a checkpoint equals the fold from the start, at every split point.
 
-This module pins the fold contract and the status, usage, timeline, tools and approvals
-folds. Reading a session (``fold_session``, bundle reuse, the order a slot's units fold in)
-lives in ``test_crew_log_projection_session_reads.py``, the bounds on what a fold retains in
-``test_crew_log_projection_bounds.py``, and the ``class`` fold in
-``test_crew_log_projection_class.py``; the shared logs, entries and fixture writers in
-``crew_log_projection_helpers.py``.
+Session reads are in ``test_crew_log_projection_session_reads.py``, retention bounds in
+``test_crew_log_projection_bounds.py``, the ``class`` fold in
+``test_crew_log_projection_class.py``; shared helpers in ``crew_log_projection_helpers.py``.
 """
 
 from __future__ import annotations
@@ -40,18 +34,14 @@ from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLogError
 from kiro_crew.crew_log import projection as crew_log
 
-# --- the contract ---------------------------------------------------------
+# the contract
 
 
 def test_the_class_fold_is_registered_but_not_advertised():
     """MUTATION-SENSITIVE: the class fold is machinery, not a panel value.
 
-    It must stay REGISTERED, because its one caller asks the registry for it by name
-    and that is what gives it the shared checkpoint, the incremental reuse and the
-    recreated-log guard. It must stay OUT of the advertised set, because nothing on a
-    client draws it: naming it there makes the growth push ship a frame per log growth
-    to every owner socket for no reader, and advertises a projection with no consumer.
-    Both halves are asserted, so neither drifts without this failing.
+    Registered, so its caller gets the shared checkpoint and reuse by name. Not
+    advertised, or the growth push would send every owner socket a frame nobody reads.
     """
     from kiro_crew import mcp_crew_log
 
@@ -100,15 +90,9 @@ def test_the_kernel_definition_folds_to_what_advance_folds(name):
 def test_a_fold_never_reaches_into_the_state_it_was_handed(name):
     """MUTATION-SENSITIVE: ``apply`` copies before it steps, so its input is intact.
 
-    This is what keeps each fold's declared ``copy_state`` honest. A copier that misses
-    a nested container still produces the RIGHT value -- the step edits the object it
-    meant to edit -- but it edits the caller's state along with it, and a caller holding
-    an earlier bundle would then watch its value move underneath it. Nothing raises
-    either way, so this test is the only thing that catches the miss.
-
-    Checked at every position, because the container a copier misses often does not
-    exist until the fold has something in it: ``tools`` has no per-name row to share
-    until a tool has been called.
+    A ``copy_state`` that misses a nested container still gives the right value but
+    silently edits an earlier bundle too. Checked at every position, because such a
+    container (e.g. a ``tools`` per-name row) may only appear later.
     """
     entries = _entries(_busy_log())
     definition = crew_log._SessionFold(crew_log._FOLDS[name])
@@ -124,14 +108,8 @@ def test_a_fold_never_reaches_into_the_state_it_was_handed(name):
 def test_an_entry_a_fold_declares_untouched_really_moves_nothing(name):
     """MUTATION-SENSITIVE: ``affects`` may be wider than the truth, never narrower.
 
-    Returning the state unchanged is how ``apply`` tells the kernel this entry moved
-    nothing, and the kernel believes it: a type wrongly left out of ``affects`` drops a
-    real change and serves a stale value for as long as the fold sits there. So for
-    every entry the wrapper skipped, the step is run on a copy to prove it would indeed
-    have changed nothing.
-
-    The opposite error is not a bug and is not asserted against: a type wrongly
-    INCLUDED costs a copy, and a spurious frame to a client watching the change feed.
+    A type wrongly left out of ``affects`` drops a real change, so each skipped entry
+    is stepped on a copy to prove it moves nothing. Too wide only costs a copy and a frame.
     """
     entries = _entries(_busy_log())
     fold_spec = crew_log._FOLDS[name]
@@ -211,7 +189,7 @@ def test_an_unknown_projection_name_is_refused():
         assert excinfo.value.code == lg.CODE_BAD_DATA
 
 
-# --- status ---------------------------------------------------------------
+# status
 
 
 def test_status_reports_an_open_turn_rather_than_closing_it():
@@ -279,7 +257,7 @@ def test_status_totals_dropped_writes():
     assert crew_log.fold_status(_entries(handle))["dropped"] == {"count": 5, "bytes": 30}
 
 
-# --- usage ----------------------------------------------------------------
+# usage
 
 
 def test_usage_does_not_read_absent_credits_as_zero():
@@ -313,11 +291,8 @@ def test_usage_sums_every_token_dimension_and_its_total():
 def test_usage_does_not_count_an_all_zero_tokens_block_as_reported():
     """A block of four zeros is an absence written as a block.
 
-    Logs on disk carry it on every turn whose provider sent no counts, so the fold --
-    not only the writer -- has to know that a completed turn cannot have cost zero
-    tokens. The credits beside it were genuinely billed and stay counted, which is
-    the difference a reader sees: a real bill beside ``tokens_reported: 0``, and the
-    panel dashes the tokens instead of printing a measured ``0``.
+    Logs on disk carry it whenever a provider sent no counts, and a completed turn
+    cannot cost zero tokens. The credits beside it are real and stay counted.
     """
     handle = _log()
     _opened(handle)
@@ -358,11 +333,8 @@ def test_usage_counts_a_block_reported_once_any_dimension_is_above_zero():
 def test_usage_still_counts_a_recorded_zero_credit_charge_as_reported():
     """Pins what the token rule deliberately leaves alone.
 
-    ``credits: 0.0`` on a closer is counted as a report, and the fold keeps doing so:
-    the writer omits an unbilled charge, but a zero already on disk cannot be told
-    from a turn a provider genuinely billed at nothing, and ``_bill_credits`` lets a
-    zero through on purpose. Tokens are different -- a completed turn cannot cost
-    zero of them -- which is why only ``tokens_reported`` carries the rule.
+    ``credits: 0.0`` counts as a report: a zero on disk may be a real zero-cost bill,
+    and ``_bill_credits`` lets it through on purpose. Only tokens carry the rule.
     """
     handle = _log()
     _opened(handle)
@@ -376,11 +348,8 @@ def test_usage_still_counts_a_recorded_zero_credit_charge_as_reported():
 def test_usage_bills_every_source_that_spends_and_says_which_spent_what():
     """A session's bill is its turns PLUS its children PLUS its helpers.
 
-    A total that billed turns alone would read a session that spent most of its
-    budget on subagents as cheap, and would fold none of the credits
-    ``background/completed`` carries. The split beside the total is what keeps the
-    total readable: one number cannot say whether the spend was the user's turns or
-    a wave of children.
+    Turns alone would miss subagent and ``background/completed`` credits; the
+    per-source split says where the spend went.
     """
     handle = _log()
     _opened(handle)
@@ -603,7 +572,7 @@ def test_usage_counts_compactions_and_the_context_they_freed():
     }
 
 
-# --- timeline -------------------------------------------------------------
+# timeline
 
 
 def test_timeline_keeps_the_newest_moments_and_says_how_many_it_dropped():
@@ -700,7 +669,7 @@ def test_timeline_refuses_rows_from_a_second_succession_unit():
     assert "one succession unit" in str(excinfo.value)
 
 
-# --- tools ----------------------------------------------------------------
+# tools
 
 
 def test_tools_matches_a_call_to_its_completion_by_call_id():
@@ -808,7 +777,7 @@ def test_tools_counts_a_completion_with_no_call_before_it():
     assert crew_log.fold_tools(_entries(handle))["unmatched_completions"] == 1
 
 
-# --- approvals ------------------------------------------------------------
+# approvals
 
 
 def test_approvals_matches_a_request_to_its_decision():

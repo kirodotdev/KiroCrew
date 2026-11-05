@@ -317,6 +317,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # straight off disk, and a corrupted record reads as ABSENT to the store —
     # silent loss the conductor cannot see. No legitimate file-tool reader.
     "work-ledger",
+    # Browser turn replays (``browser_harness.recording``): per-chat frames of the
+    # pages seen. Only the owner-only replay routes read them, like the ledgers.
+    "browser-recordings",
     # The cross-process work root (``work_root``). Not credentials either: the
     # hazard is WRITE, and it is specific to this root's deterministic keys. A key
     # is an issue or pull-request number so a later run can compute it again, so a
@@ -361,13 +364,19 @@ _CREW_SECRET_LEAVES: list[str] = [
     # operator's logged-in browser without them seeing a prompt. The gateway hands
     # it to the CLI through the environment, so nothing legitimate opens the file.
     "playwright-extension-token",
-    # Gateway-executed browser launcher and its vendored package tree. Agent
-    # subprocesses receive a READONLY sandbox view so their browser commands can
-    # run it; file tools must not inspect or replace the executable the
-    # unsandboxed gateway later uses for startup cleanup and owner launches.
-    "playwright-cli",
+    # The Browser Harness venv the gateway executes for its daemon and helper
+    # worker, with Kiro's Chromium beside it (``browser_harness.install``).
+    # READONLY in-sandbox, fenced from file tools so the interpreter cannot be swapped.
+    "browser-harness",
+    # The Harness daemon's runtime directory: its IPC socket (the Windows port file
+    # carries the IPC token), pid file and log (``browser_harness.supervisor``).
+    # Whoever can open the socket drives the user's Chrome, so only the gateway may.
+    "browser-harness-ipc",
+    # Kiro's Chromium profile. Cookies from a takeover login live here, and the
+    # agent must never read them as a file; also sandbox-masked.
+    "browser-profile",
     # KAS engine bundles the gateway installs then executes (``acp.kas_bundle``);
-    # same class as ``playwright-cli``: READONLY in-sandbox, fenced from file tools.
+    # same class as ``browser-harness``: READONLY in-sandbox, fenced from file tools.
     "engines",
     # Legacy SEL HMAC key location (pre-``trust/`` installs, and any stale file
     # a backup restore resurrects). Kept alongside the ``trust``
@@ -510,6 +519,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # is ``sandbox._CREW_HIDDEN_LEAVES``. Deliberately NOT under ``trust/``,
     # which stays sandbox read-write for SEL. Only the gateway opens it.
     "panel-dismissals",
+    # Pending deletes of released engine records (``released_sessions``); also masked.
+    "released-sessions",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),
@@ -627,6 +638,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``/api/decisions/consent`` handler is the only writer and opens the path
     # directly, not through this gate.
     "decisions_consent.json",
+    # The owner's Shared Crew preview switch. The record is what AUTHORIZES the
+    # Crew to open to other people on the next start, so an agent that could
+    # write it would share the owner's machine on the owner's behalf. The
+    # owner-only ``/api/shared-crew/preview`` handler is the only writer and
+    # opens the path directly, not through this gate.
+    "shared_crew_preview.json",
     "ssh_auth_sock_consent.json",
     # The owner's credential-redaction switch. Same class of control as the
     # consent records above: the record is what AUTHORIZES the credential scrubber
@@ -741,6 +758,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # the launcher and read the sealed extension. This floor still keeps the agent's
     # own file tools out; the controls cover different readers rather than cancelling.
     "pi-gate",
+    # KAS MCP launch snapshots hold servers' env values (``acp.kas_env_launch``); the
+    # ``pi-gate`` split: readable in the sandbox for the launcher, fenced from file tools.
+    "kas-mcp-launch",
     # Encrypted secret vault directory — denylists the entire subdirectory so
     # the key file, ciphertext store, lock, and atomic-write temp files are all
     # unreadable to the agent through any Kiro Crew-mediated channel.
@@ -894,14 +914,6 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
     # config.json / config.local.json: security-relevant resource ceilings.
-    # playwright-cli-config.json: the browse launch config
-    # (browser_cli/launch.py). It holds no secret and the CLI must READ it on
-    # every invocation, so it is write-protected rather than sensitive. But it is
-    # an INPUT TO A SECURITY DECISION: the schema accepts
-    # ``launchOptions.chromiumSandbox``, so an agent that could rewrite it would
-    # turn the browser sandbox OFF for every later browse, and the change persists
-    # until the next gateway start re-converges the file. Kiro Crew generates it
-    # directly and does NOT route through this gate, so its own write still works.
     # subagents: the canonical run records a cold continuation restores app
     # ownership from. Gateway writers bypass this tool gate; an agent may read a
     # run's results but cannot turn an app-owned run into a personal run. Its
@@ -917,7 +929,6 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     for leaf in (
         "config.json",
         "config.local.json",
-        "playwright-cli-config.json",
         "subagents",
         "app-agent-launch",
     )
@@ -944,9 +955,9 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
 
 
 _WRITE_PROTECTED_HOME_PATHS += [
-    # The cloud launcher's config. WRITE-protected for the same reason as
-    # ``playwright-cli-config.json`` above and by the same placement-not-logic fix:
-    # it holds no credential (its own module docstring is explicit that it stores a
+    # The cloud launcher's config. WRITE-protected by the placement-not-logic fix
+    # (the gate refuses only the agent's own file-edit tool, the product's own
+    # writers bypass it): it holds no credential (its own module docstring is explicit that it stores a
     # profile NAME, and the Fargate block stores secret names and ARNs, never
     # values), and the gateway must READ it on every request to build the remote
     # provisioner list, so sealing it against reads would break the Set-up tab.
@@ -1051,6 +1062,14 @@ _WRITE_PROTECTED_HOME_PATHS += [
     # gate, so first-run fetches, re-downloads after a failed check and the embedding
     # model install all keep working; only the agent's file-edit tool is refused.
     f"{prefix}/models"
+    for prefix in _CREW_HOME_PREFIXES
+]
+
+
+_WRITE_PROTECTED_HOME_PATHS += [
+    # This install's ``kirocrew`` link (``env_own_kirocrew``), ahead of ~/.local/bin
+    # on every PATH Kiro Crew builds: a write would choose the ``kirocrew`` agents run.
+    f"{prefix}/kirocrew-bin"
     for prefix in _CREW_HOME_PREFIXES
 ]
 
@@ -1188,6 +1207,14 @@ _WRITE_PROTECTED_HOME_PATHS += [
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
     for leaf in ("seed-provenance", "settings_seeds.json")
+]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The gateway's config publication record (``config.write_provenance``). Same shape
+    # as the settings-seed record above: no secret, so READS stay open; a WRITE would let
+    # an agent vouch for a substituted config file at the launcher's pin. Its only writer
+    # is ``write_provenance.staging_hook``, outside this gate.
+    f"{prefix}/config-provenance"
+    for prefix in _CREW_HOME_PREFIXES
 ]
 
 

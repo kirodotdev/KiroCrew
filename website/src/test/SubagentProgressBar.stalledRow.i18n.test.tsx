@@ -19,7 +19,7 @@
  * tool name.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
-import { render } from '@testing-library/react'
+import { act, render } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
@@ -100,7 +100,9 @@ describe('stalled subagent row — sentence composition', () => {
   it.each(LOCALES)('renders translated prose, not the English fallback, in %s', async tag => {
     await i18next.changeLanguage(tag)
     const localised = stallLine(stalledRow({ idleSecs: 117 }))
-    await i18next.changeLanguage('en')
+    // The first row is still mounted, so switching back re-renders it through
+    // react-i18next. That update is caused by this call, so it runs inside act.
+    await act(async () => { await i18next.changeLanguage('en') })
     const english = stallLine(stalledRow({ idleSecs: 117 }))
     expect(localised).not.toBe(english)
   })

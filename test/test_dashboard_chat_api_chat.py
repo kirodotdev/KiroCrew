@@ -12,6 +12,9 @@ from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.testing.wait import async_wait_until
 
+#: An app-worker slot mode, as a built-in would register it (``apps/seams.py``).
+_WORKER_MODE = "some-app"
+
 
 @pytest.mark.asyncio
 class TestApiChatDrainOnDisconnect:
@@ -23,11 +26,16 @@ class TestApiChatDrainOnDisconnect:
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        parked = asyncio.Event()
+
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "partial answer", "chunk")
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: the fake turn parks here until the disconnect cancels it; nothing waits on this sleep
-            await asyncio.sleep(60)
+            # Parks until the disconnect cancels this turn. The 30 s ceiling only
+            # bounds a lost run; nothing sets the event, so no test waits on it.
+            await asyncio.wait_for(parked.wait(), timeout=30)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
 
@@ -69,7 +77,9 @@ class TestApiChatMemoryModeForwarding:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "ack", "chunk")
 
@@ -103,7 +113,9 @@ class TestApiChatMemoryModeForwarding:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "ack", "chunk")
 
@@ -133,7 +145,9 @@ class TestApiChatMemoryModeForwarding:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "ack", "chunk")
 
@@ -202,21 +216,28 @@ class TestApiChatMemoryModeForwarding:
 class TestApiChatModeForwarding:
     """api_chat propagates a validated body.mode to the auto-created slot.
 
-    The Design Critique app's worker slot (mode="design-critique") lives only
-    in gateway memory. After a gateway restart the app's next send() recreates
-    the slot through this auto-create path; without mode forwarding the slot
-    is reborn with mode="" — it then serializes surface="" and passes the chat
-    sidebar's surface allowlist, leaking the throwaway worker session into the
-    user's chat list. Mirrors TestApiChatMemoryModeForwarding above.
+    An app's worker slot (created under the app-worker mode its built-in registers
+    through ``apps/seams.py``) lives only in gateway memory. After a
+    gateway restart the app's next send() recreates the slot through this
+    auto-create path; without mode forwarding the slot is reborn with mode="" —
+    it then serializes surface="" and passes the chat sidebar's surface
+    allowlist, leaking the throwaway worker session into the user's chat list.
+    Mirrors TestApiChatMemoryModeForwarding above.
+
+    The worker mode here is a fixture registered on the facade for each post, so
+    these rows hold whichever built-ins ship one.
     """
 
     async def _post_chat(self, state, body):
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "ack", "chunk")
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+            mp.setattr("kiro_crew.dashboard.chat_handlers._CREATABLE_MODES", ("", _WORKER_MODE))
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat", json=body, timeout=None)
                 assert resp.status == 200
@@ -225,23 +246,23 @@ class TestApiChatModeForwarding:
                 resp.close()
                 await asyncio.sleep(0.05)
 
-    async def test_design_critique_mode_propagates_to_new_slot(self, tmp_path, monkeypatch):
+    async def test_app_worker_mode_propagates_to_new_slot(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
         await self._post_chat(
             state,
             {
-                "message": "critique this",
-                "slot": "dc-12345",
+                "message": "work on this",
+                "slot": "worker-12345",
                 "memory_mode": "temporary",
-                "mode": "design-critique",
+                "mode": _WORKER_MODE,
             },
         )
 
-        slot = state._slots.get("dc-12345")
+        slot = state._slots.get("worker-12345")
         assert slot is not None
-        assert slot.mode == "design-critique"
+        assert slot.mode == _WORKER_MODE
         # The leak this guards against: the sidebar allowlist admits the plain
         # "" surface — the recreated worker must not serialize it.
         assert slot.mode != ""
@@ -294,21 +315,21 @@ class TestApiChatModeForwarding:
         existing slot keeps its stored mode and no error is raised."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
-        state.get_or_create_slot("dc-alive", mode="design-critique", memory_mode="temporary")
+        state.get_or_create_slot("worker-alive", mode=_WORKER_MODE, memory_mode="temporary")
 
         await self._post_chat(
             state,
             {
                 "message": "hello again",
-                "slot": "dc-alive",
+                "slot": "worker-alive",
                 "memory_mode": "temporary",
-                "mode": "design-critique",
+                "mode": _WORKER_MODE,
             },
         )
 
-        slot = state._slots.get("dc-alive")
+        slot = state._slots.get("worker-alive")
         assert slot is not None
-        assert slot.mode == "design-critique"
+        assert slot.mode == _WORKER_MODE
 
 
 @pytest.mark.asyncio
@@ -323,7 +344,9 @@ class TestApiChatNoBrowseMarker:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "ack", "chunk")
 
@@ -527,7 +550,9 @@ class TestApiChatSendReceiptMid:
 
         monkeypatch.setattr(state, "broadcast_ws", record_echo)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             # The frontend can see this turn's first chunk before the HTTP
             # receipt. Its user row must already be on the ordered event stream.
             assert [(row["slot"], row["role"]) for row in echoed] == [("echo-slot", "user")]
@@ -561,7 +586,9 @@ class TestApiChatSendReceiptMid:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             sl.append("chunk", "ack", "chunk")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
@@ -612,7 +639,7 @@ class TestApiChatSendReceiptMid:
 def _long_turn(n_chunks: int, finished: asyncio.Event):
     """A turn that streams *n_chunks* rows of about 1 KB through the real ``append``."""
 
-    async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+    async def fake_run_chat(st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False):
         for i in range(n_chunks):
             sl.append("chunk", f"{i:06d}" + "x" * 1024, "chunk")
             if i % 16 == 0:

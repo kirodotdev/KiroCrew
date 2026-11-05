@@ -161,6 +161,47 @@ the harness gateway runs with `KIROCREW_SKIP_APP_STORE_FETCH=1`, so Discover
 renders the bundled seed, not the live catalog, and a spec's verdict never waits
 on the CDN. A gateway you start by hand for a local run does not set it.
 
+## Render benchmark
+
+`npm run bench:render` builds the SPA with react-dom/profiling into
+`node_modules/.cache/kc-perf/dist` and runs `scripts/bench-render.mjs` against it,
+gateway-free. Four scenarios replay seeded websocket traffic into a 222-session
+sidebar for 30 s each: `idle`, `s1x1` and `s1x5` (1 or 5 background slots running
+agentic turns) and `s2` (the open chat streams a long answer). For each one it
+reports React commits, component renders, store dispatches and `useAppSelector`
+calls, the median of 3 runs, and fails when a median is more than 15% over its
+budget in `perf-budgets.json`.
+
+Counts, not milliseconds, are gated: a scenario sends the same frames every run,
+so a count moves when render behaviour does. A PR that adds renders on purpose
+raises the budget and says why; a PR that removes them lowers it. To see why a
+component renders, pass `--why Name,Other`: the JSON report then lists each
+render's cause (mount, a changed hook or selector, a context, which props
+changed and whether only their identity did, or a parent re-render). Run one
+scenario with `node scripts/bench-render.mjs --scenario s2 --runs 1` after the
+first build; `--viewport mobile --cpu 4` approximates a phone.
+
+The benchmark hooks into the store through `window.__kcPerfMw` (a middleware
+that counts dispatches) and `window.__kcSelWrap` (a wrapper around every
+`useAppSelector` selector), read in `src/store/index.ts`. Only the profiling
+build defines `VITE_KC_PERF`, so other builds drop both seams.
+
+CI runs the same command in the `bench-render` job when a diff touches
+`website/src/**` or the benchmark's own files, on the `kirocrew-linux-4-core`
+runner the budgets were measured on, and uploads the JSON report as the
+`bench-render-report` artifact. The job is report-only for now
+(`continue-on-error`): an overrun reddens its own check but blocks no merge.
+Take new budgets from that report's per-run
+counts, not from a local run. Commits and renders depend on the host: a slower
+one batches more frames per commit and counts fewer, a faster one counts more.
+So the kirocrew-prepare-pr gate floor, which runs the benchmark when the diff
+touches the same inputs, passes `--fail-on dispatches,selectorCalls`. Those two
+follow the frames sent, so they mean the same on any host; commits and renders
+are printed as report only. A counter listed in a scenario's
+`report` array varies between runs on the runner by more than the tolerance; it
+is printed but never fails the job. Today that is `s1x5` selector calls, which
+follow how the five streams' frames batch into dispatches.
+
 ## CI gates
 
 - **jscpd** duplication check: copy-pasted code fails the build.
@@ -171,7 +212,9 @@ on the CDN. A gateway you start by hand for a local run does not set it.
   coordinator, coverage maps, happy-dom state, and the operating system on a
   standard hosted runner; without it one fork per core exceeds host RAM and the
   kernel OOM-kills a worker, which surfaces as "Worker exited unexpectedly"
-  even though every test passed.
+  even though every test passed. CI's `frontend-test` job overrides the cap
+  with `--maxWorkers`, sized to its runner: cores minus one, and at most one
+  fork per 1.5 GiB of RAM (3 on a hosted runner, 7 on the 8-core fleet).
 
 Backend-side test determinism and suite-speed rules (they apply to the same CI run)
 are in
@@ -494,6 +537,22 @@ Six more CI reds (#17237) added two shapes to the ones above:
   (`MISSING_FILE_RETRY_MS`, `RUNTIME_POLL_MS`, `CACHE_WARM_BOUND_MS`), never a literal
   that silently stops matching when the value changes. Every case starts from reset
   mocks and restored window stubs, so a file never passes only in file order.
+- **A placeholder row is not a settled search.** `FilePickerMenu` keeps the PREVIOUS
+  payload's rows on screen (`placeholderData`) while a re-rooted query is in flight,
+  and a row's rendered name is root-independent, so `findByText('main.ts')` resolves
+  on the stale rows and a click there relativizes against the OLD root. Waiting for
+  the mock to have been CALLED, or for its promise plus a `setTimeout(0)`, is a timing
+  barrier, not a state one. The listbox is `aria-busy` exactly while the fetch is in
+  flight; wait for the re-rooted call AND for `aria-busy` to clear
+  (`pickerSettledFor` in `ChatPage.dirStaging.test.tsx`).
+- **A one-shot init effect is a latch that lags its source.** `SttSettings` seeded
+  its editable rows and the custom-model intent from the served config in an effect,
+  so the commit that first showed the model select was one frame short of the
+  explanation the config implied, and a `getBy` right after `waitFor(select)` read
+  `null`. The seed now runs during render (React's set-state-during-render shape, which
+  re-renders before committing), and a `<Profiler onRender>` probe pins that the first
+  commit with the select already carries the explanation. Derive what a value implies
+  in the render that has it; an effect is for work the DOM must exist for.
 
 ## Manual procedures
 

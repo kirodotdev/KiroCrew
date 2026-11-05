@@ -1,4 +1,4 @@
-import { memo, useState, useMemo } from 'react'
+import { memo, useContext, useState, useMemo } from 'react'
 import { Copy, Check, Columns2, Rows2 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { usePathKind } from '../hooks/usePathKind'
@@ -14,6 +14,8 @@ import { usePlainDiff } from '../hooks/usePlainDiff'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { pathBasename, decodePathForDisplay } from '../utils/pathBasename'
+import { ChatProjectDirCtx } from './markdown/contexts'
+import { joinProjectRelative } from './markdown/pathReferences'
 
 /** Extract the target file path from unified-diff header lines.
  *
@@ -198,7 +200,15 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
   // affordance, because no button beats a guessed target.
   const ambiguousRootless = extracted != null && extracted.prefixStripped && ROOTLESS_ABS_RE.test(extracted.path)
   const corroboratedRooted = ambiguousRootless && extracted != null && pathHint === '/' + extracted.path ? pathHint : null
-  const probePath = ambiguousRootless ? corroboratedRooted : headerPath
+  // A relative header (`+++ b/src/a.ts`) names a file in THIS chat's project,
+  // the same rule the inline path chips follow: joined here, it is probed and
+  // opened as that absolute path rather than resolved by the backend against
+  // the gateway's own directory, which is a different tree whenever the chat
+  // has a project of its own. A header that climbs above the project joins to
+  // `null` and gets no Open, the backend's own answer for it.
+  const projectDir = useContext(ChatProjectDirCtx)
+  const unjoinedProbePath = ambiguousRootless ? corroboratedRooted : headerPath
+  const probePath = unjoinedProbePath == null ? null : joinProjectRelative(unjoinedProbePath, projectDir)
   // The path the Open button acts on. `usePathKind` keys its verdict to the path
   // it was measured for, so a verdict for a PREVIOUS header is never rendered
   // against the current one: during the render after a header change the kind

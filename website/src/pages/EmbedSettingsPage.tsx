@@ -5,6 +5,7 @@ import { useAppSelector } from '../store'
 import { DisplayPanel } from './settings/DisplayPanel'
 import { ChatPanel } from './settings/ChatPanel'
 import { NotificationsPanel } from './settings/NotificationsPanel'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 
 import { i18nT } from '../i18n/t'
 
@@ -54,30 +55,28 @@ export default function EmbedSettingsPage() {
         <span className="text-sm font-medium">{i18nT('pages.embedSettingsPage.settings')}</span>
       </div>
 
-      {/* Tab bar */}
-      <div className="flex gap-1 px-4 py-2 border-b border-border shrink-0 overflow-x-auto">
-        {tabs.map(t => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
-              tab === t.key
-                ? 'bg-accent/10 text-accent'
-                : 'text-muted hover:text-text hover:bg-bg-hover'
-            }`}
-          >
-            {t.icon}
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {/* Tab bar: the shared Radix rail, so a screen reader hears which tab
+          is selected and the arrow keys move between tabs. Each panel is a
+          TabsContent, which Radix unmounts while inactive. */}
+      <Tabs value={tab} onValueChange={setTab} layoutId="embed-settings-tabs" className="flex-1 min-h-0 flex flex-col">
+        <div className="px-4 py-2 border-b border-border shrink-0 overflow-x-auto">
+          <TabsList aria-label={i18nT('pages.embedSettingsPage.settings')}>
+            {tabs.map(t => (
+              <TabsTrigger key={t.key} value={t.key}>
+                {t.icon}
+                {t.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
 
-      {/* Panel content */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
-        {tab === 'display' && <DisplayPanel />}
-        {tab === 'chat' && <ChatPanel />}
-        {tab === 'notifications' && <NotificationsPanel />}
-      </div>
+        {/* Panel content */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
+          <TabsContent value="display"><DisplayPanel /></TabsContent>
+          <TabsContent value="chat"><ChatPanel /></TabsContent>
+          <TabsContent value="notifications"><NotificationsPanel /></TabsContent>
+        </div>
+      </Tabs>
     </div>
   )
 }

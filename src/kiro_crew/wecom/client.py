@@ -786,7 +786,11 @@ class WeComClient:
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 data = await resp.json(content_type=None)
-                if resp.status != 200 or data.get("errcode") not in (0, None):
+                # A body that is not a JSON object (null, a list, a bare string)
+                # carries no errcode, which reads the same as an object without
+                # one; ``.get`` on it would raise past the except below.
+                errcode = data.get("errcode") if isinstance(data, dict) else None
+                if resp.status != 200 or errcode not in (0, None):
                     # The errcode/errmsg are externally-derived frame content and
                     # must not be logged: errmsg can echo the rejected payload, which
                     # is the answer text itself. Log the http status and the

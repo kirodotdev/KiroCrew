@@ -107,6 +107,7 @@ vi.mock('../components/SimpleSelect', () => ({
 
 import DiscoverPage from '../pages/apps/DiscoverPage'
 import LibraryPage from '../pages/apps/LibraryPage'
+import { i18next } from '../i18n/all'
 import { pickFeatured } from '../pages/apps/useAppsData'
 import type { RegistryApp } from '../components/appstore/types'
 
@@ -392,6 +393,15 @@ describe('AppsPage — query failures and empty states', () => {
   })
 })
 
+// The tile list's name is only announced when the element carries a role:
+// assistive tech ignores aria-label on a plain div.
+describe('AppsPage — Library list name', () => {
+  it('names the installed-app list as a group', async () => {
+    renderLibrary()
+    expect(await screen.findByRole('group', { name: 'Installed apps' })).toBeInTheDocument()
+  })
+})
+
 describe('AppsPage — Library actions', () => {
   it('opens the app at its AppHost route from the card, and the detail page from its name', async () => {
     renderLibrary()
@@ -399,7 +409,7 @@ describe('AppsPage — Library actions', () => {
     // command palette use: a third-party (non-builtin) app is AppHost-routed at
     // /apps/<name>, NOT its raw manifest page route (which only a native builtin
     // serves, and which otherwise dead-ends at BuiltinAppRoute -> /chat).
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Secretary' }))
     const probe = await screen.findByTestId('detail-route')
     expect(probe).toHaveAttribute('data-path', '/apps/secretary')
   })
@@ -432,37 +442,19 @@ describe('AppsPage — Library actions', () => {
     expect(screen.queryByText(/re-enable it from the Discover/)).toBeNull()
   })
 
-  it('a disabled builtin is reachable via the show-all view, with Enable in its overflow menu', async () => {
+  it('a disabled builtin is reachable from the Disabled section, with Enable in its overflow menu', async () => {
     // The reachability property: a disabled builtin can be reached and enabled
-    // from Library. It lives behind the show-all view now, so the seed is what
-    // makes the row render; its Enable verb is in the tile's overflow menu (the
-    // launchpad grid caps direct actions at two peers).
-    localStorage.setItem('mc-apps-library-show-all', '1')
+    // from Library, on the default view with no toggle to find first.
     listApps.mockResolvedValue([{ ...BUILTIN_OFF, enabled: false }])
     renderLibrary()
+    const section = await screen.findByTestId('library-section-disabled')
+    expect(within(section).getByTestId('launchpad-tile-pets')).toBeInTheDocument()
     await openTileMenu('Pets')
     expect(await screen.findByRole('menuitem', { name: 'Enable' })).toBeInTheDocument()
   })
 
-  it('the default view hides a disabled builtin behind the labelled reveal control', async () => {
-    // The new default: a disabled builtin does NOT fill the fresh-visit list. No
-    // seed, so this asserts the shipped default. The row is filtered, not gone —
-    // the "Show 1 disabled" control names the hidden count so it stays reachable
-    // (the reachability a hard hide would break).
-    listApps.mockResolvedValue([{ ...BUILTIN_OFF, enabled: false }])
-    renderLibrary()
-    expect(await screen.findByRole('button', { name: 'Show 1 disabled app' })).toBeInTheDocument()
-    expect(screen.queryByTestId('launchpad-tile-pets')).toBeNull()
-    // Clicking the control reveals the row: reachable, just not the default.
-    fireEvent.click(screen.getByRole('button', { name: 'Show 1 disabled app' }))
-    expect(await screen.findByTestId('launchpad-tile-pets')).toBeInTheDocument()
-  })
-
   it('orders enabled rows above disabled ones', async () => {
-    // Subject is the ordering of BOTH groups, which only the show-all view
-    // renders — the seed is what puts the disabled group on screen to order. The
-    // gateway returns them disabled-first here, so a pass-through would fail.
-    localStorage.setItem('mc-apps-library-show-all', '1')
+    // The gateway returns them disabled-first here, so a pass-through would fail.
     listApps.mockResolvedValue([
       { ...BUILTIN_OFF, name: 'zeta-off', displayName: 'Zeta Off', enabled: false },
       { ...BUILTIN_OFF, name: 'alpha-on', displayName: 'Alpha On', enabled: true },
@@ -522,7 +514,7 @@ describe('AppsPage — uninstall dialog', () => {
 
   it('lists the resources the removal takes with it', async () => {
     const dialog = await openDialog()
-    expect(within(dialog).getByText('Uninstall Secretary?')).toBeInTheDocument()
+    expect(within(dialog).getByText('Uninstall “Secretary”?')).toBeInTheDocument()
     expect(within(dialog).getByText('1 agent')).toBeInTheDocument()
     expect(within(dialog).getByText('1 skill')).toBeInTheDocument()
     expect(within(dialog).getByText('1 cron job')).toBeInTheDocument()
@@ -598,7 +590,7 @@ describe('AppsPage — uninstall dialog', () => {
     uninstallPreview.mockRejectedValue(new Error('preview unavailable'))
     const dialog = await openDialog()
     expect(within(dialog).queryByText('Dependencies:')).toBeNull()
-    expect(within(dialog).getByText('Uninstall Secretary?')).toBeInTheDocument()
+    expect(within(dialog).getByText('Uninstall “Secretary”?')).toBeInTheDocument()
   })
 
   it('reports a failed uninstall and closes the dialog', async () => {
@@ -776,7 +768,9 @@ describe('AppsPage — Library enable and update', () => {
     renderLibrary()
     await openTileMenu('Orchestrator Switch')
     fireEvent.click(screen.getByRole('menuitem', { name: 'Update' }))
-    expect(await screen.findByText(/Synced Orchestrator Switch from its source directory/)).toBeInTheDocument()
+    // The message is read from the always-mounted live region (the visible
+    // card carries the same text, hidden from assistive tech).
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Synced Orchestrator Switch from its source directory/))
   })
 
   it('surfaces a failed in-place sync instead of leaving the card silent', async () => {
@@ -809,9 +803,6 @@ describe('AppsPage — Library enable and update', () => {
   })
 
   it('enables a switched-off installed app from the Library', async () => {
-    // Subject is the enable action on a disabled app; the row lives behind the
-    // show-all view now, so the seed is what renders it to act on.
-    localStorage.setItem('mc-apps-library-show-all', '1')
     listApps.mockResolvedValue([{ ...SECRETARY, enabled: false }])
     renderLibrary()
     await openTileMenu('Secretary')
@@ -822,9 +813,6 @@ describe('AppsPage — Library enable and update', () => {
   it('opens consent from the Library using the installed record when the catalog has no row', async () => {
     // origin `local` and absent from the registry, so `trustTarget` has to fall
     // back to the installed record for the name shown in the consent dialog.
-    // The app is disabled, so the seed renders it behind the show-all view for
-    // the Enable click that triggers consent.
-    localStorage.setItem('mc-apps-library-show-all', '1')
     listApps.mockResolvedValue([{
       ...SECRETARY, name: 'localapp', displayName: 'Local App', enabled: false, origin: 'local',
     }])
@@ -916,5 +904,32 @@ describe('pickFeatured', () => {
       app({ name: 'a', displayName: 'Alpha', featured: true }),
     ])
     expect(picked.map(a => a.name)).toEqual(['a', 'b'])
+  })
+})
+
+// Library sentences built by gluing a translated word to a name or an English
+// verb. Each is one catalog sentence with the name inside, so a language can
+// order it itself: German puts the verb after the name, and Russian needs its
+// own verb rather than the English "disable" dropped into its frame.
+describe('AppsPage — Library sentences in other languages', () => {
+  afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
+
+  it('words the uninstall title with the name where German puts it', async () => {
+    await act(async () => { await i18next.changeLanguage('de') })
+    renderLibrary()
+    fireEvent.click(await screen.findByRole('button', { name: 'Weitere Aktionen für Secretary' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Deinstallieren' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('„Secretary“ deinstallieren?')).toBeInTheDocument()
+  })
+
+  it('reports a failed disable with a Russian verb, not the English one', async () => {
+    disableApp.mockRejectedValue({})
+    await act(async () => { await i18next.changeLanguage('ru') })
+    renderLibrary()
+    fireEvent.click(await screen.findByRole('button', { name: 'Другие действия для Secretary' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Отключить' }))
+    expect(await screen.findByText('Не удалось отключить secretary')).toBeInTheDocument()
+    expect(screen.queryByText(/disable/)).toBeNull()
   })
 })

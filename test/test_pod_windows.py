@@ -1,18 +1,9 @@
 """Tests for the Windows Task Scheduler pod backend.
 
-Two halves, deliberately:
-
-**Platform-independent.** Rendering, the pid record's start-time binding, the
-``unit_state`` result mapping, the runtime dispatch and the teardown contract all
-run on EVERY platform — like ``test_pod_systemd.py`` fakes ``systemctl`` and
-``test_pod_launchd.py`` fakes ``launchctl``, these fake ``schtasks`` at the module
-boundary and pin the argv. That is what gives the backend coverage on the Linux
-matrix, where the bulk of CI lives.
-
-**Real win32.** The handful of tests under ``skipif(not IS_WINDOWS)`` shell out to
-the actual ``schtasks.exe`` and create a real throwaway task. Those are the only
-ones that can answer "can this user supervise a pod at all", which is precisely
-the question the fakes cannot.
+Most tests fake ``schtasks`` at the module boundary and pin the argv, so they run on
+every platform (as ``test_pod_systemd.py`` fakes ``systemctl``). The few under
+``skipif(not IS_WINDOWS)`` create a real throwaway task, the only way to learn whether
+this user can supervise a pod at all.
 """
 
 from __future__ import annotations
@@ -40,11 +31,8 @@ requires_windows = pytest.mark.skipif(
 def _no_successor(tmp_path):
     """A gateway pid sidecar path with nothing at it.
 
-    ``supervise_gateway`` reads that sidecar after the gateway it spawned exits,
-    to see whether an in-app restart (``os.execv``, which on Windows spawns a
-    successor and exits the caller) left a replacement serving. An absent file is
-    the "no successor" answer, which is what every test here means: they assert
-    the ordinary spawn-and-exit contract, not the restart handover.
+    ``supervise_gateway`` reads it after exit to find an ``os.execv`` successor; an
+    absent file means "no successor", the ordinary spawn-and-exit case.
     """
     return tmp_path / "no-such-gateway.pid"
 
@@ -79,9 +67,7 @@ def _no_real_schtasks(monkeypatch):
     monkeypatch.setattr(win, "require_backend", lambda: None)
 
 
-# --------------------------------------------------------------------------
 # The generated .cmd wrapper
-# --------------------------------------------------------------------------
 def test_the_wrapper_pins_the_pod_plane_because_a_task_carries_no_env(cfg):
     """The whole reason the wrapper exists.
 
@@ -109,12 +95,9 @@ def test_the_wrapper_boots_the_named_pod_through_python(cfg):
 def test_the_wrapper_writes_no_sidecar_and_the_producer_records_the_exit_code(cfg):
     """``unit_state``'s crash signal is the result file, written by ``pod _run``.
 
-    Task Scheduler retries a failed START, not a non-zero exit, and exposes no
-    per-exit-code state in any locale-independent form. The recorded code is the
-    only crash signal ``_wait_healthy`` can stop on. It is written by the claimed
-    producer, whose identity the run record carries, never by the surrounding
-    ``cmd.exe``: a wrapper write would have no identity for ``stop`` to retire and
-    could land after teardown removed the sidecars.
+    Task Scheduler exposes no locale-independent exit state. The claimed producer
+    writes it, never ``cmd.exe``, whose write has no identity for ``stop`` to retire
+    and could land after teardown.
     """
     body = win.render_task_script(cfg, "smoke")
     result = str(win.result_path(cfg, "smoke"))
@@ -195,9 +178,7 @@ def test_the_task_name_honours_a_hermetic_unit_prefix(cfg, monkeypatch):
     assert win.task_script_path(c, "smoke").name == "kctest-pod.smoke.cmd"
 
 
-# --------------------------------------------------------------------------
 # The supervised pid record — this platform's MainPID
-# --------------------------------------------------------------------------
 def test_the_pid_record_proves_its_own_freshness(cfg):
     """A bare pid is not an identity; a recycled one must not attest."""
     import os
@@ -241,9 +222,7 @@ def test_clearing_the_record_reports_the_pod_down(cfg):
     assert win.main_pid(cfg, "smoke") is None
 
 
-# --------------------------------------------------------------------------
 # unit_state — the crash signal without a restart counter
-# --------------------------------------------------------------------------
 def test_unit_state_reports_active_while_the_gateway_lives(cfg):
     import os
 
@@ -280,9 +259,31 @@ def test_last_result_ignores_a_non_numeric_body(cfg):
     assert win.last_result(cfg, "smoke") is None
 
 
-# --------------------------------------------------------------------------
+# U+00B2 SUPERSCRIPT TWO passes isdigit but int() refuses it; b"\xff" is not UTF-8.
+@pytest.mark.parametrize(
+    "body",
+    ["\u00b2\n".encode(), b"--1\n", b"\xff\xfe1\n", b"9" * 5000],
+    ids=["sup2", "dash", "bytes", "long"],
+)
+def test_last_result_reads_a_torn_or_foreign_body_as_unknown(cfg, body):
+    win.result_path(cfg, "smoke").write_bytes(body)
+    assert win.last_result(cfg, "smoke") is None
+    assert win.unit_state(cfg, "smoke") == ("inactive", 0)
+
+
+def test_last_result_still_reads_a_negative_code(cfg):
+    win.result_path(cfg, "smoke").write_text("-1\n")
+    assert win.last_result(cfg, "smoke") == -1
+
+
+@pytest.mark.parametrize("first", ["\u00b2", "9" * 5000], ids=["sup2", "long"])
+def test_a_pid_record_int_refuses_reads_as_no_process(cfg, first):
+    win.pid_record_path(cfg, "smoke").parent.mkdir(parents=True, exist_ok=True)
+    win.pid_record_path(cfg, "smoke").write_text(f"{first}\ntoken\n", encoding="utf-8")
+    assert win.supervised_pid(cfg, "smoke") is None
+
+
 # Enumeration and logs
-# --------------------------------------------------------------------------
 def test_active_names_lists_only_pods_with_a_live_process(cfg):
     """Not a schtasks listing: its status column is localized (fail-OPEN)."""
     import os
@@ -373,21 +374,12 @@ def test_journal_since_mark_reads_a_replaced_file_whole(cfg):
     assert "FATAL: new" in win.recent_journal(cfg, "smoke", since=mark)
 
 
-# --------------------------------------------------------------------------
 # The exit-code contract
-# --------------------------------------------------------------------------
 def test_the_runtime_wrapper_does_not_translate_on_windows(cfg, monkeypatch):
     """The launchd twin translates 78 to 0; this platform must NOT.
 
-    Pinned on ``terminal_exit_code`` -- the function callers actually reach --
-    because that is where the decision lives, and a change that gives the task a
-    restart policy would have to change it HERE. Asserting the same property on a
-    per-platform identity helper instead would be decorative: nothing calls such a
-    helper, so a translation added to this branch would leave it green.
-
-    The reason the answer is "no translation" is a property of the task this
-    backend renders: Task Scheduler has no restart policy, so a non-zero exit is
-    recorded and stays down, and the honest code is already the terminal one.
+    Pinned on ``terminal_exit_code``, the function callers reach. The rendered task
+    has no restart policy, so a non-zero exit already stays down.
     """
     from kiro_crew.pod.config import TERMINAL_BOOT_EXIT_CODES
 
@@ -396,9 +388,7 @@ def test_the_runtime_wrapper_does_not_translate_on_windows(cfg, monkeypatch):
         assert rt.terminal_exit_code(cfg, "smoke", code) == code
 
 
-# --------------------------------------------------------------------------
 # schtasks argv — pinned, because the fakes are the only thing asserting it
-# --------------------------------------------------------------------------
 def test_start_creates_a_manual_run_only_task_then_runs_it(cfg, monkeypatch):
     """`/SC ONCE /ST 00:00` is a trigger already in the past, so Task Scheduler
     never fires it on its own — that keeps a pod transient, like `systemctl
@@ -534,18 +524,49 @@ def test_stop_reports_a_task_it_could_not_delete(cfg, monkeypatch, drainable_sto
 def test_deleting_a_task_that_is_already_gone_is_a_no_op_not_a_failure(
     cfg, monkeypatch, drainable_stop_root
 ):
-    """Judged by re-probing existence, never by /Delete's own localized error."""
+    """Judged by re-probing absence, never by /Delete's own localized error.
+
+    "Already gone" means ``/Query /TN`` is non-zero while a bare ``/Query`` is zero
+    (the service answered); see ``test_stop_keeps_the_task_when_query_cannot_confirm_absence``.
+    """
 
     def fake(*a):
         if a[0] == "/Delete":
             return _cp(returncode=1, stderr="ERROR: The system cannot find the file specified.")
+        if a[0] == "/Query" and len(a) > 1:
+            return _cp(returncode=1)  # no such task
         if a[0] == "/Query":
-            return _cp(returncode=1)  # gone
+            return _cp(returncode=0)  # bare /Query: the service answered
         return _cp()
 
     monkeypatch.setattr(win, "schtasks", fake)
     win.write_task_script(cfg, "smoke")
     assert win.stop(cfg, "smoke").returncode == 0
+
+
+def test_stop_keeps_the_task_when_query_cannot_confirm_absence(
+    cfg, monkeypatch, drainable_stop_root
+):
+    """A /Delete failure plus an UNANSWERED /Query is not proof the task is gone.
+
+    ``schtasks /Query /TN`` is non-zero both for "no such task" and "no answer", so
+    teardown fails closed: rc 1, the wrapper kept for ``orphan_homes``, and the
+    retirement receipt unconsumed.
+    """
+
+    def fake(*a):
+        if a[0] == "/Delete":
+            return _cp(returncode=1, stderr="ERROR: Access is denied.")
+        if a[0] == "/Query":
+            return _cp(returncode=1)  # both the per-task and bare query are unanswered
+        return _cp()
+
+    monkeypatch.setattr(win, "schtasks", fake)
+    win.write_task_script(cfg, "smoke")
+    cp = win.stop(cfg, "smoke")
+    assert cp.returncode == 1
+    assert "could not be deleted" in cp.stderr
+    assert win.task_script_path(cfg, "smoke").exists()
 
 
 def test_task_exists_reads_the_exit_code_not_the_localized_output(cfg, monkeypatch):
@@ -574,9 +595,7 @@ class _FakeClock:
         return None
 
 
-# --------------------------------------------------------------------------
 # Runtime dispatch — Linux and macOS must be byte-identical
-# --------------------------------------------------------------------------
 def test_runtime_dispatches_to_the_windows_backend_on_win32(cfg, monkeypatch):
     monkeypatch.setattr(rt, "IS_MACOS", False)
     monkeypatch.setattr(rt, "IS_WINDOWS", True)
@@ -756,9 +775,7 @@ def test_a_missing_ceiling_does_not_fail_the_boot(supervisor, monkeypatch):
     assert win.runs.read(cfg, "demo")["state"] == "drained"
 
 
-# --------------------------------------------------------------------------
 # Real win32 — the only tests that can answer "can this user supervise a pod"
-# --------------------------------------------------------------------------
 @requires_windows
 def test_schtasks_resolves_from_a_trusted_system_directory():
     """A bare argv name would resolve through a PATH that can lead with a

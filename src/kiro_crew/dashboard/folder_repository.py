@@ -9,10 +9,17 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, TypeVar
 
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.user_json import loads_user_json
 
 FOLDERS_FILE = "folders.json"
 
 _T = TypeVar("_T")
+
+
+class StoreRootNotAList(ValueError):
+    """A store file parsed as JSON whose root is not a list; already logged."""
+
+
 _JsonWriter = Callable[[Path, Any], None]
 
 
@@ -22,32 +29,44 @@ class FolderRepository:
     def __init__(self, logger_provider: Callable[[], logging.Logger]) -> None:
         self._logger_provider = logger_provider
 
+    def read_rows(self, path: Path) -> list[dict[str, Any]] | None:
+        """Return usable rows from *path*, ``None`` when it is missing.
+
+        Raises when the file is present but cannot be read or parsed, or its
+        root is not a list: the folder set is then unknown, not empty. A
+        leading UTF-8 BOM is accepted.
+        """
+        if not path.exists():
+            return None
+        raw = loads_user_json(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            self._logger_provider().warning(
+                "folders.json is a %s, not a list — ignoring it",
+                type(raw).__name__,
+            )
+            raise StoreRootNotAList(f"folders.json is a {type(raw).__name__}, not a list")
+        kept = [
+            folder
+            for folder in raw
+            if isinstance(folder, dict) and isinstance(folder.get("id"), str) and folder["id"]
+        ]
+        if len(kept) != len(raw):
+            self._logger_provider().warning(
+                "dropped %d unusable folder row(s) from folders.json (not a dict, or no id)",
+                len(raw) - len(kept),
+            )
+        return kept
+
     def load(self, path: Path, current: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Return usable rows from *path*, retaining *current* on store failure."""
         try:
-            if not path.exists():
-                return current
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(raw, list):
-                self._logger_provider().warning(
-                    "folders.json is a %s, not a list — ignoring it",
-                    type(raw).__name__,
-                )
-                return current
-            kept = [
-                folder
-                for folder in raw
-                if isinstance(folder, dict) and isinstance(folder.get("id"), str) and folder["id"]
-            ]
-            if len(kept) != len(raw):
-                self._logger_provider().warning(
-                    "dropped %d unusable folder row(s) from folders.json (not a dict, or no id)",
-                    len(raw) - len(kept),
-                )
-            return kept
+            rows = self.read_rows(path)
+        except StoreRootNotAList:
+            return current
         except Exception:
             self._logger_provider().warning("Failed to load folders", exc_info=True)
             return current
+        return current if rows is None else rows
 
     @staticmethod
     def save(path: Path, folders: list[dict[str, Any]], write_json: _JsonWriter) -> None:

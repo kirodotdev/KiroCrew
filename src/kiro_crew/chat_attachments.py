@@ -102,6 +102,7 @@ from kiro_crew.messaging.outbound_files import (
     iter_local_refs,
     local_destination,
 )
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
 
@@ -506,7 +507,7 @@ def _store_one(raw_dest: str, target_dir: Path, budget: ImageBudget) -> tuple[st
     if len(data) > budget.session_room:
         _report_full(target_dir)
         return None
-    target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(target_dir)
     atomic_write(dest, data)
     budget.session_room -= len(data)
     return str(dest), len(data)

@@ -23,15 +23,14 @@ _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX launcher
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse ssh probe pin moved verbatim; no test in the modules that import it calls monkeypatch.undo()
-def _no_host_ssh_probe(monkeypatch):
+def _no_host_ssh_probe(_floor_monkeypatch):
     """Planning a namespace spawn asks the HOST's ``ssh -V`` for accept-new support.
 
     Many tests here plan or write a launcher; none is about that probe, and a real ssh
     spawned from the test process is a host dependency the plan must not vary with.
     Pinned so no binary runs.
     """
-    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+    _floor_monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
 
 
 @pytest.fixture(name="crew_home")

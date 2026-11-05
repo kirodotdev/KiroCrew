@@ -237,6 +237,15 @@ properties matter beyond the classification:
 A malformed regex in the config is reported as malformed config with the
 offending pattern, never a crash mid-cycle.
 
+The handled-set state file is read two ways. The patrol reads it tolerantly: a
+missing, unreadable or corrupt file reads as an empty set, so the worst case is a
+handled signal firing again, never a crashed cycle. `--mark-handled` writes the
+set back, so it reads strictly: a present file that cannot be read, or is not
+UTF-8 JSON, is refused with exit 4 and left byte-for-byte unchanged, since
+writing past it would replace every recorded disposition with the one being
+marked. A missing file starts an empty set, and JSON of the wrong shape, which
+holds no handled set to lose, is rewritten as a valid one.
+
 The banned-process scan's contract:
 
 - **Built-in rules.** The pytest rule reports a run whose explicit worker count
@@ -254,6 +263,10 @@ The banned-process scan's contract:
   `unknown`), never an argument. `cmd=` carries only program names and flags,
   with the rest withheld, because a command line can carry a credential or a
   presigned URL.
+- **No scan, no count.** On a host with no `/proc` the scan does not run, and
+  the OK line prints `banned n/a | foreign n/a`, the same way `load/cpu n/a` and
+  `mem n/a` mark a field the host cannot measure. A `0` there always means a
+  scan ran and found nothing.
 
 The probe is three files. `fleet_probe.py` is the script an agent runs, and it
 loads `fleet_probe_sessions.py` and `fleet_probe_processes.py` from its own

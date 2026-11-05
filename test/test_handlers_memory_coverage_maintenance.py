@@ -29,6 +29,7 @@ from handlers_memory_coverage_helpers import (  # noqa: F401 -- the autouse fixt
 )
 
 import kiro_crew.dashboard.handlers.memory as mem_mod
+from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
@@ -357,7 +358,7 @@ class TestPromote:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
-            ('{"min_count": -2}', (-2, 0.75)),
+            ('{"min_count": 2}', (2, 0.75)),
             ('{"min_count": 99999999999999999999999}', (99999999999999999999999, 0.75)),
         ],
     )
@@ -535,8 +536,7 @@ class TestConsolidate:
         assert "s1" in cons._running
         # Drain the spawned task so nothing is left pending at loop teardown.
         for task in list(cons._tasks):
-            # flake-ok: pre-existing await of a task this test drives to completion moved verbatim; tracked for a de-flake pass
-            await task
+            await await_until(task, what="the spawned consolidation task never finished")
         cons._consolidate.assert_awaited_once_with("s1", False)
 
     # -- the target's memory mode, not only the caller's ---------------------------
@@ -690,8 +690,7 @@ class TestConsolidate:
             "key": "dashboard:p1",
         }
         for task in list(cons._tasks):
-            # flake-ok: pre-existing await of a task this test drives to completion moved verbatim; tracked for a de-flake pass
-            await task
+            await await_until(task, what="the spawned consolidation task never finished")
         cons._consolidate.assert_awaited_once_with("dashboard:p1", False)
 
     @pytest.mark.asyncio

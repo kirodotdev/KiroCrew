@@ -7,6 +7,7 @@ the slot saves writing the flag.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,6 +21,7 @@ from kiro_crew.dashboard.chat_title import (
     maybe_refresh_title,
 )
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout, until_parked
 
 
 # ── low-signal first-message titles: the early refresh milestone ─────────────
@@ -266,6 +268,15 @@ class TestChainedTriggerWaitsForOnSendAttempt:
         monkeypatch.setattr(chat_title, "maybe_suggest_folder", _noop)
 
     @staticmethod
+    async def _after_first_step(task: asyncio.Task) -> None:
+        """Return once ``task`` has run its first step: parked at an await, or finished."""
+        await async_wait_until(
+            lambda: task.done()
+            or inspect.getcoroutinestate(task.get_coro()) != inspect.CORO_CREATED,
+            describe=lambda: f"{task!r} never took its first step",
+        )
+
+    @staticmethod
     def _one_message_url_slot() -> _ChatSlot:
         slot = _ChatSlot("chat-1-1")
         slot.messages = [
@@ -279,8 +290,7 @@ class TestChainedTriggerWaitsForOnSendAttempt:
         gate = asyncio.Event()
 
         async def _slow_generate(_state, _messages, *, session_key: str = ""):
-            # flake-ok: the fake parks on an event the test sets itself, pre-existing shape, moved verbatim; tracked for a de-flake pass
-            await gate.wait()
+            await await_until(gate, what="the test releasing the title generation")
             return "Research ticket T8412000027"  # URL echo → low-signal
 
         self._patch_title_path(monkeypatch, _slow_generate)
@@ -290,21 +300,22 @@ class TestChainedTriggerWaitsForOnSendAttempt:
         state = _fake_state(slot)
         # The on-send attempt is still awaiting its LLM call at chat_done.
         slot._title_task = asyncio.create_task(chat_title._maybe_auto_title(state, slot))
-        # flake-ok: one loop yield so the created task reaches its await, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)  # let it take the in-flight guard
-        assert slot._title_in_flight is True
+        try:
+            # The attempt holds the in-flight guard while it awaits the LLM call.
+            await until_parked(gate, describe=lambda: "the attempt never reached its LLM call")
+            assert slot._title_in_flight is True
 
-        chained = asyncio.create_task(chat_title.title_then_refresh(state, slot))
-        # flake-ok: one loop yield so the created task reaches its await, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
-        assert not chained.done(), "chain must wait, not bounce off the guards"
-        assert refresh_calls == []
+            chained = asyncio.create_task(chat_title.title_then_refresh(state, slot))
+            await self._after_first_step(chained)
+            assert not chained.done(), "chain must wait, not bounce off the guards"
+            assert refresh_calls == []
 
-        gate.set()  # LLM answers; the on-send attempt locks the low-signal title
-        # flake-ok: awaits the chain the test has just released, unbounded as at its origin, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await chained
-        assert refresh_calls == ["Research ticket T8412000027"]
-        assert slot.title == "S3 bucket policy triage"
+            gate.set()  # LLM answers; the on-send attempt locks the low-signal title
+            await await_until(chained, what="the chained trigger finishing")
+            assert refresh_calls == ["Research ticket T8412000027"]
+            assert slot.title == "S3 bucket policy triage"
+        finally:
+            gate.set()  # nothing stays parked when an assertion above fails
 
     @pytest.mark.asyncio
     async def test_no_pending_task_runs_straight_through(self, monkeypatch):
@@ -325,8 +336,10 @@ class TestChainedTriggerWaitsForOnSendAttempt:
         gate = asyncio.Event()
 
         async def _slow_generate(_state, _messages, *, session_key: str = ""):
-            # flake-ok: the fake parks on an event the test never sets; the test cancels the task that waits on it, pre-existing shape, moved verbatim; tracked for a de-flake pass
-            await gate.wait()
+            # The test never sets the gate: cancelling the attempt ends this wait. It is
+            # ``wait_for``, not ``await_until``, because ``await_until`` leaves its own
+            # waiter pending when the task awaiting it is cancelled.
+            await asyncio.wait_for(gate.wait(), timeout=default_timeout())
             return "never returned"
 
         self._patch_title_path(monkeypatch, _slow_generate)
@@ -335,19 +348,24 @@ class TestChainedTriggerWaitsForOnSendAttempt:
         slot = self._one_message_url_slot()
         state = _fake_state(slot)
         slot._title_task = asyncio.create_task(chat_title._maybe_auto_title(state, slot))
-        # flake-ok: one loop yield so the created task reaches its await, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
-        slot._title_task.cancel()
-        # flake-ok: one loop yield so the cancellation reaches the parked task and releases its guard, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)  # cancellation propagates; guard is released
+        try:
+            await until_parked(gate, describe=lambda: "the attempt never reached its LLM call")
+            slot._title_task.cancel()
+            # Cancellation propagates to the parked task and releases its guard.
+            await async_wait_until(
+                slot._title_task.done,
+                describe=lambda: f"cancellation never reached {slot._title_task!r}",
+            )
 
-        async def _fast_generate(_state, _messages, *, session_key: str = ""):
-            return "Research ticket T8412000027"
+            async def _fast_generate(_state, _messages, *, session_key: str = ""):
+                return "Research ticket T8412000027"
 
-        monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _fast_generate)
-        await chat_title.title_then_refresh(state, slot)  # must not raise
-        assert slot.title == "S3 bucket policy triage"
-        assert refresh_calls == ["Research ticket T8412000027"]
+            monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _fast_generate)
+            await chat_title.title_then_refresh(state, slot)  # must not raise
+            assert slot.title == "S3 bucket policy triage"
+            assert refresh_calls == ["Research ticket T8412000027"]
+        finally:
+            gate.set()  # nothing stays parked when an assertion above fails
 
     @pytest.mark.asyncio
     async def test_titled_at_entry_with_guard_still_held_waits_then_refreshes(self, monkeypatch):
@@ -363,8 +381,7 @@ class TestChainedTriggerWaitsForOnSendAttempt:
         gate = asyncio.Event()
 
         async def _slow_persist(_state, _slot, **_kw):
-            # flake-ok: the fake parks on an event the test sets itself, pre-existing shape, moved verbatim; tracked for a de-flake pass
-            await gate.wait()
+            await await_until(gate, what="the test releasing the title persist")
             return True  # honor the bool contract — the durable-mark gate reads it
 
         async def _fast_generate(_state, _messages, *, session_key: str = ""):
@@ -377,24 +394,23 @@ class TestChainedTriggerWaitsForOnSendAttempt:
         slot = self._one_message_url_slot()
         state = _fake_state(slot)
         slot._title_task = asyncio.create_task(chat_title._maybe_auto_title(state, slot))
-        # flake-ok: one loop yield so the created task reaches its await, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)  # generate returns; attempt now awaits persist
-        # flake-ok: a second loop yield so the attempt reaches its persist await, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
-        assert slot._titled is True, "attempt must have locked the title already"
-        assert slot._title_in_flight is True, "guard must still be held (persist pending)"
+        try:
+            # Generate returns, then the attempt awaits persist.
+            await until_parked(gate, describe=lambda: "the attempt never reached its title persist")
+            assert slot._titled is True, "attempt must have locked the title already"
+            assert slot._title_in_flight is True, "guard must still be held (persist pending)"
 
-        chained = asyncio.create_task(chat_title.title_then_refresh(state, slot))
-        # flake-ok: one loop yield so the created task reaches its await, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
-        assert not chained.done(), "chain must wait, not bounce off the in-flight guard"
-        assert refresh_calls == []
+            chained = asyncio.create_task(chat_title.title_then_refresh(state, slot))
+            await self._after_first_step(chained)
+            assert not chained.done(), "chain must wait, not bounce off the in-flight guard"
+            assert refresh_calls == []
 
-        gate.set()  # persist lands; the attempt releases the guard
-        # flake-ok: awaits the chain the test has just released, unbounded as at its origin, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await chained
-        assert refresh_calls == ["Research ticket T8412000027"]
-        assert slot.title == "S3 bucket policy triage"
+            gate.set()  # persist lands; the attempt releases the guard
+            await await_until(chained, what="the chained trigger finishing")
+            assert refresh_calls == ["Research ticket T8412000027"]
+            assert slot.title == "S3 bucket policy triage"
+        finally:
+            gate.set()  # nothing stays parked when an assertion above fails
 
 
 class TestSlotSavePersistsLowSignalFlag:

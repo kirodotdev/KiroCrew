@@ -8,7 +8,7 @@ methods.
 
 The functions are bound on ``VectorMemoryStore`` as the class attributes of the same name
 and take the store as ``self``. Store fields read: ``embed_fn``, ``_memory_version``,
-``_embedding_dim`` and ``_space_generation``;
+``_embedding_dim``, ``_space_generation`` and ``_confidence_threshold``;
 ``_promotion_refused`` is read and updated.
 """
 
@@ -124,6 +124,42 @@ def _decode_payload_vector(raw: object, dim: int) -> list[float] | None:
     if not all(math.isfinite(v) for v in values):
         return None
     return values
+
+
+# The confidence an imported semantic row with no ``confidence`` field is stored at.
+IMPORT_CONFIDENCE_DEFAULT = 0.85
+
+
+def _import_confidence(raw: object, replacement: float, *, writer: str = "memory import") -> float:
+    """The ``0..1`` confidence an imported semantic row with *raw* is written at.
+
+    *writer* names the write path in the warning line; member consolidation shares
+    this bound for the confidence its model writes.
+
+    An import file is the user's own data, so a bad confidence never skips its row:
+    a number is clamped to ``0..1`` (an int is compared before it is converted, so one
+    too large for a float clamps instead of raising), a string ``float()`` reads is
+    read as before, and ``True``/``False`` keep 1.0/0.0. NaN, ``null`` and every other
+    non-number take *replacement*, which the caller keeps at or above the store's
+    confidence threshold: NaN passed that threshold before, so it still must. A
+    replaced value logs a warning that never echoes it: a file can carry a 400-digit
+    integer.
+    """
+    if isinstance(raw, bool):
+        return float(raw)
+    value: object = raw
+    if isinstance(raw, str):
+        try:
+            value = float(raw)
+        except ValueError:
+            value = None
+    if not isinstance(value, (int, float)) or (isinstance(value, float) and math.isnan(value)):
+        logger.warning("%s: confidence is not a number; using %s", writer, replacement)
+        return replacement
+    clamped = max(0, min(1, value))
+    if clamped != value:
+        logger.warning("%s: confidence outside 0..1; using %s", writer, float(clamped))
+    return float(clamped)
 
 
 def migrate_from_markdown(self: VectorMemoryStore) -> dict[str, int]:
@@ -270,6 +306,7 @@ def import_memory(self: VectorMemoryStore, data: dict) -> dict[str, int]:
     embedder, waits for the gateway's sweep.
     """
     counts = {"semantic": 0, "episodic": 0, "skipped": 0}
+    replacement = max(IMPORT_CONFIDENCE_DEFAULT, min(1.0, float(self._confidence_threshold)))
     token = self._embedding_token()
     generation = self._space_generation
     carry = _payload_space_carryable(
@@ -282,7 +319,11 @@ def import_memory(self: VectorMemoryStore, data: dict) -> dict[str, int]:
                 if isinstance(entry.get("value_json"), str)
                 else entry.get("value")
             )
-            conf = float(entry.get("confidence", 0.85))
+            conf = (
+                _import_confidence(entry["confidence"], replacement)
+                if "confidence" in entry
+                else IMPORT_CONFIDENCE_DEFAULT
+            )
             src = entry.get("source", "import")
             values = (
                 _decode_payload_vector(entry.get("embedding"), self._embedding_dim)

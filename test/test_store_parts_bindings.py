@@ -33,7 +33,6 @@ import hashlib
 import importlib
 import inspect
 import re
-import sys
 import traceback
 from pathlib import Path
 from types import ModuleType
@@ -46,6 +45,12 @@ from kiro_crew.knowledge import store as store_module
 from kiro_crew.knowledge.store import KnowledgeStore
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_store_parts_bindings")
+
+SHARED_BINDINGS_CHECKS = (
+    "the_member_set_is_the_frozen_inventory",
+    "the_kind_reader_tells_a_coroutine_from_a_function",
+    "each_owner_imports_only_owners_listed_before_it",
+)
 
 _FACADE = "kiro_crew.knowledge.store"
 _PACKAGE = "kiro_crew.knowledge.store_parts"
@@ -109,7 +114,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "delete_source_cascade": ("function", "99191a176ec8", "item_rows"),
     "detach_source_location_by_hash": ("function", "75820b543a01", "item_ownership"),
     "ensure_fts_index_current": ("function", "b60c5fea256e", "fulltext_index"),
-    "ensure_graph_loaded": ("function", "b60c5fea256e", "entity_graph"),
+    "ensure_graph_loaded": ("function", "758f8289654d", "entity_graph"),
     "ensure_search_indexes": ("function", "b60c5fea256e", "schema_migrations"),
     "export_all": ("function", "07128394bed8", "bundle_transfer"),
     "export_item": ("function", "7e52befa88f7", "bundle_transfer"),
@@ -126,6 +131,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "import_bundle": ("function", "a799faeee9da", "bundle_transfer"),
     "ingestion_in_flight": ("function", "3ef35315efe6", "store"),
     "maintenance_window": ("function", "0c950929ae8f", "store"),
+    "mark_graph_stale": ("function", "b60c5fea256e", "entity_graph"),
     "merge_entities": ("function", "66dda62cb15a", "entity_graph"),
     "merge_source_properties": ("function", "4c45d701c5d1", "source_rows"),
     "open_read_only": ("classmethod", "ea0961fa9b58", "store"),
@@ -140,6 +146,8 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "search_items_fts": ("function", "b580228dc456", "fulltext_index"),
     "source_count": ("function", "fa6cfecd5574", "content_stats"),
     "sources_holding_item": ("function", "38e1d5ac5668", "item_ownership"),
+    "_refuse_live_source": ("function", "abf534c1cf14", "item_ownership"),
+    "_reassignment_candidates": ("function", "ca98b671cebb", "item_ownership"),
     "surviving_group_in_txn": ("function", "90373a793d37", "item_ownership"),
     "update_item": ("function", "f074042316f2", "item_rows"),
     "update_source": ("function", "dfb808fc1ab1", "source_rows"),
@@ -229,17 +237,6 @@ def _members() -> dict[str, object]:
 # --------------------------------------------------------------------------- #
 # The member inventory and the binding.
 # --------------------------------------------------------------------------- #
-
-
-def test_the_kind_reader_tells_a_coroutine_from_a_function() -> None:
-    async def stand_in(self: object) -> None:
-        return None
-
-    assert (_kind(stand_in), _kind(lambda self: None)) == ("coroutine", "function")
-
-
-def test_the_member_set_is_the_frozen_inventory() -> None:
-    assert sorted(_members()) == sorted(_MEMBERS)
 
 
 @pytest.mark.parametrize("name", sorted(_MEMBERS))
@@ -397,19 +394,6 @@ def test_no_owner_imports_the_facade_at_run_time(owner: str) -> None:
     assert sorted(name for name in found if name == _FACADE or name.startswith(_FACADE + ".")) == []
 
 
-def test_each_owner_imports_only_owners_listed_before_it() -> None:
-    owners = store_module._STORE_OWNERS
-    later = {
-        owner: sorted(
-            name
-            for name in _runtime_imports(_tree(sys.modules[owner]))
-            if name in owners and name not in owners[:i]
-        )
-        for i, owner in enumerate(owners)
-    }
-    assert later == {owner: [] for owner in owners}
-
-
 def _owner_importers(src: Path, owners: frozenset[str]) -> list[str]:
     """Files under *src* that import one of *owners* at all, the owners and facade aside."""
     found = []
@@ -548,6 +532,7 @@ def test_an_owner_that_logs_uses_the_store_logger(owner: str) -> None:
 #: keys on their module path.
 _CLASS_MODULES = {
     "KnowledgeBundleError": _FACADE,
+    "LiveSourceHoldsNoItems": _FACADE,
     "SimpleDiGraph": f"{_PACKAGE}.entity_graph",
     "_NodeView": f"{_PACKAGE}.entity_graph",
     "_EdgeView": f"{_PACKAGE}.entity_graph",

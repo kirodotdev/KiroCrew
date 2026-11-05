@@ -162,7 +162,8 @@ export function panelSitsBeside({ winW, rosterW, isMobile }: { winW: number; ros
  *  the two answers the placement and the two visibility flags decide together.
  *
  *  Each placement reads its OWN flag: the docked column reads the persisted
- *  `dockedOpen`, the overlay reads the per-visit `overlayOpen`. The opener
+ *  `dockedOpen`, the overlay reads `overlayOpen` (remembered on a desktop
+ *  window, per visit on a phone; see useMembersPageLayout). The opener
  *  disappears while the docked column is open, because the open panel's own
  *  strip carries the close control there — the chat page's split of the gesture
  *  across the two halves. As an overlay the opener always stays, since a

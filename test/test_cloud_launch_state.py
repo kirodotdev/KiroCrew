@@ -7,6 +7,7 @@ own, and an install whose pointer is still in the configuration file keeps resum
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -41,7 +42,7 @@ class TestTheLaunchRecord:
         write came minutes later. Frozen means the write is the only way to change the file,
         so there is no half-applied state to reason about.
         """
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(dataclasses.FrozenInstanceError) as exc:
             LaunchState().profile = "nope"  # type: ignore[misc]
         assert "FrozenInstanceError" in type(exc.value).__name__
 

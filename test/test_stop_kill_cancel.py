@@ -303,6 +303,8 @@ class TestKillPathIsPlatformCorrect:
 
         assert mock_async.await_count == 1
         assert mock_async.await_args.args[1] == pc.SIGKILL
+        # The process never reported an exit, so the backend itself must read dead.
+        assert backend.is_alive is False
 
     @pytest.mark.asyncio
     async def test_shutdown_falls_back_to_process_kill_when_tree_kill_fails(self):
@@ -323,6 +325,7 @@ class TestKillPathIsPlatformCorrect:
             await backend.shutdown(timeout=0.01)
 
         backend.process.kill.assert_called_once()
+        assert backend.is_alive is False
 
 
 class TestTeardownUsesPortableSignalConstant:
@@ -378,6 +381,7 @@ class TestTeardownUsesPortableSignalConstant:
             await backend.shutdown(timeout=0.01)
 
         assert mock_async.await_count == 1
+        assert backend.is_alive is False
 
     @pytest.mark.asyncio
     async def test_orphan_reap_survives_without_signal_sigkill(
@@ -406,6 +410,8 @@ class TestTeardownUsesPortableSignalConstant:
             await manager._reap_orphaned_backends()
 
         assert mock_group.call_args.args == (111, 9)
+        # The reap ran to its end: the record of the gone generation is removed.
+        assert not (tmp_path / "gateway.sock.backends").exists()
 
 
 class TestOrphanReapIsPlatformCorrect:
@@ -779,6 +785,9 @@ class TestConservativeShutdown:
         # Should NOT kill — conservative shutdown regardless of co-tenants
         mock_kill.assert_not_called()
         info_a._shared_provider.shutdown.assert_called_once()
+        # Only the reaped run is marked and released; its co-tenant runs on.
+        assert (info_a.reaped, info_b.reaped) == (True, False)
+        assert mgr._running_count == 1
 
 
 # --- Scope E: stop_turn outcome logging test ---------------------------------

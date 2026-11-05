@@ -122,6 +122,33 @@ visible area (a chat container, a modal). Safe area is **padding, not size**:
 `padding-bottom: env(safe-area-inset-bottom)`, which resolves to 0 without
 `viewport-fit=cover`.
 
+**Inset all four edges, not only top and bottom.** Side insets are real: the notch sits
+on one side in iOS landscape, and a foldable's outer display can move the system
+controls to the side. A `fixed inset-0` container that lays out a dialog or a sheet
+uses `p-safe` (it had no padding) or `p-safe-or-<n>` (it had `p-<n>`: the same gutter,
+widened only where an inset is wider). A dim backdrop with nothing laid out inside it
+bleeds to every edge and needs neither. A fixed surface whose width is the viewport minus
+a gutter (`w-[calc(100%-4rem)]`) subtracts twice the wider side inset as well,
+`w-[calc(100%-max(4rem,var(--safe-area-x)+var(--safe-area-x)))]`, because a centred box
+keeps the same gutter on both sides. Write the doubling as a sum, not `2*`. Every one of these is 0 where the platform reports no inset, so
+nothing moves on a desktop. `src/test/safeArea.guard.test.ts` enforces both rules and
+lists the surfaces that inset their content themselves.
+
+**A fold resizes the viewport live.** A book-style foldable reports widths from about
+380px (the outer display, and each of two side-by-side windows on the inner one) to
+about 950px (the inner display in landscape), so folding or unfolding with the dashboard
+open crosses the `md` breakpoint in both directions. The shell switches its grid in
+place and the route element underneath is never unmounted, which is what keeps the open
+chat and its draft. Do not key a shell or a page on `useIsMobile()`, and do not branch a
+route element's component type on it. `src/test/App.foldResize.test.tsx` walks those
+widths.
+
+**`useIsMobile()` is the one form signal.** During an animated form switch the hook
+reports the form being drawn, which can trail the live media query by a frame or two. A
+component that decides phone versus desktop layout reads the hook, not its own
+`matchMedia('(max-width: 767px)')` or a raw width; `md:` classes stay for spacing and
+grids, which may flip a frame early without harm.
+
 **The shell is an application, not a zoomable document — page zoom is off on touch.**
 Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
 *inner*, so there is no axis left to reach what the magnification pushed outside the
@@ -215,29 +242,30 @@ claim is restated (`docs/guides/remote-and-mobile.md`; `website/index.html` only
 points back here) — an unqualified version points a low-vision user at a control
 that is not there.
 
-**Any touch input below 16px zooms the viewport on focus, and WebKit does not zoom
-back out.** The scale is `clampTo(16 / fontSize, minimumScale, maximumScale)` from the
-FIELD's computed size, so a `text-sm` field can leave the user zoomed in — and with
-page zoom off there is no pinch-out to undo it. **There is deliberately no app-wide
-floor for this, and adding one needs evidence from a real device first**, because CSS
-cannot express a floor at all: it can only SET a
-size, so the two available shapes are wrong in opposite directions. A rule broad
-enough to reach every field SHRINKS the ones that are deliberately larger — measured,
-not hypothetical: `input:not([type=…]):not([type=…])` is (0,2,1) and beat the artifact
-rename field's `text-2xl`, snapping a 24px title to 16px on a phone. A narrower
-selector list misses fields instead, because a size can arrive as a named utility, an
-arbitrary value (`text-[13px]`), an `!important` modifier or an inline style, and no
-list contains the next one. A guard test rescues neither shape: ~120 of this app's
-fields are routed through the `<Input>` primitive or the `useAutoGrowTextarea`
-hook rather than a native tag, so a source sweep for `<input>` cannot see them and
-reports green.
+**Focus zoom is off, so no field needs a 16px floor.** WebKit zooms the viewport when
+a field below 16px takes focus, by `clampTo(16 / fontSize, minimumScale, maximumScale)`
+from the FIELD's computed size. The authored `maximum-scale=1` clamps that scale to 1:
+on an iPhone a 14px field (the Settings search) takes focus without zooming. Fields
+therefore keep their authored size on touch, and the composer uses the message font
+setting on every device. One size for the composer's typed text and its placeholder
+is also what keeps an empty composer one line tall: its auto-size measures the
+placeholder at the field's font size, so a field held at 16px over a 14px hint
+measured the hint a line too tall on a 375px phone (#28843).
 
-Two things make withholding the floor the safer side of that trade. The focus zoom is
-**pre-existing** — it is not introduced by suppressing pinch, which removes only the
-recovery gesture — and whether it can fire at all once `maximum-scale=1` is authored
-depends on the same engine path that decides whether WebKit honours the viewport keys,
-which is not answerable from source. Settle it on a device; if it does fire, the fix
-belongs in the field components, where a real `max(16px, authored)` is expressible.
+**There is deliberately no app-wide 16px field rule either**, because CSS cannot
+express a floor at all: it can only SET a size, so the two available shapes are wrong
+in opposite directions. A rule broad enough to reach every field SHRINKS the ones that
+are deliberately larger — measured, not hypothetical: `input:not([type=…]):not([type=…])`
+is (0,2,1) and beat the artifact rename field's `text-2xl`, snapping a 24px title to
+16px on a phone. A narrower selector list misses fields instead, because a size can
+arrive as a named utility, an arbitrary value (`text-[13px]`), an `!important`
+modifier or an inline style, and no list contains the next one. A guard test rescues
+neither shape: ~120 of this app's fields are routed through the `<Input>` primitive or
+the `useAutoGrowTextarea` hook rather than a native tag, so a source sweep for
+`<input>` cannot see them and reports green. If focus zoom ever comes back (the
+viewport key dropped, or an engine that stops honouring it), the fix belongs in the
+field components, where a real `max(16px, authored)` is expressible, and the
+composer's placeholder has to move with its field.
 
 **The `meta-viewport` axe rule is left ENABLED, deliberately.** `@axe-core/react` scans
 every render, so `user-scalable=no` reports a critical WCAG 1.4.4 finding on every scan.
@@ -366,18 +394,18 @@ the apps, behind a separator. The decision reads `stableRailHeight` — the tall
 height seen at the current window width — so the on-screen keyboard or a browser
 toolbar shrinking the rail at the same width never moves the tiles.
 
-**The Mates page hosts the same drawer.** On a phone `/members` lands on a
-mate exactly as a wide window does, and its roster is a left drawer over the
+**The Bots page hosts the same drawer.** On a phone `/members` lands on a
+Bot exactly as a wide window does, and its roster is a left drawer over the
 open chat: the same rail (App provides `MobileNavRailContext` on this route too)
 beside the roster aside, which is portaled into the drawer while a chat or team
 is open. A rightward drag or the header's back control reveals it, a leftward
 drag reveals the side panel (a full-width overlay that slides on `sidePanelX`),
 and each gesture is off while the other's panel is open. The drawer mints the
 same duplicate history entry, and a roster pick spends it FIRST, then opens the
-mate on the entry below (`consumeRosterDrawerEntry`), so Back never reopens
-the mate just left. With nothing open the roster is the page, the page
+Bot on the entry below (`consumeRosterDrawerEntry`), so Back never reopens
+the Bot just left. With nothing open the roster is the page, the page
 binds nothing and claims no side, and the shell's nav-drawer swipe works there.
-With a mate or team open, or about to open, the page also shares the chat page's single top bar: `mobileSingle` covers it, so the shell drops its logo row and the page portals its thread header (drawer toggle, identity pill, panel toggle) into `#mobile-topbar-slot`, beside the bell. The page says which bar it needs through `MobileRosterBarContext`: `open` once a mate or team is on screen; `pending` while one is still being read (the landing, or a `?team=` link before the teams read answers); `roster` for the bare roster with no one to open (an empty roster, a failed read, a `?team=` link whose team does not resolve), which has no drawer and needs the bar's logo to reach the navigation, and on unmount. Every phone `/members` visit starts on the single bar and keeps it while the page is `pending`, because the page opens its mate from an effect and a bar keyed on the URL alone flashed the logo row for the frames before `?member=` landed. The bar does not change under a slow read: until the page reports `open` the shell's nav-drawer swipe stays on and the shell puts a nav-drawer toggle (the logo row's `Menu` glyph) in the slot, so the navigation is one swipe or one tap away and the bar is never empty. The page looks up the bar slot only once it reports `open`. In the bar the drawer toggle and the panel toggle are bare icons, as on the Sessions bar, and the identity pill drops its vertical padding so it stays as tall as the 32px controls beside it; over the pane they stay Glass chips. With no overflow menu to carry it, the update pill sits in the trailing cell before the bell, with its text shown in a pill capped at 88px that truncates, and asks the page before it leaves for Settings › About. The rail's Home control navigates with `replace` without closing the drawer
+With a Bot or team open, or about to open, the page also shares the chat page's single top bar: `mobileSingle` covers it, so the shell drops its logo row and the page portals its thread header (drawer toggle, identity pill, panel toggle) into `#mobile-topbar-slot`, beside the bell. The page says which bar it needs through `MobileRosterBarContext`: `open` once a Bot or team is on screen; `pending` while one is still being read (the landing, or a `?team=` link before the teams read answers); `roster` for the bare roster with no one to open (an empty roster, a failed read, a `?team=` link whose team does not resolve), which has no drawer and needs the bar's logo to reach the navigation, and on unmount. Every phone `/members` visit starts on the single bar and keeps it while the page is `pending`, because the page opens its Bot from an effect and a bar keyed on the URL alone flashed the logo row for the frames before `?member=` landed. The bar does not change under a slow read: until the page reports `open` the shell's nav-drawer swipe stays on and the shell puts a nav-drawer toggle (the logo row's `Menu` glyph) in the slot, so the navigation is one swipe or one tap away and the bar is never empty. The page looks up the bar slot only once it reports `open`. In the bar the drawer toggle and the panel toggle are bare icons, as on the Sessions bar, and the identity pill drops its vertical padding so it stays as tall as the 32px controls beside it; over the pane they stay Glass chips. With no overflow menu to carry it, the update pill sits in the trailing cell before the bell, with its text shown in a pill capped at 88px that truncates, and asks the page before it leaves for Settings › About. The rail's Home control navigates with `replace` without closing the drawer
 when its host is not the chat page, since that close would pop the entry after
 the replace.
 
@@ -563,9 +591,9 @@ still on screen and its mount predicate keys on `!== 'closed'`, so writing `'clo
 here would cut the slide short. That also matches what a tap-driven close already did,
 which is why the chrome derived from the phase does not change timing.
 
-### The desktop counterpart: a trackpad swipe on the Mates page
+### The desktop counterpart: a trackpad swipe on the Bots page
 
-Off the phone the Mates page plays a two-finger trackpad swipe as the same side-panel
+Off the phone the Bots page plays a two-finger trackpad swipe as the same side-panel
 DRAG (`useMembersPageTrackpadSwipe` over `hooks/useTrackpadSwipe`): to the left the
 panel follows the fingers in and settles open on its Dashboard tab, to the right it
 follows them out. A trackpad sends `wheel` events, not touches, so the reader cuts the
@@ -632,7 +660,7 @@ only from `window.parent` at the origin it asked, for its own watch id.
 The chat page plays the same drag on its right side panel off the phone
 (`useChatPanelTrackpadSwipe` in `pages/chat/page/chatTrackpadSwipe.ts`), over
 the same reader and the same drag and release (`hooks/trackpadPanelDrag`, which
-the Mates page uses too). The panel lives in the shell's `actbar` column, an
+the Bots page uses too). The panel lives in the shell's `actbar` column, an
 `auto` grid track, so the drag does not need a spacer in a page row: while it
 runs, the column becomes a window onto the panel as wide as its visible part
 (`deskSpacerW`), with the panel pinned at its left edge and clipped, so the

@@ -65,7 +65,6 @@ workflow_run_event      Declared by its own literal name -- already the correct
                         per-event Tier 2 shape, and the only events declaration
                         present in the tree today (the workflows app).
 log                     Gateway log stream (broad)
-browser                 browser_event (broad)
 
 ## Scope declarations are SELF-declared
 
@@ -321,6 +320,10 @@ _OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # floor, and a later literal broadcast of this name must not silently start
     # reaching an app token.
     "dashboard_fields",
+    # The outcome of one bulk Resume run (``chat_resume_all.RESUME_ALL_DONE_FRAME``,
+    # ``broadcast_ws_owners``): slot keys and refusal codes across every slot on
+    # the install, for the owner who pressed the button and no one else.
+    "resume_all_done",
 })
 
 
@@ -486,7 +489,6 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     "dashboard_instance_changed": "panels",
     # Privileged
     "log": "log",
-    "browser_event": "browser",
 }
 
 
@@ -1447,11 +1449,24 @@ def filter_slots_for_app(
         if slot is None:
             continue
         if _slot_visible(slot, app, allowed_events, state):
-            result.append(_strip_pin_rank(_strip_source_link_status(slot_dict)))
+            result.append(_strip_pin_rank(_strip_source_link_status(_withhold_from_apps(slot_dict))))
             _audit_allow(app, "slots_item")
         else:
             _audit_deny(app, "slots_item", "slot_scope_denied")
     return result
+
+
+#: Slot-row fields for a person's dashboard only. The WS app frame is built from
+#: the dashboard-user list, so they are removed here as well as never being put
+#: on the bare list (``slack/code_channels/dashboard_view.py``).
+_PERSON_ONLY_SLOT_KEYS = ("code_channel", "code_channel_pending")
+
+
+def _withhold_from_apps(slot_dict: dict[str, Any]) -> dict[str, Any]:
+    """A copy of *slot_dict* without :data:`_PERSON_ONLY_SLOT_KEYS` (or itself)."""
+    if not any(k in slot_dict for k in _PERSON_ONLY_SLOT_KEYS):
+        return slot_dict
+    return {k: v for k, v in slot_dict.items() if k not in _PERSON_ONLY_SLOT_KEYS}
 
 
 # Credential-backed chip fields attached by ``state._project_source_links``.

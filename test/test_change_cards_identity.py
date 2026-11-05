@@ -207,13 +207,13 @@ async def test_delete_route_refuses_a_replacement_persisted_inside_the_lock_wind
 
     reclaim = MagicMock()
     avatars = MagicMock()
-    prune = MagicMock(return_value=False)
+    prune = MagicMock(return_value="")
     with (
         patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir),
         patch.object(handlers, "update_config_locked", _update_after_a_racing_recreate),
         patch.object(handlers, "_reclaim_deleted_member_crew_log", reclaim),
         patch.object(handlers, "_remove_avatar_files", avatars),
-        patch.object(handlers, "_prune_private_copy_of_deleted_crew", prune),
+        patch.object(handlers, "_prune_private_copy_outcome", prune),
     ):
         resp = await routes_delete(_delete_request("scout", expected_member_id="m-ORIGINAL"))
 

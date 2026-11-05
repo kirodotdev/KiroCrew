@@ -1,14 +1,9 @@
 """Shared pieces for the ``test_subagent_scale*.py`` modules.
 
-``_mock_sessions`` and ``_mock_ctx`` are the session manager and context builder a
-``SubagentManager`` is built over; ``_make_orchestrator``, ``_mock_dashboard_state`` and
-``_drain_injections`` build the gateway orchestrator the wave-digest cases drive and finish
-its injection turns. ``test_subagent_delivery_ttl_anchor.py`` and
-``test_subagent_queue_max_wait.py`` import ``_mock_sessions``, ``_mock_dashboard_state``,
-``_make_orchestrator`` and ``_drain_injections`` from ``test_subagent_scale.py``, which
-imports them by name from here. The autouse ``_close_subagent_managers`` closes every
-manager a test builds, and ``_ANNOUNCE_WAIT_SECS`` bounds a wait on an announce task only
-the test ends.
+Mocks a ``SubagentManager`` is built over, and the gateway orchestrator the wave-digest cases
+drive. ``test_subagent_delivery_ttl_anchor.py`` and ``test_subagent_queue_max_wait.py`` import
+some of these through ``test_subagent_scale.py``. The autouse ``_close_subagent_managers``
+closes every manager a test builds; ``_ANNOUNCE_WAIT_SECS`` bounds an announce-task wait.
 """
 
 from __future__ import annotations
@@ -79,12 +74,8 @@ def _mock_dashboard_state():
 async def _drain_injections(orch) -> None:
     """Run every injection turn the orchestrator has spawned to completion.
 
-    ``on_done`` hands each announce to ``asyncio.create_task`` and registers the
-    task on ``dashboard_state._background_tasks``. A test that returns once the
-    digest text is observed can leave a sibling task still parked inside
-    ``bounded_chat_turn``'s off-loop timeout hop; the loop then closes under it
-    and its ``_run_chat`` coroutine is reported as never awaited. Awaiting the
-    set here keeps that lifetime inside the test that created it.
+    A sibling announce task left parked in ``bounded_chat_turn``'s off-loop hop would have
+    the loop close under it and report ``_run_chat`` as never awaited.
     """
     pending = [t for t in orch.dashboard_state._background_tasks if not t.done()]
     if pending:

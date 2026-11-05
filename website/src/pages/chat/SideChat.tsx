@@ -14,6 +14,7 @@ import { deriveFollowUpOptions } from '../../app-sdk/protocol'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
 import ChatInput from '../../components/ChatInput'
 import ErrorNotice from '../../components/ErrorNotice'
+import InfoTip from '../../components/InfoTip'
 import { SlotProvider } from '../../providers/SlotContext'
 import { useConnected } from '../../hooks/useConnected'
 import { consumeSideChatSeed, readSideChatDraft, restoreSideChatDraft, writeSideChatDraft, writeSideChatPastes, useSideChatDraft } from '../../chat-core/composer/sideChatDrafts'
@@ -157,6 +158,16 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
   // for a user who looks back after the TTL, and the text would be resent.
   // Lives in the store, per slot, beside the text it explains (see SideState.sendStatus).
   const sendStatus = reduxSide?.sendStatus
+  // Another tab's Refresh context closed this conversation while this tab showed it.
+  // Kept outside the slot's side state, which `sideClose` dropped.
+  const closedElsewhere = useAppSelector(s => s.chat.slotSideClosedElsewhere?.[slot] === true)
+
+  // The error of a failed cancel, edit or Stop belongs to the conversation another
+  // tab closed. Left in place it outranks the status strip and would hide the
+  // closed-in-another-tab line for as long as that line lasts.
+  useEffect(() => {
+    if (closedElsewhere) setLocalError(null)
+  }, [closedElsewhere])
 
   // Retire the transient notice on its own so it cannot outlive the moment it
   // describes.
@@ -936,29 +947,32 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
           <span className="italic">
             {i18nT('pages.chat.sideChat.context_from')} {i18nT('pages.chat.sideChat.turn', { count: turnsBehind })} {i18nT('pages.chat.sideChat.ago')}{age ? ` · ${age}` : ''}
           </span>
-          <button
-            onClick={() => void handleRefresh()}
-            title={
-              queue.length > 0
-                ? i18nT('pages.chat.sideChat.refresh_blocked_queued')
-                : isBusy
-                  ? i18nT('pages.chat.sideChat.refresh_blocked_busy')
-                  : undefined
-            }
-            // Disabled WHILE a turn runs: a running turn can hold an accepted
-            // but unconsumed steer that has no queue card, so the empty-queue
-            // check cannot see it and a mid-turn Refresh would silently drop
-            // it. The hung-turn escape is the Stop control, which cancels the
-            // turn and settles the panel; once that clears (`is_complete` flips,
-            // `isBusy` falls), Refresh becomes reachable the ordinary way. So
-            // the steer-loss collateral never exists and Stop is the single
-            // in-flight escape.
-            disabled={isBusy || refreshMutation.isPending || queue.length > 0}
-            className="flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover disabled:opacity-50 bg-transparent border-none cursor-pointer disabled:cursor-not-allowed"
-          >
-            <RotateCcw size={11} className={refreshMutation.isPending ? 'animate-spin' : ''} />
-            {i18nT('pages.chat.sideChat.refresh_context')}
-          </button>
+          <span className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => void handleRefresh()}
+              title={
+                queue.length > 0
+                  ? i18nT('pages.chat.sideChat.refresh_blocked_queued')
+                  : isBusy
+                    ? i18nT('pages.chat.sideChat.refresh_blocked_busy')
+                    : undefined
+              }
+              // Disabled WHILE a turn runs: a running turn can hold an accepted
+              // but unconsumed steer that has no queue card, so the empty-queue
+              // check cannot see it and a mid-turn Refresh would silently drop
+              // it. The hung-turn escape is the Stop control, which cancels the
+              // turn and settles the panel; once that clears (`is_complete` flips,
+              // `isBusy` falls), Refresh becomes reachable the ordinary way. So
+              // the steer-loss collateral never exists and Stop is the single
+              // in-flight escape.
+              disabled={isBusy || refreshMutation.isPending || queue.length > 0}
+              className="flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover disabled:opacity-50 bg-transparent border-none cursor-pointer disabled:cursor-not-allowed"
+            >
+              <RotateCcw size={11} className={refreshMutation.isPending ? 'animate-spin' : ''} />
+              {i18nT('pages.chat.sideChat.refresh_context')}
+            </button>
+            <InfoTip text={i18nT('pages.chat.sideChat.refresh_context_hint')} />
+          </span>
         </div>
       )}
       <ChatMessageList
@@ -1024,11 +1038,12 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
       {!displayError && lengthHint && (
         <div className="px-3 py-1 text-[12px] text-warn border-t border-border" role="status" data-testid="side-chat-length-hint">{lengthHint}</div>
       )}
-      {!displayError && !lengthHint && (sendStatus?.notice || localNotice) && (
+      {!displayError && !lengthHint && (sendStatus?.notice || localNotice || closedElsewhere) && (
         // The standing unconfirmed notice carries a decision ("check the
         // conversation above before sending it again"), so it reads at body
-        // weight; the transient demote notice keeps the muted strip.
-        <div className={`px-3 py-1 text-[12px] border-t border-border ${sendStatus?.notice ? 'text-text' : 'text-muted'}`} role="status">{sendStatus?.notice?.text ?? localNotice}</div>
+        // weight; the transient demote notice and the note that another tab
+        // cleared the conversation keep the muted strip.
+        <div className={`px-3 py-1 text-[12px] border-t border-border ${sendStatus?.notice ? 'text-text' : 'text-muted'}`} role="status">{sendStatus?.notice?.text ?? localNotice ?? i18nT('pages.chat.sideChat.closed_in_another_tab')}</div>
       )}
       {queueCards.length > 0 && (
         <div className="shrink-0 pt-1">

@@ -586,6 +586,36 @@ def _overlapping(pair):
     return ["src/kiro_crew/ledger/store.py"]
 
 
+def _comment(login, body, assoc="CONTRIBUTOR"):
+    """One comment in the shape ``gh pr view --json author,comments`` returns."""
+    return {"author": {"login": login}, "authorAssociation": assoc, "body": body}
+
+
+def _jq_count(mod, comments, author="author"):
+    """What the selector answers for a payload, run through a real ``jq``.
+
+    ``gh`` evaluates the program remotely, so a stubbed runner returns a number
+    without it ever executing. Every case that asserts WHICH comments count has
+    to go through this.
+    """
+    proc = subprocess.run(
+        [shutil.which("jq"), "-r", mod.resync_selector()],
+        input=json.dumps({"author": {"login": author}, "comments": list(comments)}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        # Bounded so a jq that never exits fails at this line instead of hanging
+        # the xdist worker, which loses the whole run rather than one test.
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+def _resync_body(mod):
+    return mod.RESYNC_MARKER + " `a.py` since this head went green; CI re-running."
+
+
 def test_a_spent_re_sync_cap_is_its_own_exit_code(mod, monkeypatch, pair, capsys) -> None:
     """At the cap the overlap is still real, but another rebase is the wrong answer.
 
@@ -689,36 +719,149 @@ def test_the_selector_counts_only_re_syncs_somebody_could_have_pushed(mod) -> No
     re-syncs are real, and the cap silently stops applying to them.
     """
 
-    def comment(login, body, assoc="CONTRIBUTOR"):
-        return {"author": {"login": login}, "authorAssociation": assoc, "body": body}
+    resync = _resync_body(mod)
+    comments = [
+        # The author's own re-syncs, whatever their association: an outside
+        # contributor driving their own fork PR reads CONTRIBUTOR.
+        _comment("author", resync),
+        _comment("author", resync),
+        # A maintainer driving a branch they did not author -- an assigned PR,
+        # or a fork with maintainer edits on -- really did spend a re-sync.
+        _comment("maintainer", resync, assoc="MEMBER"),
+        # Neither the author nor able to push: cannot spend the budget.
+        _comment("drive-by", resync),
+        _comment("stranger", resync, assoc="NONE"),
+        # The author quoting the marker mid-sentence is not a re-sync record.
+        _comment("author", "Earlier I posted " + mod.RESYNC_MARKER),
+    ]
+    assert _jq_count(mod, comments) == "3"
 
-    resync = mod.RESYNC_MARKER + " `a.py` since this head went green; CI re-running."
-    payload = {
-        "author": {"login": "author"},
-        "comments": [
-            # The author's own re-syncs, whatever their association: an outside
-            # contributor driving their own fork PR reads CONTRIBUTOR.
-            comment("author", resync),
-            comment("author", resync),
-            # A maintainer driving a branch they did not author -- an assigned PR,
-            # or a fork with maintainer edits on -- really did spend a re-sync.
-            comment("maintainer", resync, assoc="MEMBER"),
-            # Neither the author nor able to push: cannot spend the budget.
-            comment("drive-by", resync),
-            comment("stranger", resync, assoc="NONE"),
-            # The author quoting the marker mid-sentence is not a re-sync record.
-            comment("author", "Earlier I posted " + mod.RESYNC_MARKER),
-        ],
-    }
-    proc = subprocess.run(
-        [shutil.which("jq"), "-r", mod.resync_selector()],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
+
+@pytest.mark.skipif(
+    shutil.which("jq") is None,
+    reason="requires jq to evaluate the selector gh otherwise runs for us",
+)
+def test_a_reset_comment_restarts_the_count_and_only_a_member_can_post_one(mod) -> None:
+    """Who may reset is the whole security of the cap, so it is asserted per author.
+
+    The count is what exit 31 reads, so whoever can zero it can hand the PR
+    another budget. The author clause that the re-sync count needs would be fatal
+    here: the loop drives a PR as its author, so an author who could reset would
+    be a loop re-arming itself and the cap would bound nothing at all. A
+    passer-by must not be able to either. Both negatives are below, next to the
+    positive, because the selector is one program and a change that widens the
+    reset arm would otherwise only redden a case nobody wrote.
+    """
+    resync = _resync_body(mod)
+    spent = [_comment("author", resync) for _ in range(mod.RESYNC_CAP)]
+    reset = mod.RESET_MARKER + " -- I rebased it myself, carry on."
+
+    # The positive: a member of the project hands the PR back, and the re-syncs
+    # after the reset are the only ones left counting.
+    assert _jq_count(mod, spent + [_comment("owner", reset, assoc="OWNER")]) == "0"
+    assert (
+        _jq_count(
+            mod,
+            spent + [_comment("owner", reset, assoc="OWNER"), _comment("author", resync)],
+        )
+        == "1"
     )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "3"
+    # Repeated resets each restart it; there is no cumulative memory to leak.
+    assert (
+        _jq_count(
+            mod,
+            [
+                _comment("author", resync),
+                _comment("owner", reset, assoc="OWNER"),
+                _comment("author", resync),
+                _comment("maintainer", reset, assoc="COLLABORATOR"),
+                _comment("author", resync),
+            ],
+        )
+        == "1"
+    )
+
+    # The author is NOT a resetter, even though the same login's re-syncs count.
+    assert _jq_count(mod, spent + [_comment("author", reset)]) == str(mod.RESYNC_CAP)
+    # Nor is a drive-by, who could otherwise keep any PR's loop running forever.
+    assert _jq_count(mod, spent + [_comment("stranger", reset, assoc="NONE")]) == str(
+        mod.RESYNC_CAP
+    )
+    # Quoting the phrase mid-body is discussion, not a reset: same anchoring rule
+    # the re-sync marker gets, or talking about a reset would perform one.
+    assert _jq_count(mod, spent + [_comment("owner", "See " + mod.RESET_MARKER, "OWNER")]) == str(
+        mod.RESYNC_CAP
+    )
+
+
+@pytest.mark.skipif(
+    shutil.which("jq") is None,
+    reason="requires jq to evaluate the selector gh otherwise runs for us",
+)
+def test_a_reset_hands_a_capped_pr_back_to_the_loop(mod, monkeypatch, pair, capsys) -> None:
+    """Exit 31 has to be an exit a PR can come back from; that is the whole fix.
+
+    Asserted end to end rather than on the selector alone, because the door is
+    open only if all three parts agree: the selector restarts the count, the
+    summary carries it, and ``main`` picks 30 over 31 again. Feeding the exit
+    codes a hand-written number instead would assert the number.
+    """
+    files = _overlapping(pair)
+    resync = _resync_body(mod)
+    spent = [_comment("author", resync) for _ in range(mod.RESYNC_CAP)]
+    handed_back = spent + [
+        _comment("owner", mod.RESET_MARKER + " -- looked at it, carry on.", assoc="OWNER")
+    ]
+
+    _stub_gh(mod, monkeypatch, pr_files=files, comments=(0, _jq_count(mod, spent)))
+    assert _run_main(mod, monkeypatch, pair, "--pr", "42") == mod.EXIT_CAP_SPENT
+    assert "CAP SPENT" in capsys.readouterr().err
+
+    _stub_gh(mod, monkeypatch, pr_files=files, comments=(0, _jq_count(mod, handed_back)))
+    code = _run_main(mod, monkeypatch, pair, "--pr", "42")
+
+    assert code == mod.EXIT_STALE
+    err = capsys.readouterr().err
+    assert "STALE:" in err
+    assert "CAP SPENT" not in err
+
+
+def test_the_cap_spent_message_names_the_way_back(mod, monkeypatch, pair, capsys) -> None:
+    """A bound with an undocumented exit is the one-way door all over again.
+
+    The mechanism is only half the fix: the person who meets exit 31 is told to
+    take the PR over, and the reset is worth nothing if that message does not say
+    it exists. It also has to keep saying the comments must not be deleted, since
+    deleting them clears the count too and destroys the record it reads.
+    """
+    files = _overlapping(pair)
+    _stub_gh(mod, monkeypatch, pr_files=files, comments=(0, str(mod.RESYNC_CAP)))
+
+    _run_main(mod, monkeypatch, pair, "--pr", "42")
+
+    err = capsys.readouterr().err
+    assert mod.RESET_MARKER in err
+    assert "do not delete the re-sync comments" in err
+
+
+def test_the_reset_is_documented_where_a_cycle_actually_reads_it(mod) -> None:
+    """The loop must ask for a reset and never post one, so both files must say so.
+
+    `green_age.py` accepts a reset from any member of the project, and the
+    account a loop runs as is often exactly that, so nothing server-side stops a
+    cycle from writing its own. The only thing that does is the instruction --
+    and a cycle wakes with no memory, so an instruction missing from the arming
+    template never reaches it, however clearly SKILL.md states it.
+    """
+    skill = " ".join((_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    template = " ".join(_template_text().split())
+
+    for text in (skill, template):
+        assert mod.RESET_MARKER in text
+        assert "never post" in text
+    # Each reset buys the same budget as the first, so the prose and RESYNC_CAP
+    # cannot drift into promising a wider one.
+    assert "grants another {}".format(_CAP_WORDS[mod.RESYNC_CAP]) in skill
 
 
 def test_the_counting_call_asks_github_for_the_author(mod, monkeypatch, pair) -> None:

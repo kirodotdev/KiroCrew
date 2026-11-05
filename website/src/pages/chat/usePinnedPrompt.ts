@@ -1,4 +1,4 @@
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { type Dispatch, type RefObject, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 
 import type { DisplayItem } from './types'
 import type { PasteBlock } from '../../utils/pasteTokens'
@@ -92,7 +92,19 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
   const pinFoldRef = useRef<HTMLDivElement | null>(null)
   const pinCardRef = useRef<HTMLDivElement | null>(null)
   const pinEnabledRef = useRef(true)
-  const [pinned, setPinned] = useState<PinnedPromptState | null>(null)
+  const [pinned, setPinnedState] = useState<PinnedPromptState | null>(null)
+  // Every writer goes through this setter, so the ref holds the newest value
+  // React will commit. The recompute runs on every scroll and list change and
+  // usually lands on the state it already has; comparing here schedules nothing
+  // then, where an updater returning `prev` still makes React re-run the page
+  // body to discover it whenever the page has other work pending.
+  const pinnedRef = useRef<PinnedPromptState | null>(null)
+  const setPinned = useCallback<Dispatch<SetStateAction<PinnedPromptState | null>>>((action) => {
+    const next = typeof action === 'function' ? action(pinnedRef.current) : action
+    if (Object.is(next, pinnedRef.current)) return
+    pinnedRef.current = next
+    setPinnedState(next)
+  }, [])
   const [pinExpanded, setPinExpanded] = useState(false)
   // Collapsed card height — the hand-off line is derived from it, so it must be
   // known even while nothing is pinned (no card mounted to measure). Seeded with
@@ -421,7 +433,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       maxH,
       stripUncovered,
     }))
-  }, [requiresMountedHandoff, scrollerRef])
+  }, [requiresMountedHandoff, scrollerRef, setPinned])
   const updatePinnedPromptRef = useRef(updatePinnedPrompt)
   updatePinnedPromptRef.current = updatePinnedPrompt
   // The card grows at rest with no scroll to run the recompute — the hover peek

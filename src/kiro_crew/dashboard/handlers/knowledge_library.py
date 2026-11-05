@@ -427,9 +427,8 @@ async def delete_item(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
 
     # BEGIN IMMEDIATE takes the write lock eagerly (busy_timeout 10s, so a
-    # concurrent writer can park this call for that long) and the commit is
-    # followed by _load_graph(), a full scan of entities and entity_relations
-    # that grows linearly with the library -- never on the event loop.
+    # concurrent writer can park this call for that long) and the delete
+    # scales with the library -- never on the event loop.
     # The SEL record rides in the same worker as the commit: a client
     # disconnect cancels this coroutine at the await, and a cancellation
     # landing after the worker committed must not skip the audit line. The
@@ -517,12 +516,12 @@ async def get_entity_graph(request: web.Request) -> web.Response:
     # the event loop, where the loop-stall watchdog is armed -- so the scan has
     # to happen on a worker thread, the same way this module already offloads
     # the store's SQL.
-    await asyncio.to_thread(store.ensure_graph_loaded)
-    # get_entity_subgraph pins one graph reference internally and does the
-    # existence check against it, so the 404 decision and the walk read the SAME
-    # snapshot even if a worker-thread mutation swaps in a rebuilt graph; it
-    # returns None when the entity is absent.
-    result = store.get_entity_subgraph(entity_id, depth)
+    # The whole read runs on a worker: a delete on another thread can mark the
+    # graph stale at any moment, and the next `.graph` read would then rebuild
+    # wherever it runs. get_entity_subgraph pins one graph reference internally
+    # and does the existence check against it, so the 404 decision and the walk
+    # read the SAME snapshot; it returns None when the entity is absent.
+    result = await asyncio.to_thread(store.get_entity_subgraph, entity_id, depth)
     if result is None:
         return web.json_response({"error": "entity not found"}, status=404)
     return web.json_response(result)
@@ -634,14 +633,14 @@ async def get_full_graph(request: web.Request) -> web.Response:
     # Materialise the graph off-loop before any `.graph` read below. The store
     # defers the load to its first reader; this handler already offloads its SQL
     # for the same reason, and an inline graph read would stall the event loop.
-    await asyncio.to_thread(store.ensure_graph_loaded)
-
-    # Pin one graph reference for every read below. ``_load_graph`` publishes a
-    # rebuilt graph by swapping ``store._graph``; re-reading
-    # ``store.graph`` at each step (degree ranking, then per-node attribute
-    # reads, then edges) could otherwise mix an old and a new graph and drop a
-    # node between steps. One capture means this response is a single snapshot.
-    graph = store.graph
+    #
+    # Pin the graph the worker saw loaded and use it for every read below.
+    # Re-reading ``store.graph`` here could find it marked stale by a delete on
+    # another thread and rebuild on the event loop; and ``_load_graph`` publishes
+    # a rebuilt graph by swapping ``store._graph``, so re-reading at each step
+    # (degree ranking, then per-node attribute reads, then edges) could mix an
+    # old and a new graph. One capture means this response is a single snapshot.
+    graph = await asyncio.to_thread(store.ensure_graph_loaded)
 
     # Source filter: restrict to entities mentioned in items from specific sources
     source_id_param = request.query.get("source_id", "").strip()

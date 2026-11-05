@@ -241,13 +241,17 @@ class TestDoctorKasBundle:
         _floor_monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
 
     def test_nothing_installed_is_an_issue_naming_the_install(self, monkeypatch, capsys):
+        """Not installed yet is a warning: the first chat downloads the engine, and
+        the row names the command that does it now."""
         from kiro_crew.agent_sdk import kas_bundle
 
         monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "bundle:      ❌" in out
+        assert "route:       bundle" in out
+        assert "bundle:      ⚠  not installed yet" in out
+        assert "downloads it at the first chat" in out
         assert "kirocrew kas install" in out
         assert issues == ["agent.kas_bundle is on but no KAS engine bundle is installed"]
         assert "relay:" not in out
@@ -268,6 +272,61 @@ class TestDoctorKasBundle:
         )
         assert "kiro-cli" not in out
         assert len(issues) == 1
+
+    def test_another_version_on_disk_names_what_is_installed_and_what_is_needed(
+        self, monkeypatch, capsys
+    ):
+        """A release whose pin moved finds the old engine, not nothing: say both versions.
+
+        A warning like nothing-installed, because the first chat installs the pin."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: ["0.66.33"])
+        monkeypatch.setattr(kas_bundle, "pinned_version", lambda: "0.66.40")
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "bundle:      ⚠  KAS 0.66.33 installed, but this release needs KAS 0.66.40" in out
+        assert "downloads it at the first chat" in out
+        assert "not installed yet under" not in out
+        assert "kirocrew kas install" in out
+        assert issues == [
+            "agent.kas_bundle is on but the KAS engine this release needs (0.66.40) "
+            "is not installed; on disk: 0.66.33"
+        ]
+
+    def test_an_incomplete_pinned_directory_names_the_force_install(self, monkeypatch, capsys):
+        """The pin's directory is there but does not read back: not "X installed, needs X"."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: ["0.66.40"])
+        monkeypatch.setattr(kas_bundle, "pinned_version", lambda: "0.66.40")
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "bundle:      ❌ KAS 0.66.40 is on disk but incomplete" in out
+        assert "kirocrew kas install --force" in out
+        assert "but this release needs" not in out
+        assert "downloads it at the first chat" not in out
+        assert issues == ["the KAS engine directory for 0.66.40 is incomplete"]
+
+    def test_an_unreadable_engine_directory_is_an_issue_not_a_crash(self, monkeypatch, capsys):
+        from kiro_crew.agent_sdk import kas_bundle
+
+        def unreadable():
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr(kas_bundle, "installed_versions", unreadable)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "bundle:      ❌ cannot read" in out
+        assert "Permission denied" in out
+        assert len(issues) == 1
+        assert issues[0].startswith("the KAS engine directory cannot be read")
 
     @staticmethod
     def _installed(tmp_path, version: str):
@@ -555,8 +614,7 @@ class TestDoctorKas:
         )
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the KAS section's autouse kiro-cli pin, moved verbatim; no test in test_cli_doctor_agent_auth.py calls monkeypatch.undo()
-    def _accepting_cli(self, monkeypatch):
+    def _accepting_cli(self, _floor_monkeypatch):
         """Pin the installed kiro-cli to one that accepts the spec ``permissions``
         field, so the cases here stay about the relay and the engine.
 
@@ -564,7 +622,7 @@ class TestDoctorKas:
         kiro-cli -- absent on CI, which reads as refusing and appends an issue the
         engine cases do not expect.
         """
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             cli_doctor,
             "installed_kiro_cli_version",
             lambda: cli_doctor.SPEC_PERMISSIONS_MIN_VERSION,

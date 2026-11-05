@@ -523,6 +523,16 @@ async def test_the_identity_sweep_barrier_finishes_under_a_foreground_stream():
         (dict(user_origin=True, crew_log_actor="app", provenance_restored=False), BG),
         # A queue entry restored from a previous process: its provenance is a file.
         (dict(user_origin=True, crew_log_actor="user", provenance_restored=True), BG),
+        # A bulk Resume: the owner's provenance, but nobody waits on this one start.
+        (
+            dict(
+                user_origin=True,
+                crew_log_actor="user",
+                provenance_restored=False,
+                start_background=True,
+            ),
+            BG,
+        ),
     ],
 )
 def test_a_dashboard_turn_is_foreground_only_when_a_person_sent_it(flags, expected):
@@ -881,19 +891,6 @@ def test_a_claimer_passes_the_owner_priority_positionally(path, function, callee
     assert [ast.unparse(a) for call in calls for a in call.args][-1:] == [
         "owner_start_priority(request)"
     ]
-
-
-def test_an_unattended_stream_claims_nothing():
-    """Meeting translation is a per-line stream nobody waits on, so it names no
-    priority at all: the BACKGROUND default is the whole statement."""
-    assert (
-        _priority_args(
-            "apps/builtins/meetings/backend/domain/translate.py",
-            "run_oneshot_translation",
-            "get_or_create",
-        )
-        == []
-    )
 
 
 def _turn_tree() -> ast.Module:

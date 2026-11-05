@@ -18,7 +18,7 @@ import os
 import re
 import stat
 from pathlib import Path
-from typing import Any, Container
+from typing import Any, Container, Mapping
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.apps.bridges_mcp_config import (
@@ -68,7 +68,7 @@ def _agent_mcp_policy(app_name: str) -> dict[str, Any]:
     path = app_dir(app_name) / "data" / AGENT_MCP_POLICY_FILE
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError, OSError):
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -648,9 +648,39 @@ def _read_agent_config(path: Path) -> dict[str, Any] | None:
     """The agent JSON currently on disk, or None when there is nothing usable."""
     try:
         data = loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def snapshot_app_agent_configs(app_name: str) -> dict[str, dict[str, Any]]:
+    """Every materialized agent config of *app_name*, keyed by its file name.
+
+    Taken by a caller that deregisters an app and then registers it again (an update):
+    the deregister deletes these files, so the registration that follows has no prior
+    file to carry the user's edits from (see :func:`_preserve_user_agent_edits`) unless
+    it is handed this snapshot. Same name match as :func:`_deregister_agents`. A link
+    is skipped: it is a legacy pointer at the app's own template, not a user's edit.
+    An unreadable or non-object file is skipped, as the on-disk read skips it.
+    """
+    prefix = _safe_link_name(app_name + "/")
+    snapshot: dict[str, dict[str, Any]] = {}
+    try:
+        entries = list(_kiro_agents_dir().iterdir())
+    except OSError:
+        return snapshot
+    for entry in entries:
+        if not (entry.name.startswith(prefix) and entry.name.endswith(".json")):
+            continue
+        try:
+            if not stat.S_ISREG(os.lstat(entry).st_mode):
+                continue
+        except OSError:
+            continue
+        config = _read_agent_config(entry)
+        if config is not None:
+            snapshot[entry.name] = config
+    return snapshot
 
 
 def _preserve_user_agent_edits(
@@ -718,8 +748,9 @@ def _preserve_user_agent_edits(
 #: can move, or a dependency resolved from the installed Python package — cannot
 #: express it in the packaged file at all.
 #:
-#: `pptx-maker` is that case: its MCP server lives under the provisioned engine root
-#: and is launched with `uv`, neither of which has a fixed location.
+#: Such a builtin ships an ``agent_placeholders`` submodule whose
+#: ``placeholder_values()`` computes them (an MCP server under a provisioned engine
+#: root, launched with a ``uv`` resolved per host, has no fixed location).
 
 
 _TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{[A-Z][A-Z0-9_]*\}")
@@ -734,40 +765,43 @@ _RENDERED_AGENTS_DIRNAME = "rendered-agents"
 def _placeholder_values(app_name: str) -> dict[str, str]:
     """Trusted substitutions for *app_name*'s agent templates, or ``{}``.
 
-    Every value is COMPUTED HERE, in the gateway, from the data home and the installed
+    Every value is COMPUTED in the gateway process, by the builtin's own shipped
+    ``agent_placeholders.placeholder_values()``, from the data home and the installed
     Python package — the same way the app's own provisioner computes them. Nothing is
     read back from disk, so there is nothing for an attacker with write access to the
-    engine directory to influence.
+    engine directory to influence. Only a package in ``BUILTIN_NAMES`` is consulted, so
+    the code that computes them is shipped package code, never an installed app's.
 
-    An unknown app gets ``{}``, which leaves its template unrendered and therefore
-    unregistered (see :func:`_render_shipped_agent`) — fail-closed, so adding a
-    placeholder to a new app's config is inert until its values are named here.
+    An app with no such module gets ``{}``, which leaves its template unrendered and
+    therefore unregistered (see :func:`_render_shipped_agent`) — fail-closed, so adding
+    a placeholder to a new app's config is inert until its package computes the value.
+    A result that is not a ``{"{NAME}": str}`` mapping is refused whole the same way.
     """
-    if app_name != "pptx-maker":
+    import importlib
+
+    from kiro_crew.apps import builtins
+
+    package = app_name.replace("-", "_")
+    if package not in builtins.BUILTIN_NAMES:
+        return {}
+    # Looked for on disk first: a builtin with no placeholders is never imported here.
+    if not (Path(builtins.__file__).parent / package / "agent_placeholders.py").is_file():
         return {}
     # Imported lazily and defensively: this is a builtin's own module, and a
     # registration path must not fail because one app's package is unimportable.
     try:
-        from kiro_crew.apps.builtins.pptx_maker.backend import paths as pptx_paths
-        from kiro_crew.apps.builtins.pptx_maker.backend import provision as pptx_provision
+        module = importlib.import_module(f"{builtins.__name__}.{package}.agent_placeholders")
+        values = module.placeholder_values()
     except Exception:  # pragma: no cover - defensive
         logger.warning("App %s: cannot resolve placeholder values", app_name)
         return {}
-    uv_bin = pptx_provision.resolve_uv()
-    if not uv_bin:
+    if not isinstance(values, dict) or not all(
+        isinstance(k, str) and _TEMPLATE_PLACEHOLDER_RE.fullmatch(k) and isinstance(v, str)
+        for k, v in values.items()
+    ):
+        logger.warning("App %s: placeholder values are malformed, none applied", app_name)
         return {}
-    return {
-        "{UV_BIN}": uv_bin,
-        "{ENGINE_ROOT}": str(pptx_paths.engine_root()),
-        "{ENGINE_MCP_DIR}": str(pptx_paths.engine_mcp_dir()),
-        "{APP_PROMPTS}": str(app_dir(app_name) / "prompts"),
-        # The engine invokes `pdftoppm`/`soffice` BY NAME from inside its MCP
-        # server, which kiro-cli spawns from this config — not from any gateway
-        # subprocess. So the app's managed tool dir has to be on the PATH declared
-        # here or the managed install is invisible at the one moment it matters.
-        # Appended, so a real system poppler still wins the engine's own lookup.
-        "{TOOLS_PATH}": pptx_provision.mcp_tools_path(),
-    }
+    return values
 
 
 def _render_shipped_agent(
@@ -785,17 +819,15 @@ def _render_shipped_agent(
     identically forever, so reporting them to a caller that retries would spin without
     ever converging. The ``OSError`` arm is the transient one.
 
-    **The gateway renders the template itself.** An earlier version of this took the
-    app's own provisioned copy from its install dir and verified it was "the template
-    with only placeholders substituted". A reviewer pointed out why that is unsound and
-    they were right: the check constrained WHERE a substitution could appear but not
-    WHAT it could contain, and `{UV_BIN}` is an executable path — so an agent with
-    write access to the engine dir could substitute its own binary and kiro-cli would
-    run it. Constraining the shape of an injection point is not the same as trusting
-    the value that lands in it.
+    **The gateway renders the template itself.** Verifying the app's own provisioned
+    copy as "the template with only placeholders substituted" is unsound: that check
+    constrains WHERE a substitution can appear but not WHAT it can contain, and
+    `{UV_BIN}` is an executable path — so an agent with write access to the engine
+    dir could substitute its own binary and kiro-cli would run it. Constraining the
+    shape of an injection point is not the same as trusting the value that lands in it.
     Since every value is computable here (:func:`_placeholder_values`), there is no
     reason to read any of them back from a directory the agent can write. Nothing on
-    the mutable side is trusted now — the bytes come from the immutable package, the
+    the mutable side is trusted — the bytes come from the immutable package, the
     values from the gateway.
 
     The output goes under the DATA HOME next to the agent symlinks, not into the app's
@@ -803,7 +835,8 @@ def _render_shipped_agent(
     """
     try:
         template = agent_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Unrendered: the caller's own read of this path reports the failure.
         return agent_path
     if not _TEMPLATE_PLACEHOLDER_RE.search(template):
         return agent_path
@@ -848,6 +881,7 @@ def _register_agents(
     manifest: AppManifest,
     app_root: Path,
     io_failures: list[str] | None = None,
+    prior_configs: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Materialize app agent JSONs into ~/.kiro/agents/ with namespaced names.
 
@@ -857,6 +891,10 @@ def _register_agents(
     agent name, malformed JSON, an unresolved template placeholder — and retrying those
     never converges. Only the I/O class can succeed on a later attempt, so only it is
     worth reporting to a caller that retries.
+
+    ``prior_configs`` is a :func:`snapshot_app_agent_configs` taken before the caller
+    deleted these files. An agent with no file on disk takes its prior config from it,
+    so the user's edits survive a deregister-then-register.
 
     Written as a COPY, not a symlink, for two reasons:
 
@@ -920,7 +958,7 @@ def _register_agents(
             # Read agent JSON to get the agent name
             try:
                 agent_data = json.loads(agent_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as exc:
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
                 logger.warning("App %s: unreadable agent %s: %s", app_name, agent_path, exc)
                 if isinstance(exc, OSError) and io_failures is not None:
                     io_failures.append(str(agent_path))  # transient; a malformed spec is not
@@ -959,6 +997,8 @@ def _register_agents(
             # Snapshot the user's own edits BEFORE the unlink below — after it there
             # is nothing left to read (see _preserve_user_agent_edits).
             prior_on_disk = _read_agent_config(link_path)
+            if prior_on_disk is None and prior_configs:
+                prior_on_disk = prior_configs.get(link_name)
 
             # Drop a legacy SYMLINK from an older Kiro Crew (which pointed at a file
             # inside the app) so the write below lands a real file at this path.

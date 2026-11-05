@@ -21,13 +21,20 @@ The fix:
     (older remotes, or a gateway that isn't running) makes mint fall back to the
     candidate search, so nothing regresses.
 
+    A gateway serving from a non-default data home (``KIROCREW_HOME``) also leaves
+    ``gateway-<port>.home`` in the DEFAULT run dir, naming that home and its launcher,
+    so a remote shell without ``KIROCREW_HOME`` runs that launcher when there is one
+    and that home has a marker.
+
 Trust: the marker lives in the ``0700`` ``run/`` dir (owner-only) and is written
 ``0600`` by the gateway itself; the dir is on the ``is_sensitive_path`` floor
 (``security._SENSITIVE_HOME_DIRS``) so agent file tools cannot write it. That
 write boundary — not an ownership check on the mint side — is what bounds who can
 plant a marker; the mint side additionally only ``exec``s the path when it is an
 executable file (``-x``), the same boundary as the pre-existing
-``~/.local/bin/kirocrew`` candidate.
+``~/.local/bin/kirocrew`` candidate. Another data home's ``run/`` is not on the
+floor, so mint execs only the launcher the fenced pointer names; the pointed
+home's ``.bin`` is only a liveness gate, never read or run.
 
 Second consumer — port discovery:
     The marker's *filename* also advertises which port a gateway is serving, so
@@ -58,7 +65,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import CONFIG_DIR_NAME, config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +89,10 @@ _MAX_START_TOKEN_BYTES = 128
 #: Directory containing gateway sidecars, relative to a data home. Public so a
 #: control plane can inspect a pod's isolated home without resolving its own.
 RUN_DIR_NAME = "run"
+
+#: The run dir a shell with no ``KIROCREW_HOME`` resolves, bound at import so the
+#: test floor can pin it. A gateway on another data home leaves its pointer here.
+_DEFAULT_RUN_DIR = Path.home() / CONFIG_DIR_NAME / RUN_DIR_NAME
 
 
 def pid_file_name(port: int) -> str:
@@ -717,7 +728,7 @@ def gateway_launcher_path() -> str | None:
 #: window into one that misses it, and a lock that waited less could refuse a
 #: peer that shutdown still considers live.
 #:
-#: A legitimate hold is three ``atomic_write`` calls or a handful of unlinks --
+#: A legitimate hold is up to four ``atomic_write`` calls or a handful of unlinks --
 #: single-digit milliseconds even on a slow filesystem -- so this is ~three orders
 #: of magnitude of headroom and never refuses a real contender. The ceiling
 #: matters because BOTH holders are latency-sensitive: the graceful path is
@@ -738,8 +749,8 @@ def marker_lock_path(port: int) -> Path:
 
 
 @contextlib.contextmanager
-def _marker_lock(port: int) -> Iterator[bool]:
-    """Hold the per-port marker lock for the block; yield whether it was taken.
+def _marker_lock(port: int, path: Path | None = None) -> Iterator[bool]:
+    """Hold the per-port marker lock (or the lock file at *path*); yield whether it was taken.
 
     This exists because a CHECK and the WRITE it authorises must not be separable.
     Reading the pid record, deciding the record names someone else, and then
@@ -748,9 +759,9 @@ def _marker_lock(port: int) -> Iterator[bool]:
     it was acted on. Holding the lock across all three is what makes the decision
     still true at the moment it is used.
 
-    Yields False rather than raising when the lock cannot be taken, and every
-    caller treats False as "do nothing". That is the fail-closed direction for
-    both callers, and they get there from opposite starting points:
+    Yields False rather than raising when the lock cannot be taken. Every caller
+    other than the pointer write treats that as "do nothing" -- the fail-closed
+    direction -- and they get there from opposite starting points:
 
     * A write that does not happen costs this generation its discovery marker,
       which is worth nothing to a process that does not hold the port.
@@ -760,9 +771,12 @@ def _marker_lock(port: int) -> Iterator[bool]:
       unsafe direction: that is precisely how a shutdown eats its successor's
       record.
 
+    The pointer write removes the pointer instead, because an unverifiable pointer
+    is the unsafe direction there.
+
     Never raises. A data home on a filesystem with no working locks (some network
-    mounts) yields False forever, which degrades to the two costs above rather
-    than to an unserialised write.
+    mounts) yields False forever, which degrades to the two costs above, and to no
+    pointer for a non-default home, rather than to an unserialised write.
     """
     fd: int | None = None
     guard = None
@@ -771,7 +785,9 @@ def _marker_lock(port: int) -> Iterator[bool]:
         # a contender observe the file empty mid-section (GH-9248), which is why
         # platform_compat.open_lock_file exists and why this mirrors it.
         fd = platform_compat.open_create_or_existing(
-            os.fspath(marker_lock_path(port)), os.O_RDWR, 0o600
+            os.fspath(path or marker_lock_path(port)),
+            os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
         )
         guard = platform_compat.file_lock(fd, exclusive=True, timeout=_MARKER_LOCK_TIMEOUT_SECS)
         guard.__enter__()
@@ -851,7 +867,7 @@ def _record_names_another_live_gateway(port: int, pid: int) -> bool:
 def write_marker(port: int) -> None:
     """Best-effort: record that this gateway serves *port*, plus its pid.
 
-    Writes three files, then prunes markers left by earlier runs on other ports:
+    Writes up to four files, then prunes markers left by earlier runs on other ports:
 
     * ``gateway-<port>.bin`` — the launcher path for the SSH token mint, or
       **empty** when no console script sits beside ``sys.executable`` (a
@@ -875,12 +891,23 @@ def write_marker(port: int) -> None:
       (:func:`_pid_record`), which is why the start identity is a separate file
       rather than a second line.
 
+    Outside a pod, a gateway on a non-default data home also writes
+    ``gateway-<port>.home`` (that home's path, then its launcher, one per line)
+    into the default run dir when the dir already exists, and logs the skip when
+    it does not. The write holds ``gateway-<port>.home.lock`` there and removes the
+    pointer again if :func:`clear_marker` ran meanwhile. The write is skipped once
+    :func:`clear_marker` has run; a gateway still covering the port that cannot take
+    the lock removes the pointer instead. A default-home gateway unlinks its port's
+    pointer, whoever wrote it. Neither happens unless this process published a
+    listener covering 127.0.0.1 on the port, mint's IPv4 target; that skip is
+    logged too.
+
     The start file is written FIRST. Both orders fail closed — a pid without a
     token reads as unproven, and a token without a pid is never consulted — but
     this one narrows the window in which a published pid has no token to none of
     the gateway's own making.
 
-    All three go through :func:`kiro_crew.atomic_write.atomic_write`, which uses a
+    Each goes through :func:`kiro_crew.atomic_write.atomic_write`, which uses a
     unique ``mkstemp`` (``O_EXCL``, mode ``0600``) temp then ``os.replace``.
     Using the shared helper — rather than a predictable ``<name>.tmp`` — closes a
     same-user symlink-TOCTOU: a pre-planted ``gateway-<port>.bin.tmp`` symlink
@@ -929,11 +956,39 @@ def write_marker(port: int) -> None:
                 _start_path_for(pid_path(port)), (token + "\n") if token else "", mode=0o600
             )
             atomic_write(pid_path(port), _pid_record(pid), mode=0o600)
+            pointer = _DEFAULT_RUN_DIR / f"{_MARKER_PREFIX}{int(port)}.home"
+            if published_listeners(port).isdisjoint(_LOOPBACK_FAMILY_BINDS["v4"]):
+                logger.info("No pointer for port %s: no published listener covers 127.0.0.1", port)
+            elif (config_dir() / RUN_DIR_NAME).resolve() == _DEFAULT_RUN_DIR.resolve():
+                pointer.unlink(missing_ok=True)
+            elif not os.environ.get("KIROCREW_POD") and _DEFAULT_RUN_DIR.is_dir():
+                # A pod's home is the control plane's to find; this gateway never
+                # creates the default run dir.
+                lock = _DEFAULT_RUN_DIR / f"{_MARKER_PREFIX}{int(port)}.home.lock"
+                with _marker_lock(port, lock) as pointer_locked:
+                    if published_listeners(port).isdisjoint(_LOOPBACK_FAMILY_BINDS["v4"]):
+                        logger.info("No pointer for port %s: stopped before the pointer lock", port)
+                    elif not pointer_locked:
+                        # Unverifiable without the lock, and a planted one execs an agent's
+                        # launcher; on overlapping listeners this drops a live home's too.
+                        logger.info("No pointer for port %s: the pointer lock is unavailable", port)
+                        pointer.unlink(missing_ok=True)
+                    else:
+                        atomic_write(
+                            pointer, f"{config_dir()}\n{launcher or ''}\n", mode=0o600, newline=""
+                        )
+                        # clear_marker forgets the listener first, so a stop that
+                        # ran during the write shows here; the lock keeps the
+                        # pointer ours to remove.
+                        if published_listeners(port).isdisjoint(_LOOPBACK_FAMILY_BINDS["v4"]):
+                            pointer.unlink(missing_ok=True)
+            elif not os.environ.get("KIROCREW_POD"):
+                logger.warning("No pointer for port %s: %s is not a dir", port, _DEFAULT_RUN_DIR)
             logger.info(
                 "Wrote gateway run-marker for port %s -> %s", port, launcher or "(port only)"
             )
         except Exception as e:  # best-effort — never break startup on a marker write
-            logger.warning("Could not write gateway run-marker for port %s: %s", port, e)
+            logger.warning("Could not write the run-marker or pointer for port %s: %s", port, e)
     prune_markers(keep_port=port)
 
 
@@ -1020,8 +1075,9 @@ def listener_secret_paths(port: int) -> list[Path]:
 
 
 #: Listener addresses THIS process published a credential for, per port. Written
-#: by :func:`note_published_listener` at publication time and read only by
-#: :func:`clear_marker`, which must delete its own entries and no one else's.
+#: by :func:`note_published_listener` at publication time and read by
+#: :func:`clear_marker`, which must delete its own entries and no one else's,
+#: and by both pointer mutations, which need this process to cover 127.0.0.1.
 #: In-process rather than on disk on purpose: the only caller of ``clear_marker``
 #: is the owning gateway's own graceful shutdown, so the knowledge is already
 #: here, and a file recording it would itself need an ownership proof.
@@ -1153,6 +1209,11 @@ def _blank_listener_secret(path: Path) -> bool:
 def clear_marker(port: int) -> None:
     """Best-effort removal of the run-marker, pid sidecar, start identity and credentials.
 
+    The default run dir's pointer goes only when its first line names this data
+    home, since a gateway on another home may have rewritten it for this port,
+    and only when this process published a listener covering 127.0.0.1 there,
+    as :func:`write_marker` requires.
+
     The start identity goes with the pid it attests: on its own it names nothing,
     and leaving it beside a pid file a later gateway rewrites is exactly the
     stale-token pairing the freshness check exists to refuse.
@@ -1188,7 +1249,16 @@ def clear_marker(port: int) -> None:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+    pointer = _DEFAULT_RUN_DIR / f"{_MARKER_PREFIX}{int(port)}.home"
+    covers = not published_listeners(port).isdisjoint(_LOOPBACK_FAMILY_BINDS["v4"])
+    # Forgotten before the pointer is read, so a pointer write that lands after
+    # this point sees no coverage and removes itself.
     _PUBLISHED_LISTENERS.pop(int(port), None)
+    try:
+        if covers and pointer.read_bytes().partition(b"\n")[0] == os.fsencode(config_dir()):
+            pointer.unlink()
+    except OSError:
+        pass
 
 
 def clear_late_marker_write(port: int) -> bool:

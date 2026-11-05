@@ -1171,13 +1171,11 @@ class TestSqliteVectorSearchNumpyRung:
         for n_rows in (20, 40):
             store = _sqlite_search_store(tmp_path / f"n{n_rows}", n_rows, opened=opened)
             counting = _CountingNumpy(vm.np)
-            monkeypatch.setattr(vm, "np", counting)
-            try:
+            with monkeypatch.context() as mp:
+                mp.setattr(vm, "np", counting)
                 results = store._sqlite_vector_search(
                     _spread_embed(_EPISODIC_DIM)("gate"), "gate", n_rows, mmr=False
                 )
-            finally:
-                monkeypatch.undo()
             assert len(results) == n_rows
             assert counting.asarray_calls, "the numpy rung was never entered"
             counts.append((counting.asarray_calls, counting.frombuffer_calls))

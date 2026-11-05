@@ -1,11 +1,8 @@
 """The MCP ``send_message`` tool's advertised shape must match what validates.
 
-``validate_tool_args`` REJECTS an unknown field, so a property advertised in the
-tool's ``inputSchema`` but missing from ``SEND_MESSAGE_SCHEMA`` does not merely go
-unvalidated — the whole call fails and the capability is 0% reachable over MCP,
-while the dashboard path that shares the handler keeps working. That asymmetry is
-invisible to every test that exercises only one side, which is why the agreement
-itself is pinned here.
+``validate_tool_args`` rejects an unknown field, so a property advertised in the
+``inputSchema`` but missing from ``SEND_MESSAGE_SCHEMA`` fails every MCP call while the
+dashboard path keeps working. A test of one side alone cannot see that.
 """
 
 from __future__ import annotations
@@ -121,12 +118,9 @@ def test_a_plain_send_still_validates_without_the_pair() -> None:
 def test_the_channel_session_roster_is_the_gateways_minus_owner_inference_gaps() -> None:
     """The two rosters are derived from one source and differ only by reason.
 
-    ``channel_type`` names a CONVERSATION (this session's, or an explicit
-    ``target_id``), so it needs no owner. A channel ``session`` INFERS a recipient
-    through ``_owner_dm_target``, so it additionally needs the transport to tell
-    configured recipients from peers learned off inbound traffic. Every member of
-    the narrower set is a member of the wider one, and each exclusion carries its
-    reason at the definition -- so this stays a derivation, not hand-kept drift.
+    ``channel_type`` names a conversation and needs no owner. A channel ``session``
+    infers a recipient through ``_owner_dm_target``, so its transport must also tell
+    configured recipients from peers learned off inbound traffic.
     """
     from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES, CHANNEL_SEND_NAMESPACES
     from kiro_crew.dashboard.handlers.messaging import _SEND_MESSAGE_CHANNEL_TYPES
@@ -146,16 +140,10 @@ def test_a_learned_peer_channel_takes_channel_type_but_never_an_inferred_owner_d
 ) -> None:
     """The exclusions that keep an inferred owner DM off a LEARNED peer.
 
-    Both fold identities learned from inbound traffic into
-    ``configured_targets()`` -- Weixin's ``_known_users``, WeCom's ``_warm_chats``
-    (which under ``allow_all_users`` become the list outright) -- so a peer who
-    messaged the bot once can be the single available direct target, which is what
-    ``_owner_dm_target`` reads as the owner. Neither is caught downstream: both
-    ``may_send_to`` implementations return True unconditionally under their open
-    policy.
-
-    ``channel_type`` is NOT withdrawn for either: it addresses a conversation
-    rather than inferring a recipient, so it never consults ``_owner_dm_target``.
+    Both fold learned identities into ``configured_targets()`` (Weixin's
+    ``_known_users``, WeCom's ``_warm_chats``), so a peer who messaged the bot once can
+    read as the owner, and both ``may_send_to`` allow it under the open policy.
+    ``channel_type`` stays: it never consults ``_owner_dm_target``.
     """
     from kiro_crew.constants import CHANNEL_SEND_NAMESPACES
     from kiro_crew.dashboard.handlers.messaging import _SEND_MESSAGE_CHANNEL_TYPES
@@ -169,13 +157,9 @@ def test_a_learned_peer_channel_takes_channel_type_but_never_an_inferred_owner_d
 def test_no_owner_dm_channel_advertises_learned_identities() -> None:
     """The ratchet that keeps the exclusion list from being hand-kept.
 
-    ``_owner_dm_target`` infers an owner from ``configured_targets()``, and its
-    safety claim is that the agent can only reach somebody the USER configured. A
-    transport that folds a learned/warm/known set into that method breaks the claim
-    silently -- the roster still admits it and the send still succeeds, just to the
-    wrong human. Deriving the check from the transports means a channel that starts
-    mixing learned identities in fails HERE rather than becoming an owner-DM target
-    and being found later by review.
+    ``_owner_dm_target`` must reach only someone the user configured. A transport that
+    folds learned identities into ``configured_targets()`` would send to the wrong
+    person silently, so it fails here instead.
     """
     import inspect
 
@@ -256,18 +240,9 @@ def test_an_ambiguous_webex_allowlist_is_refused_rather_than_guessed() -> None:
 def test_a_channel_that_cannot_dm_proactively_is_in_the_roster_but_yields_no_target() -> None:
     """The asymmetry the derivation must NOT flatten, on a real transport.
 
-    Channels differ because platforms differ, and a roster is the wrong place to
-    encode that: Feishu can only reply to an inbound message, so it declares its
-    DM targets unavailable with a reason. Being accepted by ``session`` and being
-    deliverable are therefore separate questions, answered in separate places --
-    the roster admits the value, and ``_owner_dm_target`` declines the send at the
-    side-effect boundary where live config can be read.
-
-    Webex passes the same gate because its platform genuinely permits the send
-    (``toPersonEmail`` opens the 1:1 space server-side), not because the gate is
-    lenient. Pinned on the real ``FeishuTransport`` because a stub with
-    ``available=False`` would prove only that the filter reads the flag, not that
-    a shipped channel sets it.
+    Feishu can only reply to an inbound message, so the roster admits it and
+    ``_owner_dm_target`` declines the send. Uses the real ``FeishuTransport``: a stub
+    with ``available=False`` would not prove a shipped channel sets the flag.
     """
     from kiro_crew.dashboard.handlers.messaging import _owner_dm_target
     from kiro_crew.feishu.transport import FeishuTransport
@@ -280,11 +255,9 @@ def test_a_channel_that_cannot_dm_proactively_is_in_the_roster_but_yields_no_tar
 
 
 def test_the_roster_move_did_not_change_the_roster() -> None:
-    """``constants`` is the new home; ``messaging.link`` re-exports the same object.
+    """``messaging.link`` re-exports the same roster object that ``constants`` defines.
 
-    The move exists to break an import cycle, so it must be observationally inert
-    for the roster's existing readers -- several of which import it from
-    ``messaging.link`` and are unaware of the move.
+    Several readers import it from ``messaging.link``.
     """
     from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES as canonical
     from kiro_crew.messaging.link import CHANNEL_SESSION_NAMESPACES as re_exported
@@ -308,11 +281,8 @@ def test_the_roster_move_did_not_change_the_roster() -> None:
 def test_a_channel_session_forwards_a_strict_caller_session_when_one_exists() -> None:
     """The gateway must re-vet a channel session under the CALLER's identity.
 
-    A channel ``session`` leaves over the same transports as ``channel_type``, so
-    omitting ``caller_session`` makes the gateway fall back to the host sentinel
-    and vet the wrong principal. Resolved STRICTLY: the lenient resolver walks
-    process ancestors, which would hand a sub-agent its parent's channel
-    permissions at the egress gate.
+    Without ``caller_session`` the gateway vets the host sentinel instead. Resolved
+    strictly, since the lenient resolver would give a sub-agent its parent's rights.
     """
     from unittest.mock import patch
 
@@ -345,16 +315,10 @@ def test_a_channel_session_forwards_a_strict_caller_session_when_one_exists() ->
 def test_a_channel_session_without_a_strict_key_is_refused() -> None:
     """An unattributable channel-session send is refused, and refusing is the point.
 
-    ``gov_session`` falls back to the LENIENT resolver, which walks process
-    ancestors, so an unidentified sub-agent resolves to its parent and the
-    channel-agent containment check (keyed on an identity starting ``channel:``)
-    does not fire for a contained agent. That is a confinement bypass onto the
-    owner-DM egress surface, and the gateway's fail-closed ``channels`` re-vet
-    does not backstop it -- that gate covers the transport scope, not containment.
-
-    It costs no legitimate caller: the gateway injects ``KIROCREW_SESSION_KEY``
-    into every agent subprocess and cron runs carry ``cron:<job_id>`` in it, so
-    the refusal only reaches a caller that genuinely cannot be attributed.
+    The lenient resolver walks process ancestors, so an unidentified sub-agent would
+    resolve to its parent and skip the ``channel:`` containment check; the gateway's
+    ``channels`` re-vet covers transport scope, not containment. Every agent
+    subprocess and cron run has ``KIROCREW_SESSION_KEY``, so no real caller is refused.
     """
     from unittest.mock import patch
 

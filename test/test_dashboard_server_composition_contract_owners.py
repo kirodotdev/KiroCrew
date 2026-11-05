@@ -27,6 +27,7 @@ from dashboard_server_composition_contract_helpers import (
 )
 
 import kiro_crew.dashboard.server as server
+from kiro_crew.testing.wait import async_wait_until
 
 # ── the clauses the bootstrap carries ─────────────────────────────────────────
 
@@ -112,13 +113,15 @@ async def test_the_heartbeat_claims_the_capture_before_it_beats_and_logs_off_the
     """One bounded enrichment per lag episode: the capture is claimed before the beat
     that would end the episode, and the collector runs on an executor thread behind a
     shielded, bounded wait, so the loop it watches never waits on it unbounded."""
-    real_sleep = asyncio.sleep
     ticks: list[float] = []
+    # The intervals are virtual: each sleep the heartbeat asks for is recorded and takes one
+    # of three permits, so it beats three times and parks in its fourth sleep until it is
+    # cancelled. How far it gets is the permits handed out, not a count of loop turns.
+    intervals = asyncio.Semaphore(3)
 
     async def _sleep(delay: float, *args: Any, **kwargs: Any) -> None:
         ticks.append(delay)
-        # flake-ok: pre-existing asyncio.sleep stand-in that yields one tick instead of waiting; moved verbatim and tracked for a de-flake pass
-        await real_sleep(0)
+        await intervals.acquire()
 
     monkeypatch.setattr(asyncio, "sleep", _sleep)
     state = MagicMock()
@@ -128,11 +131,10 @@ async def test_the_heartbeat_claims_the_capture_before_it_beats_and_logs_off_the
     watchdog = _Watchdog()
     task = server._start_loop_heartbeat(state, watchdog, trimmer)
     try:
-        for _ in range(200):
-            if sum(1 for name, _ in watchdog.calls if name == "beat") >= 3:
-                break
-            # flake-ok: pre-existing 10 ms poll bounded at 200 rounds while the heartbeat beats three times; moved verbatim and tracked for a de-flake pass
-            await real_sleep(0.01)
+        await async_wait_until(
+            lambda: sum(1 for name, _ in watchdog.calls if name == "beat") >= 3,
+            describe=lambda: f"the heartbeat made these calls: {watchdog.calls!r}",
+        )
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -186,12 +188,12 @@ async def test_the_decision_http_release_waits_for_its_import(
     import it to close nothing."""
     import kiro_crew.decisions as decisions
 
-    name = "kiro_crew.decisions.impl_jev"
+    name = "kiro_crew.decisions.impl_systemone"
     app = web.Application()
     server._register_stt_hooks(app)
     hook = next(h for h in app.on_cleanup if h.__name__ == "_decision_http_shutdown")
     monkeypatch.delitem(sys.modules, name, raising=False)
-    monkeypatch.delattr(decisions, "impl_jev", raising=False)
+    monkeypatch.delattr(decisions, "impl_systemone", raising=False)
     await hook(app)
     assert name not in sys.modules
     closed: list[bool] = []
@@ -202,7 +204,7 @@ async def test_the_decision_http_release_waits_for_its_import(
     module = types.ModuleType(name)
     module.close_sessions = _close_sessions  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, name, module)
-    monkeypatch.setattr(decisions, "impl_jev", module, raising=False)
+    monkeypatch.setattr(decisions, "impl_systemone", module, raising=False)
     await hook(app)
     assert closed == [True]
 
@@ -301,9 +303,13 @@ async def test_a_staged_skill_rings_the_bell_on_the_serving_loop(
     on_staged, on_consumed = _skill_hooks(monkeypatch, state)
     info = {"slug": "tidy-up", "name": "Tidy", "kind": "update", "target": "tidy"}
     await asyncio.to_thread(on_staged, info)
-    for _ in range(3):
-        # flake-ok: pre-existing bounded yield ticks for the tasks the code under test schedules; moved verbatim and tracked for a de-flake pass
-        await asyncio.sleep(0)
+    await async_wait_until(
+        lambda: state.notify.called,
+        describe=lambda: (
+            f"notify calls: {state.notify.call_args_list!r}; "
+            f"broadcast calls: {state.broadcast_ws.call_args_list!r}"
+        ),
+    )
     payload = {"slug": "tidy-up", "candidate_kind": "update", "target": "tidy"}
     title, body, url, actions = server._pending_skill_notification(info)
     state.notify.assert_called_once_with(
@@ -312,9 +318,15 @@ async def test_a_staged_skill_rings_the_bell_on_the_serving_loop(
     state.broadcast_ws.assert_called_once_with("skills.pending_changed", payload)
     await asyncio.to_thread(on_consumed, {"slug": "tidy-up", "consumed_at": "t1"})
     await asyncio.to_thread(on_consumed, {"slug": "", "consumed_at": "t2"})
-    for _ in range(5):
-        # flake-ok: pre-existing bounded yield ticks for the tasks the code under test schedules; moved verbatim and tracked for a de-flake pass
-        await asyncio.sleep(0)
+    # The retire task is awaited once, and has left the set once its done callback ran.
+    await async_wait_until(
+        lambda: state.resolve_skill_review_notifications.await_count >= 1
+        and not state._background_tasks,
+        describe=lambda: (
+            f"retired: {state.resolve_skill_review_notifications.await_args_list!r}; "
+            f"tasks still tracked: {state._background_tasks!r}"
+        ),
+    )
     state.resolve_skill_review_notifications.assert_awaited_once_with("tidy-up", "t1")
     assert state._background_tasks == set()
 
@@ -473,11 +485,12 @@ async def test_a_blocked_loop_is_logged_and_a_dead_heartbeat_reports_itself(
     capture that fails does not stop the beat, and a heartbeat that dies says so."""
     import logging
 
-    real_sleep = asyncio.sleep
+    # The two intervals are virtual: each sleep takes a permit, and the clock the heartbeat
+    # reads is the one below, so no interval has to pass for the lag to be the one named.
+    intervals = asyncio.Semaphore(2)
 
     async def _sleep(delay: float, *args: Any, **kwargs: Any) -> None:
-        # flake-ok: pre-existing asyncio.sleep stand-in that yields one tick instead of waiting; moved verbatim and tracked for a de-flake pass
-        await real_sleep(0)
+        await intervals.acquire()
 
     clock = iter([0.0, 10.0, 10.0, 15.5])
     monkeypatch.setattr(asyncio, "sleep", _sleep)
@@ -496,9 +509,14 @@ async def test_a_blocked_loop_is_logged_and_a_dead_heartbeat_reports_itself(
     with caplog.at_level(logging.DEBUG, logger=_FACADE):
         task = server._start_loop_heartbeat(state, watchdog, trimmer)
         await asyncio.gather(task, return_exceptions=True)
-        for _ in range(3):
-            # flake-ok: pre-existing bounded yield ticks for the tasks the code under test schedules; moved verbatim and tracked for a de-flake pass
-            await real_sleep(0)
+        # The done callback the heartbeat registered is what says it died: wait for its record.
+        await async_wait_until(
+            lambda: any(
+                record.getMessage() == "event-loop heartbeat task exited unexpectedly"
+                for record in caplog.records
+            ),
+            describe=lambda: f"logged: {[record.getMessage() for record in caplog.records]!r}",
+        )
     messages = [record.getMessage() for record in caplog.records]
     assert "event-loop heartbeat: lag 5.0s (loop was blocked)" in messages
     assert "Gateway heap trim returned 16 MiB to the OS" in messages
@@ -791,9 +809,15 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
     created["on_event"]("run-1", {"kind": "step"})
 
     created["on_done"]("run-1", {"name": "nightly", "status": "done"})
-    for _ in range(3):
-        # flake-ok: pre-existing bounded yield ticks for the tasks the code under test schedules; moved verbatim and tracked for a de-flake pass
-        await asyncio.sleep(0)
+    # The delivery task opens the agent turn, then leaves the set once its done callback ran.
+    await async_wait_until(
+        lambda: state.push_slots_update.called and not state._background_tasks,
+        describe=lambda: (
+            f"enqueued: {slot.enqueue_or_run_prompt.call_args_list!r}; "
+            f"slot updates: {state.push_slots_update.call_args_list!r}; "
+            f"tasks still tracked: {state._background_tasks!r}"
+        ),
+    )
     prompt = slot.enqueue_or_run_prompt.call_args.args[0]
     assert prompt.startswith("[Workflow `nightly` finished: done] Its result was just posted")
     state.push_slots_update.assert_called_once_with()

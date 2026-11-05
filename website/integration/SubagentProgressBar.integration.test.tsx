@@ -50,6 +50,10 @@ function storeWithActiveSlot(): ReturnType<typeof createTestStore> {
   })
 }
 
+/** The visible digit; the sr-only words beside it are pinned in src/test/SubagentProgressBar.test.tsx. */
+const runningDigit = () =>
+  screen.getByTestId('subagent-running-count').querySelector('span[aria-hidden="true"]')?.textContent
+
 describe('SubagentProgressBar', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -71,7 +75,7 @@ describe('SubagentProgressBar', () => {
 
     act(() => { store.dispatch(sseSubagentSpawn(makeAgent('a1', 'Search codebase'))) })
 
-    expect(screen.getByTestId('subagent-running-count').textContent?.trim()).toBe('1')
+    expect(runningDigit()).toBe('1')
   })
 
   it('shows plural count for multiple agents', () => {
@@ -84,7 +88,7 @@ describe('SubagentProgressBar', () => {
       store.dispatch(sseSubagentSpawn(makeAgent('a3', 'Count lines')))
     })
 
-    expect(screen.getByTestId('subagent-running-count').textContent?.trim()).toBe('3')
+    expect(runningDigit()).toBe('3')
   })
 
   it('shows task previews without an extra expansion step', () => {
@@ -142,7 +146,7 @@ describe('SubagentProgressBar', () => {
     const { container } = renderWithProviders(<SubagentProgressBar slot={SLOT} />, { store })
 
     act(() => { store.dispatch(sseSubagentSpawn(makeAgent('a1', 'Search codebase'))) })
-    expect(screen.getByTestId('subagent-running-count').textContent?.trim()).toBe('1')
+    expect(runningDigit()).toBe('1')
 
     act(() => { store.dispatch(sseSubagentDone({ slot: SLOT, id: 'a1', elapsed: 5 })) })
     expect(container.innerHTML).toBe('')
@@ -156,10 +160,10 @@ describe('SubagentProgressBar', () => {
       store.dispatch(sseSubagentSpawn(makeAgent('a1', 'Task one')))
       store.dispatch(sseSubagentSpawn(makeAgent('a2', 'Task two')))
     })
-    expect(screen.getByTestId('subagent-running-count').textContent?.trim()).toBe('2')
+    expect(runningDigit()).toBe('2')
 
     act(() => { store.dispatch(sseSubagentDone({ slot: SLOT, id: 'a1', elapsed: 3 })) })
-    expect(screen.getByTestId('subagent-running-count').textContent?.trim()).toBe('1')
+    expect(runningDigit()).toBe('1')
   })
 
   it('reconciliation clears phantom agents after 30s', async () => {
@@ -168,7 +172,7 @@ describe('SubagentProgressBar', () => {
     renderWithProviders(<SubagentProgressBar slot={SLOT} />, { store })
 
     act(() => { store.dispatch(sseSubagentSpawn(makeAgent('phantom1', 'Phantom task'))) })
-    expect(screen.getByTestId('subagent-running-count').textContent?.trim()).toBe('1')
+    expect(runningDigit()).toBe('1')
 
     // Advance past the 30s reconciliation interval
     await act(async () => { vi.advanceTimersByTime(31_000) })
@@ -193,14 +197,14 @@ describe('SubagentProgressBar', () => {
     renderWithProviders(<SubagentProgressBar slot={SLOT} />, { store })
 
     act(() => { store.dispatch(sseSubagentSpawn(makeAgent('real1', 'Real task'))) })
-    expect(screen.getByTestId('subagent-running-count').textContent?.trim()).toBe('1')
+    expect(runningDigit()).toBe('1')
 
     await act(async () => { vi.advanceTimersByTime(31_000) })
 
     await waitFor(() => { expect(mockSpawnList).toHaveBeenCalled() })
 
     // Agent should still be running — not cleared
-    expect(screen.getByTestId('subagent-running-count').textContent?.trim()).toBe('1')
+    expect(runningDigit()).toBe('1')
     expect(store.getState().chat.subagents['real1']?.status).toBe('running')
   })
 

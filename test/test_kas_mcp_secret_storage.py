@@ -262,16 +262,103 @@ async def test_a_vault_failure_is_a_value_free_refusal(tmp_path, monkeypatch, ca
 # ── the opt-in key and the handshake ──────────────────────────────────────────
 
 
-def test_the_key_is_off_by_default_and_read_from_config(tmp_path, monkeypatch):
+def _config_home(tmp_path, monkeypatch):
     from kiro_crew.config import loader as L
-    from kiro_crew.config.loader import KiroCrewConfig
 
     monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
-    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
-    assert kss.persistence_enabled() is False
-    (tmp_path / "config.json").write_text(json.dumps({"agent": {"kas_persist_mcp_sign_in": True}}))
+    return tmp_path
+
+
+def test_the_key_is_on_by_default_and_read_from_config(tmp_path, monkeypatch):
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    home = _config_home(tmp_path, monkeypatch)
     assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is True
     assert kss.persistence_enabled() is True
+    (home / "config.json").write_text(json.dumps({"agent": {"default_agent": ""}}))
+    assert kss.persistence_enabled() is True
+    (home / "config.json").write_text(json.dumps({"agent": {"kas_persist_mcp_sign_in": True}}))
+    assert kss.persistence_enabled() is True
+
+
+@pytest.mark.parametrize("stored", ["true", "false", 1, 0, None, [], {}])
+def test_only_a_real_true_keeps_sign_ins(tmp_path, monkeypatch, stored):
+    """A stored value that is not a JSON boolean never turns storage on.
+
+    ``_safe_bool`` would fold each of these into the true default, so a hand-edited
+    ``"false"`` would start storing tokens against what the owner wrote.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    home = _config_home(tmp_path, monkeypatch)
+    (home / "config.json").write_text(json.dumps({"agent": {"kas_persist_mcp_sign_in": stored}}))
+    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+    assert kss.persistence_enabled() is False
+
+
+def test_a_false_set_after_the_default_change_turns_it_off(tmp_path, monkeypatch):
+    """The opt-out holds once the one-shot adoption of the old default has run."""
+    home = _config_home(tmp_path, monkeypatch)
+    stored_false = json.dumps({"agent": {"kas_persist_mcp_sign_in": False}})
+    (home / "config.json").write_text(stored_false)
+    assert kss.persistence_enabled() is True  # the materialized old default, adopted
+    (home / "config.json").write_text(stored_false)
+    assert kss.persistence_enabled() is False
+    assert kss.persistence_enabled() is False
+
+
+@pytest.mark.parametrize("name", ["config.json", "config.local.json"])
+def test_an_unreadable_config_file_keeps_sign_ins_in_memory(tmp_path, monkeypatch, name):
+    """A file the loader cannot parse builds the true default; that must not store tokens."""
+    home = _config_home(tmp_path, monkeypatch)
+    if name == "config.local.json":
+        (home / "config.json").write_text(json.dumps({"agent": {"default_agent": ""}}))
+    (home / name).write_text('{"agent": {"kas_persist_mcp_sign_in": false')
+    assert kss.persistence_enabled() is False
+
+
+def test_a_config_load_that_raises_keeps_sign_ins_in_memory(monkeypatch):
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    def _boom(*_a, **_k):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_boom))
+    assert kss.persistence_enabled() is False
+
+
+@pytest.mark.parametrize(
+    ("name", "overlay"),
+    [
+        ("config.local.json", {"agent": None}),
+        ("config.local.json", {"agent": ["kas_persist_mcp_sign_in", False]}),
+        ("config.json", {"agent": 5}),
+    ],
+)
+def test_a_non_object_agent_section_keeps_sign_ins_in_memory(tmp_path, monkeypatch, name, overlay):
+    """A non-object ``agent`` section is degraded, never read as unconfigured.
+
+    Repaired to absent, an overlay replacing the base file's ``agent`` with
+    ``null`` would drop a stored ``false`` and read as on. Preserved, the loader
+    records the section as degraded and the read keeps sign-ins in memory.
+    """
+    home = _config_home(tmp_path, monkeypatch)
+    base = {"agent": {"kas_persist_mcp_sign_in": False}} if name != "config.json" else overlay
+    (home / "config.json").write_text(json.dumps(base))
+    if name == "config.local.json":
+        (home / name).write_text(json.dumps(overlay))
+    assert kss.persistence_enabled() is False
+
+
+@pytest.mark.asyncio
+async def test_a_kas_handshake_with_no_config_declares_secret_storage(tmp_path, monkeypatch):
+    """The default reaches the wire: a KAS spawn on an unconfigured home keeps sign-ins."""
+    _config_home(tmp_path, monkeypatch)
+    runtime = AcpRuntime(acp_backend=ACP_BACKEND_KAS)
+    runtime._tool_search = None
+    caps = await runtime_spawn_launch._handshake_client_capabilities(runtime)
+    assert caps["_meta"]["kiro"]["secretStorage"] is True
+    assert runtime._mcp_secret_server is not None
 
 
 def test_the_shipped_declaration_never_carries_secret_storage():

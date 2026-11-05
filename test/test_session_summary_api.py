@@ -344,14 +344,10 @@ class TestSessionSummaryBroadcast:
 
     @pytest.mark.asyncio
     async def test_ws_envelope_is_typed(self, tmp_path):
-        """Async (per async-test-for-event-loop): _broadcast is unpatched
-        production code whose _send_ws_all path routes through
-        asyncio.ensure_future, so a running loop must exist even though the
-        send itself is stubbed here.
+        """The event gets its own envelope, not the generic `notification` one.
 
-        Without a typed branch this event falls into the generic `notification`
-        envelope, where the client's `case 'session_summary'` never matches and
-        the payload is instead dispatched as a Notification.
+        Async because the unpatched _broadcast routes through asyncio.ensure_future. Untyped,
+        the client's `case 'session_summary'` never matches.
         """
         state = _make_state(tmp_path)
         state._ws_clients = [MagicMock()]
@@ -681,17 +677,11 @@ class TestSummaryGenerateEndpoint:
 
 
 class TestPanelGateDrift:
-    """The panel's affordance and the generator's gate are two implementations of
-    one rule, kept separate on purpose: ``_generate_state`` answers on every panel
-    mount from the slot's in-memory window, while ``_should_summarize`` is
-    authoritative and needs the on-disk turn count. Deriving one from the other
-    would put a transcript read on every session switch.
+    """The panel's affordance and the generator's gate implement one rule twice.
 
-    The cost of that separation is drift: a gate added to the generator and not
-    mirrored here shows up as a button that appears and then refuses. These tests
-    are what make the separation safe — the first fails when a NEW gate is added
-    without classifying it, so the omission surfaces here rather than as a failed
-    click on someone's session.
+    ``_generate_state`` reads the in-memory window on every mount; ``_should_summarize``
+    needs the on-disk turn count. A new generator gate must be classified here, or the
+    button appears and then refuses.
     """
 
     # Every reason `_should_summarize` can return must fall in exactly one bucket.
@@ -857,14 +847,9 @@ class TestGenerateState:
     async def test_a_turn_in_flight_is_still_reported_ready(self):
         """Mid-turn is deliberately NOT a value of this field.
 
-        The field is only refreshed when a summary is WRITTEN, so a verdict that
-        begins and ends mid-turn would arrive stale and stick: a turn that ends
-        without producing a summary (stopped, or gated by cadence) pushes no
-        event, and the panel would sit on a dead "unavailable" until it
-        remounted. The panel already holds a live per-slot turn signal and owns
-        that presentation; the server-side refusals are the generator's
-        ``running`` gate and the POST's 409 ``summary_turn_running``, both
-        asserted elsewhere in this file.
+        The field refreshes only when a summary is written, so a mid-turn verdict would stick
+        after a turn that writes none. The panel shows the live turn signal; the server-side
+        refusals (``running`` gate, 409 ``summary_turn_running``) are pinned elsewhere here.
         """
         cfg = KiroCrewConfig()
         cfg.session_summary = SessionSummaryConfig(enabled=True, min_user_turns=2)

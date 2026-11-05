@@ -879,6 +879,44 @@ def test_a_second_boot_reads_no_thread_again(layout, persisted, threads, monkeyp
     assert _now(threads, key) == moved
 
 
+def test_an_unlistable_sessions_folder_leaves_the_thread_pass_owed(
+    layout, persisted, threads, monkeypatch
+):
+    import os
+
+    from kiro_crew.history_files import _sessions_dir
+    from kiro_crew.mate_config_migration import repoint_moved_threads
+
+    user, mates = layout
+    _write(user, "builder", _template("builder", mcpServers={"jira": JIRA}, tools=["@jira"]))
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"))
+    persisted(cfg)
+    key = "dashboard:member-zxc.memory-member-zxc-0123"
+    _thread(threads, key, "zxc", "builder")
+
+    sessions = Path(_sessions_dir())
+    real_scandir = os.scandir
+
+    def unlistable(path=".", *args, **kwargs):
+        if Path(path) == sessions:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", unlistable)
+    report = migrate_existing_crewmates(cfg)
+    monkeypatch.setattr(os, "scandir", real_scandir)
+
+    assert report.migrated == ["zxc"]
+    # No thread was read, so the pass is still owed.
+    assert _ledger(mates)["threads"]["zxc"]["done"] is False
+    assert _now(threads, key).template_id == "builder"
+
+    # A later boot, with the folder readable again, moves the thread.
+    assert repoint_moved_threads() == {"zxc": [key]}
+    assert _now(threads, key).template_id == mate_worker.MATE_CONDUCTOR_AGENT
+    assert _ledger(mates)["threads"]["zxc"]["done"] is True
+
+
 def test_a_rolled_back_crewmate_s_threads_stay_on_its_old_agent(layout, persisted, threads):
     user, mates = layout
     _write(user, "builder", _template("builder", mcpServers={"jira": JIRA}, tools=["@jira"]))
@@ -933,7 +971,7 @@ def test_a_crewmate_made_again_under_a_moved_name_is_moved_too(layout, persisted
 def test_a_name_a_ledger_from_before_the_ids_lists_still_counts_as_moved(layout, persisted):
     user, mates = layout
     _write(user, "builder", _template("builder", mcpServers={"jira": JIRA}, tools=["@jira"]))
-    (mates.parent / "migrated.json").write_text(json.dumps({"migrated": ["zxc"]}))
+    (mates.parent / "migrated.json").write_text(json.dumps({"migrated": ["zxc"]}), encoding="utf-8")
     cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"))
     saved = persisted(cfg)
 
@@ -1085,7 +1123,7 @@ def test_a_crewmate_shadowed_by_its_own_private_copy_moves_and_the_copy_is_retir
 
     assert report.migrated == ["rust"] and report.dry_run_failed == {}
     assert not (user / "rust.json").exists()
-    assert json.loads((mates.parent / "retired" / "rust.json").read_text()) == fork
+    assert json.loads((mates.parent / "retired" / "rust.json").read_text(encoding="utf-8")) == fork
     assert lineage == {}
     assert _file(mates, "rust")["prompt"] == "Write Rust."
 
@@ -1323,7 +1361,7 @@ def test_a_private_copy_with_a_markdown_twin_is_not_retired(layout, persisted, m
     report = migrate_existing_crewmates(cfg)
 
     assert report.migrated == [] and "user-level agent" in report.dry_run_failed["rust"]
-    assert (user / "rust.json").is_file() and (user / "rust.md").read_text() == twin
+    assert (user / "rust.json").is_file() and (user / "rust.md").read_text(encoding="utf-8") == twin
     assert lineage
 
 
@@ -1364,5 +1402,5 @@ def test_a_retirement_whose_move_fails_puts_the_copy_back(layout, persisted, mon
     report = migrate_existing_crewmates(cfg)
 
     assert report.migrated == [] and "rust" in report.repoint_failed
-    assert json.loads((user / "rust.json").read_text()) == fork
+    assert json.loads((user / "rust.json").read_text(encoding="utf-8")) == fork
     assert lineage == {"rust": original}

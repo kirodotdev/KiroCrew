@@ -64,7 +64,7 @@ def _completed_parent(model: str) -> str:
     )
     pid = parent["id"]
     h.update_campaign_status(pid, h.CampaignStatus.COMPLETE)
-    (h._campaign_dir(pid) / "FINDINGS.md").write_text("# Parent findings\n")
+    (h._campaign_dir(pid) / "FINDINGS.md").write_text("# Parent findings\n", encoding="utf-8")
     return pid
 
 

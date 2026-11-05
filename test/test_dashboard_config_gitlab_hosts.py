@@ -65,9 +65,7 @@ async def test_get_exposes_configured_gitlab_hosts(handler_app, cfg_file):
 
 
 @pytest.mark.asyncio
-async def test_round_tripped_gitlab_hosts_does_not_reject_an_unrelated_save(
-    handler_app, cfg_file
-):
+async def test_round_tripped_gitlab_hosts_does_not_reject_an_unrelated_save(handler_app, cfg_file):
     """Regression: the settings UI spreads the whole GET response into the PUT
     body, so shipping gitlab_hosts on the GET without dropping it on the PUT made
     every dashboard-settings save fail with 400 "Unknown fields"."""
@@ -126,9 +124,7 @@ async def test_unknown_fields_are_still_rejected(handler_app, cfg_file):
     [("GET", "dashboard_config_read"), ("PUT", "dashboard_config_write")],
 )
 @pytest.mark.asyncio
-async def test_cancellation_during_config_load_is_audited(
-    mock_sel, monkeypatch, method, tool_name
-):
+async def test_cancellation_during_config_load_is_audited(mock_sel, monkeypatch, method, tool_name):
     """The client now polls this endpoint, so the config load runs off-loop via
     ``asyncio.to_thread``. A cancellation at that await (client disconnect,
     gateway shutdown) must still emit a terminal audit: without the guard the

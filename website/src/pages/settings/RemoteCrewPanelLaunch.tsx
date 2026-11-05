@@ -411,6 +411,22 @@ function CancelLaunchBtn({ job, onCancel, cancelling, className }: {
   className?: string
 }) {
   const [armed, setArmed] = useState(false)
+  // Arming and backing out each swap the pressed button for another, which
+  // would drop keyboard focus to the page. Move it to the button that takes
+  // the pressed one's place, and only after a press, so nothing is stolen.
+  const armRef = useRef<HTMLButtonElement>(null)
+  const confirmRef = useRef<HTMLButtonElement>(null)
+  const focusNext = useRef<'arm' | 'confirm' | null>(null)
+  useEffect(() => {
+    const target = focusNext.current
+    focusNext.current = null
+    if (target === 'confirm') confirmRef.current?.focus()
+    else if (target === 'arm') armRef.current?.focus()
+  }, [armed])
+  const arm = (on: boolean) => {
+    focusNext.current = on ? 'confirm' : 'arm'
+    setArmed(on)
+  }
   const copy = cancelCopy(job)
   if (!copy.danger) {
     return (
@@ -421,7 +437,7 @@ function CancelLaunchBtn({ job, onCancel, cancelling, className }: {
   }
   if (!armed) {
     return (
-      <Btn className={className} danger onClick={() => setArmed(true)} disabled={cancelling} aria-label={copy.aria}>
+      <Btn ref={armRef} className={className} danger onClick={() => arm(true)} disabled={cancelling} aria-label={copy.aria}>
         {cancelling ? i18nT('pages.settings.remoteCrewPanel.cancelling') : copy.label}
       </Btn>
     )
@@ -432,13 +448,22 @@ function CancelLaunchBtn({ job, onCancel, cancelling, className }: {
           removes, and an aria-label would REPLACE that name for a screen reader
           with the pre-arm wording -- so the confirm would announce itself as the
           button the reader already pressed. */}
-      <Btn className={className} danger onClick={() => onCancel(job.id)} disabled={cancelling}>
+      <Btn
+        ref={confirmRef}
+        className={className}
+        danger
+        onClick={() => onCancel(job.id)}
+        // Focus lands here while the Enter that armed it may still be held, and
+        // a repeated Enter on a button clicks it. Removal needs its own press.
+        onKeyDown={e => { if (e.repeat && e.key === 'Enter') e.preventDefault() }}
+        disabled={cancelling}
+      >
         {cancelling
           ? i18nT('pages.settings.remoteCrewPanel.cancelling')
           : i18nT('pages.settings.remoteCrewPanel.confirm_cancel_remove', { tag: job.tag })}
       </Btn>
       {/* An armed destructive button needs a way out, as on the crew row. */}
-      <Btn onClick={() => setArmed(false)} disabled={cancelling}>
+      <Btn onClick={() => arm(false)} disabled={cancelling}>
         {i18nT('pages.settings.remoteCrewPanel.keep_setting_up')}
       </Btn>
       <p className="text-[12px] text-warn basis-full m-0" data-testid="cancel-remove-warning">

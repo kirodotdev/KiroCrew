@@ -85,7 +85,7 @@ describe('filterCrewmateChat', () => {
     const retrying: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — retrying…', cls: '', ts: at('2026-10-20T11:00:00Z'), meta: { notice: 'transient_retrying' } }
     const resuming: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — resuming…', cls: '', ts: at('2026-10-20T11:00:01Z'), meta: { notice: 'transient_resuming' } }
     // Persisted by a gateway that predates the token: classified by content, as
-    // `transientNotice.ts` does.
+    // `gatewayNotice.ts` does.
     const legacyRetrying: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — retrying…', cls: '', ts: at('2026-10-20T11:00:02Z') }
     const giveUp: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — please retry.', cls: '', ts: at('2026-10-20T11:00:03Z'), meta: { notice: 'transient_give_up' } }
     const other: ChatMessage = { role: 'error', content: '❌ Something else entirely', cls: '', ts: at('2026-10-20T11:00:04Z') }

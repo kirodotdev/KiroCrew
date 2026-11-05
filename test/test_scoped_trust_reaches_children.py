@@ -126,20 +126,38 @@ class TestSubagentApprovalHonoursScope:
         assert ops == ["subagent.scoped_trust_auto_approve"]
 
     @pytest.mark.asyncio
-    async def test_G1_a_crew_card_trust_does_not_auto_approve_its_spawn_or_subagents(
+    async def test_G1_a_crew_card_trust_auto_approves_its_spawn_and_subagents(
         self,
     ) -> None:
-        """A card-scoped trust ("Trust this crew member") covers the worker's own tools only.
-        Its spawn prompt and its subagents' tools still ask, so they reach the card."""
+        """A card-scoped trust ("Trust this crew member") covers the worker's subagents:
+        its spawn prompt and its subagents' tools auto-approve like a session trust."""
         slot = _slot(trust=True)
         slot._trust_card_scoped = True
         approved, ops, _log, prompt, _renew = await _decide(slot, scope_live=False)
+        assert approved is True
+        prompt.assert_not_awaited()
+        assert ops == ["subagent.scoped_trust_auto_approve"]
+        assert chat_runner._slot_is_trusted(slot) is True
+
+    @pytest.mark.asyncio
+    async def test_G1_a_crew_card_trust_still_blocks_a_low_fidelity_child(self) -> None:
+        slot = _slot(trust=True)
+        slot._trust_card_scoped = True
+        approved, ops, _log, prompt, _renew = await _decide(
+            slot, scope_live=False, low_fidelity=True
+        )
         assert approved is False
         prompt.assert_awaited_once()
-        assert ops[0] == "subagent.card_trust_not_inherited"
-        assert "subagent.scoped_trust_auto_approve" not in ops
-        # The worker's own tools still auto-approve per event.
-        assert chat_runner._slot_is_trusted(slot) is True
+        assert "subagent.scoped_trust_blocked_low_fidelity_child" in ops
+
+    @pytest.mark.asyncio
+    async def test_G1_a_revoked_crew_card_trust_asks_again(self) -> None:
+        slot = _slot(trust=False)
+        slot._trust_card_scoped = True  # left set by the grant; _trust is what counts
+        approved, ops, _log, prompt, _renew = await _decide(slot, scope_live=False)
+        assert approved is False
+        prompt.assert_awaited_once()
+        assert "subagent.scoped_trust_not_trusted" in ops
 
 
 class TestProjection:

@@ -753,7 +753,7 @@ def _write_raw_running(sdk: JobSDK, run_id: str, kind: str = "slow") -> js.JobRu
     )
     store = sdk.store
     store.dir.mkdir(parents=True, exist_ok=True)
-    (store.dir / f"{run.run_id}.json").write_text(json.dumps(run.to_dict()))
+    (store.dir / f"{run.run_id}.json").write_text(json.dumps(run.to_dict()), encoding="utf-8")
     return run
 
 

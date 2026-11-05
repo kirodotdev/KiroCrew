@@ -1,13 +1,9 @@
 """Session control revive: the resume core's pre-publish containment hook.
 
-Covers what ``resume_slot_from_history`` publishes, refuses and rolls back when
-its ``containment`` hook or ``final_check`` answers, when the deferred reopen
-write, its verification read or the marker restore fails, and when the task is
-cancelled or the session is deleted, recreated, linked or published live before
-the publish. Also here: the History click's own refusals, the global cap at the
-hook, the one answer an ineligible caller gets, a live target authorized before
-it is named, and the pin on the ``SessionManager`` getters the link probes read.
-Shared fixtures and helpers live in ``session_control_revive_helpers.py``.
+What ``resume_slot_from_history`` publishes, refuses and rolls back when the
+``containment`` hook or ``final_check`` answers, when the reopen write, its verification
+or the marker restore fails, and when the session changes before the publish.
+Shared helpers live in ``session_control_revive_helpers.py``.
 """
 
 from __future__ import annotations
@@ -28,7 +24,9 @@ from session_control_revive_helpers import (  # noqa: F401 -- the autouse fixtur
     _slot,
 )
 
+from kiro_crew import history_schema
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.clock import ManualClock
 
 # ── The resume core's pre-publish containment hook ───────────────────────────
 
@@ -241,11 +239,10 @@ def test_a_cancellation_during_the_deferred_clear_still_discards_the_build(tmp_p
 
 
 def test_a_history_click_that_loses_the_race_leaves_the_marker_untouched(tmp_path, monkeypatch):
-    """The History path clears ``closed`` only after construction. A
-    click that passes the early construction guard and then finds the key under
-    construction (a revive retracted its build inside the click's read window)
-    is refused ``resume_in_progress`` with the marker exactly as it found it, so
-    if that revive is then refused too, the archived session stays archived."""
+    """A click that finds the key under construction leaves ``closed`` untouched.
+
+    It is refused ``resume_in_progress``, so if the racing revive is refused too, the
+    archived session stays archived."""
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
@@ -528,14 +525,10 @@ def test_a_clear_that_lands_then_reads_unreadable_once_retries_and_publishes(tmp
 
 
 def test_a_persistently_unreadable_verification_refuses_and_restores_the_marker(tmp_path):
-    """When the verification read is unreadable across EVERY retry, the resume
-    stays fail-closed: it refuses and publishes nothing, and the ``closed``
-    marker is written back so the session does not reopen at the next start.
-    With the confirmation re-read also unreadable the refusal escalates to
-    ``reopen_rollback_failed`` (the marker write landed but could not be
-    confirmed) -- either way it never publishes. The handler's extra re-reads
-    widen the window a transient has to clear; they never accept a line that
-    stays unreadable."""
+    """A verification read unreadable on EVERY retry refuses and restores ``closed``.
+
+    If the confirmation re-read is unreadable too, it escalates to
+    ``reopen_rollback_failed``; either way nothing is published."""
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
@@ -669,16 +662,16 @@ def test_a_marker_restore_that_fails_once_recovers_on_the_retry(tmp_path, monkey
     assert key not in state._slots
 
 
-def test_a_session_recreated_during_the_hook_is_refused_not_published(tmp_path):
+def test_a_session_recreated_during_the_hook_is_refused_not_published(tmp_path, monkeypatch):
     """The existence and ``created_at`` identity barrier runs before the hook;
     a delete-and-recreate landing INSIDE the hook window would otherwise publish
     the old transcript under the new file's identity, and every later save would
     take the delete-won arm and drop its rows. The barrier is re-run after the
     hook's last await with the same ``resume_session_deleted`` answer."""
-    import time
-
     from kiro_crew.dashboard import chat_handlers
 
+    clock = ManualClock()
+    clock.install(monkeypatch, history_schema, time=False, datetime=True)
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     key = _archive(state, caller, _slot(state, "chat-2"), messages=2)
@@ -689,9 +682,7 @@ def test_a_session_recreated_during_the_hook_is_refused_not_published(tmp_path):
 
     async def _recreate(_built):
         assert log.delete_session(hk) is True
-        # flake-ok: pre-existing 10 ms pause that gives the replacement a fresh created_at stamp; moved verbatim and tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 10 ms pause that gives the replacement a fresh created_at stamp and moves verbatim
-        time.sleep(0.01)  # a fresh created_at stamp for the replacement
+        clock.advance(1)  # the replacement is stamped one second later
         log.append(hk, "user", "a different conversation")
         return None
 
@@ -764,10 +755,10 @@ def test_the_rollback_never_archives_a_replacement_transcript(tmp_path, monkeypa
     refuses, and the rollback must NOT put the old ``closed`` marker onto the
     replacement: both its write guard and its confirmation read compare the
     stamp against the one this resume read."""
-    import time
-
     from kiro_crew.dashboard import chat_handlers
 
+    clock = ManualClock()
+    clock.install(monkeypatch, history_schema, time=False, datetime=True)
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     key = _archive(state, caller, _slot(state, "chat-2"), messages=2)
@@ -779,9 +770,7 @@ def test_the_rollback_never_archives_a_replacement_transcript(tmp_path, monkeypa
     def _clear_then_replace(k, **kw):
         real_clear(k, **kw)
         assert log.delete_session(hk) is True
-        # flake-ok: pre-existing 10 ms pause that gives the replacement a fresh created_at stamp; moved verbatim and tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 10 ms pause that gives the replacement a fresh created_at stamp and moves verbatim
-        time.sleep(0.01)
+        clock.advance(1)  # the replacement is stamped one second later
         log.append(hk, "user", "a different conversation")
 
     monkeypatch.setattr(log, "clear_closed", _clear_then_replace)
@@ -860,12 +849,9 @@ def test_a_channel_link_written_to_the_line_during_the_read_is_seen_by_the_hook(
 def test_an_unreadable_final_identity_read_refuses_rather_than_publishing(tmp_path, monkeypatch):
     """A mutation landing after the last await refuses rather than publishing.
 
-    The identity re-read runs off the loop so it survives a transient Windows
-    file lock, then the containment pass is the last await. A delete or
-    delete-and-recreate landing in that pass bumps the key's invalidation
-    generation; the synchronous generation re-check after the pass is the
-    delete-and-recreate's lock-free signature, and refuses ``resume_conflict``
-    with the marker rolled back instead of publishing over it.
+    A delete or recreate during the containment pass (the last await) bumps the key's
+    invalidation generation; the synchronous re-check after it refuses ``resume_conflict``
+    with the marker rolled back.
     """
     from kiro_crew.dashboard import chat_handlers
 
@@ -897,11 +883,8 @@ def test_a_delete_in_flight_during_the_last_await_refuses_before_it_unlinks(tmp_
     """An in-flight delete opened during the containment await, before it bumps
     the generation, is caught by the lock-free in-flight marker.
 
-    ``delete_session`` bumps the invalidation generation only after the unlink,
-    so a delete that opens its in-flight window during the last await has not
-    bumped it yet. ``_identity_refusal``'s own marker check runs before that
-    await, so the synchronous re-check after it carries the marker term too and
-    refuses ``resume_conflict`` with the marker rolled back.
+    ``delete_session`` bumps the generation only after the unlink, so the re-check after
+    the await also reads the in-flight marker and refuses ``resume_conflict``.
     """
     from kiro_crew.dashboard import chat_handlers
 

@@ -29,6 +29,7 @@ import { updateInfoQuery } from '../../api/updateInfoQuery'
 import { useUpdateSubscription } from '../../hooks/useUpdateSubscription'
 import { sseStatus } from '../../store/dashboardSlice'
 import type { ResourceProvider } from './types'
+import { PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 
 import { createSettingsProvider, useSettingsProvider } from './providers/settingsProvider'
 import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
@@ -42,6 +43,7 @@ import {
   type SettingsSearchGovernance,
 } from './settingsSearchCore'
 import { extractFromSource } from '../../../scripts/settingsExtract'
+import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import type { SettingEntry } from './settingsTypes'
 
 const decisionsEntry = (): SettingEntry => {
@@ -65,6 +67,7 @@ const tipsEntry = (): SettingEntry => {
 /** Every id some governance answer can withhold. */
 const GOVERNED_IDS = new Set([
   ...DECISIONS_SETTING_IDS, FEATURE_TIPS_SETTING_ID, GATEWAY_AUTO_UPDATE_SETTING_ID, APP_AUTO_DOWNLOAD_SETTING_ID,
+  KIRO_SIGN_IN_SETTING_ID,
 ])
 
 /** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
@@ -125,6 +128,28 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(app, only({ app: false, gateway: true }))).toBe(false)
     expect(settingEntryOffered(gateway, only({ app: false, gateway: true }))).toBe(true)
     expect(settingEntryOffered(otherEntry(), only({ app: false, gateway: false }))).toBe(true)
+  })
+
+  it('offers the Kiro sign-in entry unless KAS is known to be off the harness list', () => {
+    const signIn = entryById(KIRO_SIGN_IN_SETTING_ID)
+    expect(settingEntryOffered(signIn, ON)).toBe(true)
+    expect(settingEntryOffered(signIn, { ...ON, kiroSignInOffered: true })).toBe(true)
+    expect(settingEntryOffered(signIn, { ...ON, kiroSignInOffered: false })).toBe(false)
+    expect(settingEntryOffered(otherEntry(), { ...ON, kiroSignInOffered: false })).toBe(true)
+  })
+
+  it('offers Display > Explore only while the Explore preview is on', () => {
+    const explore = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.milestones_enabled')!
+    expect(explore).toBeDefined()
+    try {
+      setPreviewFlag(PREVIEW_EXPLORE, false)
+      expect(settingEntryOffered(explore, ON)).toBe(false)
+      expect(settingEntryOffered(otherEntry(), ON)).toBe(true)
+      setPreviewFlag(PREVIEW_EXPLORE, true)
+      expect(settingEntryOffered(explore, ON)).toBe(true)
+    } finally {
+      setPreviewFlag(PREVIEW_EXPLORE, false)
+    }
   })
 })
 
@@ -445,5 +470,47 @@ describe('DECISIONS_SETTING_IDS covers the whole card', () => {
       id => !SETTINGS_REGISTRY.some(e => e.id === id),
     )
     expect(unknown, unknown.join('\n')).toEqual([])
+  })
+})
+
+describe('the Kiro sign-in entry follows the selected harness', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // The search reads the harness from the cache the shell's boot read fills, so
+  // each case seeds that cache (or leaves it empty) instead of serving a fetch.
+  const renderWithConfig = async (cached: unknown) => {
+    const config = vi.spyOn(api, 'kirocrewConfig')
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+    vi.spyOn(api, 'tipsStatus').mockResolvedValue({ enabled_config: true } as never)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    if (cached !== undefined) client.setQueryData(['kirocrewConfig'], cached)
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(Provider, { store: createTestStore() },
+        createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children)))
+    const hook = renderHook(() => useSettingsProvider(), { wrapper })
+    await waitFor(() => expect(client.getQueryState(['tipsStatus'])?.status).not.toBe('pending'))
+    // Cache only: opening a search never issues a request of its own.
+    expect(config).not.toHaveBeenCalled()
+    return hook
+  }
+  const harness = (acp_backend: string) => ({ agent: { acp_backend } })
+  const offersSignIn = (provider: ResourceProvider) =>
+    (provider.search('sign out') as { id?: string }[]).some(r => (r.id ?? '').endsWith(KIRO_SIGN_IN_SETTING_ID))
+
+  it.each(['kas', ''])('offers it on the KAS harness (acp_backend=%j)', async backend => {
+    const { result } = await renderWithConfig(harness(backend))
+    await waitFor(() => expect(offersSignIn(result.current)).toBe(true))
+  })
+
+  it.each(['kiro', 'claude'])('withholds it on the %s harness, whose account the card does not sign out', async backend => {
+    const { result } = await renderWithConfig(harness(backend))
+    await waitFor(() => expect(offersSignIn(result.current)).toBe(false))
+  })
+
+  it('offers it while the harness is unknown (no answer in the cache)', async () => {
+    const { result } = await renderWithConfig(undefined)
+    expect(offersSignIn(result.current)).toBe(true)
   })
 })

@@ -219,7 +219,7 @@ describe('side panel browser-tab strip', () => {
       renderPanel()
       expect(document.querySelector('.side-panel-strip')!.className).not.toContain('focus-caption-reserve')
     } finally {
-      setSidePanelDock('right')
+      act(() => { setSidePanelDock('right') })
     }
   })
 })

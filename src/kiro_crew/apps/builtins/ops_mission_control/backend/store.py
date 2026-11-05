@@ -229,17 +229,13 @@ def _coerce_index(raw: Any, *, strict: bool = False) -> dict[str, Incident]:
 
     ``strict`` is the update path, and it refuses on a rule about CONTENT rather than a list
     of shapes: **deserialize, re-serialize, and refuse if anything that was on disk did not
-    survive.** Three review rounds each found the same class of loss one layer deeper than
-    the last -- the document root, then a row, then a nested field like ``"signal": []``
-    coerced to an empty ``Signal`` -- because each fix enumerated a shape, and any
-    enumeration can be beaten by a deeper example. This rule cannot: it covers the root, the
-    rows, the nested fields and every layer beneath them at once, and it is the invariant the
-    docstrings were already claiming.
+    survive.** A list of shapes can always be beaten by a deeper example -- the document
+    root, a row, a nested field like ``"signal": []`` coerced to an empty ``Signal``. This
+    rule cannot: it covers the root, the rows, the nested fields and every layer beneath them
+    at once.
 
-    That is also why this reader now has FEWER checks than it did a round ago. The
-    ``isinstance`` guards for the row and the nested fields are gone, because dropping a row
-    or blanking a field is exactly what the round trip detects. A smaller diff is the honest
-    signal that this is the real rule rather than another patch on top of one.
+    That is also why this reader has no ``isinstance`` guards for the row and the nested
+    fields: dropping a row or blanking a field is exactly what the round trip detects.
 
     Why it matters on the mutation path specifically: the caller rewrites the WHOLE file from
     what this returns, so any content the coercion quietly replaced is destroyed. The display

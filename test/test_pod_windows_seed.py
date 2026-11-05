@@ -1,18 +1,10 @@
 """The win32 pod-seed branch, exercised on every platform.
 
-``seed_home_from_scenario`` gates on ``pinned_fs.supports_pinned_tree_walk()``,
-which is False on Windows because ``os.open`` and ``os.mkdir`` accept no
-``dir_fd`` there. The Windows branch is otherwise pure Python, so these tests
-force that gate False and ``IS_WINDOWS`` True and run the real code on
-``tmp_path``. Only the containment WITNESS is mocked: ``fd_real_path`` reads
-``GetFinalPathNameByHandleW`` on win32 and ``/proc/self/fd`` on Linux, so the
-Linux route answers here and the tests that need a controlled witness pin what
-the call receives rather than replacing the branch around it.
-
-What only a real windows-latest run can establish is listed in the pod README's
-Platform section: whether ``GetFinalPathNameByHandleW`` answers for a directory
-handle opened with these flags, and whether a real junction is caught by
-``is_reparse_point`` before any byte lands.
+The tests force ``pinned_fs.supports_pinned_tree_walk()`` False and ``IS_WINDOWS``
+True and run the pure-Python Windows branch on ``tmp_path``. The containment
+witness ``fd_real_path`` uses ``/proc/self/fd`` on Linux, so it answers here.
+What only a real windows-latest run can show is listed in the pod README's
+Platform section.
 """
 
 from __future__ import annotations
@@ -59,9 +51,7 @@ def scenario() -> str:
     return "minimal" if "minimal" in names else names[0]
 
 
-# --------------------------------------------------------------------------
 # The refusal that is NOT relaxed
-# --------------------------------------------------------------------------
 def test_a_non_windows_host_without_a_pinned_walk_still_refuses(cfg, scenario, monkeypatch):
     """Only win32 gets the by-name branch; every other such host keeps refusing.
 
@@ -78,8 +68,7 @@ def test_a_non_windows_host_without_a_pinned_walk_still_refuses(cfg, scenario, m
 def test_the_posix_branch_is_untouched_when_the_walk_is_available(cfg, scenario, monkeypatch):
     """A host WITH the pinned walk must never reach the Windows code.
 
-    Pins that this change is additive: the POSIX path is selected by the same probe
-    it always was, and setting IS_WINDOWS true cannot divert it.
+    The capability probe alone selects the POSIX path; IS_WINDOWS true cannot divert it.
     """
     monkeypatch.setattr(rt, "IS_WINDOWS", True)
     monkeypatch.setattr(
@@ -90,9 +79,7 @@ def test_the_posix_branch_is_untouched_when_the_walk_is_available(cfg, scenario,
     assert rt.seed_home_from_scenario(cfg, "demo", scenario) is True
 
 
-# --------------------------------------------------------------------------
 # Reparse-point screening happens BEFORE any write
-# --------------------------------------------------------------------------
 def test_a_reparse_point_anywhere_above_the_home_is_refused_before_any_write(
     cfg, scenario, windows_seed, monkeypatch
 ):
@@ -145,9 +132,7 @@ def test_the_screen_walks_from_the_root_downward(cfg, monkeypatch):
     assert len(seen) == len(home.parents) + 1
 
 
-# --------------------------------------------------------------------------
 # The witness
-# --------------------------------------------------------------------------
 def test_a_home_whose_real_path_cannot_be_read_is_refused(cfg, scenario, windows_seed, monkeypatch):
     """Fail CLOSED with no witness: a by-name write would validate against nothing."""
     monkeypatch.setattr(rt.pinned_fs, "fd_real_path", lambda fd: None)
@@ -198,9 +183,7 @@ def test_a_home_that_changes_identity_mid_seed_is_refused_before_the_marker(
         rt.seed_home_from_scenario(cfg, "demo", scenario)
 
 
-# --------------------------------------------------------------------------
 # The seed itself
-# --------------------------------------------------------------------------
 def test_a_fresh_home_is_seeded_with_the_marker_published_last(cfg, scenario, windows_seed):
     assert rt.seed_home_from_scenario(cfg, "demo", scenario) is True
     home = cfg.home_dir("demo")
@@ -236,13 +219,9 @@ def test_a_partial_home_with_no_marker_is_refused_rather_than_completed(
 def test_a_non_directory_home_refuses_in_the_pod_vocabulary(cfg, scenario, windows_seed):
     """The win32 twin of ``test_a_non_directory_home_refuses_instead_of_crashing``.
 
-    A stale FILE at the pod-home name reaches ``pin_directory``, which refuses a
-    non-directory with ``NotADirectoryError``. Nothing between here and the CLI
-    catches ``OSError`` -- ``boot`` and the scenario call site catch ``PodError``
-    only -- so an untranslated one escaped as a bare traceback: no FATAL line, no
-    recorded refusal for ``pod status`` to report, no ``pod.boot`` audit event and a
-    default exit 1 rather than the provisioning code. The POSIX branch has always
-    translated the equivalent open; this asserts the Windows branch does too.
+    A stale FILE at the pod-home name makes ``pin_directory`` raise
+    ``NotADirectoryError``. Callers catch only ``PodError``, so it must be translated
+    or it escapes as a traceback with no recorded refusal.
     """
     home = cfg.home_dir("demo")
     home.parent.mkdir(parents=True, exist_ok=True)
@@ -256,11 +235,8 @@ def test_the_restart_path_translates_an_os_error_into_a_refusal(
 ):
     """The already-seeded path needs the same translation frame as the fresh one.
 
-    ``_prepare_seeded_home_dir`` and the ``iterdir`` above it can both raise a bare
-    ``OSError`` -- on Windows a sharing violation from another process holding a
-    seeded file open is the ordinary way -- and they sat OUTSIDE the frame that
-    turns one into a ``PodError``. The POSIX branch spans both paths with a single
-    ``try``; so does this one now.
+    ``_prepare_seeded_home_dir`` and ``iterdir`` can raise a bare ``OSError`` (on
+    Windows, a sharing violation), which must become a ``PodError``.
     """
     assert rt.seed_home_from_scenario(cfg, "demo", scenario) is True
 
@@ -295,12 +271,9 @@ def test_a_complete_home_for_the_same_scenario_is_restarted_unchanged(cfg, scena
 def test_the_restart_path_is_pinned_and_witnessed_too(cfg, scenario, windows_seed, monkeypatch):
     """The already-seeded path has the least to hold, so pin it explicitly.
 
-    A home that already carries this scenario's marker is restarted rather than
-    re-seeded. Reading the completion marker and re-preparing the home purely BY
-    NAME would let a pod seeded once be restarted out of a directory swapped in
-    since, and the branch that does hold a pin -- the fresh seed -- never runs for
-    it. Both paths take the pin, and the witness is re-read before the restart is
-    allowed to return.
+    A home with this scenario's marker is restarted, not re-seeded. Working by name
+    would restart out of a directory swapped in since, so the restart takes the pin
+    and re-reads the witness before returning.
     """
     assert rt.seed_home_from_scenario(cfg, "demo", scenario) is True
 
@@ -366,15 +339,9 @@ def test_the_source_pin_is_the_authority_not_the_name_screen(
 ):
     """The screen is an early message; the PIN is what settles the source.
 
-    A screen by name is a check-to-use window: it reports what the name meant a
-    moment ago, and an adversary that can plant a junction chooses when to plant
-    it. So the walk holds a pinned handle to each source directory — on Windows
-    that also blocks a rename of it or of anything above it — and a refusal from
-    the pin has to surface as the same ``unsupported symlink`` the screen reports,
-    or the stronger check would answer in a shape no caller recognises.
-
-    Driven by making the pin refuse while the screen passes, which is exactly the
-    ordering a stale screen produces.
+    A name screen leaves a check-to-use window for a planted junction. A pin refusal
+    must read as the same ``unsupported symlink`` the screen reports. Driven by a pin
+    that refuses while the screen passes, as a stale screen would.
     """
     monkeypatch.setattr(seed_mod.pinned_fs, "is_reparse_point", lambda p: False)
 
@@ -392,14 +359,9 @@ def test_the_marker_open_is_the_authority_not_its_name_screen(
 ):
     """The completion marker gets the same treatment as the tree it certifies.
 
-    Publishing the marker is the COMMIT of the win32 seeding transaction, so a
-    reparse point planted at its name after the screen would publish a host file's
-    contents as this pod's marker, inside a home the agent can read. The open has
-    to refuse in the same operation, and its refusal has to read as the link
-    message the screen would have given.
-
-    Driven by making the open refuse while the screen passes -- the ordering a
-    stale screen produces.
+    A reparse point planted at the marker's name after the screen would publish a
+    host file into a home the agent can read, so the open refuses with the screen's
+    link message. Driven by an open that refuses while the screen passes.
     """
     home = cfg.home_dir("demo")
     home.mkdir(parents=True, exist_ok=True)

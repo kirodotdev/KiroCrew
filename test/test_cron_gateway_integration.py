@@ -229,12 +229,8 @@ class TestCommandExecution:
     async def test_silent_success_overwrites_stale_result(self):
         """A silent success must not leave the previous run's failure in last_result.
 
-        The dashboard and the cron_list renderers read last_result to show "what
-        this job last produced", so a stale value is presented as this run's
-        output on a job the same view reports as OK. Cleared rather than marked
-        with a literal: last_status already carries the verdict, and any literal
-        stored here is also legal job output, so no reader could tell the two
-        apart.
+        Cleared rather than marked with a literal: last_status carries the verdict, and
+        any literal stored here is also legal job output.
         """
         gw = _make_gw()
         job = _make_command_job(last_result="⚠️ Exit code 1\n\nstderr:\nboom")
@@ -457,11 +453,8 @@ class TestCommandExecution:
 class TestFireTimeGatesScriptAndMessage:
     """Fire-time re-vetting for script and message (LLM) cron jobs.
 
-    Command jobs gained this gate first (TestCommandExecution above); these
-    tests lock in the same policy-tightened-after-scheduling protection for
-    the other two job kinds, routed through mcp_cron.vet_job_at_fire_time.
-    The mcp_cron privates are patched (not the helper itself) so the
-    helper's real dispatch logic is exercised.
+    Same gate as command jobs, through mcp_cron.vet_job_at_fire_time. The mcp_cron
+    privates are patched, not the helper, so its real dispatch logic runs.
     """
 
     async def _run_script_real_vet(self, gw, job, script_result, cap=None, script_vet=None):
@@ -776,15 +769,9 @@ class TestTimeoutPersistence:
 class TestCronDefaultAgent:
     """The configured default agent must reach dispatch for an agent-less cron.
 
-    Regression cover for a silent-no-op class rather than for one bug site.
-    ``_cron_callback`` captures its selectors up front -- "captured selectors,
-    never the scheduler's mutable job" -- and every downstream consumer reads
-    the resulting ``cron_agent``, never ``job.agent_id`` again. A default
-    resolved anywhere BELOW that capture therefore reaches nothing: no error,
-    no conflict, no failing assertion elsewhere, just a cron quietly running
-    as AcpClient's ``CLIENT_NAME`` floor with none of the default agent's MCP
-    servers. These assert on the ``agent`` kwarg ``get_or_create`` actually
-    receives, which is the only place the difference is observable.
+    ``_cron_callback`` captures its selectors up front, so a default resolved below
+    that capture reaches nothing and the cron silently runs as the ``CLIENT_NAME``
+    floor. The ``agent`` kwarg ``get_or_create`` receives is the only place to see it.
     """
 
     @staticmethod
@@ -856,22 +843,9 @@ class TestCronDefaultAgent:
     async def test_a_retained_session_under_another_agent_defers_the_fire(self):
         """A live session built for the PREVIOUS default must not be reused.
 
-        The window this closes exists only because of this change. The cron key
-        is the stable ``cron:{job.id}``, and the run's ``finally`` DEFERS the
-        session reset while sub-agents are pending or an injection is in
-        flight, so the session outlives its fire. ``get_or_create`` then claims
-        that live session by key and returns ``session.provider`` without ever
-        comparing the ``agent`` kwarg, so the next fire builds the NEW default's
-        context and runs it on the OLD default's process -- keeping MCP servers
-        and a workspace the operator has just narrowed away. Before this
-        change an agent-less cron dispatched the constant floor on every fire,
-        so no two fires could differ and the window was unreachable.
-
-        Deferring is the only safe branch: a retained session implies pending
-        sub-agent work (the no-pending case already reset in the prior fire's
-        ``finally``), so resetting here would destroy work in flight. The
-        retention is temporary by construction -- ``_subagent_done`` resets once
-        the last one lands, and the reaper still targets the key if that hangs.
+        The reset is deferred while sub-agents are pending, and ``get_or_create`` claims
+        the live ``cron:{job.id}`` session without comparing the ``agent`` kwarg. Deferring
+        is the only safe branch: resetting would destroy the pending sub-agent work.
         """
         gw = _make_gw_for_llm()
         gw._cfg.agent.default_agent = "configured-default"
@@ -907,12 +881,8 @@ class TestCronDefaultAgent:
     async def test_an_unreadable_live_agent_does_not_defer_the_fire(self):
         """No readable agent is NOT evidence of a mismatch.
 
-        The guard fires on positive evidence only. A manager that does not
-        expose the reader, or answers something that is not a non-empty ``str``,
-        leaves the dispatch exactly as it was before this guard existed --
-        because deferring on an unreadable answer would stall every agent-less
-        cron on such a host forever, which is a far worse failure than the
-        capability widening being closed here.
+        The guard fires on positive evidence only: deferring on an answer that is not a
+        non-empty ``str`` would stall every agent-less cron on such a host forever.
         """
         gw = _make_gw_for_llm()
         gw._cfg.agent.default_agent = "configured-default"
@@ -974,14 +944,9 @@ class TestCronDefaultAgent:
     async def test_the_shared_job_record_is_never_mutated(self):
         """The scheduler hands the callback its LIVE stored CronJob.
 
-        CronService passes the object straight out of ``self._jobs``
-        (``await self._on_job(job)``) and ``_save()`` reserialises ``self._jobs``
-        wholesale, so writing a resolved default onto ``job.agent_id`` would pin
-        an agent-less cron to a concrete agent name in ``crons.json`` on its
-        first completed run -- the job would silently stop tracking
-        ``agent.default_agent``, and an operator who later changed the default
-        would keep running the old agent. The default must therefore reach
-        dispatch without the stored record changing at all.
+        ``_save()`` reserialises ``self._jobs``, so writing the default onto
+        ``job.agent_id`` would pin it in ``crons.json`` and stop tracking
+        ``agent.default_agent``.
         """
         gw = _make_gw_for_llm()
         gw._cfg.agent.default_agent = "configured-default"
@@ -1011,20 +976,9 @@ class TestCronDefaultAgent:
     async def test_default_agent_does_not_enter_the_captured_execution(self, monkeypatch):
         """The resolved default must reach dispatch WITHOUT entering the bind.
 
-        ``persistent_session`` defaults True, so ``build_cron_session_context``
-        returns the stable key ``cron:{job.id}`` and every later fire re-binds
-        it. ``bind_session_execution`` is called positionally, so
-        ``replace_existing`` is False, and it raises "session already belongs to
-        another execution" whenever the candidate differs from what is already
-        recorded. A pre-migration job that has already run therefore has
-        ``template_id="kirocrew"`` on record; folding the configured default into
-        the captured identity changes that field and makes every subsequent fire
-        raise before ``get_or_create`` -- a non-transient error nothing in the
-        callback catches, so the job records a failure per fire and auto-pauses.
-
-        The default belongs on the dispatched agent, which no durable record
-        compares. This asserts both halves at once: dispatch sees the default,
-        the bind does not.
+        Every fire re-binds the stable ``cron:{job.id}`` key with
+        ``replace_existing`` False, which raises when the candidate differs from the
+        recorded ``template_id="kirocrew"``; the job would fail every fire and auto-pause.
         """
         from kiro_crew import execution_context
 
@@ -1054,19 +1008,9 @@ class TestCronDefaultAgent:
     async def test_a_captured_non_floor_template_keeps_its_own_agent(self):
         """A record carrying a REAL captured template must not be re-pointed.
 
-        A schedule created from a template chat with no ``agent`` argument names
-        its template ONLY in ``execution_context.template_id`` -- ``agent_id``
-        stays empty. ``bind_cron_memory``
-        (``cron_service/identity.py:143-152``) captures the CREATOR session's
-        execution, whose ``template_id`` names the template, and overwrites it
-        only ``if job.agent_id``. An agent_id-only gate therefore reads
-        such a job as agent-less, and an ungated override would replace the
-        captured template with the configured default on every fire while the
-        captured execution and memory store stayed the original template's, and
-        ``dispatched_agents_from_disk`` -- the delete guard's single walk of the
-        dispatch-mirroring rule -- still reported the old agent. That is the same
-        silent wrong-agent class this change removes, reintroduced on the other
-        arm, so the override is gated on the resolved agent still being the floor.
+        A schedule made from a template chat names its template only in
+        ``execution_context.template_id`` with ``agent_id`` empty, so the override is
+        gated on the resolved agent still being the floor.
         """
         from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
@@ -1081,13 +1025,10 @@ class TestCronDefaultAgent:
 
     @pytest.mark.asyncio
     async def test_a_captured_floor_template_still_gets_the_default(self):
-        """The post-migration case this change exists for.
+        """An agent-less job whose captured ``template_id`` is the ``"kirocrew"`` floor.
 
-        Every record created since the execution-context migration carries an
-        ``execution_context``, so gating the resolution inside the legacy arm
-        would reach only pre-migration jobs. An agent-less job whose captured
-        ``template_id`` is itself the bare ``"kirocrew"`` floor is the reported
-        symptom, and it must still pick the configured default up at dispatch.
+        Post-migration records all carry an ``execution_context``, so a gate inside the
+        legacy arm alone would reach only pre-migration jobs.
         """
         from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
@@ -1105,15 +1046,8 @@ class TestCronDefaultAgent:
         """A member execution is a real selection even when it spells the floor.
 
         ``resolve_member_execution`` sets ``template_id`` to
-        ``agent.kiro_agent or "kirocrew"``, so a member whose agent names no
-        ``kiro_agent`` captures the floor spelling while ``agent_id`` stays
-        empty -- and a floor-only gate reads that as "selected nothing".
-        Substituting there would have ``build_message`` inject the substituted
-        template's system prompt and documents into THAT member's envelope while
-        ``_resolve_cron_agent`` still dispatches the member's own
-        ``kiro_agent``, and would attribute the usage row to the substituted
-        name. Requiring ``member_id`` to be unset narrows the override to a
-        capture that really did select nothing.
+        ``agent.kiro_agent or "kirocrew"``. Substituting would inject another template's
+        prompt into the member's envelope, so the override needs ``member_id`` unset.
         """
         from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
@@ -1132,18 +1066,8 @@ class TestCronDefaultAgent:
     async def test_a_legacy_member_with_no_member_id_keeps_its_own_agent(self):
         """``member_id`` alone does not identify a member capture.
 
-        A member predating the identity migration persists no ``member_id``:
-        ``with_template`` states the admitting rule outright -- such a record
-        "is named by ``selection_kind == 'member'`` and ``selection_name``
-        alone" -- and ``__post_init__`` accepts ``member_id=None`` on a store
-        that also carries none. Pair that with an agent naming no
-        ``kiro_agent``, so ``template_id`` spells the ``"kirocrew"`` floor, and
-        a ``member_id``-only gate reads a real member selection as "selected
-        nothing" and substitutes the configured default -- injecting that
-        template's system prompt and documents into the member's envelope and
-        attributing the usage row to it. ``selection_kind`` is the namespace
-        itself and ``__post_init__`` constrains it to "member" or "template",
-        so testing it covers the persisted and unpersisted member alike.
+        A member predating the identity migration persists no ``member_id`` and is named
+        by ``selection_kind == 'member'`` alone, so the gate tests ``selection_kind``.
         """
         from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
@@ -1163,25 +1087,9 @@ class TestCronDefaultAgent:
     async def test_an_unmigrated_member_schedule_keeps_its_own_agent(self):
         """A pre-migration member cron carries its membership on the JOB, not the capture.
 
-        The two gates above read ``cron_execution``, and on the arm where
-        ``job.execution_context`` is ``None`` that object is RECONSTRUCTED rather
-        than loaded: ``resolve_legacy_execution`` calls ``execution_for_store``,
-        which for a V1 store returns
-        ``ExecutionContext(None, MemoryStoreRef(name), "template", template_id)``
-        -- hardcoding a null ``member_id`` and the ``"template"`` namespace no
-        matter what the schedule selected. So a member cron that predates the
-        execution-context migration passes BOTH capture gates while
-        ``job.member_id`` still names the member, and ``resolve_cron_memory``
-        deliberately keeps exactly that record dispatching instead of raising
-        ("Older V1 schedules may still carry the historical member selector
-        beside their explicit legacy store"), so the arm stays live -- nothing
-        backfills ``execution_context`` on load.
-
-        Substituting there runs the configured default template against that
-        member's own silo: ``build_message`` injects the substituted template's
-        system prompt and documents into the member's envelope, and the usage row
-        is attributed to it. The capture cannot answer "did this schedule select
-        a member?" on this arm, so the job record has to be asked as well.
+        With ``job.execution_context`` ``None`` the capture is rebuilt by
+        ``execution_for_store`` with a null ``member_id`` and the ``"template"``
+        namespace, so it passes both capture gates; only ``job.member_id`` names the member.
         """
         gw = _make_gw_for_llm()
         gw._cfg.agent.default_agent = "configured-default"
@@ -1196,24 +1104,9 @@ class TestCronDefaultAgent:
     async def test_a_default_declaring_a_spawn_allowlist_keeps_the_floor(self, monkeypatch):
         """A restricted default cannot be dispatched while the capture names the floor.
 
-        The substitution reaches the dispatched ``agent=`` only, while
-        ``bind_session_execution`` publishes the UNSUBSTITUTED capture under
-        ``cron:{job.id}`` -- deliberately, because that binder is called
-        positionally (``replace_existing=False``) and refuses a candidate
-        differing from what a prior fire recorded. Both spawn entry points derive
-        the parent's declaration from that record alone:
-        ``read_session_execution(parent)`` ->
-        ``parent_spawn_allowlists(parent_execution.template_id)``
-        (``dashboard/handlers/messaging.py``, and the off-loop twin in
-        ``subagent_parts/admission_surface.py``). For the floor spelling that resolves to ``()``, which
-        ``_vet_parent_available_agents`` admits as "no declaration to honour" --
-        so a ``toolsSettings.subagent.availableAgents`` declaration on the
-        substituted template is never consulted and a child it forbids starts.
-
-        Honouring it instead would mean a new non-durable parent execution read by
-        the spawn gate, in two files this change does not touch; narrowing the
-        substitution is the fix that stays inside it. The declined job keeps the
-        pre-change floor, so nothing an operator has today regresses.
+        The spawn gate reads the parent's ``availableAgents`` from the bound capture,
+        which names the floor, so the substituted template's declaration would never be
+        consulted and a child it forbids would start.
         """
         from kiro_crew import subagent as _subagent
 
@@ -1232,20 +1125,9 @@ class TestCronDefaultAgent:
     async def test_an_unknown_spawn_allowlist_keeps_the_floor(self, monkeypatch):
         """``None`` is the reader's UNKNOWN and must DECLINE -- deny by default.
 
-        An earlier revision substituted on ``None``, reasoning that the spawn gate
-        would refuse anyway because it asks about the capture's floor spelling.
-        That premise is FALSE: ``agent.py`` generates and installs
-        ``kirocrew.json`` into the agents directory and ``config/defaults.json``
-        declares ``"name": "kirocrew"``, so a readable spec DOES declare the floor
-        name. ``parent_spawn_allowlists`` only answers ``None`` when *no* readable
-        spec declares the name while some file could not be read -- so for the
-        floor it returns ``()``, "no declaration to honour", and the gate ADMITS.
-        A child the substituted default's ``availableAgents`` forbids would start.
-
-        ``None`` arises when the hardened reader refused a spec file in the
-        shared, user-writable agents dir -- which is where a restrictive
-        declaration could be hiding. A falsy value must not silently skip an
-        authorization check.
+        The spawn gate does not catch it: for the floor name it gets ``()`` and admits.
+        ``None`` means a spec file in the user-writable agents dir was refused, where a
+        restrictive declaration could hide.
         """
         from kiro_crew import subagent as _subagent
 
@@ -1262,21 +1144,9 @@ class TestCronDefaultAgent:
     async def test_a_cleared_default_still_defers_a_session_held_by_the_old_one(self):
         """The window is an AGENT-LESS JOB, not "this fire substituted".
 
-        Gating the guard on ``_default_substituted`` failed open in exactly the
-        case it was written for. Fire N substitutes ``researcher`` and its
-        ``finally`` defers the reset because sub-agents are pending; the operator
-        then CLEARS ``agent.default_agent``; fire N+1 resolves an empty default,
-        so the five-gate ``if`` is false and the flag stays ``False``. The guard
-        block was skipped entirely, and the claim path took its
-        ``existing is not None and not recycling`` arm -- returning
-        ``session.provider`` without comparing the ``agent`` kwarg -- so the fire
-        built the FLOOR's context and ran it on the process still holding
-        ``researcher``'s MCP servers, workspace and pinned model. Exactly the harm
-        the guard exists to prevent, in the one direction the flag excluded.
-
-        Any other reason for declining the substitution reaches the same hole --
-        the default's spec gaining an ``availableAgents`` list between fires, for
-        instance. So the guard keys on the agent-less predicate itself.
+        Fire N substitutes ``researcher`` and defers its reset; the operator then clears
+        the default, so fire N+1 substitutes nothing. A guard keyed on
+        ``_default_substituted`` would skip and run the floor on ``researcher``'s process.
         """
         gw = _make_gw_for_llm()
         gw._cfg.agent.default_agent = ""  # the operator cleared it between fires
@@ -1295,11 +1165,8 @@ class TestCronDefaultAgent:
     async def test_the_live_config_default_outranks_the_boot_snapshot(self, monkeypatch):
         """``agent.default_agent`` is adopted live, so a boot-only read goes stale.
 
-        The field carries no ``restart=True`` mark, so the config watcher applies
-        a dashboard/CLI change without a gateway restart, while ``self._cfg`` is
-        rebuilt only by unrelated MCP handlers. Reading the boot snapshot would
-        keep dispatching the ``"kirocrew"`` floor after an operator sets a
-        default -- the very symptom this change exists to remove.
+        The field has no ``restart=True`` mark, while ``self._cfg`` is rebuilt only by
+        unrelated MCP handlers.
         """
         import copy
 
@@ -1321,17 +1188,9 @@ class TestCronDefaultAgent:
     async def test_a_default_naming_a_crew_alias_does_not_inherit_that_crew(self, monkeypatch):
         """The configured default is a TEMPLATE name, so the alias collapse must not claim it.
 
-        ``_resolve_cron_agent`` collapses any name that merely keys ``cfg.agents``
-        into a crew alias and returns it as ``crew_agent``, which
-        ``resolve_crew_identity`` honours verbatim -- binding that crew's
-        workspace, its pinned model and its capability MCP servers.
-        ``agent.default_agent`` is a free-form str in the TEMPLATE namespace with
-        no alias validation (the alias-namespaced default is a different field,
-        guarded by ``default_agent_not_alias``), so an operator naming a crew
-        member there is ordinary input rather than an extreme one. Collapsing it
-        would widen an agent-less cron's capabilities and identity with no signal
-        above DEBUG, so the substituted default must dispatch as the template it
-        was configured as and bind no crew.
+        ``_resolve_cron_agent`` collapses any name keying ``cfg.agents`` into a crew alias,
+        binding that crew's workspace, model and MCP servers. ``agent.default_agent`` has
+        no alias validation, so collapsing would silently widen the cron's capabilities.
         """
         import copy
 

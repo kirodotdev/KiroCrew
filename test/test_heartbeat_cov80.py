@@ -21,12 +21,14 @@ exactly the part that decides *whether* maintenance ever runs:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+import kiro_crew.memory as memory_mod
 from kiro_crew.heartbeat import (
     _HEADER,
     HeartbeatService,
@@ -37,6 +39,8 @@ from kiro_crew.heartbeat import (
     is_keep_response,
     strip_keep_sentinel,
 )
+from kiro_crew.memory import MemoryStore
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import await_until, finished
 
 
@@ -208,6 +212,8 @@ class TestBeat:
         monkeypatch.setattr(svc, "_process_heartbeat_file", _counting_process)
         svc._tick = tick
         await svc._beat()
+        assert svc._process_task is not None
+        await await_until(svc._process_task, what="the tick's file pass")
         assert processed == [tick]
         assert mem.rebuild_index.call_count == rebuilds
         mem.prune_history.assert_not_called()
@@ -218,6 +224,7 @@ class TestBeat:
         workspace: Path,
         inline_executor: None,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         cfg = MagicMock()
         cfg.memory.history_max_days = 11
@@ -225,12 +232,23 @@ class TestBeat:
         sel_obj = MagicMock()
         monkeypatch.setattr("kiro_crew.heartbeat.sel", lambda: sel_obj)
 
-        mem = _memory()
+        clock = ManualClock()
+        clock.install(monkeypatch, memory_mod, time=False, datetime=True)
+        mem = MemoryStore(workspace=tmp_path / "store")
+        mem.init()
+        history = tmp_path / "store" / "memory" / "history"
+        today = datetime.fromtimestamp(clock.time()).date()
+        stale = history / f"{(today - timedelta(days=20)).strftime('%Y-%m-%d')}.md"
+        kept = history / f"{(today - timedelta(days=5)).strftime('%Y-%m-%d')}.md"
+        for f in (stale, kept):
+            f.write_text("# x\n", encoding="utf-8")
+
         svc = HeartbeatService(mem)
         svc._tick = 1440
         await svc._beat()
 
-        mem.prune_history.assert_called_once_with(keep_days=11)
+        assert not stale.exists()
+        assert kept.exists()
         sel_obj.prune.assert_called_once_with()
 
     @pytest.mark.asyncio
@@ -269,6 +287,7 @@ class TestBeat:
         monkeypatch.setattr(svc, "_process_heartbeat_file", _process)
         svc._tick = 1
         await svc._beat()
+        assert svc._process_task is None
         assert calls == []
 
 
@@ -324,6 +343,54 @@ class TestExtractTasks:
             ("real task", "slack"),
             ("starred task", ""),
         ]
+
+    def test_closed_comment_hides_only_its_own_contents(self) -> None:
+        content = "- check CI <!-- note\n- second\n--> - after\n- third"
+        assert _extract_tasks(content) == [
+            ("check CI", ""),
+            ("after", ""),
+            ("third", ""),
+        ]
+
+    def test_unclosed_comment_hides_only_the_rest_of_its_line(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        content = "- first\n- check CI <!-- note\n- second\n- third  <!-- deliver:slack -->"
+        with caplog.at_level("WARNING", logger="kiro_crew.heartbeat"):
+            tasks = _extract_tasks(content)
+        assert tasks == [
+            ("first", ""),
+            ("check CI", ""),
+            ("second", ""),
+            ("third", "slack"),
+        ]
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "line 2" in warnings[0]
+
+    def test_comment_around_a_task_hides_its_deliver_tag_too(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        content = (
+            "<!--\n- deploy prod  <!-- deliver:slack -->\n-->\n- kept  <!-- deliver:dashboard -->"
+        )
+        with caplog.at_level("WARNING", logger="kiro_crew.heartbeat"):
+            assert _extract_tasks(content) == [("kept", "dashboard")]
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+    def test_comment_closed_by_the_bang_closer_is_closed(self) -> None:
+        content = "<!-- note\n- hidden\n--!>\n- kept"
+        assert _extract_tasks(content) == [("kept", "")]
+
+    def test_multiline_comment_shaped_like_a_deliver_tag_is_not_a_task(self) -> None:
+        content = "<!--\ndeliver:silent\n-->\n- kept"
+        assert _extract_tasks(content) == [("kept", "")]
+
+    def test_comment_inside_a_task_line_is_dropped(self, caplog: pytest.LogCaptureFixture) -> None:
+        content = "- run <!-- why --> tests  <!-- deliver:dashboard -->\n<!-- deliver:slack -->"
+        with caplog.at_level("WARNING", logger="kiro_crew.heartbeat"):
+            assert _extract_tasks(content) == [("run  tests", "dashboard")]
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
     def test_keep_sentinel_helpers(self) -> None:
         assert is_keep_response("all done heartbeat_keep") is True

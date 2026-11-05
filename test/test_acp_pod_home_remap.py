@@ -2,14 +2,9 @@
 child, applied identically at both ACP spawn sites (``AcpClient._spawn`` and
 ``AcpRuntime._spawn_admitted``).
 
-Regression context: ``pod.runtime.build_pod_env`` deliberately keeps the pod
-GATEWAY's own ``HOME`` unchanged (isolating ``KIROCREW_HOME``/``KIRO_HOME``
-only), so a pod-spawned kiro-cli child inherited that same real ``$HOME`` and
-wrote its MCP OAuth grant artifacts there -- a REAL, durable, machine-level
-credential that survived ``pod down``. This function is the fix's second half:
-``mcp_grant.kiro_oauth_cache_dir()`` (pinned in ``test_mcp_grant.py``) makes
-the pod's OWN reads resolve the pod's tree; this makes kiro-cli's OWN WRITES
-land there too, by remapping the spawned child's ``HOME``.
+``build_pod_env`` keeps the gateway's real ``HOME``, so without the remap kiro-cli would
+write MCP OAuth grants to the host, where they survive ``pod down``. The read side is
+``mcp_grant.kiro_oauth_cache_dir()`` (``test_mcp_grant.py``).
 """
 
 from __future__ import annotations
@@ -164,11 +159,8 @@ class TestTheCapabilitySetIsItsOwnDecision:
     def test_the_shared_process_spawn_asks_a_question_of_its_own(self, tmp_path) -> None:
         """The same conflation, closed one layer down.
 
-        The shared-process spawn asks its host, and the host answers from the
-        remap set. Each question is one property reading one set, so answering
-        "does this host relocate its credential store" with "does it carry its own
-        sandbox" now requires editing the wrong property by name -- a stronger
-        pin than a spawn method that mentions both sets for unrelated reasons.
+        The host answers from the remap set, one property per set, so "relocates its
+        credential store" cannot be answered by "carries its own sandbox".
         """
         import inspect
         from unittest.mock import PropertyMock, patch
@@ -199,21 +191,10 @@ class TestTheCapabilitySetIsItsOwnDecision:
 
 class TestAwsCredentialPointersAreNotExportedIntoThePod:
     """``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` must not be exported
-    into the pod. Naming those files in the child environment IS the leak: the
-    deny matchers work on command text with no variable expansion, so the export
-    is a working alias for a path the sensitive-path fence refuses by name, and
-    the alias is retrievable through an unbounded set of spellings (``$VAR``,
-    ``os.environ['VAR']``, ``$(printenv VAR)``, ``eval``, indirect expansion, a
-    helper script). The alias is deleted at its source instead of matched spelling
-    by spelling.
+    into the pod. Deny matchers do not expand variables, so the export is an alias
+    for a refused path with endless spellings; it is deleted at the source.
 
-    An ACP agent turn inside a pod has NO inherited AWS credentials on any path.
-    File credentials do not resolve (the pointer exports are gone), and
-    environment credentials do not reach the turn either --
-    ``sandbox.scrub_agent_subprocess_env`` scrubs the ``AWS_SECRET`` and
-    ``AWS_SESSION`` prefixes from every Kiro/ACP child. The pod GATEWAY's
-    environment does keep ``AWS_*`` (via ``build_pod_env``), but the ACP child's
-    is scrubbed after it."""
+    Secret-carrying ``AWS_*`` vars are scrubbed by ``sandbox.scrub_agent_subprocess_env``."""
 
     @pytest.mark.parametrize(
         "pointer",
@@ -251,13 +232,8 @@ class TestAwsCredentialPointersAreNotExportedIntoThePod:
     def test_an_operator_set_pointer_is_removed_too(self, tmp_path: Path) -> None:
         """An operator-set inherited pointer must be removed too.
 
-        The value reaches the pod's AGENT, and the agent dereferences it.
-        ``build_pod_env`` keeps ``AWS_*`` on purpose, so an absolute host pointer
-        would survive into a child whose ``HOME`` has moved and whose
-        ``.aws/config`` / ``.aws/credentials`` / ``.aws/cli`` are empty-masked
-        under the new home -- the pointer walks around the relocation and the
-        operator's real credentials are disclosed. Whose file it is does not change
-        what following it yields.
+        ``build_pod_env`` keeps ``AWS_*``, so an absolute host pointer would walk around
+        the masked ``.aws`` under the new ``HOME`` to the operator's real credentials.
         """
         env = _base_pod_env(tmp_path)
         env["AWS_CONFIG_FILE"] = "/custom/aws-config"
@@ -269,18 +245,9 @@ class TestAwsCredentialPointersAreNotExportedIntoThePod:
     def test_a_plain_text_container_bearer_does_not_reach_the_child(self, tmp_path: Path) -> None:
         """``AWS_CONTAINER_AUTHORIZATION_TOKEN`` -- the bearer IN the value.
 
-        RED-FIRST for the twin the first pass missed. The set covered the ``_FILE``
-        spelling and not the bare one, and the bare one is strictly worse: ``_FILE``
-        names a file the agent still has to open, while this variable IS the token,
-        in plain text, readable straight out of the child's environment. Per the SDK
-        reference it is the documented alternative used whenever ``_FILE`` is unset,
-        so an ECS/EKS/SnapStart host that sets it -- and ``build_pod_env`` keeps
-        ``AWS_*`` on purpose -- handed the pod's agent a live bearer for the
-        credential endpoint.
-
-        A real-shaped value rather than a path, because the previous parametrized
-        case fed every pointer a filesystem path and a value-carrying variable would
-        have looked plausible under that fixture even while leaking.
+        Unlike the ``_FILE`` spelling, this variable is the plain-text token itself, set
+        on ECS/EKS/SnapStart hosts. A real-shaped value, not a path, because the
+        parametrized case feeds only paths.
         """
         env = _base_pod_env(tmp_path)
         env["AWS_CONTAINER_CREDENTIALS_FULL_URI"] = "http://localhost/get-credentials"
@@ -297,13 +264,8 @@ class TestAwsCredentialPointersAreNotExportedIntoThePod:
     def test_the_whole_container_credential_family_is_covered(self) -> None:
         """The family is CLOSED and enumerable, so pin it by name.
 
-        The SDK reference documents exactly four variables for the container
-        credential provider, in two alternative pairs (relative/full URL, and
-        token/token-file). The finding that produced the test above was one member
-        of one pair being absent, which a per-variable test cannot catch on its own
-        -- it only checks the names someone already thought to list. This asserts
-        the set relation instead, so a fifth member added to the provider upstream
-        fails here rather than silently going unscrubbed.
+        The SDK documents four variables in two pairs (relative/full URL, token/token
+        file). A per-variable test only checks names someone thought to list.
         """
         from kiro_crew.acp.client import CREDENTIAL_POINTER_ENV_VARS
 
@@ -360,12 +322,9 @@ class TestAwsCredentialPointersAreNotExportedIntoThePod:
     def test_the_global_secret_scrub_still_owns_the_secret_carrying_vars(self) -> None:
         """One philosophy, two scopes -- pinned so the lists cannot converge.
 
-        ``sandbox.scrub_agent_subprocess_env`` drops the variables that CARRY a
-        secret, on EVERY agent spawn. This set drops the ones that POINT at
-        credentials, and only where the pointed-at tree has been relocated. Adding
-        pointers to the global scrub would break the non-pod path the standard tier
-        deliberately supports (the AWS CLI and ``credential_process`` reading the
-        real ``~/.aws``), so the boundary is asserted rather than assumed.
+        The global scrub drops secret-carrying vars on every spawn; this set drops
+        pointers only where the tree moved. Pointers in the global scrub would break
+        non-pod AWS CLI and ``credential_process`` use of the real ``~/.aws``.
         """
         from kiro_crew.acp.client import CREDENTIAL_POINTER_ENV_VARS
         from kiro_crew.sandbox import scrub_agent_subprocess_env
@@ -454,11 +413,8 @@ class TestBothSpawnTransportsApplyItIdentically:
 class TestIdentityStoreRootOverridesAreScrubbed:
     """A remapped HOME is not enough: the identity store honours a ROOT OVERRIDE.
 
-    ``identity_stores`` resolves each store from ``StoreRoot.env_var`` before
-    falling back to ``$HOME``, so an inherited ``XDG_DATA_HOME`` (or the Windows
-    ``LOCALAPPDATA`` / ``APPDATA``) pointing at a host path made a pod's kiro-cli
-    read AND WRITE the HOST identity store -- sign-in state that survives
-    ``pod down``, which is the escape the remap exists to prevent.
+    ``identity_stores`` reads ``StoreRoot.env_var`` before ``$HOME``, so an inherited
+    ``XDG_DATA_HOME`` / ``LOCALAPPDATA`` / ``APPDATA`` would hit the host identity store.
     """
 
     def test_a_hostile_data_root_override_is_removed(self) -> None:

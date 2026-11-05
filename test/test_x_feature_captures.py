@@ -345,6 +345,34 @@ def test_the_worker_kit_capture_shows_the_crewmate_prompt_and_limit_applied() ->
     assert tags == ["read"]  # the crewmate file excluded ``shell`` from the base
 
 
+def test_codex_worker_kit_is_proven_by_its_own_capture() -> None:
+    """The codex worker capture is cited, passes, and is off the allowlist."""
+    name, rel = "ACP_BACKENDS_MATE_WORKER_KIT", "codex/worker-kit-live.jsonl"
+    comments = gate.set_comments()
+    assert (name, "codex") not in gate.X_CAPTURE_ALLOWLIST
+    assert f"acp_frames/{rel}" in comments[name]
+    assert (name, "codex") not in gate.check_x_captures(gate.live_sets(), comments)
+    assert (name, "codex") in gate.check_x_captures(
+        gate.live_sets(), {**comments, name: comments[name].replace(rel, "codex/absent.jsonl")}
+    )
+
+
+def test_the_codex_worker_capture_shows_the_crewmates_server_and_prompt_applied() -> None:
+    """The crewmate's server, called once and answered, and the reply its prompt asked for."""
+    rel = "codex/worker-kit-live.jsonl"
+    (call,) = _updates(rel, "tool_call")
+    assert call["rawInput"] == {"server": "pixel-probe", "tool": "probe_codeword", "arguments": {}}
+    assert len(_methods(rel, "session/request_permission")) == 1
+    done = _updates(rel, "tool_call_update")[-1]
+    assert done["rawOutput"]["result"]["content"][0]["text"] == "kumquat-17"
+    reply = [
+        u["content"]["text"] for u in _updates(rel, "agent_message_chunk") if u.get("messageId")
+    ]
+    assert reply == ["kumquat-17"]
+    (title,) = [u["title"] for u in _updates(rel, "session_info_update") if u.get("title")]
+    assert title.startswith("[AGENT SYSTEM PROMPT] You are the worker.")
+
+
 def test_every_live_kas_capture_names_the_engine_version() -> None:
     """KAS is versioned apart from kiro-cli; a live capture records the engine's own."""
     import re

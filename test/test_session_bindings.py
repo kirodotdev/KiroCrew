@@ -42,6 +42,8 @@ from kiro_crew.session_parts.state_views import StateProperty
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_field_scan_counts_every_read_and_write_shape",)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now
 #: (``session`` is the facade, any other name a ``kiro_crew.session_parts`` module).
@@ -103,6 +105,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_has_attached_subagents": ("function", False, "9c6eda911dd8", "sweeps"),
     "_has_pending_injection": ("function", False, "1eda252b53bd", "sweeps"),
     "_identity_sweep_lock": ("property", False, "fd738ff11600", "state_views"),
+    "_idle_compaction_blocker": ("function", False, "4b576121a346", "sweeps"),
     "_idle_sweep_enabled": ("property", False, "a6632a57e602", "state_views"),
     "_idle_timeout": ("property", False, "fa6cfecd5574", "state_views"),
     "_in_flight_pids": ("function", False, "6e67e49bb5fd", "runtimes"),
@@ -141,6 +144,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_recycle_unmanaged": ("function", True, "1c68c9ed8dbb", "turn_context"),
     "_recycling": ("property", False, "5c9a1a8aab23", "state_views"),
     "_registry_state": ("function", False, "21fce5dd2c88", "state_views"),
+    "_released_sessions_hook": ("function", True, "b60c5fea256e", "sweeps"),
     "_reset_still_critical": ("function", True, "14f70d097513", "turn_context"),
     "_resolve_agent_model": ("staticmethod", False, "f2204edfe0d1", "session"),
     "_retire_kiro_bg_runtime": ("function", True, "b3a488b20d12", "teardown"),
@@ -155,6 +159,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_sessions": ("property", False, "5c9a1a8aab23", "state_views"),
     "_settle_compact_cooldown": ("function", False, "782a54a66452", "turn_context"),
     "_spawn_in_flight": ("function", False, "4b576121a346", "claims"),
+    "_start_cleanup_for_waiting_deletes": ("function", True, "b60c5fea256e", "runtimes"),
     "_start_sem": ("property", False, "1f1197566c49", "state_views"),
     "_starting_pids": ("property", False, "d657ba783a38", "state_views"),
     "_stuck_reported": ("property", False, "b00f42b34605", "state_views"),
@@ -183,6 +188,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "batched_save": ("function", False, "08ba78a8a6e0", "links"),
     "begin_turn": ("function", False, "958babeb61c8", "claims"),
     "cancel_current": ("function", True, "9859e2116ea5", "teardown"),
+    "cancel_idle_compaction": ("function", False, "1eda252b53bd", "turn_context"),
     "cancel_owned_turn": ("function", True, "86bfc9daa5fd", "teardown"),
     "cancel_queued": ("function", False, "50fe52427d8c", "claims"),
     "capability_runtime_view": ("function", False, "de139dca2f5d", "claims"),
@@ -197,6 +203,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "close_all": ("function", True, "9679ccba1fac", "teardown"),
     "close_replay_gap": ("function", False, "958babeb61c8", "teardown"),
     "commit_provider_switch_replay_sid": ("function", False, "1eda252b53bd", "session"),
+    "compact_if_idle": ("function", True, "b7ea3f0979bb", "turn_context"),
     "compact_if_needed": ("function", True, "f1d40e624ae4", "turn_context"),
     "compact_wait_budget_secs": ("function", False, "59162e39f6f1", "turn_context"),
     "compaction_due_after_turn": ("function", False, "9e38ffe0e60c", "turn_context"),
@@ -211,7 +218,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "destroy": ("function", True, "958babeb61c8", "teardown"),
     "destroy_if": ("function", True, "b2e16ab8f2dd", "teardown"),
     "detach_queue": ("function", False, "197b82a5019f", "claims"),
-    "discard_conversation": ("function", True, "b225e6bcbd95", "teardown"),
+    "discard_conversation": ("function", True, "185d63c540e6", "teardown"),
     "drain_active_turns": ("function", True, "5944c6af44b2", "teardown"),
     "drain_all_providers": ("function", True, "f5423acdeebc", "teardown"),
     "drain_warm_pool": ("function", True, "f5423acdeebc", "runtimes"),
@@ -227,6 +234,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "flag_identity_stamp_mismatches": ("function", True, "946212e80718", "teardown"),
     "forget_conversation": ("function", False, "4b576121a346", "claims"),
     "forget_conversation_if_sid": ("function", False, "70e3d61c5764", "claims"),
+    "fresh_start_unclaimed": ("function", False, "1eda252b53bd", "claims"),
     "get_agent": ("function", False, "f1d40e624ae4", "claims"),
     "get_agent_selection": ("function", False, "b3496bff0391", "claims"),
     "get_approval_policy": ("function", False, "f1d40e624ae4", "claims"),
@@ -267,6 +275,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "mirror_link_nonce": ("function", False, "f1d40e624ae4", "links"),
     "mirror_opt_out": ("function", False, "1eda252b53bd", "links"),
     "note_stop": ("function", False, "1eda252b53bd", "teardown"),
+    "note_turn_landed": ("function", False, "958babeb61c8", "claims"),
     "open_replay_gap": ("function", False, "958babeb61c8", "teardown"),
     "open_task_session": ("function", True, "79d5142a16be", "runtimes"),
     "parent_work_scratch_dir": ("function", False, "b0a47dac7d8f", "claims"),
@@ -309,6 +318,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_compact_callback": ("function", False, "6f1bae527bd9", "turn_context"),
     "set_compacting_callback": ("function", False, "2aed1f018edf", "turn_context"),
     "set_continuable_fallback": ("function", False, "9129b57ccbd2", "claims"),
+    "set_idle_compaction_probe": ("function", False, "29fcd4f6cb4d", "sweeps"),
     "set_injection_probe": ("function", False, "f6fd6f250ecd", "sweeps"),
     "set_lifecycle_turn_active": ("function", False, "3656499fe52f", "claims"),
     "set_mirror_link": ("function", False, "e65f668f550c", "links"),
@@ -321,6 +331,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_subagent_probe": ("function", False, "15a1fb4a5fb2", "sweeps"),
     "set_thread": ("function", True, "ca35fd6d7149", "links"),
     "set_unbind_listener": ("staticmethod", False, "de25b1a3a879", "session"),
+    "settle_turn": ("function", False, "958babeb61c8", "claims"),
     "slack_link_nonce": ("function", False, "f1d40e624ae4", "links"),
     "start_pool": ("function", True, "255a2f05f73c", "runtimes"),
     "stop_generation": ("function", False, "028659ce42ac", "teardown"),
@@ -330,6 +341,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "tearing_down": ("function", False, "cc5b7dd151c6", "teardown"),
     "touch": ("function", False, "1eda252b53bd", "claims"),
     "try_acquire": ("function", True, "1eda252b53bd", "claims"),
+    "turn_holder": ("function", False, "f610bbd5c527", "claims"),
+    "turn_prompt_in_flight": ("function", False, "1eda252b53bd", "claims"),
+    "turn_token": ("function", False, "b3873f9f379c", "claims"),
     "unlanded_marker_pending": ("function", False, "1eda252b53bd", "turn_context"),
     "unmark_continuable": ("function", False, "958babeb61c8", "claims"),
     "update_restart_fenced": ("property", False, "a6632a57e602", "state_views"),
@@ -797,16 +811,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
     return written - set(_MEMBERS), read - written - set(_MEMBERS)
-
-
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
 
 
 def test_the_field_scan_reads_self_dict_keys_as_fields() -> None:

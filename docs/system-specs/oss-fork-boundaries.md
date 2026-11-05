@@ -63,9 +63,14 @@ STT extras.
 
 - The **Channels** app is hidden from the App Store, and the **Board** app is removed.
   An upstream sync must not restore either.
-- **The built-in app set is closed.** The `no-new-builtin-apps` rule in `AUTOSDE.yaml`
-  blocks restoring those two and blocks any NEW built-in app: new apps ship as external
-  apps through the KiroCrewApps registry.
+- **The built-in app set is closed, and it is being emptied.** Kiro Crew accepts no
+  new built-in app: every app, first-party included, lives in a dedicated GitHub
+  repository listed in the official registry (`kirodotdev/KiroCrewApps`). The
+  built-ins that still ship move out one at a time without changing anything for the
+  people who already use them
+  ([decision](../decisions/2026-11-01-kiro-crew-accepts-no-new-built-in-apps.md)).
+  The `no-new-builtin-apps` rule in `AUTOSDE.yaml` blocks restoring those two and
+  blocks any NEW built-in app, per-app core table row, or app-specific core MCP tool.
 
 ## Keep the generic security controls
 

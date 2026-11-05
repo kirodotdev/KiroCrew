@@ -3,9 +3,9 @@
 ``start_enabled_app_backends`` reaps a prior generation's orphans, scrubs the MCP
 entries of disabled apps, revokes the executable resources of apps no activation
 boundary admits any more, vets the rest fail-closed, and spawns the admitted set
-concurrently with their fixed ports reserved first. The Dev Fleet backend is vetted
-with the rest but spawned by ``start_deferred_app_backends`` once the gateway's bound
-port exists.
+concurrently with their fixed ports reserved first. ``start_dashboard`` reserves
+the dashboard port and exports ``KIROCREW_BOUND_PORT`` before calling it, so a
+backend whose host grants ask for the bound port spawns in the same wave.
 """
 
 from __future__ import annotations
@@ -36,23 +36,18 @@ logger = logging.getLogger(_FACADE)
 _BOOT_SPAWN_MAX_WORKERS = 8
 
 
-#: The one app backend that needs the gateway's ACTUALLY-bound port at spawn
-#: (``KIROCREW_BOUND_PORT``): it reads live-target pointer state through an
-#: in-gateway route. ``start_dashboard`` starts every other backend before
-#: ``runner.setup()`` so an app's startup hooks find its backend running, and starts
-#: this one only after ``_export_bound_port`` — the value does not exist before the bind.
-DEV_FLEET_APP_NAME: str = "dev-fleet"
-
-
 def start_enabled_app_backends() -> list[str]:
     """Start backends for all enabled apps that declare one.
 
     Called during gateway startup to restore app backends.
     Returns list of app names that were started.
 
-    The :data:`DEV_FLEET_APP_NAME` backend is vetted and reconciled like
-    every other app but NOT spawned here; ``start_dashboard`` starts it with
-    :func:`start_deferred_app_backends` once the bound port exists.
+    One wave for every admitted app, including those whose host grants ask for the
+    gateway's ACTUALLY-bound port (``builtin_host_grants.bound_port_apps``, handed
+    over as ``KIROCREW_BOUND_PORT``): ``start_dashboard`` reserves the port and
+    exports that value before this runs. A callback such a backend makes while the
+    gateway is still booting queues in the reserved socket's backlog until the
+    listener starts accepting.
     """
     # Reap app backends left running by a prior (e.g. SIGKILLed) gateway
     # generation before starting the new one. See the RFC,
@@ -226,44 +221,15 @@ def start_enabled_app_backends() -> list[str]:
                 continue
         admitted.append(name)
 
-    global _DEV_FLEET_DEFERRED
-    _DEV_FLEET_DEFERRED = DEV_FLEET_APP_NAME in admitted
-    return _start_backends_concurrently([n for n in admitted if n != DEV_FLEET_APP_NAME])
-
-
-#: Whether the boot wave admitted Dev Fleet and held its spawn back for the bound port.
-_DEV_FLEET_DEFERRED: bool = False
-
-
-def start_deferred_app_backends() -> list[str]:
-    """Spawn the Dev Fleet backend ``start_enabled_app_backends`` held back.
-
-    Its admission and reconcile work already ran in the same boot, but the deferral
-    leaves a window (the rest of ``start_dashboard``) in which the operator can
-    disable the app or a policy can tighten — so enablement and governance are
-    re-checked here, fail-closed, immediately before the spawn. Same per-app
-    isolation as the main wave. Returns the names that started; a second call is a
-    no-op.
-    """
-    global _DEV_FLEET_DEFERRED
-    from kiro_crew.apps.manager import _app_activation_denied
-
-    deferred, _DEV_FLEET_DEFERRED = _DEV_FLEET_DEFERRED, False
-    if not deferred:
-        return []
-    name = DEV_FLEET_APP_NAME
-    # ``True`` only: an unreadable state (None) is not a licence to spawn.
-    if _app_enabled_state(name) is not True:
-        logger.info("Deferred boot: %s is no longer enabled — not started", name)
-        return []
-    try:
-        gov_denied = _app_activation_denied(name)
-    except Exception as exc:  # noqa: BLE001 — fail closed, never crash boot
-        gov_denied = f"activation re-vet error: {exc}"
-    if gov_denied:
-        logger.warning("Deferred boot: %s not started: %s", name, gov_denied)
-        return []
-    return _start_backends_concurrently([name])
+    # ``list_apps`` above is a snapshot, and the reconcile passes between it and
+    # here can take seconds, long enough for `kirocrew app disable` to land. Re-read
+    # enablement right before the spawn, fail-closed: ``True`` only, since an
+    # unreadable state (None) is not a licence to spawn.
+    still_enabled = [n for n in admitted if _app_enabled_state(n) is True]
+    for name in admitted:
+        if name not in still_enabled:
+            logger.info("Boot: %s is no longer enabled — not started", name)
+    return _start_backends_concurrently(still_enabled)
 
 
 def _preclaim_fixed_ports(names: list[str]) -> None:

@@ -134,16 +134,8 @@ def test_the_child_measures_this_checkout() -> None:
 def test_the_child_refuses_to_write_bytecode() -> None:
     """A read-only assertion must not write into the tree it inspects.
 
-    ``-I`` does not imply ``-B``, so an earlier draft compiled every module the
-    child imported straight into ``src/**/__pycache__``.
-
-    This asks the child what it will DO rather than diffing the directory
-    afterwards, and the difference matters: pytest imports most of ``kiro_crew``
-    during collection, so by the time this test runs the ``.pyc`` files already
-    exist and a child writing bytecode adds no new file. A mtime-and-filename
-    diff therefore passes with ``-B`` removed -- measured, not assumed -- which
-    makes it exactly the vacuous test this suite's other self-checks exist to
-    prevent.
+    ``-I`` does not imply ``-B``. Asks the child rather than diffing ``__pycache__``:
+    collection already wrote the ``.pyc`` files, so a diff passes with ``-B`` removed.
     """
     proc = _run(f"print({_ANSWER!r} + str(sys.dont_write_bytecode))")
     assert proc.returncode == 0, proc.stderr

@@ -3,14 +3,26 @@ import { i18nT } from '../i18n/t'
 type TitledSession = { key: string; title?: string | null }
 
 /**
+ * Whether a title is the placeholder the backend sends for an open, untitled
+ * slot (`NEW_SESSION_TITLE` in `state_parts/slot_session.py`), in either
+ * ellipsis spelling. It is English text, not a title, so no surface shows it
+ * (#29748). An exact match, so "New Session Planning" stays a real title.
+ * This is the one copy of the check; the command palette imports it too.
+ */
+export function isBackendPlaceholderTitle(title: string): boolean {
+  return title === 'New Session…' || title === 'New Session...'
+}
+
+/**
  * Whether a session has no title of its own.
  *
  * A title equal to the key counts as none, as the sidebar row already treats
  * it: a dragged session reference and a restored draft carry the key as their
- * title when the session had none.
+ * title when the session had none. The backend's placeholder counts as none
+ * too, so an open untitled slot reads like a closed one.
  */
 export function isUntitledSession(session: TitledSession): boolean {
-  return !session.title || session.title === session.key
+  return !session.title || session.title === session.key || isBackendPlaceholderTitle(session.title)
 }
 
 /**

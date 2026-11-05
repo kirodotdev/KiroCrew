@@ -363,7 +363,8 @@ describe('MarkdownPanel — selection copy', () => {
     sel.removeAllRanges()
     sel.addRange(range)
     fireEvent.mouseUp(document)
-    fireEvent.click(await screen.findByRole('button', { name: 'Copy' }))
+    const copyBtn = await screen.findByRole('button', { name: 'Copy' })
+    await act(async () => { fireEvent.click(copyBtn) })
     expect(copyToClipboard).toHaveBeenCalledWith('alpha')
   })
 })
@@ -630,7 +631,9 @@ describe('MarkdownPanel — live file watch', () => {
       { ok: false, status: 500, headers: { get: () => null } } as unknown as Response,
     )
     act(() => { streams[0].onmessage?.({ data: JSON.stringify({ content: 'event body only' }) }) })
-    await new Promise(resolve => setTimeout(resolve, 30))
+    // The failed re-read is reported in the panel's ErrorNotice: wait for that, then
+    // assert nothing was applied.
+    await screen.findByTestId('markdown-panel-action-error')
     expect(onContentChange).not.toHaveBeenCalledWith('event body only')
     expect(onContentChange).not.toHaveBeenCalled()
   })
@@ -707,7 +710,9 @@ describe('MarkdownPanel — live file watch', () => {
     installEventSource()
     const props = { ...panelProps({ content: 'edited body', savedBaseline: 'disk body' }), liveWatch: true }
     render(<MarkdownPanel embedded {...props} />, { wrapper })
-    await new Promise(resolve => setTimeout(resolve, 20))
+    // The window is the panel's mount-time reads (the ⋯ menu's artifact and knowledge
+    // queries): wait until they have all settled, then look for a stream.
+    await waitFor(() => expect(qc.isFetching()).toBe(0))
     expect(streams.length).toBe(0)
   })
 })

@@ -14,7 +14,7 @@ from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F
 
 from kiro_crew import github_runner
 from kiro_crew.dashboard.handlers import source_providers as source
-from kiro_crew.testing.wait import default_timeout
+from kiro_crew.testing.wait import await_until, default_timeout
 
 
 @pytest.mark.asyncio
@@ -513,8 +513,7 @@ async def test_concurrent_allowlist_refresh_cannot_restore_a_revoked_host(monkey
         )
 
     async def _noop() -> None:
-        # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        await await_until(release, what="the test to release the allowlist hold")
 
     loop = source.asyncio.get_running_loop()
     monkeypatch.setattr(source, "_load_source_link_settings", slow_stale_load)
@@ -523,15 +522,12 @@ async def test_concurrent_allowlist_refresh_cannot_restore_a_revoked_host(monkey
     monkeypatch.setattr(source, "_gitlab_hosts_lock", source.asyncio.Lock())
 
     first = loop.create_task(source.ensure_gitlab_hosts_loaded())
-    # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-    await started.wait()
+    await await_until(started, what="the allowlist load to start")
     second = loop.create_task(source.ensure_gitlab_hosts_loaded())
     await source.asyncio.sleep(0)
     release.set()
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    await first
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    await second
+    await await_until(first, what="the first allowlist refresh to finish")
+    await await_until(second, what="the second allowlist refresh to finish")
 
     # The second caller reused the fresh snapshot instead of running its own load.
     assert loads["n"] == 1

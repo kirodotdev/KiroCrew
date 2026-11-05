@@ -42,7 +42,7 @@ def _png(tmp_path: pathlib.Path) -> pathlib.Path:
 def _captured_initialize(backend_dir: str) -> dict:
     """The ``initialize`` result off a committed live capture."""
     path = _FRAMES / backend_dir / "handshake-live.jsonl"
-    for line in path.read_text().splitlines()[1:]:
+    for line in path.read_text(encoding="utf-8").splitlines()[1:]:
         result = json.loads(line).get("result")
         if isinstance(result, dict) and "agentCapabilities" in result:
             return result

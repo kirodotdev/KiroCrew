@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         _LockedSectionWrite,
         _mask_secret,
         _sel,
+        _stored_threshold_pct,
         _threshold_pct_rejection,
         _write_env_or_roll_back,
         channel_restart_required,
@@ -251,7 +252,10 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             s = str(item).strip()
             if not s:
                 continue
-            if not s.isdigit():
+            # Refuse what int() would raise on: "²".isdigit() is True while
+            # int("²") raises, and so does int() past its digit limit. Telegram
+            # IDs fit an int64, so 20 digits is generous.
+            if not (s.isascii() and s.isdigit()) or len(s) > 20:
                 return _deny(f"invalid Telegram user ID: {s} (numeric IDs only)")
             uid = int(s)
             if uid not in new_ids:
@@ -265,7 +269,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
         return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
         pct = int(body["soft_threshold_pct"])
-        if pct != int(tg_cfg.get("soft_threshold_pct", 80)):
+        if pct != _stored_threshold_pct(tg_cfg, "soft_threshold_pct", 80):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
@@ -334,7 +338,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             # so accept an optional leading minus — the digits-only check used
             # for allowed_user_ids would wrongly reject every group id here.
             digits = s[1:] if s.startswith("-") else s
-            if not digits.isdigit():
+            if not (digits.isascii() and digits.isdigit()) or len(digits) > 20:
                 return _deny(f"invalid Telegram chat ID: {s} (integer IDs only)")
             cid = int(s)
             if cid not in new_chat_ids:

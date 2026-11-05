@@ -67,6 +67,11 @@ _MAX_ACTIVE_SYNTHESES = 2
 _MAX_REQUEST_ID_CHARS = 128
 _CANCELLED_REQUEST_TTL = 60.0
 
+#: Failure codes after which the dashboard may speak the reply with its own
+#: engine. Both mean the gateway produced no audio for a reason the client's
+#: engine does not share, so their error payloads carry ``speakable``.
+_CLIENT_FALLBACK_CODES = frozenset({"voice_unavailable", "voice_polly_rejected"})
+
 #: The live ``_vc`` attribute each config PUT field lands on, mapped to the key
 #: it is stored under in config.json's ``voice_reply`` block (the names the
 #: loader in slack/handler.py reads back).
@@ -298,16 +303,25 @@ async def api_voice_config(request: web.Request) -> web.Response:
     # caller gets a 400 while an earlier field has already taken effect, so the
     # live provider can change on a request the API said it refused.
     pending: dict[str, object] = {}
+    # A provider or engine the server does not know is left unsaved, as it
+    # always was, and named here, so the caller can tell its choice did not
+    # take instead of reading the 200 as saved.
+    warnings: list[dict[str, str]] = []
 
     # ``in valid_providers()`` would raise TypeError on an unhashable JSON value
     # (list/dict), 500ing the PUT — require a str first. The built-ins plus the
     # edition's registered TTS providers; with the default registry, the built-ins.
-    if (
-        "provider" in body
-        and isinstance(body["provider"], str)
-        and body["provider"] in valid_providers()
-    ):
-        pending["provider"] = body["provider"]
+    if "provider" in body:
+        if isinstance(body["provider"], str) and body["provider"] in valid_providers():
+            pending["provider"] = body["provider"]
+        else:
+            warnings.append(
+                {
+                    "field": "provider",
+                    "code": "voice_provider_unknown",
+                    "message": "provider is not a known voice provider, so it was not saved",
+                }
+            )
     if "voice" in body:
         # A voice NAME, same class as system_voice: a wrong type must be refused
         # rather than stringified, because "{}" is a name no engine can satisfy.
@@ -320,8 +334,17 @@ async def api_voice_config(request: web.Request) -> web.Response:
         pending["default_voice"] = _voice
     # Same as provider above: ``in VALID_ENGINES`` raises TypeError on an
     # unhashable JSON value (list/dict), 500ing the PUT — require a str first.
-    if "engine" in body and isinstance(body["engine"], str) and body["engine"] in VALID_ENGINES:
-        pending["default_engine"] = body["engine"]
+    if "engine" in body:
+        if isinstance(body["engine"], str) and body["engine"] in VALID_ENGINES:
+            pending["default_engine"] = body["engine"]
+        else:
+            warnings.append(
+                {
+                    "field": "engine",
+                    "code": "voice_engine_unknown",
+                    "message": "engine is not a known Polly engine, so it was not saved",
+                }
+            )
     # rate/pitch differ from the name fields on purpose: their validators own a
     # documented degrade-to-default contract (a numeric "rate": 100 is a mundane
     # typo, not a refusable request), and they are shape-checked against a percent
@@ -405,6 +428,11 @@ async def api_voice_config(request: web.Request) -> web.Response:
     for _attr, _new in pending.items():
         setattr(_vc, _attr, _new)
 
+    if warnings:
+        logger.warning(
+            "voice config PUT: left unsaved: %s", ", ".join(w["field"] for w in warnings)
+        )
+        return web.json_response({"ok": True, "warnings": warnings})
     return web.json_response({"ok": True})
 
 
@@ -555,24 +583,25 @@ async def _synthesize_request(
         err_msg, _ = redact_exfiltration_urls(str(exc))
         err_msg, _ = redact_credentials(err_msg)
         code = getattr(exc, "code", "voice_synthesis_failed")
-        # Carry the speakable text on the one code the client speaks locally, so
+        # Carry the speakable text on the codes the client speaks locally, so
         # the fallback voices placeholders (not raw code/markup) without
         # re-implementing strip_markdown.
-        extra = {"speakable": speakable} if code == "voice_unavailable" else {}
+        fallback = code in _CLIENT_FALLBACK_CODES
+        extra = {"speakable": speakable} if fallback else {}
         state.broadcast_ws(
             "voice_error",
             {**identity, "error": err_msg, "code": code, **extra},
         )
         # The body is a literal dict with a literal `code` on purpose: the
         # error-code ratchet treats a `**spread` body as opaque. `speakable` is
-        # only read by the client on voice_unavailable; None elsewhere is inert.
+        # only read by the client on a fallback code; None elsewhere is inert.
         return web.json_response(
             {
                 "ok": False,
                 "error": err_msg,
                 "code": code,
                 "request_id": request_id,
-                "speakable": speakable if code == "voice_unavailable" else None,
+                "speakable": speakable if fallback else None,
             },
             status=502,
         )
@@ -748,6 +777,10 @@ async def _synthesize_nonstreaming(
 
 _voices_cache: list[dict] | None = None
 _voices_cache_ts: float = 0.0
+#: The ``(aws_profile, region)`` the cached Polly catalogue was read with. A
+#: different account or region has a different catalogue, so a cache from
+#: another pair is a miss.
+_voices_cache_key: tuple[str, str] | None = None
 _VOICES_CACHE_TTL = 3600  # 1 hour
 
 _system_voices_cache: list[dict[str, str]] | None = None
@@ -796,14 +829,16 @@ async def api_voice_system_voices(request: web.Request) -> web.Response:
 
 async def api_voice_voices(request: web.Request) -> web.Response:
     """GET /api/voice/voices — list available Polly voices (cached 1h)."""
-    global _voices_cache, _voices_cache_ts
+    global _voices_cache, _voices_cache_ts, _voices_cache_key
 
-    now = time.time()
-    if _voices_cache is not None and (now - _voices_cache_ts) < _VOICES_CACHE_TTL:
-        return web.json_response({"voices": _voices_cache})
+    # One read of the account and region for the whole request: the consent
+    # check, the cache key and the command must all name the same pair, even
+    # if a config PUT lands while this handler awaits.
+    profile, region = _vc.aws_profile or "", _vc.region or ""
 
     # The catalogue lives behind a paid provider, so two gates come before the
-    # subprocess. Neither may be dropped: without them the only thing stopping
+    # cache and the subprocess: a cached list is still Polly data, served only
+    # while Polly is the confirmed provider. Neither may be dropped: without them the only thing stopping
     # this endpoint from calling AWS is the frontend declining to fetch it while
     # another provider is selected, so any other client — or a direct request — reaches
     # `aws polly describe-voices` against whatever the ambient credential chain
@@ -821,9 +856,18 @@ async def api_voice_voices(request: web.Request) -> web.Response:
     #    gated call site -- a denial that only logs is a denial an incident
     #    review cannot see.
     if not await aws_consent.refuse_and_log(
-        aws_consent.SERVICE_POLLY, profile=_vc.aws_profile, region=_vc.region
+        aws_consent.SERVICE_POLLY, profile=profile, region=region
     ):
         return web.json_response({"voices": []})
+
+    now = time.time()
+    cache_key = (profile, region)
+    if (
+        _voices_cache is not None
+        and _voices_cache_key == cache_key
+        and (now - _voices_cache_ts) < _VOICES_CACHE_TTL
+    ):
+        return web.json_response({"voices": _voices_cache})
 
     aws_bin = await asyncio.to_thread(resolve_polly_cli)
     if aws_bin is None:
@@ -840,10 +884,10 @@ async def api_voice_voices(request: web.Request) -> web.Response:
         return web.json_response({"voices": []})
 
     cmd = [aws_bin, "polly", "describe-voices", "--output", "json"]
-    if _vc.aws_profile:
-        cmd += ["--profile", _vc.aws_profile]
-    if _vc.region:
-        cmd += ["--region", _vc.region]
+    if profile:
+        cmd += ["--profile", profile]
+    if region:
+        cmd += ["--region", region]
 
     try:
         # A Python-based `aws` (aws-cli v1) must not import the gateway's own
@@ -873,6 +917,7 @@ async def api_voice_voices(request: web.Request) -> web.Response:
         voices.sort(key=lambda v: (v["languageCode"], v["name"]))
         _voices_cache = voices
         _voices_cache_ts = now
+        _voices_cache_key = cache_key
         return web.json_response({"voices": voices})
     except asyncio.TimeoutError:
         with contextlib.suppress(ProcessLookupError):

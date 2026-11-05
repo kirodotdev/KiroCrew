@@ -49,6 +49,7 @@ import inspect
 import pytest
 
 from kiro_crew.computer_use import macos_ffi
+from kiro_crew.computer_use.types import ComputerUseUnsupported
 
 # Symbols the five live prototypes proved were required. Listed explicitly so a
 # refactor that "tidies away" one of them fails here instead of at runtime on a
@@ -175,7 +176,7 @@ def test_bind_raises_when_argtypes_is_none():
     at bind time — before any call — is what converts a would-be segfault into a
     diagnosable exception.
     """
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(ComputerUseUnsupported) as excinfo:
         macos_ffi._bind(_Lib(), "CFRelease", macos_ffi._VOID, None)
     # The message must name the symbol: a bind failure with no symbol name sends
     # the next maintainer reading the whole table.

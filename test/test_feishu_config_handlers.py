@@ -17,6 +17,8 @@ from aiohttp.test_utils import make_mocked_request
 import kiro_crew.config.loader as loader
 from kiro_crew.secrets import SecretVault
 
+SHARED_CONFIG_HANDLER_CHECKS = ("save_rejects_whitespace_credentials",)
+
 
 def _vault_value(env: Path, key: str) -> str | None:
     """The vault secret a channel save stored beside *env* under *key*."""
@@ -122,17 +124,6 @@ def test_save_persists_credentials_and_config(tmp_path: Path, monkeypatch) -> No
     assert cfg["feishu"]["allowed_open_ids"] == [OPEN_ID, OPEN_ID_2]
     assert "allowed_user_ids" not in cfg["feishu"]
     assert cfg["feishu"]["soft_threshold_pct"] == 75
-
-
-def test_save_rejects_whitespace_credentials(tmp_path: Path, monkeypatch) -> None:
-    """A secret carrying inner whitespace fails before any write."""
-    import kiro_crew.dashboard.handlers.messaging as mod
-
-    status_body, env = _client_put(mod, monkeypatch, tmp_path, {"bot_token": "two words"})
-    status, body = status_body
-    assert status == 400
-    assert "whitespace" in body["error"]
-    assert "two" not in env.read_text(encoding="utf-8")
 
 
 def test_save_rejects_open_id_without_prefix(tmp_path: Path, monkeypatch) -> None:

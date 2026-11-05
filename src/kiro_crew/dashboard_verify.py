@@ -153,10 +153,18 @@ from kiro_crew import (
     github_runner,
     platform_compat,
 )
-from kiro_crew.browser_cli.launcher import _SANDBOX_MARKERS
 from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
 
 logger = logging.getLogger(__name__)
+
+#: Chromium's own stderr lines when it cannot set up its process sandbox (no
+#: unprivileged user namespaces). Matched against the verify browser's log to
+#: name the cause instead of quoting a stack.
+_SANDBOX_MARKERS = (
+    "No usable sandbox",
+    "sandbox initialization failed",
+    "Failed to initialize sandbox.",
+)
 
 __all__ = [
     "DATA_RECORD",
@@ -1440,7 +1448,7 @@ def _run_in_slot(
         copy = _copy_of_record(read, model, page_html, real_record)
     except _ReadFailed:
         return _skipped(
-            "this crewmate's current data could not be read, so the page was not run", started
+            "this Bot's current data could not be read, so the page was not run", started
         )
     except dashboard_synth.SynthesisRefused as exc:
         return _skipped(f"the record could not be copied for the check ({exc})", started)

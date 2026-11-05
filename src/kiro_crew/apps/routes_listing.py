@@ -20,6 +20,8 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps.backend import list_app_processes
+from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
+from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
 from kiro_crew.apps.hooks_integration import get_all_hook_health
 from kiro_crew.apps.manager import (
     _credential_free_source_metadata,
@@ -121,8 +123,58 @@ async def handle_list_apps(request: web.Request) -> web.Response:
     # than a second flat name to maintain. The envelope also keeps the subsystem
     # explicit: this is hook-wiring health, not the subprocess backend_status.
     hook_health = get_all_hook_health()
+    # Derived from the restart supervisor's existing attempt counter + the tracked
+    # process state — no second copy of state is kept. This is the one fact that
+    # lets the app page's backend-unavailable banner say "repeatedly failing to
+    # restart" with the disable/re-enable hint instead of the generic "unavailable".
+    #
+    # The boundary is subtle because `_restart_attempts` is bumped to
+    # `previous_attempts + 1` just BEFORE each spawn (`_restart_exited_backend`),
+    # while `steady_state` is `previous_attempts >= ceiling`:
+    #   - attempts > ceiling: the fast ramp is unambiguously spent — at least
+    #     `ceiling` restarts have failed and the loop is on its slow cadence.
+    #     The record may be absent in the brief spawn window; still exhausted.
+    #   - attempts == ceiling AND the backend has EXITED: the ceiling-th attempt
+    #     already failed and the loop is inside its first slow wait (the record is
+    #     kept, exited, through `shutdown_event.wait`). Exhausted — this is the
+    #     300s window the banner must cover.
+    #   - attempts == ceiling AND the backend is LIVE/in-flight: the ceiling-th
+    #     replacement is still running, only `ceiling - 1` have failed. NOT
+    #     exhausted — the count would not have been measured yet.
+    # The counter is cleared on stop, sustained recovery, and a policy denial that
+    # ends supervision, so the state clears exactly when retrying does.
+    #
+    # Imported inside the handler rather than at module scope: the counter, its lock
+    # and the ceiling live in the backend module, and binding them here as this
+    # module's own names would make the ``kiro_crew.apps.routes`` facade forward
+    # names it does not own.
+    from kiro_crew.apps import backend as _backend
+
+    ceiling = _backend._RESTART_ON_EXIT_FAST_ATTEMPTS
+    with _backend._lock:
+        attempts_by_app = dict(_backend._restart_attempts)
+
+    def _is_exhausted(name: str, proc_row: dict[str, Any] | None) -> bool:
+        attempts = attempts_by_app.get(name, 0)
+        if attempts > ceiling:
+            return True
+        if attempts == ceiling:
+            # Only once the ceiling-th replacement has exited (the slow-wait
+            # window). A still-running record means it is the in-flight attempt.
+            return proc_row is not None and not proc_row["running"]
+        return False
+
+    # A built-in app skipped at boot is listed as unavailable, with the reason, so
+    # the App Store does not present it as a working app.
+    skipped = _unavailable_builtins(request.app)
     for app in apps:
+        _mark_unavailable(app, skipped)
         proc = procs.get(app["name"])
+        # Only an app the operator still has enabled is being retried: disabling a
+        # crash-looping app persists enabled=False and ends supervision without
+        # clearing the attempt counter, so gating on the persisted flag keeps the
+        # "will keep retrying" banner off an app whose retry loop has stopped.
+        exhausted = bool(app.get("enabled")) and _is_exhausted(app["name"], proc)
         if proc:
             app["backend_status"] = {
                 # Both flags come from the tracking record rather than being asserted
@@ -132,6 +184,18 @@ async def handle_list_apps(request: web.Request) -> web.Response:
                 "port": proc["port"],
                 "healthy": proc["healthy"],
                 "pid": proc["pid"],
+            }
+            if exhausted:
+                app["backend_status"]["restart_exhausted"] = {
+                    "attempts": ceiling,
+                }
+        elif exhausted:
+            # Only in the brief spawn window after the dead record is popped and
+            # before its replacement publishes is `proc` absent while the supervisor
+            # is still retrying; report the failure on its own so the banner is not
+            # generic.
+            app["backend_status"] = {
+                "restart_exhausted": {"attempts": ceiling},
             }
         health = hook_health.get(app["name"])
         if health:
@@ -353,7 +417,8 @@ async def handle_get_app(request: web.Request) -> web.Response:
         if name == "deploy-web":
             raise web.HTTPTemporaryRedirect(location="/api/deploy/list")
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
-    return web.json_response(await asyncio.to_thread(_installed_app_detail, name, info))
+    detail = await asyncio.to_thread(_installed_app_detail, name, info)
+    return web.json_response(_mark_unavailable(detail, _unavailable_builtins(request.app)))
 
 
 async def handle_get_manifest(request: web.Request) -> web.Response:
@@ -404,7 +469,7 @@ async def handle_app_config(request: web.Request) -> web.Response:
         try:
             text = await asyncio.to_thread(config_path.read_text, encoding="utf-8")
             return web.json_response(json.loads(text))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             return web.json_response({"error": f"failed to read config: {exc}"}, status=500)
 
     # PUT — write config.

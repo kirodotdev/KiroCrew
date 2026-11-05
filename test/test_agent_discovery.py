@@ -157,25 +157,16 @@ class TestProjectScopeDiscovery:
     ):
         """``list_agents`` refuses a sensitive project dir BEFORE stating under it.
 
-        The sibling pin
-        ``TestProjectAgentNameCache.test_sensitive_project_dir_denied_before_any_stat``
-        patches ``_project_signature``, which this entry point does not call, so
-        it leaves this scope's ordering uncovered.
-
-        Regression: the refusal yielded no project specs and the cache signature
-        was then built from ``_dir_signature`` on both project scopes anyway -- a
-        ``scandir`` plus a ``stat`` per entry under the tree the refusal had just
-        protected, while the recorded outcome said denied. The user-level scope
-        still lists, and the one refusal still owes exactly one denial row.
+        The sibling pin patches ``_project_signature``, which this entry point does not
+        call. The cache signature must not stat under the refused tree; the user-level
+        scope still lists, and the one refusal owes exactly one denial row.
         """
         import kiro_crew.agent_discovery as ad
 
         d = _agents_dir(fake_home)
         (d / "user-level.json").write_text(json.dumps({"name": "user-level"}))
-        # Named "protected", not "secret": CodeQL's clear-text-logging query
-        # treats a variable named `secret` as a credential and then follows this
-        # plain temp path into the module's existing logs of a REFUSED path,
-        # reporting them as new leaks. The refused path is what the trail shows.
+        # Named "protected", not "secret": CodeQL treats `secret` as a credential and
+        # would report the module's logs of the refused path as leaks.
         protected = tmp_path / "protected"
         (_project_agents_dir(protected) / "a.json").write_text(json.dumps({"name": "a"}))
         monkeypatch.setattr(
@@ -213,16 +204,9 @@ class TestProjectScopeDiscovery:
     ):
         """One scope, ONE sensitivity verdict -- for the spec scan and the signature.
 
-        ``list_agents`` takes its own verdict and then scans through the
-        unguarded ``_scan_project_agent_files``, so one call decides this scope
-        exactly once. A redundant second verdict inside ``project_agent_files``
-        is not a stronger guard, because both reduce to
-        ``is_sensitive_path(str(project_dir))``,
-        which RE-RESOLVES the path on every call -- so the two answers can differ
-        and one half of the function proceeds on a verdict the other half
-        rejected. Counting the verdicts is what holds the shape: the behavioural
-        pin below passes just as well while a redundant guard sits there
-        agreeing, and only starts failing once the answers diverge.
+        ``is_sensitive_path`` re-resolves on every call, so two verdicts can differ.
+        Counted here because the behavioural pin below passes while a redundant guard
+        still agrees.
         """
         import kiro_crew.agent_discovery as ad
 
@@ -250,16 +234,8 @@ class TestProjectScopeDiscovery:
     ):
         """No stat under a scope ANY verdict in the call refused.
 
-        ``is_sensitive_path`` re-resolves the path on every call, so two verdicts
-        on one scope can disagree -- a symlink component repointed between them,
-        or a fail-closed resolver stall landing on only the later one.
-        Regression: when the refusal came second, the first verdict had already
-        admitted the scope, so ``project_agent_files`` recorded a denial row and
-        the cache signature statted the protected tree anyway -- the exact
-        deny-and-read this module's guard exists to prevent.
-
-        The invariant is the conjunction: a call must never both record a denial
-        for a scope and stat under it.
+        Two verdicts on one scope can disagree (a repointed symlink, a resolver stall),
+        and a call must never both record a denial for a scope and stat under it.
         """
         import kiro_crew.agent_discovery as ad
 
@@ -364,16 +340,13 @@ class TestProjectAgentNameCache:
     def test_sensitive_project_dir_denied_before_any_stat(self, tmp_path, monkeypatch):
         """A sensitive project dir is rejected BEFORE the signature stats, loudly.
 
-        Regression: the cache path computed `_project_signature` (a stat pair
-        under the caller-supplied dir) before `project_agent_files` rejected
-        sensitivity — probing a protected tree, and silently: no SEL denial.
+        `_project_signature` stats under the caller-supplied dir, so it must not run
+        before the sensitivity check, and the refusal records a SEL denial.
         """
         import kiro_crew.agent_discovery as ad
 
-        # Named "protected", not "secret": CodeQL's clear-text-logging query
-        # treats a variable named `secret` as a credential and then follows this
-        # plain temp path into the module's existing logs of a REFUSED path,
-        # reporting them as new leaks. The refused path is what the trail shows.
+        # Named "protected", not "secret": CodeQL treats `secret` as a credential and
+        # would report the module's logs of the refused path as leaks.
         protected = tmp_path / "protected"
         (_project_agents_dir(protected) / "a.json").write_text(json.dumps({"name": "a"}))
         monkeypatch.setattr(
@@ -401,11 +374,8 @@ class TestProjectAgentNameCache:
     def test_decides_project_sensitivity_exactly_once(self, tmp_path, monkeypatch):
         """The sibling entry point decides once too, for the same reason.
 
-        ``project_agent_names`` guards, stats its signature, and then scans
-        through ``_scan_project_agent_files``, which does not re-decide the
-        scope. Were a second verdict taken there, with the signature already
-        taken, a refusal would record a denial for a tree this very call had
-        just statted.
+        ``project_agent_names`` stats its signature before scanning, so a second verdict
+        could deny a tree this call had just statted.
         """
         import kiro_crew.agent_discovery as ad
 
@@ -428,10 +398,8 @@ class TestProjectAgentNameCache:
     def test_malformed_spec_is_not_dispatchable(self, tmp_path):
         """A file that does not parse must not contribute its filename fallback.
 
-        Regression: a malformed/unreadable spec whose stem matched a stored agent
-        name entered the allowlist, so session startup selected a mode kiro-cli
-        could never load and failed at set_mode. Only a spec that parses can
-        become a mode, so only parsed specs may contribute names.
+        Only a spec that parses can become a mode; otherwise session startup would
+        select a mode kiro-cli cannot load and fail at set_mode.
         """
         proj = tmp_path / "repo"
         pdir = _project_agents_dir(proj)
@@ -496,9 +464,8 @@ class TestListAgentsRobustness:
         """A spec over the safety cap is skipped — for BOTH scopes, since
         _read_agent_spec is the one reader.
 
-        Regression: reads used a bare ``read_bytes()``, so a multi-gigabyte
-        "agent config" was slurped whole into memory during a cache warm. The
-        read now goes through hooks.safe_read_file_bytes, whose cap refuses it.
+        The read goes through hooks.safe_read_file_bytes, whose cap keeps a
+        multi-gigabyte "agent config" out of memory.
         """
         import kiro_crew.hooks as hooks_mod
 
@@ -689,12 +656,8 @@ class TestSpecModelCoercion:
     def test_every_str_field_is_coerced_at_construction(self) -> None:
         """The invariant is on the CONSTRUCTOR, not on any one caller.
 
-        `model` and `description` were the two fields observed failing, but
-        `name`, `package`, `source` and `filename` are rendered bare too
-        (`{a.name}`, `{a.package}`, `<SourceBadge source={a.source}>`,
-        `a.filename.startsWith(...)`), so a per-field fix at one call site only
-        looks complete. Constructing directly — as the out-of-tree edition seam
-        does — must still yield the declared types.
+        Every str field is rendered bare in the UI, and the out-of-tree edition seam
+        constructs directly, so direct construction must yield the declared types.
         """
         info = AgentInfo(
             name={"id": "x"},  # type: ignore[arg-type]
@@ -781,10 +744,8 @@ class TestListAgentsGlobalGuards:
     def test_global_symlink_loop_skipped_not_crashed(self, tmp_path: Path) -> None:
         """A self-referential symlink is skipped, never an uncaught RuntimeError.
 
-        Regression: ``resolve(strict=True)`` signals a symlink LOOP with
-        RuntimeError (not OSError); only OSError was caught, so one
-        ``ln -s loop.json loop.json`` in a user-writable agents dir crashed
-        every surface that listed agents (e.g. Slack's ``!agent``).
+        ``resolve(strict=True)`` signals a symlink loop with RuntimeError, not OSError,
+        and one such link would crash every surface that lists agents.
         """
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
@@ -886,12 +847,8 @@ class TestListAgentsDedup:
     ) -> None:
         """A 'local-' twin of the same package dedupes silently (no WARNING).
 
-        Package managers publish a locally-built package as BOTH
-        ``{package}-{name}.json`` and ``local-{package}-{name}.json``. Since the
-        ``local-`` prefix is stripped from the package name, the twins collide on
-        the same (name, package) — an expected layout, not an anomaly, so it
-        must not log a self-contradictory "from packages 'X' and 'X'" WARNING
-        per agent per scan.
+        A local build ships ``{package}-{name}.json`` and ``local-{package}-{name}.json``,
+        which collide once ``local-`` is stripped; that is expected, not an anomaly.
         """
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
@@ -1054,10 +1011,8 @@ def _discovery_warnings(caplog):
 class TestSystematicScanFailureWarning:
     """A scan that rejects EVERY candidate spec warns once; anything less stays quiet.
 
-    Regression: `_read_agent_spec` degrades per file to ``None`` at debug level, so
-    a systematic refusal (e.g. the trusted-root gate rejecting an entire home
-    layout) is indistinguishable at default log levels from an empty
-    agents directory — discovery lists nothing and nothing says why.
+    `_read_agent_spec` degrades per file to ``None`` at debug level, so without the
+    warning a systematic refusal looks like an empty agents directory.
     """
 
     def test_all_unreadable_user_specs_emit_one_warning(self, fake_home, caplog):
@@ -1348,16 +1303,9 @@ class TestSpecByDeclaredName:
     def test_only_the_first_matching_parse_is_held(self, tmp_path: Path, monkeypatch) -> None:
         """The refusal needs the duplicates' PATHS, not their parses.
 
-        Each file is capped by the reader, so the parsed-spec memory the scan
-        holds at its peak is set by how many parses it keeps at once. Holding
-        one per match makes that the number of same-name files in a
-        user-writable directory times the cap; holding one total makes it the
-        cap. (Paths are kept one per candidate either way; they are small and
-        the refusal message needs them.) The bound is a property of
-        the scan WHILE it runs -- once it raises, any list it held dies with its
-        frame either way -- so the probe sits inside the reader: on every read,
-        each earlier parse except the first and the one the loop body last
-        assigned must already be unreachable.
+        Peak memory is the per-file cap times the parses held, so only one is kept. The
+        bound holds while the scan runs, so the probe sits inside the reader: on each
+        read, earlier parses except the first and the last assigned must be unreachable.
         """
         import gc
         import weakref
@@ -1373,7 +1321,7 @@ class TestSpecByDeclaredName:
         handed_out: list[weakref.ref] = []
         retained_mid_scan: list[str] = []
 
-        def _reader(path: Path, *, operation: str, source: str) -> dict:
+        def _reader(path: Path, *, operation: str, source: str, fence=None) -> dict:
             # Reads 0..n-2 are done; read n-2's parse is still the loop's own
             # ``spec`` local until this call returns, so it is exempt. Read 0 is
             # the match the scan may return, so it is exempt. Everything else

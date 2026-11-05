@@ -20,7 +20,9 @@ if TYPE_CHECKING:
         ExecutionContext,
         Iterator,
         SubagentDelivery,
+        SubagentEnding,
         _RunCreditAccounting,
+        classify_ending,
     )
 
 
@@ -89,6 +91,11 @@ class SubagentInfo:
     result: str = ""
     result_path: str = ""
     result_truncated: bool = False  # completion-event copy dropped content → summary+path
+    # Whether the run's own reply text was non-empty, read before any notice or
+    # annotation is added to ``result``. None until the runner decides it (a
+    # record that never reached that point); the usage metric then reads
+    # ``result`` instead.
+    returned_reply: bool | None = None
     error: str = ""
     # Machine-readable identifier for ``error``, forwarded by ``POST /api/spawn``
     # as the response's ``code`` so a client can switch on the decision instead of
@@ -328,6 +335,33 @@ class SubagentInfo:
     # or gives up on it leaves this unset, and so does any route added later that
     # does not say so; a memory-wait expiry's owed mark is cleared only on it.
     _report_delivered: bool = False
+    # True once the parent's own blocking ``spawn_sub_agents`` call answered with
+    # a reply frame carrying this result and that frame was written to the
+    # parent's pipe (``POST /api/spawn/mark-collected``, sent only after the
+    # write). A completion route skips the injection for an announce whose every
+    # member is marked: the parent already holds the result.
+    _collected_inline: bool = False
+    # A mark on a parent that is not dashboard-born (``settles_at_release``):
+    # "pending" until the attempt holding the parent's permit when it arrived
+    # (``_inline_token``) ends, then "confirmed" if that turn landed. A revoked
+    # mark clears all three, so the completion is delivered
+    # (``kiro_crew.parent_turns``).
+    _inline_state: str = ""
+    _inline_token: tuple[str, Any, int] | None = None
+    # The attempt holding the parent's turn permit, with its prompt in flight, when
+    # the parent's own tool's spawn request arrived (``POST /api/spawn``), or None
+    # when no such turn held it then, that attempt did not hold it when the spawn
+    # returned, or the spawn did not come from the parent's own session. A done
+    # read stamps ``_seen_done_under`` only under this same attempt, so a call that
+    # reads on after its turn ended never names the attempt of whatever holds the
+    # permit next (a sibling's injection, a retry, the next turn).
+    _spawned_under: tuple[str, Any, int] | None = None
+    # The attempt holding the parent's turn permit that first read this run done
+    # through the parent's own tool (``GET /api/spawn/{id}``), stamped only when it
+    # is the spawning attempt (``_spawned_under``). A mark is held only under that
+    # same attempt, so a mark processed after it ended is never held under a
+    # retry, a next turn, an injection or a compaction holding the permit.
+    _seen_done_under: tuple[str, Any, int] | None = None
     # True once an injection of this report was given up on: every attempt the
     # gateway made failed, so at most a failure notice was queued for the
     # parent's next turn (``notify_injection_failed``). ``_on_done`` still
@@ -359,6 +393,12 @@ class SubagentInfo:
     _delivery_queued: bool = False
     max_turns: int = 0
     reaped: bool = False
+    # True when ``error`` was written for a deadline or by the reaper, not by
+    # the run itself: the run's own ``wait_for`` timeout, ``_force_reap``'s
+    # synthesis and ``_record_reap_ending``. ``reaped`` alone cannot say this:
+    # the reaper sets it late, also on a run whose own failure was recorded
+    # first, which is the run's ``failed``, not ``reaped``.
+    _deadline_ending: bool = False
     streaming_text: str = ""
     elapsed: float = 0.0
     # Deadline captured when execution starts (``0`` until then). A config
@@ -412,6 +452,10 @@ class SubagentInfo:
     # own id. Like ``model``, a value forces the dedicated-process path -- the
     # shared runtime is the PARENT's process, on the parent's backend.
     backend: str | None = None
+    # The backend the caller asked for, when ``agent.acp_failover`` started this
+    # run on ``backend`` instead; ``None`` when no hop happened. Informational:
+    # ``spawn_status`` and ``spawn_list`` show it, nothing decides on it.
+    failover_from: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
     bare: bool = False
     # Continuable conversations (spawn_run keep=True / spawn_continue):
@@ -722,21 +766,27 @@ class SubagentInfo:
         return self.tool_count == 0 and self.turns == 0
 
     @property
+    def ending(self) -> SubagentEnding:
+        """The fine-grained ending of this run (see :class:`SubagentEnding`)."""
+        return classify_ending(
+            user_stopped=self.user_stopped,
+            error=self.error,
+            deadline_ending=self._deadline_ending,
+            partial=self.partial,
+        )
+
+    @property
     def outcome(self) -> str:
         """Canonical three-way terminal outcome: 'stopped' | 'failed' | 'completed'.
 
-        THE single source of truth for terminal-state classification. Consumers
-        MUST use this (or the ``outcome`` field carried on every subagent_done
-        emission) instead of re-deriving from ``error``-nullability — the
-        legacy ``error ? failed : completed`` idiom silently misreports a
-        user-stopped agent as completed. ``stopped``/``error`` remain on the
-        wire for compatibility.
+        THE single source of truth for terminal-state classification, folded from
+        :attr:`ending`. Consumers MUST use this (or the ``outcome`` field
+        carried on every subagent_done emission) instead of re-deriving from
+        ``error``-nullability — the legacy ``error ? failed : completed`` idiom
+        silently misreports a user-stopped agent as completed.
+        ``stopped``/``error`` remain on the wire for compatibility.
         """
-        if self.user_stopped:
-            return "stopped"
-        if self.error:
-            return "failed"
-        return "completed"
+        return self.ending.coarse
 
 
 # Callback: (subagent_info) -> None

@@ -26,6 +26,14 @@ import pytest
 from kiro_crew import _facade_mirror
 from kiro_crew.mcp_tools import DOMAIN_MODULES, _schemas_accepts_names_only, spawn, spawn_parts
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="spawn_parts_contract")
+
+SHARED_FACADE_CHECKS = (
+    "no_name_of_the_family_is_excluded_from_the_mirror",
+    "owners_import_only_owners_listed_before_them",
+)
+
 _FACADE = spawn.__name__
 _PACKAGE = spawn_parts.__name__
 _MIRROR: _facade_mirror.MirrorIndex = vars(spawn)[_facade_mirror.INDEX_ATTRIBUTE]
@@ -74,12 +82,6 @@ def test_the_owner_package_is_not_a_tool_domain() -> None:
         for name, value in vars(spawn_parts).items()
         if name in halves and not isinstance(value, ModuleType)
     ], "the package binds a tool half of its own"
-
-
-def test_no_name_of_the_family_is_excluded_from_the_mirror() -> None:
-    """The family came from one namespace, so no name can mean two things in it."""
-    assert _MIRROR.excluded == ()
-    assert _MIRROR.divergent() == ()
 
 
 def test_both_halves_of_every_tool_resolve_on_the_facade() -> None:
@@ -143,18 +145,6 @@ def test_the_names_owners_import_from_elsewhere_stay_visible_to_type_checkers() 
     assert {"visible_agent_names", "redact", "SPAWN_SUB_AGENTS_SCHEMA"} <= imported_from_elsewhere
     assert len(imported_from_elsewhere) >= 15, "the scan found too few names to measure"
     assert _reexport_group() == imported_from_elsewhere
-
-
-def test_owners_import_only_owners_listed_before_them() -> None:
-    """Lowest layer first: an owner reads a sibling only when the sibling comes earlier."""
-    order = {name: position for position, name in enumerate(_MIRROR.owners)}
-    edges = 0
-    for owner_name in _MIRROR.owners:
-        for node in ast.walk(_tree(importlib.import_module(owner_name))):
-            if isinstance(node, ast.ImportFrom) and node.module in order:
-                edges += 1
-                assert order[node.module] < order[owner_name], (owner_name, node.module)
-    assert edges > 0, "no owner imports a sibling, so this case measures nothing"
 
 
 def test_a_patch_through_the_facade_reaches_both_roster_readers() -> None:

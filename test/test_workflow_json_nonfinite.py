@@ -73,6 +73,17 @@ def test_the_store_writes_strict_json_for_an_unbudgeted_run(tmp_path) -> None:
     assert on_disk["events"][0]["data"]["value"] is None
 
 
+def test_the_store_writes_strict_json_for_a_tuple_result(tmp_path) -> None:
+    store = WorkflowRunStore(base_dir=tmp_path)
+    run = _unbudgeted_run()
+    run["result"] = (Budget(total=None).remaining(), 1)
+    store.save("wf_000002", run)
+
+    on_disk = _strict_loads(next(store.runs_dir.glob("*.json")).read_text(encoding="utf-8"))
+
+    assert on_disk["result"] == [None, 1]
+
+
 @pytest.mark.asyncio
 async def test_a_stored_run_holding_a_bare_infinity_still_opens(tmp_path) -> None:
     store = WorkflowRunStore(base_dir=tmp_path)
@@ -87,3 +98,27 @@ async def test_a_stored_run_holding_a_bare_infinity_still_opens(tmp_path) -> Non
 
     assert body["result"]["left"] is None
     assert body["status"] == "finished"
+
+
+def test_live_run_event_is_strict_json() -> None:
+    """The live ``workflow_run_event`` push carries the run's raw result.
+
+    A script can return a tuple, which nothing turns into a list before the
+    broadcast, so a tuple holding ``math.inf`` must still leave as ``null``.
+    """
+    remaining = Budget(total=None).remaining()
+    event = {
+        "type": "run_finished",
+        "data": {
+            "result": {"remaining": remaining, "pair": (math.nan, 1), "nested": [(remaining,)]},
+            "duration_s": 0.5,
+        },
+    }
+
+    safe = handlers._redact_obj(event)
+
+    assert safe["data"] == {
+        "result": {"remaining": None, "pair": [None, 1], "nested": [[None]]},
+        "duration_s": 0.5,
+    }
+    assert _strict_loads(json.dumps(safe, allow_nan=False))["data"] == safe["data"]

@@ -731,7 +731,10 @@ def purge(report: SweepReport, *, include_unreadable: bool = False) -> PurgeResu
             logger.debug("ledger sweep: work ledger purge failed", exc_info=True)
             failed.append(candidate)
             continue
-        (removed if gone else failed).append(candidate)
+        # ``purge_conductor`` answers False for a store that is already gone (an
+        # overlapping sweep removed it). The session half counts a store by
+        # whether it still exists, and this half does the same.
+        (removed if gone or not candidate.path.exists() else failed).append(candidate)
 
     if session_targets:
         keys = {candidate.key for candidate in session_targets}
@@ -823,6 +826,11 @@ def render(report: SweepReport, *, purged: PurgeResult | None = None) -> list[st
     ]
     lines.append("  " + " · ".join(counts))
     if purged is not None:
+        # ``skipped_unaddressable`` also holds stores WITH a key: a copy whose key
+        # names another store, or a store that is a link. Only a store with no
+        # readable breadcrumb is "without a key"; the rest are report-only.
+        keyless = sum(1 for c in purged.skipped_unaddressable if not c.key)
+        keyed = len(purged.skipped_unaddressable) - keyless
         lines.append(
             f"  purged {len(purged.removed)}"
             + (f", failed {len(purged.failed)}" if purged.failed else "")
@@ -831,11 +839,8 @@ def render(report: SweepReport, *, purged: PurgeResult | None = None) -> list[st
                 if purged.skipped_unreadable
                 else ""
             )
-            + (
-                f", skipped {len(purged.skipped_unaddressable)} without a key"
-                if purged.skipped_unaddressable
-                else ""
-            )
+            + (f", skipped {keyless} without a key" if keyless else "")
+            + (f", skipped {keyed} report-only" if keyed else "")
             + (
                 f", stood down on {len(purged.stale)} that changed since the scan"
                 if purged.stale
@@ -884,6 +889,12 @@ def run_command(*, purge: bool, older_than_days: float | None, purge_unreadable:
     if not math.isfinite(window) or window < 0:
         print("  ❌ --older-than-days must be a finite number of days, and not negative")
         sys.exit(2)
+    # ``--purge-unreadable`` is a modifier of ``--purge``. Run alone it would be
+    # the hazard this command exists to remove: a modifier parsed without its
+    # mode, a dry run that exits 0 and reads like a purge that found nothing.
+    if purge_unreadable and not purge:
+        print("  ❌ --purge-unreadable only works with --purge", file=sys.stderr)
+        sys.exit(2)
     header = "Ledger Sweep" + ("" if purge else " (dry run — nothing is deleted)")
     print(f"{header}\n")
     try:
@@ -903,3 +914,14 @@ def run_command(*, purge: bool, older_than_days: float | None, purge_unreadable:
         print(f"\n  Purge them with: kirocrew ledger-sweep --purge --older-than-days {window:g}")
     if not purge and report.unreadable:
         print("  Unreadable records need --purge-unreadable, and are worth reading first.")
+    if result is not None and result.failed:
+        # The sweep finishes every other delete first, then says which ones did
+        # not go: a script that runs the purge must not read a failed delete as
+        # a clean run. Stored text is sanitised like every other printed field.
+        for candidate in result.failed:
+            key = _safe(candidate.key) if candidate.key else "(no breadcrumb)"
+            print(
+                f"  ❌ could not delete {candidate.kind} {_safe(candidate.store)}  key={key}",
+                file=sys.stderr,
+            )
+        sys.exit(1)

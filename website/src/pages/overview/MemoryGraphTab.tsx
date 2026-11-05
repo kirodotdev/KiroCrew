@@ -7,6 +7,8 @@ import type { SimulationNodeDatum, SimulationLinkDatum } from 'd3'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, Badge } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
+import ErrorNotice from '../../components/ErrorNotice'
+import { errMessage } from '../../utils/thunkError'
 
 import { i18nT } from '../../i18n/t'
 // Hex per group, fed straight to sigma's WebGL node program.
@@ -72,10 +74,12 @@ export default function MemoryGraphTab() {
   const filterRef = useRef<string | null>(null)
   const searchRef = useRef('')
 
-  const { data, isLoading: loading, refetch: load } = useQuery({
+  // A failed read must reach the query: folding it into an empty graph showed
+  // "no memory data" in front of an outage, with nothing to retry.
+  const { data, isLoading: loading, isError, error, isFetching, refetch: load } = useQuery({
     queryKey: ['memory-graph'],
     queryFn: async () => {
-      const r = await api.memoryGraph().catch(() => ({ nodes: [], edges: [] }))
+      const r = await api.memoryGraph()
       return r as { nodes: GraphNode[]; edges: GraphEdge[]; partial?: GraphPartial }
     },
   })
@@ -314,6 +318,28 @@ export default function MemoryGraphTab() {
   }, {})
 
   if (loading) return <Card><CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')}</CardTitle><p className="text-muted text-sm">{i18nT('pages.overview.memoryGraphTab.loading_graph_data')}</p></Card>
+  // A failed read says so. With no graph in hand it takes the empty state's
+  // place; over a graph from an earlier read it sits above it, so a failed
+  // Refresh is not passed off as a fresh graph.
+  const loadError = isError ? (
+    <div className="mb-3 flex flex-col items-start gap-2">
+      <ErrorNotice
+        askAgent
+        testId="memory-graph-load-error"
+        title={i18nT('pages.overview.memoryGraphTab.load_failed')}
+        message={errMessage(error) || i18nT('pages.overview.memoryGraphTab.load_failed_unknown')}
+        messagePlacement="below"
+        className="w-full"
+      />
+      <Btn disabled={isFetching} onClick={() => void load()}><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.retry')}</Btn>
+    </div>
+  ) : null
+  if (isError && nodes.length === 0) return (
+    <Card>
+      <CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')}</CardTitle>
+      {loadError}
+    </Card>
+  )
   if (nodes.length === 0) return <Card><CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')}</CardTitle><p className="text-muted text-sm">{i18nT('pages.overview.memoryGraphTab.no_memory_data_to_visualize_add_preferences_proj')}</p></Card>
 
   return (<>
@@ -321,6 +347,7 @@ export default function MemoryGraphTab() {
       <CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')} <InfoTip text={i18nT('pages.overview.memoryGraphTab.gpu_rendered_visualization_of_all_kirocrew_memor')} />
         <Btn onClick={() => load()} className="ml-2"><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.refresh')}</Btn>
       </CardTitle>
+      {loadError}
       <div className="flex gap-2 flex-wrap mb-3 items-center">
         <input
           aria-label={i18nT('pages.overview.memoryGraphTab.search_memory_nodes')}

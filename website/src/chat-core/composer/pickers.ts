@@ -6,6 +6,7 @@ import type { ComposerControl } from '../../components/composerControl'
 import type { FileKind } from '../../components/FilePickerMenu'
 import { terminalCommand } from '../../hooks/useTerminalCommand'
 import { offers, pickerQueryKey, type ComposerPickerSource } from './pickerSource'
+import { SLASH_MENU_QUERY, WORKFLOW_PICK_QUERY } from './slashQuery'
 
 /* The in-input trigger pickers (chat-core RFC §3 layer 4): `/` commands, `@`
    files, `$` skills and shell-style `./` paths. One rule decides which menu
@@ -20,12 +21,15 @@ import { offers, pickerQueryKey, type ComposerPickerSource } from './pickerSourc
  *  token the picker wrote into the text. */
 export type ComposerFileSelect = (path: string, kind?: FileKind, token?: string) => void
 
-export function useComposerPickers({ source, project, onFileSelect, typedCommandMenus, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName }: {
+export function useComposerPickers({ source, project, onFileSelect, typedCommandMenus, hiddenCommands, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName }: {
   /** Where every menu reads from; a missing read is a menu not offered. */
   source: ComposerPickerSource
   project?: string
   onFileSelect?: ComposerFileSelect
   typedCommandMenus: boolean
+  /** Commands the host refuses -- the same list `SlashCommandMenu` hides, so a
+   *  refused `/workflow` never opens a menu that would show nothing. */
+  hiddenCommands?: readonly string[]
   /** The host runs `!`-prefixed terminal commands: while one is typed, no menu opens. */
   terminalCommands?: string
   value: string
@@ -81,10 +85,16 @@ export function useComposerPickers({ source, project, onFileSelect, typedCommand
   const fileOn = !!onFileSelect && offers(source, 'fileSearch')
   const slashOn = typedCommandMenus && offers(source, 'slashCommands')
   const skillOn = typedCommandMenus && offers(source, 'skills')
+  const workflowsOn = typeof source.workflows === 'function' && !hiddenCommands?.includes('/workflow')
   const openPickersForText = useCallback((text: string, before: string) => {
     // This is the incoming edit, which can enter terminal mode before render.
     if (terminalCommands && terminalCommand(text) !== null) { closePickers(); return }
-    setSlashMenuOpen(slashOn && text.startsWith('/'))
+    // Open exactly when the menu can show (see slashQuery.ts): a `/` draft
+    // with arguments, a new line or a capital renders no menu, and an
+    // invisible one must not keep Escape-to-stop, Tab indent and ↑/↓ history.
+    // `/workflow ` and a partial slug opens the same menu on the saved
+    // workflows; it closes itself whenever it has no row to show.
+    setSlashMenuOpen(slashOn && (SLASH_MENU_QUERY.test(text) || (workflowsOn && WORKFLOW_PICK_QUERY.test(text))))
     // Anchor @/$ detection to the token being edited AT THE CARET, not the
     // end of the whole input. `before` ends at the caret, so a match means
     // "the token ends where my cursor is" — which makes both pickers fire
@@ -100,7 +110,7 @@ export function useComposerPickers({ source, project, onFileSelect, typedCommand
     const pathQ = pathTokenAt(before)
     if (pathQ !== null) { setPathPickerOpen(true); setPathQuery(pathQ) }
     else { setPathPickerOpen(false); setPathQuery('') }
-  }, [slashOn, fileOn, skillOn, pathTokenAt, terminalCommands, closePickers])
+  }, [slashOn, fileOn, skillOn, workflowsOn, pathTokenAt, terminalCommands, closePickers])
   // Warm the per-slot-and-project skills cache when the input gains focus so the first
   // `$` trigger renders the picker instantly (the fetch is the only latency).
   // prefetchQuery is a no-op if the cache is already fresh (staleTime), so it's

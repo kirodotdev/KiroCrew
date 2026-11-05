@@ -56,7 +56,7 @@ def _run(script: str, cwd: Path, env: dict[str, str]) -> subprocess.CompletedPro
         cwd=cwd,
         env=full,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
 
 
@@ -249,7 +249,7 @@ def test_a_brand_new_baseline_tree_is_detected_and_committed(tmp_path: Path) -> 
         cwd=repo,
         env=_git_env(),
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         check=True,
     ).stdout
     assert "bench_baselines/accepted/locomo10_now.json" in committed

@@ -73,6 +73,9 @@ def add_item(
     tags_json = json.dumps(tags or [])
     self.db.execute("BEGIN IMMEDIATE")
     try:
+        # Inside the write transaction, so the type read and the insert
+        # are one unit under the same lock.
+        self._refuse_live_source(source_id)
         self.db.execute(
             "INSERT INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, content_hash, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -192,7 +195,7 @@ def delete_item(self: KnowledgeStore, item_id):
     except Exception:
         self.db.execute("ROLLBACK")
         raise
-    self._load_graph()
+    self.mark_graph_stale()
 
 
 def delete_items_batch(
@@ -217,7 +220,7 @@ def delete_items_batch(
     except Exception:
         self.db.execute("ROLLBACK")
         raise
-    self._load_graph()
+    self.mark_graph_stale()
 
 
 def delete_items_batch_in_txn(
@@ -234,7 +237,7 @@ def delete_items_batch_in_txn(
     """
     for item_id in item_ids:
         if owner_source_id:
-            others = self.sources_holding_item(item_id, exclude_source_id=owner_source_id)
+            others = self._reassignment_candidates(item_id, owner_source_id)
             if others:
                 self.reassign_item_source(item_id, others[0])
                 self._adopt_reassigned_item(item_id, others[0])
@@ -269,7 +272,7 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
         ]
         doomed: list[str] = []
         for item_id in owned:
-            others = self.sources_holding_item(item_id, exclude_source_id=source_id)
+            others = self._reassignment_candidates(item_id, source_id)
             if others:
                 self.reassign_item_source(item_id, others[0])
                 # Same obligation as the item-level path: a recipient must never
@@ -366,4 +369,4 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
     except Exception:
         self.db.execute("ROLLBACK")
         raise
-    self._load_graph()
+    self.mark_graph_stale()

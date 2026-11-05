@@ -566,11 +566,9 @@ def test_ping_answered_while_tool_in_flight() -> None:
         )
         loop_thread.start()
 
-        # Wait for tool to start
         assert tool_started.wait(timeout=5), "Tool did not start"
         # Wait until the loop actually answers the ping (no fixed sleep)
         assert ping_responded.wait(timeout=5), "Ping response not emitted in time"
-        # Release tool
         tool_release.set()
         loop_thread.join(timeout=5)
 

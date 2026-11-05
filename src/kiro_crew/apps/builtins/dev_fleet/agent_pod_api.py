@@ -25,7 +25,7 @@ holds neither (cookies are httpOnly, the gateway mints its internal secret
 in-process and never puts it in an agent's env, and ``.local_secret`` is on the
 sensitive-path denylist). Admitting an
 internal-secret caller to that proxy would have opened the app's WHOLE backend
-surface to anything holding the secret, so instead these four routes are named
+surface to anything holding the secret, so instead these five routes are named
 one by one in ``server._STRICT_INTERNAL_API_PATHS`` -- the same shape
 ``/api/apps/issue-radar/investigation`` and the Ops Mission Control agent surface
 already use, and for the same reason.
@@ -67,6 +67,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.sel import sel
 
@@ -198,6 +199,34 @@ def _clean_name(raw: Any) -> tuple[str, web.Response | None]:
     return name, None
 
 
+# Bound on a ``memory`` / ``cpu`` value. ``kirocrew pod up`` is the validator
+# (syntax, floor and host cap); this only stops an unbounded string reaching argv.
+_MAX_LIMIT_LEN = 16
+
+
+def _clean_limits(body: dict[str, Any]) -> tuple[dict[str, str], web.Response | None]:
+    """Optional ``memory`` / ``cpu`` strings from a body, or a 400."""
+    out: dict[str, str] = {}
+    for key in ("memory", "cpu"):
+        raw = body.get(key)
+        if raw is None or raw == "":
+            continue
+        if not isinstance(raw, str) or len(raw) > _MAX_LIMIT_LEN or raw.strip().startswith("-"):
+            return {}, web.json_response(
+                {
+                    "ok": False,
+                    "code": "invalid_limit",
+                    "error": (
+                        f"'{key}' must be a string of at most {_MAX_LIMIT_LEN} "
+                        "characters, such as '16G' or '800%'"
+                    ),
+                },
+                status=400,
+            )
+        out[key] = raw.strip()
+    return out, None
+
+
 async def _body(request: web.Request) -> tuple[dict[str, Any], web.Response | None]:
     """The request's JSON object, or a 400. A missing body reads as ``{}``."""
     if not request.can_read_body:
@@ -312,7 +341,10 @@ async def handle_pod_up(request: web.Request) -> web.Response:
     name, err = _clean_name(body.get("worktree"))
     if err is not None:
         return err
-    result = await _run_op(functools.partial(_ops()._pod_up, name))
+    limits, err = _clean_limits(body)
+    if err is not None:
+        return err
+    result = await _run_op(functools.partial(_ops()._pod_up, name, **limits))
     refusal = _repo_refusal(result)
     if refusal is not None:
         return refusal
@@ -325,6 +357,58 @@ async def handle_pod_up(request: web.Request) -> web.Response:
     if not result.get("ok"):
         return web.json_response(
             {"ok": False, "code": "pod_up_failed", "error": _error_text(result)}, status=409
+        )
+    return web.json_response(result)
+
+
+@_machine_only
+@_require_enabled
+async def handle_pod_restart(request: web.Request) -> web.Response:
+    """POST /api/apps/dev-fleet/pod/restart -- restart a pod and KEEP its home.
+
+    The agent's way to apply a new ``memory`` / ``cpu`` ceiling, or to revive a
+    crashed pod, without the ``pod_down`` that deletes sessions, config, apps and
+    models. Answers with the same handle as ``pod/up``, token minted here.
+    """
+    body, err = await _body(request)
+    if err is not None:
+        return err
+    name, err = _clean_name(body.get("worktree"))
+    if err is not None:
+        return err
+    limits, err = _clean_limits(body)
+    if err is not None:
+        return err
+    if platform_compat.IS_WINDOWS:
+        # `pod restart` cannot keep a Windows pod's home, and the only Windows
+        # restart there is (the dashboard button's down-then-up) deletes it. This
+        # tool promises the home is kept, so it refuses before any pod work.
+        return web.json_response(
+            {
+                "ok": False,
+                "code": "pod_restart_unsupported",
+                "error": (
+                    "pod_restart is not supported on Windows: a Windows pod cannot "
+                    "restart and keep its data directory. Nothing was stopped. Use "
+                    "pod_down then pod_up to restart it with a fresh one."
+                ),
+            },
+            status=409,
+        )
+    result = await _run_op(functools.partial(_ops()._pod_restart, name, **limits))
+    refusal = _repo_refusal(result)
+    if refusal is not None:
+        return refusal
+    _audit(
+        "pod_restart",
+        name,
+        "granted" if result.get("ok") else "failed",
+        error=str(result.get("error") or ""),
+    )
+    if not result.get("ok"):
+        return web.json_response(
+            {"ok": False, "code": "pod_restart_failed", "error": _error_text(result)},
+            status=409,
         )
     return web.json_response(result)
 
@@ -401,6 +485,7 @@ def register_routes(app: web.Application) -> None:
     than inherit the internal-secret grant by sitting in the same directory.
     """
     app.router.add_post("/api/apps/dev-fleet/pod/up", handle_pod_up)
+    app.router.add_post("/api/apps/dev-fleet/pod/restart", handle_pod_restart)
     app.router.add_post("/api/apps/dev-fleet/pod/down", handle_pod_down)
     app.router.add_get("/api/apps/dev-fleet/pod/status", handle_pod_status)
     app.router.add_get("/api/apps/dev-fleet/pod/list", handle_pod_list)

@@ -30,6 +30,7 @@ from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
+from kiro_crew.testing.wait import async_wait_until
 
 # =============================================================================
 # Task 2b: fleet gateway_service_active
@@ -933,12 +934,12 @@ async def test_run_records_authoritative_step_index(monkeypatch):
 
     monkeypatch.setattr(runtime_mod.asyncio, "create_subprocess_exec", fake_exec)
     rid = await mod._start_run("sync", ["true"], env={})
-    for _ in range(50):
-        # flake-ok: pre-existing bounded 50 ms poll of the run status, moved verbatim; on expiry the test reads the record as it stands and its assertions fail
-        await runtime_mod.asyncio.sleep(0.05)
+
+    async def _run_done():
         async with mod._RUNS_LOCK:
-            if mod._RUNS.get(rid, {}).get("status") == "done":
-                break
+            return mod._RUNS.get(rid, {}).get("status") == "done"
+
+    await async_wait_until(_run_done, describe=lambda: f"run {rid} never reached status done")
     async with mod._RUNS_LOCK:
         run = dict(mod._RUNS[rid])
     assert run.get("step") == 3

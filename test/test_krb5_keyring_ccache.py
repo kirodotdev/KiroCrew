@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 
 import kiro_crew.env as env_mod
+import kiro_crew.env_krb5_conf as conf_mod
+import kiro_crew.env_krb5_keyring as keyring_mod
 from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import access
 
@@ -30,7 +32,7 @@ def linux(monkeypatch):
     monkeypatch.setattr(env_mod.platform_compat, "IS_LINUX", True)
     monkeypatch.setattr(env_mod.os, "getuid", lambda: 4242, raising=False)
     monkeypatch.setattr(env_mod.os, "geteuid", lambda: 4242, raising=False)
-    monkeypatch.setattr(env_mod, "_KRB5_KEYRING_CHECKED", False)
+    monkeypatch.setattr(keyring_mod, "_KRB5_KEYRING_CHECKED", False)
 
 
 def _conf(tmp_path: Path, body: str, name: str = "krb5.conf") -> Path:
@@ -123,7 +125,7 @@ class TestKeyringCcache:
         ],
     )
     def test_quoted_value_escapes_follow_libkrb5(self, quoted, decoded) -> None:
-        assert env_mod._krb5_quoted_value(quoted[1:]) == decoded
+        assert conf_mod._krb5_quoted_value(quoted[1:]) == decoded
 
     def test_final_section_marker_is_a_section_header(self, linux, tmp_path) -> None:
         conf = _conf(tmp_path, "[libdefaults]*\n default_ccache_name = KEYRING:persistent:1\n")
@@ -197,7 +199,7 @@ class TestSpawnWarning:
     def test_warns_once_when_left_on_keyring(self, linux, monkeypatch, tmp_path, caplog) -> None:
         self._no_file_cache(monkeypatch)
         conf = _conf(tmp_path, "[libdefaults]\n default_ccache_name = KEYRING:persistent:%{uid}\n")
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.env"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.env_krb5_keyring"):
             for _ in range(3):
                 env = {"KRB5_CONFIG": str(conf)}
                 env_mod.resolve_krb5_ccname(env)
@@ -212,7 +214,7 @@ class TestSpawnWarning:
         monkeypatch.setattr(env_mod, "_reject_reason", lambda cache: None)
         conf = _conf(tmp_path, "[libdefaults]\n default_ccache_name = KEYRING:persistent:%{uid}\n")
         env = {"KRB5_CONFIG": str(conf)}
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.env"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.env_krb5_keyring"):
             env_mod.resolve_krb5_ccname(env)
         assert env["KRB5CCNAME"] == "FILE:/tmp/krb5cc_4242"
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -220,7 +222,7 @@ class TestSpawnWarning:
     def test_no_warning_without_keyring_default(self, linux, monkeypatch, tmp_path, caplog) -> None:
         self._no_file_cache(monkeypatch)
         conf = _conf(tmp_path, "[libdefaults]\n dns_lookup_kdc = true\n")
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.env"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.env_krb5_keyring"):
             env_mod.resolve_krb5_ccname({"KRB5_CONFIG": str(conf)})
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
@@ -230,7 +232,7 @@ class TestSpawnWarning:
         def _boom(env):
             raise TypeError("unexpected")
 
-        monkeypatch.setattr(env_mod, "krb5_keyring_ccache", _boom)
+        monkeypatch.setattr(keyring_mod, "krb5_keyring_ccache", _boom)
         env: dict[str, str] = {}
         env_mod.resolve_krb5_ccname(env)  # must not raise
         assert "KRB5CCNAME" not in env

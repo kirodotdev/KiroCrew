@@ -174,9 +174,11 @@ class TestProbeFilePersistence:
 
         real = atomic_write.replace_with_retry
 
-        def _spy(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        def _spy(
+            src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object
+        ) -> None:
             calls.append((str(src), str(dst)))
-            real(src, dst)
+            real(src, dst, **kwargs)
 
         monkeypatch.setattr("kiro_crew.atomic_write.replace_with_retry", _spy)
         assert probe_file_persistence(tmp_path) is None
@@ -207,9 +209,7 @@ class TestGatewayPreflightWiring:
         return GatewayOrchestrator(KiroCrewConfig(), no_dashboard=True, no_crons=True)
 
     @pytest.mark.asyncio
-    async def test_run_exits_when_probe_fails(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_run_exits_when_probe_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.slack import gateway as gateway_mod
 
         monkeypatch.setattr(
@@ -242,9 +242,7 @@ class TestGatewayPreflightWiring:
         assert excinfo.value.code == 1
 
     @pytest.mark.asyncio
-    async def test_probe_runs_before_orphan_cleanup(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_probe_runs_before_orphan_cleanup(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A broken environment must exit BEFORE the first lock consumer runs
         (the raw-traceback crash this preflight replaces happened inside
         ``cleanup_orphaned_sessions``)."""

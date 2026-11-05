@@ -318,7 +318,7 @@ describe('CrewProfileSettings permission', () => {
 
   it('saves nothing while the thread is still being confirmed', async () => {
     setup(member(), null, true)
-    expect(within(group()).getByTestId('crew-profile-settings-waiting')).toHaveTextContent('These unlock once the chat with this mate is open.')
+    expect(within(group()).getByTestId('crew-profile-settings-waiting')).toHaveTextContent('These unlock once the chat with this Bot is open.')
     const p = open('approval_mode')
     expect(p).toHaveAttribute('aria-busy', 'true')
     expect(within(p).getByRole('radio', { name: /Normal/ })).toHaveAttribute('aria-disabled', 'true')
@@ -406,6 +406,18 @@ describe('CrewProfileSettings model and effort', () => {
     setup(member({ model: 'claude-opus-5' }))
     const p = open('reasoning_effort')
     await waitFor(() => expect(within(p).getByRole('radio', { name: /Inherited/ })).toHaveTextContent('Medium'))
+  })
+
+  it.each(['claude', 'goose', 'pi'])('names and judges an Inherited model by what the %s route resolves (#25821)', async (harness) => {
+    // `model` is the configured backend's answer; the crewmate's sessions run `harness_model`.
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-haiku-4', harness_model: 'claude-opus-5', harness, acp_backend: '',
+    })
+    setup(member())
+    await waitFor(() => expect(within(group()).getByTestId('crew-profile-setting-reasoning_effort')).toBeInTheDocument())
+    const inherit = within(open('model')).getByRole('radio', { name: /Inherited/ })
+    expect(inherit).toHaveTextContent('Using claude-opus-5')
+    expect(inherit).not.toHaveTextContent('claude-haiku-4')
   })
 
   it('shows a failed resolve instead of silently hiding effort', async () => {

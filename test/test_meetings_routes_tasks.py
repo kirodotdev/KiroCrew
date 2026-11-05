@@ -533,6 +533,7 @@ class TestNoStoreCallRunsOnTheEventLoop:
             "list_meetings",
             "tasks_path",
             "read_tasks",
+            "read_tasks_for_update",
             "write_tasks",
             "ensure_agent_files",
             "read_agent_outputs",
@@ -789,6 +790,57 @@ class TestTaskWritesAreSerialized:
         # Stable: the same file always normalizes to the same ids, so a client that
         # just read the list can still act on what it saw.
         assert [t["id"] for t in task_routes.read_normalized(meeting_id, root)] == ids
+
+    @pytest.mark.parametrize(
+        "raw_ids",
+        [
+            ["x" * 64, "x" * 64],  # an id at the 64-char cap leaves no room for a suffix
+            ["t", "t-2", "t"],  # the plain suffix names another row
+            ["t", "t", "t-1"],  # a later row's own id is not taken by a rename
+            ["t", "t", "t", "t-1"],  # each rename is added to the taken set
+        ],
+    )
+    def test_renamed_task_ids_never_collide(self, root: Path, raw_ids: list[str]) -> None:
+        from kiro_crew.apps.builtins.meetings.backend import store as meetings_store
+        from kiro_crew.apps.builtins.meetings.backend.routes import tasks as task_routes
+
+        meeting_id = "m-collide"
+        meetings_store.write_tasks(
+            meeting_id,
+            [{"id": tid, "description": f"row {i}"} for i, tid in enumerate(raw_ids)],
+            root,
+        )
+        tasks = task_routes.read_normalized(meeting_id, root)
+
+        ids = [t["id"] for t in tasks]
+        assert len(ids) == len(set(ids)), f"duplicate ids survived: {ids}"
+        assert all(len(tid) <= 64 for tid in ids)
+        # A row whose id was unique in the file keeps it.
+        unique_in_file = {tid for tid in raw_ids if raw_ids.count(tid) == 1}
+        for tid in unique_in_file:
+            assert tid in ids
+
+    @pytest.mark.asyncio
+    async def test_deleting_one_of_two_long_duplicate_ids_keeps_the_other(
+        self, app, root: Path
+    ) -> None:
+        from kiro_crew.apps.builtins.meetings.backend import store as meetings_store
+
+        long_id = "x" * 64
+        meetings_store.write_tasks(
+            "standup",
+            [
+                {"id": long_id, "description": "first"},
+                {"id": long_id, "description": "second"},
+            ],
+            root,
+        )
+        async with client_for(app) as client:
+            resp = await client.delete(f"{BASE}/meetings/standup/tasks", json={"id": long_id})
+            assert resp.status == 200, await resp.text()
+            left = (await (await client.get(f"{BASE}/meetings/standup/tasks")).json())["tasks"]
+
+        assert [t["description"] for t in left] == ["second"]
 
     def test_deleting_one_of_two_duplicate_ids_keeps_the_other(self, root: Path) -> None:
         """The consequence the rename prevents, asserted end to end."""

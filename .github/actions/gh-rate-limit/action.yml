@@ -1,0 +1,99 @@
+name: Rate-limit-aware gh
+description: >-
+  Put a gh wrapper first on PATH for every later step of the job. It waits out
+  a spent GitHub API rate limit, bounded, and retries only a call whose error
+  names a rate limit. Any other result passes through unchanged.
+
+# A job's token draws on the repository's shared installation rate limit,
+# which the rest of the CI fleet can spend. When it is spent, a single `gh`
+# call fails with "API rate limit exceeded" and the run fails, although the
+# limit resets within the hour. A scheduled run that fails this way loses what
+# it was for until its next tick, which for a daily or weekly job is a day or
+# a week.
+#
+# The wrapper retries ONLY a call whose error names a rate limit, and at most
+# twice. It waits until the earliest reset GitHub reports among the spent
+# buckets (`/rate_limit` does not count against the quota), or 60s when no
+# bucket reads as spent (a secondary limit). The earliest, because the failed
+# call's own bucket is not known: if that one is still spent on retry, the
+# next wait reads it. Waits share one budget for the whole job, `max-wait`
+# seconds; a reset past it fails the call as before. Any other failure passes
+# through unchanged.
+#
+# Retrying is safe for reads and for writes alike: GitHub refuses a
+# rate-limited request before acting on it. The wrapper holds a call's output
+# until the call ends, so a paginated read that fails part way is re-read from
+# the first page and never emits a partial page set. A step that streams
+# `gh` output (`gh run watch`) would see it all at once at the end. A call fed
+# on stdin (`--input -`, `--body-file -`) is not retry-safe: its retry would
+# read an empty stdin. Give such a call a file instead.
+#
+# The job's `timeout-minutes` must leave room for `max-wait` on top of its own
+# work. Put this step after the checkout and before the job's first `gh` call.
+# test/test_scheduled_gh_rate_limit.py pins both for every scheduled workflow.
+
+inputs:
+  max-wait:
+    description: Total seconds the job may spend waiting for rate-limit resets.
+    required: false
+    default: "1200"
+
+runs:
+  using: composite
+  steps:
+    - name: Install rate-limit-aware gh
+      shell: bash
+      env:
+        GH_RATE_LIMIT_MAX_WAIT: ${{ inputs.max-wait }}
+      run: |
+        set -euo pipefail
+        real="$(command -v gh)"
+        dir="$RUNNER_TEMP/gh-rate-limit"
+        mkdir -p "$dir"
+        {
+          echo '#!/usr/bin/env bash'
+          printf 'REAL_GH=%q\n' "$real"
+          printf 'WAITED_FILE=%q\n' "$dir/waited-seconds"
+          printf 'BUDGET=%q\n' "$GH_RATE_LIMIT_MAX_WAIT"
+          cat <<'SHIM'
+        set -uo pipefail
+        case "$BUDGET" in '' | *[!0-9]*) BUDGET=1200 ;; esac
+        out="$(mktemp)"
+        err="$(mktemp)"
+        trap 'rm -f "$out" "$err"' EXIT
+        retries=0
+        while :; do
+          "$REAL_GH" "$@" > "$out" 2> "$err"
+          rc=$?
+          if [ "$rc" -eq 0 ] || [ "$retries" -ge 2 ] || ! grep -qi 'rate limit' "$err"; then
+            cat "$out"
+            cat "$err" >&2
+            exit "$rc"
+          fi
+          now="$(date +%s)"
+          reset="$("$REAL_GH" api rate_limit --jq '
+            [.resources | (.core, .graphql, .search)
+             | select(type == "object" and .remaining == 0) | .reset]
+            | min // empty' 2> /dev/null)" || reset=""
+          if [[ "$reset" =~ ^[0-9]+$ ]]; then
+            delay=$((reset - now + 5))
+          else
+            delay=60
+          fi
+          [ "$delay" -ge 5 ] || delay=5
+          waited="$(cat "$WAITED_FILE" 2> /dev/null || true)"
+          case "$waited" in '' | *[!0-9]*) waited=0 ;; esac
+          if [ $((waited + delay)) -gt "$BUDGET" ]; then
+            cat "$err" >&2
+            echo "::error::The GitHub API rate limit is spent and resets in ${delay}s, past what is left of this job's ${BUDGET}s wait budget (${waited}s used). Failing the call without waiting." >&2
+            exit "$rc"
+          fi
+          echo $((waited + delay)) > "$WAITED_FILE"
+          echo "::warning::gh ${1:-} hit the GitHub API rate limit; waiting ${delay}s for the reset, then retrying." >&2
+          sleep "$delay"
+          retries=$((retries + 1))
+        done
+        SHIM
+        } > "$dir/gh"
+        chmod +x "$dir/gh"
+        echo "$dir" >> "$GITHUB_PATH"

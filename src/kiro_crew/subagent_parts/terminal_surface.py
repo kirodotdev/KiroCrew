@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         DISMISSAL_FAILED,
         MAX_ERROR_DETAIL_LEN,
         Any,
+        Iterable,
         Literal,
         ProcessHandle,
         SubagentDelivery,
@@ -300,6 +301,12 @@ def notify_injection_failed(
     return self._terminal.notify_injection_failed_impl(info, reason)
 
 
+def suppress_retired_delivery(
+    self: SubagentManager, info: SubagentInfo, members: Iterable[str] = ()
+) -> bool:
+    return self._terminal.suppress_retired_delivery_impl(info, members)
+
+
 def batch_members_pending(self: SubagentManager, batch_id: str) -> bool:
     return self._waves.batch_members_pending_impl(batch_id)
 
@@ -427,3 +434,27 @@ def _write_tombstone(info: SubagentInfo, cause: str, *, leaked_process: bool = F
         )
     except Exception:
         logger.debug("Failed to write tombstone for %s", info.id, exc_info=True)
+
+
+def write_refusal_tombstone(agent_id: str, reason: str) -> None:
+    """The durable ending of a persisted row refused before it registered.
+
+    ``reconcile_on_boot`` asks the artifact probe about every row the dead
+    incarnation left behind BEFORE it requeues an ADMITTED one, and a tombstone
+    whose cause is ``REFUSAL_TOMBSTONE_CAUSE`` is the probe's ``REFUSED`` -- a
+    ``failed`` for the row, and the ONE ending the queued pass settles a
+    ``queued`` row on, since no run that started can leave this cause behind.
+    The refusal text is redacted the way :meth:`SubagentManager._write_tombstone`
+    redacts a run's ``error`` into the same ``detail`` field -- one writer owns
+    that field's hygiene. Blocking file I/O: an on-loop caller wraps it in a
+    thread. Raises ``ValueError`` / ``OSError`` as ``write_tombstone`` does.
+    """
+    # circular import: the admission package loads this module while it is imported.
+    from kiro_crew.subagent_manager.admission.types import REFUSAL_TOMBSTONE_CAUSE
+
+    write_tombstone(
+        agent_id,
+        cause=REFUSAL_TOMBSTONE_CAUSE,
+        recovery_action=tombstone_recovery_action(agent_id, read_state(agent_id) or {}),
+        detail=_redact(reason)[:MAX_ERROR_DETAIL_LEN],
+    )

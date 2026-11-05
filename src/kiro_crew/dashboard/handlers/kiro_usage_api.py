@@ -93,7 +93,6 @@ import hashlib
 import json
 import logging
 import math
-import re
 import ssl
 import time
 import urllib.error
@@ -107,7 +106,7 @@ from kiro_crew import hooks
 # The kiro-cli store is also read in this process through the shim; one SQLite
 # library keeps the other readers' locks when this connection closes.
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.identity_stores import Trust, sqlite_dbs
+from kiro_crew.identity_stores import AUTH_TOKEN_KEYS, Trust, parse_token_expiry, sqlite_dbs
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +229,7 @@ _CLI_SQLITE_DBS = sqlite_dbs(Trust.TRUSTED)
 # absent. Untrusted either way (``from_cli_store=False``), so this widens what
 # can be READ for credit reporting, never what is believed.
 _OTHER_SQLITE_DBS = sqlite_dbs(Trust.OTHER)
-_SQLITE_TOKEN_KEYS = ("kirocli:odic:token", "codewhisperer:odic:token", "kirocli:social:token", "kirocli:external-idp:token")
+_SQLITE_TOKEN_KEYS = AUTH_TOKEN_KEYS
 
 # SEL audit label for the SQLite live-token read. Not an allowlist entry (that
 # gate is for sensitive-path reads via safe_read_file_internal); this is only
@@ -341,21 +340,9 @@ def _note_api_outcome(ok: bool, reason: str = "") -> None:
         )
 
 
-def _parse_iso(ts: object) -> datetime | None:
-    """Parse an ISO8601 timestamp (handles trailing Z) to an aware datetime.
-
-    kiro-cli emits nanosecond precision (9 fractional digits); Python 3.10's
-    ``fromisoformat`` accepts at most 6, so the fraction is truncated to
-    microseconds first. Without this the parse fails and an expired token would
-    be treated as non-expiring (fail-open).
-    """
-    try:
-        s = str(ts).replace("Z", "+00:00")
-        s = re.sub(r"(\.\d{6})\d+", r"\1", s)
-        dt = datetime.fromisoformat(s)
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return None
+#: The shared token-expiry parser (``identity_stores.parse_token_expiry``): the sign-in
+#: resolver reads the same rows, so the two readers cannot parse an expiry differently.
+_parse_iso = parse_token_expiry
 
 
 def _expiry_if_unexpired(exp: object, now: datetime) -> datetime | None:
@@ -1225,8 +1212,28 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
             # point. The ARN still rides back (see _get_usage) because matching
             # on ``None`` -- two Builder ID accounts both present none -- is
             # consistent but not proof; ``_identity_matches_account`` decides
-            # whether an email may sit next to an overage figure.
-            attempt = _get_usage(token, arn, name_anchor=expected_arn, endpoint=endpoint)
+            # whether an email may sit next to an overage figure, and on the
+            # ARN-less path the billed e-mail below is what proves it.
+            #
+            # Ask for the billed account's e-mail ONLY on the ARN-less path
+            # (``expected_arn is None``). That is the account whose credential
+            # just answered GetUsageLimits -- the billing account itself -- so
+            # ``_fetch_usage_bg`` can attach a whoami e-mail only when it equals
+            # this one, tying the displayed identity to the credential that
+            # supplied the numbers rather than to a whoami that merely stayed
+            # unchanged. The ARN path is unchanged: its ARN match is already the
+            # proof, so it does not ask and this is byte-for-byte as before.
+            want_email = expected_arn is None
+            attempt = _get_usage(
+                token, arn, name_anchor=expected_arn, endpoint=endpoint, want_email=want_email
+            )
+            if want_email and attempt.result is None and attempt.reason == _EMAIL_REJECTED_REASON:
+                # The e-mail is an extra, never a condition of the reading: a 400
+                # may be the service refusing ``isEmailRequired`` for this kind
+                # of sign-in, so ask once more without it before giving up -- the
+                # same fallback the vault path takes. A reading with no billed
+                # e-mail then simply attaches no whoami e-mail downstream.
+                attempt = _get_usage(token, arn, name_anchor=expected_arn, endpoint=endpoint)
             if attempt.result is not None:
                 return attempt.result._replace(user_id=active_user_id)
             reason = attempt.reason

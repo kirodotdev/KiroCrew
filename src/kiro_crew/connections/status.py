@@ -121,6 +121,12 @@ class ConnectionStatus(TypedDict, total=False):
     #: instead of asserting the grant is unshared on a partial read -- the same
     #: fail-closed stance the Disconnect path takes.
     grantSharedUnconfirmed: bool
+    #: True for every pre-registered provider while the backend dashboard chats
+    #: run on (``agent.acp_backend``) drops a remote MCP entry's ``oauth`` block
+    #: (KAS today). Present only when true. A caveat the card shows beside
+    #: Connect and on a connected row; it never blocks the mint, which runs on
+    #: kiro-cli and writes a grant kiro-cli chats use.
+    backendLacksOauth: bool
 
 
 def _client_config_map(providers: list[Provider]) -> dict[str, bool]:
@@ -154,6 +160,30 @@ def _client_config_map(providers: list[Provider]) -> dict[str, bool]:
     }
 
 
+def chat_backend_honors_preregistered_oauth() -> bool:
+    """Whether the chat backend carries a pre-registered OAuth provider's client.
+
+    What the status feed's ``backendLacksOauth`` caveat reads. Reads the resolved
+    ``agent.acp_backend`` and answers from that backend's own capability record,
+    never from a backend name. Worker-thread only (reads config).
+
+    An unreadable config answers True: the flag is a claim about the backend, and
+    a config that cannot be read proves nothing about it, so the card keeps the
+    behaviour it had before the flag existed.
+    """
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.config import KiroCrewConfig
+
+    try:
+        # Ordinary chats only. ``member_acp_backend`` resolves to KAS on every
+        # install whether or not crewmates exist, so reading it would put the
+        # caveat on every row and say nothing about the operator's own chats.
+        backend = KiroCrewConfig.load().agent.acp_backend
+    except Exception:  # noqa: BLE001 -- see the docstring: no proof, no claim
+        return True
+    return capabilities_for(backend).honors_remote_mcp_oauth
+
+
 def _connection_state_path() -> Path:
     """Where first-authorization timestamps live: our own state dir."""
     if _CONNECTION_STATE_PATH is not None:
@@ -168,7 +198,7 @@ def _utc_now() -> str:
 def _load_connected_since() -> dict[str, str] | None:
     """Read persisted first-connect timestamps; ``None`` when unknowable.
 
-    Tri-state, mirroring ``_artifact_presence``: a MISSING file is an answer
+    Tri-state, mirroring ``mcp_grant.artifact_presence``: a MISSING file is an answer
     (nothing was ever written -> empty), a DAMAGED file is the documented
     self-heal (unparseable content is replaceable -> empty), but any other
     ``OSError`` (EACCES/EIO/stalled mount) means the record could not be READ
@@ -441,6 +471,11 @@ async def collect_connection_statuses(
 
     grants = await asyncio.to_thread(_grant_presence_map, providers)
     client_configured = await asyncio.to_thread(_client_config_map, providers)
+    backend_oauth = (
+        await asyncio.to_thread(chat_backend_honors_preregistered_oauth)
+        if any(is_preregistered(p) for p in providers)
+        else True
+    )
 
     statuses: list[ConnectionStatus] = []
     for provider in providers:
@@ -458,6 +493,12 @@ async def collect_connection_statuses(
         }
         if granted is None:
             entry["grantIndeterminate"] = True
+        if not backend_oauth and is_preregistered(provider):
+            # A caveat, not a refusal: the mint runs on kiro-cli, so the grant it
+            # writes is real for kiro-cli chats. Whether a KAS chat can use it is
+            # not established, so the flag rides every pre-registered row,
+            # connected or not, and blocks nothing.
+            entry["backendLacksOauth"] = True
         if (
             slug in client_configured
             and not client_configured[slug]

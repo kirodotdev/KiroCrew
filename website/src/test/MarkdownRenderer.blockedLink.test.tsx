@@ -124,6 +124,19 @@ describe('Blocked link chip', () => {
     await waitFor(() => expect(revoke).toHaveBeenCalledWith('default', 'reviews.corp.example'))
   })
 
+  it('offers no Allow for a host the server refuses and says why in its place', () => {
+    for (const domain of ['10.0.0.5', '[::1]', 'my_box.corp.example', 'api.localhost']) {
+      const ui = render(<MarkdownRenderer content={PH(domain)} blockedLinks={[link({ domain })]} slotKey="s1" />)
+      fireEvent.click(ui.getByTestId('blocked-link-inspect'))
+      expect(ui.queryByTestId('blocked-link-allow')).toBeNull()
+      expect(ui.getByTestId('blocked-link-allow-unsupported').textContent).toContain('Only a host name like example.com')
+      ui.unmount()
+    }
+    const dns = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} slotKey="s1" />)
+    fireEvent.click(dns.getByTestId('blocked-link-inspect'))
+    expect(dns.queryByTestId('blocked-link-allow-unsupported')).toBeNull()
+  })
+
   it('asks the page to reload the slot once a host is allowed, so the link shows again', async () => {
     vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
     const seen: unknown[] = []
@@ -458,7 +471,7 @@ describe('credential lock tag', () => {
     fireEvent.click(getByTestId('credential-tag'))
     const card = getByTestId('credential-card')
     expect(card.textContent).toContain('A credential was removed here')
-    expect(card.textContent).toContain('It was removed before saving, so no copy of this conversation contains it')
+    expect(card.textContent).toContain('It was removed before saving, so no saved copy of this conversation contains it')
     expect(card.textContent).toContain('Source: ~/.aws/credentials section [default].')
     expect(card.textContent).toContain('View the value in the built-in Terminal')
     expect(card.textContent).toContain('aws configure get aws_secret_access_key --profile default')
@@ -599,7 +612,7 @@ describe('reveal focus ownership', () => {
   ])('hands focus from the %s opener to its revealed card', (_kind, content, triggerId, cardId) => {
     const ui = render(<MarkdownRenderer content={content} blockedLinks={[link()]} redactions={[cred()]} slotKey="s1" />)
     const trigger = ui.getByTestId(triggerId)
-    trigger.focus()
+    act(() => { trigger.focus() })
     vi.useFakeTimers()
     fireEvent.click(trigger)
     expect(document.activeElement).toBe(trigger)
@@ -612,7 +625,7 @@ describe('reveal focus ownership', () => {
   it('hands focus to the card when the click left focus on the body', () => {
     const ui = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} />)
     const trigger = ui.getByTestId('blocked-link-inspect')
-    ;(document.activeElement as HTMLElement | null)?.blur()
+    act(() => { (document.activeElement as HTMLElement | null)?.blur() })
     expect(document.activeElement).toBe(document.body)
     vi.useFakeTimers()
     // A mouse click that does not focus the button, as on Safari, iOS and Firefox on macOS.
@@ -625,7 +638,7 @@ describe('reveal focus ownership', () => {
     const replyKey = 's1:held-remount'
     setAllowHold(replyKey, 'reviews.corp.example', { workspace: 'w', records: [link()], outcome: 'allowed', cardId: 'rx-link-reviews.corp.example~0.0' })
     try {
-      ;(document.activeElement as HTMLElement | null)?.blur()
+      act(() => { (document.activeElement as HTMLElement | null)?.blur() })
       vi.useFakeTimers()
       const ui = render(
         <RedactionProvider credentials={[]} blockedLinks={[link()]} replyKey={replyKey}>
@@ -636,18 +649,18 @@ describe('reveal focus ownership', () => {
       act(() => { vi.advanceTimersByTime(REVEAL_MS) })
       expect(document.activeElement).toBe(ui.getByTestId('blocked-link-card'))
     } finally {
-      setAllowHold(replyKey, 'reviews.corp.example', null)
+      act(() => { setAllowHold(replyKey, 'reviews.corp.example', null) })
     }
   })
 
   it('leaves focus on a control reached while the card reveals', () => {
     const ui = render(<><MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} /><input aria-label="Next request" /></>)
     const trigger = ui.getByTestId('blocked-link-inspect')
-    trigger.focus()
+    act(() => { trigger.focus() })
     vi.useFakeTimers()
     fireEvent.click(trigger)
     const input = ui.getByRole('textbox', { name: 'Next request' })
-    input.focus()
+    act(() => { input.focus() })
     act(() => { vi.advanceTimersByTime(REVEAL_MS) })
     expect(document.activeElement).toBe(input)
   })
@@ -667,7 +680,7 @@ describe('reveal focus ownership', () => {
       </RedactionProvider>,
     )
     const trigger = ui.getByTestId('blocked-link-inspect')
-    trigger.focus()
+    act(() => { trigger.focus() })
     vi.useFakeTimers()
     fireEvent.click(trigger)
     const input = ui.getByRole('textbox', { name: 'Next request' })
@@ -679,7 +692,7 @@ describe('reveal focus ownership', () => {
   it('preserves Cancel focus in a confirmation opened before reveal completes', () => {
     const ui = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} />)
     const trigger = ui.getByTestId('blocked-link-inspect')
-    trigger.focus()
+    act(() => { trigger.focus() })
     vi.useFakeTimers()
     fireEvent.click(trigger)
     fireEvent.click(ui.getByTestId('blocked-link-open-once'))
@@ -692,7 +705,7 @@ describe('reveal focus ownership', () => {
   it('does not focus a closed card that remains mounted during its exit', () => {
     const ui = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} />)
     const trigger = ui.getByTestId('blocked-link-inspect')
-    trigger.focus()
+    act(() => { trigger.focus() })
     vi.useFakeTimers()
     fireEvent.click(trigger)
     const card = ui.getByTestId('blocked-link-card')
@@ -706,12 +719,12 @@ describe('reveal focus ownership', () => {
   it('cancels the old card handoff when another block opens, then focuses the new card', () => {
     const ui = render(<MarkdownRenderer content={`${PH('reviews.corp.example')}\n\n${PH('other.corp.example')}`} blockedLinks={[link(), link({ domain: 'other.corp.example' })]} />)
     const [first, next] = ui.getAllByTestId('blocked-link-inspect')
-    first.focus()
+    act(() => { first.focus() })
     vi.useFakeTimers()
     fireEvent.click(first)
     const oldCard = ui.getByTestId('blocked-link-card')
     act(() => { vi.advanceTimersByTime(REVEAL_MS / 2) })
-    next.focus()
+    act(() => { next.focus() })
     fireEvent.click(next)
     expect(oldCard.isConnected).toBe(true)
     act(() => { vi.advanceTimersByTime(REVEAL_MS / 2) })
@@ -729,7 +742,9 @@ describe('first-run coach', () => {
     const coach = getByTestId('redaction-coach')
     expect(coach.textContent).toContain('3 values were removed before saving this reply')
     expect(coach.textContent).toContain('Removed before saving.')
-    expect(coach.textContent).toContain('Always on.')
+    expect(coach.textContent).toContain('Owner can reveal.')
+    expect(coach.textContent).not.toContain('Nothing can show them')
+    expect(coach.textContent).toContain('Keep secrets in Settings → Secrets.')
     expect(coach.textContent).toContain('Check the source.')
     expect(coach.textContent).toContain('Keep secrets at their source.')
     expect(getByTestId('redaction-coach-never').textContent).toBe("Don't show again")

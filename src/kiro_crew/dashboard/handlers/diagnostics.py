@@ -21,6 +21,7 @@ from pathlib import Path
 from aiohttp import web
 
 from kiro_crew import diagnostics
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import config_dir
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
@@ -91,7 +92,10 @@ async def api_diagnostics_collect(request: web.Request) -> web.Response:
         )
 
     note = str(body.get("note") or "")
-    include_logs = bool(body.get("include_logs", True))
+    # A spelled "false"/"0"/"no"/"off" leaves the logs out; any other value
+    # keeps the truthiness it has always been read with.
+    raw_include_logs = body.get("include_logs", True)
+    include_logs = _coerce_bool(raw_include_logs, bool(raw_include_logs))
 
     # The owner gate audits only its refusals; record the allowed build here,
     # before the collector reads the owner's logs.

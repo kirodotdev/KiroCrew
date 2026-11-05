@@ -1,11 +1,7 @@
 """Coverage for the ``message`` (LLM) arm of the Kiro Crew gateway's cron callback.
 
-Covers the arm's fire-time governance denial, a crewmate goal check-in passing the same
-gate, the ``_init_cron`` wiring that skips the reaper without a session manager, and a
-job whose ``agent_id`` is an agent alias dispatching that alias's kiro agent mode and
-workspace instead of the alias itself. The deterministic arms are in
-``test_slack_gateway_cron_exec_coverage.py``; the shared harness comes from
-``slack_gateway_cron_exec_coverage_helpers.py``.
+Fire-time governance denial, a goal check-in through the same gate, the ``_init_cron``
+wiring, and agent-alias resolution.
 """
 
 from __future__ import annotations
@@ -76,6 +72,20 @@ class TestCronMessageDenialAndWiring:
         assert job.fire_time_denied is False
 
     @pytest.mark.asyncio
+    async def test_a_silent_goal_checkin_skip_is_the_runs_result(self):
+        """A skip reaches the run's history summary even when the job is silent."""
+        from kiro_crew.dashboard import goal_reminder
+
+        orch = _make_orchestrator()
+        job = _job(managed_by=goal_reminder.managed_key("ava", "heartbeat"), silent=True)
+        skip = "skipped: the mate is busy"
+        with patch.object(goal_reminder, "fire", AsyncMock(return_value=skip)):
+            async with _cron_cb(orch, gate_reason="") as cb:
+                assert await cb(job) == skip
+        assert job.result_produced is True
+        assert job.last_result == skip
+
+    @pytest.mark.asyncio
     async def test_reaper_not_started_without_sessions(self):
         """Arming the scheduler without a session manager skips the reaper."""
         orch = _make_orchestrator(no_crons=False)
@@ -88,15 +98,10 @@ class TestCronMessageDenialAndWiring:
 
 
 class TestCronResolvesAgentAlias:
-    """A cron whose agent is a Kiro Crew ALIAS must dispatch the alias's real
-    kiro agent mode + workspace, not the alias verbatim.
+    """A cron whose agent is an ALIAS dispatches the alias's real agent mode and workspace.
 
-    Regression: a cron created in a Slack channel carries that channel's agent
-    alias (e.g. ``in-3d``) in ``job.agent_id``. kiro-cli only accepts a
-    materialized agent MODE, so dispatching the alias failed every run with
-    "Agent mode 'in-3d' is not available on this session … its
-    ~/.kiro/agents/in-3d.json is likely missing". The Slack chat path already
-    collapses the alias via resolve_agent_bindings; the cron path did not.
+    A cron made in a Slack channel carries the channel's alias (e.g. ``in-3d``) in
+    ``job.agent_id``, and kiro-cli accepts only a materialized agent MODE.
     """
 
     @staticmethod

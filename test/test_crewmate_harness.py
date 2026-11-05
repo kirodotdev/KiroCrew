@@ -874,7 +874,7 @@ class TestAHarnessChangeReloadsTheLiveChat:
 
         assert status == 409
         assert data == {
-            "error": "Atlas Prime has more than one chat open. Close the mate's other chat, "
+            "error": "Atlas Prime has more than one chat open. Close the Bot's other chat, "
             "then change the agent harness.",
             "code": "crewmate_harness_busy",
         }
@@ -1137,6 +1137,125 @@ class TestReadPath:
         assert body["acp_backend"] == "codex"
         assert body["harness"] == ""
         assert "crewmate_harness_unavailable" in body["harness_error"]
+
+    @staticmethod
+    def _member_route_cfg(member, monkeypatch):
+        """A config whose member route is *member*, with a kiro-cli model configured."""
+        from kiro_crew import model_registry
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset(SELECTABLE | {member})
+        )
+        cfg = KiroCrewConfig.load()
+        cfg.agent.model = "claude-opus-5.5"
+        # save() does not write the harness fields, so the handler reads this copy.
+        cfg.agent.member_acp_backend = member
+        model_registry.refresh_advertised_models("acp", ["claude-opus-5.5"])
+        model_registry.refresh_advertised_models(
+            capabilities_for(member).model_id_namespace, ["anthropic/claude-haiku-4-5"]
+        )
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg))
+        return cfg
+
+    @staticmethod
+    async def _readout(crew):
+        async with TestClient(TestServer(_app())) as client:
+            return await (
+                await client.get("/api/agents/resolved-model", params={"agent": crew})
+            ).json()
+
+    @pytest.mark.parametrize("member", ["goose", "pi"])
+    @pytest.mark.asyncio
+    async def test_an_inherited_crew_names_the_model_its_member_route_resolves(
+        self, seeded, member, _floor_monkeypatch
+    ):
+        # `model` is resolved on the configured backend; an enrolled crew's
+        # sessions resolve on the member route, where a kiro-cli id falls out of scope.
+        cfg = self._member_route_cfg(member, _floor_monkeypatch)
+        cfg.agents[seeded].member_id = MEMBER_ID
+        body = await self._readout(seeded)
+        assert body["acp_backend"] == ""
+        assert body["harness"] == member
+        assert body["model"] == "claude-opus-5.5"
+        # The kiro-cli id is out of that harness's scope, so the harness picks.
+        assert body.get("harness_model") == ""
+
+    @pytest.mark.asyncio
+    async def test_the_default_crew_is_judged_on_the_configured_backend(
+        self, seeded, _floor_monkeypatch
+    ):
+        # Its main chats are not member sessions, so they start on agent.acp_backend.
+        cfg = self._member_route_cfg("goose", _floor_monkeypatch)
+        cfg.default_agent = seeded
+        body = await self._readout(seeded)
+        # The Harness row reads as main does; readers fall back to `model`.
+        assert body["harness"] == body["inherited_harness"] == "goose"
+        assert "harness_model" not in body
+        assert body["model"] == "claude-opus-5.5"
+
+    @pytest.mark.asyncio
+    async def test_a_template_only_crew_is_judged_on_the_configured_backend(
+        self, _floor_monkeypatch
+    ):
+        cfg = self._member_route_cfg("goose", _floor_monkeypatch)
+        cfg.agents["scout"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", workspace="default", memory_store="default"
+        )
+        body = await self._readout("scout")
+        assert body["harness"] == body["inherited_harness"] == "goose"
+        assert "harness_model" not in body
+        assert body["model"] == "claude-opus-5.5"
+
+    @pytest.mark.asyncio
+    async def test_a_dm_only_crew_without_a_member_id_keeps_mains_readout(self, _floor_monkeypatch):
+        # No function maps such a crew to its DM key, so the readout claims nothing new.
+        from kiro_crew.members_parts.dm_bindings import write_dm_binding
+        from kiro_crew.members_parts.member_sessions import member_slot_key
+
+        cfg = self._member_route_cfg("goose", _floor_monkeypatch)
+        cfg.agents["assistant"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", workspace="default", memory_store="default"
+        )
+        write_dm_binding("assistant", member="assistant", slot_key=member_slot_key("assistant"))
+        body = await self._readout("assistant")
+        assert "harness_model" not in body
+        assert body["model"] == "claude-opus-5.5"
+
+    @pytest.mark.asyncio
+    async def test_an_enrolled_default_crew_is_judged_by_its_dm(self, seeded, _floor_monkeypatch):
+        cfg = self._member_route_cfg("goose", _floor_monkeypatch)
+        cfg.agents[seeded].member_id = MEMBER_ID
+        cfg.default_agent = seeded
+        body = await self._readout(seeded)
+        assert body["harness"] == "goose"
+        assert body.get("harness_model") == ""
+
+    @pytest.mark.asyncio
+    async def test_an_enrolled_pinned_crew_is_judged_on_its_pin(self, seeded, _floor_monkeypatch):
+        # The pin outranks the member route on the crew's DM key.
+        cfg = self._member_route_cfg("goose", _floor_monkeypatch)
+        cfg.agents[seeded].member_id = MEMBER_ID
+        cfg.agents[seeded].acp_backend = "claude"
+        body = await self._readout(seeded)
+        assert body["harness"] == "claude"
+        assert body["inherited_harness"] == "goose"
+        assert body.get("harness_model") == body["model"] == "claude-opus-5.5"
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_crew_names_the_same_model_twice(self, seeded):
+        cfg = KiroCrewConfig.load()
+        cfg.agent.model = "claude-opus-5.5"
+        cfg.agents[seeded].acp_backend = "claude"
+        cfg.save()
+        async with TestClient(TestServer(_app())) as client:
+            body = await (
+                await client.get("/api/agents/resolved-model", params={"agent": seeded})
+            ).json()
+        # Not enrolled: `model` already names the pinned harness's model.
+        assert "harness_model" not in body
+        assert body["model"] == "claude-opus-5.5"
 
     @pytest.mark.asyncio
     async def test_a_non_owner_readout_carries_no_harness_fields(self, seeded, monkeypatch):

@@ -3,6 +3,7 @@ import { act, fireEvent, renderHook, screen, waitFor, within } from '@testing-li
 import userEvent from '@testing-library/user-event'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { TerminalTabsView } from '../components/BottomTerminalPanel'
 import {
   __resetBottomTerminal, addTab, removeTab, renameTab, setActiveTab, setTabsOrder, useBottomTerminal,
@@ -30,7 +31,7 @@ vi.mock('../utils/terminalPopout', () => ({
 }))
 
 beforeEach(() => { __resetBottomTerminal(); terminal.title = 'workspace'; terminal.autofocus = false; vi.clearAllMocks() })
-afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); __resetBottomTerminal() })
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); act(() => { __resetBottomTerminal() }) })
 
 function mount(variant: 'dock' | 'popout' = 'dock') {
   const id = addTab('/project')!
@@ -304,7 +305,10 @@ describe('terminal inline rename', () => {
   it('declines the committing Enter that lands just after compositionend', async () => {
     // WebKit reports isComposing=false on the keydown that commits a candidate;
     // only the shared latch (useImeGuard) knows that Enter still belongs to the IME.
-    mount()
+    const { queryClient } = mount()
+    // ThemeProvider's boot read settles during the 80 ms sleep below otherwise, outside act.
+    // (Its catalog query retries forever against no server, so only the boot key is awaited.)
+    await waitFor(() => expect(queryClient.isFetching({ queryKey: ['theme-boot'] })).toBe(0), namedCeiling('THEME_BOOT_SETTLED', 5000))
     fireEvent.keyDown(screen.getByRole('tab'), { key: 'F2' })
     fireEvent.compositionStart(editor())
     fireEvent.change(editor(), { target: { value: '端末' } })
@@ -591,11 +595,10 @@ describe('terminal tab name persistence', () => {
     const first = addTab('/one')!
     const second = addTab('/two')!
     renameTab(first, '  Build  ')
-    setTabsOrder([...snapshot().tabs].reverse())
-    closeBottomTerminal()
-    openBottomTerminal()
+    const reversed = [...snapshot().tabs].reverse()
+    act(() => { setTabsOrder(reversed); closeBottomTerminal(); openBottomTerminal() })
     const saved = localStorage.getItem('mc-bottom-terminal')!
-    __resetBottomTerminal()
+    act(() => { __resetBottomTerminal() })
     localStorage.setItem('mc-bottom-terminal', saved)
     act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'mc-bottom-terminal' })))
     expect(snapshot().tabs).toEqual([

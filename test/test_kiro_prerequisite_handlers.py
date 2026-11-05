@@ -1111,8 +1111,7 @@ class TestKiroCrewNeverSetsUpKiroCli:
         # SERVES for the user to type, which is a display string that is never
         # executed -- so matching it would forbid naming the flag while leaving
         # the actual "what gets spawned" question untested. The behavioral
-        # guarantee is pinned separately by the argv-equality assertion in
-        # test_repeated_forced_snapshots_probe_once.
+        # guarantee needs an argv-equality assertion, not this source scan.
         assert '"--use-device-flow"' not in source
         assert '"login"' not in source
 

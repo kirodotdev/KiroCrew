@@ -36,6 +36,11 @@ import { readSideChatDraft, seedSideChatDraft } from '../chat-core/composer/side
 const dashInitial = { ...dashboardReducer(undefined, { type: '@@INIT' }), connected: true }
 const chatInitial = chatReducer(undefined, { type: '@@INIT' })
 
+// Async act lets ThemeProvider's boot and catalog queries settle before the test reads the tree.
+async function renderSettled(ui: React.ReactElement, opts: Parameters<typeof renderWithProviders>[1] = {}) {
+  return act(async () => renderWithProviders(ui, opts))
+}
+
 // Harness that mounts the toolbar from an external selection so the actions
 // render deterministically without simulating a real DOM range.
 function ToolbarHarness({ onAsk, onQuote }: { onAsk?: (t: string, r: DOMRect) => void; onQuote?: (t: string, r: DOMRect) => void }) {
@@ -51,8 +56,8 @@ function ToolbarHarness({ onAsk, onQuote }: { onAsk?: (t: string, r: DOMRect) =>
 describe('Select-to-Ask', () => {
   beforeEach(() => { vi.restoreAllMocks() })
 
-  it('useSelectionActions exposes an Ask action only when onAsk is provided', () => {
-    renderWithProviders(<ToolbarHarness onAsk={() => {}} />)
+  it('useSelectionActions exposes an Ask action only when onAsk is provided', async () => {
+    await renderSettled(<ToolbarHarness onAsk={() => {}} />)
     const ask = screen.getByRole('button', { name: 'Ask about this' })
     expect(ask).toBeInTheDocument()
     // The label says what happens to the selection; WHERE the question lands
@@ -65,40 +70,40 @@ describe('Select-to-Ask', () => {
     expect(ask).toHaveTextContent(/^Ask about this$/)
   })
 
-  it('omits the Ask action when onAsk is absent', () => {
-    renderWithProviders(<ToolbarHarness />)
+  it('omits the Ask action when onAsk is absent', async () => {
+    await renderSettled(<ToolbarHarness />)
     expect(screen.queryByRole('button', { name: 'Ask about this' })).not.toBeInTheDocument()
   })
 
-  it('the Quote / Ask pair name different destinations in their descriptions', () => {
-    renderWithProviders(<ToolbarHarness onQuote={() => {}} onAsk={() => {}} />)
+  it('the Quote / Ask pair name different destinations in their descriptions', async () => {
+    await renderSettled(<ToolbarHarness onQuote={() => {}} onAsk={() => {}} />)
     // Neither description merely restates its label: Quote says the reply goes
     // to the main chat, Ask says the question lands in the Side Chat.
     expect(screen.getByRole('button', { name: 'Quote' })).toHaveAccessibleDescription(/main chat/)
     expect(screen.getByRole('button', { name: 'Ask about this' })).toHaveAccessibleDescription(/Side Chat/)
   })
 
-  it('clicking Ask invokes the handler with the selected text', () => {
+  it('clicking Ask invokes the handler with the selected text', async () => {
     const onAsk = vi.fn()
-    renderWithProviders(<ToolbarHarness onAsk={onAsk} />)
+    await renderSettled(<ToolbarHarness onAsk={onAsk} />)
     act(() => { screen.getByRole('button', { name: 'Ask about this' }).click() })
     expect(onAsk).toHaveBeenCalledWith('hi', expect.anything())
   })
 
-  it('SideChat renders a seed written into its slot as a grounding quote, and puts the caret after it', () => {
+  it('SideChat renders a seed written into its slot as a grounding quote, and puts the caret after it', async () => {
     const SLOT = 'seed-slot'
     const store = createTestStore({
       dashboard: dashInitial,
       chat: { ...chatInitial, activeSlot: SLOT, slotHistory: [SLOT], activityOpen: true, activityTab: 'side' } as unknown as RootState['chat'],
     })
-    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await renderSettled(<SideChat slot={SLOT} />, { store })
     const ta = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
     expect(ta.value).toBe('')
     act(() => { seedSideChatDraft(SLOT, 'line one\nline two') })
     expect(ta.value).toBe('> line one\n> line two\n\n')
   })
 
-  it('a seed for another slot never shows in this panel; a seed written BEFORE mount is waiting when it mounts', () => {
+  it('a seed for another slot never shows in this panel; a seed written BEFORE mount is waiting when it mounts', async () => {
     const SLOT = 'seed-slot'
     const store = createTestStore({
       dashboard: dashInitial,
@@ -106,7 +111,7 @@ describe('Select-to-Ask', () => {
     })
     // Late-panel case: the Ask landed while the panel was still coming up.
     seedSideChatDraft(SLOT, 'asked before mount')
-    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await renderSettled(<SideChat slot={SLOT} />, { store })
     const ta = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
     expect(ta.value).toBe('> asked before mount\n\n')
     // The composer wrapper names its slot — a test / capture-harness hook.
@@ -116,7 +121,7 @@ describe('Select-to-Ask', () => {
     expect(readSideChatDraft('other-slot')).toBe('> not mine\n\n')
   })
 
-  it('a Side Chat draft survives the panel unmounting and is kept per slot', () => {
+  it('a Side Chat draft survives the panel unmounting and is kept per slot', async () => {
     // Every host unmounts the panel through a control beside the composer
     // (another tab, the Members drawer's "Details", a member switch); the
     // draft must not die with it.
@@ -126,19 +131,19 @@ describe('Select-to-Ask', () => {
       // on slot-b, and the per-slot selectors read maps a subset would lack.
       chat: { ...chatInitial, activeSlot: 'slot-a', slotHistory: ['slot-a'], activityOpen: true, activityTab: 'side' } as unknown as RootState['chat'],
     })
-    const first = renderWithProviders(<SideChat slot="slot-a" />, { store })
+    const first = await renderSettled(<SideChat slot="slot-a" />, { store })
     const ta = () => screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
     fireEvent.change(ta(), { target: { value: 'half a question' } })
     expect(ta().value).toBe('half a question')
     first.unmount()
 
     // Another slot's panel does not see it …
-    const other = renderWithProviders(<SideChat slot="slot-b" />, { store })
+    const other = await renderSettled(<SideChat slot="slot-b" />, { store })
     expect(ta().value).toBe('')
     other.unmount()
 
     // … and the same slot's panel gets it back.
-    renderWithProviders(<SideChat slot="slot-a" />, { store })
+    await renderSettled(<SideChat slot="slot-a" />, { store })
     expect(ta().value).toBe('half a question')
   })
 
@@ -157,7 +162,7 @@ describe('Select-to-Ask', () => {
       // on slot-b, and the per-slot selectors read maps a subset would lack.
       chat: { ...chatInitial, activeSlot: 'slot-a', slotHistory: ['slot-a'], activityOpen: true, activityTab: 'side' } as unknown as RootState['chat'],
     })
-    const view = renderWithProviders(<SideChat slot="slot-a" />, { store })
+    const view = await renderSettled(<SideChat slot="slot-a" />, { store })
     const ta = () => screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
     fireEvent.change(ta(), { target: { value: 'question for A' } })
     fireEvent.keyDown(ta(), { key: 'Enter', code: 'Enter' })

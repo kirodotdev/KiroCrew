@@ -99,42 +99,21 @@ def mcp_apps_env_override() -> bool | None:
 def _mcp_apps_enabled() -> bool:
     """Feature gate for MCP Apps. **Tightest-wins**: any explicit off disables.
 
-    Capability follows the STUB, not a new preference. This function only ever
-    runs inside a backend, and a backend only exists because a stub reached the
-    broker for a server the operator stubbed, so the opt-in has already happened
-    by the time control is here. That is why there is no *forward-facing* apps
-    switch any more: a preference could not grant the feature (with no stub there
-    is no render or callback path to grant).
+    Capability follows the STUB: this runs only inside a backend, which exists
+    only because the operator stubbed the server, so the opt-in has happened.
+    Two ways to say **no** remain:
 
-    What survives is the two ways an operator can still say **no**:
+    1. ``KIROCREW_MCP_APPS`` off: absolute kill switch.
+    2. A stored ``mcp_gateway.apps_enabled = false``, EVEN with the env flag on.
+       Nothing writes or surfaces the key, but an existing ``false`` is a real
+       opt-out. It defaults True when absent.
 
-    1. ``KIROCREW_MCP_APPS`` off -> disabled. Absolute kill switch, for tests,
-       the e2e harness, and an operator who wants a stubbed server's backend
-       shared without its server-authored UI.
-    2. A stored ``mcp_gateway.apps_enabled = false`` -> disabled, EVEN with the
-       env flag on. This key is retired going forward — nothing writes it, the
-       MCP Management page does not surface it, and the docs do not teach it —
-       but a released version honoured it as a trustworthy opt-out, so a config
-       that already carries ``false`` keeps its opt-out. Dropping it here would
-       silently start executing server-authored UI for the one operator who took
-       the trouble to turn it off. It defaults True when absent, so this fires
-       only on a value someone actually wrote: "not configured" is not an opt-out.
+    ``mcp_gateway.enabled`` is not checked: ``enabled: false`` yields an empty
+    stub set, so this gate never runs there.
 
-    The released gate had a third leg — it also required ``mcp_gateway.enabled``,
-    because back then the broker existed only when sharing was on. That leg is
-    deliberately gone, and it costs no released behaviour: under the current
-    migration ``enabled: false`` resolves to an EMPTY stub set, so no stub, no
-    backend, and this gate never runs for such an install.
-
-    Fails CLOSED: if config cannot be read, the feature is disabled. An
-    unreadable config in gatewayd is an abnormal state, and silently disabling an
-    optional rendering feature is the low-harm outcome versus rendering against
-    an operator preference we could not confirm.
-
-    Read per-call (``KiroCrewConfig.load`` is fingerprint-cached, so this is a
-    dict lookup in the common case) so the gateway reflects a config change
-    without a daemon restart — including a daemon this gateway merely adopted and
-    therefore cannot restart.
+    Fails CLOSED when config cannot be read. Read per call (the load is
+    fingerprint-cached) so a config change applies without a daemon restart,
+    including on an adopted daemon.
     """
     override = mcp_apps_env_override()
     if override is False:

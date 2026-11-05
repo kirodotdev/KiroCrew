@@ -918,7 +918,7 @@ class TestExternalRegistryRepos:
 
 class TestRegistryInstallAdmission:
     def _write_policy(self, home, policy):
-        (home / "app_admission.json").write_text(json.dumps(policy))
+        (home / "app_admission.json").write_text(json.dumps(policy), encoding="utf-8")
 
     @pytest.fixture()
     def reg_home(self, tmp_path, monkeypatch):

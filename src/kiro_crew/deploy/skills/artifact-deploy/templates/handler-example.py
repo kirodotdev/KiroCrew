@@ -17,6 +17,7 @@ CONTRACT (read this):
 - Stateful apps (deployed with --table): the DynamoDB table name is in
   os.environ["TABLE_NAME"]; boto3 is preinstalled in the Lambda runtime.
 """
+
 import base64
 import json
 import os  # noqa: F401  (TABLE_NAME available when deployed with --table)

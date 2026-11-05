@@ -36,14 +36,10 @@ def _stored_token_rows(monkeypatch, tmp_path):
 
 
 class TestTokenPersistenceBackfill:
-    """Regression tests for the late-backfill of slot.model before
-    persist_token_record is called from _on_complete (chat_turn/turn_stats.py).
+    """The model is read again just before persist_token_record (chat_turn/turn_stats.py).
 
-    Background: Claude Code reports its model only after the prompt is
-    dispatched (via the `init` system event). The original eager backfill
-    at the start of _run_chat reads client._model too early for CC, so
-    slot.model stays empty and tokens.jsonl records get model="". The
-    fix re-reads client._model right before persisting the token record.
+    Claude Code reports its model only after dispatch (the `init` event), so the eager
+    backfill at the start of _run_chat finds nothing.
     """
 
     @staticmethod
@@ -309,17 +305,10 @@ class TestTokenPersistenceBackfill:
 
     @pytest.mark.asyncio
     async def test_late_backfill_populates_model_for_cc_session(self, tmp_path, monkeypatch):
-        """When slot.model is empty at EVENT_COMPLETE but the provider has
-        learned its model (CC init event), persist_token_record receives the
-        provider model. slot.model stays empty: the slot pins nothing and its
-        crew pins nothing, so it inherits and the served model is not a pin.
+        """persist_token_record gets the model the provider learned late; slot.model stays empty.
 
-        The mock starts with an empty ``inner._model`` so the *early* backfill
-        at the top of _run_chat finds nothing, then mutates ``inner._model``
-        just before yielding EVENT_COMPLETE — mirroring CC reporting its
-        model only after the prompt is dispatched. This way only the *late*
-        backfill branch can populate the record's model, so removing the
-        late-backfill code would cause this test to fail.
+        ``inner._model`` is set only just before EVENT_COMPLETE, so only the late backfill
+        can fill the record.
         """
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
 
@@ -334,18 +323,9 @@ class TestTokenPersistenceBackfill:
         slot = state.get_or_create_slot("s1")
         slot.model = ""  # CC has not yet emitted init when _run_chat begins
 
-        # This simulates a claude_code session, so the backfill must run under
-        # provider=claude_code for canonicalize_for_provider to map 'opus' ->
-        # 'opus-4.8-1m'. Under the acp label the backfill (correctly) leaves a
-        # kiro/acp model unchanged.
-        #
-        # The provider label is resolved from the LIVE CLIENT's
-        # ``SessionCapabilities.provider_seam``, not from cfg.agent.provider: that
-        # field is declared enum=["acp"] and validate_config_data deletes an
-        # out-of-enum value, so no real config can ever say "claude_code" and this
-        # branch was unreachable in production while the test mocked it green. The
-        # client here is a bare AsyncMock, so it is given the claude backend's
-        # record below -- a real CC session's client resolves the same one.
+        # The backfill must run as claude_code for canonicalize_for_provider to map 'opus'
+        # -> 'opus-4.8-1m'. The label comes from the client's
+        # ``SessionCapabilities.provider_seam``: cfg.agent.provider only allows "acp".
         _cc_cfg = KiroCrewConfig()
         _cc_cfg.dashboard.merge_queued_messages = False
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.KiroCrewConfig.load", lambda: _cc_cfg)
@@ -562,8 +542,7 @@ class TestCostOnlyTurnPersistGate:
 
     @pytest.mark.asyncio
     async def test_a_cost_only_turn_persists_its_row(self, tmp_path, monkeypatch):
-        """Mutation guard: dropping the gate's ``cost_usd`` conjunct makes the
-        persist call disappear and this fail."""
+        """A turn with only ``cost_usd`` set passes the persist gate."""
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
 
         events = [LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(cost_usd=0.42))]
@@ -602,17 +581,10 @@ class TestCostOnlyTurnPersistGate:
 
 
 class TestKiroBackfillProfileGuard:
-    """Regression tests for the kiro/acp backfill must NOT store a
-    resolved Bedrock inference-profile id into slot.model.
+    """The kiro/acp backfill must NOT store a resolved Bedrock inference-profile id.
 
-    kiro-cli reports the RESOLVED profile id (e.g.
-    ``global.anthropic.claude-opus-4-8[1m]``) on ``client._model`` — not the
-    alias the user picked. Because ``canonicalize_for_provider`` is a no-op for
-    kiro, an un-guarded backfill stores that profile id verbatim and re-sends it
-    as a ``set_model`` override on every resume, pinning the slot to one
-    profile+region. When that profile is capacity-throttled the session is stuck
-    and the picker can't dislodge it. The guard drops a profile-form id for
-    non-claude_code providers so the slot re-resolves; portable aliases are kept.
+    kiro-cli reports e.g. ``global.anthropic.claude-opus-4-8[1m]``; stored, it would pin
+    the slot to one profile+region on every resume, stuck when that profile throttles.
     """
 
     @staticmethod
@@ -725,14 +697,9 @@ class TestKiroBackfillProfileGuard:
 class TestPinnedModelWithheld:
     """The slot's pin must not outlive the account's access to that model.
 
-    ``providers.acp`` withholds a configured model the live session did not
-    advertise and leaves the session on the backend default, so the turn
-    succeeds. Nothing told the slot, so the composer chip and the picker went on
-    naming a model no turn would use — the reported symptom after a plan
-    downgrade (chip read ``claude-opus-5``; every turn ran on auto). The runner
-    reports the dead pin using the same predicate the withhold uses, and carries
-    the verdict in the slots payload so the frontend reads it instead of
-    inferring it from picker-list membership.
+    ``providers.acp`` withholds a model the session did not advertise, so the chip would
+    name a model no turn uses. The runner reports the dead pin with the same predicate,
+    in the slots payload, so the frontend need not infer it from the picker list.
     """
 
     @staticmethod
@@ -911,11 +878,8 @@ class TestPinnedModelWithheld:
     def test_verdict_is_reported_only_for_the_model_it_was_computed_for(self):
         """Re-pinning must invalidate the verdict without anyone remembering to.
 
-        `slot.model` has many writers (the picker, the bulk pick, the pick
-        rollback, two restore paths, the canonical backfill). A verdict that
-        outlived a re-pin would label the NEW model with the OLD model's
-        entitlement, so the verdict is stored against the id it was computed for
-        instead of relying on each of those writers to clear it.
+        `slot.model` has many writers, so the verdict is stored against the id it was
+        computed for instead of relying on each writer to clear it.
         """
         slot = _ChatSlot("s1")
         slot.model = "claude-opus-5"
@@ -944,13 +908,8 @@ class TestPinnedModelWithheld:
     def test_every_session_teardown_drops_the_verdict(self):
         """A teardown site added later must not silently keep a dead verdict.
 
-        The drop cannot live in one chokepoint: `_reset_slot_session` is the
-        funnel for the switch handlers, but the runner tears a session down
-        directly at a turn boundary too (the deferred project-change reset, the
-        deferred conversation discard, the post-turn agent-switch reset) and
-        routing those through the funnel would also cancel pending question cards.
-        So the invariant is pinned here instead of trusting each author to
-        remember it.
+        The runner also tears sessions down outside `_reset_slot_session` (routing them
+        through it would cancel question cards), so every teardown site is pinned here.
         """
         import importlib
         from pathlib import Path
@@ -1152,12 +1111,8 @@ class TestPinnedModelWithheld:
     ):
         """The inheriting slot is the one whose chip has nothing else to name.
 
-        `slot.model == ""` takes the backfill branch (which keeps the slot
-        unpinned on purpose), so the served model must be recorded OUTSIDE the
-        pinned-verdict branch. And it must be read through the provider's public
-        `served_model` accessor: `client` is the AcpProvider wrapper, which has
-        no `_resolved_model_id` — a private-field read would store `""` forever
-        and the chip would keep saying `auto`.
+        Recorded outside the pinned-verdict branch, through the public `served_model`: the
+        AcpProvider wrapper has no `_resolved_model_id`, so a private read stores `""`.
         """
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
 
@@ -1207,16 +1162,9 @@ class TestPinnedModelWithheld:
     async def test_run_chat_records_an_entitled_pin_as_not_withheld(self, tmp_path, monkeypatch):
         """The false answer must be carried too, not just the withhold.
 
-        It is the half that stops an unrelated `/api/models` filter from acting as
-        an entitlement signal. The verdict is computed against the wire id the
-        session was actually given, so a pin the picker's list omits is still
-        reported runnable.
-
-        Asserted on a DEPRECATED pin's replacement on purpose: `api_models` drops
-        deprecated ids before the entitlement narrowing, and `_normalize_model`
-        rewrites such a pin to its replacement at turn start — so the id the
-        session (and this verdict) sees is the replacement, never the deprecated
-        spelling the slot was carrying.
+        It stops the `/api/models` filter acting as an entitlement signal. A DEPRECATED pin
+        is used on purpose: `api_models` drops it, but `_normalize_model` rewrites it to the
+        replacement the session sees, so it is still reported runnable.
         """
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
 
@@ -1269,11 +1217,8 @@ class TestPinnedModelWithheld:
     ):
         """A new session must never inherit the previous session's verdict.
 
-        A replacement can arrive without a teardown this slot saw (a reaped
-        session, a provider that re-spawned) and can advertise nothing at all --
-        a dead provider, or a backend that omits `models`. That is "not known",
-        and publishing the previous session's answer for it would label a live
-        session from an entitlement snapshot it never took.
+        A replacement can arrive without a teardown this slot saw and advertise nothing;
+        that is "not known".
         """
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
 
@@ -1324,16 +1269,9 @@ class TestPinnedModelWithheld:
     ):
         """Config going unreadable mid-turn must not abort the turn.
 
-        `cfg` is bound inside a try whose except only logs, so a later
-        `cfg.agent.provider` read would raise UnboundLocalError. A PINNED slot is
-        what exercises it: the withhold check runs only when slot.model is set, so
-        an unpinned slot never reaches the second read.
-
-        The failing load has to be the SECOND one. An earlier unguarded
-        `KiroCrewConfig.load()` (slash-command detection) would abort the turn
-        first if config were broken from the start, so the reachable shape is
-        config that loads once and then goes bad — config is read live through a
-        fingerprint cache, so an edit mid-turn does exactly that.
+        `cfg` is bound in a try whose except only logs, so a later `cfg.agent.provider` read
+        would raise UnboundLocalError. Only a PINNED slot reaches that read. The SECOND load
+        fails because an earlier unguarded `KiroCrewConfig.load()` would abort first.
         """
         from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent

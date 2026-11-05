@@ -29,7 +29,7 @@ interface ChatPaneChromeProps {
   navigate: NavigateFunction
   provider: ProviderAdapter
   setVoiceRecoverySlot: Dispatch<SetStateAction<string | null>>
-  switchSlotGone: { name: string; kind: 'gone' | 'failed'; report?: ErrorReport; } | null
+  switchSlotGone: { name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport; } | null
   titleInTopbar: boolean
   undeletableHistory: HistoryDeleteRefusal | null
   unresumableResume: { key: string; title: string; surface: string; reason: 'surface' | 'failed'; } | null

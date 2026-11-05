@@ -391,9 +391,9 @@ async def _sweep(
     reads: list[str] = []
     counts = consolidator._count_rows
 
-    def counting(key: str, floor: int | None) -> object:
+    def counting(key: str, floor: int | None, floor_generation: int | None = None) -> object:
         reads.append(key)
-        found = counts(key, floor)
+        found = counts(key, floor, floor_generation)
         if after_read is not None:
             after_read(key)
         return found
@@ -583,8 +583,8 @@ async def test_a_deleted_session_is_forgotten_once_its_count_has_ended(tmp_path)
     entered, release = threading.Event(), threading.Event()
     counts = consolidator._count_rows
 
-    def held(k: str, floor: int | None) -> object:
-        found = counts(k, floor)  # the thread has read the transcript ...
+    def held(k: str, floor: int | None, floor_generation: int | None = None) -> object:
+        found = counts(k, floor, floor_generation)  # the thread has read the transcript ...
         entered.set()
         assert release.wait(timeout=30)  # ... and returns only after the delete
         return found

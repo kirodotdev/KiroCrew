@@ -1,6 +1,6 @@
 ---
 title: Playwright CLI Migration — retire the Playwright MCP proxy for playwright-cli
-status: partial
+status: superseded
 author: Bolin Chen
 created: 2026-08-13
 last-audited: 2026-10-06
@@ -9,7 +9,7 @@ doc-pr:
 implementation-prs: [3233, 3277]
 tracking-issues: []
 supersedes: []
-superseded-by: []
+superseded-by: [rfc-browser-live-harness.md]
 ---
 
 # RFC: Migration — Playwright MCP + Kiro Crew proxy to Playwright CLI
@@ -18,14 +18,14 @@ This migration replaces the browser stack wholesale rather than adding a second
 path, because two browser backends would double the surface that already produces
 the defects it retires.
 
-> **Partly shipped — current behaviour is
-> [`../system-specs/modules/browser.md`](../system-specs/modules/browser.md).**
-> `playwright-cli` is the live browser backend and `browser_cli/` is on main. One
-> deliberate divergence from the plan below: Phase 3's removal of `browser/` did
-> **not** happen — `browser/command_bus.py` and `browser/__init__.py` remain,
-> `dashboard/handlers/messaging.py` imports the command bus, and
-> `test_browser_command_bus.py` pins it. Read the deletion table as a proposal that
-> was not carried out, not as a record of what shipped.
+> **Superseded by
+> [`rfc-browser-live-harness.md`](rfc-browser-live-harness.md).** `playwright-cli`
+> was the live browser backend from this migration until the browser live harness
+> replaced it: the agent's browser is now Browser Harness behind a gateway CDP
+> relay, shown in the chat, and `browser_cli/`'s launcher, live view, snapshot
+> retention, command bus and address-bar launcher are gone. Current behaviour is
+> [`../system-specs/modules/browser.md`](../system-specs/modules/browser.md); read
+> everything below as history.
 
 ## Why
 

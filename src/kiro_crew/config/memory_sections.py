@@ -21,6 +21,10 @@ logger = logging.getLogger("kiro_crew.config.loader")
 #: keeps its own allowance above it, so a build never outwaits the embed it joined.
 STARTUP_RECALL_TIMEOUT_MAX_SECS = 10.0
 
+#: Floor of ``memory.history_idle_hours`` on load: the same 0.5 hours the dashboard's
+#: settings write clamps to, so a hand-edited file cannot go lower.
+HISTORY_IDLE_HOURS_MIN = 0.5
+
 #: ``memory.kind_routing`` values; :mod:`kiro_crew.memory_kind_routing` says what each does.
 KIND_ROUTING_MODES = ("off", "shadow", "enforce")
 
@@ -104,6 +108,16 @@ class MemoryConfig:
             "a few seconds. 0 keeps the model loaded.",
         ),
     )
+    embedding_weight_repack: bool = field(
+        default=True,
+        metadata=_meta(
+            "Repack Embedding Model Weights",
+            "Keep a CPU-optimised second copy of the embedding model's weights, which "
+            "makes background embedding faster. Turning it off saves about 450 MB while "
+            "the model is loaded; background embedding gets slower, and new vectors differ "
+            "very slightly from ones already stored. Applies the next time the model loads.",
+        ),
+    )
     embedding_child_process: bool = field(
         default=False,
         metadata=_meta(
@@ -112,6 +126,40 @@ class MemoryConfig:
             "process, so embedding work never competes with the gateway itself. Off "
             "by default: the model runs inside the gateway. Takes effect at the next "
             "model load.",
+        ),
+    )
+    consolidation_write_child_process: bool = field(
+        default=False,
+        metadata=_meta(
+            "Run Consolidation Memory Writes in a Child Process",
+            "Run the memory writes that history consolidation makes (extracted facts, "
+            "episodes and lessons) in a separate low-priority process, so they never "
+            "compete with turn context building for the gateway's interpreter lock. "
+            "Off by default: the writes run inside the gateway. Takes effect at the "
+            "next consolidation pass.",
+        ),
+    )
+    recall_pool_processes: int = field(
+        default=0,
+        metadata=_meta(
+            "Recall Worker Processes",
+            "Number of child processes that answer the memory reads of a turn's context "
+            "(facts, episodes, lessons), so several sessions can build their context at "
+            "the same time instead of taking turns on the gateway's interpreter lock. "
+            "0 (the default) keeps those reads inside the gateway. Each process holds its "
+            "own copy of the store's search data, so it uses memory in proportion to the "
+            "store; see Recall Worker Memory Limit. If a process cannot start or fails, "
+            "the read runs in the gateway instead. Takes effect within a second.",
+        ),
+    )
+    recall_pool_worker_max_mb: int = field(
+        default=3072,
+        metadata=_meta(
+            "Recall Worker Memory Limit (MB)",
+            "Memory limit for one recall worker process. A worker is not started while "
+            "less than this is free on the host, and a worker whose resident memory "
+            "passes it after a read exits and is replaced by the next read. Only used "
+            "when Recall Worker Processes is above 0.",
         ),
     )
     embed_model_url: str = field(
@@ -631,9 +679,7 @@ class MemoryStoreConfig:
     )
     owner_member: str = field(
         default="",
-        metadata=_meta(
-            "Owner Member", "Display label of the Crew Member owning this memory store."
-        ),
+        metadata=_meta("Owner Member", "Display label of the Bot owning this memory store."),
     )
     memory_version: int = field(
         default=1,

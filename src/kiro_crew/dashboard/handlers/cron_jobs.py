@@ -21,9 +21,23 @@ from typing import Any, TypeVar
 from aiohttp import web
 
 from kiro_crew import model_registry
-from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, is_valid_timezone, parse_time_string
-from kiro_crew.cron_service.model import validate_auto_pause_after_failures
-from kiro_crew.dashboard.cron_inject import chat_folder_exists, move_cron_job_tab
+from kiro_crew.cron import (
+    CronStoreBusy,
+    CronStoreUnreadable,
+    is_valid_timezone,
+    never_fires_warning,
+    parse_time_string,
+)
+from kiro_crew.cron_service.model import (
+    validate_alert_after_failures,
+    validate_auto_pause_after_failures,
+)
+from kiro_crew.dashboard.cron_inject import (
+    chat_folder_exists,
+    chat_folder_move_refuses_store,
+    chat_folder_refuses_store,
+    move_cron_job_tab,
+)
 from kiro_crew.dashboard.cron_timeout_field import timeout_secs_from_body
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.cron_shared import (
@@ -33,6 +47,7 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _cron_unreadable_response,
     _invalid_path_id_response,
     _refuse_foreign_app_job,
+    _sel,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -268,13 +283,29 @@ async def api_cron_tools(request: web.Request) -> web.Response:
             status=400,
         )
 
+    presented_token = request.headers.get("X-Session-Token", "")
+
     def dispatch() -> str:
+        # A tool that calls back into the gateway (cron_add creating a missing
+        # folder through POST /api/cron-folders) must name the same session
+        # behind an attestation, or that route answers it as a caller it cannot
+        # name. Forward the caller's own token, and only when it verifies to the
+        # session this request was already verified as.
+        token = ""
+        if isinstance(presented_token, str) and presented_token:
+            from kiro_crew.session_token_sig import verify_session_token
+
+            if verify_session_token(presented_token) == actual:
+                token = presented_token
         # ContextVars are isolated by to_thread. Restore the prior value even
         # on failure; no caller identity survives into a later request.
         previous = current_caller()
         set_current_caller(
             CallerContext(
-                session_key=actual, session_type=actual.partition(":")[0], from_gateway=True
+                session_key=actual,
+                session_type=actual.partition(":")[0],
+                from_gateway=True,
+                session_token=token,
             )
         )
         try:
@@ -346,6 +377,70 @@ def _unknown_chat_folder_response() -> web.Response:
     )
 
 
+def _refuse_mate_home_chat_folder(
+    request: web.Request,
+    state: DashboardState,
+    chat_folder_id: str,
+    memory_store: str,
+    operation: str,
+    current_chat_folder_id: str = "",
+) -> web.Response | None:
+    """A 403 ``mate_home_locked`` when the job's tab could never be filed in *chat_folder_id*.
+
+    A mate's home and the folders inside it hold only that mate's sessions, and a
+    job's tab runs on the job's memory store: a job on any other store would be
+    saved with a folder its runs are never placed in. *current_chat_folder_id*
+    is the folder an existing job is filed in: moving its tab out of a mate's
+    home its store may not write is refused the same way. Refused here, while a
+    person is present to be told, and recorded like the routes' other denials.
+    """
+    if not chat_folder_move_refuses_store(
+        state, current_chat_folder_id, chat_folder_id, memory_store
+    ):
+        return None
+    moving_out = not chat_folder_refuses_store(state, chat_folder_id, memory_store)
+    app = _app_caller(request)
+    resources = f"chat_folder_id={chat_folder_id}"
+    if moving_out:
+        resources += f",current_chat_folder_id={current_chat_folder_id}"
+    try:
+        _sel().log_api_access(
+            caller=f"app:{app}" if app else "dashboard",
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=resources,
+            error="mate_home_locked",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+    error = (
+        "This schedule's runs are filed in a Bot's folder, and only that Bot can " "move them out."
+        if moving_out
+        else "That chat folder belongs to a Bot, so this schedule's runs cannot be "
+        "filed there. Pick another folder, or choose not to file runs."
+    )
+    return web.json_response({"error": error, "code": "mate_home_locked"}, status=403)
+
+
+def _member_store(member_id: str) -> str:
+    """The memory store a schedule bound to *member_id* runs on, or ``""``. Blocking.
+
+    ``""`` (the person's) also for a member that does not resolve: the create
+    refuses that member anyway, and ``""`` is kept out of every mate's home.
+    """
+    if not member_id:
+        return ""
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.execution_context import resolve_member_execution
+
+    try:
+        execution = resolve_member_execution(KiroCrewConfig.load(), member_id)
+    except Exception:
+        return ""
+    return execution.store.legacy_name
+
+
 class _ChatFolderGone(Exception):
     """The job's chat folder was deleted before the save could commit."""
 
@@ -374,6 +469,15 @@ async def _persist_holding_folder(
         return await persist()
 
     return await state.hold_folders(_section)
+
+
+def _with_schedule_warnings(body: dict[str, Any], job: Any) -> dict[str, Any]:
+    """Add a ``warnings`` list to a saved job's success body when its cron never fires."""
+    schedule = getattr(job, "schedule", None)
+    warning = never_fires_warning(schedule) if schedule is not None else ""
+    if warning:
+        body["warnings"] = [warning]
+    return body
 
 
 async def api_crons_create(request: web.Request) -> web.Response:
@@ -442,6 +546,11 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if timezone_val and not is_valid_timezone(timezone_val):
         safe_tz, _ = redact_credentials(redact_exfiltration_urls(timezone_val)[0])
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
+    # A "local" (or default) clock time is read in the host's zone: have it read
+    # before the clock becomes a stored instant, which nothing corrects later.
+    from kiro_crew.host_timezone import ensure_host_timezone
+
+    await ensure_host_timezone()
     at_ts, at_err = _resolve_one_shot_at(body, timezone_val)
     if at_err is not None:
         return at_err
@@ -474,6 +583,22 @@ async def api_crons_create(request: web.Request) -> web.Response:
     timeout_secs, timeout_err = timeout_secs_from_body(body)
     if timeout_err is not None:
         return timeout_err
+    # The two failure limits take the PATCH contract: checked before anything is
+    # written, so a bad value is a 400 the form can name, and ``null`` is refused
+    # rather than read as "use the default". An absent key keeps the default.
+    failure_limits: dict[str, int] = {}
+    for limit_field, validate_limit in (
+        ("auto_pause_after_failures", validate_auto_pause_after_failures),
+        ("alert_after_failures", validate_alert_after_failures),
+    ):
+        if limit_field not in body:
+            continue
+        try:
+            failure_limits[limit_field] = validate_limit(body[limit_field])
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": f"invalid_{limit_field}"}, status=400
+            )
     # Same folder_id contract as PATCH /api/crons/{id}: string or null → "",
     # anything else is a 400 so the two entry points cannot diverge.
     folder_id = body.get("folder_id", "")
@@ -527,6 +652,18 @@ async def api_crons_create(request: web.Request) -> web.Response:
     agent_id, member_id = await asyncio.to_thread(
         split_cron_agent_member, agent_id or "", member_id or ""
     )
+    # Kept out of a mate's home even as the person; the member is resolved only
+    # when the folder is in one.
+    if chat_folder_refuses_store(state, chat_folder_id, ""):
+        refused = _refuse_mate_home_chat_folder(
+            request,
+            state,
+            chat_folder_id,
+            await asyncio.to_thread(_member_store, member_id or ""),
+            "crons.create",
+        )
+        if refused is not None:
+            return refused
     add_kwargs: dict[str, Any] = {
         "channel": channel,
         "agent_id": (agent_id or ""),
@@ -554,6 +691,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         add_kwargs["enabled"] = False
     if timeout_secs is not None:
         add_kwargs["timeout_secs"] = timeout_secs
+    add_kwargs.update(failure_limits)
     # An app token's job is stamped as that app's, exactly as ``CronSDK`` stamps
     # it: without the stamp every later reader (the app's own PATCH/DELETE, the
     # cron session's scope, the disabled-app fire gate, uninstall cleanup) takes
@@ -569,8 +707,10 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # below is written once and cannot drift between the three schedule shapes.
     schedule_kwargs: dict[str, Any]
     if every:
+        from kiro_crew.dashboard.body_numbers import body_int
+
         try:
-            every = int(every)
+            every = body_int(every)
         except (ValueError, TypeError):
             return web.json_response(
                 {"error": "'every' must be an integer", "code": "invalid_every"}, status=400
@@ -616,7 +756,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
 
     # The fingerprint of the job as this write made it: a card step records it,
     # so its Undo's baseline is what the card made, not a later edit.
-    return web.json_response({"ok": True, "id": job.id, "revision": cron_job_revision(job)})
+    created: dict[str, Any] = {"ok": True, "id": job.id, "revision": cron_job_revision(job)}
+    return web.json_response(_with_schedule_warnings(created, job))
 
 
 async def api_cron_delete(request: web.Request) -> web.Response:
@@ -759,6 +900,22 @@ async def api_cron_update(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # These text fields are normalized below with ``(value or "").strip()``, so
+    # a truthy non-string would raise AttributeError there. A falsy one still
+    # reads as "" (cleared), as before.
+    for text_field, code in (
+        ("agent", "invalid_agent"),
+        ("agent_id", "invalid_agent"),
+        ("channel", "invalid_channel"),
+        ("timezone", "invalid_timezone"),
+    ):
+        if text_field == "agent_id" and "agent" in body:
+            continue  # ``agent`` wins and ``agent_id`` is never read
+        raw_text = body.get(text_field)
+        if raw_text and not isinstance(raw_text, str):
+            return web.json_response(
+                {"error": f"'{text_field}' must be a string", "code": code}, status=400
+            )
     kwargs: dict[str, Any] = {}
     for key in (
         "name",
@@ -819,6 +976,34 @@ async def api_cron_update(request: web.Request) -> web.Response:
         if chat_folder_err is not None:
             return chat_folder_err
         kwargs["chat_folder_id"] = resolved
+    # The folder the job's tab is moved to: an explicit one, or none when
+    # persistence is turned off (the store then clears a filed job's folder).
+    next_chat_folder: str | None = kwargs.get("chat_folder_id")
+    if next_chat_folder is None and "persistent_session" in kwargs:
+        next_chat_folder = "" if not kwargs["persistent_session"] else None
+    # Function-local: ``mate_folders`` reaches this module back through the folder records.
+    from kiro_crew.dashboard.mate_folders import is_mate_home
+
+    if next_chat_folder is not None and any(is_mate_home(folder) for folder in state._folders):
+        # The move may go into or out of a mate's home. A schedule's member, and so its store, is
+        # fixed once created, so the store the job already runs on decides.
+        existing = await state.crons.get_job_async(job_id)
+        # An unreadable store loads as no job, which would skip the refusal.
+        try:
+            state.crons.raise_if_store_unreadable()
+        except CronStoreUnreadable as exc:
+            return _cron_unreadable_response(exc)
+        if existing is not None:
+            refused = _refuse_mate_home_chat_folder(
+                request,
+                state,
+                next_chat_folder,
+                str(getattr(existing, "memory_store", "") or ""),
+                "crons.update",
+                current_chat_folder_id=str(getattr(existing, "chat_folder_id", "") or ""),
+            )
+            if refused is not None:
+                return refused
     if "chat_folder_id" in kwargs or "persistent_session" in kwargs:
         # Turning persistence off clears a filed job's folder in the store, so
         # that edit moves the tab through the same path an explicit clear does.
@@ -896,6 +1081,15 @@ async def api_cron_update(request: web.Request) -> web.Response:
 
         app = _app_caller(request)
         kwargs["audit_actor"] = f"app:{app}" if app else audit_actor(request, "dashboard")
+    if "alert_after_failures" in body:
+        try:
+            kwargs["alert_after_failures"] = validate_alert_after_failures(
+                body["alert_after_failures"]
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_alert_after_failures"}, status=400
+            )
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
     try:
@@ -928,7 +1122,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
             getattr(job, "chat_folder_id", ""),
         )
     state.push_refresh("crons")
-    return web.json_response({"ok": True, "id": job.id})
+    return web.json_response(_with_schedule_warnings({"ok": True, "id": job.id}, job))
 
 
 async def api_cron_enable(request: web.Request) -> web.Response:

@@ -122,7 +122,11 @@ async function main() {
     await page.waitForTimeout(11500)
     const card = page.getByTestId('tip-card').first()
     await card.waitFor({ timeout: 8000 }).catch(() => {})
-    const cardBox = await card.boundingBox().catch(() => null)
+    // A tip first shows as a one-line pill; its title button opens the card
+    // that carries the Learn more link.
+    await card.locator('button[aria-expanded="false"]').first().click().catch(() => {})
+    await page.getByTestId('tip-body').first().waitFor({ timeout: 8000 }).catch(() => {})
+    const cardBox = await page.getByTestId('tip-card').first().boundingBox().catch(() => null)
     if (!cardBox) {
       results.push({ name, ok: false, why: 'tip card never rendered' })
       await page.screenshot({ path: `${OUT}/${name}-MISSING.png` })

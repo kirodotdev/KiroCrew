@@ -47,10 +47,12 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard import responsive_chat
 from kiro_crew.dashboard.chat_delivery import (
+    CHAT_BANNER_META_KEY,
     STEER_RETRACTABLE_META,
     STEER_STATE_RETRACTED,
     STEER_STATE_WRITTEN,
     attachment_meta,
+    banner_meta,
     find_written_steer_row,
     queue_for_next_turn,
     quote_meta,
@@ -379,6 +381,11 @@ def take_back(state: "DashboardState", slot: "_ChatSlot", record: SteerRetract) 
     from kiro_crew.dashboard.chat_handlers import crew_steer_discarded, crew_steer_requeued
 
     held = dict(slot._steer_attachment_meta.get(record.message) or {})
+    # Read before `_forget` drops it: a queued take-back keeps the owner mark the
+    # steer carried, as the turn-end requeue does, and never more than the user mark.
+    owner_origin = record.directive_user_origin and bool(
+        slot._steer_owner_origin.get(record.message, False)
+    )
     _forget(slot, record.message)
     _mark_retracted(state, slot, record)
     if record.action != RETRACT_QUEUE:
@@ -392,8 +399,10 @@ def take_back(state: "DashboardState", slot: "_ChatSlot", record: SteerRetract) 
             slot,
             record.message,
             directive_user_origin=record.directive_user_origin,
+            directive_owner_origin=owner_origin,
             attachments=attachment_meta(held),
             quote=quote_meta(held).get("quote"),
+            banner=banner_meta(held).get(CHAT_BANNER_META_KEY, ""),
             admission=record.admission,
         )
         crew_steer_requeued(
@@ -412,6 +421,7 @@ def _forget(slot: "_ChatSlot", message: str) -> None:
         slot._steer_send_ids,
         slot._steer_user_origin,
         slot._steer_channel_origin,
+        slot._steer_owner_origin,
         slot._steer_admissions,
         slot._steer_attachment_meta,
         slot._steer_decision_strips,

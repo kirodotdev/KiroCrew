@@ -1,13 +1,19 @@
-"""Session-identity resolution and fallback for the ``browser`` MCP tool.
+"""The ``browser`` MCP tool: its two gates, its post, and what it tells the model.
 
-Guards the two fixes for the default-install 403:
+The tool runs in the ``kirocrew-core`` shim and posts one op to
+``/api/browser/op``. Pinned here:
 
-* an UNRESOLVED session must NOT fabricate a placeholder key and fire a
-  request the strict route is guaranteed to 403 — it must degrade to the
-  playwright-cli fallback text, exactly like the no-native-panel (503) case;
-* a RESOLVED session must POST the dashboard:-namespaced key in the
-  ``X-Session-Key`` header (what the gateway peer check compares against) and
-  the BARE slot id in the request body (what the native panel is keyed under).
+* governance (``capabilities.browse``) refuses OUTRIGHT, before any post, and
+  nothing is offered as a fallback;
+* the navigate gate refuses every non-public URL before any post, for
+  ``navigate`` and for the URL a new tab opens with alike;
+* a resolved session posts its ``dashboard:``-namespaced key in the
+  ``X-Session-Key`` header AND in the body; an unresolved one posts a
+  process-local body key and NO header (a fabricated header is refused where
+  a missing one is simply absent);
+* the gateway's refusal codes (``not_installed``, ``user_in_control``,
+  ``password_field``, ...) are rendered as the text the model acts on, and
+  no refusal ever points at another browser.
 """
 
 from __future__ import annotations
@@ -16,466 +22,509 @@ import io
 from typing import Any
 
 import pytest
-from named_cases_helpers import named_cases
 
-from kiro_crew.browser_cli import own_browser
+from kiro_crew.browser_harness import ops as harness_ops
 from kiro_crew.mcp_tools import browser as mod
 
 
 @pytest.fixture(autouse=True)
-def _browsing_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Presence of the CLI is the browse availability gate; force it on so the tool
-    # runs its body instead of the "not set up" early return.
-    monkeypatch.setattr(mod, "_browsing_available", lambda: True)
+def _tool_on(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     # The header encodability guard is orthogonal to what these tests exercise.
-    monkeypatch.setattr(mod.mcp_core, "_session_key_header_error", lambda sk: None)
+    _floor_monkeypatch.setattr(mod.mcp_core, "_session_key_header_error", lambda sk: None)
     # Default: governance permits browsing (its own deny is covered separately).
-    monkeypatch.setattr(mod.mcp_core, "_vet_browse_governance", lambda s: None)
-    # Default: the built-in-browser preference is ON (its OFF path is covered
-    # separately); otherwise every test would route to the playwright fallback.
-    monkeypatch.setattr(mod, "_use_builtin_browser", lambda: True)
-    # Host probes (is Chrome installed, does a profile carry the extension) are
-    # covered in test_own_browser; here only their placement in a reply matters.
-    monkeypatch.setattr(mod.own_browser, "next_step", lambda: _OWN_STEP)
+    _floor_monkeypatch.setattr(mod.mcp_core, "_vet_browse_governance", lambda s: None)
+    _floor_monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-1-2")
 
 
-_OWN_STEP = "<own-browser step>"
-
-
-def _capture_post(recorder: list[tuple[str, str, dict, str, int]], status: int, payload: dict):
+def _capture_post(recorder: list[tuple[str, str, dict, str, float]], status: int, payload: dict):
     def _fake(
-        bus_key: str, op: str, args: dict, session_header: str, timeout_ms: int
+        session_key: str, op: str, args: dict, session_header: str, timeout_s: float
     ) -> tuple[int, dict]:
-        recorder.append((bus_key, op, args, session_header, timeout_ms))
+        recorder.append((session_key, op, args, session_header, timeout_s))
         return status, payload
 
     return _fake
 
 
-def test_unresolved_session_falls_back_without_posting(
+def _must_not_post(*_a: Any, **_k: Any) -> tuple[int, dict]:
+    raise AssertionError("must not POST")
+
+
+def _ok(result: dict) -> dict:
+    return {"ok": True, "result": {"ok": True, **result}}
+
+
+# --- the advertisement -------------------------------------------------------
+
+
+def test_schema_advertises_every_op_the_gateway_serves() -> None:
+    (desc,) = mod.schemas()
+    assert desc["name"] == "browser"
+    assert tuple(desc["inputSchema"]["properties"]["op"]["enum"]) == harness_ops.OPS
+    assert mod.BROWSER_OPS == harness_ops.OPS
+    text = desc["description"]
+    # The three things the model must know without reading a skill.
+    assert "password" in text
+    assert "waits until they hand it back" in text  # the hold, not a user_in_control refusal
+    assert "Settings -> Browser" in text
+    assert "playwright" not in text.lower()
+
+
+def test_handlers_and_schemas_agree() -> None:
+    assert set(mod.HANDLERS) == {d["name"] for d in mod.schemas()}
+
+
+# --- the session identity ----------------------------------------------------
+
+
+def test_resolved_session_posts_the_key_in_header_and_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[tuple[str, str, dict, str, float]] = []
+    monkeypatch.setattr(mod, "_post_command", _capture_post(sent, 200, _ok({"title": "T"})))
+    out = mod.browser("browser", {"op": "snapshot"})
+    assert out.startswith("Browser snapshot")
+    ((body_key, op, args, header, timeout),) = sent
+    assert body_key == "dashboard:chat-1-2"
+    assert header == "dashboard:chat-1-2"
+    assert (op, args) == ("snapshot", {})
+    assert timeout == mod.FAST_COMMAND_TIMEOUT_SECS
+
+
+def test_unresolved_session_posts_a_local_key_and_no_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "")
+    sent: list[tuple[str, str, dict, str, float]] = []
+    monkeypatch.setattr(mod, "_post_command", _capture_post(sent, 200, _ok({})))
+    out = mod.browser("browser", {"op": "console"})
+    assert out == "Browser console: ok"
+    ((body_key, _op, _args, header, _t),) = sent
+    assert body_key.startswith("anonymous:")
+    assert header == ""
 
-    def _must_not_post(*_a: Any, **_k: Any) -> tuple[int, dict]:
-        raise AssertionError("must not POST when the session is unresolved")
 
+def test_header_encodability_error_is_surfaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mod.mcp_core, "_session_key_header_error", lambda sk: "bad header")
     monkeypatch.setattr(mod, "_post_command", _must_not_post)
-
-    out = mod.browser("browser", {"op": "navigate", "args": {"url": "https://example.com"}})
-    assert out == f"{mod._FALLBACK_TEXT} {_OWN_STEP}"
+    assert mod.browser("browser", {"op": "snapshot"}) == "Error: bad header"
 
 
-def test_resolved_session_posts_namespaced_header_and_bare_bus_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1786752973")
-    calls: list[tuple[str, str, dict, str]] = []
-    monkeypatch.setattr(
-        mod, "_post_command", _capture_post(calls, 200, {"ok": True, "result": "ok"})
-    )
-
-    out = mod.browser("browser", {"op": "navigate", "args": {"url": "https://example.com"}})
-
-    assert len(calls) == 1
-    bus_key, op, args, session_header, timeout_ms = calls[0]
-    assert session_header == "dashboard:chat-7-1786752973"  # namespaced -> header
-    assert bus_key == "chat-7-1786752973"  # bare slot id -> body
-    assert op == "navigate"
-    assert args == {"url": "https://example.com"}
-    assert timeout_ms == 60000  # navigate is a slow op -> longer ceiling
-    assert out.startswith("Browser navigate:")
+def test_slow_ops_get_the_long_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[tuple[str, str, dict, str, float]] = []
+    monkeypatch.setattr(mod, "_post_command", _capture_post(sent, 200, _ok({})))
+    mod.browser("browser", {"op": "navigate", "args": {"url": "https://example.com"}})
+    mod.browser("browser", {"op": "wait_for", "args": {"time": 1}})
+    mod.browser("browser", {"op": "click", "args": {"ref": "e1"}})
+    assert [s[4] for s in sent] == [
+        mod.SLOW_COMMAND_TIMEOUT_SECS,
+        mod.SLOW_COMMAND_TIMEOUT_SECS,
+        mod.FAST_COMMAND_TIMEOUT_SECS,
+    ]
 
 
-def test_bus_key_left_as_is_when_not_namespaced(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "chat-9-1786000000")
-    calls: list[tuple[str, str, dict, str]] = []
-    monkeypatch.setattr(
-        mod, "_post_command", _capture_post(calls, 200, {"ok": True, "result": "ok"})
-    )
-
-    mod.browser("browser", {"op": "snapshot"})
-
-    bus_key, _op, _args, session_header, timeout_ms = calls[0]
-    assert bus_key == "chat-9-1786000000"
-    assert session_header == "chat-9-1786000000"
-    assert timeout_ms == 15000  # non-slow op -> default ceiling
+# --- governance --------------------------------------------------------------
 
 
-def test_no_native_panel_503_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1786752973")
-    monkeypatch.setattr(mod, "_post_command", _capture_post([], 503, {"code": "no_native_panel"}))
-
-    out = mod.browser("browser", {"op": "navigate", "args": {"url": "https://example.com"}})
-    assert out == f"{mod._FALLBACK_TEXT} {_OWN_STEP}"
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://127.0.0.1:5476/api/spawn",  # loopback control plane
-        "http://localhost:8080/",  # loopback name
-        "http://169.254.169.254/latest/meta-data/",  # cloud metadata (IMDS)
-        "http://10.0.0.5/",  # RFC1918 private
-        "http://192.168.1.1/",  # RFC1918 private
-        "file:///etc/passwd",  # non-http scheme
-        "http://[::1]/",  # IPv6 loopback
-    ],
-)
-def test_navigate_to_non_public_target_is_refused_without_posting(
-    monkeypatch: pytest.MonkeyPatch, url: str
-) -> None:
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
-
-    def _must_not_post(*_a: Any, **_k: Any) -> tuple[int, dict]:
-        raise AssertionError("must not POST a non-public navigate target")
-
+def test_governance_deny_refuses_without_posting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mod.mcp_core, "_vet_browse_governance", lambda s: "browsing is disabled")
     monkeypatch.setattr(mod, "_post_command", _must_not_post)
-
-    out = mod.browser("browser", {"op": "navigate", "args": {"url": url}})
-    assert out.startswith("Error: the browser tool only opens public http(s) URLs")
-
-
-def test_navigate_classifier_accepts_public_and_rejects_local() -> None:
-    assert mod._navigate_target_is_public("https://example.com/path?q=1") is True
-    assert mod._navigate_target_is_public("http://8.8.8.8/") is True
-    assert mod._navigate_target_is_public("http://127.0.0.1/") is False
-    assert mod._navigate_target_is_public("http://169.254.169.254/") is False
-    assert mod._navigate_target_is_public("http://localhost/") is False
-    assert mod._navigate_target_is_public("ftp://example.com/") is False
-
-
-def test_navigate_classifier_rejects_alternate_ip_encodings() -> None:
-    # 2852039166 == 0xa9fea9fe == 169.254.169.254 (IMDS); Chromium would
-    # normalize these, so the gate must canonicalize before classifying.
-    assert mod._navigate_target_is_public("http://2852039166/latest/meta-data/") is False
-    assert mod._navigate_target_is_public("http://0xa9fea9fe/") is False
-    assert mod._navigate_target_is_public("http://0x7f000001/") is False  # 127.0.0.1
-    assert mod._navigate_target_is_public("http://2130706433/") is False  # 127.0.0.1
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        *named_cases(
-            "test_navigate_classifier_rejects_percent_encoded_hosts",
-            "url",
-            [
-                "http://%31%32%37.0.0.1:8080/",  # 127.0.0.1
-                "http://%31%36%39.254.169.254/",  # IMDS
-                "http://loc%61lhost/",
-                "http://%4C%4F%43%41%4C%48%4F%53%54/",  # LOCALHOST
-                "http://foo.loc%61lhost/",
-                "http://loc%61lhost%2e/",  # trailing dot
-                "http://127.0.0.1%2e/",  # trailing dot
-                "http://0x7f%30%30%30001/",  # hex 127.0.0.1
-                "http://%32130706433/",  # decimal 127.0.0.1
-                "http://%31%32%37.1/",  # short 127.1
-                "http://%2531%32%37.0.0.1/",  # double-encoded: a '%' survives one decode
-                "http://%ff127.0.0.1/",  # not UTF-8
-                "http://%e2%91%a027.0.0.1/",  # circled digit one
-                "http://%ef%bc%91%ef%bc%92%ef%bc%97.0.0.1/",  # fullwidth digits
-                "http://127%e3%80%820%e3%80%820%e3%80%821/",  # ideographic full stop
-                "http://127.0.0.1%40example.com/",  # '@' after decode
-                "http://169.254.169.254%2f.example.com/",  # '/' after decode
-                "http://127.0.0.1%3a80/",  # ':' after decode
-                "http://a@loc%61lhost/",  # userinfo
-            ],
-        ),
-        *named_cases(
-            "test_navigate_classifier_rejects_raw_non_ascii_private_hosts",
-            "url",
-            [
-                "http://１２７.０.０.１/",  # fullwidth digits
-                "http://ｌｏｃａｌｈｏｓｔ/",  # fullwidth letters
-                "http://①27.0.0.1/",  # circled digit one
-                "http://ⓛocalhost/",  # circled letter
-                "http://127。0。0。1/",  # ideographic full stop
-            ],
-        ),
-    ],
-)
-def test_navigate_classifier_rejects_a_disguised_private_host(url: str) -> None:
-    # urlsplit leaves the host percent-encoded; the browser decodes it.
-    assert mod._navigate_target_is_public(url) is False
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://example%2ecom/",
-        "https://ex%41mple.com/",
-        "https://example.com/path?q=%2F",
-        "https://xn--bcher-kva.example/",
-        "http://[2606:4700::1111%25eth0]/",
-    ],
-)
-def test_navigate_classifier_keeps_percent_encoded_public_hosts(url: str) -> None:
-    assert mod._navigate_target_is_public(url) is True
-
-
-def test_navigate_percent_encoded_loopback_is_refused_without_posting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
-
-    def _must_not_post(*_a: Any, **_k: Any) -> tuple[int, dict]:
-        raise AssertionError("must not POST a percent-encoded loopback target")
-
-    monkeypatch.setattr(mod, "_post_command", _must_not_post)
-
-    out = mod.browser(
-        "browser", {"op": "navigate", "args": {"url": "http://%31%32%37.0.0.1:8080/"}}
-    )
-    assert out.startswith("Error: the browser tool only opens public http(s) URLs")
-
-
-def test_governance_deny_refuses_without_fallback_or_posting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # A governance deny must refuse outright — NOT fall back to playwright-cli
-    # (that would let browsing continue) and NOT POST to the bus.
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
-    monkeypatch.setattr(
-        mod.mcp_core,
-        "_vet_browse_governance",
-        lambda s: "web browsing is disabled by governance policy",
-    )
-
-    def _must_not_post(*_a: Any, **_k: Any) -> tuple[int, dict]:
-        raise AssertionError("must not POST when browsing is denied by policy")
-
-    monkeypatch.setattr(mod, "_post_command", _must_not_post)
-
     out = mod.browser("browser", {"op": "navigate", "args": {"url": "https://example.com"}})
-    assert out.startswith("Error: web browsing is disabled by governance policy")
-    assert not out.startswith(mod._FALLBACK_TEXT)  # not the playwright downgrade
+    assert out == "Error: browsing is disabled"
 
 
-def test_builtin_off_falls_back_to_playwright_without_posting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # With the built-in-browser preference OFF, browsing is still allowed (unlike
-    # a governance deny) -- the tool returns the dedicated built-in-off message
-    # (naming the setting, not a missing panel) and never touches the native panel.
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
-    monkeypatch.setattr(mod, "_use_builtin_browser", lambda: False)
+def test_governance_runs_before_argument_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A denied caller learns nothing about which ops exist."""
+    monkeypatch.setattr(mod.mcp_core, "_vet_browse_governance", lambda s: "denied")
+    assert mod.browser("browser", {"op": "nonsense"}) == "Error: denied"
 
-    def _must_not_post(*_a: Any, **_k: Any) -> tuple[int, dict]:
-        raise AssertionError("must not POST when the built-in browser is off")
 
+# --- argument validation -----------------------------------------------------
+
+
+def test_unknown_op_and_non_object_args_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "_post_command", _must_not_post)
-
-    out = mod.browser("browser", {"op": "navigate", "args": {"url": "https://example.com"}})
-    assert out == f"{mod._DISABLED_TEXT} {_OWN_STEP}"
-    assert "turned off in Settings" in out
-
-
-def test_governance_deny_wins_over_builtin_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Pins the ordering invariant: a governance DENY must win even when the
-    # built-in-browser preference is OFF. If the OFF short-circuit ever moved
-    # ahead of the governance gate, a denied session would get _FALLBACK_TEXT and
-    # keep browsing via playwright -- exactly the control the ordering protects.
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
-    monkeypatch.setattr(
-        mod.mcp_core,
-        "_vet_browse_governance",
-        lambda s: "web browsing is disabled by governance policy",
+    assert mod.browser("browser", {"op": "evaluate"}).startswith("Error: op must be one of")
+    assert (
+        mod.browser("browser", {"op": "click", "args": "e1"}) == "Error: args must be a JSON object"
     )
-    monkeypatch.setattr(mod, "_use_builtin_browser", lambda: False)
-
-    def _deny_post(*_a: Any, **_k: Any) -> tuple[int, dict]:
-        raise AssertionError("must not POST when browsing is governance-denied")
-
-    monkeypatch.setattr(mod, "_post_command", _deny_post)
-
-    out = mod.browser("browser", {"op": "navigate", "args": {"url": "https://example.com"}})
-    assert out.startswith("Error: web browsing is disabled by governance policy")
-    assert not out.startswith(mod._FALLBACK_TEXT)
-
-
-def test_navigate_classifier_rejects_parser_differential_hosts() -> None:
-    # urlsplit vs Chromium disagree on the authority when a backslash / control
-    # char is present; reject before parsing.
-    assert mod._navigate_target_is_public("http://169.254.169.254\\@example.com/") is False
-    assert mod._navigate_target_is_public("http://example.com\\@169.254.169.254/") is False
-    assert mod._navigate_target_is_public("http://example.com\t@169.254.169.254/") is False
-    assert mod._navigate_target_is_public("http://exa mple.com/") is False
-    assert mod._navigate_target_is_public("https://example.com/") is True
 
 
 def test_object_valued_arg_is_rejected_without_posting(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
-
-    def _must_not_post(*_a: Any, **_k: Any) -> tuple[int, dict]:
-        raise AssertionError("must not POST a non-scalar arg")
-
     monkeypatch.setattr(mod, "_post_command", _must_not_post)
-
-    out = mod.browser("browser", {"op": "type", "args": {"ref": "e5", "text": {"nested": 1}}})
-    assert out.startswith("Error: args values must be")
-
-
-def test_screenshot_result_is_not_a_truncated_blob() -> None:
-    # A base64 image would be corrupted by the length cap; screenshot returns a
-    # safe confirmation instead, never a sliced blob.
-    out = mod._result_text("screenshot", "data:image/png;base64," + "A" * 5000)
-    assert "captured" in out
-    assert "AAAA" not in out
+    out = mod.browser("browser", {"op": "type", "args": {"ref": "e1", "text": {"a": 1}}})
+    assert out.startswith("Error: args values must be strings")
 
 
-def test_result_text_renders_and_redacts_non_screenshot() -> None:
-    assert mod._result_text("snapshot", None) == "Browser snapshot: ok"
-    assert mod._result_text("snapshot", "hello") == "Browser snapshot: hello"
+def test_list_of_scalars_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[tuple[str, str, dict, str, float]] = []
+    monkeypatch.setattr(mod, "_post_command", _capture_post(sent, 200, _ok({"selected": ["a"]})))
+    out = mod.browser("browser", {"op": "select_option", "args": {"ref": "e1", "values": ["a"]}})
+    assert out == 'Browser select_option: {"selected": ["a"]}'
 
 
-def test_schemas_always_advertises_the_tool(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Always advertised (registry invariant): even when browsing is not set up,
-    # the descriptor is present; browser() degrades at call time instead.
-    monkeypatch.setattr(mod, "_browsing_available", lambda: True)
-    assert mod.schemas()[0]["name"] == "browser"
-    monkeypatch.setattr(mod, "_browsing_available", lambda: False)
-    assert mod.schemas()[0]["name"] == "browser"
+# --- the navigate gate -------------------------------------------------------
 
 
-@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
-def test_description_names_the_attach_command_for_this_host(
-    monkeypatch: pytest.MonkeyPatch, platform: str
+def test_navigate_to_non_public_target_is_refused_without_posting(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The POSIX `NAME=value cmd` prefix sets nothing in PowerShell, so a Windows
-    # host must be told the form that does.
-    monkeypatch.setattr(own_browser.sys, "platform", platform)
-    description = mod.schemas()[0]["description"]
-    assert own_browser.attach_command(platform) in description
-    if platform == "win32":
-        assert own_browser.ATTACH_COMMAND not in description
+    monkeypatch.setattr(mod, "_post_command", _must_not_post)
+    monkeypatch.setattr(mod, "_allowed_local_origins", lambda: frozenset())
+    for url in ("http://localhost:5476/", "http://169.254.169.254/", "file:///etc/passwd", 5):
+        out = mod.browser("browser", {"op": "navigate", "args": {"url": url}})
+        assert out == mod._URL_GATE_TEXT, url
+    assert "playwright" not in mod._URL_GATE_TEXT
 
 
-def test_browsing_not_set_up_degrades_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mod, "_browsing_available", lambda: False)
-    out = mod.browser("browser", {"op": "snapshot"})
-    assert out.startswith("Error: browsing is not set up")
+def test_new_tab_url_runs_through_the_same_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mod, "_allowed_local_origins", lambda: frozenset())
+    monkeypatch.setattr(mod, "_post_command", _must_not_post)
+    out = mod.browser(
+        "browser", {"op": "tabs", "args": {"action": "new", "url": "http://127.0.0.1:9/"}}
+    )
+    assert out == mod._URL_GATE_TEXT
+    sent: list[tuple[str, str, dict, str, float]] = []
+    monkeypatch.setattr(mod, "_post_command", _capture_post(sent, 200, _ok({"target_id": "T1"})))
+    mod.browser("browser", {"op": "tabs", "args": {"action": "new", "url": "https://example.com"}})
+    mod.browser("browser", {"op": "tabs", "args": {"action": "new"}})  # about:blank: no URL to gate
+    mod.browser("browser", {"op": "tabs", "args": {"action": "list"}})
+    assert [s[1] for s in sent] == ["tabs", "tabs", "tabs"]
 
 
-def test_op_ran_but_failed_surfaces_the_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
+def test_navigate_classifier_accepts_public_and_rejects_local() -> None:
+    assert mod._navigate_target_is_public("https://example.com/path")
+    assert mod._navigate_target_is_public("http://93.184.216.34/")
+    for url in (
+        "http://localhost:5476/",
+        "http://127.0.0.1:5476/",
+        "http://[::1]:5476/",
+        "http://10.0.0.5/",
+        "http://192.168.1.1/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://100.64.0.1/",
+        "http://0.0.0.0/",
+        "http://app.localhost/",
+        "ftp://example.com/",
+        "javascript:alert(1)",
+        "",
+    ):
+        assert not mod._navigate_target_is_public(url), url
+
+
+def test_navigate_classifier_rejects_alternate_ip_encodings() -> None:
+    for url in (
+        "http://2130706433/",  # decimal 127.0.0.1
+        "http://0x7f000001/",  # hex
+        "http://0177.0.0.1/",  # octal
+        "http://127.1/",  # short form
+        "http://[::ffff:127.0.0.1]/",  # IPv6-mapped
+        "http://[::ffff:7f00:1]/",
+        "http://0xa9.0xfe.0xa9.0xfe/",  # IMDS in hex
+        "http://2852039166/",  # IMDS decimal
+    ):
+        assert not mod._navigate_target_is_public(url), url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://%31%32%37.0.0.1/",
+        "http://loc%61lhost/",
+        "http://%5b::1%5d/",
+        "http://127.0.0.1%2e/",
+    ],
+)
+def test_navigate_classifier_rejects_percent_encoded_hosts(url: str) -> None:
+    assert not mod._navigate_target_is_public(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://１２７.0.0.1/", "http://ｌocalhost/", "http://xn--localhost/"],
+)
+def test_navigate_classifier_rejects_raw_non_ascii_private_hosts(url: str) -> None:
+    # xn--localhost is punycode for a name that is NOT localhost -- but the
+    # fullwidth forms must be refused; the ASCII punycode spelling of a real IDN
+    # site stays admitted (covered below).
+    if url == "http://xn--localhost/":
+        assert mod._navigate_target_is_public(url)
+    else:
+        assert not mod._navigate_target_is_public(url)
+
+
+@pytest.mark.parametrize("url", ["http://ex%61mple.com/", "http://xn--bcher-kva.example/"])
+def test_navigate_classifier_keeps_percent_encoded_public_hosts(url: str) -> None:
+    assert mod._navigate_target_is_public(url)
+
+
+def test_navigate_classifier_rejects_parser_differential_hosts() -> None:
+    for url in (
+        "http://169.254.169.254\\@example.com/",
+        "http://example.com\t/",
+        "http://exam ple.com/",
+        "http://example.com\n/",
+    ):
+        assert not mod._navigate_target_is_public(url), repr(url)
+
+
+# --- the gateway's answers ---------------------------------------------------
+
+
+def test_not_installed_tells_the_user_where_to_install(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        mod, "_post_command", _capture_post([], 200, {"ok": False, "error": "boom"})
+        mod,
+        "_post_command",
+        _capture_post([], 200, {"ok": False, "code": "not_installed", "error": "x"}),
     )
     out = mod.browser("browser", {"op": "snapshot"})
-    assert out == "Error: boom"
+    assert out == mod._NOT_INSTALLED_TEXT
+    assert "Settings -> Browser" in out
+    assert "playwright" not in out.lower()
 
 
-def test_hard_non_200_is_surfaced_not_masked_as_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
+class _Clock:
+    """``mcp_core.time`` stand-in: monotonic advances only when the test says so."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+_HELD = {"ok": False, "code": "user_in_control", "error": "held", "hold": True}
+
+
+def _parked(monkeypatch: pytest.MonkeyPatch, clock: _Clock, answers: list[tuple[int, dict]]):
+    """Park a ``click`` behind a held browser; ``answers`` feed the hand-back polls."""
+    monkeypatch.setattr(mod.mcp_core, "time", clock)
+    posts: list[tuple[str, dict]] = []
+    ops: list[tuple[str, dict]] = []
+
+    def fake_handback(session_key: str, header: str, timeout_s: float) -> tuple[int, dict]:
+        posts.append((mod.HANDBACK_PATH, {"session_key": session_key}))
+        assert timeout_s == mod.budgets.HANDBACK_CALL_TIMEOUT_S
+        return answers.pop(0) if answers else (200, {"released": False})
+
+    monkeypatch.setattr(mod, "_post_handback", fake_handback)
+    keepalives: list[str] = []
     monkeypatch.setattr(
-        mod, "_post_command", _capture_post([], 429, {"code": "queue_full", "error": "queue-full"})
+        mod.mcp_core, "_post", lambda path, body, **kw: keepalives.append(path) or {}
+    )
+    first = [(200, _HELD)]
+
+    def fake_cmd(session_key: str, op: str, args: dict, header: str, timeout_s: float):
+        ops.append((op, args))
+        return first.pop(0) if first else (200, _ok({"x": 1, "y": 2}))
+
+    monkeypatch.setattr(mod, "_post_command", fake_cmd)
+    result = mod.browser("browser", {"op": "click", "args": {"x": 1, "y": 2}})
+    assert isinstance(result, mod.DeferredTool), "a held op parks the tool, it does not fail"
+    return result, posts, ops, keepalives
+
+
+def test_a_held_op_parks_polls_the_hand_back_and_then_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Manus-style flow: the person takes over, the tool waits in short slices
+    (no blocking call, the one worker thread stays free), and on the hand-back the
+    op is posted again and runs as if nothing happened."""
+    clock = _Clock()
+    parked, posts, ops, keepalives = _parked(
+        monkeypatch, clock, [(200, {"released": False}), (200, {"released": True})]
+    )
+    assert parked.due_at() <= clock.monotonic()
+    assert parked.step() is None  # still held
+    assert posts == [(mod.HANDBACK_PATH, {"session_key": "dashboard:chat-1-2"})]
+    assert parked.due_at() == clock.monotonic() + mod.budgets.HANDBACK_POLL_S
+    clock.sleep(mod.budgets.HANDBACK_POLL_S)
+    text = parked.step()  # released: the op runs
+    assert text is not None and text.startswith("Browser click:")
+    assert ops == [("click", {"x": 1, "y": 2}), ("click", {"x": 1, "y": 2})]
+    assert keepalives == [], "no keepalive needed within the first 30 s"
+
+
+def test_a_long_hold_pings_the_session_keepalive_and_gives_up_at_the_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each slice past ``HOLD_KEEPALIVE_SECS`` pings the keepalive so the ACP
+    tool-stall watchdog (600 s of silence) never ends the turn; at
+    ``HOLD_TIMEOUT_S`` the agent is told the person still has the browser."""
+    clock = _Clock()
+    parked, posts, ops, keepalives = _parked(monkeypatch, clock, [])
+    steps = 0
+    while (text := parked.step()) is None:
+        steps += 1
+        clock.sleep(mod.budgets.HANDBACK_POLL_S)
+        assert steps < 10_000
+    assert "user_in_control" in text and "10 minutes" in text and "end your turn" in text
+    assert clock.monotonic() - 1000.0 >= mod.budgets.HOLD_TIMEOUT_S
+    assert len(keepalives) >= int(mod.budgets.HOLD_TIMEOUT_S // mod.HOLD_KEEPALIVE_SECS) - 1
+    assert all(path == mod.KEEPALIVE_PATH for path in keepalives)
+    assert ops == [("click", {"x": 1, "y": 2})], "the op is not re-posted while held"
+
+
+def test_an_interrupted_op_is_not_re_run_after_the_hand_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The person took over mid-op: whether it landed is unknown, so after the
+    hand-back the agent is told to look, never handed a blind repeat."""
+    clock = _Clock()
+    monkeypatch.setattr(mod.mcp_core, "time", clock)
+    monkeypatch.setattr(mod.mcp_core, "_post", lambda *a, **k: {})
+    monkeypatch.setattr(mod, "_post_handback", lambda *a, **k: (200, {"released": True}))
+    ops: list[str] = []
+
+    def fake_cmd(session_key, op, args, header, timeout_s):
+        ops.append(op)
+        return 200, {
+            "ok": False,
+            "code": "interrupted",
+            "error": "took over mid `type`",
+            "hold": True,
+        }
+
+    monkeypatch.setattr(mod, "_post_command", fake_cmd)
+    parked = mod.browser("browser", {"op": "type", "args": {"text": "hi"}})
+    assert isinstance(parked, mod.DeferredTool)
+    text = parked.step()
+    assert text is not None and text.startswith("Error (interrupted)") and "mid `type`" in text
+    assert ops == ["type"], "posted once; never repeated"
+
+
+def test_user_in_control_without_hold_is_the_bounded_wait_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain ``user_in_control`` (no ``hold``) is the end of the wait: the text
+    tells the agent to stop and wait for the person's word, not to retry."""
+    monkeypatch.setattr(
+        mod,
+        "_post_command",
+        _capture_post([], 200, {"ok": False, "code": "user_in_control", "error": "held"}),
+    )
+    out = mod.browser("browser", {"op": "click", "args": {"x": 1, "y": 1}})
+    assert isinstance(out, str) and out.startswith("Error: user_in_control")
+    assert "Do not retry in a loop" in out and "end your turn" in out
+
+
+def test_other_refusals_carry_their_code_and_redacted_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "ok": False,
+        "code": "password_field",
+        "error": "e3 is a password field; AKIAIOSFODNN7EXAMPLE leaked",
+    }
+    monkeypatch.setattr(mod, "_post_command", _capture_post([], 200, payload))
+    out = mod.browser("browser", {"op": "type", "args": {"ref": "e3", "text": "x"}})
+    assert out.startswith("Error (password_field): e3 is a password field")
+    assert "AKIAIOSFODNN7EXAMPLE" not in out
+
+
+def test_transport_failure_names_the_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mod, "_post_command", lambda *a, **k: (None, {}))
+    out = mod.browser("browser", {"op": "snapshot"})
+    assert out.startswith("Error: the gateway did not answer")
+
+
+def test_hard_non_200_is_surfaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        mod, "_post_command", _capture_post([], 403, {"code": "loopback_only", "error": "no"})
     )
     out = mod.browser("browser", {"op": "snapshot"})
-    assert out.startswith("Error: browser command failed (HTTP 429, queue_full)")
+    assert out == "Error: browser op failed (HTTP 403, loopback_only): no"
 
 
-class _FakeResp:
-    def __init__(self, status: int, body: bytes) -> None:
-        self.status = status
-        self._body = body
+# --- result rendering --------------------------------------------------------
 
-    def __enter__(self):
+
+def test_screenshot_result_is_the_path_and_how_to_show_it() -> None:
+    out = mod._result_text("screenshot", {"ok": True, "path": "/tmp/shots/a.png"})
+    assert out.splitlines() == [
+        "Browser screenshot saved: /tmp/shots/a.png",
+        "Show it with ![screenshot](/tmp/shots/a.png)",
+    ]
+
+
+def test_snapshot_result_renders_the_outline_and_redacts() -> None:
+    result = {
+        "ok": True,
+        "url": "https://example.com/",
+        "title": "Example",
+        "snapshot": '- link "Home" [ref=e1]\n- textbox "AKIAIOSFODNN7EXAMPLE" [ref=e2]',
+    }
+    out = mod._result_text("snapshot", result)
+    assert out.startswith("Browser snapshot of https://example.com/ -- Example\n- link")
+    assert "AKIAIOSFODNN7EXAMPLE" not in out
+
+
+def test_generic_result_drops_ok_and_nulls() -> None:
+    assert mod._result_text("click", {"ok": True, "x": 1.0, "y": 2.0, "ref": None}) == (
+        'Browser click: {"x": 1.0, "y": 2.0}'
+    )
+    assert mod._result_text("back", {"ok": True}) == "Browser back: ok"
+    assert mod._result_text("back", None) == "Browser back: ok"
+
+
+# --- the post itself ---------------------------------------------------------
+
+
+class _Resp(io.BytesIO):
+    status = 200
+
+    def __enter__(self) -> "_Resp":
         return self
 
-    def __exit__(self, *_a):
-        return False
-
-    def read(self) -> bytes:
-        return self._body
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
 
-def test_post_command_parses_success_and_transport_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mod.mcp_core, "_api_base", lambda: "http://127.0.0.1:9")
-    monkeypatch.setattr(mod.mcp_core, "_internal_secret", lambda: "sekret")
+def test_post_command_sends_the_header_pair_only_when_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
 
-    # 200 success -> (status, parsed body)
-    monkeypatch.setattr(
-        mod.mcp_core, "_api_urlopen", lambda req, timeout: _FakeResp(200, b'{"ok": true}')
+    def _urlopen(req: Any, timeout: float) -> _Resp:
+        seen.append((req, timeout))
+        return _Resp(b'{"ok": true, "result": {"ok": true}}')
+
+    monkeypatch.setattr(mod.mcp_core, "_api_base", lambda: "http://127.0.0.1:1")
+    monkeypatch.setattr(mod.mcp_core, "_internal_secret", lambda: "s3cret")
+    monkeypatch.setattr(mod.mcp_core, "_session_token_header", lambda: {"X-Session-Token": "tok"})
+    monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _urlopen)
+
+    status, body = mod._post_command(
+        "dashboard:chat-1-2", "snapshot", {}, "dashboard:chat-1-2", 7.0
     )
-    status, payload = mod._post_command("chat-1", "snapshot", {}, "dashboard:chat-1", 15000)
-    assert status == 200 and payload == {"ok": True}
+    assert (status, body) == (200, {"ok": True, "result": {"ok": True}})
+    req, timeout = seen[-1]
+    assert timeout == 7.0
+    assert req.full_url == "http://127.0.0.1:1/api/browser/op"
+    assert req.get_header("X-internal-secret") == "s3cret"
+    assert req.get_header("X-session-key") == "dashboard:chat-1-2"
+    assert req.get_header("X-session-token") == "tok"
 
-    # HTTPError -> (code, parsed-or-empty)
-    def _raise_http(req, timeout):
-        raise mod.urllib.error.HTTPError(
-            "u", 503, "x", None, io.BytesIO(b'{"code":"no_native_panel"}')
+    mod._post_command("anonymous:7", "snapshot", {}, "", 7.0)
+    req, _ = seen[-1]
+    assert req.get_header("X-session-key") is None
+    assert req.get_header("X-session-token") is None
+
+
+def test_post_command_maps_transport_errors_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.error
+
+    def _refused(req: Any, timeout: float) -> _Resp:
+        raise urllib.error.URLError("refused")
+
+    monkeypatch.setattr(mod.mcp_core, "_api_base", lambda: "http://127.0.0.1:1")
+    monkeypatch.setattr(mod.mcp_core, "_internal_secret", lambda: "s")
+    monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _refused)
+    assert mod._post_command("k", "snapshot", {}, "", 1.0) == (None, {})
+
+    def _http_error(req: Any, timeout: float) -> _Resp:
+        raise urllib.error.HTTPError(
+            req.full_url, 403, "forbidden", {}, io.BytesIO(b'{"code":"x"}')
         )
 
-    monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _raise_http)
-    status, payload = mod._post_command("chat-1", "snapshot", {}, "dashboard:chat-1", 15000)
-    assert status == 503 and payload.get("code") == "no_native_panel"
-
-    # URLError -> (None, {})  [connection failure == no native panel here]
-    def _raise_url(req, timeout):
-        raise mod.urllib.error.URLError("refused")
-
-    monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _raise_url)
-    status, payload = mod._post_command("chat-1", "snapshot", {}, "dashboard:chat-1", 15000)
-    assert status is None and payload == {}
-
-
-def test_post_command_sends_the_session_token_beside_the_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """HEADLINE: the token travels WITH the declared key, asserted on the real request.
-
-    On a pid hosting several sessions the peer check cannot tell which of them holds
-    the socket from kernel credentials, so it requires a token naming exactly the
-    declared key and refuses the declaration otherwise. Without this header every
-    native browser-panel op on a shared runtime is refused -- including the founder's,
-    which worked before that demand existed. The header dict is read off the request
-    object rather than from a stub, so a refactor that rebuilds it cannot drop the
-    token silently, which is how it came to be missing.
-    """
-    seen: list[dict] = []
-
-    monkeypatch.setattr(mod.mcp_core, "_api_base", lambda: "http://127.0.0.1:9")
-    monkeypatch.setattr(mod.mcp_core, "_internal_secret", lambda: "sekret")
-    monkeypatch.setattr(
-        mod.mcp_core, "_session_token_header", lambda: {"X-Session-Token": "a-signed-token"}
-    )
-
-    def _record(req, timeout):
-        seen.append(dict(req.headers))
-        return _FakeResp(200, b'{"ok": true}')
-
-    monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _record)
-    mod._post_command("chat-1", "snapshot", {}, "dashboard:chat-1", 15000)
-
-    assert len(seen) == 1
-    # urllib title-cases header names on the Request object.
-    headers = {k.lower(): v for k, v in seen[0].items()}
-    assert headers["x-session-key"] == "dashboard:chat-1"
-    assert headers["x-session-token"] == "a-signed-token"
-
-
-def test_post_command_adds_no_token_header_when_there_is_no_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The converse, and what keeps a 1:1 install byte-identical: with no token the
-    helper contributes no header at all, rather than an empty one that the gateway
-    would have to tell apart from a real attestation."""
-    seen: list[dict] = []
-
-    monkeypatch.setattr(mod.mcp_core, "_api_base", lambda: "http://127.0.0.1:9")
-    monkeypatch.setattr(mod.mcp_core, "_internal_secret", lambda: "sekret")
-    monkeypatch.setattr(mod.mcp_core, "_session_token_header", dict)
-
-    def _record(req, timeout):
-        seen.append(dict(req.headers))
-        return _FakeResp(200, b'{"ok": true}')
-
-    monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _record)
-    mod._post_command("chat-1", "snapshot", {}, "dashboard:chat-1", 15000)
-
-    headers = {k.lower() for k in seen[0]}
-    assert "x-session-key" in headers
-    assert "x-session-token" not in headers
+    monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _http_error)
+    assert mod._post_command("k", "snapshot", {}, "", 1.0) == (403, {"code": "x"})

@@ -398,6 +398,7 @@ class TestReadFileChangeMessages:
         assert rows == [
             {
                 "ts": "2026-08-25T18:00:00Z",
+                "role": "assistant",
                 "meta": {"file_changes": [{"path": "/tmp/report.md"}]},
             }
         ]
@@ -431,7 +432,7 @@ class TestReadFileChangeMessages:
         _write(path, _jsonl({"_type": "metadata"}, second))
 
         assert log.read_file_change_messages("changed") == [
-            {"ts": second["ts"], "meta": second["meta"]}
+            {"ts": second["ts"], "role": "assistant", "meta": second["meta"]}
         ]
 
     def test_session_write_invalidates_cached_projection(self, tmp_path: Path) -> None:

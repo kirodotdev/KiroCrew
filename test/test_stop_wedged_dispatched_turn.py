@@ -37,6 +37,7 @@ class _FakeSlot:
         self._steer_send_ids: dict = {}
         self._steer_user_origin: dict = {}
         self._steer_channel_origin: dict = {}
+        self._steer_owner_origin: dict = {}
         self._steer_admissions: dict = {}
         self._steer_attachment_meta: dict = {}
         self._steer_decision_strips: dict = {}

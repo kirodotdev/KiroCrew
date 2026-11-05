@@ -5,7 +5,12 @@ import { useQuery, useMutation, type QueryClient } from '@tanstack/react-query'
 import { useState, useEffect, useMemo, useRef, useCallback, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
 import { LAYOUT } from '../../components/layout'
 import { SIDEBAR_MAX, SIDEBAR_MIN } from '../chat/sidebarWidth'
-import type { TagColumn, TagColumnMode, ChatFolder } from '../../types'
+import type { TagColumn, TagColumnMode, ChatFolder, ChatSlot } from '../../types'
+
+/** The row fields `crewLaneSets` reads. */
+type CrewLaneRow = Pick<ChatSlot, 'key' | 'running' | 'pending_approval' | 'created_by' | 'crew_root' | 'crew_work'>
+import { crewWorkCounts } from '../../lib/crewWork'
+import { crewRootOf } from '../../lib/crewMode'
 import { api } from '../../api/client'
 import { loadChatConfig } from '../chat/ChatSettings'
 import { useDocumentImeLatch } from '../../hooks/useImeGuard'
@@ -299,6 +304,50 @@ export interface LaneSignals {
   subagentApprovalCounts: Record<string, number>
   workflowActiveSet: Set<string>
   automationRunningSet: Set<string>
+  /** Sessions one of whose opened sessions is mid-turn (`crewLaneSets`). Absent: none. */
+  crewBusySet?: Set<string>
+  /** Sessions whose ledger has open work still moving (`crewLaneSets`). Absent: none. */
+  crewOpenSet?: Set<string>
+  /** Sessions whose ledger has open work gone quiet (`crewLaneSets`). Absent: none. */
+  crewStalledSet?: Set<string>
+  /** Sessions whose ledger has an item on a person (`crewLaneSets`). Absent: none. */
+  crewPersonSet?: Set<string>
+  /** Sessions one of whose opened sessions waits on a tool approval (`crewLaneSets`). */
+  crewApprovalSet?: Set<string>
+}
+
+/** Key sets for the lane signals, from the live rows at `now`: busy is a session
+ *  one of whose opened sessions is mid-turn; open is one whose ledger has open
+ *  work not on a person (moving or gone quiet); person is one whose ledger has an
+ *  item on a person. Only rows that opened a session or carry `crew_work` can land
+ *  in any. */
+export function crewLaneSets(slots: readonly CrewLaneRow[], now: number): { busy: Set<string>; open: Set<string>; stalled: Set<string>; person: Set<string>; approval: Set<string> } {
+  const approval = new Set<string>()
+  for (const s of slots) {
+    if (!s.pending_approval) continue
+    if (s.created_by) approval.add(s.created_by)
+    const root = crewRootOf(s)
+    if (root) approval.add(root)
+  }
+  const busy = new Set<string>()
+  const open = new Set<string>()
+  const stalled = new Set<string>()
+  const person = new Set<string>()
+  for (const s of slots) {
+    if (!s.running) continue
+    if (s.created_by) busy.add(s.created_by)
+    const root = crewRootOf(s)
+    if (root) busy.add(root)
+  }
+  for (const s of slots) {
+    if (!s.crew_work) continue
+    const counts = crewWorkCounts(s.crew_work, slots, now)
+    if (!counts) continue
+    if (counts.moving > 0) open.add(s.key)
+    if (counts.stalled > 0) stalled.add(s.key)
+    if (counts.person > 0) person.add(s.key)
+  }
+  return { busy, open, stalled, person, approval }
 }
 
 export function laneExtrasFor(slotKey: string, sig: LaneSignals): LaneExtras {
@@ -315,17 +364,27 @@ export function laneExtrasFor(slotKey: string, sig: LaneSignals): LaneExtras {
     workflowActive: sig.workflowActiveSet.has(normalizeRunSessionKey(slotKey)),
     goalLoopActive: sig.automationRunningSet.has(slotKey),
     detailedSubagentsRunning: running > 0,
+    crewBusy: !!sig.crewBusySet?.has(slotKey),
+    crewOpenWork: !!sig.crewOpenSet?.has(slotKey),
+    crewStalled: !!sig.crewStalledSet?.has(slotKey),
+    crewPerson: !!sig.crewPersonSet?.has(slotKey),
+    crewApproval: !!sig.crewApprovalSet?.has(slotKey),
   }
 }
 
 /** Whether a slot belongs in a column. */
-export function useColumnMatches({ subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet }: {
+export function useColumnMatches({ subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet, crewBusySet, crewOpenSet, crewStalledSet, crewPersonSet, crewApprovalSet }: {
   /** STARTED children only (`selectSidebarStartedSubagentCounts`): a queued
    *  child is not work, so it must never be what files a session as Working. */
   subagentStartedCounts: Record<string, number>
   subagentApprovalCounts: Record<string, number>
   workflowActiveSet: Set<string>
   automationRunningSet: Set<string>
+  crewBusySet?: Set<string>
+  crewOpenSet?: Set<string>
+  crewStalledSet?: Set<string>
+  crewPersonSet?: Set<string>
+  crewApprovalSet?: Set<string>
 }) {
   // Filter predicate for a single column. Takes the whole slot, not just its
   // tags: a state column's membership is derived from live runtime fields, and
@@ -335,7 +394,7 @@ export function useColumnMatches({ subagentStartedCounts, subagentApprovalCounts
     if (col.source === 'state') {
       if (!col.state_key) return false
       return inferLane(slot, laneExtrasFor(slot.key, {
-        subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet,
+        subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet, crewBusySet, crewOpenSet, crewStalledSet, crewPersonSet, crewApprovalSet,
       })) === col.state_key
     }
     const slotTags = slot.tags || []
@@ -352,7 +411,7 @@ export function useColumnMatches({ subagentStartedCounts, subagentApprovalCounts
     if (col.mode === 'all') return col.tag_ids.every(t => set.has(t))
     if (col.mode === 'none') return !col.tag_ids.some(t => set.has(t))
     return col.tag_ids.some(t => set.has(t))  // 'any'
-  }, [subagentApprovalCounts, subagentStartedCounts, automationRunningSet, workflowActiveSet])
+  }, [subagentApprovalCounts, subagentStartedCounts, automationRunningSet, workflowActiveSet, crewBusySet, crewOpenSet, crewStalledSet, crewPersonSet, crewApprovalSet])
   return { columnMatches }
 }
 

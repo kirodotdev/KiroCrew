@@ -131,10 +131,12 @@ def test_live_keys_off_the_workers_status_not_a_masked_field() -> None:
     reaches a page, so a ``live`` test on it would never be true."""
     from kiro_crew.dashboard.handlers.member_dashboard import _MASKED_VALUE_KEYS
 
-    body = _function("live")
+    body = _function("view")
     for masked in _MASKED_VALUE_KEYS:
         assert masked not in _script(), masked
+    assert "it.worker === 'running'" in body
     assert "it.status === 'progress'" in body
+    assert "view(it) === 'working'" in _function("live")
 
 
 def test_no_animation_runs_forever_except_the_live_markers() -> None:
@@ -164,7 +166,7 @@ def test_every_needs_you_button_says_it_drafts_rather_than_sends() -> None:
 def test_items_that_need_the_reader_get_their_own_segment() -> None:
     """The bar's "open" must not swallow a task that waits on the reader."""
     assert "['needs_you', 'needs you', 'var(--warn, #ffd230)']" in _script()
-    assert "needsYou(list[i]) ? 'needs_you'" in _function("drawStates")
+    assert "var s = view(list[i]);" in _function("drawStates")
 
 
 def test_a_worker_status_reads_in_the_readers_language() -> None:

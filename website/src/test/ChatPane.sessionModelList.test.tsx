@@ -58,7 +58,7 @@ import { api } from '../api/client'
  *  that harness's model list loads and fails. */
 const HARNESS_CHAIN = { timeout: 5000 }
 
-function renderPane(slotKey: string, model = 'claude-opus-5-5') {
+function renderPane(slotKey: string, model = 'claude-opus-5-5', queryDefaults: Record<string, unknown> = {}) {
   const store = configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
@@ -70,7 +70,7 @@ function renderPane(slotKey: string, model = 'claude-opus-5-5') {
       } as unknown as RootState['dashboard'],
     } as Partial<RootState>,
   })
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, ...queryDefaults } } })
   render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
@@ -110,5 +110,21 @@ describe('ChatPane effort control — a crewmate thread before its first turn', 
     const menu = await waitFor(() => screen.getByRole('dialog', { name: 'Model list' }))
 
     expect(await within(menu).findByRole('slider', { name: 'Reasoning effort' }, HARNESS_CHAIN)).toBeInTheDocument()
+  })
+})
+
+describe('ChatPane effort control — a gateway restart', () => {
+  const caps = vi.mocked(api.chatSlotSelectionCapabilities)
+  afterEach(() => { caps.mockResolvedValue({ known: false, models_backend: 'claude' } as never) })
+
+  it('re-reads a dropped capability read at once instead of saying it could not verify', async () => {
+    caps.mockClear()
+    caps.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    caps.mockResolvedValue({ known: true, backend: 'kiro', effort_supported: true, effort_levels: ['low', 'high'] } as never)
+    // No backoff: the retry (`retryThroughRestart`) lands well before the 2s cold-start poll.
+    renderPane('member-helper', 'claude-opus-5-5', { retryDelay: 0 })
+
+    await waitFor(() => expect(caps).toHaveBeenCalledTimes(2), { timeout: 1000 })
+    expect(screen.queryByTestId('chat-pane-effort-capabilities-error')).toBeNull()
   })
 })

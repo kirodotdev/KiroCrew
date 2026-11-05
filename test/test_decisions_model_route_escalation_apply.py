@@ -69,7 +69,7 @@ def switch(monkeypatch):
 
 @pytest.fixture
 def answers(monkeypatch):
-    import kiro_crew.decisions.impl_jev as impl_mod
+    import kiro_crew.decisions.impl_systemone as impl_mod
 
     state = {"tier": "simple"}
 
@@ -77,7 +77,7 @@ def answers(monkeypatch):
         async def ask(self, _state, questions):
             return {q.id: Answer(id=q.id, value=state["tier"], p=0.91) for q in questions}
 
-    monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: _Oracle())
+    monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: _Oracle())
 
     def _set(tier: str) -> None:
         state["tier"] = tier

@@ -25,6 +25,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import dashboard_template_checks
 import pytest
 
 from kiro_crew.dashboard_templates.manifest import MAX_FIELDS, ManifestError, load_template
@@ -276,7 +277,7 @@ class TestTheVerdictLine:
         """A verdict with no silence state becomes a stale lie the moment the crewmate
         stops writing, which is the normal case on a box whose gateway restarts often."""
         assert "No word yet" in html, (
-            "the verdict line has no state for 'the mate has not written a lane "
+            "the verdict line has no state for 'the Bot has not written a lane "
             "reading', so an unwritten board renders as a judgment nobody made"
         )
 
@@ -298,7 +299,7 @@ class TestTheVerdictLine:
         )
 
 
-class TestItDrawsFromTheHost:
+class TestItDrawsFromTheHost(dashboard_template_checks.ItReadsTheHostsOwnFieldBag):
     def test_it_reaches_no_network(self, html: str) -> None:
         """The frame's CSP blocks network, so a page that fetches renders a hole.
 
@@ -308,9 +309,6 @@ class TestItDrawsFromTheHost:
         lowered = html.lower()
         for forbidden in ("<script src", "fetch(", "xmlhttprequest", "importscripts", "//cdn."):
             assert forbidden not in lowered, f"reaches the network via {forbidden!r}"
-
-    def test_it_reads_the_hosts_own_field_bag(self, html: str) -> None:
-        assert "window.kirocrew" in html
 
     def test_the_written_tag_is_drawn_from_the_hosts_mark_only(self, html: str) -> None:
         """A value arriving some other way must not borrow the label.
@@ -381,4 +379,4 @@ class TestItDrawsFromTheHost:
         """The order of the host's first fill against the script is not the page's to
         assume, and a later fold write arrives as a message."""
         assert "window.addEventListener('load', render)" in html
-        assert "addEventListener('message'" in html
+        assert "addEventListener('kirocrew-dashboard'" in html

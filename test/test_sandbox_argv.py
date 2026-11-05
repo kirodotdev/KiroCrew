@@ -63,6 +63,28 @@ class TestKiroInternalSandboxExclusion:
         self._write_settings(tmp_path, monkeypatch, "{not json")
         assert kiro_internal_sandbox_enabled() is False
 
+    def test_several_values_read_by_the_first(self, tmp_path, monkeypatch):
+        """kiro-cli reads the first of several JSON values, so this must too."""
+        import kiro_crew.sandbox_delegation as delegation
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        monkeypatch.setattr(delegation, "_kiro_settings_concat_warned", False)
+        self._write_settings(
+            tmp_path,
+            monkeypatch,
+            '{"sandbox": true}\n{"sandbox": false}\n{"sandbox": false}\n',
+        )
+        assert kiro_internal_sandbox_enabled() is True
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": false}\n{"sandbox": true}\n')
+        assert kiro_internal_sandbox_enabled() is False
+
+    def test_value_then_garbage_is_disabled(self, tmp_path, monkeypatch):
+        """Only whole JSON values after the first are read past; junk is not."""
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}\n{oops')
+        assert kiro_internal_sandbox_enabled() is False
+
     def test_missing_key_is_disabled(self, tmp_path, monkeypatch):
         from kiro_crew.sandbox import kiro_internal_sandbox_enabled
 

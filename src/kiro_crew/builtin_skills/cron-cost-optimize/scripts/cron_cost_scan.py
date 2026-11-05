@@ -122,19 +122,11 @@ SKILL_TOKEN_RE = re.compile(r"(?<![\w$])\$([a-z0-9][a-z0-9/_-]*)")
 #: missing it would clear a job for a mode that injects no skill at all.
 SKILL_WORD_RE = re.compile(r"\bskills?\b", re.IGNORECASE)
 
-#: Every blocker above is an English word list, so a prompt written in another
-#: language matches NONE of them. That failure is silent and points the wrong
-#: way: no match reads as "nothing blocks a cheaper mode", so a Chinese or German
-#: "总结并决定" / "fasse zusammen und entscheide" job would be cleared for script
-#: mode precisely because the blockers could not see it. The classifier is biased
-#: toward the safe direction only for text it can actually read, so a prompt whose
-#: judgement-bearing words cannot be matched is treated like a truncated one:
-#: unreadable, therefore not judged.
-#:
-#: The test is coarse on purpose -- enough Latin-script word characters to make an
-#: English word list meaningful. A prompt of mostly CJK, Cyrillic, Arabic or other
-#: non-Latin script fails it; an English prompt containing a few such characters
-#: (a name, a quoted string) still passes.
+#: Every blocker above is an English word list, so a non-English prompt matches
+#: none of them and would silently read as "nothing blocks a cheaper mode". A
+#: prompt the lists cannot read is treated like a truncated one: not judged.
+#: The test is coarse on purpose: mostly non-Latin script fails it, while an
+#: English prompt with a few such characters (a name, a quote) still passes.
 _LATIN_WORD_RE = re.compile(r"[A-Za-z]{2,}")
 _NON_LATIN_RE = re.compile(r"[^\x00-\x7F]")
 

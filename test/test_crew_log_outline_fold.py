@@ -76,11 +76,8 @@ class _Log:
     def chunked_reply(self, turn: int, step: int, *, chars: int = 70_000) -> int:
         """A reply too long for one line, in the shape the writer really stores.
 
-        `_append_body_entry` slices an oversize body into `message/chunk` entries and
-        the citing `message/sent` carries `chunks` and `chars` and NO `text`
-        (`emit_text.py`: the overflow branch builds its data from `turn` / `step` / extras
-        only). So this is not a reply with an empty body -- it is a reply whose body
-        is somewhere this fold does not read.
+        `_append_body_entry` slices it into `message/chunk` entries and the citing
+        `message/sent` carries `chunks` and `chars` but no `text` (see `emit_text.py`).
         """
         return self.add(
             "message/sent",
@@ -401,16 +398,10 @@ class TestWhatARowCarries:
         assert log.row(1)["reply"] == ""
 
     def test_a_refusal_at_a_settled_ordinal_clears_the_answer_it_replaces(self) -> None:
-        """The retraction rule, on the path that has no `turn/started` to carry it.
+        """A refusal at a settled ordinal clears the answer it replaces.
 
-        Regenerate removes a turn's answer and runs it again; Stop while that rerun is
-        still preparing writes `turn/refused` and NO `turn/started`, at the same
-        ordinal. `turn/started` is where a rerun's retraction lives, so a refusal that
-        never gets one leaves the committed reply standing and the row then shows the
-        answer that was removed beside the reason the rerun never produced one.
-
-        A refusal means this ordinal produced nothing, so it has to retract the same
-        two things a start does: the committed reply and any standing draft.
+        Stop during a regenerate's preparation writes `turn/refused` and no `turn/started`, so
+        the refusal must retract what a start would: the committed reply and any draft.
         """
         log = _Log()
         _settled_turn(log, 1, "a question", "the answer that was then removed")
@@ -434,17 +425,11 @@ class TestWhatARowCarries:
         assert log.row(2)["refused"] == "stopped before it ran"
 
     def test_a_chunked_final_reply_settles_on_nothing_rather_than_on_the_narration(self) -> None:
-        """Settled rule 1 again, on the half an EMPTY body must not borrow.
+        """A chunked final reply settles on nothing, not on the earlier narration.
 
-        A turn often narrates before it calls a tool ("let me check that"), and the
-        real answer that follows can be long enough that the writer stores it as
-        chunks -- so the citing `message/sent` carries no `text` at all. Treating that
-        like a cut reply keeps the narration standing, and the closer then publishes
-        the narration AS the settled answer: an intermediate line presented as the
-        thing the turn concluded, which is the one reading a reader cannot detect.
-
-        Empty is the honest answer, and it is what this fold's stated scope promises:
-        it does not read `message/chunk`, so an overflow body has no preview here.
+        The citing `message/sent` has no `text`; treated like a cut reply, the narration ("let
+        me check that") would be published as the answer. This fold does not read
+        `message/chunk`, so empty is the honest answer.
         """
         log = _Log()
         log.prompt(1, "summarise the whole log")
@@ -519,14 +504,10 @@ class TestWhatARowCarries:
         assert log.row(1)["prompt"] == "the question"
 
     def test_a_restart_clears_a_refusal_even_when_the_rerun_is_not_numbered(self) -> None:
-        """The retraction keys on the START, not on the attempt number.
+        """The retraction keys on the start, not on the attempt number.
 
-        A rerun is numbered only when the writer can number it, and for a refused turn
-        it cannot: ``on_turn_refused`` does not advance the attempt counter, so a
-        rewind or a regenerate of a refused turn starts again at attempt 1 and the
-        field is omitted. Keying on the number alone would leave one try's refusal
-        standing beside the next try's answer, which reads as a turn that was both
-        blocked and answered.
+        ``on_turn_refused`` does not advance the attempt counter, so a rerun of a refused turn
+        starts at attempt 1 with the field omitted.
         """
         log = _Log()
         log.prompt(3, "the question a gate stopped")
@@ -599,19 +580,12 @@ class TestWhatARowCarries:
         assert log.row(1)["refused"] == "gateway_closing"
 
     def test_an_unclosed_turns_draft_is_never_committed_onto_the_next_turns_row(self) -> None:
-        """Why the draft carries its own ordinal rather than riding on the newest row.
+        """The draft carries its own ordinal rather than riding on the newest row.
 
-        This log shape is ordinary, not fabricated: ``turn/completed`` has a
-        crash-repair writer, so a turn whose closer never landed is a real file. Turn 1
-        answered and was never closed, then turn 2 opened and closed. Without the
-        ordinal on the draft, turn 1's answer lands in turn 2's row -- one turn's answer
-        reported against another turn's question, which is the mis-attribution this
-        guard exists for.
-
-        The row-opening rule cannot decide this case, which is the point: a closer for a
-        turn ABOVE the newest row opens its own row and a regressive one is dropped
-        before the commit is reached, so only a closer for the newest row -- this one --
-        reaches the guard at all.
+        A turn whose closer never landed is a real file (``turn/completed`` has a crash-repair
+        writer). Turn 1 answered unclosed, then turn 2 opened and closed: without the ordinal,
+        turn 1's answer lands in turn 2's row. Only a closer for the newest row reaches this
+        guard.
         """
         log = _Log()
         log.prompt(1, "turn one's question")

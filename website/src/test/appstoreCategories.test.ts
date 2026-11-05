@@ -315,6 +315,19 @@ describe('normalizeRegistryApp', () => {
 })
 
 describe('normalizeInstalledApp', () => {
+  it('keeps a well-formed unavailable reason and drops a malformed one', () => {
+    const ok = normalizeInstalledApp({
+      name: 'skipped', unavailable: { reason: 'PermissionError: denied' },
+    } as unknown as InstalledApp)
+    expect(ok.unavailable).toEqual({ reason: 'PermissionError: denied' })
+    const bad = normalizeInstalledApp({
+      name: 'skipped', unavailable: { reason: 42 },
+    } as unknown as InstalledApp)
+    expect(bad.unavailable).toBeUndefined()
+    const loaded = normalizeInstalledApp({ name: 'loaded' } as unknown as InstalledApp)
+    expect('unavailable' in loaded).toBe(false)
+  })
+
   it('supplies a manifest and its lists for a record that has none', () => {
     // /api/apps mirrors on-disk records, so a hand-written or older app can
     // arrive with no manifest at all. Every render site indexes these lists.

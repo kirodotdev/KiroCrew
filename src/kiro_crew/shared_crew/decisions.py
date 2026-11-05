@@ -28,12 +28,14 @@ from functools import partial
 from typing import Any, Callable, Mapping
 
 from kiro_crew.shared_crew.collab import (
+    SETTLED_BY_HOST,
     DecisionKind,
     DecisionState,
     ResolveOutcome,
     SharedDecision,
     classify_response,
     decision_frame,
+    settled_by_of,
 )
 from kiro_crew.shared_crew.contracts import (
     ActionOutcome,
@@ -228,8 +230,12 @@ class DecisionRegistry:
         responder: Principal,
         outcome: str,
         apply: Callable[[], bool],
+        settled_by: str = "",
     ) -> Resolution:
         """Settle a decision once.
+
+        ``settled_by`` is ``person`` or ``host``; empty derives it from the
+        responder (a verified human is a person, anything else the host).
 
         ``apply`` performs the real side effect (settling the waiting future) and
         returns whether it took. It runs under the lock and only for the winning
@@ -238,7 +244,14 @@ class DecisionRegistry:
         """
         if not outcome:
             raise ValueError("a resolution names its outcome")
-        resolution = self._resolve_locked(decision_id, response_id, responder, outcome, apply)
+        resolution = self._resolve_locked(
+            decision_id,
+            response_id,
+            responder,
+            outcome,
+            apply,
+            settled_by or settled_by_of(responder),
+        )
         audit_decision_response(resolution, responder)
         return resolution
 
@@ -249,6 +262,7 @@ class DecisionRegistry:
         responder: Principal,
         outcome: str,
         apply: Callable[[], bool],
+        settled_by: str,
     ) -> Resolution:
         with self._lock:
             current = self._records.get(decision_id)
@@ -267,6 +281,7 @@ class DecisionRegistry:
                 response_id=response_id,
                 outcome=outcome,
                 resolved_at=self._clock(),
+                settled_by=settled_by,
             )
             self._store_locked(settled)
             return Resolution(ResolveOutcome.WON, settled)
@@ -373,9 +388,10 @@ def settle_after_wait(
 
     When a response came through the registry the decision is already resolved
     and this does nothing. When the wait ended through a path that carries no
-    verified responder, the decision resolves with an Unknown responder (it was
-    answered, and by whom is not known). With no ``outcome`` nobody answered and
-    the decision ends as ``closed``.
+    verified responder (an approval mode such as trust or YOLO, an expiry
+    default, a channel), the decision resolves with an Unknown responder and
+    ``settled_by="host"``: it was answered, and no person decided. With no
+    ``outcome`` nobody answered and the decision ends as ``closed``.
     """
     registry = decisions_for(state)
     current = registry.get(decision_id)
@@ -388,6 +404,7 @@ def settle_after_wait(
             responder=Principal.unknown(),
             outcome=outcome,
             apply=lambda: True,
+            settled_by=SETTLED_BY_HOST,
         ).decision
     else:
         settled = registry.close(decision_id, closed)
@@ -458,11 +475,27 @@ def conflict_body(resolution: Resolution) -> dict[str, Any]:
 Reply = tuple[int, dict[str, Any]]
 
 
+#: The 409 code for a decide by id that names no session while the id is
+#: pending in more than one: it carries no decision, unlike ``already_resolved``.
+APPROVAL_AMBIGUOUS = "approval_ambiguous"
+
+
 def respond(reply: Reply) -> Any:
-    """The HTTP answer for a :data:`Reply`: 200 with the body, or 409 ``already_resolved``."""
+    """The HTTP answer for a :data:`Reply`.
+
+    200 with the body, 409 ``already_resolved``, or 409 ``approval_ambiguous``.
+    """
     from aiohttp import web
 
     status, body = reply
+    if status == 409 and body.get("code") == APPROVAL_AMBIGUOUS:
+        return web.json_response(
+            {
+                "error": "approval id is pending in more than one session; name the session",
+                "code": "approval_ambiguous",
+            },
+            status=409,
+        )
     if status == 409:
         return web.json_response(
             {
@@ -605,6 +638,12 @@ def resolve_approval_by_id(
     ``DashboardState.resolve_approval`` uses, so it never widens which request an
     id can reach. Returns ``None`` when nothing is pending and nothing settled is
     known, which the route answers with its existing 404.
+
+    A request id is the agent's own JSON-RPC id, so two sessions can hold a
+    pending request under the same id. This form names no session, so such an
+    id is refused with 409 ``approval_ambiguous`` rather than settled in
+    whichever session comes first; a caller that knows its session and card row
+    names them on ``POST /api/chat/slots/{slot}/approve`` (``origin: "native"``).
     """
     if approved:
         decision = "approved"
@@ -615,10 +654,17 @@ def resolve_approval_by_id(
     state_future = state._approval_futures.get(approval_id)
     if state_future is not None and not state_future.done():
         return resolve_state_approval(state, request, approval_id, approved, decision, response_id)
-    for slot in list(state._slots.values()):
-        future = slot._approval_futures.get(approval_id)
-        if future is None or future.done():
-            continue
+    pending = [
+        (slot, future)
+        for slot in list(state._slots.values())
+        if (future := slot._approval_futures.get(approval_id)) is not None and not future.done()
+    ]
+    if len(pending) > 1:
+        return 409, {
+            "error": "approval id is pending in more than one session; name the session",
+            "code": APPROVAL_AMBIGUOUS,
+        }
+    for slot, future in pending:
         registry = decisions_for(state)
         decision_id = approval_decision_id(slot.key, approval_id)
         registry.open(decision_id, DecisionKind.APPROVAL, slot.key, turn_initiator(slot.messages))

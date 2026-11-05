@@ -151,8 +151,20 @@ jobs:
           # Read out of the BASE tree: the corpus is the contract being judged and
           # must not be editable by the change under judgement.
           owner="base"
-          if git cat-file -e "$BASE_SHA:$corpus_path" 2>/dev/null; then
-            git show "$BASE_SHA:$corpus_path" > corpus.json
+          # Only a base TREE with no such path is the bootstrap window. `git
+          # cat-file -e` answers "no" for an absent path AND for a base commit
+          # the fetch above could not supply, so it cannot tell the two apart;
+          # `git ls-tree` prints nothing and exits 0 for an absent path, and
+          # exits non-zero when the tree cannot be read.
+          if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- "$corpus_path")"; then
+            echo "::error::Could not read the base commit's tree ($BASE_SHA) for $corpus_path. Failing closed rather than classifying against the change's own corpus."
+            exit 1
+          fi
+          if [ -n "$listed" ]; then
+            if ! git show "$BASE_SHA:$corpus_path" > corpus.json; then
+              echo "::error::$corpus_path is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than classifying against the change's own corpus."
+              exit 1
+            fi
           elif [ -f "$corpus_path" ]; then
             # Absent at base -- the gate itself is being introduced, or the corpus is
             # being added. There is no base contract to protect, so nothing can be

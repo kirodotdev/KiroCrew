@@ -24,12 +24,10 @@ import { render, act, cleanup, waitFor } from '@testing-library/react'
 
 // The copy outcome ("Image copied" pill vs "copy failed" notice) is driven by
 // the clipboard util. Mock it so each case picks the branch it pins, without a
-// real clipboard. imageBlobToPng is pass-through; copyImageToClipboard resolves
-// the boolean the Lightbox turns into copyState 'ok' / 'failed'.
+// real clipboard. copyImageFromUrl resolves the boolean the Lightbox turns into copyState 'ok' / 'failed'.
 const copyOutcome = vi.fn<[], Promise<boolean>>()
 vi.mock('../utils/clipboard', () => ({
-  copyImageToClipboard: () => copyOutcome(),
-  imageBlobToPng: (p: Promise<Blob>) => p,
+  copyImageFromUrl: () => copyOutcome(),
 }))
 
 type Shell = Record<string, unknown> | undefined
@@ -46,7 +44,7 @@ function setShell(kirocrew: Shell) {
 async function lightboxToolbar(kirocrew: Shell): Promise<HTMLElement> {
   setShell(kirocrew)
   const { Lightbox } = await import('../components/markdown/Lightbox')
-  const { container } = render(<Lightbox />)
+  render(<Lightbox />); const container = document.body
   act(() => {
     window.dispatchEvent(new CustomEvent('lightbox', {
       detail: { images: [{ src: 'a.png', alt: 'a' }], index: 0 },
@@ -89,7 +87,7 @@ async function copySurface(
     setShell(kirocrew)
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob()) }))
     const { Lightbox } = await import('../components/markdown/Lightbox')
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => {
       window.dispatchEvent(new CustomEvent('lightbox', {
         detail: { images: [{ src: 'a.png', alt: 'a' }], index: 0 },

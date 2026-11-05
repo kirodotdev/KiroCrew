@@ -27,6 +27,7 @@ from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 
 from kiro_crew import platform_compat
 from kiro_crew.apps import registry
+from kiro_crew.config.paths import config_dir
 from kiro_crew.testing.wait import await_until
 
 
@@ -942,6 +943,32 @@ def _fresh_clone_harness(monkeypatch, dest, *, mode):
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="POSIX mode bits")
+@pytest.mark.parametrize("pinned", [False, True])
+async def test_a_first_checkout_creates_the_app_sources_root_owner_only(monkeypatch, pinned):
+    """Both checkout paths create ``app-sources/`` itself ``0700``, as every data-home directory."""
+    dest = config_dir() / "app-sources" / "demoapp"
+    _fresh_clone_harness(monkeypatch, dest, mode="exit")
+    previous = os.umask(0o022)
+    try:
+        if pinned:
+            await registry._git_fetch_commit(
+                "https://example.com/demo.git",
+                "a" * 40,
+                dest,
+                [],
+                clone_env={},
+                sandbox_mode="strict",
+            )
+        else:
+            await registry._git_clone_or_pull("https://example.com/demo.git", "main", dest, [])
+    finally:
+        os.umask(previous)
+
+    assert stat.S_IMODE(dest.parent.stat().st_mode) == 0o700
 
 
 @pytest.mark.asyncio

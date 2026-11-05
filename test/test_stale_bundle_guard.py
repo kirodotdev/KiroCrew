@@ -159,6 +159,10 @@ def test_check_never_raises(tmp_path: Path, caplog):
         raise RuntimeError("backend tree lookup exploded")
 
     _run(mod, path, tmp_path / "none.txt", _boom, caplog)
+    # Noted for diagnosis at DEBUG, never raised as a staleness WARNING.
+    assert [(r.levelno, r.getMessage()) for r in caplog.records if r.name == _LOGGER] == [
+        (logging.DEBUG, "Bundle freshness check failed — ignoring.")
+    ]
 
 
 # ── real git: the identity is the website/ tree, not HEAD ──

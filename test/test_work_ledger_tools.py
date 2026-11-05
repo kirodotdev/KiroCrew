@@ -57,7 +57,8 @@ def _open_route(monkeypatch):
     with the same caveat: the real probe reads the session store, which a
     ``make_mocked_request`` slot cannot answer, and it FAILS CLOSED — so leaving it
     live would make every test's caller read as mirrored and refused.
-    ``test_an_outbound_mirrored_session_is_refused`` drives the true branch.
+    ``test_an_outbound_mirrored_session_is_refused_like_a_channel_one`` drives the
+    true branch.
     """
 
     async def _recognized(*a: Any, **k: Any) -> None:
@@ -406,6 +407,7 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "depth_exceeded": 409,
         "crew_log_incomplete": 409,
         "cache_dirty": 409,
+        "retired_history_full": 409,
         "field_too_long": 400,
         "invalid_action": 400,
         "invalid_status": 400,

@@ -1,26 +1,13 @@
-"""Regression tests for the three Arbiter BLOCK items in cron locking.
+"""Cron locking: the CronSDK sync contract, atomic remove_all, and loop safety.
 
-Item 1 — the app-facing ``CronSDK`` mutation API stays **sync-callable** with
-         its published contract; a prior revision flipped
-         ``add_job``/``remove_job``/``update_job``/``remove_all`` to ``async def``
-         with no shim, silently turning ``ctx.cron.add_job(...)`` into an
-         un-awaited coroutine (data-losing break). Separately-named ``*_async``
-         siblings serve loop-native callers.
-
-Item 2 — ``CronSDK.remove_all`` removes every owned job in ONE atomic
-         ``CronService`` batch transaction and PROPAGATES ``CronStoreBusy``: a
-         contended store removes them all or none (never a partial removal that
-         orphans still-ENABLED jobs) and the failure is surfaced, not masked as
-         a successful ``0``. The owned set is SELECTED inside the same locked
-         transaction (against the reloaded on-disk state), not from a cache-only
-         id snapshot, so a job the app created in another process since the last
-         cache refresh is still removed — no cross-process orphan window.
-
-Item 3 — the store lock's loop-safety invariant is MACHINE-ENFORCED:
-         ``_file_lock`` raises ``CronLoopSafetyError`` on a running event loop
-         under strict mode, while the sanctioned async / offloaded-sync paths
-         do NOT trip it. Runs in CI, so a future writer that reintroduces an
-         on-loop sync-mutator call on a sanctioned path is caught.
+1. ``CronSDK`` ``add_job``/``remove_job``/``update_job``/``remove_all`` stay sync: as
+   ``async def`` an app's ``ctx.cron.add_job(...)`` is an un-awaited coroutine.
+   ``*_async`` siblings serve loop-native callers.
+2. ``remove_all`` removes all owned jobs or none in one batch, raises
+   ``CronStoreBusy``, and selects the owned set inside the lock from disk, so a job
+   another process created is not orphaned.
+3. ``_file_lock`` raises ``CronLoopSafetyError`` on a running loop in strict mode;
+   the async and offloaded-sync paths do not trip it.
 """
 from __future__ import annotations
 
@@ -34,6 +21,7 @@ import pytest
 from kiro_crew.apps import bridges
 from kiro_crew.apps.cron_sdk import CronSDK, CronSyncOnLoopError
 from kiro_crew.cron import CronLoopSafetyError, CronService, CronStoreBusy
+from kiro_crew.cron_service.store import cron_store_lock
 
 STRICT = "KIROCREW_STRICT_LOOP_SAFETY"
 
@@ -139,16 +127,10 @@ class TestRemoveAllAtomic:
     def test_remove_all_removes_job_present_on_disk_but_absent_from_cache(
         self, tmp_path: Path
     ) -> None:
-        """Cross-process regression: a job this app created in ANOTHER process
-        after our cache was populated must still be removed on uninstall.
+        """A job this app created in ANOTHER process after our cache filled is still removed.
 
-        Because this PR made ``list_jobs()`` cache-only (no filesystem read),
-        computing the owned-id set from the cache before the lock would MISS
-        the externally-added job; the locked removal would then delete only the
-        stale ids, report success, and uninstall would proceed to delete the
-        app — leaving an ENABLED orphan cron with no owning app. The fix selects
-        the owned set INSIDE the locked transaction against the reloaded on-disk
-        state, so the externally-added job is seen and removed."""
+        ``list_jobs()`` is cache-only, so the owned set is selected inside the lock from
+        the reloaded disk state; otherwise uninstall leaves an ENABLED orphan cron."""
         svc = CronService(base_dir=tmp_path)
         sdk = CronSDK("app1", svc)
         cached = sdk.add_job("cached", "m", every_secs=3600)
@@ -230,9 +212,12 @@ class TestLoopSafetyGuard:
     ) -> None:
         monkeypatch.setenv(STRICT, "1")
         svc = CronService(base_dir=tmp_path)
-        # No running loop on this thread → the intended sync path → guard passes.
+        # No running loop on this thread → the intended sync path → guard passes,
+        # and the store lock is really held: a second opener cannot take it.
         with svc._file_lock():
-            pass
+            with pytest.raises(CronStoreBusy):
+                with cron_store_lock(svc._dir, timeout=0.0, poll=0.0):
+                    pass  # pragma: no cover
 
     @pytest.mark.asyncio
     async def test_file_lock_raises_on_running_loop_under_strict(
@@ -310,14 +295,8 @@ class TestLoopSafetyGuard:
     ) -> None:
         """The refusal must be the CHEAP answer, so no disk work may precede it.
 
-        The sibling test above passes whether the refusal lands before or after
-        vetting, because it only observes the exception -- so it cannot see this.
-        `_vet_command_script` is blocking: it stats the script, reads its body for
-        the content scan, and on an SDK instance's first call walks the builtin
-        manifest sources for the bundle root. Doing any of that on the loop before
-        producing a refusal defeats the point of failing fast, which is why the
-        refusal is asserted at the sync entry point rather than only at the
-        mutator it eventually reaches.
+        `_vet_command_script` is blocking disk I/O, so the refusal is asserted at the sync
+        entry point; the sibling above sees only the exception, not its timing.
         """
         svc = await CronService.create(base_dir=tmp_path)
         sdk = CronSDK("app1", svc)

@@ -4,8 +4,9 @@ The bundled ``kiro-cli-chat`` starts, answers ``initialize`` and ``session/new``
 then fails ``session/prompt`` with the frame below and writes nothing to stderr
 (captured from kiro-cli 2.31.0 under an empty ``HOME``; its ``whoami`` printed
 ``Not logged in`` and exited 1). ``saw_not_logged_in`` never latches, so the
-frame was classified as a transient connection failure and the dashboard ran its
-retry ladder before showing "transient error (HTTP 5xx)".
+frame alone classifies as a transient connection failure, and without the
+signed-out check the dashboard would run its retry ladder and end on the
+connection card instead of the sign-in error.
 
 These tests drive the real frame through the real classifier
 (``_raise_acp_error``) and the real ``AcpSessionProvider.stream``, with a real

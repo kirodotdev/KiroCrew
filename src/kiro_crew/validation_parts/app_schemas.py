@@ -1,7 +1,8 @@
 """Tool schemas for the builtin apps' agent tools.
 
-Issue Radar investigations and crew records, the Ops Mission Control API allowlist,
-the Design Tweak thread update and the pod tools.
+Issue Radar investigations and crew records, the Ops Mission Control API allowlist
+and the pod tools. A tool a built-in declares as data (``apps.builtin_agent_tools``)
+carries its own fields, and ``server_registries`` builds its schema from them.
 
 Callers import these names from :mod:`kiro_crew.validation`, which serves them; this
 module never imports that facade.
@@ -96,62 +97,32 @@ OPS_MISSION_CONTROL_API_SCHEMA = ToolSchema(
     custom_validator=_validate_omc_api,
 )
 
-# ── Tool Schema (Design Tweak app) ──
-#
-# ``design_tweak_update_thread`` is the agent's ONLY credentialed path to the
-# Design Tweak app's ``POST /thread`` route (same pattern as
-# ``ops_mission_control_api`` and ``issue_radar_record_investigation``: the MCP
-# server process holds the internal secret; the agent never sees a credential).
-# The app hands the agent batched click-anchored comments to apply, but the
-# agent cannot update the preview's thread bubbles — posting to ``/thread``
-# needs the dashboard credential an agent session is deliberately denied — so
-# it reported progress inline in chat and the dots never changed.
-#
-# Both ids are value-position only: the schema URL-quotes them with
-# ``safe=''`` so neither can carry a '/', '?' or '#' that would rewrite the
-# single ``/thread`` route, and the backend's own ``_ID_RE``
-# (``^[A-Za-z0-9._-]+$``) is the authority that rejects a malformed id. The
-# tool boundary therefore bounds only length, not grammar. ``status`` is
-# restricted to the one FORWARD-progress value ``done`` — the agent may mark a
-# comment it finished, but the tool exposes no destructive thread action
-# (``/clear`` archives a request and removes its pins, and is NOT reachable
-# here). The ``text or status`` rule is likewise the backend's
-# (``_h_thread``): an empty call is refused there, so it is not restated here.
-# The one thread status the tool may set: forward progress only. The backend's
-# full set is ``new | sent | done`` (COMMENT_STATUSES); ``new``/``sent`` are
-# the app's own lifecycle, not something an agent reports, so the scoped tool
-# admits only ``done``.
-_DESIGN_TWEAK_ALLOWED_STATUSES = frozenset({"done"})
-# Bounds one progress note. The backend caps a thread at MAX_THREAD_ENTRIES
-# short lines; 2 KiB is well above one legitimate note and keeps an unbounded
-# string from being carried further.
-_DESIGN_TWEAK_MAX_TEXT = 2_048
-
-
-DESIGN_TWEAK_UPDATE_THREAD_SCHEMA = ToolSchema(
-    tool_name="design_tweak_update_thread",
-    fields=[
-        FieldSpec(
-            "request_id",
-            str,
-            required=True,
-            max_len=200,
-        ),
-        FieldSpec("comment_id", str, max_len=200, default=""),
-        FieldSpec("text", str, max_len=_DESIGN_TWEAK_MAX_TEXT, default=""),
-        FieldSpec("status", str, allowed=_DESIGN_TWEAK_ALLOWED_STATUSES, default=""),
-    ],
-)
-
 # Dev Fleet pod lifecycle (agent surface). A pod name is a git worktree basename,
 # so it reaches `git worktree list` matching and a filesystem path before
 # `rt.validate_name` -- the real authority -- ever sees it. Bounded here so an
 # unbounded string is refused at the tool boundary rather than carried further.
 _POD_WORKTREE_MAX_LEN = 200
 
+# `memory` / `cpu` are validated by `kirocrew pod up` (syntax, floor, host cap);
+# the bound here only stops an unbounded string reaching the CLI's argv.
+_POD_LIMIT_MAX_LEN = 16
+
 POD_UP_SCHEMA = ToolSchema(
     tool_name="pod_up",
-    fields=[FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN)],
+    fields=[
+        FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN),
+        FieldSpec("memory", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
+        FieldSpec("cpu", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
+    ],
+)
+
+POD_RESTART_SCHEMA = ToolSchema(
+    tool_name="pod_restart",
+    fields=[
+        FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN),
+        FieldSpec("memory", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
+        FieldSpec("cpu", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
+    ],
 )
 
 POD_DOWN_SCHEMA = ToolSchema(

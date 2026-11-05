@@ -14,6 +14,11 @@ import pytest
 
 from kiro_crew.channel_history import ChannelHistory, HistoryEntry
 
+# Tests here assert the SHAPE of a built turn (e.g. that it opens with the user's
+# text), so the host's own free memory must not be an input: see the fixture for
+# the advisory it pins off.
+pytestmark = pytest.mark.usefixtures("ample_host_resources")
+
 # ── Phase 0: ChannelHistory thread-aware ──
 
 
@@ -159,38 +164,56 @@ class TestNoThreadReminder:
 class TestThreadTsWiring:
     """P2: thread_ts passes from handler → build_message → context_for."""
 
+    @staticmethod
+    def _three_places() -> ChannelHistory:
+        h = ChannelHistory()
+        h.push("C1", "alice", "top level note")
+        h.push("C1", "bob", "in-thread reply", thread_ts="t123")
+        h.push("C1", "carol", "other thread chatter", thread_ts="t999")
+        return h
+
     def test_build_message_passes_thread_ts_to_channel_history(self):
         from kiro_crew.context import ContextBuilder
 
-        mock_ch = MagicMock(spec=ChannelHistory)
-        mock_ch.context_for.return_value = "[mocked context]"
+        mock_ch = MagicMock(spec=ChannelHistory, wraps=self._three_places())
 
         cb = ContextBuilder()
         cb.channel_history = mock_ch
 
-        cb.build_message(
+        msg, _ = cb.build_message(
             "test",
             is_new_session=False,
             channel_id="C1",
             thread_ts="t123",
         )
+        # Only the current thread reaches the turn.
+        assert "in-thread reply" in msg
+        assert "other thread chatter" not in msg
+        assert "top level note" not in msg
         mock_ch.context_for.assert_called_once_with("C1", thread_ts="t123")
 
     def test_build_message_no_thread_ts_passes_none(self):
         from kiro_crew.context import ContextBuilder
 
-        mock_ch = MagicMock(spec=ChannelHistory)
-        mock_ch.context_for.return_value = ""
+        mock_ch = MagicMock(spec=ChannelHistory, wraps=self._three_places())
 
         cb = ContextBuilder()
         cb.channel_history = mock_ch
 
-        cb.build_message(
+        msg, _ = cb.build_message(
             "test",
             is_new_session=False,
             channel_id="C1",
         )
+        # A top-level turn sees top-level messages and no thread's replies.
+        assert "top level note" in msg
+        assert "in-thread reply" not in msg
+        assert "other thread chatter" not in msg
         mock_ch.context_for.assert_called_once_with("C1", thread_ts=None)
+
+        # A channel with no history adds no block: the turn is the raw user text.
+        quiet, _ = cb.build_message("test", is_new_session=False, channel_id="C2")
+        assert quiet.startswith("test")
 
 
 # ── Scenario: The original bug ──

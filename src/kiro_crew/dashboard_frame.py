@@ -17,8 +17,11 @@ Three ways a value reaches the page, and the page chooses per element
    draw from. :data:`WINDOW_GLOBAL` also carries ``agentic`` (the names the
    crewmate wrote rather than the gateway folded), ``seq`` (the fold watermark),
    and ``missing`` (the cells whose value this read did not produce).
-3. ``window.kirocrew.subscribe(name, cb)``: ``cb(value, name)`` on first load and
-   again on every push that carries that field, returning a disposer. For a page
+3. ``window.kirocrew.subscribe(name, cb)``: ``cb(value, name, meta)`` on first load
+   and again on every push that changes that field, returning a disposer. ``meta`` is
+   ``{missing}``; when a field the page drew stops resolving the
+   callback is called again with the value it already drew and ``missing: true``, so
+   a chart can mark it rather than freeze on it at full strength. For a page
    that DRAWS -- a tree, a chart, a scene -- where (2) is a value read once and the
    generic :data:`PAGE_EVENT` only says that something landed, leaving the page to
    diff a whole read to find out what.
@@ -44,7 +47,8 @@ a channel is an exfiltration path with a data source attached.
 Unresolved fields and the agentic marker
 ----------------------------------------
 A field whose source did not resolve is named in ``missing``, not guessed at. The
-cell keeps the last value that did resolve and is dimmed, and the host draws NO
+cell keeps the last value that did resolve, is dimmed and carries a "not current"
+label in the reader's language (:data:`_MISSING_LABELS`), and the host draws NO
 band about it: a field that does not resolve is the crewmate's page or binding to
 fix, so the gateway tells the crewmate in its ``[DASHBOARD]`` turn block
 (``dashboard_agentic.turn_block``) rather than telling the person something they
@@ -594,6 +598,30 @@ _INIT_GUARD_JS: Final[str] = f"""
 #: a refill reaches? Set by the probe below, and by ``subscribe`` in the bootstrap.
 _REFILL_FLAG: Final[str] = "__kirocrewPageRefills"
 
+#: The words a cell named in ``missing`` carries beside the value it still shows,
+#: one per shipped UI catalog (``context_assembly.output_contract``'s set).
+#:
+#: Dimming alone read as a real number: a reader who does not know the convention
+#: sees a pale cell and takes its value as current. The marker SAYS it, as text the
+#: host CSS draws after the value and a screen reader reads, so it reaches a reader
+#: who cannot see opacity either. Worded "not current" rather than "older value"
+#: because a cell that never resolved still shows the template's own placeholder,
+#: and calling that an older value would be a claim this read cannot make.
+_MISSING_LABELS: Final[Mapping[str, str]] = {
+    "en": "not current",
+    "zh-CN": "非最新",
+    "hi": "नवीनतम नहीं",
+    "es": "no actualizado",
+    "fr": "pas à jour",
+    "bn": "হালনাগাদ নয়",
+    "pt": "desatualizado",
+    "ru": "не актуально",
+    "de": "nicht aktuell",
+    "ja": "最新ではありません",
+    "ko": "최신 아님",
+    "it": "non aggiornato",
+}
+
 _BOOTSTRAP_JS: Final[str] = f"""
 (function () {{
   var el = document.getElementById({_DATA_ELEMENT_ID!r});
@@ -613,17 +641,77 @@ _BOOTSTRAP_JS: Final[str] = f"""
   // and keeps drawing across every push: a registry living on the published object
   // would be discarded with it and every callback would silently stop.
   var subscribers = [];
-  function deliver(entry, source) {{
+  function own(object, key) {{
+    return !!object && typeof object === 'object' &&
+      Object.prototype.hasOwnProperty.call(object, key);
+  }}
+  function same(a, b) {{
+    return JSON.stringify(a) === JSON.stringify(b);
+  }}
+  function sameMap(a, b) {{
+    a = a || {{}};
+    b = b || {{}};
+    var keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    for (var key of keys) if (!own(b, key) || !same(a[key], b[key])) return false;
+    return true;
+  }}
+  // Whether two reads show the same page: every key a page can draw from, leaving
+  // out only the push bookkeeping (and `subscribe`, which `publish` adds).
+  function sameRead(a, b) {{
+    var skip = {{ version: 1, seq: 1, generation: 1, subscribe: 1 }};
+    for (var key of Object.keys(a).concat(Object.keys(b))) {{
+      if (skip[key] === 1) continue;
+      var map = key === 'fields' || key === 'written_at';
+      if (map ? !sameMap(a[key], b[key]) : !same(a[key], b[key])) return false;
+    }}
+    return true;
+  }}
+  function deliver(entry, source, whole) {{
     if (!entry.live) return;
     var fields = source && source.fields;
     if (!fields || typeof fields !== 'object') return;
+    var name = entry.name;
     // PRESENCE, not truthiness. A field is ABSENT when its fold path did not
     // resolve, and `0`, `''` and `false` are values a fold legitimately holds --
     // reading them as absent would stop a counter's subscriber at exactly the
     // moment the counter reached zero.
-    if (!Object.prototype.hasOwnProperty.call(fields, entry.name)) return;
+    var has = own(fields, name);
+    // `missing` WINS over presence, exactly as in `fill`: a read can still carry
+    // the older value of a field it names missing.
+    var gone = Array.isArray(source.missing) && source.missing.indexOf(name) !== -1;
+    var value;
+    if (gone) {{
+      // A FIELD THAT STOPPED RESOLVING IS TOLD, not left frozen. Without this a
+      // chart drawn from a subscriber kept its last value at full strength while
+      // the bound cells beside it dimmed, and nothing on the chart said so. The
+      // value handed back is the one the page already drew -- never a new one --
+      // so a two-argument callback redraws what it had, and a page that reads
+      // the third argument dims it. A field the page never held stays silent:
+      // there is no older value to mark, and `undefined` is not a value.
+      if (has) value = fields[name];
+      else if (entry.held && !entry.stale) value = entry.last;
+      else return;
+    }} else if (has) {{
+      value = fields[name];
+    }} else if (entry.stale && own(whole && whole.fields, name)) {{
+      // RESOLVED AGAIN, unmoved: a patch omits a field that did not change, so a
+      // field leaving `missing` with its old value arrives only in the merge.
+      value = whole.fields[name];
+    }} else {{
+      return;
+    }}
+    // UNMOVED, so silent: a full read carries every field, and redrawing a field
+    // for the value it already drew is what made the page feel reloaded.
+    if (!gone && entry.held && !entry.stale && same(entry.last, value)) return;
+    entry.held = true;
+    entry.last = value;
+    entry.stale = gone;
+    // `missing` ONLY. The agentic marks and `written_at` are already on
+    // `window.kirocrew`, published before this runs.
+    var meta = Object.freeze({{ missing: gone }});
     try {{
-      entry.cb(fields[entry.name], entry.name);
+      entry.cb(value, name, meta);
     }} catch (err) {{
       // ONE SUBSCRIBER'S THROW COSTS ONLY ITSELF. Two blocks on one page redraw
       // from one push, and letting the first one's error abort the loop leaves the
@@ -631,15 +719,15 @@ _BOOTSTRAP_JS: Final[str] = f"""
       // different ages with nothing on it saying so.
     }}
   }}
-  function notify(source) {{
+  function notify(source, whole) {{
     // A COPY of the list, because a callback may subscribe or dispose during
     // delivery and mutating the array under the loop would skip its neighbour.
     var current = subscribers.slice();
-    for (var i = 0; i < current.length; i++) deliver(current[i], source);
+    for (var i = 0; i < current.length; i++) deliver(current[i], source, whole);
   }}
   function subscribe(name, cb) {{
     if (typeof name !== 'string' || typeof cb !== 'function') return function () {{}};
-    var entry = {{ name: name, cb: cb, live: true }};
+    var entry = {{ name: name, cb: cb, live: true, held: false, last: undefined, stale: false }};
     subscribers.push(entry);
     // A PAGE THAT SUBSCRIBES IS ONE A REFILL REACHES: `notify` runs on every push,
     // so the callback redraws the page without a reload. The probe below watches
@@ -653,7 +741,7 @@ _BOOTSTRAP_JS: Final[str] = f"""
     // fired on a push would draw nothing on first paint -- over a log that has the
     // numbers in it. This is what makes the callback a page's one entry point
     // rather than something it needs a binding beside.
-    deliver(entry, read);
+    deliver(entry, read, read);
     return function () {{ entry.live = false; }};
   }}
   // The push version the page HOLDS, taken from the ISLAND rather than started at
@@ -661,6 +749,8 @@ _BOOTSTRAP_JS: Final[str] = f"""
   // page that began at zero would accept the first patch whatever its version and
   // apply a frame computed against a read it never saw.
   var held = typeof read.version === 'number' ? read.version : 0;
+  // When the page event last fired; first paint counts as one.
+  var lastEvent = Date.now();
   // WHOSE COUNTER `held` BELONGS TO. Versions are only comparable inside one armed
   // page: a page the host re-arms starts its counter again, so a lower number can
   // belong to a newer read. The generation says which counter a number came from, and
@@ -692,6 +782,11 @@ _BOOTSTRAP_JS: Final[str] = f"""
       version: typeof patch.version === 'number' ? patch.version : 0,
       generation:
         typeof patch.generation === 'string' ? patch.generation : (base || {{}}).generation,
+      // KEPT FROM THE HELD READ, never the patch's: the host builds a patch with the
+      // builder's defaults for these two (`subject: 'crewmate'`, `last_user_at: ''`),
+      // so taking them would blank the stamp and mislabel a session page.
+      subject: (base || {{}}).subject,
+      last_user_at: (base || {{}}).last_user_at,
     }};
   }}
   function publish(value) {{
@@ -732,6 +827,8 @@ _BOOTSTRAP_JS: Final[str] = f"""
     var gone = Object.create(null);
     var missing = Array.isArray(read.missing) ? read.missing : [];
     for (var m = 0; m < missing.length; m++) gone[missing[m]] = true;
+    var labels = {json.dumps(_MISSING_LABELS)};
+    var missingLabel = own(labels, read.locale) ? labels[read.locale] : labels.en;
     var nodes = document.querySelectorAll('[{BINDING_ATTRIBUTE}]');
     for (var n = 0; n < nodes.length; n++) {{
       var node = nodes[n];
@@ -741,9 +838,13 @@ _BOOTSTRAP_JS: Final[str] = f"""
         // page last showed, which on a refill is the last value that DID resolve.
         // Blanking it would turn one unresolved path into a page of em dashes.
         node.setAttribute('data-dashboard-missing', 'true');
+        // The marker the host CSS draws after the value, in the reader's words.
+        // See _MISSING_LABELS in dashboard_frame.py.
+        node.setAttribute('data-dashboard-missing-label', missingLabel);
         continue;
       }}
       node.removeAttribute('data-dashboard-missing');
+      node.removeAttribute('data-dashboard-missing-label');
       // Text, never markup. See _BOOTSTRAP_JS's own note in dashboard_frame.py.
       node.textContent = text(read.fields[name]);
       if (agentic[name]) node.setAttribute('data-dashboard-agentic', 'true');
@@ -814,11 +915,27 @@ _BOOTSTRAP_JS: Final[str] = f"""
     }}
     held = version;
     generation = arrivedGeneration;
+    var moved = !sameRead(read, arrived);
     // The FROZEN global is replaced wholesale rather than mutated, for the reason
     // it is frozen: a page holding a reference to the old object keeps reading
     // consistent numbers from it, and nothing half-updates.
     read = arrived;
     publish(read);
+    // NOTHING MOVED, so nothing redraws. Most reads repeat what the page shows (a
+    // reconnect, the fallback, a full read after a patch), and refilling, calling
+    // back and firing the event for them rebuilt the page as if it had reloaded.
+    // THE CLOCK STILL TICKS: a page that draws "idle for 20 min" from `Date.now()`
+    // redraws on this event, so an unchanged read still fires it once a minute.
+    // Filled first, because a page's redraw may reformat the text the fill wrote
+    // (a shortened timestamp) and must start again from the recorded value.
+    if (!moved) {{
+      if (Date.now() - lastEvent < 60000) return;
+      lastEvent = Date.now();
+      fill();
+      window.dispatchEvent(new Event({'"kirocrew-dashboard"'}));
+      return;
+    }}
+    lastEvent = Date.now();
     fill();
     // AFTER the fill, so a callback that reads its own bound element finds the text
     // the host wrote for this push rather than the previous one's. Before the
@@ -827,7 +944,8 @@ _BOOTSTRAP_JS: Final[str] = f"""
     // Notified with WHAT ARRIVED, never with the merged read: `deliver` fires on the
     // presence of a field, so handing it the merge would fire every subscriber on
     // every push and make the callback another spelling of the generic event.
-    notify(data.read);
+    // The merge rides beside it only so a field leaving `missing` unmoved is told.
+    notify(data.read, read);
     window.dispatchEvent(new Event({'"kirocrew-dashboard"'}));
   }});
   if (document.readyState === 'loading') addEventListener('DOMContentLoaded', fill);
@@ -924,6 +1042,10 @@ body { margin: 0; padding: 12px; font: 13px/1.5 var(--font-sans);
   background: var(--bg, light-dark(#ffffff, #12141a)); }
 [data-dashboard-agentic='true'] { border-bottom: 1px dotted var(--muted, #8b8b8b); }
 [data-dashboard-missing='true'] { opacity: 0.55; }
+[data-dashboard-missing='true']::after { content: attr(data-dashboard-missing-label);
+  display: inline-block; margin-inline-start: 0.4em; padding: 0 0.35em;
+  border: 1px dashed currentColor; border-radius: 3px; font-size: 0.8em;
+  line-height: 1.4; white-space: nowrap; vertical-align: baseline; }
 """
 
 #: The language a page renders its own words in when the host names none it ships.

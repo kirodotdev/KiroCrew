@@ -30,35 +30,33 @@ from kiro_crew.cli_server import (
 
 class TestDoctor:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture kept in place; no test of this class calls monkeypatch.undo()
-    def _hermetic_config(self, monkeypatch):
+    def _hermetic_config(self, _floor_monkeypatch):
         """Pin config to a pristine default (see ``_pin_default_config``)."""
-        _pin_default_config(monkeypatch)
+        _pin_default_config(_floor_monkeypatch)
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture kept in place; no test of this class calls monkeypatch.undo()
-    def _hermetic_embeddings_runtime(self, monkeypatch):
+    def _hermetic_embeddings_runtime(self, _floor_monkeypatch):
         """Pin the vendored-runtime probe host-independently: the brazil
         interpreter on a Mac can be darwin/x86_64 under Rosetta, where the
         vendored libs legitimately do not exist (designed degradation)."""
         import kiro_crew.cli_doctor as _doc
 
-        monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
-        monkeypatch.setattr(_doc, "model_file_present", lambda path=None: False)
+        _floor_monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
+        _floor_monkeypatch.setattr(_doc, "model_file_present", lambda path=None: False)
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture kept in place; no test of this class calls monkeypatch.undo()
-    def _hermetic_sandbox(self, monkeypatch):
+    def _hermetic_sandbox(self, _floor_monkeypatch):
         """Pin the Sandbox section host-independently: a CI runner can restrict
         user namespaces with no profile installed, which is a genuine issue on
         that HOST (doctor exits 1 for it) but not the subject of these tests."""
         import kiro_crew.cli_doctor as _doc
 
-        monkeypatch.setattr(_doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace")
+        _floor_monkeypatch.setattr(
+            _doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace"
+        )
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture kept in place; no test of this class calls monkeypatch.undo()
-    def _restore_path(self, monkeypatch):
+    def _restore_path(self, _floor_monkeypatch):
         """Put ``PATH`` back after each doctor run.
 
         The doctor's media section calls ``transcribe.ensure_ffmpeg_in_path()``,
@@ -68,7 +66,7 @@ class TestDoctor:
         change leaking out of the first doctor test in a full run). Recording the
         value through monkeypatch restores it at teardown whatever the doctor did.
         """
-        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+        _floor_monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
 
     def test_doctor_with_kiro(self, tmp_path, capsys, monkeypatch):
         import kiro_crew.cli_doctor as _doc
@@ -292,7 +290,7 @@ class TestDoctor:
     @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 5.6.7.8 22"})
     def test_doctor_remote_shows_ssh_tunnel_hint(self, tmp_path, capsys):
         agent_file = tmp_path / "kirocrew.json"
-        agent_file.write_text("{}")
+        agent_file.write_text("{}", encoding="utf-8")
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         with (
             patch(

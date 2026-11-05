@@ -1,6 +1,6 @@
 """Read the default Kerberos ccache name from the krb5 config, as libkrb5 does.
 
-:func:`kiro_crew.env.krb5_keyring_ccache` asks this module which
+:func:`kiro_crew.env_krb5_keyring.krb5_keyring_ccache` asks this module which
 ``default_ccache_name`` a child would get when ``KRB5CCNAME`` is unset. The
 reader follows libkrb5's lookup order across ``KRB5_CONFIG`` (else
 ``/etc/krb5.conf``) and its ``include`` / ``includedir`` files, opens only

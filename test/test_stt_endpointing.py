@@ -203,6 +203,8 @@ async def test_background_failure_is_swallowed(monkeypatch) -> None:
     ep.note_final("whatever")
     await _drain(ep)  # must not raise
     ws.send_json.assert_not_awaited()
+    # A failed call must release the single-flight latch, or no later final is judged.
+    assert ep._inflight is False
 
 
 async def _drain_until_idle(ep: "stt_stream._Endpointer") -> None:
@@ -288,6 +290,7 @@ async def test_empty_final_does_not_invalidate_pending(monkeypatch) -> None:
     ep.note_final("turn on the lights")  # schedules gen 1
     ep.note_final("")  # empty: must NOT bump gen or schedule
     await _drain_until_idle(ep)
+    assert (ep._gen, ep._finals) == (1, ["turn on the lights"])
     assert bg.await_count == 1
     ws.send_json.assert_awaited_once_with({"type": "endpoint", "complete": True})
 

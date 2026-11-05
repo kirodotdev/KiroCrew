@@ -190,29 +190,17 @@ class TestRestrictedRunStateLifetime:
 class TestSharedBindIdentityLabel:
     """The shared-bind identity write names the backend that served the session.
 
-    ``_bind_shared_handle_impl`` publishes and persists a cleanup identity before any
-    cancellable await, so the value it writes is what a run cancelled in that window
-    leaves behind. A constant here can be correct for exactly one of the backends this
-    path can serve, so it is read from the provider.
-
-    That record is not what a continuation reads: ``_run_inner_impl`` re-captures the
-    label from the same provider right after session acquisition, and that value is
-    what reaches ``state.json``, so a run that completes was always labelled
-    correctly. What the record routes is session-file CLEANUP. With kiro's label on
-    another host's session, ``_cleanup_session_files_sync`` takes the kiro branch,
-    unlinks a path that was never going to exist and returns success -- where the real
-    label returns False, "no cleanup route for this provider", and the prune keeps its
-    retry metadata instead of deleting the run folder over a cleanup that did nothing.
+    ``_bind_shared_handle_impl`` persists it before any cancellable await, and it routes
+    session-file cleanup. With kiro's label on another host's session,
+    ``_cleanup_session_files_sync`` would report a no-op as success and the prune would delete
+    the run folder; the real label returns False and keeps the retry metadata.
     """
 
     async def _bound(self, backend: str):  # type: ignore[no-untyped-def]
         """Drive the real bind against a provider whose backend is *backend*.
 
-        The provider is a REAL ``AcpSessionProvider``, built the way the bind builds
-        one, because ``provider_label`` resolves it by ``isinstance``: a bare
-        ``MagicMock`` answers the default label for every backend, which is precisely
-        the failure this test exists to catch. The backend is carried by the runtime,
-        which is where the provider reads it from in production too.
+        A real ``AcpSessionProvider``: ``provider_label`` resolves by ``isinstance``, and a bare
+        ``MagicMock`` would answer the default label for every backend.
         """
         from kiro_crew.acp.session_provider import AcpSessionProvider
         from kiro_crew.subagent_manager.run import RunEventCoordinator

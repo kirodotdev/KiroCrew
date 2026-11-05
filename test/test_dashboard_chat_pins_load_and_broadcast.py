@@ -93,14 +93,13 @@ async def test_load_transient_io_error_no_destructive_followon(tmp_path, monkeyp
         call_count[0] += 1
         raise PermissionError("transient disk permission error")
 
-    monkeypatch.setattr(type(tmp_path / "chat_pins.json"), "read_text", _failing_read)
+    # The failing read_text lives only inside this context, so it is lifted
+    # before the saved file is read back.
+    with monkeypatch.context() as mp:
+        mp.setattr(type(tmp_path / "chat_pins.json"), "read_text", _failing_read)
+        with pytest.raises(OSError):
+            state.load_chat_pins()
 
-    with pytest.raises(OSError):
-        state.load_chat_pins()
-
-    # Restore read ability for save verification
-    # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that lifts the read_text failure before the saved file is read back, moved verbatim; tracked for a de-flake pass
-    monkeypatch.undo()
     monkeypatch.setattr(state_module, "config_dir", lambda: tmp_path)
 
     # In-memory state preserved — now save it (simulating a subsequent mutation)

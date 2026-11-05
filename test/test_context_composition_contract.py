@@ -108,8 +108,8 @@ _STABLE_TEXT_SHA256 = {
     "critical_rules_channel": "7b7ea4db70ccbc233959938b561281591e3b3c26544b383046942ce229eacf7e",
     "critical_rules_subagent": "9eaa81827b3b0cb392286aa21837b6c17014e0abce484d2013150535102104c9",
     "docs_section": "971b6008afbd9ff048c498c06cffecc6dafc7a58b0df75ff9db0b15cf9e26c09",
-    "member_how_you_work": "0eaf81da81eb98552dd0ee9f0de078b06da2855579f9107adf0bebd1736557b2",
-    "member_how_you_work_unavailable": "861580229057bd9163fa665b6356d947bafa1c8232f368f55a69b67d2ed73b6b",
+    "member_how_you_work": "df9ee9aff3939ab17a682684f48cd06a091911e3e5774bfc3fce764809b7b946",
+    "member_how_you_work_unavailable": "b38545643c06e143e9fe9082e41aa589a13a7082345e0323b21a2a4cfbb9bbf9",
     "reply_answer_only": "f0bd694165ff81cdbe123048042070588b846bd43a224b31adc79d9f8768bfce",
     "reply_concise": "5d3e25d89e682469332237e46373f0e9aac8516eefd63047134d1ec0575aac2a",
     "response_preferences_frame": "08ee149ae459c828213d47643f1cdbd6661d8a77a2223b8be5d0aa6fbb6cdc18",
@@ -152,6 +152,9 @@ def _mask_stable_text(text: str) -> str:
 
 
 def _turn(rig: _Rig, text: str, is_new: bool, **kwargs) -> str:
+    # The matrix pins the bytes of a turn a person sent. An automation turn's
+    # guidance is covered in test_followup_guidance_origin_gate.py.
+    kwargs.setdefault("directive_user_origin", True)
     message, _hook = rig.builder.build_message(text, is_new, **kwargs)
     return message
 
@@ -736,11 +739,11 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "session_context_member_mode": (
-        "758327f19b09f64d46dd8e137d69303353c0cb0645fb7b81f578f65b2200d16b",
+        "ed6df2b66be4315ed1914aeba0f5674bf60d5817cc2db223a1625d84b60da5d8",
         [
             ("unclassified", 64),
             ("agent_identity", 25),
-            ("surface", 1360),
+            ("surface", 1679),
             ("workspace_identity", 371),
             ("docs_pointer", 235),
             ("memory_tools", 425),

@@ -75,13 +75,15 @@ class TestSharedSpellings:
             assert cp.AWS_KEY_ID in pattern, f"{name} no longer carries the shared AWS spelling"
 
         assert cp.JWT_MULTI_SEGMENT in security._CREDENTIAL_PATTERNS.pattern
+        assert security._TOKEN_PARAM_RE.pattern == cp.TOKEN_PARAMETER
 
     def test_redaction_floor_compiles_the_shared_spellings(self) -> None:
         """``log_redaction``'s patterns are exactly the shared strings."""
-        from kiro_crew.log_redaction import _AWS_KEY_ID_RE, _JWT_RE
+        from kiro_crew.log_redaction import _AWS_KEY_ID_RE, _JWT_RE, _TOKEN_PARAM_RE
 
         assert _AWS_KEY_ID_RE.pattern == cp.AWS_KEY_ID_REDACTION
         assert _JWT_RE.pattern == cp.JWT_MULTI_SEGMENT
+        assert _TOKEN_PARAM_RE.pattern == cp.TOKEN_PARAMETER
 
     def test_no_module_spells_the_prefix_group_by_hand(self) -> None:
         """No module under ``src/kiro_crew`` writes the prefix group as a literal.
@@ -108,12 +110,13 @@ class TestSharedSpellings:
         )
 
     def test_siblings_read_their_spelling_from_the_home(self) -> None:
-        """The three sites outside the two original homes compile the shared strings."""
+        """The core sites outside the two original homes compile the shared strings.
+
+        A built-in app that compiles one of them too pins that in its own ``tests/``.
+        """
         from kiro_crew import sel
-        from kiro_crew.apps.builtins.pptx_maker.backend import routes as pptx_routes
         from kiro_crew.metrics import schema as metrics_schema
 
-        assert pptx_routes._ENCODED_CREDENTIAL_RE.pattern == cp.AWS_KEY_ID
         assert metrics_schema._HIGH_ENTROPY_PATTERNS[0].pattern == cp.AWS_KEY_ID
         # SEL shares only the PREFIXES: its body is mixed-case and boundary-bounded,
         # a different pattern rather than another spelling of the same one.

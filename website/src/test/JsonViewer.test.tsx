@@ -170,3 +170,20 @@ describe('JsonViewer long string leaves', () => {
     expect(valueOf(toggle)).toContain('\\"stop\\" at C:\\\\temp\\\\x. TAIL"')
   })
 })
+
+describe('JsonViewer tree toggles', () => {
+  it('say whether their node is open and keep the arrow out of the name', () => {
+    // Depth 2 starts collapsed, so this object has one closed toggle to drive.
+    render(<JsonViewer content={'{"a": {"b": {"c": 1}}}'} />)
+    const closed = screen.getAllByRole('button').filter(b => b.getAttribute('aria-expanded') === 'false')
+    expect(closed).toHaveLength(1)
+    const toggle = closed[0]
+
+    expect(toggle.textContent).not.toMatch(/[▼▶]/)
+    for (const svg of toggle.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('1')).toBeInTheDocument()
+  })
+})

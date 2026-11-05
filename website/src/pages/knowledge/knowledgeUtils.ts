@@ -1,4 +1,5 @@
-import type { Source } from './types'
+import type { IngestionJob, Source } from './types'
+import { i18nT } from '../../i18n/t'
 
 export interface ParsedSourceProps {
   summary?: { topic?: string; themes?: string[] }
@@ -44,6 +45,13 @@ const SYNC_STATUS_LABEL_KEYS: Record<string, string> = {
 export function syncStatusLabel(syncStatus: string, t: (key: string) => string): string {
   const key = SYNC_STATUS_LABEL_KEYS[syncStatus]
   return key ? t(key) : syncStatus
+}
+
+/** The visible label for a row still uploading or finished. A failed row is
+ *  an error and renders through `ErrorNotice` instead, so it has no label here. */
+export function ingestionStatusLabel(status: Exclude<IngestionJob['status'], 'error'>): string {
+  if (status === 'done') return i18nT('pages.knowledge.sourcesList.ingest_status_done')
+  return i18nT('pages.knowledge.sourcesList.ingest_status_uploading')
 }
 
 export function formatSourceSubtitle(source: Source, filesTotal?: number, lastScan?: string): string {

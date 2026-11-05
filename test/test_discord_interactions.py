@@ -598,6 +598,121 @@ class TestInteractions:
         )
 
     @pytest.mark.asyncio
+    async def test_a_long_option_answers_with_its_full_text_not_the_cut_label(self) -> None:
+        """A choice over 80 characters shows a cut label but answers in full."""
+        from kiro_crew.discord.renderer import build_option_components
+
+        d, cli, _ = _dispatcher({"u1"})
+        tag = session_provenance_tag(d.current_session_key("u1"))
+        shared = "Deploy the release to the staging fleet and then run the full smoke suite "
+        long_a = shared + "against region us-east-1 first"
+        long_b = shared + "against region eu-west-1 first"
+        rows = build_option_components([long_a, long_b, "Short"], tag)
+        buttons = rows[0]["components"]
+        assert all(len(b["label"]) <= 80 for b in buttons)
+        assert buttons[0]["label"] == buttons[1]["label"]
+        assert buttons[2]["custom_id"] == f"opt:2:{tag}"
+
+        turns: list[str] = []
+
+        async def _record(msg, **_kw) -> None:
+            turns.append(msg.text)
+
+        d.handle_message = _record
+        await d.on_interaction(self._itx(buttons[1]["custom_id"], label=buttons[1]["label"]))
+
+        assert f"> {long_b}" in [t for t, _ in cli.sent]
+        assert turns == [long_b]
+
+    @pytest.mark.asyncio
+    async def test_the_choice_echo_goes_through_the_display_pass(self, monkeypatch) -> None:
+        """The echo is display text: it is sent as the display pass returns it."""
+        import kiro_crew.discord.transport_dispatch_interactions as tdi
+        from kiro_crew.discord.renderer import build_option_components
+
+        passed: list[str] = []
+
+        def _display(text: str) -> str:
+            passed.append(text)
+            return "[shown]"
+
+        monkeypatch.setattr(tdi, "_redact_transformed", _display)
+        d, cli, _ = _dispatcher({"u1"})
+        tag = session_provenance_tag(d.current_session_key("u1"))
+        choice = "Run the migration on the staging database, then report back " + "x" * 40
+        button = build_option_components([choice], tag)[0]["components"][0]
+
+        async def _record(msg, **_kw) -> None:
+            return None
+
+        d.handle_message = _record
+        await d.on_interaction(self._itx(button["custom_id"], label=button["label"]))
+
+        assert passed == [f"> {choice}"]
+        assert "[shown]" in [t for t, _ in cli.sent]
+        assert f"> {choice}" not in [t for t, _ in cli.sent]
+
+    def test_the_full_choice_map_is_capped_oldest_first(self, monkeypatch) -> None:
+        """A long-running bot keeps at most the cap of full choices; the oldest go first."""
+        from kiro_crew.discord import renderer_components as rc
+
+        monkeypatch.setattr(rc, "_FULL_CHOICES", rc.OrderedDict())
+        monkeypatch.setattr(rc, "_FULL_CHOICES_MAX", 3)
+        refs = []
+        for n in range(5):
+            text = f"{n} " + "x" * 90
+            button = rc.build_option_components([text], "a" * 12)[0]["components"][0]
+            refs.append((button["custom_id"].split(":")[1], text, button["label"]))
+
+        assert len(rc._FULL_CHOICES) == 3
+        # The two oldest are gone: no text, never the cut label. The rest keep theirs.
+        for ref, text, label in refs[:2]:
+            assert rc.full_choice_text("a" * 12, ref, label) == ""
+        for ref, text, label in refs[2:]:
+            assert rc.full_choice_text("a" * 12, ref, label) == text
+
+    def test_a_choice_past_the_length_ceiling_is_not_kept(self, monkeypatch) -> None:
+        """The map is bounded in characters too: an oversized choice is never stored."""
+        from kiro_crew.discord import renderer_components as rc
+
+        monkeypatch.setattr(rc, "_FULL_CHOICES", rc.OrderedDict())
+        huge = "y" * (rc._FULL_CHOICE_MAX_CHARS + 1)
+        at_cap = "z" * rc._FULL_CHOICE_MAX_CHARS
+        buttons = rc.build_option_components([huge, at_cap], "b" * 12)[0]["components"]
+        huge_ref = buttons[0]["custom_id"].split(":")[1]
+        cap_ref = buttons[1]["custom_id"].split(":")[1]
+
+        assert len(rc._FULL_CHOICES) == 1
+        assert rc.full_choice_text("b" * 12, huge_ref, buttons[0]["label"]) == ""
+        assert rc.full_choice_text("b" * 12, cap_ref, buttons[1]["label"]) == at_cap
+
+    @pytest.mark.asyncio
+    async def test_a_cut_choice_not_kept_asks_to_type_instead_of_sending_the_cut_label(
+        self, monkeypatch
+    ) -> None:
+        """After a restart the map is empty: a cut button must not answer with its label."""
+        from kiro_crew.discord import renderer_components as rc
+        from kiro_crew.discord.renderer import build_option_components
+
+        d, cli, _ = _dispatcher({"u1"})
+        tag = session_provenance_tag(d.current_session_key("u1"))
+        long_text = (
+            "Deploy the release to the staging fleet and then run the full smoke suite on us-east-1"
+        )
+        button = build_option_components([long_text], tag)[0]["components"][0]
+        monkeypatch.setattr(rc, "_FULL_CHOICES", rc.OrderedDict())
+        turns: list[str] = []
+
+        async def _record(msg, **_kw) -> None:
+            turns.append(msg.text)
+
+        d.handle_message = _record
+        await d.on_interaction(self._itx(button["custom_id"], label=button["label"]))
+
+        assert turns == []
+        assert any("type it instead" in t for t, _ in cli.sent)
+
+    @pytest.mark.asyncio
     async def test_untagged_option_press_fails_closed(self) -> None:
         """A pre-provenance button press is refused — its origin is unprovable."""
         d, cli, sess = _dispatcher({"u1"})
