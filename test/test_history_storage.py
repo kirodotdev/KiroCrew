@@ -480,6 +480,21 @@ class TestTailReads:
         assert all(m.get("role") != "metadata" for m in got)
         assert got == [{"role": "user", "content": "first"}]
 
+    def test_tail_window_skips_warm_task_brief_rows_before_counting(self, tmp_path):
+        """Brief rows in the tail must not shrink the recent() window."""
+        log = ConversationLog(base_dir=tmp_path)
+        for i in range(6):
+            log.append("t1", "user" if i % 2 == 0 else "assistant", f"m{i}")
+        for kind in ("warm_task_brief_claim", "warm_task_brief_result"):
+            log.append("t1", "assistant", "brief", extra_meta={"kind": kind})
+        log._msg_cache.clear()
+        got = log.recent("t1", max_messages=3)
+        log._tail_reads = False
+        log._msg_cache.clear()
+        full = log.recent("t1", max_messages=3)
+        assert [m["content"] for m in got] == ["m3", "m4", "m5"]
+        assert got == full
+
 
 # ---------------------------------------------------------------------------
 # Finding 0 / 4 — _LRUCache thread safety under concurrent access.
