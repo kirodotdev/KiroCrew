@@ -1171,7 +1171,7 @@ async def test_import_refuses_past_the_slot_cap(monkeypatch):
     state._slots = {f"s{i}": object() for i in range(500)}
     resp = await st.api_chat_slot_import(_make_request(state, _valid()))
 
-    assert resp.status == 429
+    assert resp.status == 409
     assert json.loads(resp.body)["code"] == "transfer_slot_cap"
 
 
