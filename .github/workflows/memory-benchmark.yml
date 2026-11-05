@@ -266,7 +266,9 @@ jobs:
                 # `compare` refuses when the two runs disagree on corpus
                 # fingerprint, ingest config, retrieval config or embedder, so a
                 # mismatch prints "not comparable" instead of a plausible number.
-                kirocrew bench compare "$OLD" "$NEW" || true
+                # 2>&1: a report that cannot be read is refused on stderr, and the
+                # reason belongs in comparison.md beside the other sections.
+                kirocrew bench compare "$OLD" "$NEW" 2>&1 || true
               fi
               echo
             done
