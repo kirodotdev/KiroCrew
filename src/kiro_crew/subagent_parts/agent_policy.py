@@ -675,6 +675,36 @@ _PARENT_ALLOWLIST_MEMO: AgentsDirMemo[_ScopeAllowlists] = AgentsDirMemo()
 _PARENT_PROJECT_ALLOWLIST_MEMO: AgentsDirMemo[_ScopeAllowlists] = AgentsDirMemo()
 
 
+#: The spec files that made the last UNKNOWN answer for each parent template, so
+#: the refusal can name them (:func:`_vet_parent_available_agents`). The answer
+#: itself is memoized per directory revision, so this is written on the scan that
+#: produced it and read on every refusal that answer causes. Bounded like
+#: :data:`_UNRESOLVED_PARENT_WARNED`.
+_UNREADABLE_SPECS: dict[str, tuple[str, ...]] = {}
+
+
+_UNREADABLE_SPECS_MAX = 256
+
+
+_UNREADABLE_SPECS_SHOWN = 3
+
+
+def _note_unreadable_specs(parent_template: str, paths: Sequence[Path]) -> None:
+    """Remember which files kept *parent_template*'s spec from being read."""
+    if parent_template in _UNREADABLE_SPECS or len(_UNREADABLE_SPECS) < _UNREADABLE_SPECS_MAX:
+        _UNREADABLE_SPECS[parent_template] = tuple(str(path) for path in paths)
+
+
+def _unreadable_specs_hint(parent_template: str) -> str:
+    """``" (could not read: <files>)"`` for the refusal, ``""`` when none is known."""
+    files = _UNREADABLE_SPECS.get(parent_template, ())
+    if not files:
+        return ""
+    shown = [redact_via_context(f) for f in files[:_UNREADABLE_SPECS_SHOWN]]
+    more = len(files) - len(shown)
+    return f" (could not read: {', '.join(shown)}{f' (+{more} more)' if more else ''})"
+
+
 def _scan_parent_spawn_allowlists(
     agents_dir: Path,
     parent_template: str,
@@ -761,6 +791,7 @@ def _scan_parent_spawn_allowlists(
                 parent_template,
                 ", ".join(repr(path.name) for path in unreadable),
             )
+            _note_unreadable_specs(parent_template, unreadable)
             return None, False
         declared = [data for data, path in rows if path.stem == parent_template]
     lists = (spawn_allowlist(data) for data in declared)
@@ -932,6 +963,7 @@ def _vet_parent_available_agents(
             f"the parent agent {redact_via_context(parent_template)!r} spec could not be "
             "read, so its toolsSettings.subagent.availableAgents is unknown; refusing "
             "(fail-closed) -- fix or remove the unreadable spec file"
+            f"{_unreadable_specs_hint(parent_template)}"
         )
     if not allowlists:
         return None

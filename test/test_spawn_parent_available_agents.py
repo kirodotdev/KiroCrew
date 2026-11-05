@@ -822,6 +822,25 @@ class TestProjectScopeParent:
         _write_spec(project / ".kiro" / "agents", "lead")
         assert sa.parent_template_allowlists("dashboard:repo", "lead") == ()
 
+    def test_the_refusal_names_the_project_spec_that_could_not_be_read(
+        self, project: Path, agents_dir: Path, resolver: list[str]
+    ) -> None:
+        """A valid user-level parent and one broken project ``.md`` spec.
+
+        The refusal stays fail-closed and names the file that could not be
+        read, so the operator can find it without the gateway log.
+        """
+        _write_spec(agents_dir, "lead")
+        broken = project / ".kiro" / "agents" / "helper.md"
+        broken.write_text(
+            "---\nname: helper\ndescription: Reviews: the diff\n---\nbody\n", encoding="utf-8"
+        )
+        lists = sa.parent_template_allowlists("dashboard:repo", "lead")
+        assert lists is None
+        denial = sa._vet_parent_available_agents(("lead", lists), "agent1")
+        assert denial is not None and "could not be read" in denial
+        assert str(broken) in denial
+
     def test_an_unreadable_project_spec_is_unknown(
         self, project: Path, resolver: list[str]
     ) -> None:
