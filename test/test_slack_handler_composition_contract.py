@@ -206,6 +206,7 @@ _SPLIT_HELPERS: dict[str, str] = {
     "_AnswerStream": "stream",
     "_SlackTurn": "turn",
     "_answer_permission_request": "permission_ladder",
+    "_batch_refusal_outcome": "permission_ladder",
     "_bang_agent": "commands",
     "_bang_allowlist": "commands",
     "_bang_channel": "commands",
