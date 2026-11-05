@@ -23,7 +23,7 @@ vi.mock('../../hooks/useAvailableModels', () => ({
 /* Plain-DOM stand-in for SimpleSelect, for the documented harness limit: the
    real one is a Radix Select, whose discrete events commit via flushSync and
    throw "Should not already be working." inside Testing Library's act().
-   test/IssueRadarCrewEditor.test.tsx stubs the same component for the same
+   apps/issue-radar/IssueRadarCrewEditor.test.tsx stubs the same component for the same
    reason. The stub MIRRORS the real trigger gate (SimpleSelect's selectable():
    a value not in options renders triggerFallback ?? clearLabel, '' renders
    clearLabel) so the unavailable-pin display case is testable here — a stub

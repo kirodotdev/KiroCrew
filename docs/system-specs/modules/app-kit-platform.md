@@ -683,6 +683,10 @@ them), and the next app to leave adds a gate that does the same, never another
 scanner. An app that core never calls, as with Auto-Improvement, needs no seam: its
 gate pins that direction and the reasoned rows left (see `auto-improvement.md`,
 "Repository boundary").
+Issue Radar's gate (`test/test_core_issue_radar_decoupling.py`) pins the rows
+that still name it, chiefly its three agent tools, which the data-only
+`apps.builtin_agent_tools` seam cannot carry (`issue-radar.md`, "Repository
+boundary").
 
 ## 0. Three-axis classification: origin, resources, lifecycle
 

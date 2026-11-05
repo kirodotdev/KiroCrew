@@ -818,16 +818,6 @@ def test_the_app_backend_lifecycle_lock_and_its_directory_are_owner_only(home: P
     assert _readable_by_others(home) == []
 
 
-def test_the_issue_radar_config_lock_is_owner_only(home: Path) -> None:
-    from kiro_crew.apps.builtins.issue_radar.backend import store_repos
-
-    with store_repos._config_lock():
-        pass
-
-    assert _mode(store_repos.data_dir() / "config.json.lock") == 0o600
-    assert _readable_by_others(home) == []
-
-
 def test_the_dependency_ledger_lock_is_owner_only(home: Path) -> None:
     from kiro_crew.apps import dependency_ledger
 
