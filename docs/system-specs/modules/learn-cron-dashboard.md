@@ -922,6 +922,15 @@ the job — the job holds the resolved script path and folder id, which differ
 between hosts for one manifest. Pinned by `test/test_app_cron_manifest_resync.py`
 against a real `CronService`.
 
+The re-sync reaches an update only where an update calls it. Every route that
+replaces an installed, still-enabled app's files calls
+`routes_install._resync_app_crons_after_update` after re-registering: both
+branches of `POST /api/apps/{name}/update` (local source and registry source),
+and `POST /api/apps/registry/install` and `/install-stream` over an app already
+installed. A fresh install calls nothing: it leaves the app disabled, and the
+enable registers the crons. Pinned per route by
+`test/test_app_registry_update_cron_resync.py`, also against a real `CronService`.
+
 ### Run Time Limit (`timeout_secs`)
 
 A job's `timeout_secs` is its whole-run budget: `_execute_with_timeout` stops a run still going after it and records the run as timed out (`Timed out after <N>s`). Valid values are `1..86400`, and a job without one, or with a stored value outside that range, runs under `_JOB_TIMEOUT_SECS` (1800 s). A `timeout` or `timeout_secs` that `int()` cannot read, an infinite float included, is refused with `ValueError` on add and update alike (`fields.whole_seconds`), as `every_secs` is. `effective_wake_budget` (`cron_service/execution.py`) is that rule. A command or script job also has `timeout`, its subprocess bound, and its `timeout_secs` must cover that bound plus cleanup (see the App SDK allowlist above).
