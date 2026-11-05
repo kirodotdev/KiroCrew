@@ -227,6 +227,36 @@ class TestTheLeadCanDispatch:
         assert {"srv", "kirocrew-dashboard", "kirocrew-work"} <= set(seen[-1])
         assert "autoApprove" not in spec["mcpServers"]["srv"]
 
+    def test_the_tool_search_loader_is_auto_approved(self, installed):
+        """The dispatch verbs are deferred under MCP Tool Search, so the load that
+        reaches them must not prompt first -- the conductor's rule."""
+        assert "tool_search" in installed["tools"]
+        assert "tool_search" in installed["allowedTools"]
+
+    def test_the_loader_grant_passes_through_the_governance_ceiling(self, tmp_path, monkeypatch):
+        """A ceiling that withholds ``tool_search`` keeps it off ``allowedTools`` while
+        it stays mounted, so the load prompts instead of vanishing."""
+        from kiro_crew.agent_materialization import auto_approve
+
+        monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+        monkeypatch.setattr(auto_approve, "_may_auto_approve", lambda ref: ref != "tool_search")
+        service_agents._install_team_lead_agent()
+        spec = json.loads((tmp_path / TEAM_LEAD_AGENT_FILENAME).read_text(encoding="utf-8"))
+        assert "tool_search" in spec["tools"]
+        assert "tool_search" not in spec["allowedTools"]
+        assert "@kirocrew-dashboard/session_create" in spec["allowedTools"]
+
+    def test_no_loader_grant_when_the_inherited_tools_drop_it(self, tmp_path, monkeypatch):
+        """An operator whose tools leave out the loader gets no dead grant for it."""
+        base = agent.build_agent_config()
+        base["tools"] = [t for t in base["tools"] if t != "tool_search"]
+        monkeypatch.setattr(agent, "build_agent_config", lambda: json.loads(json.dumps(base)))
+        monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+        service_agents._install_team_lead_agent()
+        spec = json.loads((tmp_path / TEAM_LEAD_AGENT_FILENAME).read_text(encoding="utf-8"))
+        assert "tool_search" not in spec["tools"]
+        assert "tool_search" not in spec["allowedTools"]
+
     def test_it_does_not_mount_the_panel_server(self, installed):
         assert "kirocrew-panel" not in installed["mcpServers"]
         assert not any("kirocrew-panel" in t for t in installed["tools"])

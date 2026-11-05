@@ -46,12 +46,16 @@ logger = logging.getLogger("kiro_crew.context")
 
 _WIDGET_TOKEN = "{{WIDGET_BLOCK}}"
 
-#: Built-in agents whose spec prompt asks for widgets (the conductor's
-#: introduction card and task board) and so get the per-surface widget pointer
-#: in their ``[AGENT SYSTEM PROMPT]`` block. ``kirocrew-ledger-conductor`` is the
-#: conductor's deprecated alias with the same body. ``kirocrew-worker`` is absent
-#: on purpose: it reports to the work ledger, not to a person.
-WIDGET_BLOCK_AGENTS = frozenset({"kirocrew-conductor", "kirocrew-ledger-conductor"})
+#: Built-in agents that draw for a person in the dashboard chat (the conductor's
+#: introduction card and task board, a team lead's progress) and so get the
+#: per-surface widget pointer in their ``[AGENT SYSTEM PROMPT]`` block. Each maps
+#: the ``widgets`` / ``living-ui`` / ``artifacts`` skills the pointer names.
+#: ``kirocrew-ledger-conductor`` is the conductor's deprecated alias with the same
+#: body. ``kirocrew-worker`` is absent on purpose: it reports to the work ledger,
+#: not to a person.
+WIDGET_BLOCK_AGENTS = frozenset(
+    {"kirocrew-conductor", "kirocrew-ledger-conductor", "kirocrew-team-lead"}
+)
 
 
 def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool:
