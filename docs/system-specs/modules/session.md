@@ -204,8 +204,9 @@ not today), posted as a plain message without a card or status chip, and no
 model call is made. The line claims nothing about what waits:
 a question asked in prose before the owner left is the message right above it.
 Otherwise the slot's `preparing` flag shows "Preparing your catch-up…" in the
-chat's working indicator while the gateway reads its inputs and makes one
-tool-free background model call; the finished message posts while the flag is
+chat's working indicator while the gateway reads its inputs and writes the
+brief (the wake turn below, else one tool-free background model call); the
+finished message posts while the flag is
 still up, so it replaces the indicator in place. The claim and every staleness
 check use the first read's fingerprint; what the brief says comes from the
 re-read made once the claim is on disk, so a worker report that lands in
@@ -258,8 +259,8 @@ The model returns its catch-up lines as `lines` (at most 12), each
 `{text, kind, facts}` with `kind` one of `pr`, `task`, `file`, `deploy`,
 `ticket`, `none`. Before the grounding scans the gateway keeps a line only
 when every id in `facts` is a key of the fact table, a `pr` or `task` line
-lists a fact of its own kind, and its kind is not `file`, `deploy` or
-`ticket` (no fact covers those yet); no text is scanned for this. `body`
+lists a fact of its own kind (a `none` line needs none); only a wake check
+is a `file`, `deploy` or `ticket` fact; no text is scanned for this. `body`
 is asked for pictures only; the gateway enforces no picture count.
 Known limit: a `none` line naming a task or file is not caught; a pull
 request in one still fails the `#N` grounding check. Words in `body` are not citation-checked
@@ -273,6 +274,33 @@ waited and each live read, without read times); when the newest delivered
 brief's digest equals the new one and the thread said nothing since the away
 anchor, the return sends nothing and calls no model. A PR whose read failed
 is written as "not checked since HH:MM", citing its fact.
+
+**Wake turn** (`warm_task_brief_wake.py`, RFC section 3.8 as amended
+2026-11-05). On the first write of a return, before the one-call brief, the
+gateway runs one turn of the thread's crewmate in a fresh session
+(`thread:<slot>:warm-wake`, a dashboard surface for governance and the
+audit log, destroyed after) through
+`DashboardState.run_background_turn`, under `ToolApprovalPolicy.READ_ONLY`
+(the Reads mode's classifier with reject as the fallback, so no approval card
+and no write: it closes no task and writes no ledger) and the read-only spec
+of a thread reply (`publish_readonly_spec`, or `side_read_only`). The prompt
+is the one-call prompt with its tool ban replaced: the turn may read files,
+deployments and tickets, its calls are numbered `t1`, `t2`, ... in call
+order, and it returns the same JSON plus `checks`, each
+`{id: c1..c8, kind: file|deploy|ticket, label, result, tool_calls}`. A check
+stays only when every call it cites completed in this turn; it takes the next
+`fN`, `source: wake`, and `evidence` (the cited calls' tool-call ids, the
+only proof stored), and lines citing its `cN` are renamed to it. Limits:
+`WARM_TASK_BRIEF_WAKE_TIMEOUT_SECS = 180`, `WARM_TASK_BRIEF_WAKE_MAX_TOOL_CALLS = 15` (`max_turns`),
+`WARM_TASK_BRIEF_WAKE_MAX_PER_THREAD_PER_DAY = 6` per chat per local day (in memory: a gateway restart
+resets the count). It runs only when the crewmate's own chat runs on the
+default harness the wake session starts on (no pin or member route
+elsewhere). The one-call brief runs instead, once, on a timeout, a failed
+or brief-less turn, the cap, or a harness that does not qualify. A typed
+owner row, a reset or a close during the wake stops it
+(`cancel_warm_task_brief`) and abandons the brief: no one-call brief is made,
+since none could post. Nothing is retried, and a retry after a changed snapshot
+never wakes.
 
 The prompt asks for parts in order: the goal, what changed since the owner
 left (each fact with source and time), numbered asks (what, why only the

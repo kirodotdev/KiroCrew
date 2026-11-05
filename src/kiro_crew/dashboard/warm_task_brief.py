@@ -36,6 +36,7 @@ from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import warm_task_brief_facts as facts
 from kiro_crew.dashboard import warm_task_brief_inputs as inputs
+from kiro_crew.dashboard import warm_task_brief_wake as wake
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.slot_preparing import preparing_message
 from kiro_crew.dashboard.slot_retention import _MAX_FOREGROUND_KEY
@@ -321,7 +322,8 @@ class TaskSnapshot:
 
 
 def cancel_warm_task_brief(state: "DashboardState", slot_key: str) -> None:
-    """Cancel one in-flight brief before model acquisition starts."""
+    """Cancel one in-flight brief before model acquisition starts; a wake stops too."""
+    wake.stop(slot_key)
     tasks = getattr(state, "_warm_task_brief_tasks", None)
     task = tasks.get(slot_key) if isinstance(tasks, dict) else None
     current = asyncio.current_task() if task is not None else None
@@ -1561,10 +1563,9 @@ def _posted_text(brief: "Brief", content: str) -> str:
 
 def _posted_model_text(brief: "Brief") -> str:
     """The model-written strings exactly as the row posts them: each
-    ``meta.brief`` field, and the body as ``content`` carries it. The PR, SHA
-    and time scans read this; the gateway's own waiting cards are not model
-    text."""
-    return brief.model_text() + "\n" + _inert_body(brief.body)
+    ``meta.brief`` field, the body as ``content`` carries it, and wake checks.
+    The PR, SHA and time scans read this; gateway cards are not model text."""
+    return "\n".join([brief.model_text(), _inert_body(brief.body), *wake.words(brief.checked)])
 
 
 def _names_an_unknown_pr(posted: str, known: set[int]) -> bool:
@@ -1768,8 +1769,9 @@ async def _generate(
     anchor: float | None,
     live: tuple[dict[str, Any], ...] = (),
     now: float | None = None,
+    calls: wake.Calls | None = None,
 ) -> tuple[str, str]:
-    """One tool-free background model call over *fresh*: ``(text, source)``,
+    """The wake turn, else one tool-free model call, over *fresh*: ``(text, source)``,
     with "" text on any failure. *source* is every text value of the prompt's
     input, decoded, one per line: what the PR-number post-check reads. The JSON
     form would hide a reference after an escape (``\\n#222`` reads ``n#222``)."""
@@ -1795,7 +1797,9 @@ async def _generate(
         )
         state._warm_task_brief_model_active.add(slot.key)
         try:
-            text = await run_bg_oneliner(
+            if (woken := await wake.run(state, slot, cfg, prompt, calls)) is None:
+                return "", source  # stopped: the owner typed or left; nothing would post
+            text = woken or await run_bg_oneliner(
                 state.sessions,
                 prompt,
                 model=cfg.agent.resolve_model("background"),
@@ -1934,7 +1938,8 @@ async def _run_warm_task_brief(
             read_left -= time.monotonic() - read_started
             digest = facts.facts_digest(fresh.ledger_digest, fresh.waiting, live)
         asked_at = time.time()
-        text, source = await _generate(state, slot, fresh, anchor, live, now=asked_at)
+        calls = None if attempt else wake.Calls()  # one wake per return, never on a retry
+        text, source = await _generate(state, slot, fresh, anchor, live, asked_at, calls)
         # Once the indicator shows, the result lands as ordinary history even
         # while the owner is away from the thread. A turn that started
         # meanwhile defers publication until it ends.
@@ -1973,7 +1978,7 @@ async def _run_warm_task_brief(
     # is marked so the next return is not read as already caught up.
     # The scans run last, on the exact strings the row would post.
     items = inputs.open_item_entries(fresh.work_items, anchor, work_item_is_terminal)
-    checked = facts.checked_facts(live, items)
+    brief, checked = wake.with_checks(brief, text, calls, facts.checked_facts(live, items))
     brief = cast(Brief, facts.checked_brief(brief, checked, facts.live_links(live)))
     content = _brief_text(brief, language)
     miss = _grounding_miss(brief, content, inputs.pr_numbers(source), grounding, clocks)
