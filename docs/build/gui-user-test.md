@@ -23,7 +23,7 @@ while the code holding credentials is not. `pr-readiness.yml` does not read this
 |---|---|
 | `.github/workflows/gui-user-test.yml` | Triggers, boot, run, artifact, run summary, nightly issue, lane status. |
 | `scripts/gui-user-test/boot.sh` | Xvfb -> `seed_home.py` -> `python -m kiro_crew gateway --test-mode --approval yolo --no-crons` on the packaged fake ACP backend -> Chromium at the dashboard URL. Writes `target.env` (origin, one-time token and the gateway session cookie, mode 0600) and `pids`. Also stages the sample notes folder and the sample project at a fixed path (see "Seeds" below). |
-| `scripts/gui-user-test/seed_home.py` | Copies a fixture into `$KIROCREW_HOME` through `kiro_crew.seed`, marks the install onboarded (including `dashboard.crewmates_onboarded`), writes `config.agents.default` and then `config.agents.<slug>` for each `--member` so the Mates page has a roster, and with `--project` gives the pinned starter session (`dashboard_starter.jsonl`) the staged sample project. |
+| `scripts/gui-user-test/seed_home.py` | Copies a fixture into `$KIROCREW_HOME` through `kiro_crew.seed`, marks the install onboarded (including `dashboard.crewmates_onboarded`), writes `config.agents.default` and then `config.agents.<slug>` for each `--member` so the Bots page has a roster, and with `--project` gives the pinned starter session (`dashboard_starter.jsonl`) the staged sample project. |
 | `scripts/gui-user-test/teardown.sh` | Kills the three process groups and removes the scratch home, the browser profile and the staged sample folders. |
 | `test/gui_user/harness.py` | The screenshot -> Bedrock Messages API -> action loop with the step, time and budget gates. |
 | `test/gui_user/x11.py` | Screenshots (Pillow `ImageGrab`) and input (`xdotool`); coordinate scaling, key aliases and argv building are pure and unit-tested. |
@@ -180,7 +180,7 @@ in the same PR as the UI and re-run it on demand (below) before merging.
 needs and must agree with that boot, because the target is booted once per run.
 
 Nothing resets the target between scenarios, so a scenario sees whatever earlier
-ones wrote: a mate chat posts a notification and a create scenario adds a
+ones wrote: a Bot chat posts a notification and a create scenario adds a
 mate. A scenario that reads the boot state (an empty inbox, a one-card roster)
 sets `preconditions.fresh_target: true` and must not write anything itself.
 `scenarios.select` runs every such scenario first, before the rest in file-name
@@ -235,13 +235,13 @@ the whole root, sample project included.
 
 One boot also means one roster: every scenario meets the members `GUI_MEMBERS` seeded
 plus whatever an earlier scenario created. A seeded member has an empty DM thread, and
-the Mates page lists a mate unasked only once its thread holds a message or the
+the Bots page lists a Bot unasked only once its thread holds a message or the
 user starred it (`docs/request-for-change/rfc-session-template-vs-crewmate.md`, rule 3);
 until then the roster search is the one door to it. A scenario that opens a seeded
 member's card therefore tells the tester to type its name into the search box first,
-exactly as a person reaches an unused mate; the seed does not pretend the user
+exactly as a person reaches an unused Bot; the seed does not pretend the user
 already chatted with it. So a flow that exists only for an EMPTY
-roster -- the empty Mates page's hero, shown while `config.agents` holds
+roster -- the empty Bots page's hero, shown while `config.agents` holds
 nothing beyond `default` -- cannot be reached in this lane and has no scenario;
 `seed_home.py` also sets the legacy `dashboard.crewmates_onboarded` flag, which
 nothing reads any more. Giving
@@ -269,7 +269,7 @@ navigation lands on the browser's "Leave site?" prompt over that form. The same 
 profile, so a per-device switch (Show Timestamps, a feature preview)
 that a scenario flips is still flipped when the next scenario starts. A scenario that
 flips one either puts it back before it ends or leaves a state nothing later depends on
-(on older builds the members scenarios leave the Mates preview on), and it words each switch step
+(on older builds the members scenarios leave the Bots preview on), and it words each switch step
 as the position to leave the switch in ("make sure it is ON -- click it once if it is
 off") rather than as a click, so a retry that starts from a half-finished attempt
 converges instead of inverting it.

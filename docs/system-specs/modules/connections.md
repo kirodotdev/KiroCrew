@@ -1198,7 +1198,7 @@ schema with no slot for it (#27711). The Connections mint itself runs on
 kiro-cli, so Connect stays on every backend and the grant it writes is real for
 kiro-cli chats; whether a KAS chat can use that grant is #24693 / #24677's
 question. So while the resolved `agent.acp_backend`
-lacks the capability (crewmate threads are not read: that field resolves to KAS on every install),
+lacks the capability (Bot threads are not read: that field resolves to KAS on every install),
 `/api/connections/status` marks every pre-registered row `backendLacksOauth`,
 connected or not. The card states it without adding a tip or heading key
 (connection-card-caveat-tip): inside the tip beside Connect; on a connected row

@@ -128,24 +128,24 @@ handing it the authored name of a contested agent is refused
 check at every spawn, mode switch and session start). A pin is read at each session
 start, so a new session (the card's retry
 included) runs the pinned file; a running session's later spec reads (its spawn allowlist and tool policy) follow the current pin, as they follow an edit to the file itself. Prompt and member-essential readers use
-`session_agent_spec_path` in both user and mate scope, and read-only side sessions
+`session_agent_spec_path` in both user and Bot scope, and read-only side sessions
 read their base through the same path resolver. User-level skill scope resolves
 `declared_spec_claim` from the hardened parsed-spec snapshot, preserving its warm-read
 cache while applying the current pin on each lookup; the selected file anchors relative
 skill URIs. A project spec still takes precedence over a user-level pin. Strict skill
 scope refuses an ambiguous or broken choice rather than using another claimant's mapping.
 
-**A spec built for one session.** A crewmate's worker runs a spec built per
+**A spec built for one session.** A Bot's worker runs a spec built per
 session: the source-defined `kirocrew-mate-worker` base (generated, with the
-conductor, into `~/.kiro/mates/agents/`, which kiro-cli does not list) plus that crewmate's
+conductor, into `~/.kiro/mates/agents/`, which kiro-cli does not list) plus that Bot's
 own additions and the tools it switches off (`mate_worker.worker_session_spec`,
-the one harness-neutral seam; crew-mode.md, "The worker runs on its crewmate's
+the one harness-neutral seam; crew-mode.md, "The worker runs on its Bot's
 backend"). It is carried the way a member chat's saved spec is, so it runs on the
 hosts in `ACP_BACKENDS_MATE_WORKER_KIT` and is refused with the member chat's
 codes elsewhere (harness-parity.md). KAS takes every agent over the wire per
 session, so its projection reads the seam. Its gateway-routed servers come from
-the crewmate's own broker overlay, found by the session's key, and KAS subtracts
-and injects that one set (architecture/mcp.md, "Crewmate overlays"); a server the
+the Bot's own broker overlay, found by the session's key, and KAS subtracts
+and injects that one set (architecture/mcp.md, "Bot overlays"); a server the
 gateway does not route is declared on the wire as before. claude and codex, the mirrored hosts in the
 set, build their `session/new` `mcpServers` array from `session_mcp_projection`,
 which reads the seam for a worker session by its key, so the worker's own servers
@@ -154,8 +154,8 @@ worker whose base is absent or unreadable is refused there (`WorkerKitUnreadable
 as on KAS, rather than run on the control plane alone. Its
 prompt reaches both in the `[AGENT SYSTEM PROMPT]` block, which reads the same seam
 by the session key (`context_assembly.agent_spec._crewmate_worker_prompt`), so the
-worker's own principles and the crewmate's prompt follow the base there too. The
-crewmate's addition is measured against the on-disk worker base, as KAS's is, so a
+worker's own principles and the Bot's prompt follow the base there too. The
+Bot's addition is measured against the on-disk worker base, as KAS's is, so a
 file that repeats that base (one copied from the default template) adds nothing. Only
 the hosts in `ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT`, whose mirrors project no
 spec prompt, get that addition; KAS's block stays the base, as its wire spec carries both. The
@@ -218,7 +218,7 @@ acting for. It is
 a host question rather than a declared seam — a harness declares nothing about it —
 and the answer does not vary by backend.
 
-`kirocrew-guide` is emitted into the default spec (every mate and dashboard
+`kirocrew-guide` is emitted into the default spec (every Bot and dashboard
 session on kiro-cli and KAS mounts it from there; the CC projection carries it like
 any spec entry). It is not part of the control plane, so the codex, opencode and
 goose mirrors withhold it on the same rule they withhold every other managed Crew
@@ -726,7 +726,7 @@ same commit.
 | A remote MCP sign-in is offered only for the server the user names, and stays signed in across sessions. Unknowns: #29275 item 9. Pinned by `test/test_kas_mcp_sign_in.py`, `test/test_kas_mcp_secret_storage.py`, `test/test_chat_runner_mcp_sign_in_ask.py` | unknown | ok: host-auth callback (`ACP_BACKENDS_HOST_AUTH_CALLBACK`) and a stored-grant vault | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown |
 | A changed MCP server set reaches a RUNNING session. Pinned by `test/test_mcp_hot_reload.py`, `test/test_acp_strands_mcp_relaunch.py` | ok: file watcher (`ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD`) | ok: projection re-sent (`ACP_BACKENDS_MCP_WIRE_REINJECT`) | ok: relaunch and `session/load` (`ACP_BACKENDS_MCP_RELAUNCH_RELOAD`) | gap: next session only | gap: next session only | gap: next session only | gap: next session only | gap: next session only | gap: next session only | gap: next session only |
 | A spec with `"tools": []` gets no tools. Pinned by `test/test_agent_sdk_capabilities.py`, `test/test_pi_zero_tool_ban.py`, `test/test_claude_zero_tools.py` | ok (`ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`) | ok | ok | ok: no tool is mounted, so no settings allow rule can pre-approve one (`claude/zero-tools-refused-live.jsonl`) | gap: its runtime path has no refusal | ok | ok | ok | ok | gap: it reads files without a permission request |
-| A crewmate's worker runs on its crewmate's spec and template policy. Pinned by `test/test_mate_worker_harnesses.py` | gap: refused before spawn | ok (`ACP_BACKENDS_MATE_WORKER_KIT`, `agent_sdk/backends_members.py`) | gap: refused (credential mask) | ok | ok (`codex/worker-kit-live.jsonl`) | gap: refused | gap: refused | gap: refused | gap: refused | gap: refused |
+| A Bot's worker runs on its Bot's spec and template policy. Pinned by `test/test_mate_worker_harnesses.py` | gap: refused before spawn | ok (`ACP_BACKENDS_MATE_WORKER_KIT`, `agent_sdk/backends_members.py`) | gap: refused (credential mask) | ok | ok (`codex/worker-kit-live.jsonl`) | gap: refused | gap: refused | gap: refused | gap: refused | gap: refused |
 | A per-template MCP addition reaches a session of an agent Crew does not own. Pinned by `test/test_template_mcp_additions.py` | gap: no per-session channel for a spec Crew does not own | ok (`ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN`) | gap: no live capture | ok | ok | gap: no live capture | gap: broker stubs only | gap: no live capture | gap: no live capture | gap: no live capture |
 | `/compact` works, and the auto-compact threshold is acted on. Pinned by `test/test_compaction_other_backends.py`, `test/test_auto_compact_gate.py` | ok (`ACP_BACKENDS_COMPACT`, `agent_sdk/backends_turns.py`) | ok: `/compact`, and the engine compacts on its own (`ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`) | gap: no compaction path; the threshold is declined with a warning | ok | ok | ok | ok | ok | gap: the session is recycled at the threshold (`ACP_BACKENDS_CONTEXT_RECYCLE`) | ok |
 | `/clear` starts a fresh conversation. Pinned by `test/test_slash_command_no_channel.py` | ok: native | ok: answered by the dashboard (`ACP_BACKENDS_LOCAL_CLEAR`) | ok: answered by the dashboard | ok: answered by the dashboard (`ACP_BACKENDS_LOCAL_CLEAR`) | ok: answered by the dashboard | ok: answered by the dashboard | ok: answered by the dashboard | ok: the harness runs it | ok: answered by the dashboard | ok: answered by the dashboard |

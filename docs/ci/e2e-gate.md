@@ -334,10 +334,10 @@ supplies these recordings; source authoring alone is not rendered evidence.
 Its retention is seven days, and it does not fail when setup produced no images.
 
 `website/playwright/dashboard-preview-link.spec.ts` opens the link
-`dashboard_preview` hands a mate and asserts that it resolves: the Members page
+`dashboard_preview` hands a Bot and asserts that it resolves: the Members page
 draws the staged page under its **Preview, not applied** label, and the dashboard read accepts the
-mate the link names. Before the browser starts, the harness
-(`test_playwright_e2e._stage_dashboard_preview`) seeds one mate in the disposable
+Bot the link names. Before the browser starts, the harness
+(`test_playwright_e2e._stage_dashboard_preview`) seeds one Bot in the disposable
 config, stages the `standup` template for it with the production store, and passes
 the link that store's `wire()` returns in `KIROCREW_E2E_DASHBOARD_PREVIEW`. The spec
 never builds the link itself. `standup` is not the default page, so a tab still
