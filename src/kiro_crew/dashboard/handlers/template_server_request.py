@@ -20,8 +20,13 @@ Three routes, split the way the change cards are:
 * ``POST /api/agents/detail/{name}/mcp-additions`` and
   ``DELETE /api/agents/detail/{name}/mcp-additions/{server}`` -- the browser half,
   owner-only cookie auth, hooked by the card engine. The POST is a card step
-  only (it records the card it ran under); the DELETE is that card's Undo, and
+  (it records the card it ran under); the DELETE is that card's Undo, and
   with a ``card_id`` removes the addition only when that card recorded it.
+  Settings > Developer is the one other caller, with no card: it records the
+  opt-in sets in :data:`MANAGED_MOUNT_ONLY_SETS` on the default agent, sending no
+  ``entry`` because the browser cannot know the managed launch line and the
+  gateway builds it. The record keeps :data:`SETTINGS_CARD_ID` as its card id, and
+  the Settings Remove is its DELETE without one.
 
 After either write the agent specs are rebuilt (the installers merge the record)
 and running sessions pick the change up live where every live process can
@@ -47,6 +52,42 @@ logger = logging.getLogger(__name__)
 OP_REQUEST_SERVER = "cards.request_server"
 
 _BODY_KEYS = frozenset({"server", "source", "registry_id", "reason"})
+
+#: The opt-in managed sets an owner may mount on the default agent with no
+#: ``entry`` in the body, each with the ``mcp-*`` subcommand it runs. The gateway
+#: builds the entry (``agent._managed_opt_in_entry``), which pre-approves nothing.
+#: A closed list: every other server still names its own entry.
+MANAGED_MOUNT_ONLY_SETS: dict[str, str] = {
+    "kirocrew-dashboard": "mcp-dashboard",
+    "kirocrew-debug": "mcp-debug",
+}
+#: The ``card_id`` Settings > Developer records those sets under.
+SETTINGS_CARD_ID = "settings:default-mcp-sets"
+
+
+def _is_settings_write(template: str, body: Any) -> bool:
+    """Whether *body* is the Settings write: a managed set, mount-only, no entry."""
+    return (
+        template == _additions.DEFAULT_TEMPLATE
+        and isinstance(body, dict)
+        and set(body) == {"server", "mount_only"}
+        and body.get("mount_only") is True
+        and isinstance(body.get("server"), str)
+        and body["server"] in MANAGED_MOUNT_ONLY_SETS
+    )
+
+
+def _managed_set_entry(template: str, server: Any, *, mount_only: bool) -> dict[str, Any] | None:
+    """The gateway-built entry for a managed set on the default agent, else ``None``."""
+    if not mount_only or template != _additions.DEFAULT_TEMPLATE:
+        return None
+    subcommand = MANAGED_MOUNT_ONLY_SETS.get(server) if isinstance(server, str) else None
+    if subcommand is None:
+        return None
+    from kiro_crew.agent import _managed_opt_in_entry  # circular import
+
+    return _managed_opt_in_entry(subcommand)
+
 
 #: What each caller refusal tells the agent: the reason, in this tool's words, so
 #: it can tell the user plainly instead of retrying from a turn nobody sees.
@@ -500,7 +541,11 @@ _NOT_REWRITTEN = (
 
 
 async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
-    """POST /api/agents/detail/{name}/mcp-additions — ``{server, entry}``, a card step only."""
+    """POST /api/agents/detail/{name}/mcp-additions — ``{server, entry[, mount_only]}``.
+
+    A card step, plus the one Settings write: ``{server, mount_only: true}`` with no
+    ``entry`` for a :data:`MANAGED_MOUNT_ONLY_SETS` server on the default agent.
+    """
     from kiro_crew import template_mcp_additions as additions
     from kiro_crew.dashboard.handlers.change_cards import HEADER_CARD_ID
 
@@ -509,30 +554,51 @@ async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     card_id = (request.headers.get(HEADER_CARD_ID) or "").strip()
-    if not card_id:
-        # Not an authorization check (``_owner_only`` above is that): the card id
-        # is what the record keeps for Undo, so a write with none could never be
-        # taken back by its card.
-        return _deny(403, "card_required", "an agent's servers are added from a change card")
     try:
         body = await request.json()
     except Exception:
+        body = None
+    if not card_id:
+        # Not an authorization check (``_owner_only`` above is that): the card id
+        # is what the record keeps for Undo, so a write with none could never be
+        # taken back by its card. The Settings write is the one exception: it has
+        # no card (the card middleware binds a card id to a stored card), records
+        # under SETTINGS_CARD_ID, and its Undo is the Settings Remove.
+        if not _is_settings_write(request.match_info["name"], body):
+            return _deny(403, "card_required", "an agent's servers are added from a change card")
+        card_id = SETTINGS_CARD_ID
+    if body is None:
         return _deny(400, "invalid_json", "invalid JSON body")
     if not isinstance(body, dict) or set(body) not in (
         {"server", "entry"},
         {"server", "entry", "mount_only"},
+        {"server", "mount_only"},
     ):
         return _deny(400, "invalid_body", "body is {server, entry[, mount_only]}")
     mount_only = body.get("mount_only", False)
     if not isinstance(mount_only, bool):
         return _deny(400, "invalid_body", "'mount_only' must be a boolean")
     template = request.match_info["name"]
+    if "entry" in body:
+        entry = body["entry"]
+    else:
+        # Only a managed set on the default agent omits its entry: the gateway
+        # builds it, and every other server still names the launch line it adds.
+        entry = await asyncio.to_thread(
+            functools.partial(_managed_set_entry, template, body["server"], mount_only=mount_only)
+        )
+        if entry is None:
+            return _deny(
+                400,
+                "invalid_body",
+                "only a mount-only managed set on the default agent omits its entry",
+            )
     try:
         added = await asyncio.to_thread(
             additions.add_addition,
             template,
             body["server"],
-            body["entry"],
+            entry,
             approved_by=str(request.get("user") or "owner"),
             card_id=card_id,
             # Decided under the record lock: another card may have approved this

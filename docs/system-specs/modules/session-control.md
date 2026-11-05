@@ -1036,8 +1036,10 @@ the creation tree, not the sidebar tree `session_adopt` rearranges. The picker's
 
 `kirocrew-dashboard` rather than `kirocrew-core`, because these tools are not a
 capability every session should carry. That server is an **assignable set**: it
-is absent from the default agent's spec and loads only for an agent whose own
-spec references it, so an ordinary session spends no context on tools it will
+is absent from the default agent's spec unless the owner mounts it from Settings >
+Developer > Agent MCP servers (a mount-only record, `template_mcp_additions.py`),
+and otherwise loads only for an agent whose own spec references it, so an ordinary
+session spends no context on tools it will
 never call. The set already holds the chat-folder tools, and the two classes are
 granted together on purpose — an agent given the job of organizing sessions is
 the same agent that should be able to see what they are doing. A test pins that

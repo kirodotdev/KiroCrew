@@ -1015,3 +1015,133 @@ def test_an_entry_the_record_cannot_hold_raises_no_card(env, tmp_path, monkeypat
     store = CardStore(tmp_path / "c.json")
     status, body = _run(store, lambda c: _request(c))
     assert (status, body["code"]) == (400, "entry_not_recordable")
+
+
+# --------------------------------------------------------------------------- #
+# Settings > Developer: a managed set on the default agent with no entry
+# --------------------------------------------------------------------------- #
+
+DEFAULT_ADD = "/api/agents/detail/kirocrew/mcp-additions"
+#: The Settings write carries no card: the card middleware binds a card id to a
+#: stored card, and Settings has none.
+SETTINGS_HEADERS = {"X-Test-Auth": "owner"}
+
+
+@pytest.mark.parametrize("server", sorted(tsr.MANAGED_MOUNT_ONLY_SETS))
+def test_a_managed_set_on_the_default_agent_takes_the_gateway_built_entry(env, tmp_path, server):
+    from kiro_crew import agent as agent_mod
+
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        r = await c.post(
+            DEFAULT_ADD, json={"server": server, "mount_only": True}, headers=SETTINGS_HEADERS
+        )
+        return r.status, await r.json()
+
+    status, body = _bare(store, go)
+    assert status == 200, body
+    recorded = additions.read_additions("kirocrew")[server]
+    built = agent_mod._managed_opt_in_entry(tsr.MANAGED_MOUNT_ONLY_SETS[server])
+    assert dict(recorded.entry) == built
+    assert "autoApprove" not in recorded.entry
+    assert recorded.mount_only is True
+    assert recorded.card_id == tsr.SETTINGS_CARD_ID
+
+
+def test_a_second_settings_add_is_already_added_and_changes_nothing(env, tmp_path):
+    store = CardStore(tmp_path / "c.json")
+    body = {"server": "kirocrew-debug", "mount_only": True}
+
+    async def go(c):
+        first = await c.post(DEFAULT_ADD, json=body, headers=SETTINGS_HEADERS)
+        second = await c.post(DEFAULT_ADD, json=body, headers=SETTINGS_HEADERS)
+        return first.status, await _code(second)
+
+    assert _bare(store, go) == (200, (409, "already_added"))
+    assert set(additions.read_additions("kirocrew")) == {"kirocrew-debug"}
+
+
+@pytest.mark.parametrize(
+    "path, body",
+    [
+        # Any other server still names its own entry.
+        (DEFAULT_ADD, {"server": "files", "mount_only": True}),
+        (DEFAULT_ADD, {"server": "kirocrew-work", "mount_only": True}),
+        # A managed set with no entry is only ever mount-only.
+        (DEFAULT_ADD, {"server": "kirocrew-dashboard", "mount_only": False}),
+        # And only on the default agent.
+        (ADD, {"server": "kirocrew-dashboard", "mount_only": True}),
+        (
+            "/api/agents/detail/kirocrew-worker/mcp-additions",
+            {"server": "kirocrew-debug", "mount_only": True},
+        ),
+    ],
+)
+def test_an_entryless_add_outside_the_managed_sets_is_refused(env, tmp_path, path, body):
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        return await _code(await c.post(path, json=body, headers=OWNER_WITH_CARD))
+
+    assert _bare(store, go) == (400, "invalid_body")
+    assert additions.list_additions() == {}
+    assert env["applied"] == 0
+
+
+def test_a_settings_remove_takes_the_managed_set_back_off(env, tmp_path):
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        await c.post(
+            DEFAULT_ADD,
+            json={"server": "kirocrew-dashboard", "mount_only": True},
+            headers=SETTINGS_HEADERS,
+        )
+        r = await c.delete(f"{DEFAULT_ADD}/kirocrew-dashboard", headers=SETTINGS_HEADERS)
+        return r.status
+
+    assert _bare(store, go) == 200
+    assert additions.read_additions("kirocrew") == {}
+
+
+def test_a_settings_write_passes_the_card_middleware_without_a_card(env, tmp_path):
+    """Through the real card middleware: no card header, and the write still lands."""
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        r = await c.post(
+            DEFAULT_ADD,
+            json={"server": "kirocrew-dashboard", "mount_only": True},
+            headers=SETTINGS_HEADERS,
+        )
+        return r.status, await r.json()
+
+    status, body = _run(store, go)
+    assert status == 200, body
+    assert (
+        additions.read_additions("kirocrew")["kirocrew-dashboard"].card_id == tsr.SETTINGS_CARD_ID
+    )
+
+
+@pytest.mark.parametrize(
+    "path, body",
+    [
+        # A card-less write that names its own entry is still a card step.
+        (DEFAULT_ADD, {"server": "kirocrew-dashboard", "entry": GATEWAY_ENTRY, "mount_only": True}),
+        (DEFAULT_ADD, {"server": "files", "entry": GATEWAY_ENTRY}),
+        (DEFAULT_ADD, {"server": "kirocrew-work", "mount_only": True}),
+        (ADD, {"server": "kirocrew-dashboard", "mount_only": True}),
+        # A server name that is not a string is refused, not looked up.
+        (DEFAULT_ADD, {"server": [], "mount_only": True}),
+        (DEFAULT_ADD, {"server": {"kirocrew-debug": 1}, "mount_only": True}),
+    ],
+)
+def test_a_cardless_write_other_than_the_settings_one_needs_a_card(env, tmp_path, path, body):
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        return await _code(await c.post(path, json=body, headers=SETTINGS_HEADERS))
+
+    assert _bare(store, go) == (403, "card_required")
+    assert additions.list_additions() == {}
