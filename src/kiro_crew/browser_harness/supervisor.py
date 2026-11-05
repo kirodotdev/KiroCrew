@@ -1140,12 +1140,43 @@ async def _worker_request(
     A reply with another id is a leftover from a request that was abandoned and
     is skipped. A failure the worker cannot recover from (timeout, exit, garbage)
     is returned with ``fatal`` set so the caller stops the worker.
+
+    A write to stdin can fail when the worker has already exited -- a broken
+    harness install writes its ``{"id": null, "error": "import failed ..."}``
+    reply and exits without reading stdin, so on a slow runner the exit beats the
+    drain and it raises ``ConnectionResetError``. The reply the worker already
+    wrote still waits in stdout, so the write failure is not reported on its own:
+    the read loop runs anyway and surfaces that reply. "helper worker is gone" is
+    the answer only when stdout has nothing to read.
     """
     assert proc.stdin is not None and proc.stdout is not None
     deadline = time.monotonic() + timeout
     try:
         proc.stdin.write((json.dumps(body) + "\n").encode("utf-8"))
         await proc.stdin.drain()
+    except (OSError, ConnectionError, BrokenPipeError) as exc:
+        # Do not report the write failure yet: the worker may have written its reply
+        # before it exited (a broken harness install writes "import failed ..." and
+        # exits without reading stdin). Read stdout anyway and surface that reply;
+        # fall back to "helper worker is gone" only if stdout has nothing.
+        return await _read_worker_reply(proc, body, deadline, timeout, write_error=exc)
+    return await _read_worker_reply(proc, body, deadline, timeout, write_error=None)
+
+
+async def _read_worker_reply(
+    proc: asyncio.subprocess.Process,
+    body: dict[str, Any],
+    deadline: float,
+    timeout: float,
+    *,
+    write_error: BaseException | None,
+) -> dict[str, Any]:
+    """Read lines until the reply for *body* arrives, the deadline passes, or stdout
+    ends. *write_error* is set when writing the request failed: it becomes the
+    "helper worker is gone" message only if stdout had no reply to surface.
+    """
+    assert proc.stdout is not None
+    try:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1157,6 +1188,14 @@ async def _worker_request(
                 # the pipe, so nothing read after it would frame correctly. Fatal.
                 return {"ok": False, "error": f"helper reply too long: {exc}", "fatal": True}
             if not line:
+                # Nothing left in stdout. If the request never reached the worker,
+                # the write failure is the real cause; otherwise the worker exited.
+                if write_error is not None:
+                    return {
+                        "ok": False,
+                        "error": f"helper worker is gone: {write_error}",
+                        "fatal": True,
+                    }
                 return {"ok": False, "error": "helper worker exited", "fatal": True}
             try:
                 reply = json.loads(line.decode("utf-8"))
