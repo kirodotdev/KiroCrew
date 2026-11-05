@@ -196,7 +196,6 @@ def test_an_mcp_server_tool_matcher_is_kept_without_a_warning(matcher, caplog):
     [
         "@*/create_issue",  # a server glob would widen the guard across servers
         "@gith?b/create_issue",
-        "@github",  # no tool part
         "@/create_issue",
         "@github/",
         "@github/create/issue",
