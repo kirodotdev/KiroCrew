@@ -1569,31 +1569,28 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     blocked_commands = _BLOCKED_SLASH_COMMANDS
     if capabilities_for(cfg.agent.acp_backend).supports_native_todos:
         blocked_commands = blocked_commands - {"/todos"}
-    if is_claude_code(cfg.agent.provider):
-        state: DashboardState = request.app["state"]
-        cc_commands: list[str] = []
-        for provider in state.sessions.active_providers():
-            cmds = getattr(provider, "_slash_commands", [])
-            if cmds:
-                cc_commands = cmds
-                break
-        if not cc_commands:
-            cc_commands = [
-                "compact",
-                "clear",
-                "context",
-                "help",
-                "init",
-                "review",
-                "security-review",
-                "usage",
-            ]
+    # A harness that runs its own commands gets its own list, not kiro-cli's.
+    if capabilities_for(cfg.agent.acp_backend).runs_own_slash_commands or is_claude_code(
+        cfg.agent.provider
+    ):
+        cc_commands = [
+            "compact",
+            "clear",
+            "context",
+            "help",
+            "init",
+            "review",
+            "security-review",
+            "todos",
+            "usage",
+        ]
         result = [
             {"name": f"/{c}", "description": SLASH_COMMAND_DESCRIPTIONS.get(f"/{c}", "")}
             for c in cc_commands
             if f"/{c}" not in blocked_commands
         ]
-        for command in ("/side", "/workflow"):
+        # The commands the dashboard answers before any harness sees the turn.
+        for command in ("/agent", "/goal", "/prompts", "/side", "/workflow"):
             if not any(item["name"] == command for item in result):
                 result.append(
                     {"name": command, "description": SLASH_COMMAND_DESCRIPTIONS.get(command, "")}

@@ -774,6 +774,15 @@ auto-link opens a thread for it; only a kiro-cli command name (or a word the
 `claude_code` label forwards) keeps off them (`_slash_withholds_mirror`). Pinned by
 `test/test_claude_slash_forwarding.py`.
 
+The `/` menu (`GET /api/slash-commands`) follows the same capability, read for
+the configured `agent.acp_backend` because that endpoint has no session key: where
+`runs_own_slash_commands` holds it lists Claude Code's commands (`/compact`,
+`/clear`, `/context`, `/help`, `/init`, `/review`, `/security-review`, `/todos`,
+`/usage`) and the dashboard's own ones above, minus the blocked set, never kiro-cli's
+`/hooks`, `/code`, `/experiment`, `/logdump`, `/changelog` or `/tools`. Project
+commands and skills are not listed: nothing records the adapter's
+`available_commands_update` yet. Pinned by `test/test_api_slash_commands.py`.
+
 ### A tool-less session
 
 A session whose agent spec declares `"tools": []` (the mirror's `zero_tools`, which

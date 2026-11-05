@@ -102,22 +102,41 @@ class TestApiSlashCommands:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("backend,supported", [("", False), ("claude", True)])
     async def test_claude_code_provider_filters_blocked_commands(self, backend, supported):
-        """The provider-reported path applies the same gate: a harness that
-        reports a blocked command must not have it forwarded to the menu."""
-        provider = SimpleNamespace(_slash_commands=["compact", "tangent", "todos", "quit", "help"])
-        state = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: [provider]))
-        with patch(
-            "kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load",
-            return_value=_fake_config("claude_code", backend),
-        ):
-            app = _make_app()
-            app["state"] = state
-            async with TestClient(TestServer(app)) as client:
-                resp = await client.get("/api/slash-commands")
-                assert resp.status == 200
-                payload = await resp.json()
+        """The claude list applies the same gate: /todos only where it is served."""
+        payload = await _get("claude_code", backend)
         names = {item["name"] for item in payload}
         assert "/compact" in names and "/help" in names and "/side" in names
-        assert "/tangent" not in names
-        assert "/quit" not in names
+        assert not names & (_BLOCKED_SLASH_COMMANDS - {"/todos"})
         assert ("/todos" in names) is supported
+
+    @pytest.mark.asyncio
+    async def test_claude_backend_lists_claude_commands_not_kiro_cli_ones(self):
+        """acp_backend claude runs its own commands, so the menu offers them.
+
+        The public schema only admits provider "acp"; the backend decides.
+        """
+        payload = await _get("acp", "claude")
+        by_name = {item["name"]: item["description"] for item in payload}
+
+        assert {"/init", "/review", "/security-review"} <= set(by_name)
+        assert not set(by_name) & {
+            "/hooks",
+            "/code",
+            "/experiment",
+            "/logdump",
+            "/changelog",
+            "/tools",
+        }
+        # The commands the dashboard answers itself stay offered on claude.
+        assert {"/agent", "/goal", "/prompts", "/side", "/workflow"} <= set(by_name)
+        assert not set(by_name) & (_BLOCKED_SLASH_COMMANDS - {"/todos"})
+        for name, desc in by_name.items():
+            assert desc == SLASH_COMMAND_DESCRIPTIONS[name], name
+        assert len(payload) == len(by_name)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend", ["", "kiro", "kas"])
+    async def test_non_member_backends_keep_the_kiro_cli_menu(self, backend):
+        """Only a backend that runs its own commands gets the claude list."""
+        names = {item["name"] for item in await _get("acp", backend)}
+        assert not names & {"/init", "/review", "/security-review"}
