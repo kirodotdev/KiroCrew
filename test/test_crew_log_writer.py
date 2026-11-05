@@ -1085,6 +1085,59 @@ def test_a_writer_whose_pool_is_gone_still_drains_at_shutdown(units, caplog):
     assert units.steps(UNIT) == [1]
 
 
+@pytest.mark.parametrize("pool_state", ["cancelled", "gone"])
+def test_an_entry_submitted_during_the_inline_shutdown_drain_queues_behind_it(
+    units, clock, pool_state
+):
+    """With no pass running, the shutdown drain writes on its own thread and holds the
+    writer while it does: an entry submitted meanwhile asks the pool for no pass, which
+    could claim it and write it ahead of the batch the drain is still writing. Both ways
+    a pass can be absent leave the writer's flags differently, so each is run."""
+    units.create(UNIT)
+    passes: list[Callable[[], None]] = []
+
+    class _AbsentPool:
+        def submit(self, fn: Callable[[], None]) -> Future:
+            passes.append(fn)
+            if pool_state == "gone":
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            future: Future = Future()
+            future.cancel()
+            return future
+
+    writer = CrewLogWriter(
+        units.open_unit,
+        executor=lambda: _AbsentPool(),
+        clock=clock,
+        sleep=clock.sleep,
+        logger=logging.getLogger(LOGGER),
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _held() -> None:
+        entered.set()
+        assert release.wait(20.0)
+        _step(units, UNIT, 1).run()
+
+    _on_loop(lambda: writer.submit(UNIT, WriteJob.append(_held, "a held write")))
+    reports: list[DrainReport] = []
+    shutdown = threading.Thread(
+        target=lambda: reports.append(writer.drain_for_shutdown(5.0)), daemon=True
+    )
+    shutdown.start()
+    try:
+        assert entered.wait(20.0), "the shutdown drain never reached the held write"
+        _on_loop(lambda: writer.submit(UNIT, _step(units, UNIT, 2)))
+        assert len(passes) == 1, "a submit started a pass beside the inline drain"
+    finally:
+        release.set()
+        shutdown.join(20.0)
+    assert not shutdown.is_alive(), "the shutdown drain never returned"
+    assert reports == [DrainReport(True, 0, 0, False)]
+    assert units.steps(UNIT) == [1, 2]
+
+
 def test_entries_from_a_loop_land_in_order_on_the_writer_thread(units, pool):
     units.create(UNIT, OTHER)
     writer = _writer(units, executor=lambda: pool)
