@@ -207,6 +207,43 @@ async def test_background_failure_is_swallowed(monkeypatch) -> None:
     assert ep._inflight is False
 
 
+@pytest.mark.asyncio
+async def test_default_budget_fits_a_default_backend_turn(monkeypatch) -> None:
+    """The default endpointer gives the background turn at least the stt polish
+    one-liner's budget. A budget shorter than a turn on the default backend times
+    out every judgment, so auto-submit never fires."""
+    from kiro_crew.dashboard.handlers.core_stt_speech import _POLISH_TIMEOUT_SECS
+
+    bg = AsyncMock(return_value="COMPLETE")
+    monkeypatch.setattr("kiro_crew.dashboard.stt_stream.run_bg_oneliner", bg)
+    ws = _fake_ws()
+    ep = stt_stream._Endpointer(ws, object(), debounce=0.0)
+    ep.note_final("deploy the service to production")
+    await _drain(ep)
+    assert bg.await_args.kwargs["timeout"] >= _POLISH_TIMEOUT_SECS
+    ws.send_json.assert_awaited_once_with({"type": "endpoint", "complete": True})
+
+
+@pytest.mark.asyncio
+async def test_failed_judgment_is_logged_at_info(monkeypatch, caplog) -> None:
+    """A judgment that fails (a timeout every time) must be visible at the
+    normal log level, or auto-submit stops working with nothing to say why."""
+    import logging
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.stt_stream.run_bg_oneliner",
+        AsyncMock(side_effect=asyncio.TimeoutError()),
+    )
+    ws = _fake_ws()
+    ep = stt_stream._Endpointer(ws, object(), debounce=0.0)
+    with caplog.at_level(logging.INFO, logger=stt_stream.logger.name):
+        ep.note_final("whatever")
+        await _drain(ep)
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any("stt endpointing classification failed: TimeoutError" in m for m in messages)
+    ws.send_json.assert_not_awaited()
+
+
 async def _drain_until_idle(ep: "stt_stream._Endpointer") -> None:
     """Await all scheduled tasks, including ones a completing task re-schedules
     (the single-flight latch), until the endpointer is quiescent.
