@@ -2962,6 +2962,13 @@ independently load-bearing:
   same way, but `inventory_for_install` raises it as `CatalogNoInstallSource`
   (a `CatalogUnavailable` subclass) so the refusal text says the catalog lists
   the app with no install source instead of claiming it could not be reached.
+  The update of an app that records its `sourceUrl` refuses the same way:
+  `_registry_app_candidates` lets `CatalogUnavailable` propagate (every other
+  lookup error still yields no candidate), and `_resolve_install_entry` turns
+  it into fixed outage or no-install-source text instead of "no registry entry
+  matches its recorded source". Both of its branches run the lookup inside
+  `official_catalog.install_attempt()`, so an update click makes a real fetch
+  rather than refusing from a listing page's failure memory.
 - **Supersession is URL-scoped.** A catalog row replaces a same-repo seed row
   (scheme/host case-folded, path case preserved); a different-repo name
   collision keeps the seed, so a republished document cannot silently re-home

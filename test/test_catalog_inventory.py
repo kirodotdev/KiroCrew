@@ -990,7 +990,8 @@ class TestCatalogFailureNeverDowngradesToAnUnpinnedSeed:
         """A seed candidate names the SAME repo as the catalog row it shadows, so
         provenance-pinned resolution would accept it and deliver a branch tip."""
         self._seed_only(monkeypatch, raising=True)
-        assert reg._registry_app_candidates("dup") == []
+        with pytest.raises(reg.official_catalog.CatalogUnavailable):
+            reg._registry_app_candidates("dup")
 
 
 class TestPinnedManifestFetchReachesTheGates:
@@ -1569,7 +1570,8 @@ class TestCandidatesRefuseBeforeAnyFallback:
             lambda *a, **k: [{"name": "dup", "gitUrl": "https://evil.example/x", "repo": "e/x"}],
         )
         monkeypatch.setattr(reg, "_apply_configured_branch", lambda rows, reg_cfg: None)
-        assert reg._registry_app_candidates("dup") == []
+        with pytest.raises(reg.official_catalog.CatalogUnavailable):
+            reg._registry_app_candidates("dup")
 
     def test_external_candidates_still_resolve_when_the_catalog_answers(self, monkeypatch):
         """Scope: only a FAILED lookup refuses.

@@ -159,11 +159,13 @@ async def test_a_pinned_built_in_stages_then_adopts_and_keeps_its_lifecycle(
         assert await gw.get_json(f"/api/apps/{NAME}/stored") == {"stored": "kept across the move"}
 
         # Update goes through the registry like any registry app, matched by the
-        # adopted source. The offline store lists no fixture, so it refuses and
-        # changes nothing.
+        # adopted source. The store is held off the network, so the official
+        # catalog cannot confirm that source: the update refuses with the outage
+        # cause and changes nothing.
         update = await gw.post(f"/api/apps/{NAME}/update")
         body = await update.text()
-        assert update.status == 400 and "matches its recorded source" in body, body
+        assert update.status == 400 and "could not be reached" in body, body
+        assert "matches its recorded source" not in body, body
         after = manager._read_installed(NAME)
         assert after is not None and (after.sourceCommit, after.enabled) == (COMMIT, True)
         assert (home / "data" / "store.txt").read_text(encoding="utf-8") == "kept across the move"
