@@ -183,10 +183,10 @@ _SHIPPED_PINS = [
     {
         "name": "pptx-maker",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-pptx-maker",
-        "commit": "8fa8a4218b4165f4f2a9ada9171a1b9c79830b9c",
+        "commit": "d9ee0134c47593ba301cae4ecee9d1063b6d264e",
         "version": "0.3.0",
-        "treeSha256": "7df3b138971f71b6b87efa0a02c26dce74f519513729678dbd4e94af1b118ec8",
-        "archiveSha256": "56aa865df10d1ac594970bccebd0c8369f3f6bf8a4a27b5acfa813c6bd9117db",
+        "treeSha256": "864d96070f554fd14cc97bfb410ed6d9efc55f3c1fca8ea9cfdc58fdda9c9384",
+        "archiveSha256": "18aca49392b6c55ca150f8cb632688ee678888feb62ed46ecfd351bf61a6039a",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/pptx-maker", "icon": "Presentation"},
     },

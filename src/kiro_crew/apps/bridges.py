@@ -77,6 +77,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_agent_config,
         _register_agents,
         _render_shipped_agent,
+        _shipped_builtin_placeholder_values,
         _strip_ungoverned_auto_approve,
         _unlink_unheld_app_lock,
         _unresolvable_tool_refs,
@@ -231,6 +232,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         platform_compat,
     )
     from kiro_crew.apps import deps_boot as _deps_boot_module  # noqa: F401
+    from kiro_crew.apps.agent_template_values import (  # noqa: F401
+        HOST_PLACEHOLDERS,
+        host_placeholder_values,
+    )
     from kiro_crew.apps.cron_sdk import (  # noqa: F401
         CronSDK,
     )

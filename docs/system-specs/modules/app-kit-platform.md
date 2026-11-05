@@ -5832,7 +5832,10 @@ only remove first-party status, never grant it. It gates:
   `manager_lookup`, `manager_activation`, `bridges_crons`, `bridges_mcp`,
   `backend_runtime.startup`, `cron_sdk`, `backend`) resolves the data-home tree for
   a released name, and `is_builtin_app` and the PreToolUse first-party sets drop
-  it;
+  it; the same answer keeps the wheel's `agent_placeholders` module unimported for
+  any template naming only the host placeholder set
+  (`bridges_agents._shipped_builtin_placeholder_values`, §34), so the adopted
+  agents render from that set;
 - the core's packaged skill copies (`builtin_skills/`, `app: <name>` frontmatter),
   through `released_builtin_names` (only a pinned or marked name asked):
   `skills_builtin_sync._ensure_builtin_skills` neither installs nor updates a copy
@@ -6085,11 +6088,33 @@ through one seam that is empty by default:
   `KIROCREW_*` name; a malformed row raises at load, so a grant cannot silently stop
   applying. Only `BUILTIN_NAMES` is read: an installed or registry app can claim none
   of this, whatever its manifest says.
-- **Agent-template placeholders** (`bridges_agents._placeholder_values`). A built-in
-  whose shipped agent config names a runtime path ships `agent_placeholders.py` with a
-  `placeholder_values()` the gateway calls to compute them; a result that is not a
-  `{"{NAME}": str}` mapping is refused whole, and an app with no such module gets `{}`
-  (its template stays unrendered and unregistered).
+- **Agent-template placeholders** (`bridges_agents._placeholder_values`). Every app,
+  installed or built-in, gets the fixed host set of `apps/agent_template_values.py`:
+  `{APP_ROOT}` (the root its agents register from), `{APP_DATA}` (`apps/<name>/data`,
+  named, never created), `{UV_BIN}` (`env.resolve_uv`), `{HOST_PATH}` (the gateway's
+  `PATH`, plus the directory of a `soffice` that `soffice_discovery` finds at a fixed
+  Windows root while `PATH` misses it) and `{PATH_SEP}` (`os.pathsep`). The set is
+  frozen public App Kit surface, the same for every app and pinned by
+  `test_every_value_is_derived_from_the_data_home_and_the_root`: a new name is a change
+  to this contract and to the app-author table, never one app's request. LibreOffice
+  is the one host tool `{HOST_PATH}` carries off `PATH`, because the core locates it
+  for its own file-panel slide previews (`soffice_discovery`, below); a host tool the
+  core does not itself use is the app's to find. A value the
+  host cannot compute (no `uv`, an empty `{HOST_PATH}`) is left out. Every value is
+  computed in the gateway and none is read from a file, and rendering grants nothing:
+  the rendered config passes through the same MCP policy, tool ceiling and
+  auto-approve strip as one naming no placeholder. A built-in may also ship
+  `agent_placeholders.py` with a `placeholder_values()` that adds its own; a result
+  that is not a `{"{NAME}": str}` mapping is refused whole. While its wheel copy is the
+  one registering, every value is taken. For a released name (§33) the module is
+  imported only when a template names a placeholder outside the host set, and only
+  those names are taken from it: a tree adopted at an earlier pin (pptx-maker at
+  `8fa8a42`, whose agents name the built-in's own `{ENGINE_ROOT}` family) keeps its
+  agents while the wheel ships the package, and a tree naming the host set alone
+  never imports it, so it keeps registering once the package leaves core. A
+  placeholder neither source computes leaves the template unrendered and the agent
+  unregistered. App authors: `docs/app-kit/manifest-reference.md`
+  "Host paths in an agent file".
 
 A capability the core itself offers lives in the core, and an app that needs it too
 imports it there rather than the other way round: the file panel's slide previews and
@@ -6100,7 +6125,9 @@ PPTX Maker both find `soffice` (and its install hint) through
 or PPTX Maker.
 
 Writers: `apps/builtin_host_grants.py`, `apps/bridges_agents.py`,
-`apps/builtins/dev_fleet/host_grants.py`, `apps/builtins/pptx_maker/agent_placeholders.py`.
+`apps/agent_template_values.py`, `apps/builtins/dev_fleet/host_grants.py`,
+`apps/builtins/pptx_maker/agent_placeholders.py`. Tests:
+`test/test_app_agent_template_values.py`.
 
 ## Windows stale-backend cleanup capacity
 
