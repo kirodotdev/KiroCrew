@@ -1,29 +1,23 @@
-"""The names KAS resolves a model's MCP tool call by.
+"""Qualified names for the direct MCP invocation path.
 
-KAS (``kiro-cli acp --agent-engine v3``) answers a model's tool call by looking
-the called name up in the session's tool list, by the tool's ``id`` first and its
-``displayName`` second, and by nothing else. For an MCP tool those are:
+These helpers describe direct calls through the session's tool list:
 
-* ``id``: ``mcp_`` + ``<server>_<tool>`` with every whitespace and ``-`` written
-  as ``_``, every other character outside ``[A-Za-z0-9_]`` dropped, lower-cased
-  and cut to 64 characters (a collision gets a ``_<n>`` suffix inside those 64).
-  This is the name the model's own tool list carries.
+* ``id``: ``mcp_`` + ``<server>_<tool>`` with whitespace and ``-`` written as
+  ``_``, other characters outside ``[A-Za-z0-9_]`` dropped, lower-cased and cut
+  to 64 characters. The helper does not allocate collision suffixes; the exact
+  active tool definition takes precedence when names collide.
 * ``displayName``: ``@<server>/<tool>``, lower-cased.
 
-A bare tool name (``work_report``) is neither, so KAS answers it with
-``Tool "work_report" is not available.`` without ever calling the server. Kiro
-Crew's own instructions name its tools bare, and KAS's ``tool_search`` result does
-too (``tool_name``, with "invoke the tool using ONLY the tool_name value"), which is
-how a model on KAS comes to call a name KAS cannot resolve.
+A bare name such as ``work_report`` is neither direct-call spelling. A legacy
+loader that asks for direct invocation using only a bare ``tool_name`` still
+needs the qualified-name fallback in the session context.
 
-Read off the KAS bundle kiro-cli 2.21.1 ships
-(``@kiro/agent/dist/server/acp-server.js``: the stream handler's
-``r.find(L => L.id === name) ?? r.find(L => L.displayName === name)``, and the MCP
-tool wrapper's ``sanitizedUniqueName`` / ``@${server}/${tool}`` builders).
+This is not a naming contract for every discovery flow. When a loader specifies
+an executor, use its returned ID with that executor unchanged. Neither these
+helpers nor the direct-call fallback translate catalogue or executor IDs.
 
-Importing it costs only the stdlib, so the context builder and the dashboard can both
-use it without loading the ACP package; the one ACP-layer read
-(:func:`is_kas_provider_label`'s label constant) happens when that function is called.
+Importing this module costs only the stdlib. The provider-label constant is read
+inside :func:`is_kas_provider_label`, behind the agent-SDK boundary.
 """
 
 from __future__ import annotations

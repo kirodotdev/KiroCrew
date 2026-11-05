@@ -1,18 +1,17 @@
-"""The ``[TOOL NAMES]`` block: follow the active tool-calling contract.
+"""The ``[TOOL NAMES]`` block: distinguish direct calls from executor IDs.
 
-Kiro Crew's instructions, skills and memory name MCP operations bare. A session
-may expose a tool directly or require a schema load followed by a separate
-executor. The live definitions and discovery results supply the callable names
-and IDs; a fixed spelling rule cannot cover both paths.
+Kiro Crew's instructions, skills and memory name MCP operations bare. Legacy
+loaders can ask for direct invocation using a bare name; that path needs the
+qualified-name fallback. Loaders that specify an executor instead supply its
+IDs, which must not be rewritten using the direct-call naming rule.
 
-This guidance belongs in the per-harness session context so the shared agent
-instructions keep their bare operation names. The provider-specific block reaches
-sessions at startup, including minimal runs, and is sent again after compaction.
+The provider-specific block reaches sessions at startup, including minimal runs,
+and is sent again after compaction.
 """
 
 from __future__ import annotations
 
-#: Server/operation pairs help the model find a tool without inventing its ID.
+#: Direct-call examples only; never use these names as catalogue or executor IDs.
 _EXAMPLES: tuple[tuple[str, str], ...] = (
     ("kirocrew-work", "work_brief"),
     ("kirocrew-work", "work_report"),
@@ -22,12 +21,16 @@ _EXAMPLES: tuple[tuple[str, str], ...] = (
 
 
 def _examples() -> str:
-    spelled = [f"`{tool}` on `{server}`" for server, tool in _EXAMPLES]
+    from kiro_crew.agent_sdk.kas_tool_names import kas_mcp_tool_id
+
+    spelled = [
+        f"`{tool}` on `{server}` is `{kas_mcp_tool_id(server, tool)}`" for server, tool in _EXAMPLES
+    ]
     return ", ".join(spelled[:-1]) + f", and {spelled[-1]}"
 
 
 def tool_names_block(provider_type: str | None) -> str:
-    """The tool-calling guidance for the selected provider, otherwise ``""``."""
+    """The tool-calling guidance for the selected provider, otherwise ``\"\"``."""
     from kiro_crew.agent_sdk.kas_tool_names import is_kas_provider_label
 
     if not is_kas_provider_label(provider_type):
@@ -35,18 +38,29 @@ def tool_names_block(provider_type: str | None) -> str:
     return (
         "[TOOL NAMES]\n"
         "Kiro Crew's instructions, skills and memory use bare MCP operation names as "
-        "lookup hints. Use the callable names and IDs shown by the active tool "
-        "definitions and discovery results.\n"
-        "- For a directly exposed tool, call the exact name in its active tool definition.\n"
-        "- For a deferred tool, follow the available loader's instructions and wait for "
-        "the schema result before calling. Use the execution method that result specifies; "
+        "lookup hints. Loading a tool, invoking it directly and passing an ID to an "
+        "executor are different operations. Built-in tools keep their own names.\n"
+        "Direct MCP calls:\n"
+        "- For a directly exposed tool, call the exact name in its active tool definition. "
+        "If a legacy loader asks for direct invocation but returns only a bare `tool_name` "
+        "and no executor, use the qualified direct-call name, not the bare name. "
+        "The direct-call spelling is `mcp_<server>_<tool>`, lower-case, with each `-` in "
+        "the server name written as `_`; `@<server>/<tool>` is also a direct-call alias. "
+        "An exact active definition takes precedence over this recipe. "
+        f"Direct-call examples: {_examples()}.\n"
+        '- If a direct call using a bare name returns `Tool "<name>" is not available.`, '
+        "retry with the qualified direct-call name. This fallback applies only to direct "
+        "calls, never to loader inputs or executor IDs.\n"
+        "Deferred tools and executors:\n"
+        "- Before loading, copy the exact ID from the current catalogue; do not construct "
+        "it from the direct-call examples above. Follow the available loader's instructions "
+        "and wait for the schema result before calling.\n"
+        "- If the result specifies an executor, use that executor, not a direct MCP call; "
         "if it names `tool_call` as the executor, pass its `tool_id` unchanged. Do not "
         "construct or rewrite that ID from a server name, tool name or display name. "
         "Do not reload a tool whose schema-load result is still in context.\n"
-        f"- Lookup examples: {_examples()}. These pairs help find the matching catalogue "
-        "entry; they are not execution IDs.\n"
-        "- If a tool is unavailable, check the current catalogue and the loader's recovery "
-        "guidance. It may be missing or outside this session's scope; do not assume a "
-        "name rewrite will fix it or bypass restrictions.\n"
+        "- If a loader or executor reports a tool unavailable, check the current catalogue "
+        "and the loader's recovery guidance. It may be missing or outside this session's "
+        "scope; do not assume a name rewrite will fix it or bypass restrictions.\n"
         "[End of tool names]\n\n"
     )
