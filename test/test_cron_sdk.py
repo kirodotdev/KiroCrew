@@ -669,7 +669,7 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
         """The reason an app wants this field, measured rather than asserted.
 
         Feeds the persisted job to the real gateway cron callback. ``auto`` must yield
-        AUTO_APPROVE with no approval callback; both modes are checked, since the auto
+        AUTO_APPROVE with an approver that approves on its own; both modes are checked, since the auto
         arm alone would pass on a callback that never installs an approval hook.
         """
         svc = self._service(tmp_path)
@@ -748,7 +748,9 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
 
         auto = _dispatch(unattended)
         assert auto["approval_policy"] == ToolApprovalPolicy.AUTO_APPROVE
-        assert auto["on_tool_approval"] is None
+        # The approver re-checks ``auto`` per request (RFC enterprise edition D9): it
+        # approves while the policy allows it, without asking anyone.
+        assert asyncio.run(auto["on_tool_approval"](MagicMock())) is True
 
         hook = _dispatch(attended)
         assert hook["approval_policy"] == ToolApprovalPolicy.HOOK_BASED

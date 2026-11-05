@@ -93,6 +93,10 @@ async def _apply_member_approval_to_live_thread(request: web.Request, name: str,
     if slot is None:
         # No live thread: the next thread open seeds from the record.
         return
+    from kiro_crew.approval_mode_policy import ensure_resolved
+
+    # A final policy answer first: a passing deny must not refuse the saved choice.
+    await asyncio.to_thread(ensure_resolved)
     await apply_approval_mode(
         state,
         mode=mode,
@@ -585,6 +589,22 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                         "approval_mode": agent.approval_mode,
                     },
                     status=409,
+                )
+            from kiro_crew.approval_mode_policy import session_mode_permitted
+
+            # A NEW mode the ``permission_mode`` policy denies is refused; resending
+            # the stored one saves, and its live grant is clamped where it is seeded.
+            if body["approval_mode"] != agent.approval_mode and not session_mode_permitted(
+                body["approval_mode"]
+            ):
+                return web.json_response(
+                    {
+                        "error": f"approval mode {body['approval_mode']!r} is disabled by "
+                        "your organization's policy",
+                        "code": "mode_disabled_by_policy",
+                        "mode": body["approval_mode"],
+                    },
+                    status=403,
                 )
             # Validated above. Only ever a real choice: the profile never sends
             # "" back, so a pinned mode cannot fall back to the trust default.

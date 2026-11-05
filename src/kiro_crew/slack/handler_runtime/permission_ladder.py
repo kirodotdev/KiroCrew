@@ -53,12 +53,12 @@ if TYPE_CHECKING:
         _resolve_linked_click,
         _safe_update,
         _SlackTurn,
-        _trusted_sessions,
         add_trusted_session,
         event_is_spawn_run,
         hook_gate_busy,
         hook_gate_kwargs,
         is_allowed_user,
+        is_session_trusted,
         is_yolo_mode,
         logger,
         name_grant,
@@ -68,6 +68,7 @@ if TYPE_CHECKING:
         sel,
         steer_refusal_notice,
         tool_approval_timeout_secs,
+        trust_permitted,
     )
 
 
@@ -337,7 +338,7 @@ async def _answer_permission_request(
 
     # Trust mode (per-session) or YOLO mode (owner-only global) → auto-approve
     _yolo_now = is_yolo_mode()
-    if _yolo_now or session_key in _trusted_sessions:
+    if _yolo_now or is_session_trusted(session_key):
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:
             _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
@@ -718,6 +719,9 @@ async def handle_interaction(
                     if not pending.future.done():
                         pending.future.set_result(_OUTCOME_REJECTED)
                     return _ACTION_REJECT
+                elif not trust_permitted():
+                    # A ``permission_mode`` deny of ``trust``: approve this one tool.
+                    action_id = _ACTION_APPROVE
                 elif pending.session_key:
                     add_trusted_session(pending.session_key, sessions)
                     logger.info("Trust mode ON for session %s", pending.session_key)

@@ -33,7 +33,7 @@ import logging
 import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform.context import PlatformCompositionError
@@ -377,6 +377,18 @@ def _profile_generation() -> int:
         return _PROFILE_GENERATION
 
 
+#: Called with no arguments right after a profile snapshot is published. Pure-memory
+#: callbacks only (they run under the reload lock): a consumer caching a
+#: profile-derived authorization answer marks it stale here and re-reads later.
+_PUBLISH_HOOKS: list[Callable[[], None]] = []
+
+
+def register_profile_publish_hook(cb: Callable[[], None]) -> None:
+    """Call ``cb()`` after each published profile snapshot. Idempotent per callable."""
+    if cb not in _PUBLISH_HOOKS:
+        _PUBLISH_HOOKS.append(cb)
+
+
 def _publish_snapshot(store: "ProfileStore", snap: "_Snapshot") -> None:
     """Install a snapshot AND bump the generation under ONE hold of the reader lock.
 
@@ -396,6 +408,11 @@ def _publish_snapshot(store: "ProfileStore", snap: "_Snapshot") -> None:
     with _PROFILE_GENERATION_LOCK:
         store._snap = snap
         _PROFILE_GENERATION += 1
+    for cb in list(_PUBLISH_HOOKS):
+        try:
+            cb()
+        except Exception:  # pragma: no cover - a consumer's mark must not break a reload
+            logger.warning("profile publish hook raised", exc_info=True)
 
 
 def poll_profiles_fresh() -> None:

@@ -453,7 +453,8 @@ class TestApiChatModeGlobalOverrideScope:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/mode", json={"mode": {}, "slot": "s1"})
 
-        assert resp.status == 200  # falls through to the normal branch, as before
+        # Not a mode id Crew knows, so it is refused as bad input (RFC enterprise D9).
+        assert resp.status == 400
 
 
 class TestApproveYoloPropagation:

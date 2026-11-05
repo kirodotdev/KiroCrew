@@ -136,7 +136,12 @@ async def resolve_parent_policy(self: RunEventCoordinator, info: SubagentInfo) -
         else:
             lineage = (*(founder_lineage or ()), *lineage)
     # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
-    if not parent_policy and info.approval_mode == "auto":
+    # A spawn's own or the config's ``auto`` is a session Trust: a policy that denies
+    # ``trust`` refuses both, and the child asks instead.
+    from kiro_crew.approval_mode_policy import session_mode_permitted
+
+    trust_ok = session_mode_permitted("trust")
+    if not parent_policy and info.approval_mode == "auto" and trust_ok:
         parent_policy = "auto"
         _sa.sel().log_api_access(
             caller=info.parent_session_key or f"subagent:{info.id}",
@@ -154,7 +159,7 @@ async def resolve_parent_policy(self: RunEventCoordinator, info: SubagentInfo) -
             source="subagent",
             resources=f"subagent_id={info.id}",
         )
-    if not parent_policy and self._manager._global_approval_mode == "auto":
+    if not parent_policy and self._manager._global_approval_mode == "auto" and trust_ok:
         # Apply global config as fallback only when parent is absent or
         # confirmed garbage-collected (absent from the session store).
         # If parent session still exists but returned no policy, deny by

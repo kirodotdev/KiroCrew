@@ -688,6 +688,12 @@ PEEK_CALLERS: "dict[str, str]" = {
         "answers 'governed', which refuses the item; the peek only skips that "
         "resolution on a host that already installed a context."
     ),
+    "approval_mode_policy.py::_ceiling_control": (
+        "no-context answer is 'no approval_modes rule', so trust and trust_reads stay "
+        "permitted. Only the installed ceiling can narrow them, and with no installed "
+        "context no ceiling exists that could, which is main's answer. The peek runs "
+        "on the event loop, where current_context() would load config."
+    ),
     "platform/governance_parts/carriers.py::active_policy_distribution": (
         "no-context answer is an unconfigured PolicyDistribution, i.e. no "
         "central fetch. It is reached only when boot never installed a context, "

@@ -203,13 +203,13 @@ def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool)
                 )
         if is_policy and scope in ALLOW_ONLY_IN_ENTERPRISE:
             _refuse_inexact_origin_entries(scope, ruleset)
-        for floor in spec.always_permitted:
-            # An ``always_permitted`` identifier is one this scope may not forbid.
-            # Two reasons qualify, and the catalog entry says which applies: the
-            # scope cannot FUNCTION without it (``approval_modes``' ``normal``, the
-            # interactive floor -- denying it would brick tool approval), or its
-            # enforcement is NOT IMPLEMENTED yet, so accepting a deny would
-            # advertise a control that does not hold. Either way, refuse at parse
+        floors = spec.always_permitted + (() if is_policy else spec.profile_always_permitted)
+        for floor in floors:
+            # An ``always_permitted`` identifier is one this scope may not forbid:
+            # the scope cannot FUNCTION without it (``approval_modes``' ``normal``,
+            # the interactive floor -- denying it would brick tool approval), or its
+            # enforcement is not implemented, so accepting a deny would advertise
+            # a control that does not hold. Either way, refuse at parse
             # time rather than boot into a state the policy misdescribes -- and
             # refuse HERE because the trust-root ``security_policy.json`` is the one
             # file the dashboard may not rewrite to repair itself.

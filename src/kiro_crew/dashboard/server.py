@@ -273,6 +273,7 @@ from kiro_crew.dashboard.server_runtime.heartbeat import (  # noqa: F401
 )
 from kiro_crew.dashboard.server_runtime.inherited_trust import (  # noqa: F401
     _clear_override_derived_trust,
+    _drop_policy_denied_trust,
     _suspend_override_derived_trust,
 )
 from kiro_crew.dashboard.server_runtime.instances_lifecycle import (  # noqa: F401
@@ -1548,6 +1549,11 @@ async def start_dashboard(
     # The pre-publication half: suspend inherited slot trust while a new ceiling is
     # being resolved, and get it back if the ceiling still permits.
     safety_override().on_policy_suspend = functools.partial(_suspend_override_derived_trust, state)
+    # A ``permission_mode`` deny of ``trust`` / ``trust_reads`` drops the slot grants it
+    # forbids at the install that resolves it, the same moment a ``yolo`` deny revokes.
+    from kiro_crew.approval_mode_policy import register_deny_hook
+
+    register_deny_hook("dashboard", functools.partial(_drop_policy_denied_trust, state))
 
     await _notify_restart_dropped_grant(state)
 

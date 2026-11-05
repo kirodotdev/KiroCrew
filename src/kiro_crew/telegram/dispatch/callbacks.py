@@ -142,8 +142,12 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
         body = data[2:]
         rest, _, flag = body.rpartition(":")
         rid, _, nonce = rest.rpartition(":")
-        trust = flag == "t"
         approved = flag in ("1", "t")
+        # A Trust press under a policy that denies ``trust`` approves this one tool
+        # only; the reply then says "Approved", not "Trusted".
+        from kiro_crew.messaging.session_trust import trust_permitted
+
+        trust = flag == "t" and trust_permitted()
         session_key = self._callback_session_key(
             route,
             cb.chat_id,
