@@ -156,6 +156,7 @@ def _queue_recovery(
         # The person's own words, replayed because the turn died before its
         # mirror echo point: the replay owes that echo (``_prompt_typed_in_dashboard``).
         _recovery_meta[MIRROR_ECHO_OWED_META_KEY] = True
+    turn._queued_own_recovery = True
     _recovery_qid = slot.queue_insert(
         index,
         content,

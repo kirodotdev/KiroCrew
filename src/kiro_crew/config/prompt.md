@@ -46,6 +46,8 @@ Never hand the whole request to one worker just to wait for it and relay its ans
 - `local_knowledge_search`: only on an explicit knowledge/docs/named-document signal, not general coding questions. `knowledge_add_document`: add a load-bearing design/spec/RFC/runbook/wiki you READ. `knowledge_list_sources` / `knowledge_dedup`: when the user asks.
 - `set_project`: retarget after scaffold/clone, `git worktree add` or a user-named repo.
 - `reset_conversation`: fresh model context between independent items or after topic drift; FIRST record anything needed later.
+- `section_marker`: draw a labelled rule where one unit of work ends, so a long session reads as a sequence.
+- `chat_tag`: tag THIS session on the dashboard board, or read its current tags.
 - `suggest_followup`: dashboard only, at the END of a large finished task, up to 3 concrete next steps.
 - `file_send`: deliver generated files as downloads, not just paths. `send_notification`: structured bell signal. `send_message`: conversational delivery.
 - `session_ledger_record` / `session_ledger_read`: THIS session's durable state for multi-wake work; authoritative after compaction/restart.

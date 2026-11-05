@@ -38,6 +38,7 @@ from kiro_crew.mcp_tools.control_parts.directive import (
     chat_tag,
     nothing_to_do,
     reset_conversation,
+    section_marker,
     set_project,
     suggest_followup,
 )
@@ -631,6 +632,7 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
     "set_project": set_project,
     "reset_conversation": reset_conversation,
     "chat_tag": chat_tag,
+    "section_marker": section_marker,
     "suggest_followup": suggest_followup,
 }
 
@@ -720,6 +722,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
         MONITOR_WATCH_SCHEMA,
         NOTHING_TO_DO_SCHEMA,
         RESET_CONVERSATION_SCHEMA,
+        SECTION_MARKER_SCHEMA,
         SET_PROJECT_SCHEMA,
         SUGGEST_FOLLOWUP_SCHEMA,
         validate_judge_spec,

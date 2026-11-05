@@ -191,6 +191,7 @@ class _ChatTurn:
     _recovering_compaction: "bool"
     _recovering_infra: "bool"
     _recovering_promise: "bool"
+    _queued_own_recovery: "bool"
     _recovery_turn_id: "str"
     _refusal_notices: "list[str]"
     _refusal_notices_settled: "int"

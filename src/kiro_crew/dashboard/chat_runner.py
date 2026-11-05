@@ -241,6 +241,7 @@ from kiro_crew.dashboard.chat_turn.steer_queue import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_turn.stop_recovery import (
     _turn_persist_and_settle,
+    _turn_release_held_markers,
     _turn_stop_recovery,
 )
 from kiro_crew.dashboard.chat_turn.stream_chunks import _on_text_chunk, _on_thinking_chunk
@@ -343,6 +344,11 @@ from kiro_crew.dashboard.recovery_replays import ReplayFamily
 from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     apply_session_directive,
     apply_session_directive_outcome,
+)
+from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
+    DeferredHoldFull,
+    DeferredHoldRebound,
+    persist_held_markers_sync,
 )
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_SLOT_MESSAGES,
@@ -1200,6 +1206,7 @@ async def _run_chat(
         await _turn_persist_and_settle(turn)
         await _turn_context_usage(turn)
         await _turn_stop_hook(turn)
+        await _turn_release_held_markers(turn)
     except asyncio.CancelledError:
         await _on_cancelled(turn)
     except AcpAuthRequired as exc:

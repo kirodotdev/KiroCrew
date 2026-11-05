@@ -95,7 +95,7 @@ _BASE_DEFINED = frozenset("""
     POD_LS_SCHEMA POD_RESTART_SCHEMA POD_STATUS_SCHEMA POD_UP_SCHEMA QUALIFIED_MODEL_PATTERN
     READ_SLACK_PROFILE_SCHEMA REGISTERED_AGENT_NAME_RE REGISTER_HOOK_SCHEMA
     REQUEST_SERVER_SCHEMA RESET_CONVERSATION_SCHEMA RESOURCE_STATUS_SCHEMA ROUTE_CREW_SCHEMA
-    SEARCH_CHAT_HISTORY_SCHEMA SELECT_CREW_SCHEMA SEND_MESSAGE_SCHEMA SEND_NOTIFICATION_SCHEMA
+    SEARCH_CHAT_HISTORY_SCHEMA SECTION_MARKER_SCHEMA SELECT_CREW_SCHEMA SEND_MESSAGE_SCHEMA SEND_NOTIFICATION_SCHEMA
     SESSION_ADOPT_SCHEMA SESSION_BROADCAST_SCHEMA SESSION_CLOSE_SCHEMA SESSION_COLOR_CHOICES
     SESSION_CONTINUE_SCHEMA SESSION_CREATE_SCHEMA SESSION_END_WAIT_SCHEMA SESSION_FORK_SCHEMA
     SESSION_GENERATE_TITLE_SCHEMA SESSION_HANDOFF_SCHEMA SESSION_HISTORY_LIST_SCHEMA
@@ -133,7 +133,7 @@ _BASE_DEFINED = frozenset("""
     _MCP_ARGS_MAX_DEPTH _MCP_ARGS_MAX_STRING _MODEL_NAME_RE _MODEL_SEGMENT _MONITOR_WATCH_FIELD
     _OMC_API_METHODS _OMC_API_PATHS _OMC_MAX_BODY _OMC_QUERY_RE _PATTERN_CHILD_SRC
     _PATTERN_MAX_LEN _PATTERN_TIMEOUT_SECS _PATTERN_VALUE_MAX_LEN _POD_LIMIT_MAX_LEN _POD_WORKTREE_MAX_LEN
-    _QUALIFIED_MODEL_MAX_CHARS _SEND_MESSAGE_SESSION_RE _SLACK_TS_RE _SUPPORTED_SCHEMA_KEYWORDS
+    _QUALIFIED_MODEL_MAX_CHARS _SECTION_LABEL_FORBIDDEN _SEND_MESSAGE_SESSION_RE _SLACK_TS_RE _SUPPORTED_SCHEMA_KEYWORDS
     _TARGET_ID_RE _WATCH_WORK_LEDGER _WF_RUN_ID_RE _WM_LIFECYCLE_STATUSES _WM_LIST_CAP
     _WM_PROFILE_RE _WM_SLUG_RE _WM_URL_RE _WORK_ITEM_STATES _WORK_RECORD_ACTIONS _WORK_STATUSES
     _WORK_VERDICTS _bounded_pattern_search _coerce_number_to_string_for_string_field
@@ -144,11 +144,12 @@ _BASE_DEFINED = frozenset("""
     _validate_cron_add_requires_message_or_script _validate_cron_secret_request
     _validate_dashboard_write_tool _validate_followup_items _validate_hook_create
     _validate_hook_has_action _validate_hook_regex _validate_hook_update
-    _validate_monitor_runtime _validate_omc_api _validate_session_set_model
+    _validate_monitor_runtime _validate_omc_api _validate_section_label _validate_session_set_model
     _validate_set_project _validate_webapp_metadata_shape _validate_work_artifacts
     _validate_work_report bounded_session_id build_tool_response clamp_query_offset clamp_report
     clamp_to_max_len coerce_mcp_tool_args coerce_mcp_tool_args_json_schema format_ask_answers
     infer_use_case is_registered_agent_name is_valid_followup_branch judge_is_off
+    max_section_label
     normalize_lesson_category normalize_theme_consent_sha normalize_unicode sanitize_json_values
     sanitize_response sanitize_string strip_hidden_unicode validate_api_body
     validate_ask_user_question validate_field validate_jsonrpc_request validate_jsonrpc_response

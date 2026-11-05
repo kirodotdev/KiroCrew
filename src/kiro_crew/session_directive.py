@@ -68,6 +68,7 @@ DIRECTIVE_TOOLS: frozenset[str] = frozenset(
         "nothing_to_do",
         "reset_conversation",
         "chat_tag",
+        "section_marker",
     }
 )
 
@@ -78,6 +79,18 @@ DIRECTIVE_TOOLS: frozenset[str] = frozenset(
 # session directive. (A downstream fork adjusts this one constant to its own
 # server name.)
 CORE_MCP_SERVER = "kirocrew-core"
+
+#: A chapter break. Deliberately absent from ``RECALL_ROLES``, ``_QUESTION_RETIRING_ROLES``
+#: and ``_PROMPT_ROLES``; ``test_section_marker_directive`` pins all three exclusions.
+SECTION_MARKER_ROLE = "section_marker"
+
+
+def default_row_cls(role: str) -> str:
+    """The class a history row with no stored ``cls`` is drawn with: a marker is a rule, not a bubble."""
+    if role == SECTION_MARKER_ROLE:
+        return ""
+    return "msg msg-u" if role == "user" else "msg msg-a"
+
 
 # Marker begins a line; the remainder of that line is the compact-JSON payload
 # ``{"kind": <tool>, "args": {...}}``. Placed on its own trailing line after the

@@ -310,6 +310,7 @@ class _ChatSlot:
         "_turn_in_flight_generation",
         "_turn_in_flight_prompt",
         "_active_turn_session_key",
+        "_active_turn_history_key",
         "_responsive",
         "_side",
         "_acp_client",
@@ -549,6 +550,7 @@ class _ChatSlot:
     _file_changes_flush: asyncio.Future[None] | None
     linked_session_key: str
     _active_turn_session_key: str
+    _active_turn_history_key: str
     _responsive: Any
     _side: SideState | None
     _acp_client: None

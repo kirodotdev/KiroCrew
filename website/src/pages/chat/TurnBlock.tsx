@@ -103,9 +103,11 @@ const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 
  * crew_dispatch_notice: the Crew Mode dispatch notice and its "Open Board"
  * button exist to make a mid-turn dispatch visible — folding it into the steps
  * pane on the default collapseAll path would hide the one row it adds.
+ * section_marker: a boundary between units of work; folded away, it marks nothing.
  */
 const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
   it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
+  it.msg.role === 'section_marker' ||
   it.msg.meta?.kind === 'crew_dispatch_notice' ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )

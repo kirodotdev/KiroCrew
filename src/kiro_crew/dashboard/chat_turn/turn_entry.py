@@ -903,6 +903,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # Same un-landed semantics as _recovering_promise.
     _recovering_infra = False
     turn._recovering_infra = _recovering_infra
+    # Set by _queue_recovery: this turn queued its own retry or continuation, whose
+    # reply still belongs to the item a held section marker closes.
+    turn._queued_own_recovery = False
     # Set when the L1 run for this slot ran out of attempts and the turn was
     # given up. Distinct from _recovering_infra, which also marks the turn
     # un-landed and so suppresses turn settlement, budget resets and

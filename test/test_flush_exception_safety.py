@@ -1,6 +1,6 @@
 """Exception safety of the deferred-note flush, at every seam that calls it.
 
-``slot.flush_deferred_notes()`` is called at three seams. Every one of them is a
+``slot.flush_deferred_notes(markers_only=False)`` is called at three seams. Every one of them is a
 bare statement whose *following* code is what frees the slot, so a raise inside
 the flush does not merely delay a held note -- it skips that cleanup:
 
@@ -91,7 +91,7 @@ class TestPartialFlushKeepsUnwrittenNotes:
 
         with patch.object(type(slot), "append", _append):
             with pytest.raises(_Boom):
-                slot.flush_deferred_notes()
+                slot.flush_deferred_notes(markers_only=False)
 
         # Note 1 was written and must not be replayed.
         assert calls == ["first", "second"]
@@ -113,10 +113,10 @@ class TestPartialFlushKeepsUnwrittenNotes:
 
         with patch.object(type(slot), "append", _append):
             with pytest.raises(_Boom):
-                slot.flush_deferred_notes()
+                slot.flush_deferred_notes(markers_only=False)
 
         # Second attempt, nothing patched: the held remainder is written.
-        assert slot.flush_deferred_notes() == 2
+        assert slot.flush_deferred_notes(markers_only=False) == 2
         assert [m["content"] for m in slot.messages] == ["first", "second", "third"]
         assert slot._deferred_notes == []
 
@@ -139,7 +139,7 @@ class TestPartialFlushKeepsUnwrittenNotes:
             return result
 
         with patch.object(type(slot), "append", _land_then_raise):
-            written = slot.flush_deferred_notes()  # must NOT raise
+            written = slot.flush_deferred_notes(markers_only=False)  # must NOT raise
 
         assert written == 1, "row that lands counts as written"
         assert slot._deferred_notes == [], "note must not be queued for retry"
@@ -170,11 +170,11 @@ class TestPartialFlushKeepsUnwrittenNotes:
 
         with patch.object(type(slot), "append", _append):
             with pytest.raises(_Boom):
-                slot.flush_deferred_notes()
+                slot.flush_deferred_notes(markers_only=False)
 
         # "second" row failed -- its context must NOT be in the queue yet.
         assert [e["content"] for e in slot._pending_context] == ["first"]
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
         # After the retry the row lands and context is promoted exactly once.
         assert [e["content"] for e in slot._pending_context] == ["first", "second"]
 

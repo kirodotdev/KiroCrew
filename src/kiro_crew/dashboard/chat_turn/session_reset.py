@@ -651,6 +651,7 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
         # has something to retire.
         if slot._active_turn_session_key == session_key:
             slot._active_turn_session_key = ""
+            slot._active_turn_history_key = ""
         # Spelling-independent backstop for a directive call whose tool
         # identity and result marker were both lost by the backend. The
         # validated payload reached the gateway, but no frame claimed it,
