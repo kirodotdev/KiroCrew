@@ -34,6 +34,7 @@ from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_ERROR,
     is_relay_archive,
 )
+from kiro_crew.dashboard.slot_buffers import flush_restored_hold
 from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key, load_window_off_loop
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
@@ -665,6 +666,8 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                     status=409,
                 )
         slot.agent = agent
+    # A hold a restart restored into this idle slot is owed to this turn.
+    flush_restored_hold(slot, logger=logger)
     slot.append("user", prompt, "msg msg-u")
 
     # SEL audit for tool invocation visibility

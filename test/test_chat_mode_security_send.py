@@ -773,6 +773,48 @@ async def test_app_sse_stream_stops_at_the_end_of_its_turn(state) -> None:
 
 
 @pytest.mark.asyncio
+async def test_app_sse_stream_never_carries_a_restored_note(state) -> None:
+    # A restart restored a held note into the user's idle slot. The app's send
+    # flushes it for the turn, but the app may not read it: only the user's
+    # dashboard gets the note's row.
+    slot = _user_slot(state, agent="researcher")
+    slot._deferred_notes.append(
+        {
+            "id": "n1",
+            "content": "the user's private note",
+            "cls": "reconcile-note",
+            "context": None,
+            "session": None,
+        }
+    )
+    state._broadcast = MagicMock()
+
+    async def reply(_state, s, _message, **_kwargs):
+        s.append("assistant", "reply to the app")
+        s.append("done", "", "done")
+
+    with (
+        patch(_GRANT_CHECK, return_value=True),
+        patch("kiro_crew.dashboard.chat_handlers._run_chat", new=reply),
+        patch("kiro_crew.dashboard.chat_handlers._maybe_auto_title", new=AsyncMock()),
+    ):
+        async with _app_client(state) as client:
+            resp = await client.post("/api/chat", json={"slot": "s1", "message": "hi"})
+            stream = await resp.text()
+
+    assert resp.status == 200
+    assert "reply to the app" in stream
+    assert "private note" not in stream
+    assert slot._deferred_notes == []
+    dashboard = [
+        call.args[0]["content"]
+        for call in state._broadcast.call_args_list
+        if call.args[0].get("_type") == "chat_message"
+    ]
+    assert "the user's private note" in dashboard
+
+
+@pytest.mark.asyncio
 async def test_app_sse_stream_skips_a_row_queued_for_a_later_turn(state) -> None:
     _user_slot(state, agent="researcher")
     state._broadcast = MagicMock()
