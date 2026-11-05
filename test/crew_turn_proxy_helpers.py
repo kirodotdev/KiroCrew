@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import aiohttp
 
+from kiro_crew.cloud.microvm.recipe import GUEST_FRONT_PORT
 from kiro_crew.dashboard import handlers_crew_turn as mod
 
 #: Node ids of the shape the registry really validates: ``mi-`` and 8 to 17 hex
@@ -249,9 +250,10 @@ def _connected(**extra):
     """A tunnel status that yields a loopback turn target for a headless crew.
 
     Carries the dial identity the live tunnel was built with -- transport ``ssm``
-    on the real crew's node, profile and region -- so ``api_crew_turn``'s binding
-    guard sees the open tunnel and the matched record agree. A test driving the
-    mismatch itself overrides these keys (or the record) so they disagree.
+    on the real crew's node, profile, region and front port -- so
+    ``api_crew_turn``'s binding guard sees the open tunnel and the matched record
+    agree. A test driving the mismatch itself overrides these keys (or the
+    record) so they disagree.
     """
     base = {
         "state": "connected",
@@ -260,6 +262,7 @@ def _connected(**extra):
         "ssm_target": _REAL_NODE,
         "aws_profile": "prof",
         "aws_region": "us-east-1",
+        "remote_port": GUEST_FRONT_PORT,
     }
     base.update(extra)
     return base
