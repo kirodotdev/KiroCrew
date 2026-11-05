@@ -1,13 +1,8 @@
 """SubagentManager live config: every constructor-captured limit follows config.json.
 
-``SubagentManager`` copies nine ``agent.*`` limits (plus ``session.pool_size``
-through the auto-sized cap) at construction. ``reconfigure`` re-derives every
-copy from a reloaded config, and the manager subscribes itself on the process
-watcher so a write from ANY writer reaches it. These tests pin: each derived
-field, the ``0`` timeout / stall sentinels, that a raised cap admits a queued
-spawn through the real pump, that a lowered cap cancels nothing in flight, that
-freed capacity also reaches the gate that lives outside this manager (the runner
-lane), and that an unrelated change is ignored.
+``SubagentManager`` copies nine ``agent.*`` limits (plus ``session.pool_size`` via the auto
+cap) at construction; ``reconfigure`` re-derives them, and the manager subscribes on the
+process watcher so a write from any writer reaches it.
 """
 
 from __future__ import annotations
@@ -347,13 +342,9 @@ class TestCapChangeVersusAdaptiveClamp:
 class TestCapRaiseReachesTheRunnerLane:
     """Freed capacity has to reach the gate that is NOT this manager's queue.
 
-    The runner lane (TaskRunner steps, workflow ``ctx.agent()`` calls) reads
-    ``max_concurrent`` as its ceiling on every decision, so it always SEES the
-    new cap -- but its waiters hold a bare future, and a waiter parked while the
-    cap was 0 holds no slot, so no release of its own will ever wake it. The
-    raise is its only edge, whichever writer produced it. Neither raise site is
-    allowed to grant more than the new cap, and neither may cancel in-flight
-    work on the way down.
+    A runner-lane waiter parked while the cap was 0 holds no slot, so no release wakes it;
+    the raise is its only edge. No raise grants more than the new cap, and a lowered cap
+    cancels nothing in flight.
     """
 
     @staticmethod

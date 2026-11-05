@@ -204,19 +204,11 @@ class TestReleaseAndSweep:
 
 @pytest.mark.asyncio
 async def test_the_continuation_path_takes_no_store_call_on_the_loop(monkeypatch) -> None:
-    """A continuation dispatched from the gateway loop reaches the task store
-    only on its writer thread -- dispatch, the run's mode publication, and the
-    terminal settle.
+    """A loop-dispatched continuation reaches the task store only on its writer thread.
 
-    ``store.loop_thread_calls`` is what the claim rests on, not the guard alone:
-    ``OnLoopDBGuard.check`` raises, and most store call sites sit inside an
-    ``except Exception`` that swallows the raise, so a violation shows up as a
-    number and not as a failure. The guard is armed as well, for the sites that
-    do propagate. The counter also covers the SHAPE this pins against: both
-    writes the sync entry would take here (``taskq_accept``, ``taskq_claim``)
-    wait on ``TaskStore._lock``, and a 1s hold by the writer thread freezes a
-    coroutine caller's loop for the whole hold -- measured 0 of ~95 due 10ms
-    heartbeat ticks served through the sync entry against 91 through this one.
+    Asserted on ``store.loop_thread_calls``, because most store call sites swallow the
+    ``OnLoopDBGuard.check`` raise. The sync entry's ``taskq_accept`` / ``taskq_claim`` wait
+    on ``TaskStore._lock`` and froze the loop (0 of ~95 10ms heartbeat ticks served, vs 91).
     """
     from kiro_crew.subagent_manager import admission as admission_mod
     from kiro_crew.subagent_persistence import create_agent_folder
@@ -258,19 +250,11 @@ async def test_the_continuation_path_takes_no_store_call_on_the_loop(monkeypatch
 
 
 def test_a_stale_resume_entry_does_not_hold_a_conversation() -> None:
-    """A ``_resume_id`` window entry is a RESIDENT run asking for the lane slot
-    it yielded, not an unstarted spawn, so it never answers
-    ``_conversation_busy`` -- the same separation the pump's grant loop, the
-    refill census, the eviction and the child reserve make.
+    """A ``_resume_id`` window entry never answers ``_conversation_busy``.
 
-    An entry whose run is still live is answered by the ``_agents`` scan first.
-    The case that reaches this branch is a run that ENDED with its request still
-    queued: the queued-stop path leaves the entry alone by design (dropping it
-    published a "never started" terminal over a live run) and only the bounded
-    waiter's give-up arm withdraws one, while the pump returns above its resume
-    loop whenever no slot is free. Counted, that entry refuses every
-    continuation and every release of the conversation with a
-    ``conversation_busy`` naming a run that is already done.
+    It is a resident run asking for its lane slot back, not an unstarted spawn. A run that
+    ended with its request still queued keeps the entry (dropping it would publish "never
+    started" over a live run), so counting it would refuse every continuation and release.
     """
     from kiro_crew.subagent_persistence import create_agent_folder
 
@@ -299,15 +283,10 @@ def test_a_stale_resume_entry_does_not_hold_a_conversation() -> None:
 
 @pytest.mark.asyncio
 async def test_the_followup_watcher_dispatches_no_store_call_on_the_loop(monkeypatch) -> None:
-    """The follow-up watcher is the manager's OWN continuation caller
-    (``spawn_steer mode="follow_up"``), and it dispatches from a task on the
-    gateway loop -- so the entry it picks is what decides whether a queued
-    correction costs the loop two ``BEGIN IMMEDIATE`` waits.
+    """The follow-up watcher dispatches through the async continuation entry.
 
-    Pinned separately from the dispatch pin because a counter over
-    ``continue_conversation_async`` says nothing about which entry
-    ``_deliver_followups`` calls: swapping that one line to the sync entry
-    leaves the other pin green.
+    ``_deliver_followups`` runs on the gateway loop, and the dispatch pin's counter over
+    ``continue_conversation_async`` does not see which entry this site calls.
     """
     from kiro_crew.subagent_manager import admission as admission_mod
     from kiro_crew.subagent_persistence import create_agent_folder

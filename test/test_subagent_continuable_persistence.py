@@ -79,17 +79,10 @@ class TestKeepTranscript:
 
     # ── cancellation ──
     #
-    # `AcpRuntime.terminate_session` swallows `Exception` and unregisters the
-    # queue in a `finally`, precisely because `asyncio.CancelledError` is a
-    # `BaseException` that would otherwise slip past its `except Exception`.
-    # `destroy()` awaits it and then unlinks the transcript, so before the fix
-    # that same cancellation carried straight out of the await and skipped the
-    # unlink -- on gateway shutdown and abandoned turns, which is where most
-    # ephemeral sessions are torn down. Nothing else deletes an ephemeral
-    # session's transcript, so each skipped unlink leaks a file permanently.
-    #
-    # These drive the real `_cleanup_transcript` against a real sessions dir
-    # rather than asserting on a mock, so they measure the file, not the call.
+    # `asyncio.CancelledError` is a `BaseException`, so it would carry out of `destroy()`'s
+    # await of `AcpRuntime.terminate_session` and skip the transcript unlink, on shutdown
+    # and abandoned turns. Nothing else deletes an ephemeral transcript, so each skip leaks
+    # a file. These drive the real `_cleanup_transcript` against a real sessions dir.
 
     def _handle_with_transcript(self, tmp_path, sid="sid-cancel"):  # type: ignore[no-untyped-def]
         from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -287,20 +280,12 @@ class TestPersistenceGuards:
         finally:
             holder.lock.release()
 
-        # RETRYABLE alone proves the loop did not queue behind the writer lock:
-        # every acquire on that path is non-blocking by construction
-        # (``_try_acquire_retention_lock`` then ``_try_acquire_state_lock``), and
-        # the branch returns before ``state_writer`` runs, so the promotion does
-        # no file I/O at all. A stopwatch around ``asyncio.run`` cannot add signal
-        # here -- the lock is held by the MEASURING thread, so a blocking-acquire
-        # regression self-deadlocks and hangs to the pytest timeout instead of
-        # reaching an elapsed assertion, while the number it would report is pure
-        # loop-construction and interpreter cost that coverage and a co-tenant
-        # runner inflate. The properly shaped version of that timing property --
-        # holder on a separate thread, bound DERIVED from the hold -- already
-        # exists as test_a_coroutine_does_not_wait_on_a_held_lock in
-        # test_subagent_state_write_serialization.py, whose own comment records a
-        # bare 0.5s bound false-redding at 0.515s on a loaded runner.
+        # RETRYABLE alone proves the loop did not queue behind the writer lock: every
+        # acquire on this path is non-blocking and the branch returns before
+        # ``state_writer`` runs. No stopwatch here: the measuring thread holds the lock, so
+        # a blocking regression deadlocks to the pytest timeout. The timing property lives
+        # in test_a_coroutine_does_not_wait_on_a_held_lock
+        # (test_subagent_state_write_serialization.py).
         assert result is sp.RetentionPromotionResult.RETRYABLE
         assert not (sp.read_state(agent_id) or {}).get("keep")
 

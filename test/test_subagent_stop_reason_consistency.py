@@ -1,19 +1,12 @@
 """Stop-reason consistency across every completion consumer.
 
-``EVENT_COMPLETE`` only says a stream ENDED. Before this change the sub-agent
-run (``subagent_manager/run.py``) recorded EVERY completion as success --
-``done=True, error="", outcome=completed, record_success()`` -- whatever the
-stop reason said, so a watchdog tool stall, a runtime cancel or a transport
-death reached the parent as "completed ✅" with the partial as the answer.
-The task runner (``task_executor.py``) had the same shape.
+``EVENT_COMPLETE`` only says a stream ended, so a watchdog tool stall, a runtime cancel or a
+transport death must not be recorded as success, in the sub-agent run
+(``subagent_manager/run.py``) or the task runner (``task_executor.py``).
 
-These tests drive the REAL production paths -- ``SubagentManager.spawn`` ->
-``_run`` -> ``_run_inner_impl`` and ``TaskRunner._execute_single_task`` ->
-``execute_single_task`` -- with only the ACP session provider faked, which is
-the seam every other run test uses. Nothing in ``run.py`` is mocked.
-
-The mapping lives in ONE place, ``acp.types.classify_stop_reason``; the table
-tests pin it and the path tests pin that each entry actually uses it.
+The real paths (``SubagentManager.spawn`` -> ``_run`` -> ``_run_inner_impl`` and
+``TaskRunner._execute_single_task`` -> ``execute_single_task``) run with only the ACP
+session provider faked. The mapping lives in ``acp.types.classify_stop_reason``.
 """
 
 from __future__ import annotations
@@ -275,11 +268,9 @@ async def test_runtime_cancel_is_cancelled_not_completed():
 async def test_exhausted_stream_without_complete_is_not_marked_result_complete():
     """A stream that dies between chunks must not be recorded as a finished result.
 
-    ``classify_stop_reason("")`` resolves to ``succeeded``, so a generator that
-    simply stops -- no EVENT_COMPLETE at all -- takes the success branch unless
-    the complete event is checked. The durable flag must reflect the missing
-    complete event, not the absent stop reason: nothing else on disk tells a
-    reader after a restart that ``result.txt`` holds a fragment.
+    ``classify_stop_reason("")`` resolves to ``succeeded``, so the durable flag must
+    follow the missing complete event; nothing else tells a reader after a restart that
+    ``result.txt`` holds a fragment.
     """
 
     # ...the stream dies after its chunk: no EVENT_COMPLETE, no stop reason.
@@ -363,16 +354,11 @@ class _GatedResultWrite:
 
 
 class _HeldResultDrain:
-    """Parks the bounded drain of a claimed result write until the test
-    starts its bound.
+    """Parks the bounded drain of a claimed result write until the test starts its bound.
 
-    The bound counts wall-clock from the drain's first await, while
-    :class:`_GatedResultWrite` can report ``entered`` only once a pool thread
-    has picked the write up and the loop has run two more callbacks. Timed
-    against each other, a late executor lets the bound expire first and the
-    run is ``done`` before the test looks at it. Parked here, "claimed, write
-    pending, not done" lasts until :meth:`start_bound`, and the bound then
-    expires against a write the gate still holds.
+    :class:`_GatedResultWrite` reports ``entered`` only after a pool thread picks the write
+    up, so a late executor could let the bound expire first. Parked, "claimed, write
+    pending, not done" lasts until :meth:`start_bound`.
     """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -748,11 +734,8 @@ async def test_a_failed_result_write_records_no_flag_and_the_run_completes(
 class _DeadlineOnDemand:
     """The run's deadline, fired by the test rather than by the clock.
 
-    Stands in for ``asyncio.wait_for`` on the one call that carries the run's
-    budget, which is set far past any test, so the run is held where the test
-    wants it before its deadline lands: on firing, the run is cancelled and its
-    ``TimeoutError`` raised, as ``wait_for`` does when time runs out. Every
-    other ``wait_for`` passes straight through.
+    Stands in for ``asyncio.wait_for`` on the one call carrying the run's budget: on firing
+    the run is cancelled and ``TimeoutError`` raised. Every other ``wait_for`` passes through.
     """
 
     _BUDGET = 86_400.0
